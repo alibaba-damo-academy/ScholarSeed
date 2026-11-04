@@ -1,6 +1,6 @@
 ---
 name: scholarseed-product-operations
-version: "2026.10.29+4"
+version: "2026.11.3+1"
 description: >-
   Access project resources and stored papers,
   PDF evidence and external retrieval, referenced conversation history,
@@ -15,7 +15,7 @@ description_zh: >-
   交付文件、按用户要求将会话文件导入资料库或文献库、管理多阶段会话计划、配置 MCP 服务器。操作前仅加载对应指南；普通闲聊和无需这些能力
   的直接回答不加载，科研问题本身不触发。
 metadata:
-  version: "2026.10.29+4"
+  version: "2026.11.3+1"
 ---
 
 # Materials and Task Tools — 资料与任务工具

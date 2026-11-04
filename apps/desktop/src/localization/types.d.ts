@@ -1413,7 +1413,6 @@ declare module 'i18next' {
             "elapsedSeconds": "{{seconds}} 秒",
             "elapsedMinutes": "{{minutes}} 分 {{seconds}} 秒",
             "estimate": {
-                "unavailable": "暂无可靠估算",
                 "total": "预计 {{lower}}–{{upper}}m",
                 "remaining": "剩 {{lower}}–{{upper}}m",
                 "overrun": "已超出历史区间，仍在执行",
@@ -1605,6 +1604,7 @@ declare module 'i18next' {
             "confirmContinue": "我已检查，继续任务",
             "confirmingOutcome": "正在确认",
             "confirmContinueFailed": "确认失败，请稍后重试。",
+            "confirmStateChanged": "任务状态已变化，已重新获取最新队列和会话状态，请查看后继续。",
             "body": "消息正文",
             "referenceOnly": "本条消息仅包含引用",
             "annotations": "回答批注",
@@ -2334,7 +2334,7 @@ declare module 'i18next' {
             },
             "prompts": {
                 "title": "AI 提示词",
-                "description": "AI 提示词跨项目生效、重启保留，临时要求作为补充。",
+                "description": "AI 提示词跨项目生效、重启保留。恢复默认会填入当前界面语言的模板，保存后才生效；临时要求作为补充。",
                 "explain": "AI 解读",
                 "translate": "AI 翻译",
                 "polish": "AI 润色",
@@ -4939,13 +4939,21 @@ declare module 'i18next' {
             "title": "书深更新恢复",
             "message": "更新保护进程已全部异常退出。请先保存工作，重启电脑后重新打开书深尝试恢复。现有数据已保留，此提示不会自动重启电脑。"
         },
+        "updateInterrupted": {
+            "title": "书深更新未完成",
+            "stopped": "更新已超出执行时限，或无法确认更新结果。更新进程已停止。由于安装可能不完整，书深没有自动重启。请使用可信的书深安装程序修复安装，或携带下方诊断信息联系支持人员。现有研究数据未被删除。",
+            "unconfirmed": "无法确认更新结果及更新进程是否已停止，书深没有自动重启。在更新进程可能仍然运行时，请勿再次更新或修复安装。请携带下方诊断信息联系支持人员。现有研究数据未被删除。"
+        },
         "admissionRecovery": {
             "title": "书深启动恢复",
             "message": "暂时无法安全启动书深",
             "detail": "更新可能尚未完成，或启动安全校验未通过。工作台尚未启动，更新记录已保留，数据目录未切换。请确认更新安装已结束后重试；若仍失败，请复制诊断信息并联系支持人员。",
             "retry": "重试启动",
             "copy": "复制诊断信息",
-            "quit": "退出"
+            "quit": "退出",
+            "installing": "书深正在安装更新，本次打开已退出，避免阻塞安装。请等待更新后自动打开。诊断可在 macOS“控制台”搜索 ScholarSeedStartup；请勿删除更新记录。",
+            "restoring": "更新失败后的恢复交接尚未结束，本次打开已退出。请等待更新进程结束后重新打开；若仍无法启动，请在 macOS“控制台”搜索 ScholarSeedStartup 并联系支持人员。",
+            "unconfirmed": "无法确认更新是否已结束，本次打开已安全退出，更新记录和研究数据已保留。请在 macOS“控制台”搜索 ScholarSeedStartup 并联系支持人员；在确认更新进程停止前，请勿再次更新、覆盖安装或删除更新记录。"
         },
         "browserDownload": {
             "recoveryTitle": "浏览器下载需要处理",
@@ -4956,6 +4964,13 @@ declare module 'i18next' {
             "delete": "删除下载文件",
             "later": "稍后处理",
             "recoveryFailed": "保存下载文件失败，暂存文件未被删除"
+        },
+        "updateProgress": {
+            "title": "正在更新书深",
+            "preparing": "正在准备更新组件，完成后会自动打开书深…",
+            "installing": "正在安装更新，完成后会自动打开书深…",
+            "restarting": "正在打开更新后的书深…",
+            "failed": "更新未能完成。请保留这些诊断信息以便联系支持，关闭此提示后继续恢复。"
         },
         "startup": {
             "title": "ScholarSeed 正在启动",
@@ -5528,6 +5543,7 @@ declare module 'i18next' {
             "project_creation_recovery_required": "项目创建需要恢复，请查看下方未完成记录。"
         },
         "notices": {
+            "removeFailed": "未能移除项目（{{code}}），请确认原因后重试。",
             "archivesReadFailed": "无法读取已归档的项目，请重试。",
             "renamed": "已改名（本地目录名不变）",
             "archived": "已归档，项目从默认列表收起，可随时在归档区恢复",
@@ -5915,6 +5931,7 @@ declare module 'i18next' {
             "revealDesktopUnavailable": "无法在文件管理器中显示此资料：桌面连接未就绪。"
         },
         "operationError": {
+            "root_busy": "此项目或关联目录仍有任务正在运行或等待处理。请在相关任务结束后重试，其他项目不受影响。",
             "invalid_name": "名称不能为空或仅为 .、..，也不能包含 /、\\、冒号（:）或空字符。请修改名称，例如将时间中的冒号改为连字符（-）。",
             "name_too_long": "文件或文件夹名称、路径过长，请缩短名称后重试。",
             "name_exists": "该位置已有同名项。",
@@ -6903,6 +6920,9 @@ declare module 'i18next' {
             },
             "start": "带入新任务"
         },
+        "categorySources": {
+            "user": "用户安装"
+        },
         "groups": {
             "all": "技能广场",
             "scholarseed": "系统预置",
@@ -7381,7 +7401,11 @@ declare module 'i18next' {
         "csv": {
             "controls": "CSV 表格操作",
             "editCell": "编辑单元格 {{cell}}",
-            "failed": "CSV 操作未完成，未保存的修改仍需处理。",
+            "failed": "CSV 操作失败，请重试。如有未保存的修改，请先处理。",
+            "openFailed": "无法打开 CSV 文件，请检查文件后重试。",
+            "encodingInvalid": "文件无法按 UTF-8 或 GBK 解码。请将文件另存为 UTF-8 CSV 后重试。",
+            "quotesInvalid": "CSV 引号格式不正确，请检查引号是否闭合或正确转义。",
+            "gbkReadonly": "使用只读方式打开 GBK 文件",
             "undo": "撤销",
             "redo": "重做"
         },

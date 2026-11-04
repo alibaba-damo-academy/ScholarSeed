@@ -28,6 +28,195 @@ import {
 
 const source = { kind: 'project' as const, path: 'notes/readme.md' }
 
+test('page tabs share dock placement without creating document sessions', async () => {
+  const workspace = new DocumentWorkspace(loader())
+  const documentId = await workspace.open(source, 'preview')
+  const rightId = await workspace.splitTab(documentId, 'right', false)
+  assert.ok(rightId)
+  const right = workspace.getSnapshot().focusedLeaf!
+  workspace.openPageTab('new-page', right.leafId)
+  const state = workspace.getSnapshot()
+  assert.equal(findLeaf(state.layout.areas[right.area], right.leafId)?.activeTabId, 'new-page')
+  assert.equal(state.focusedTabId, 'new-page')
+  assert.equal(Object.keys(state.sessions).length, 1)
+  assert.equal(Object.keys(state.tabs).length, 2)
+  assert.equal(
+    await workspace.moveTab(
+      'new-page',
+      'primary',
+      workspace.tabLocation(documentId)!.leafId,
+      'center'
+    ),
+    true
+  )
+  workspace.synchronizePageTabs([])
+  assert.equal(workspace.tabLocation('new-page'), null)
+  assert.equal(Object.keys(workspace.getSnapshot().sessions).length, 1)
+})
+
+test('page synchronization preserves placement and local activation across document closes', async () => {
+  const workspace = new DocumentWorkspace(loader())
+  workspace.openPageTab('page-left')
+  const documentId = await workspace.open(source, 'preview')
+  const rightId = await workspace.splitTab(documentId, 'bottom', false)
+  assert.ok(rightId)
+  const right = workspace.getSnapshot().focusedLeaf!
+  workspace.openPageTab('page-right', right.leafId)
+  workspace.synchronizePageTabs(['page-left', 'page-right'])
+  assert.equal(workspace.tabLocation('page-right')?.leafId, right.leafId)
+  workspace.focusTab(rightId)
+  workspace.requestClose(rightId)
+  assert.equal(workspace.getSnapshot().focusedTabId, 'page-right')
+  assert.equal(
+    findLeaf(workspace.getSnapshot().layout.areas[right.area], right.leafId)?.activeTabId,
+    'page-right'
+  )
+})
+
+test('page splits respect the shared grid limit and preserve local focus after closing', async () => {
+  const workspace = new DocumentWorkspace(loader())
+  workspace.openPageTab('first')
+  assert.equal(workspace.splitPageTab('first', 'right', 'right'), true)
+  assert.equal(workspace.splitPageTab('first', 'bottom-left', 'bottom'), true)
+  assert.equal(workspace.splitPageTab('right', 'bottom-right', 'bottom'), true)
+  assert.equal(workspace.splitPageTab('right', 'extra', 'right'), false)
+  const bottomRight = workspace.tabLocation('bottom-right')!
+  workspace.openPageTab('another', bottomRight.leafId)
+  workspace.synchronizePageTabs(['first', 'right', 'bottom-left', 'bottom-right'])
+  assert.equal(workspace.getSnapshot().focusedTabId, 'bottom-right')
+  assert.equal(await workspace.moveTabToTab('bottom-right', 'first', 'after'), true)
+  assert.equal(
+    workspace.tabLocation('bottom-right')?.leafId,
+    workspace.tabLocation('first')?.leafId
+  )
+  workspace.synchronizePageTabs(['first', 'right', 'bottom-left'])
+  assert.equal(Object.keys(workspace.getSnapshot().sessions).length, 0)
+})
+
+test('page synchronization does not replace an active document or move an existing page', async () => {
+  const workspace = new DocumentWorkspace(loader())
+  workspace.openPageTab('page')
+  const documentId = await workspace.open(source, 'preview')
+  const rightId = await workspace.splitTab(documentId, 'right', false)
+  const originalLeaf = workspace.tabLocation('page')!
+  workspace.synchronizePageTabs(['page', 'background-page'])
+  assert.equal(workspace.getSnapshot().focusedTabId, rightId)
+  assert.deepEqual(workspace.tabLocation('page'), originalLeaf)
+  assert.equal(workspace.openPageTab('invalid', 'removed-pane'), false)
+  assert.equal(workspace.tabLocation('invalid'), null)
+})
+
+test('embedded previews retain the hosting page focus until promoted to a standalone tab', async () => {
+  const workspace = new DocumentWorkspace(loader())
+  workspace.openPageTab('explorer-page')
+  const previewId = await workspace.open(source, 'preview', undefined, undefined, undefined, {
+    embedded: true,
+    hostTabId: 'explorer-page',
+  })
+  assert.equal(workspace.getSnapshot().focusedTabId, 'explorer-page')
+  const location = workspace.tabLocation('explorer-page')!
+  assert.equal(
+    findLeaf(workspace.getSnapshot().layout.areas[location.area], location.leafId)?.activeTabId,
+    'explorer-page'
+  )
+  assert.ok(workspace.visibleTabIds().has(previewId))
+  assert.deepEqual(workspace.pageTabsInLeaf('explorer-page'), ['explorer-page'])
+  workspace.setTabEmbedded(previewId, false)
+  workspace.focusTab(previewId)
+  assert.equal(workspace.getSnapshot().focusedTabId, previewId)
+})
+
+test('closing the last page host exposes its retained preview instead of leaving an invisible pane', async () => {
+  const workspace = new DocumentWorkspace(loader())
+  workspace.openPageTab('explorer-page')
+  const previewId = await workspace.open(source, 'preview', undefined, undefined, undefined, {
+    embedded: true,
+    hostTabId: 'explorer-page',
+  })
+  workspace.synchronizePageTabs([])
+  assert.equal(workspace.getSnapshot().tabs[previewId].embedded, false)
+  assert.ok(workspace.tabLocation(previewId))
+  assert.equal(Object.keys(workspace.getSnapshot().sessions).length, 1)
+})
+
+test('moving a page carries its embedded previews without leaving an invisible pane', async () => {
+  const workspace = new DocumentWorkspace(loader())
+  workspace.openPageTab('explorer-page')
+  const previewId = await workspace.open(source, 'preview', undefined, undefined, undefined, {
+    embedded: true,
+    hostTabId: 'explorer-page',
+  })
+  assert.equal(workspace.splitPageTab('explorer-page', 'other-page', 'right'), true)
+  const target = workspace.tabLocation('other-page')!
+  assert.equal(await workspace.moveTab('explorer-page', target.area, target.leafId, 'center'), true)
+  assert.deepEqual(workspace.tabLocation(previewId), workspace.tabLocation('explorer-page'))
+  assert.equal(workspace.getSnapshot().layout.areas.primary.kind, 'leaf')
+  assert.ok(workspace.visibleTabIds().has(previewId))
+})
+
+test('two page hosts share document bytes but keep independent concurrent preview projections', async () => {
+  const workspace = new DocumentWorkspace(loader())
+  workspace.openPageTab('first-host')
+  workspace.openPageTab('second-host')
+  const [first, second] = await Promise.all(
+    ['first-host', 'second-host'].map((hostTabId) =>
+      workspace.open(source, 'preview', undefined, undefined, undefined, {
+        embedded: true,
+        hostTabId,
+      })
+    )
+  )
+  assert.notEqual(first, second)
+  const state = workspace.getSnapshot()
+  assert.equal(state.tabs[first].sessionId, state.tabs[second].sessionId)
+  assert.equal(state.tabs[first].hostTabId, 'first-host')
+  assert.equal(state.tabs[second].hostTabId, 'second-host')
+  workspace.focusTab('first-host')
+  assert.ok(workspace.visibleTabIds().has(first))
+  assert.equal(workspace.visibleTabIds().has(second), false)
+})
+
+test('a page records its selected preview and protects only that embedded projection', async () => {
+  const workspace = new DocumentWorkspace(loader())
+  workspace.openPageTab('host')
+  const options = { embedded: true, hostTabId: 'host' }
+  const first = await workspace.open(source, 'preview', undefined, undefined, undefined, options)
+  const second = await workspace.open(
+    { ...source, path: 'other.md' },
+    'preview',
+    undefined,
+    undefined,
+    undefined,
+    options
+  )
+  await workspace.open(source, 'preview', undefined, undefined, undefined, options)
+  assert.equal(workspace.getSnapshot().tabs[first].activeInHost, true)
+  assert.equal(workspace.getSnapshot().tabs[second].activeInHost, false)
+  assert.ok(workspace.visibleTabIds().has(first))
+  assert.equal(workspace.visibleTabIds().has(second), false)
+})
+
+test('moving a standalone projection preserves a matching host-owned embedded preview', async () => {
+  const workspace = new DocumentWorkspace(loader())
+  const standalone = await workspace.open(source, 'preview')
+  workspace.openPageTab('left-page')
+  workspace.splitPageTab('left-page', 'right-host', 'right')
+  const preview = await workspace.open(source, 'preview', undefined, undefined, undefined, {
+    embedded: true,
+    hostTabId: 'right-host',
+  })
+  const target = workspace.tabLocation('right-host')!
+  await workspace.moveTab(standalone, target.area, target.leafId, 'center')
+  assert.ok(workspace.getSnapshot().tabs[preview])
+  assert.equal(workspace.getSnapshot().tabs[preview].hostTabId, 'right-host')
+  assert.equal(
+    workspace.getSnapshot().tabs[preview].sessionId,
+    workspace.getSnapshot().tabs[standalone].sessionId
+  )
+  workspace.focusTab('right-host')
+  assert.ok(workspace.visibleTabIds().has(preview))
+})
+
 test('document navigation honors literature reading context without changing source defaults', async () => {
   for (const kind of ['literature', 'project', 'session-artifact', 'session-file'] as const) {
     const workspace = new DocumentWorkspace(loader())
@@ -746,6 +935,21 @@ test('saveFocused commits only the focused dirty save-capable session through or
   assert.deepEqual(commits, ['notes/second.md'])
   assert.equal(workspace.getSnapshot().sessions[firstSession].dirty, true)
   assert.equal(workspace.getSnapshot().sessions[secondSession].dirty, false)
+})
+
+test('saveFocused prepares pending editor text before deciding whether the document is dirty', async () => {
+  const workspace = new DocumentWorkspace(loader())
+  const tab = await workspace.open(source, 'edit')
+  const session = workspace.getSnapshot().tabs[tab].sessionId
+  workspace.registerSaveDelegate(session, {
+    prepare: () => workspace.updateText(session, '# pending editor text'),
+    serialize: async () => new TextEncoder().encode('# pending editor text'),
+  })
+  assert.equal(workspace.getSnapshot().sessions[session].dirty, false)
+
+  assert.equal(await workspace.saveFocused(), true)
+  assert.equal(workspace.getSnapshot().sessions[session].savedText, '# pending editor text')
+  assert.equal(workspace.getSnapshot().sessions[session].dirty, false)
 })
 
 test('saveAll saves every dirty writable document and stops on the first failure', async () => {

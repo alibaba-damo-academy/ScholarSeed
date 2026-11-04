@@ -670,6 +670,42 @@ for (const count of [3, 12]) test(`artifact group wraps ${count} complete cards 
   } finally { await page.close() }
 })
 
+test('stacked artifact group preserves mixed card order without grid-row whitespace', async () => {
+  const { page, errors } = await openComponent(null, { language: 'zh', slot: 'custom.artifacts', status: 'pending', data: {} })
+  try {
+    await page.setViewportSize({ width: 900, height: 1050 })
+    const mountCards = async (stacked) => page.evaluate((stacked) => {
+      const { React, mount, Conversation } = window.scholarseedUI
+      mount(() => React.createElement(Conversation.ArtifactGroup, { stacked },
+        [80, 360, 240, 80].map((height, index) => React.createElement('div', {
+          key: index, 'data-artifact-card': true, style: { height },
+        }, `artifact-${index}`))))
+    }, stacked)
+    await mountCards(false)
+    const originalCards = page.locator('[data-artifact-card]')
+    const originalFirst = await originalCards.nth(0).boundingBox()
+    const originalSecond = await originalCards.nth(1).boundingBox()
+    const originalThird = await originalCards.nth(2).boundingBox()
+    assert.equal(originalFirst.y, originalSecond.y)
+    assert.ok(originalThird.y - originalFirst.y - originalFirst.height > 200)
+    await mountCards(true)
+    for (const width of [1200, 1040, 320]) {
+      await page.setViewportSize({ width, height: 1050 })
+      const cards = await page.locator('[data-artifact-card]').all()
+      assert.equal(cards.length, 4)
+      for (let index = 1; index < cards.length; index++) {
+        const previous = await cards[index - 1].boundingBox()
+        const current = await cards[index].boundingBox()
+        assert.equal(current.x, previous.x)
+        assert.ok(current.y >= previous.y + previous.height)
+        assert.ok(current.y - previous.y - previous.height < 20)
+      }
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
+    }
+    assert.deepEqual(errors, [])
+  } finally { await page.close() }
+})
+
 test('shared artifact keeps version identity, deep menus and independent open/import ports', async () => {
   const { page, errors } = await openComponent(null, { language: 'zh', slot: 'custom.artifact', status: 'pending', data: {} })
   try {

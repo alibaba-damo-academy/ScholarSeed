@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import os
+import stat
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -344,6 +347,8 @@ def metadata_roundtrip(root: Path) -> None:
 
 
 def main() -> int:
+    with tempfile.TemporaryDirectory(prefix="project-directory-metadata-") as tmp:
+        directory_metadata(Path(tmp).resolve())
     with tempfile.TemporaryDirectory(prefix="project-names-") as tmp:
         generated_project_names(Path(tmp).resolve())
     with tempfile.TemporaryDirectory(prefix="project-tree-") as tmp:
@@ -362,6 +367,74 @@ def main() -> int:
         creation_order(Path(tmp).resolve())
     print(f"\n{PASS} passed, {FAIL} failed")
     return 1 if FAIL else 0
+
+
+def directory_metadata(root: Path) -> None:
+    catalog = ContentCatalog(root / "content.sqlite3")
+    registry = ProjectRegistry(str(root), catalog)
+    project = registry.seed_workspace()
+    assert project is not None
+    registered_at = project.created_at
+    original_stat = Path.stat
+
+    for birthtime in (10.0, None, 0.0, -1.0, float("nan"), float("inf")):
+        metadata = SimpleNamespace(st_mode=stat.S_IFDIR, st_ctime=900.0, st_mtime=800.0)
+        if birthtime is not None:
+            metadata.st_birthtime = birthtime
+
+        def inspected(path: Path, *, follow_symlinks: bool = True) -> object:
+            return (
+                metadata if path == root else original_stat(path, follow_symlinks=follow_symlinks)
+            )
+
+        with patch.object(Path, "stat", inspected):
+            ref = registry.resolve(project.id)
+        check(
+            f"directory creation uses valid native birthtime only ({birthtime})",
+            getattr(ref, "directory_created_at", "absent") == (10.0 if birthtime == 10 else None)
+            and ref.created_at == registered_at
+            and ref.available,
+        )
+
+    for error in (FileNotFoundError(), PermissionError()):
+
+        def unavailable(path: Path, *, follow_symlinks: bool = True) -> object:
+            if path == root:
+                raise error
+            return original_stat(path, follow_symlinks=follow_symlinks)
+
+        with patch.object(Path, "stat", unavailable):
+            ref = registry.resolve(project.id)
+        check(
+            f"unreadable directory retains registration ({type(error).__name__})",
+            not ref.available
+            and getattr(ref, "directory_created_at", "absent") is None
+            and ref.created_at == registered_at,
+        )
+
+    registry.block(project.id, "test-blocked")
+    with patch.object(
+        Path, "stat", side_effect=AssertionError("blocked root must not be inspected")
+    ):
+        ref = registry.resolve(project.id)
+    check(
+        "blocked roots do not acquire creation metadata",
+        not ref.available and ref.directory_created_at is None,
+    )
+
+    content = ContentService(ProjectRegistry(str(root), catalog), catalog, activities=Activities())
+    app = FastAPI()
+    app.state.content = content
+    app.state.workspace = str(root)
+    register_content_routes(app)
+    response = TestClient(app).get("/api/content/projects")
+    entry = next(item for item in response.json()["projects"] if item["id"] == project.id)
+    check(
+        "project HTTP read model exposes native directory time separately",
+        "directory_created_at" in entry
+        and entry["created_at"] == registered_at
+        and entry.get("directory_created_at") == getattr(root.stat(), "st_birthtime", None),
+    )
 
 
 def project_tree(root: Path) -> None:

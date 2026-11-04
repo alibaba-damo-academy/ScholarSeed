@@ -99,7 +99,9 @@ from service.chat.service.titles import SessionTitles
 from service.content.api.routes import register_content_routes
 from service.content.domain.model import (
     PROJECT_STATE_DIRNAME,
+    ROOT_BUSY_ERROR,
     ROOT_SOURCE_CHANGED_ERROR,
+    ROOT_UNAVAILABLE_ERROR,
     ContentError,
 )
 from service.content.domain.naming import DEFAULT_PROJECT_NAME
@@ -117,6 +119,7 @@ from service.content.service.operations import (
     AuthorizeRoot,
     ContentCommand,
     ContentOperations,
+    ContentPhase,
     CreateProject,
     EnsureDefaultProject,
     ForgetProject,
@@ -126,6 +129,7 @@ from service.content.service.operations import (
     ReconcileProjectRemoval,
     RecoveryAdmission,
     RevokeRoot,
+    content_phase,
     requires_postcommit_recovery,
 )
 from service.content.service.port import ContentService, ProjectRegistry
@@ -2708,20 +2712,25 @@ def create_app(
         return {"id": record.project_id, "removed": True, "files_kept": True}
 
     def create_project_concurrently(operation_id: str, command: CreateProject) -> ProjectRef:
-        plan = app.state.content.plan_project_creation(command.name)
-        candidate = Path(plan.dir_root)
-        workspace_identity = owner.directory_identity(str(candidate.parent))
-        provenance = app.state.content_catalog.begin_project_creation(operation_id, plan)
-        with created_directory(
-            native,
-            coordinator,
-            str(candidate.parent),
-            candidate.name,
-            expected_parent=workspace_identity,
-            role=DirectoryRole.PROJECT,
-        ) as fresh:
+        with content_phase(operation_id, ContentPhase.PREPARE):
+            plan = app.state.content.plan_project_creation(command.name)
+            candidate = Path(plan.dir_root)
+            workspace_identity = owner.directory_identity(str(candidate.parent))
+            provenance = app.state.content_catalog.begin_project_creation(operation_id, plan)
+        with ExitStack() as stack:
+            with content_phase(operation_id, ContentPhase.QUALIFY):
+                fresh = stack.enter_context(
+                    created_directory(
+                        native,
+                        coordinator,
+                        str(candidate.parent),
+                        candidate.name,
+                        expected_parent=workspace_identity,
+                        role=DirectoryRole.PROJECT,
+                    )
+                )
             identity = initialize_project_creation(native, fresh, provenance)
-            with fresh.mutation():
+            with content_phase(operation_id, ContentPhase.PREPARE), fresh.mutation():
                 for relative in PROJECT_CREATION_DIRECTORIES:
                     if relative != PROJECT_STATE_DIRNAME:
                         prepare_private_directory(
@@ -2730,7 +2739,10 @@ def create_app(
                 prepare_project_storage(candidate)
             roots = (str(candidate), str(candidate / Path(PROJECT_DB_RELATIVE).parent))
             for _ in range(DIRECTORY_PREPARATION_ATTEMPTS):
-                with fresh.descendants(roots, role=DirectoryRole.PROJECT) as view:
+                with (
+                    content_phase(operation_id, ContentPhase.INSPECT),
+                    fresh.descendants(roots, role=DirectoryRole.PROJECT) as view,
+                ):
                     sources = inspect_project_sources(view, (candidate,))
                 entries = sources.projects
                 schemas = tuple(
@@ -2742,35 +2754,150 @@ def create_app(
                     raise DomainChangedError("new project storage was not qualified")
                 if not any(schema is not None and schema.needs_write for schema in schemas):
                     break
-                with fresh.mutation():
+                with content_phase(operation_id, ContentPhase.INITIALIZE), fresh.mutation():
                     initialize_project_storage_sources(entries)
             else:
                 raise RuntimeError("new project initialization did not converge")
             verify_project_creation(native, fresh, provenance)
             with fresh.mutation():
                 app.state.content_catalog.record_project_creation_identity(operation_id, identity)
-        occupied = Domains(
-            native,
-            coordinator,
-            sources.roots,
-            roles={root: DirectoryRole.PROJECT for root in sources.roots},
-        )
+        with content_phase(operation_id, ContentPhase.QUALIFY):
+            occupied = Domains(
+                native,
+                coordinator,
+                sources.roots,
+                roles={root: DirectoryRole.PROJECT for root in sources.roots},
+            )
         retained = False
         try:
-            occupied.occupy()
-            occupied.check_writable()
-            if verify_project_creation(native, occupied, provenance) != identity:
-                raise DomainChangedError("new project changed before registration")
-            observed = inspect_project_sources(occupied.inspection_view(), (candidate,))
-            if observed != sources:
-                raise DomainChangedError("new project schemas changed before registration")
-            occupied.admit()
-            owner.retain(occupied)
-            retained = True
-            return app.state.content.commit_project_creation(plan, operation_id=operation_id)
+            with content_phase(operation_id, ContentPhase.RETAIN):
+                occupied.occupy()
+                occupied.check_writable()
+                if verify_project_creation(native, occupied, provenance) != identity:
+                    raise DomainChangedError("new project changed before registration")
+                observed = inspect_project_sources(occupied.inspection_view(), (candidate,))
+                if observed != sources:
+                    raise DomainChangedError("new project schemas changed before registration")
+                occupied.admit()
+                owner.retain(occupied)
+                retained = True
+            with content_phase(operation_id, ContentPhase.REGISTER):
+                return app.state.content.commit_project_creation(plan, operation_id=operation_id)
         finally:
             if not retained:
                 occupied.close()
+
+    def adopt_project_concurrently(operation_id: str, command: AdoptProject) -> ProjectRef:
+        """Prepare only the candidate; never retire unrelated directory writers.
+
+        Existing directories require ordinary exclusive qualification. They must
+        not borrow the exclusive-mkdir proof used by fresh project creation.
+        Native ancestor/descendant conflicts remain failures, not global drains.
+        """
+        candidate = Path(command.path).expanduser().absolute()
+        # Repeated adoption does not reinitialize storage already admitted by
+        # this instance. The registry still owns identity and operation effects.
+        for project in app.state.content.projects():
+            if Path(project.root) == candidate:
+                with content_phase(operation_id, ContentPhase.REGISTER):
+                    if not project.available:
+                        raise ContentError(project.unavailable_reason or ROOT_UNAVAILABLE_ERROR)
+                    owner.directory_identity(project.root)
+                    return app.state.content.adopt_project(
+                        str(candidate), command.name, operation_id=operation_id
+                    )
+        with content_phase(operation_id, ContentPhase.QUALIFY):
+            exclusive = Domains(
+                native,
+                coordinator,
+                (str(candidate),),
+                maintenance=True,
+                roles={str(candidate): DirectoryRole.PROJECT},
+            )
+        try:
+            with content_phase(operation_id, ContentPhase.QUALIFY):
+                exclusive.occupy()
+                identity = exclusive.directory_identity(str(candidate))
+            with content_phase(operation_id, ContentPhase.PREPARE), exclusive.mutation():
+                prepare_project_storage(candidate)
+            roots = (str(candidate), str(candidate / Path(PROJECT_DB_RELATIVE).parent))
+            for _ in range(DIRECTORY_PREPARATION_ATTEMPTS):
+                with (
+                    content_phase(operation_id, ContentPhase.INSPECT),
+                    exclusive.descendants(roots, role=DirectoryRole.PROJECT) as view,
+                ):
+                    sources = inspect_project_sources(view, (candidate,))
+                schemas = tuple(
+                    schema
+                    for entry in sources.projects
+                    for schema in (entry.pdf, entry.resources, entry.versions)
+                )
+                if any(schema is None for schema in schemas):
+                    raise DomainChangedError("candidate project storage was not qualified")
+                if not any(schema.needs_write for schema in schemas if schema is not None):
+                    break
+                with content_phase(operation_id, ContentPhase.INITIALIZE), exclusive.mutation():
+                    for entry in sources.projects:
+                        if (
+                            entry.database is not None
+                            and entry.pdf is not None
+                            and entry.pdf.cutover
+                        ):
+                            cutover_project_pdf_records((entry.database,))
+                    initialize_project_storage_sources(sources.projects)
+            else:
+                raise RuntimeError("candidate project initialization did not converge")
+        finally:
+            exclusive.close()
+        # Reacquire normal writer qualification and resample after handoff;
+        # another process may have replaced the directory or changed its schema.
+        with content_phase(operation_id, ContentPhase.RETAIN):
+            occupied = Domains(
+                native,
+                coordinator,
+                sources.roots,
+                roles={root: DirectoryRole.PROJECT for root in sources.roots},
+            )
+            retained = False
+            try:
+                occupied.occupy()
+                occupied.check_writable()
+                if occupied.directory_identity(str(candidate)) != identity:
+                    raise DomainChangedError("candidate project changed before registration")
+                if inspect_project_sources(occupied.inspection_view(), (candidate,)) != sources:
+                    raise DomainChangedError(
+                        "candidate project schemas changed before registration"
+                    )
+                with occupied.inspection(str(candidate)):
+                    registration_root = ProjectRegistry.seed_root(candidate)
+                occupied.admit()
+                owner.retain(occupied)
+                retained = True
+            finally:
+                if not retained:
+                    occupied.close()
+        with content_phase(operation_id, ContentPhase.REGISTER):
+            try:
+                result = app.state.content.adopt_project(
+                    str(candidate), command.name, operation_id=operation_id
+                )
+            except BaseException:
+                # A committed/unknown catalog outcome must retain its writer.
+                # Only a successful authoritative read proving no registration
+                # permits release, never a failed commit response by itself.
+                if app.state.content_catalog.project_by_root(registration_root) is None:
+                    owner.release(occupied)
+                raise
+            current = app.state.startup_sources
+            projects = {entry.root: entry for entry in current.project_storage}
+            projects.update((entry.root, entry) for entry in sources.projects)
+            app.state.startup_sources = replace(
+                current,
+                roots=tuple(sorted(set(current.roots) | set(sources.roots))),
+                project_directories=current.extended_project_directories(sources.roots),
+                project_storage=tuple(projects[root] for root in sorted(projects)),
+            )
+            return result
 
     def authorization_sources(command: AuthorizeRoot | LinkImport) -> tuple[str, ...]:
         if isinstance(command, AuthorizeRoot):
@@ -2887,16 +3014,65 @@ def create_app(
                 if app.state.content.projects():
                     result: dict[str, object] = {"created": False}
                     return result
-                return create_project_concurrently(
-                    operation_id, CreateProject(DEFAULT_PROJECT_NAME)
+                return await activities.finish(
+                    ActivityDomain.RESOURCE,
+                    lambda: activities.to_thread(
+                        ActivityDomain.RESOURCE,
+                        create_project_concurrently,
+                        operation_id,
+                        CreateProject(DEFAULT_PROJECT_NAME),
+                    ),
                 )
         if isinstance(command, CreateProject):
-            with activities.enter(ActivityDomain.RESOURCE):
-                return create_project_concurrently(operation_id, command)
+            return await activities.finish(
+                ActivityDomain.RESOURCE,
+                lambda: activities.to_thread(
+                    ActivityDomain.RESOURCE, create_project_concurrently, operation_id, command
+                ),
+            )
+        if isinstance(command, AdoptProject):
+            return await activities.finish(
+                ActivityDomain.RESOURCE,
+                lambda: activities.to_thread(
+                    ActivityDomain.RESOURCE, adopt_project_concurrently, operation_id, command
+                ),
+            )
         if isinstance(command, LinkImport) or (
             isinstance(command, AuthorizeRoot) and not command.supersede
         ):
             return authorize_concurrently(operation_id, command)
+        if isinstance(command, (ForgetProject, ReconcileProjectRemoval)):
+            # Removing registration changes no project files or directory topology.
+            # Keep existing qualifications alive for in-flight readers and runtimes;
+            # the next ordinary maintenance/exit owns their eventual release.
+            # No await separates the durable removal marker from reconciliation.
+            with activities.enter(ActivityDomain.RESOURCE, root=True):
+                if isinstance(command, ForgetProject):
+                    app.state.content.begin_project_forget(
+                        command.project_id, operation_id=operation_id
+                    )
+                return reconcile_project_removal(
+                    operation_id,
+                    command if isinstance(command, ReconcileProjectRemoval) else None,
+                )
+        if isinstance(command, RevokeRoot):
+            with activities.enter(ActivityDomain.RESOURCE, root=True):
+                plan = app.state.content.plan_root_revocation(command.root_id, command.project_id)
+                project = app.state.content.project(plan.project_id)
+                blocked = await app.state.runtime_service.release_directory_attachments(
+                    plan.project_id, Path(plan.source_path), Path(project.root)
+                )
+                if blocked:
+                    _log.info(
+                        "content_root_revocation_blocked operation_id=%s project_id=%s sessions=%s",
+                        operation_id,
+                        plan.project_id,
+                        blocked,
+                    )
+                    raise ContentError(ROOT_BUSY_ERROR)
+                return app.state.content.commit_root_revocation(
+                    command.root_id, command.project_id, operation_id=operation_id
+                )
         generation = activities.begin()
         released = False
         transition_started = False
@@ -3011,10 +3187,7 @@ def create_app(
                 finally:
                     if released:
                         exclusive.close()
-            if isinstance(
-                command,
-                (RevokeRoot, ForgetProject, ReconcileAuthorization, ReconcileProjectRemoval),
-            ):
+            if isinstance(command, ReconcileAuthorization):
                 _, exclusive = acquire_startup_domains(
                     native,
                     coordinator,
@@ -3025,32 +3198,8 @@ def create_app(
                 )
                 try:
                     with exclusive.mutation():
-                        if isinstance(command, ReconcileAuthorization):
-                            return activities.run_maintenance(
-                                generation, lambda: reconcile_authorization(operation_id, command)
-                            )
-                        if isinstance(command, (ForgetProject, ReconcileProjectRemoval)):
-
-                            def forget():
-                                if isinstance(command, ForgetProject):
-                                    app.state.content.begin_project_forget(
-                                        command.project_id, operation_id=operation_id
-                                    )
-                                return reconcile_project_removal(
-                                    operation_id,
-                                    (
-                                        command
-                                        if isinstance(command, ReconcileProjectRemoval)
-                                        else None
-                                    ),
-                                )
-
-                            return activities.run_maintenance(generation, forget)
                         return activities.run_maintenance(
-                            generation,
-                            lambda: app.state.content.commit_root_revocation(
-                                command.root_id, command.project_id, operation_id=operation_id
-                            ),
+                            generation, lambda: reconcile_authorization(operation_id, command)
                         )
                 except MaintenanceIncomplete:
                     owner.install(exclusive)
@@ -3200,18 +3349,15 @@ def create_app(
                                 ),
                             )
                     else:
-                        adoption_name = command.name if isinstance(command, AdoptProject) else None
+                        if creation is None:
+                            raise RuntimeError(
+                                "project recovery requires an immutable creation plan"
+                            )
                         with exclusive.mutation():
                             result = activities.run_maintenance(
                                 generation,
-                                lambda adoption_name=adoption_name: (
-                                    app.state.content.commit_project_creation(
-                                        creation, operation_id=operation_id
-                                    )
-                                    if creation is not None
-                                    else app.state.content.adopt_project(
-                                        str(candidate), adoption_name, operation_id=operation_id
-                                    )
+                                lambda: app.state.content.commit_project_creation(
+                                    creation, operation_id=operation_id
                                 ),
                             )
                         break

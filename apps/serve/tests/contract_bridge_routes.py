@@ -15,12 +15,25 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.status import HTTP_403_FORBIDDEN
 
-from ._directories import directory
+from ._directories import LEASE_TEST_ROOT_ENV, directory
 
 _FIXTURES = ExitStack()
 unittest.addModuleCleanup(_FIXTURES.close)
 _HOME = _FIXTURES.enter_context(directory("bridge-routes-"))
 os.environ["SCHOLARSEED_HOME"] = str(_HOME)
+os.environ["SCHOLARSEED_CODEX_HOME"] = str(_HOME / "codex")
+os.environ["DAMOATRACE_HOME"] = str(_HOME)
+os.environ["DAMOATRACE_LEDGER_ROOT"] = str(_HOME / "projects")
+# A suite's nested TMPDIR can exceed AF_UNIX's byte limit. Keep endpoints in
+# the runner's explicit physical task boundary rather than the suite's Home.
+_SOCKET_ROOT = Path(
+    _FIXTURES.enter_context(
+        tempfile.TemporaryDirectory(
+            prefix="br-",
+            dir=Path(os.environ.get(LEASE_TEST_ROOT_ENV, tempfile.gettempdir())).resolve(),
+        )
+    )
+)
 
 from service.bootstrap import create_app  # noqa: E402  # isolated home before product imports
 from service.chat.api.browsersearch import SEARCH_BROWSER_DENIED  # noqa: E402
@@ -66,7 +79,7 @@ class BridgeRoutesContract(unittest.TestCase):
             id="invocation", bridge_token="private", publication_turn_id="turn"
         )
         with directory("bridge-invocation-") as root:
-            app = create_app(root, auth=False)
+            app = create_app(root, auth=False, local_bridge_root=_SOCKET_ROOT / "bridge")
             caller.bridge_activity = app.state.activities.enter(
                 ActivityDomain.INVOCATION, root=True
             )
@@ -256,7 +269,7 @@ class BridgeRoutesContract(unittest.TestCase):
     )
     def test_local_socket_serves_the_same_capability_registry(self) -> None:
         # Keep AF_UNIX paths short even when the host's default temp path is long.
-        with tempfile.TemporaryDirectory(prefix="br-") as temporary:
+        with tempfile.TemporaryDirectory(prefix="br-", dir=_SOCKET_ROOT) as temporary:
             root = Path(temporary).resolve()
             app = create_app(root, auth=False, local_bridge_root=root / "bridge")
             with self.product_client(app):

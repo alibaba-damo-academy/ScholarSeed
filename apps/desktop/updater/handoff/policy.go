@@ -38,21 +38,47 @@ var kindPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 var devicePattern = regexp.MustCompile(`(?i)^(con|prn|aux|nul|conin\$|conout\$|com[1-9¹²³]|lpt[1-9¹²³])($|\.)`)
 
 type Policy struct {
-	observeTiming   func(ComponentTiming)
-	observeProgress func(ComponentProgress)
-	toolAdmission   *toolAdmission
-	Schema          int               `json:"schema"`
-	ProductID       string            `json:"product_id"`
-	BundleID        string            `json:"bundle_id"`
-	AppID           string            `json:"app_id"`
-	Target          string            `json:"target"`
-	Channel         string            `json:"channel"`
-	PackVersion     string            `json:"pack_version"`
-	Executable      string            `json:"executable"`
-	RuntimeSHA256   string            `json:"runtime_sha256"`
-	Keys            map[string]string `json:"keys"`
-	Signing         Signing           `json:"signing"`
+	UpdateMessages   map[string]UpdateMessages `json:"update_messages"`
+	observeTiming    func(ComponentTiming)
+	observeProgress  func(ComponentProgress)
+	toolAdmission    *toolAdmission
+	Schema           int                         `json:"schema"`
+	ProductID        string                      `json:"product_id"`
+	BundleID         string                      `json:"bundle_id"`
+	AppID            string                      `json:"app_id"`
+	Target           string                      `json:"target"`
+	Channel          string                      `json:"channel"`
+	PackVersion      string                      `json:"pack_version"`
+	Executable       string                      `json:"executable"`
+	RuntimeSHA256    string                      `json:"runtime_sha256"`
+	Keys             map[string]string           `json:"keys"`
+	Signing          Signing                     `json:"signing"`
+	RecoveryMessages map[string]RecoveryMessages `json:"recovery_messages"`
 }
+type RecoveryMessages struct {
+	Title       string `json:"title"`
+	Stopped     string `json:"stopped"`
+	Unconfirmed string `json:"unconfirmed"`
+}
+
+func (policy Policy) ValidateRecoveryMessages() error {
+	if len(policy.RecoveryMessages) != 2 {
+		return errors.New("compiled recovery messages require both languages")
+	}
+	for _, language := range []string{"en", "zh"} {
+		messages, exists := policy.RecoveryMessages[language]
+		if !exists {
+			return errors.New("compiled recovery language is missing")
+		}
+		for _, message := range []string{messages.Title, messages.Stopped, messages.Unconfirmed} {
+			if strings.TrimSpace(message) == "" || strings.ContainsRune(message, '\x00') {
+				return errors.New("compiled recovery message is invalid")
+			}
+		}
+	}
+	return nil
+}
+
 type Signing struct {
 	Mode      string `json:"mode"`
 	Publisher string `json:"publisher,omitempty"`
@@ -87,6 +113,9 @@ func ParsePolicy(encoded string) (Policy, error) {
 		return p, err
 	}
 	if err = Decode(raw, &p); err != nil {
+		return p, err
+	}
+	if err = validateUpdateMessages(p.UpdateMessages); err != nil {
 		return p, err
 	}
 	if p.Schema != Schema || p.ProductID == "" || p.BundleID == "" || p.AppID != "scholarseed" || p.Target != "win32-x86_64" || p.Channel == "" || !digestPattern.MatchString(p.RuntimeSHA256) || p.Executable != "ScholarSeed.exe" {

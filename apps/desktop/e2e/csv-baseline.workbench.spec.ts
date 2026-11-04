@@ -13,7 +13,7 @@ import { expect, test, type Locator, type Page } from '@playwright/test'
 
 import { apiBase, DesktopSession, waitForFinishedTurn } from './fixtures/electron'
 import { createRuntime, seedLiveConfig } from './fixtures/runtime'
-import { createReadyProject } from './fixtures/projects'
+import { createReadyProject, openProjectExplorer } from './fixtures/projects'
 import { skipQuarantined } from './fixtures/quarantine'
 
 test.beforeEach(async ({}, testInfo) => { skipQuarantined(testInfo) })
@@ -231,9 +231,9 @@ for (const rows of CASES) {
         const landing = page.getByTestId('landing-skip')
         if (await landing.isVisible()) await landing.click()
         await page.getByTestId(`home-project-${project.name}`).click()
-        await page.getByTestId('activity-resource').click()
-        await page.getByTestId('resource-refresh').click()
-        const tree = page.getByTestId(`tree-resources/${name}`)
+        await openProjectExplorer(page)
+        await page.getByTestId('explorer-refresh').click()
+        const tree = page.getByTestId(`explorer-select-resources/${name}`)
         await expect(tree).toBeVisible()
 
         for (const temperature of ['cold', 'warm'] as const) {
@@ -510,9 +510,9 @@ for (const name of ORIGINAL_NAMES) {
       const landing = page.getByTestId('landing-skip')
       if (await landing.isVisible()) await landing.click()
       await page.getByTestId(`home-project-${project.name}`).click()
-      await page.getByTestId('activity-resource').click()
-      await page.getByTestId('resource-refresh').click()
-      await page.getByTestId(`tree-resources/${name}`).click()
+      await openProjectExplorer(page)
+      await page.getByTestId('explorer-refresh').click()
+      await page.getByTestId(`explorer-select-resources/${name}`).click()
       const document = page.getByTestId('csv-document')
       const grid = document.getByTestId('csv-grid')
       await expect(grid.locator('[data-cell="A1"]')).toHaveText(
@@ -575,7 +575,7 @@ for (const name of ORIGINAL_NAMES) {
         .getByRole('tab', { name: new RegExp(name.replaceAll('.', '\\.')) })
         .click({ button: 'right' })
       await page.getByTestId('tab-close-all').click()
-      await page.getByTestId(`tree-resources/${name}`).click()
+      await page.getByTestId(`explorer-select-resources/${name}`).click()
       await expect(grid.locator('[data-cell="A2"]')).toHaveText(SAVED_VALUE)
       await expect(grid.locator('[data-cell="B2"]')).toHaveText('Pasted CSV')
       await expect(grid.locator('[data-cell="C2"]')).toHaveText('Second pasted cell')
@@ -586,7 +586,7 @@ for (const name of ORIGINAL_NAMES) {
       const menu = page.getByTestId('selection-action-host')
       await expect(menu).toBeVisible()
       await expect(menu).toContainText('A2:A2')
-      await menu.getByRole('button', { name: '添加到对话', exact: true }).click()
+      await menu.getByRole('button', { name: '添加到任务', exact: true }).click()
       const reference = page.getByTestId('ai-context-ref').filter({ hasText: name })
       await expect(reference).toBeVisible()
       await reference.hover()
@@ -672,9 +672,9 @@ test('CSV compare-and-swap conflict retains the draft and reloads actual externa
     const landing = page.getByTestId('landing-skip')
     if (await landing.isVisible()) await landing.click()
     await page.getByTestId(`home-project-${project.name}`).click()
-    await page.getByTestId('activity-resource').click()
-    await page.getByTestId('resource-refresh').click()
-    await page.getByTestId(`tree-resources/${name}`).click()
+    await openProjectExplorer(page)
+    await page.getByTestId('explorer-refresh').click()
+    await page.getByTestId(`explorer-select-resources/${name}`).click()
     const grid = page.getByTestId('csv-grid')
     const cell = grid.locator('[data-cell="A2"]')
     await expect(cell).toHaveText('PB-100001')
@@ -744,9 +744,9 @@ test('CSV save acknowledgement preserves a newer edit and undo history through r
     const landing = page.getByTestId('landing-skip')
     if (await landing.isVisible()) await landing.click()
     await page.getByTestId(`home-project-${project.name}`).click()
-    await page.getByTestId('activity-resource').click()
-    await page.getByTestId('resource-refresh').click()
-    await page.getByTestId(`tree-resources/${name}`).click()
+    await openProjectExplorer(page)
+    await page.getByTestId('explorer-refresh').click()
+    await page.getByTestId(`explorer-select-resources/${name}`).click()
     const document = page.getByTestId('csv-document')
     const grid = document.getByTestId('csv-grid')
     const cell = grid.locator('[data-cell="A2"]')
@@ -825,7 +825,7 @@ test('CSV save acknowledgement preserves a newer edit and undo history through r
       .getByRole('tab', { name: new RegExp(name.replaceAll('.', '\\.')) })
       .click({ button: 'right' })
     await page.getByTestId('tab-close-all').click()
-    await page.getByTestId(`tree-resources/${name}`).click()
+    await page.getByTestId(`explorer-select-resources/${name}`).click()
     await expect(cell).toHaveText('newer version V+1')
     expect(hash(source)).toBe(originalHash)
     await page.screenshot({ path: join(runtime.artifacts, 'csv-save-v-plus-one-reopened.png') })

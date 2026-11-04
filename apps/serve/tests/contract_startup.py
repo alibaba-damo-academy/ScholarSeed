@@ -20,7 +20,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from uuid import uuid4
 
-from apps.serve.tests._directories import make_directory
+from apps.serve.tests._directories import directory, make_directory
 from service.bootstrap import resolve_workspace_root
 from service.chat.persistence.projects import ProjectRegistry as LegacyProjects
 from service.chat.runtime.selection import RuntimeDiscovery
@@ -405,6 +405,115 @@ asyncio.run(verify())
                 timeout=120,
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_project_adoption_keeps_unrelated_turns_and_directory_writers(self) -> None:
+        root = make_directory("adoption-")
+        self.addCleanup(shutil.rmtree, root)
+        workspace = root / "workspace"
+        workspace.mkdir()
+        candidate = root / "candidate"
+        candidate.mkdir()
+        (candidate / "keep.txt").write_text("unchanged", encoding="utf-8")
+        code = r"""
+import asyncio
+import io
+import logging
+import os
+from pathlib import Path
+from unittest.mock import patch
+from httpx import ASGITransport, AsyncClient
+from service.bootstrap import create_app
+from service.platform.activity import ActivityDomain, ActivityPhase
+from service.platform.domains import Domains
+from service.platform.storage import DarwinDirectoryNative, WindowsDirectoryNative
+from service.paths import coordination_root
+
+async def verify():
+    app = create_app(auth=False, auth_mode="off", ownership_axis="machine")
+    diagnostics = io.StringIO()
+    handler = logging.StreamHandler(diagnostics)
+    logger = logging.getLogger("service.content.service.operations")
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    candidate = Path(os.environ["CANDIDATE"])
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://contract") as client:
+            async def finish(path, body):
+                response = await client.post(path, json=body)
+                assert response.status_code == 202, response.text
+                operation = response.json()["operation"]
+                for _ in range(200):
+                    status = await client.get("/api/content/operations/" + operation)
+                    assert status.status_code == 200, status.text
+                    payload = status.json()
+                    if payload["state"] not in ("queued", "running"):
+                        return payload
+                    await asyncio.sleep(0.01)
+                raise AssertionError("operation stalled behind unrelated work")
+            with (
+                app.state.activities.enter(ActivityDomain.TURN),
+                app.state.activities.enter(ActivityDomain.RESOURCE),
+                patch.object(app.state.storage_domains, "close", side_effect=AssertionError("released existing writers")),
+                patch.object(app.state.activities, "begin", side_effect=AssertionError("global maintenance")),
+            ):
+                adopted = await finish("/api/content/projects/adopt", {"path": str(candidate), "name": "Existing"})
+                assert adopted["state"] == "succeeded", (adopted, diagnostics.getvalue())
+                project = adopted["result"]
+                repeated = await finish("/api/content/projects/adopt", {"path": str(candidate), "name": "Again"})
+                assert repeated["state"] == "succeeded", repeated
+                assert repeated["result"]["id"] == project["id"]
+                created = await finish("/api/content/projects", {"name": "Concurrent"})
+                assert created["state"] == "succeeded", created
+                # A child of an admitted writer cannot borrow new-mkdir proof.
+                nested = candidate / "nested"
+                nested.mkdir()
+                rejected = await finish("/api/content/projects/adopt", {"path": str(nested)})
+                assert rejected["state"] == "failed" and rejected["error"] == "ERR_LEASE_BUSY", rejected
+                assert not (nested / ".scholarseed").exists()
+                assert app.state.activities.snapshot().phase is ActivityPhase.OPEN
+                assert app.state.activities.snapshot().counts[ActivityDomain.TURN.value] == 1
+                assert (await client.get("/api/serve/sessions?limit=60&scope=all")).status_code == 200
+                assert (candidate / "keep.txt").read_text() == "unchanged"
+                failed_root = candidate.parent / "registration-failed"
+                failed_root.mkdir()
+                with patch.object(app.state.content, "adopt_project", side_effect=OSError("registration failed")):
+                    failed = await finish("/api/content/projects/adopt", {"path": str(failed_root)})
+                assert failed["state"] == "failed", failed
+                assert all(row.root != str(failed_root) for row in app.state.content.projects())
+                native = WindowsDirectoryNative() if os.name == "nt" else DarwinDirectoryNative()
+                probe = Domains(native, str(coordination_root()), (str(failed_root),), maintenance=True)
+                try:
+                    probe.occupy()
+                finally:
+                    probe.close()
+                retried = await finish("/api/content/projects/adopt", {"path": str(failed_root)})
+                assert retried["state"] == "succeeded", retried
+    logger.removeHandler(handler)
+    output = diagnostics.getvalue()
+    assert "queue_seconds=" in output and "total_seconds=" in output, output
+    for phase in ("qualify", "prepare", "inspect", "initialize", "retain", "register"):
+        assert "phase=" + phase + " event=finished" in output, output
+    assert "event=failed" in output, output
+    reopened = create_app(auth=False, auth_mode="off", ownership_axis="machine")
+    try:
+        assert any(row.id == project["id"] for row in reopened.state.content.projects())
+    finally:
+        reopened.state.storage_domains.close()
+asyncio.run(verify())
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            env={
+                **os.environ,
+                "SCHOLARSEED_HOME": str(root / "home"),
+                "SCHOLARSEED_DEFAULT_WORKSPACE": str(workspace),
+                "CANDIDATE": str(candidate),
+            },
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_root_authorization_public_api_keeps_running_turn_admitted(self) -> None:
         root = make_directory("ca-")
@@ -815,17 +924,10 @@ asyncio.run(verify())
             self.assertEqual(list(root.iterdir()), [source])
 
     def test_public_factory_initialization_and_owner_refusal_preserve_domains(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory).resolve()
-            if os.name == "nt":
-                # Python tempfile uses OWNER RIGHTS ACLs, which strict native
-                # qualification intentionally refuses. Prepare this test's own
-                # root with the same private-directory primitive as startup.
-                root = Path(account_directory()) / ("ss-startup-" + uuid4().hex)
-                native = WindowsDirectoryNative()
-                pin = native.pin(str(root), True)
-                native.release(pin)
-                self.addCleanup(shutil.rmtree, root)
+        # Use the native fixture on both platforms. In particular, Windows
+        # tempfile ACLs are not product directory admission, and the test root
+        # must remain inside the runner's explicit temporary boundary.
+        with directory("startup-factory-") as root:
             (root / "projects").mkdir()
             seed_directory = root / "packaged-seed"
             seed_directory.mkdir()
@@ -883,8 +985,8 @@ async def verify_owner_refusal():
         assert not app.state.content.external_roots(created.id)
     finally:
         held.close()
-    # Check creation before successful authorization starts independent resource
-    # scans and long-lived native watchers for the external root.
+    # This factory-only contract does not start the observer lifespan. Discovery
+    # is isolated below; resource observation has its own lifecycle contracts.
     assert not app.state.activities.snapshot().counts
     with (
         app.state.activities.enter(ActivityDomain.TURN),
@@ -900,16 +1002,15 @@ async def verify_owner_refusal():
     linked = await execute(AuthorizeRoot(created.id, str(external), "external"))
     assert str(external) in app.state.startup_sources.roots
     with (
-        patch("service.bootstrap.DIRECTORY_DRAIN_TIMEOUT_SECONDS", 0),
-        patch.object(app.state.runtime_service, "drain_resources",
-                     AsyncMock(return_value=("provider",))),
+        patch.object(app.state.runtime_service, "release_directory_attachments",
+                     AsyncMock(return_value=("related-session",))),
         patch.object(app.state.storage_domains, "close",
                      side_effect=AssertionError("blocked revoke released domains")) as close,
     ):
         try:
             await execute(RevokeRoot(linked["root_id"]))
         except ContentError as error:
-            assert error.code == "content_directory_busy"
+            assert error.code == "root_busy"
         else:
             raise AssertionError("blocked owner allowed revocation")
         close.assert_not_called()
@@ -927,11 +1028,20 @@ async def verify_owner_refusal():
     assert revoked == {"root_id": linked["root_id"], "revoked": True,
                        "writableRoots": [created.root], "agentSessionsAffected": []}
     assert not app.state.content.external_roots(created.id)
-    assert str(external) not in app.state.startup_sources.roots
+    assert str(external) in app.state.startup_sources.roots
     assert marker.read_text() == "keep"
     native = WindowsDirectoryNative() if os.name == "nt" else DarwinDirectoryNative()
-    competing = Domains(native, str(coordination_root()), (str(external),), maintenance=True)
-    competing.close()
+    competing = None
+    try:
+        competing = Domains(native, str(coordination_root()), (str(external),), maintenance=True)
+        competing.occupy()
+    except OSError as error:
+        assert getattr(error, "code", None) == "ERR_LEASE_BUSY", repr(error)
+    else:
+        raise AssertionError("revocation released live physical directory qualifications")
+    finally:
+        if competing is not None:
+            competing.close()
     single = external / "source.md"
     single.write_text("single file version")
     file_ref = await execute(AuthorizeRoot(created.id, str(single), "source.md"))
@@ -982,18 +1092,50 @@ async def verify_owner_refusal():
     assert app.state.project_registry.contains(forgotten_root)
     pending = app.state.content_catalog.project_removals()
     assert len(pending) == 1
-    removed = await app.state.content_operations._execute(
-        pending[0].operation_id, ReconcileProjectRemoval(forgotten.id, "contract")
-    )
+    with (
+        app.state.activities.enter(ActivityDomain.TURN),
+        patch.object(app.state.runtime_service.activation, "drain_attachments",
+                     side_effect=AssertionError("removal recovery drained unrelated sessions")),
+        patch.object(app.state.runtime_service, "drain_resources",
+                     side_effect=AssertionError("removal recovery drained shared resources")),
+        patch.object(app.state.storage_domains, "close",
+                     side_effect=AssertionError("removal recovery released directory protection")),
+    ):
+        removed = await app.state.content_operations._execute(
+            pending[0].operation_id, ReconcileProjectRemoval(forgotten.id, "contract")
+        )
+        assert app.state.activities.snapshot().phase is ActivityPhase.OPEN
     assert removed == {"id": forgotten.id, "removed": True, "files_kept": True}
     assert not app.state.project_registry.contains(forgotten_root)
     assert all(ref.id != forgotten.id for ref in app.state.content.projects())
     assert not app.state.startup_sources.pending_legacy_seeds
-    assert str(forgotten_root) not in app.state.startup_sources.roots
+    # Registration is gone, but physical qualifications outlive in-flight users.
+    assert str(forgotten_root) in app.state.startup_sources.roots
     assert (forgotten_root / "user.txt").read_text() == "keep"
-    competing = Domains(native, str(coordination_root()), (str(forgotten_root),), maintenance=True)
-    competing.close()
-    await execute(AdoptProject(os.environ["SCHOLARSEED_DEFAULT_WORKSPACE"], "Workspace"))
+    def exclusive_probe(path):
+        # Admitted writers release admission while retaining occupancy. A
+        # competing maintenance owner must actually request occupancy to test it.
+        domain = Domains(native, str(coordination_root()), (str(path),), maintenance=True)
+        try:
+            domain.occupy()
+        finally:
+            domain.close()
+    try:
+        exclusive_probe(forgotten_root)
+    except OSError as error:
+        assert getattr(error, "code", None) == "ERR_LEASE_BUSY", repr(error)
+    else:
+        raise AssertionError("registration removal released live directory qualifications")
+    # Registration removal and revocation both retain their qualifications.
+    # Superseding authorization still exercises global maintenance retirement.
+    maintenance_root = forgotten_root.parent / "maintenance"
+    maintenance_root.mkdir()
+    await execute(AuthorizeRoot(created.id, str(maintenance_root), "maintenance", supersede=True))
+    assert str(forgotten_root) not in app.state.startup_sources.roots
+    exclusive_probe(forgotten_root)
+    # Registry fixture for the current-project removal invariant below. Directory
+    # adoption itself is exercised through the public API in the scoped test.
+    app.state.content.adopt_project(os.environ["SCHOLARSEED_DEFAULT_WORKSPACE"], "Workspace")
     policy = app.state.project_workspace_policy
     assert policy.project_for(created_root) == created_root
     assert policy.project_for(created_root / "resources") is None
@@ -1020,10 +1162,10 @@ async def verify_owner_refusal():
                          AsyncMock(return_value=connectors)) as drain_connectors,
             patch.object(app.state.storage_domains, "close",
                          side_effect=AssertionError("blocked owner lost directory protection")) as close,
-            patch.object(app.state.content, "adopt_project") as register,
+            patch.object(app.state.content, "plan_root_authorization") as register,
         ):
             try:
-                await execute(AdoptProject(str(candidate), "candidate"))
+                await execute(AuthorizeRoot(other.id, str(candidate), "candidate", supersede=True))
             except ContentError as error:
                 assert error.code == "content_directory_busy"
             else:
@@ -1039,20 +1181,22 @@ async def verify_owner_refusal():
     # A callback which returns before its resource closes must retain the
     # exclusive qualification, not run the ordinary recovery/reopen path.
     children = []
-    def incomplete_adoption(*args, **kwargs):
+    candidate.mkdir()
+    finish_authorization = app.state.content_catalog.finish_authorization_reconciliation
+    def incomplete_reconciliation(*args, **kwargs):
+        finish_authorization(*args, **kwargs)
         children.append(app.state.activities.enter(ActivityDomain.RESOURCE))
     owner = app.state.storage_domains
     with (
         patch.object(app.state.runtime_service.activation, "drain_attachments",
                      AsyncMock(return_value=())),
         patch.object(app.state.runtime_service, "drain_resources", AsyncMock(return_value=())),
-        patch.object(app.state.content, "adopt_project", incomplete_adoption),
+        patch.object(app.state.content_catalog, "finish_authorization_reconciliation", incomplete_reconciliation),
         patch.object(owner, "close", wraps=owner.close) as close,
         patch.object(owner, "install", wraps=owner.install) as install,
     ):
         try:
-            await execute(
-                AdoptProject(os.environ["SCHOLARSEED_DEFAULT_WORKSPACE"], "existing"))
+            await execute(AuthorizeRoot(other.id, str(candidate), "unfinished", supersede=True))
         except MaintenanceIncomplete:
             pass
         else:
@@ -1077,7 +1221,11 @@ async def verify_owner_refusal():
     else:
         competing.close()
         raise AssertionError("unfinished maintenance released native directory occupancy")
-asyncio.run(verify_owner_refusal())
+# Directory admission/refusal is the subject here. A factory-only app has no
+# observer lifespan to drain scans/watchers; starting them from authorization
+# makes this synchronous ownership contract race unrelated background IO.
+with patch.object(app.state.resource_version_supervisor, "schedule_scan"):
+    asyncio.run(verify_owner_refusal())
 print("public factory initialized configuration and selected actual workspace")
 """
             result = subprocess.run(

@@ -23,8 +23,7 @@ const HOME_SPACE_TEST_ID = 'workbench-home-space'
 const LANDING_DIALOG_TEST_ID = 'landing-dialog'
 const LANDING_SKIP_TEST_ID = 'landing-skip'
 const ONBOARDING_DISMISS_SELECTOR = '.ob-dismiss'
-// 离开首页空间用的活动栏入口。挑文献库是因为它不要求先选中项目 —— 而顶栏的项目切换
-// 恰恰要在离开首页之后才存在, 用一个需要项目的入口会形成死循环。
+// 全局文献库不要求先选中项目，适合作为通用工作台夹具的初始视图。
 const HOME_ESCAPE_ACTIVITY_TEST_ID = 'activity-literature'
 const AI_PANEL_TEST_ID = 'ai-panel'
 const AI_TOGGLE_TEST_ID = 'topbar-ai'
@@ -33,6 +32,33 @@ const STARTUP_WINDOW_URL_PREFIX = 'data:text/html'
 const TURN_COMPLETE_TIMEOUT_MS = 180_000
 const CLEANUP_MAX_RETRIES = 5
 const CLEANUP_RETRY_DELAY_MS = 100
+const applications = new WeakMap<Page, ElectronApplication>()
+
+export async function productWindow(page: Page): Promise<JSHandle<Electron.BrowserWindow>> {
+  const application = applications.get(page)
+  if (!application) throw new Error('product window is not owned by this DesktopSession')
+  return application.browserWindow(page)
+}
+
+/** Bind a custom-launched test window to its actual owning Electron application. */
+export function registerProductWindow(page: Page, application: ElectronApplication): void {
+  if (!application.windows().includes(page)) throw new Error('Product page is not owned by the application')
+  applications.set(page, application)
+}
+
+/** Native menu eligibility requires a visible, focused product window. */
+export async function showProductWindow(page: Page): Promise<void> {
+  const application = applications.get(page)
+  if (!application) throw new Error('product window is not owned by this DesktopSession')
+  const handle = await application.browserWindow(page)
+  await handle.evaluate(window => {
+    if (window.isMinimized()) window.restore()
+    window.show()
+    window.focus()
+  })
+  await application.evaluate(({ app }) => app.focus({ steal: true }))
+  await page.bringToFront()
+}
 
 export async function enterWorkbenchShell(page: Page): Promise<void> {
   await expect(page.getByTestId(PRODUCT_SHELL_TEST_ID)).toBeVisible({ timeout: PRODUCT_WINDOW_TIMEOUT_MS })
@@ -151,6 +177,7 @@ export class DesktopSession {
     ).not.toBe('')
     this.page = this.app.windows().find((candidate) => candidate.url().startsWith('http://')) ?? null
     if (!this.page) throw new Error('ScholarSeed product window did not open')
+    applications.set(this.page, launchedApp)
     const selectedPage = this.page
     const onPageClose = () => recordLifecycle('page-close', { url: selectedPage.url() })
     const onPageCrash = () => recordLifecycle('page-crash', { url: selectedPage.url() })
@@ -193,7 +220,8 @@ export class DesktopSession {
         throw error
       }
     }
-    if (this.options.preserveNavigation) {
+    await showProductWindow(this.page)
+    if (this.options.preserveNavigation || await this.page.getByTestId('account-settings-shell').isVisible()) {
       await expect(this.page.getByTestId(PRODUCT_SHELL_TEST_ID)).toBeVisible({ timeout: PRODUCT_WINDOW_TIMEOUT_MS })
       return this.page
     }

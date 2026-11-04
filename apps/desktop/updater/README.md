@@ -190,6 +190,35 @@ have been removed.
 This change follows the explicitly approved Windows replacement scope; it does
 not change macOS Squirrel.Mac behavior or user data/cache locations.
 
+### Committed apply lifecycle
+
+**current (source).** The original-user coordinator owns the invocation Job's
+lifetime handle. Before reporting authorization, the apply worker joins that Job
+and closes its borrowed handle; the official updater and its descendants inherit
+membership without breakaway. Admission failure stops before commit. Preparation
+and group operations do not acquire this apply-only lifecycle contract.
+
+Committed apply uses one 30-minute operation deadline across worker completion,
+natural updater-family drain and original-main exit confirmation. Progress does
+not renew that deadline. A wait error or exhausted budget enters a separate,
+shared 15-second termination-and-confirmation budget for this invocation only.
+Worker exit and zero active Job processes must both be observed before reporting
+that update processes have stopped; unconfirmed cleanup retains request/channel
+evidence instead of claiming success.
+
+Forced interruption never enters automatic application restart: `sq.version`
+alone cannot establish installation integrity after an interrupted replacement.
+After cleanup returns, only the original-user coordinator presents the frozen
+localized recovery notice, distinguishing confirmed process exit from unknown
+cleanup. It does not roll back directories, launch a potentially partial current,
+delete research data or start another installer. Natural completion retains the
+existing installed-identity checks and original-user restart path.
+
+**required / gap.** Native Job, lock and actual UAC-transition tests establish the
+process-control mechanism, not signed full/delta update acceptance. Final installed
+acceptance must still cover successful restart and interrupted-update recovery on
+the final Windows artifacts; macOS uses its separate Squirrel admission protocol.
+
 The official SDK applies authenticated full packages or deltas against a verified
 base. An unavailable or invalid base/delta falls back to the full package. A signed
 member inventory verifies reconstructed ZIP contents independently of compression.
@@ -689,6 +718,37 @@ cross-user probes do not substitute for final CI-signed installed-update accepta
 
 ### Startup component progress
 
+**current (source):** Windows committed updates use the same native progress view
+as the launcher, held by the original-user coordinator outside the installation.
+The nonce-bound worker channel reports component checks, extracted bytes and file
+counts, publication and reuse during both preparation and update apply. Official
+application replacement and restart use indeterminate progress with elapsed time.
+Closing this view cannot cancel a committed update; a settled failure offers exit,
+without retrying the apply operation. Presentation creation/close failures cannot
+release the coordinator's worker-completion barrier. Display progress never proves
+component publication, official replacement, or successful application startup.
+The native dialog explicitly shows itself after Windows processes inherited hidden
+startup flags. After a settled worker failure and validated existing installation,
+closing the failure notice resumes that installation. Restart occurs only after
+the progress dialog closes, so it cannot hold the cached helper while the resumed
+application replaces it during startup. Restart failures retain a separate notice.
+Committed process interruption closes the progress view and returns its original
+typed outcome to the coordinator's dedicated frozen recovery notice. It does not
+substitute generic failure/reopen advice or renew the shared operation deadline.
+
+The native view and logo live in `handoff`, shared by the launcher and coordinator;
+the helper freezes bilingual update strings from Desktop localization into its
+build policy. The worker does not create UI. macOS retains Squirrel.Mac and does
+not use this Windows view. Native interactive contracts run with
+`SCHOLARSEED_NATIVE_UI_INTEGRATION=1 go test ./handoff -run '^TestNative'` from the
+updater module. **required/gap:** these contracts do not establish a CI-signed,
+installed upgrade; that flow needs the corrected helper in the source installation.
+`TestNativeHiddenStartupAndFailureRecovery` covers detached launches with both
+`windowsHide` values and piped stdio, a failure notice held beyond the transport's
+replacement budget, and the real TypeScript helper-copy/spawn transport after
+recovery. Its isolated test executable rejects the handoff request; it proves the
+replacement/startup boundary, not a complete installed Electron startup.
+
 Windows keeps its startup surface visible while preparing components and the local
 backend. Download percentages use received archive bytes. Extraction percentages
 use bytes written and verified against the component inventory, with verified file
@@ -718,7 +778,7 @@ The independent `native/principals.test.json` oracle covers the same 17 principa
 
 `native/security.json` schema 2 uses typed, ordered parameters and named statement objects (`let`, `set`, `if`/`then`, `for`/`do`, `return`). Rights use documented hexadecimal masks; `@rights.*`, `@flags.*`, `@roles.*`, `@scopes.*` and `@reasons.*` refer only to literal values in this file. Prefix expressions contain the limited existing bitwise/comparison/call operations. They are not executable strings.
 
-`scripts/shared/policy.cjs` validates and lowers this source notation into the same bounded IR as before; `scripts/security.cjs` remains the single compiler for C/Go/Python. Unknown references, operations, statement fields and out-of-range masks fail generation. Authority SID labels and function descriptions are review aids; the SID values and ordered rule bodies determine behavior. Run `node scripts/security.cjs` from Desktop to regenerate, followed by `--check` and the shared native/Go/Python contracts.
+`scripts/shared/policy.cjs` validates and lowers this source notation into the same bounded IR as before; `scripts/pre/security.cjs` remains the single compiler for C/Go/Python. Unknown references, operations, statement fields and out-of-range masks fail generation. Authority SID labels and function descriptions are review aids; the SID values and ordered rule bodies determine behavior. Run `node scripts/pre/security.cjs` from Desktop to regenerate, followed by `--check` and the shared native/Go/Python contracts.
 
 ### Purpose-specific principal profiles and denial diagnostics
 

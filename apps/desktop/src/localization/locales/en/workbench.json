@@ -2,7 +2,11 @@
   "csv": {
     "controls": "CSV table controls",
     "editCell": "Edit cell {{cell}}",
-    "failed": "The CSV operation did not complete. Unsaved changes still need attention.",
+    "failed": "The CSV operation failed. Please retry. If you have unsaved changes, handle them first.",
+    "openFailed": "Could not open the CSV file. Check the file and try again.",
+    "encodingInvalid": "The file cannot be decoded as UTF-8 or GBK. Save a copy as UTF-8 CSV and try again.",
+    "quotesInvalid": "The CSV contains invalid quotes. Check that quotes are closed and escaped correctly.",
+    "gbkReadonly": "GBK file opened in read-only mode",
     "undo": "Undo",
     "redo": "Redo"
   },

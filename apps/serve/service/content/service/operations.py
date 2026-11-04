@@ -6,8 +6,10 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
+from enum import StrEnum
 from uuid import uuid4
 
 from service.content.domain.model import (
@@ -26,6 +28,7 @@ from service.content.persistence.catalog import (
 )
 from service.platform.activity import Activities, ActivityDomain, ActivityPhase, MaintenanceActive
 from service.platform.content import ProjectRef
+from service.platform.domains import measure_directory_validation
 
 OPERATION_LIMIT = 128
 OPERATION_RETENTION_SECONDS = 3600.0
@@ -33,6 +36,41 @@ OPERATION_UNKNOWN = "content_operation_unknown"
 OPERATION_FAILED = "content_operation_failed"
 DIRECTORY_BUSY = "ERR_LEASE_BUSY"
 _log = logging.getLogger(__name__)
+
+
+class ContentPhase(StrEnum):
+    QUALIFY = "qualify"
+    PREPARE = "prepare"
+    INSPECT = "inspect"
+    INITIALIZE = "initialize"
+    RETAIN = "retain"
+    REGISTER = "register"
+
+
+@contextmanager
+def content_phase(operation_id: str, phase: ContentPhase) -> Iterator[None]:
+    started = time.monotonic()
+    error_type = ""
+    _log.info("content_operation_phase operation_id=%s phase=%s event=started", operation_id, phase)
+    with measure_directory_validation() as metrics:
+        try:
+            yield
+        except BaseException as error:
+            error_type = type(error).__name__
+            raise
+        finally:
+            _log.info(
+                "content_operation_phase operation_id=%s phase=%s event=%s elapsed_seconds=%.3f "
+                "validation_calls=%s validation_directories=%s validation_seconds=%.3f error_type=%s",
+                operation_id,
+                phase,
+                "failed" if error_type else "finished",
+                time.monotonic() - started,
+                metrics.calls,
+                metrics.directories,
+                metrics.elapsed_seconds,
+                error_type,
+            )
 
 
 def requires_postcommit_recovery(creations: tuple[ProjectCreation, ...]) -> bool:
@@ -141,6 +179,8 @@ class _Operation:
     recovery_at: float | None = None
     recovery_project: str | None = None
     recovery_blocked_reason: str | None = None
+    accepted_at: float = field(default_factory=time.monotonic)
+    submitted_at: float = field(default_factory=time.monotonic)
 
 
 class ContentOperations:
@@ -347,6 +387,7 @@ class ContentOperations:
         )
 
     def submit(self, owner: str, command: ContentCommand) -> str:
+        submitted_at = time.monotonic()
         self._activities.require_workbench()
         if (
             self._closing
@@ -378,8 +419,17 @@ class ContentOperations:
             )
         if not accepted:
             raise MaintenanceActive("content_operation_capacity")
-        self._operations[identity] = _Operation(owner, command)
+        self._operations[identity] = _Operation(
+            owner, command, accepted_at=time.monotonic(), submitted_at=submitted_at
+        )
         self._queue.put_nowait(identity)
+        _log.info(
+            "content_operation_accepted operation_id=%s command=%s queue_depth=%s accept_seconds=%.3f",
+            identity,
+            type(command).__name__,
+            self._queue.qsize(),
+            self._operations[identity].accepted_at - submitted_at,
+        )
         return identity
 
     async def execute(self, owner: str, command: ContentCommand) -> dict[str, object]:
@@ -521,9 +571,10 @@ class ContentOperations:
                     row.state = OperationState.RUNNING
                 execution_started = time.monotonic()
                 _log.info(
-                    "content_operation_started operation_id=%s command=%s",
+                    "content_operation_started operation_id=%s command=%s queue_seconds=%.3f",
                     identity,
                     type(row.command).__name__,
+                    execution_started - row.accepted_at,
                 )
                 try:
                     result = await self._execute(identity, row.command)
@@ -539,7 +590,12 @@ class ContentOperations:
                     if (
                         isinstance(
                             row.command,
-                            (CreateProject, EnsureDefaultProject, ReconcileProjectCreation),
+                            (
+                                AdoptProject,
+                                CreateProject,
+                                EnsureDefaultProject,
+                                ReconcileProjectCreation,
+                            ),
                         )
                         and getattr(error, "code", None) == DIRECTORY_BUSY
                     ):
@@ -559,11 +615,15 @@ class ContentOperations:
                 row.finished_at = time.monotonic()
                 row.finished.set()
                 _log.info(
-                    "content_operation_completed operation_id=%s command=%s state=%s elapsed_seconds=%.3f",
+                    "content_operation_completed operation_id=%s command=%s state=%s "
+                    "elapsed_seconds=%.3f queue_seconds=%.3f total_seconds=%.3f error=%s",
                     identity,
                     type(row.command).__name__,
                     row.state.value,
                     row.finished_at - execution_started,
+                    execution_started - row.accepted_at,
+                    row.finished_at - row.submitted_at,
+                    row.error or "",
                 )
         finally:
             # A dead worker cannot leave internal callers waiting forever.

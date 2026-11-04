@@ -268,7 +268,7 @@ import { findCallbackUrl, handoffFingerprint, parseCallbackUrl } from './handoff
 import { callbackTimingLine, findCallbackTiming } from './handoff-timing'
 import { processIntegrityLevel } from './integrity'
 import { showStartupScreen, type StartupScreen } from './startup'
-import { recoverStartupAdmission } from './admission'
+import { MacStartupAdmissionError, recoverStartupAdmission } from './admission'
 import * as updater from './updater'
 import { STARTUP_BUILD_NUMBER, clientVersion, isNewerRelease } from './version'
 import type {
@@ -552,6 +552,8 @@ let updateRestartRequested = false
 let updateInstallAbort: AbortController | null = null
 let updateInstallBlockingSince: number | null = null
 let updateSnapshot: UpdateSnapshot | null = null
+let macStartupDecision: updater.MacStartupAdmission | undefined
+let pendingUpdateLaunch: ReturnType<typeof observeUpdateLaunch> = null
 let previewPolicyChanging = false
 // 弹窗收起确认。主进程是唯一权威：渲染层 origin 含后端随机端口，写在那边的确认跨不了重启。
 let updateAnnouncedKey: string | null = null
@@ -731,9 +733,9 @@ function currentUpdateSnapshot(): UpdateSnapshot {
             currentVersion: app.getVersion(),
             reason: LOCAL_LANE_UPDATE_REASON,
           }
-        : updater.previewUpdatesEnabled(pushLog) || process.platform === WINDOWS_PLATFORM
+        : process.platform === WINDOWS_PLATFORM
           ? { phase: 'idle', currentVersion: app.getVersion() }
-          : updater.initialUpdateSnapshot(pushLog)
+          : updater.initialUpdateSnapshot(pushLog, macStartupDecision)
     )
   }
   return updateSnapshot
@@ -4836,6 +4838,14 @@ async function bootstrap(): Promise<void> {
   // Resolve durable installation state before any backend can begin product writes.
   currentUpdateSnapshot()
   await updater.syncMacUpdateDiagnostics(pushLog)
+  try {
+    await updater.completeMacStartupAdmission(pushLog, macStartupDecision, pendingUpdateLaunch)
+  } catch (error) {
+    startupAdmissionResolved = false
+    throw error
+  }
+  if (macStartupDecision?.admission === 'failed' && pendingUpdateLaunch)
+    completeUpdateLaunch = pendingUpdateLaunch.complete
   if (updater.macHandoffCommitted()) {
     const status = await updater.macStartupStatus(pushLog)
     const t = mainLocalization().getFixedT(null, 'account')
@@ -4984,18 +4994,25 @@ async function startDesktop(): Promise<void> {
       bundleId: config.bundleId,
       build: config.buildNumber,
     }
-    const observed = observeUpdateLaunch(storageNative, coordinationRoot(), identity)
+    let observed: ReturnType<typeof observeUpdateLaunch>
+    try {
+      observed = observeUpdateLaunch(storageNative, coordinationRoot(), identity)
+    } catch (error) {
+      throw new MacStartupAdmissionError('unconfirmed', error)
+    }
     updateLaunchContext = observed
+    pendingUpdateLaunch = observed
     let supersededAdmission: 'superseded' | undefined
     if (observed) {
-      const admission = await updater.macStartupAdmission(
+      const decision = await updater.macStartupAdmission(
         observed.context.home,
         pushLog,
         observed.context
       )
+      const { admission } = decision
       if (admission === 'superseded') supersededAdmission = admission
       if (admission === 'exit') {
-        throw new Error('Mac update startup admission is unresolved')
+        throw new MacStartupAdmissionError(decision.status ?? 'unconfirmed', decision.cause)
       }
     }
     const restored = observed
@@ -5033,14 +5050,16 @@ async function startDesktop(): Promise<void> {
   const storageSelection = selectStorage(credentialProfile.sessionNamespace, storageNative)
   if (updateLaunchContext && storageSelection.home !== updateLaunchContext.context.home)
     throw new Error('Mac update storage selection changed before admission')
-  if (
-    (await updater.macStartupAdmission(
-      storageSelection.home,
-      pushLog,
-      updateLaunchContext?.context
-    )) === 'exit'
-  ) {
-    throw new Error('Mac update startup admission is unresolved')
+  macStartupDecision = await updater.macStartupAdmission(
+    storageSelection.home,
+    pushLog,
+    updateLaunchContext?.context
+  )
+  if (macStartupDecision.admission === 'exit') {
+    throw new MacStartupAdmissionError(
+      macStartupDecision.status ?? 'unconfirmed',
+      macStartupDecision.cause
+    )
   }
   startupAdmissionResolved = true
   coordinationReclamation.run('startup')
@@ -5226,6 +5245,8 @@ async function startDesktop(): Promise<void> {
         })
       })
       .catch((e) => {
+        if (!startupAdmissionResolved)
+          return recoverStartupAdmission(e, headless, pushLog, pendingUpdateLaunch !== null)
         reportStartupFailure(startupFailureTitle(), String(e))
       })
   }
@@ -5373,7 +5394,7 @@ async function startDesktop(): Promise<void> {
 
 void startDesktop().catch((error) => {
   if (!startupAdmissionResolved) {
-    void recoverStartupAdmission(error, headless, pushLog)
+    void recoverStartupAdmission(error, headless, pushLog, pendingUpdateLaunch !== null)
     return
   }
   reportStartupFailure(

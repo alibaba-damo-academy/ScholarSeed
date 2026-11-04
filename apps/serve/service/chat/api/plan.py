@@ -14,12 +14,14 @@ from service.chat.service.plan import (
     PlanConflict,
     PlanExecutionError,
     progress_transitions,
+    reconcilable_ids,
 )
 from service.chat.service.sessions import SessionService
 from service.platform.activity import Activities, ActivityDomain
 from service.platform.bridge import (
     PLAN_ACTION_STATUSES,
     PLAN_MUTATIONS,
+    PLAN_RECONCILE_ACTION,
     PLAN_ROUTE_PREFIX,
     PlanRead,
 )
@@ -52,6 +54,7 @@ def register_plan_routes(
         def current(state: dict | None = None) -> dict:
             state = live.plans.current() if state is None else state
             transitions = progress_transitions(state["items"], state)
+            reconcilable = reconcilable_ids(state)
             return {
                 "turn_id": turn_id,
                 **state,
@@ -60,8 +63,9 @@ def register_plan_routes(
                     identity: [
                         action
                         for action, status in PLAN_ACTION_STATUSES.items()
-                        if status in allowed
+                        if action != PLAN_RECONCILE_ACTION and status in allowed
                     ]
+                    + ([PLAN_RECONCILE_ACTION] if identity in reconcilable else [])
                     for identity, allowed in transitions.items()
                 },
             }
@@ -114,8 +118,10 @@ def register_plan_routes(
                     + (
                         "Keep the current revision. Mark these leaves in_progress before actually "
                         "executing their work, then complete them. Do not backdate starts or claim "
-                        "unrecorded work was timed. If work already happened without a start, block "
-                        "with the observed reason; do not issue start/finish merely to repair history. "
+                        "unrecorded work was timed. If work already completed without a start, verify "
+                        "its result and use reconcile for those leaves, with a reason stating the observed "
+                        "completion evidence. Completion is recorded without execution time. Block only "
+                        "for an actual obstacle; do not issue start/finish merely to repair history. "
                         "Only create and start a separate verification leaf when actually performing "
                         "authorized verification, not as a substitute for missing work evidence."
                         if str(error) == PLAN_START_REQUIRED

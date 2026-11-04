@@ -4,6 +4,8 @@
 BOOL SSCleanupClearRollback(NSString *label, NSString *key);
 BOOL SSCleanupOpen(NSString *label, NSError **error);
 BOOL SSCleanupOpenDirectory(NSString *directory, NSError **error);
+BOOL SSCleanupOpenExistingDirectory(NSString *directory, NSError **error);
+NSDictionary *SSCleanupReadOnlySnapshot(NSError **error);
 BOOL SSCleanupCommit(NSURL *source, NSURL *stage, NSURL *previous, NSURL *target, NSURL *originalTarget, NSError **error);
 BOOL SSCleanupKnowsRollback(NSURL *previous, NSURL *target);
 BOOL SSCleanupReconcilesRollback(NSURL *previous, NSURL *target);
@@ -14,3 +16,4 @@ BOOL SSCleanupLaunchNeeded(NSURL *source, NSURL *target);
 BOOL SSCleanupMarkLaunched(NSURL *source, NSURL *target);
 BOOL SSCleanupDrain(NSURL *protectedTarget);
 void SSCleanupClose(void);
+BOOL SSCleanupCloseChecked(NSError **error);

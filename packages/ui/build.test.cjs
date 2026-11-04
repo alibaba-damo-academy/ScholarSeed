@@ -9,7 +9,7 @@ const desktopRequire = createRequire(path.resolve(__dirname, '../../apps/desktop
 const { unzipSync } = desktopRequire('fflate')
 const yaml = desktopRequire('yaml')
 const { buildOfficialUI, buildExample, buildArchive } = require('./build.cjs')
-const { buildComponents } = require('../../apps/desktop/scripts/components.cjs')
+const { buildComponents } = require('../../apps/desktop/scripts/cd/components.cjs')
 
 test('review composition consumes the official runtime without copying React, styles or cards', async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'review-composition-'))

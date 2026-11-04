@@ -171,10 +171,10 @@ class CodexRpcContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(errors, [FramingError.MALFORMED_JSON, FramingError.NON_OBJECT_MESSAGE])
 
     async def test_writer_preserves_json_line_and_rejects_detached_generation(self):
-        stream = SimpleNamespace(
-            is_closing=lambda: False, write=lambda data: written.append(data), drain=AsyncMock()
-        )
         written = []
+        stream = SimpleNamespace(
+            is_closing=lambda: False, write=written.append, drain=AsyncMock()
+        )
         writer = JsonLineWriter()
         writer.attach(stream, 2)
         writer.detach(1)
@@ -506,7 +506,9 @@ class CodexWatchContract(unittest.IsolatedAsyncioTestCase):
     async def test_terminal_before_rpc_ack_does_not_revive_turn(self) -> None:
         self.state.turn_done = None
 
-        async def request(method, params, *, generation):
+        async def request(method, params, *, generation, before_write, submission):
+            before_write()
+            submission.attempt()
             await self.state.notification(
                 "turn/started", {"turn": {"id": "completed-before-ack"}}, generation=generation
             )
@@ -932,8 +934,10 @@ class CodexWatchContract(unittest.IsolatedAsyncioTestCase):
         self.state.turn_done = None
         self.state._ensure_attached = AsyncMock(return_value=1)
         self.state._request = AsyncMock()
-        with self.assertRaises(ValueError):
+        with self.assertRaises(AppServerError) as rejected:
             await self.state.start(TurnInput(()))
+        self.assertEqual(rejected.exception.safe_error, "runtime_turn_not_submitted")
+        self.assertIsInstance(rejected.exception.__cause__, ValueError)
         self.assertEqual(self.state.final_text, "previous answer")
         self.assertEqual(self.state.item_output, {"previous-item": "previous output"})
         self.assertIsNone(self.state.turn_done)
@@ -1325,7 +1329,9 @@ class CodexWatchContract(unittest.IsolatedAsyncioTestCase):
         self.state.turn_done = None
         self.state._ensure_attached = AsyncMock(return_value=1)
 
-        async def dispatch(method, payload, *, generation):
+        async def dispatch(method, payload, *, generation, before_write, submission):
+            before_write()
+            submission.attempt()
             self.assertEqual(method, "turn/start")
             self.assertNotIn("sandboxPolicy", payload)
             self.assertEqual(payload["permissions"], "local-services")

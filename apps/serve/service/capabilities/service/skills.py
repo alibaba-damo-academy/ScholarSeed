@@ -48,6 +48,7 @@ SKILL_GROUP_SCHOLARSEED = "scholarseed"
 SKILL_GROUP_USER = "user"
 SKILL_CATEGORY_SCHOLARSEED = "系统预置"
 SKILL_CATEGORY_USER = "用户安装"
+SKILL_CATEGORY_SOURCE_KEY = "category_source"
 SKILL_DEPENDENCY_READY = "ready"
 SKILL_DEPENDENCY_MISSING = "missing"
 SKILL_DEPENDENCY_ERROR = "error"
@@ -719,12 +720,19 @@ class SkillCatalog:
         if not version and fingerprint:
             version = f"{SKILL_LOCAL_VERSION_PREFIX}-{fingerprint[:12]}"
         category = str(metadata.get("category") or "").strip()
+        category_source = (
+            SKILL_SOURCE_BUILTIN
+            if source == SKILL_SOURCE_BUILTIN
+            and metadata.get(SKILL_CATEGORY_SOURCE_KEY) == SKILL_SOURCE_BUILTIN
+            else None
+        )
         if not category:
             category = (
                 SKILL_CATEGORY_SCHOLARSEED
                 if source == SKILL_SOURCE_BUILTIN
                 else SKILL_CATEGORY_USER
             )
+            category_source = source
         description = str(hub_record.get("description") or skill.description)
         descriptions = self._localized_descriptions(manifest)
         display_name = hub_record.get("display_name") or skill.display_name
@@ -760,6 +768,7 @@ class SkillCatalog:
                 SKILL_GROUP_SCHOLARSEED if source == SKILL_SOURCE_BUILTIN else SKILL_GROUP_USER
             ),
             "category": category,
+            SKILL_CATEGORY_SOURCE_KEY: category_source,
             "blurb": str(metadata.get("blurb") or skill.short_description or description),
             "icon": icon,
             "hub": hub_record or None,

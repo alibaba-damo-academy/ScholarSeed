@@ -74,7 +74,13 @@ from service.content.service.native import (
     publish_descriptor,
     sync_published_descriptor,
 )
-from service.content.service.utils import directory, filesystem_error, read_regular, writable
+from service.content.service.utils import (
+    creation_time,
+    directory,
+    filesystem_error,
+    read_regular,
+    writable,
+)
 from service.paths import PROJECT_ARTIFACT_OBJECTS_RELATIVE, PROJECT_DB_RELATIVE
 from service.platform.activity import Activities, ActivityDomain
 from service.platform.content import (
@@ -615,17 +621,28 @@ def _project_ref(
     except ValueError:
         # 未知布局按 LEGACY 解析: 宁可按老规则显示资料, 也不要整个项目打不开。
         layout = ProjectLayout.LEGACY
+    available = False
+    directory_created_at = None
+    if not unavailable:
+        try:
+            metadata = root.stat()
+            available = stat.S_ISDIR(metadata.st_mode)
+            if available:
+                directory_created_at = creation_time(metadata)
+        except OSError:
+            available = False
     return ProjectRef(
         id=row.project_id,
         name=row.display_name,
         root=str(root),
         layout=layout,
-        available=not unavailable and root.is_dir(),
+        available=available,
         unavailable_reason=unavailable_reason,
         created_at=row.created_at,
         archived_at=row.archived_at,
         description=row.description,
         pinned=row.pinned,
+        directory_created_at=directory_created_at,
     )
 
 
@@ -2411,10 +2428,14 @@ class ContentService:
 
         self._roots.assert_linkable(self._registry.resolve(project_id), sources)
 
+    def plan_root_revocation(self, root_id: str, project_id: str | None) -> ExternalRootRow:
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            return self._roots.plan_revocation(root_id, project_id)
+
     def commit_root_revocation(
         self, root_id: str, project_id: str | None, *, operation_id: str
     ) -> dict[str, object]:
-        """Snapshot the completed revocation while composition owns exclusive domains."""
+        """Commit after related attachments settle, retaining physical directory qualifications."""
         with self._activities.enter(ActivityDomain.RESOURCE):
             plan = self._roots.plan_revocation(root_id, project_id)
             project = self._registry.resolve(plan.project_id)

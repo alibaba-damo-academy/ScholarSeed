@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path'
 import { expect, test, type Page } from '@playwright/test'
 
 import { DesktopSession, apiBase, enterWorkbenchShell } from './fixtures/electron'
-import { createReadyProject } from './fixtures/projects'
+import { createReadyProject, openLiteratureScope } from './fixtures/projects'
 import { createRuntime } from './fixtures/runtime'
 import { skipQuarantined } from './fixtures/quarantine'
 
@@ -14,15 +14,11 @@ const RESULT_TIMEOUT_MS = 120_000
 const SOURCE_PROJECT = 'Metadata source'
 const OTHER_PROJECT = 'Metadata other'
 const EMPTY_PROJECT = 'Metadata empty'
-const EVIDENCE_ROOT = resolve(__dirname, '../../../tmp/test_snapshot/desktop/metadata-scope')
-const CONFLICT_MESSAGE = '其他项目或全局文献库正在同步元数据，请返回发起位置查看进度，完成后再试。'
+
+const CONFLICT_MESSAGE = '其他项目或文献中心正在同步元数据，请返回发起位置查看进度，完成后再试。'
 
 async function selectLibrary(page: Page, project?: string): Promise<void> {
-  await page.getByTestId('topbar-project').click()
-  await page
-    .getByTestId(project ? `project-menu-option-${project}` : 'project-menu-literature')
-    .click()
-  await page.getByTestId('activity-literature').click()
+  await openLiteratureScope(page, project)
 }
 
 for (const scope of ['project', 'global'] as const) {
@@ -35,7 +31,7 @@ for (const scope of ['project', 'global'] as const) {
       JSON.stringify({ ...preferences, theme: scope === 'global' ? 'dark' : 'light' })
     )
     const desktop = new DesktopSession(runtime, testInfo)
-    mkdirSync(EVIDENCE_ROOT, { recursive: true })
+    const EVIDENCE_ROOT = runtime.artifacts
     try {
       const page = await desktop.launch()
       if (scope === 'global') {
@@ -99,8 +95,12 @@ for (const scope of ['project', 'global'] as const) {
       await page.reload()
       await enterWorkbenchShell(page)
       await selectLibrary(page, scope === 'project' ? SOURCE_PROJECT : undefined)
-      await expect(page.locator('.lit-row')).toHaveCount(QUEUE_SIZE + (scope === 'global' ? 2 : 1))
-      await page.locator('.lit-table-head').getByRole('checkbox').check()
+      await expect(page.locator('.lit-row:visible').first()).toBeVisible()
+      await page.locator('.lit-table-head:visible').getByRole('button', { name: '标题', exact: true }).click()
+      await expect(page.locator('.lit-row:visible').first()).toContainText('Metadata identified paper')
+      await page.locator('.lit-table-head:visible').getByRole('checkbox').check()
+      await expect(page.getByText(`已选 ${QUEUE_SIZE + (scope === 'global' ? 2 : 1)} 篇`, { exact: true })).toBeVisible()
+      await page.locator('.lit-table-head:visible').getByRole('checkbox').check()
       const metadataResponse = page.waitForResponse((response) =>
         response.url().endsWith('/api/literature/papermeta')
       )
@@ -128,15 +128,15 @@ for (const scope of ['project', 'global'] as const) {
         .click()
 
       await selectLibrary(page, EMPTY_PROJECT)
-      await expect(page.locator('.lit-row')).toHaveCount(0)
+      await expect(page.locator('.lit-row:visible')).toHaveCount(0)
       await expect(page.getByText('暂无文献', { exact: true })).toBeVisible()
       await expect(page.getByRole('button', { name: '同步进度', exact: true })).toHaveCount(0)
       await expect(dialog).toHaveCount(0)
       await page.screenshot({ path: join(EVIDENCE_ROOT, `${scope}-empty-other.png`) })
 
       await selectLibrary(page, OTHER_PROJECT)
-      await expect(page.locator('.lit-row')).toHaveCount(1)
-      await page.locator('.lit-table-head').getByRole('checkbox').check()
+      await expect(page.locator('.lit-row:visible')).toHaveCount(1)
+      await page.locator('.lit-table-head:visible').getByRole('checkbox').check()
       await page.getByRole('button', { name: '同步元数据', exact: true }).click()
       await expect(page.getByText(CONFLICT_MESSAGE)).toBeVisible()
       await expect(dialog).toHaveCount(0)
@@ -170,7 +170,7 @@ for (const scope of ['project', 'global'] as const) {
       await selectLibrary(page, EMPTY_PROJECT)
       await expect(page.getByRole('button', { name: '同步结果', exact: true })).toHaveCount(0)
       await selectLibrary(page, OTHER_PROJECT)
-      await page.locator('.lit-table-head').getByRole('checkbox').check()
+      await page.locator('.lit-table-head:visible').getByRole('checkbox').check()
       await page.getByRole('button', { name: '同步元数据', exact: true }).click()
       await expect(dialog).toContainText('Other project paper')
       await expect(dialog.getByRole('button', { name: '停止同步', exact: true })).toHaveCount(0, {

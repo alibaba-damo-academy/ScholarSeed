@@ -33,7 +33,11 @@ from service.capabilities.service.package import (
     extract_package,
     json_bytes,
 )
-from service.capabilities.service.skills import SKILL_PRODUCT_METADATA_FILE
+from service.capabilities.service.skills import (
+    SKILL_CATEGORY_SOURCE_KEY,
+    SKILL_PRODUCT_METADATA_FILE,
+    SKILL_SOURCE_BUILTIN,
+)
 from service.platform.storage import WINDOWS_PLATFORM, filesystem_path
 
 SKILL_INTERFACE_FILE = Path("agents") / "openai.yaml"
@@ -206,6 +210,7 @@ def product_metadata(directory: Path, row: Mapping[str, Any]) -> bytes:
             "version": row["version"],
             "origin": f"{SKILL_PACK_ORIGIN}:{row['namespace']}/{row['slug']}",
             "category": SKILL_PACK_CATEGORY,
+            SKILL_CATEGORY_SOURCE_KEY: SKILL_SOURCE_BUILTIN,
             "blurb": _skill_blurb(directory, frontmatter),
             "icon": SKILL_PACK_ICON,
             "package_sha256": row["zip_sha256"],

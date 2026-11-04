@@ -9,6 +9,7 @@ import enConversation from '../../localization/locales/en/conversation.json' wit
 import {
   QUEUE_PRESENTATION_MESSAGE_KEYS,
   canCancelQueuedMessage,
+  confirmQueuedOutcome,
   hasAcceptedMessageAwaitingRuntime,
   hasQueuedMessageAwaitingRuntime,
   markOptimisticQueueOutcomeUnknown,
@@ -26,6 +27,52 @@ import {
 import { mergeQueuedOutbox, releaseQueuedOutbox, retainQueuedOutbox } from './outbox.ts'
 
 const input = [{ type: 'text' as const, text: '继续补充证据' }]
+
+test('unknown confirmation refreshes authoritative state before reporting a stale or failed action', async () => {
+  for (const result of [
+    { ok: true },
+    { ok: false, code: 'runtime_turn_confirmation_stale' },
+    { ok: false, error: 'network unavailable' },
+  ]) {
+    const calls: string[] = []
+    const message = await confirmQueuedOutcome({
+      confirm: async () => {
+        calls.push('confirm')
+        return result
+      },
+      refreshQueue: async () => {
+        calls.push('queue')
+        return true
+      },
+      refreshContext: async () => {
+        calls.push('context')
+      },
+    })
+    assert.deepEqual(calls, ['confirm', 'queue', 'context'])
+    assert.equal(
+      message?.key,
+      result.ok
+        ? undefined
+        : result.code
+          ? 'composer.confirmStateChanged'
+          : 'composer.confirmContinueFailed'
+    )
+  }
+})
+
+test('unknown confirmation keeps refresh failure explicit and never repeats the submission', async () => {
+  let confirmations = 0
+  const message = await confirmQueuedOutcome({
+    confirm: async () => {
+      confirmations += 1
+      return { ok: false, code: 'runtime_turn_confirmation_stale' }
+    },
+    refreshQueue: async () => false,
+    refreshContext: async () => {},
+  })
+  assert.equal(confirmations, 1)
+  assert.equal(message?.key, 'composer.checkFailed')
+})
 
 test('host configuration conflicts explain the explicit runtime switch boundary', async () => {
   const instance = createInstance()

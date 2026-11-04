@@ -2,12 +2,13 @@ const assert = require('node:assert/strict')
 const { test, before, after } = require('node:test')
 const fs = require('node:fs/promises')
 const path = require('node:path')
+const os = require('node:os')
 const { createRequire } = require('node:module')
 const desktopRequire = createRequire(path.resolve(__dirname, '../../apps/desktop/package.json'))
 const { chromium, expect } = desktopRequire('@playwright/test')
 const { build } = desktopRequire('esbuild')
 const { buildOfficialUI } = require('./build.cjs')
-const { buildComponents } = require('../../apps/desktop/scripts/components.cjs')
+const { buildComponents } = require('../../apps/desktop/scripts/cd/components.cjs')
 const manifest = require('./manifest.json')
 const skills = ['agentic-search', 'precise-literature-search', 'literature-review', 'research-idea-partner']
 let directory
@@ -15,9 +16,7 @@ let browser
 let preview
 
 before(async () => {
-  const work = path.resolve(__dirname, '../../work/ui-sdk')
-  await fs.mkdir(work, { recursive: true })
-  directory = await fs.mkdtemp(path.join(work, 'research-'))
+  directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ui-research-'))
   await buildOfficialUI(directory)
   await buildComponents(path.join(directory, 'review'))
   preview = (await build({ entryPoints: [path.resolve(__dirname, '../../apps/desktop/src/renderer/src/components/business/preview.ts')], bundle: true, format: 'iife', globalName: 'preview', write: false })).outputFiles[0].text

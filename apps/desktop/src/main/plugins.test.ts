@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import test from 'node:test'
@@ -50,9 +50,7 @@ test(
   'repeated lease validation drains large snapshots and retains revocation checks',
   { timeout: 30_000 },
   async () => {
-    const work = resolve('../../work/ui-sdk')
-    await mkdir(work, { recursive: true })
-    const directory = await mkdtemp(join(work, 'validation-'))
+    const directory = await mkdtemp(join(tmpdir(), 'plugin-validation-'))
     const fixture = join(directory, 'main.cjs')
     await build({
       stdin: {

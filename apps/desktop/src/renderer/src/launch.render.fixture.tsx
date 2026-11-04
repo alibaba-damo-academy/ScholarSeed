@@ -6,6 +6,7 @@ import { resources } from '../../localization/resources'
 import { ToastProvider } from './components/ui'
 import { StoreProvider, useApp, type SessionSurface, type Store } from './store'
 import { Composer } from './components/business/Composer'
+import { Stream } from './components/business/Stream'
 import { TodoPanel } from './components/business/TodoPanel'
 import { DocumentWorkspaceContext, documentWorkspaces } from './features/workbench/workspace'
 import { getBackendHealth, getSharedRuntimeReconfiguration } from './api'
@@ -17,6 +18,7 @@ let hideComposer: () => void
 let setComposerSurface: (surface: SessionSurface) => void
 Object.assign(window, {
   launchProbe: {
+    language: (language: 'zh' | 'en') => localization.changeLanguage(language),
     patch: (patch: Parameters<Store['set']>[0]) => store.set(patch),
     catalog: (catalog: Parameters<Store['act']['applyModelCatalog']>[0]) =>
       store.act.applyModelCatalog(catalog),
@@ -42,18 +44,21 @@ function Fixture(): React.JSX.Element {
   hideComposer = () => setVisible(false)
   setComposerSurface = setSurface
   return visible ? (
-    <Composer
-      home
-      surface={surface}
-      header={({ continueTurn, continueDisabled }) => (
-        <TodoPanel
-          compact
-          currentTurnOnly
-          onContinue={continueTurn}
-          continueDisabled={continueDisabled}
-        />
-      )}
-    />
+    <>
+      {Reflect.get(window, 'streamFixture') === true && <Stream home />}
+      <Composer
+        home
+        surface={surface}
+        header={({ continueTurn, continueDisabled }) => (
+          <TodoPanel
+            compact
+            currentTurnOnly
+            onContinue={continueTurn}
+            continueDisabled={continueDisabled}
+          />
+        )}
+      />
+    </>
   ) : (
     <output data-testid="composer-hidden" />
   )

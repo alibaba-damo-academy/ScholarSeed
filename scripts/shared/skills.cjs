@@ -1,13 +1,5 @@
 #!/usr/bin/env node
-// 只读校验：skills/community/<slug>/.scholarseed-package.json 必须与 skills/skills.lock.json
-// 的对应行、以及 skills/registry.json 的依赖政策三方一致。
-//
-// 为什么收集全部违规再一次性报告，而不是循环内逐条 assert：本检查过去用 fail-fast 断言，
-// 第一个坏技能就中止循环，把它之后的技能全部遮蔽——pdf-evidence 缺 registry 条目时，
-// research-idea-partner 的 manifest/lock 版本不一致（1.1.0 vs 1.2.0）永远走不到断言，
-// 直到打包机 dependencies._inputs 抛 PackageError 才暴露，两批三平台构建全挂。
-// 门禁红着的时候，必须能一次看见每一个违规。
-//
+// 只读校验已审核源码库存和依赖政策。发布清单由 Serve 从这些输入生成。
 // 零第三方依赖（只用 node 内置模块），因此 git 钩子无需 node_modules 即可运行。
 // 消费方：apps/desktop/scripts/cd/__tests__/build.test.cjs 的同名门禁、.husky/pre-push。
 'use strict'
@@ -21,10 +13,12 @@ const SKILL_MANIFEST = 'SKILL.md'
 const LOCK_FILE = 'skills.lock.json'
 const REGISTRY_FILE = 'registry.json'
 const COMMUNITY_DIR = 'community'
+const DEFAULTS_DIR = 'apps/serve/service/capabilities/defaults'
+const LOCK_PROTOCOL_VERSION = 3
+const EXCLUDED_NAMES = new Set(['__pycache__', '.DS_Store', '.git', '.pytest_cache'])
+const EXCLUDED_SUFFIXES = ['.pyc', '.pyo']
 const REGENERATE_HINT =
-  '按 skills/ADAPTATION.md §3 用仓库模块重新生成该技能包清单，' +
-  '再用 python -m service.cli.prebundle --build --source skills/community ' +
-  '--lock <tmp>/skills.lock.json 重生并回写该技能的 lock 行'
+  '按 skills/ADAPTATION.md §3 生成并审核受影响的 lock 行'
 
 function sha256(buffer) {
   return crypto.createHash('sha256').update(buffer).digest('hex')
@@ -59,6 +53,18 @@ function sourceSkillNames(sourceRoot) {
     .sort()
 }
 
+function inventory(root, prefix = '') {
+  if (!fs.existsSync(root)) return []
+  return fs.readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
+    if (EXCLUDED_NAMES.has(entry.name) || EXCLUDED_SUFFIXES.some((suffix) => entry.name.endsWith(suffix))) return []
+    const relative = prefix + entry.name
+    const absolute = path.join(root, entry.name)
+    if (entry.isDirectory()) return inventory(absolute, relative + '/')
+    if (!prefix && entry.name === '.scholarseed.json' && entry.isFile()) return []
+    return [[relative, entry.isFile() ? absolute : null]]
+  })
+}
+
 /**
  * 返回全部一致性违规；空数组代表一致。
  * @param {string} repoRoot 仓库根目录
@@ -75,6 +81,9 @@ function skillLockProblems(repoRoot) {
     return [`缺少 ${LOCK_FILE} 或 ${REGISTRY_FILE}，无法校验技能清单一致性`]
   }
   const lock = readJson(lockFile)
+  if (lock.protocol_version !== LOCK_PROTOCOL_VERSION || lock.source !== 'repository') {
+    return [`${LOCK_FILE}: 不支持的源码 lock 格式；${REGENERATE_HINT}`]
+  }
   const registry = readJson(registryFile)
   const declared = (registry.dependencies && registry.dependencies) || {}
 
@@ -90,75 +99,39 @@ function skillLockProblems(repoRoot) {
 
   for (const skill of locked) {
     const slug = skill.slug
-    const files = Array.isArray(skill.files) ? skill.files : []
-    const inventory = files.find((file) => file.path === PACKAGE_MANIFEST)
-    const manifestPath = path.join(sourceRoot, slug, PACKAGE_MANIFEST)
-    const hasSourceManifest = fs.existsSync(manifestPath)
-
-    // 三类「缺失」彼此独立，必须全部报出，任何一个都不得遮蔽另外两个。
-    if (!inventory) {
-      problems.push(
-        `${slug}: ${LOCK_FILE} 的文件清单缺少 ${PACKAGE_MANIFEST}；${REGENERATE_HINT}`
-      )
-    }
-    if (!hasSourceManifest) {
-      problems.push(
-        `${slug}: 源码树缺少 ${PACKAGE_MANIFEST}，validate_source_lock 会判该技能行 ` +
-          `"invalid repository skill file inventory"，打包期 --verify-installed 直接失败；` +
-          `${REGENERATE_HINT}`
-      )
-    }
     if (!Object.hasOwn(declared, slug)) {
       problems.push(
         `${slug}: ${REGISTRY_FILE} 的 dependencies 缺少该技能条目；依赖政策以 ${REGISTRY_FILE} ` +
           `为单一来源，请由技能 owner 确认应声明什么后补上`
       )
-    }
-
-    // 内容级比对要求 lock 行与源码清单同时在场，否则上面已报出缺失原因。
-    if (!inventory || !hasSourceManifest) {
-      continue
-    }
-    const payload = fs.readFileSync(manifestPath)
-    const digest = sha256(payload)
-    if (digest !== inventory.sha256) {
-      problems.push(
-        `${slug}: ${PACKAGE_MANIFEST} 内容已变但 ${LOCK_FILE} 未重生 ` +
-          `(源码 sha256=${digest.slice(0, 12)} lock=${String(inventory.sha256).slice(0, 12)})；${REGENERATE_HINT}`
-      )
-    }
-    if (payload.length !== inventory.size) {
-      problems.push(
-        `${slug}: ${PACKAGE_MANIFEST} 大小与 ${LOCK_FILE} 不一致 ` +
-          `(源码=${payload.length} lock=${inventory.size})；${REGENERATE_HINT}`
-      )
-    }
-
-    let manifest
-    try {
-      manifest = JSON.parse(payload.toString('utf8'))
-    } catch {
-      problems.push(`${slug}: ${PACKAGE_MANIFEST} 不是合法 JSON`)
-      continue
-    }
-    if (manifest.name !== slug) {
-      problems.push(`${slug}: 包清单 name=${JSON.stringify(manifest.name)} 与技能 slug 不一致`)
-    }
-    if (manifest.version !== skill.version) {
-      problems.push(
-        `${slug}: 版本不一致（${PACKAGE_MANIFEST}=${manifest.version} ${LOCK_FILE}=${skill.version}），` +
-          `打包期 dependencies._inputs 会抛 "source package manifest differs: ${slug}"；${REGENERATE_HINT}`
-      )
-    }
-    if (
-      Object.hasOwn(declared, slug) &&
-      JSON.stringify(canonical(manifest.dependencies)) !== JSON.stringify(canonical(declared[slug]))
+    } else if (
+      JSON.stringify(canonical(skill.dependencies)) !== JSON.stringify(canonical(declared[slug]))
     ) {
-      problems.push(
-        `${slug}: ${PACKAGE_MANIFEST} 的 dependencies 与 ${REGISTRY_FILE} 不一致 ` +
-          `(清单=${JSON.stringify(canonical(manifest.dependencies))} ` +
-          `registry=${JSON.stringify(canonical(declared[slug]))})`
-      )
+      problems.push(`${slug}: lock 的 dependencies 与 ${REGISTRY_FILE} 不一致；${REGENERATE_HINT}`)
+    }
+
+    const expected = new Map((skill.files || []).map((file) => [file.path, file]))
+    const actual = new Map()
+    for (const root of [path.join(sourceRoot, slug), path.join(repoRoot, DEFAULTS_DIR, slug)]) {
+      for (const [relative, absolute] of inventory(root)) {
+        if (actual.has(relative)) problems.push(`${slug}/${relative}: 默认文件覆盖源码`)
+        actual.set(relative, absolute)
+      }
+    }
+    if (actual.has(PACKAGE_MANIFEST) || expected.has(PACKAGE_MANIFEST)) {
+      problems.push(`${slug}: ${PACKAGE_MANIFEST} 只允许由构建生成`)
+    }
+    for (const relative of new Set([...expected.keys(), ...actual.keys()])) {
+      const file = expected.get(relative)
+      const location = actual.get(relative)
+      if (!file || !location) {
+        problems.push(`${slug}/${relative}: 源码或 lock 条目缺失；${REGENERATE_HINT}`)
+        continue
+      }
+      const payload = fs.readFileSync(location)
+      if (payload.length !== file.size || sha256(payload) !== file.sha256) {
+        problems.push(`${slug}/${relative}: 源码大小或哈希与 lock 不一致；${REGENERATE_HINT}`)
+      }
     }
   }
 
@@ -171,7 +144,7 @@ if (require.main === module) {
   const repoRoot = path.resolve(__dirname, '../..')
   const problems = skillLockProblems(repoRoot)
   if (problems.length === 0) {
-    console.log(`[skills] ${PACKAGE_MANIFEST} 与 ${LOCK_FILE}、${REGISTRY_FILE} 一致`)
+    console.log(`[skills] 源码和 ${REGISTRY_FILE} 与 ${LOCK_FILE} 一致`)
     process.exit(0)
   }
   for (const problem of problems) {

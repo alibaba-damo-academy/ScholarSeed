@@ -59,6 +59,7 @@ test(
           const toggle = page.getByTestId('todo-toggle')
           const elapsed = page.getByTestId('todo-elapsed')
           await expect(elapsed).toContainText('2h 54m')
+          await expect(page.getByTestId('todo-estimate')).toHaveCount(0)
           await expect
             .poll(async () =>
               panel.evaluate((element) => element.scrollWidth - element.clientWidth)

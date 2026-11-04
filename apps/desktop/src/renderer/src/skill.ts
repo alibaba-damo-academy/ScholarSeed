@@ -77,6 +77,20 @@ export function skillName(skill: { name: string; display_name?: string }): strin
   return skill.display_name || skill.name
 }
 
+export function skillCategory(
+  skill: { category?: string; category_source?: string | null },
+  translate: TFunction<'skills'>
+): string {
+  switch (skill.category_source) {
+    case 'builtin':
+      return translate('groups.scholarseed')
+    case 'user':
+      return translate('categorySources.user')
+    default:
+      return skill.category ?? ''
+  }
+}
+
 export function skillDescription(
   skill: { descriptions?: Record<string, string> | null; blurb?: string; description?: string },
   language: string

@@ -83,6 +83,113 @@ function statuses(value: Thread): string[] {
   return displayTodos(value).map((item) => item.status)
 }
 
+test('completed leaves complete their pending groups and the whole plan without changing records', () => {
+  const value = thread({
+    turnOutcomes: { 'plan-turn': 'completed' },
+    todos: [
+      { id: 'setup', content: 'setup', status: 'completed' },
+      ...[3, 2, 3, 3].flatMap((count, index) => [
+        {
+          id: `group-${index}`,
+          content: 'stage',
+          kind: 'group' as const,
+          status: 'pending' as const,
+        },
+        ...Array.from({ length: count }, (_, child) => ({
+          id: `child-${index}-${child}`,
+          parent_id: `group-${index}`,
+          content: 'work',
+          kind: 'step' as const,
+          status: 'completed' as const,
+        })),
+      ]),
+    ],
+  })
+  const original = structuredClone(value)
+  const items = displayTodos(value)
+  assert.deepEqual(todoProgress(items), { done: 5, total: 5 })
+  assert.equal(todoProgressLabel(items), '5 / 5')
+  assert.deepEqual(todoSummary(value, items), {
+    messageKey: 'todo.summary.allDone',
+    status: 'done',
+  })
+  assert.deepEqual(displayTodos(structuredClone(value)), items)
+  assert.deepEqual(value, original)
+})
+
+test('group completion is bottom-up regardless of snapshot item order or explicit kind', () => {
+  const value = thread({
+    todos: [
+      { id: 'leaf', parent_id: 'nested', content: 'work', status: 'completed' },
+      { id: 'nested', parent_id: 'root', content: 'nested', status: 'pending' },
+      { id: 'root', content: 'root', kind: 'group', status: 'pending' },
+    ],
+  })
+  const [root] = displayTodos(value)
+  assert.equal(root.status, 'done')
+  assert.equal(root.children?.[0].status, 'done')
+  assert.equal(root.children?.[0].children?.[0].status, 'done')
+  value.todos![0].status = 'pending'
+  assert.notEqual(displayTodos(value)[0].status, 'done')
+})
+
+test('unfinished children prevent group completion even after a completed parent gains work', () => {
+  for (const status of [
+    'pending',
+    'in_progress',
+    'blocked',
+    'failed',
+    'partial',
+    'needs_confirmation',
+  ] as const) {
+    const value = thread({
+      turnOutcomes: { 'plan-turn': 'completed' },
+      todos: [
+        { id: 'root', content: 'stage', kind: 'group', status: 'completed' },
+        { id: 'done', parent_id: 'root', content: 'done', status: 'completed' },
+        { id: 'open', parent_id: 'root', content: 'new work', status },
+      ],
+    })
+    const items = displayTodos(value)
+    assert.deepEqual(todoProgress(items), { done: 0, total: 1 }, status)
+    assert.notEqual(todoSummary(value, items).status, 'done', status)
+  }
+})
+
+test('group failures, partial results and confirmation are not erased by completed children', () => {
+  for (const status of ['blocked', 'failed', 'partial', 'needs_confirmation'] as const) {
+    const value = thread({
+      todos: [
+        { id: 'root', content: 'stage', kind: 'group', status },
+        { id: 'leaf', parent_id: 'root', content: 'work', status: 'completed' },
+      ],
+    })
+    const items = displayTodos(value)
+    assert.equal(items[0].status, status === 'needs_confirmation' ? 'unrequested' : status)
+    assert.deepEqual(todoProgress(items), { done: 0, total: 1 })
+    if (status === 'needs_confirmation') {
+      value.conversation = [
+        { kind: 'hil', requestId: 'approve', hilKind: 'question', turnId: 'plan-turn' },
+      ]
+      assert.equal(displayTodos(value)[0].status, 'need')
+    }
+  }
+})
+
+test('empty groups do not complete and unfinished groups do not start merely by projection', () => {
+  const value = thread({
+    todos: [
+      { id: 'empty', content: 'empty', kind: 'group', status: 'pending' },
+      { id: 'root', content: 'stage', kind: 'group', status: 'pending' },
+      { id: 'one', parent_id: 'root', content: 'done', status: 'completed' },
+      { id: 'two', parent_id: 'root', content: 'pending', status: 'pending' },
+    ],
+  })
+  assert.deepEqual(statuses(value), ['todo', 'todo'])
+  value.todos![1].status = 'in_progress'
+  assert.deepEqual(statuses(value), ['todo', 'running'])
+})
+
 const SKILL_ESTIMATE = {
   lowerSeconds: 1800,
   upperSeconds: 2700,
@@ -475,6 +582,24 @@ test('missing or ambiguous completion evidence stays unknown rather than becomin
   value.planSnapshots![0].released = false
   value.planSnapshots![0].items.push({ id: 'step', content: 'duplicate', status: 'completed' })
   assert.equal(stepEstimatedMilliseconds(value, item), null)
+})
+
+test('reconciled completion has a done status but no fabricated execution time after replay', () => {
+  const pending = planEvent(1, 2, 'pending')
+  const completed = planEvent(2, 12, 'completed')
+  if (pending.type !== 'plan_snapshot' || completed.type !== 'plan_snapshot')
+    throw new Error('plan expected')
+  pending.data.plan!.timing_policy = 'leaf-execution-v1'
+  completed.data.plan!.timing_policy = 'leaf-execution-v1'
+  const value = timedPlan([], 13_000)
+  value.todos = completed.data.items
+  value.turnOutcomes = { 'plan-turn': 'completed' }
+  value.planSnapshots = projectPlanSnapshots([pending, completed])
+  const [item] = displayTodos(value)
+  assert.equal(item.status, 'done')
+  assert.equal(stepElapsedMilliseconds(value, item, 99_000), null)
+  assert.equal(stepDisplayMilliseconds(value, item, 99_000), null)
+  assert.equal(todoSummary(value, [item]).status, 'done')
 })
 
 function wait(

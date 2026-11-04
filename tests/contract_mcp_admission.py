@@ -63,6 +63,35 @@ class McpProjectionArgumentTests(unittest.TestCase):
 
 
 class McpCoordinatorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_configuration_reload_runs_during_active_execution(self):
+        coordinator = McpCoordinator(Mock(runtime_home=Path.cwd()))
+        self.addAsyncCleanup(coordinator.aclose)
+        coordinator.submit(NativeMcpConfiguration(1, b"{}", ()))
+        await coordinator._worker
+        admission = NativeAdmission()
+        host = Mock(
+            process_environment={CODEX_HOME_ENV: str(Path.cwd())},
+            process_generation=2,
+            pid=1,
+            admission=admission,
+            readiness=SimpleNamespace(ready=True),
+            configuration_quiescence=AsyncMock(return_value=None),
+            mcp_launch_matches=Mock(return_value=True),
+            reload_mcp=AsyncMock(),
+        )
+        coordinator.register("active", host)
+        admission.applied(1)
+        epoch = admission.epoch
+        async with admission.enter():
+            coordinator.submit(NativeMcpConfiguration(2, b"{}", ()))
+            await asyncio.wait_for(asyncio.shield(coordinator._worker), 0.5)
+            host.reload_mcp.assert_awaited_once_with(2)
+            host.configuration_quiescence.assert_not_awaited()
+            self.assertTrue(admission.accepting)
+            self.assertEqual(admission.active, 1)
+            self.assertEqual(admission.epoch, epoch)
+            self.assertEqual(coordinator._hosts["active"].applied_revision, 2)
+
     async def test_busy_host_does_not_block_publication_or_new_host(self):
         coordinator = McpCoordinator(Mock(runtime_home=Path.cwd()))
         self.addAsyncCleanup(coordinator.aclose)
@@ -77,8 +106,10 @@ class McpCoordinatorTests(unittest.IsolatedAsyncioTestCase):
             admission=admission,
             readiness=SimpleNamespace(ready=True),
             configuration_quiescence=AsyncMock(return_value=None),
+            reload_mcp=AsyncMock(),
         )
         coordinator.register("busy", busy)
+        admission.applied(0)
         coordinator.submit(NativeMcpConfiguration(3, b'{"disabled":{"enabled":false}}', ()))
         await asyncio.sleep(0.2)
         self.assertTrue(admission.accepting)
@@ -152,6 +183,7 @@ class McpCoordinatorTests(unittest.IsolatedAsyncioTestCase):
             verify_mcp_startup=AsyncMock(return_value=inventory),
         )
         coordinator.register("host", host)
+        admission.applied(1)
         coordinator.reload()
         await asyncio.wait_for(coordinator._worker, 2)
         await coordinator.refresh()
@@ -268,6 +300,7 @@ class McpCoordinatorTests(unittest.IsolatedAsyncioTestCase):
             reload_mcp=AsyncMock(side_effect=AppServerError("reload failed")),
         )
         coordinator.register("host", host)
+        admission.applied(1)
         with self.assertLogs("scholarseed_codex.coordination", level="ERROR"):
             coordinator.reload()
             await coordinator._worker
@@ -316,14 +349,11 @@ class McpCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         admission = NativeAdmission()
         entered = asyncio.Event()
         released = asyncio.Event()
-        reload_epochs = []
+        reload_generations = []
 
-        async def quiescence(revision):
-            return NativeQuiescence(revision, 1, 0, admission.epoch)
-
-        async def reload(ticket):
-            reload_epochs.append(ticket.admission_epoch)
-            if len(reload_epochs) == 1:
+        async def reload(generation):
+            reload_generations.append(generation)
+            if len(reload_generations) == 1:
                 entered.set()
                 await released.wait()
 
@@ -340,20 +370,21 @@ class McpCoordinatorTests(unittest.IsolatedAsyncioTestCase):
             pid=1,
             admission=admission,
             readiness=SimpleNamespace(ready=True),
-            configuration_quiescence=AsyncMock(side_effect=quiescence),
             reload_mcp=AsyncMock(side_effect=reload),
             verify_mcp_startup=AsyncMock(side_effect=verify),
         )
         coordinator.register("host", host)
+        admission.applied(1)
+        epoch = admission.epoch
         coordinator.reload()
         await asyncio.wait_for(entered.wait(), 1)
         coordinator.reload()
         released.set()
         await asyncio.wait_for(coordinator._worker, 2)
         await coordinator.refresh()
-        self.assertEqual(len(reload_epochs), 2)
+        self.assertEqual(reload_generations, [1, 1])
         await coordinator._observer
-        self.assertNotEqual(reload_epochs[0], reload_epochs[1])
+        self.assertEqual(admission.epoch, epoch)
         self.assertEqual(host.verify_mcp_startup.await_count, 1)
         self.assertEqual(coordinator.receipt().hosts[0].state, McpApplicationState.READY)
         self.assertEqual(coordinator.receipt().safe_error, "")

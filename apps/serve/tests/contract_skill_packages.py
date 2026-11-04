@@ -31,6 +31,7 @@ from service.capabilities.service.package import (
     validate_paths,
 )
 from service.capabilities.service.registry import Registry, RegistryError, secure_origin
+from service.capabilities.service.source import compile_source_skills
 
 CONFIG: dict[str, Any] = {
     "namespace": "fixture",
@@ -75,9 +76,12 @@ class PackageContracts(unittest.TestCase):
     def test_precise_search_manifest_matches_registered_dependencies(self) -> None:
         skills_root = Path(__file__).resolve().parents[3] / "skills"
         registry = json.loads((skills_root / "registry.json").read_text())
-        manifest = json.loads(
-            (skills_root / "community" / "precise-literature-search" / PACKAGE_MANIFEST).read_text()
-        )
+        with tempfile.TemporaryDirectory() as temporary:
+            pack = Path(temporary) / "skills"
+            compile_source_skills(pack, skills_root / "community")
+            manifest = json.loads(
+                (pack / "precise-literature-search" / PACKAGE_MANIFEST).read_bytes()
+            )
         self.assertEqual(
             manifest["dependencies"], registry["dependencies"]["precise-literature-search"]
         )

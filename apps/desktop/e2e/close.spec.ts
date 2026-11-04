@@ -1,8 +1,9 @@
 import { readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { expect, test } from '@playwright/test'
-import { DesktopSession, apiBase } from './fixtures/electron'
+import { DesktopSession, apiBase, enterWorkbenchShell } from './fixtures/electron'
 import { createRuntime } from './fixtures/runtime'
+import { openAccountSettings } from './fixtures/menu'
 import { PREFERENCE_DIAGNOSTIC_PREFIX } from '../src/preference-diagnostics'
 import { ONBOARDING_GROUPS } from '../src/onboarding'
 import zh from '../src/localization/locales/zh/native.json'
@@ -38,43 +39,22 @@ const VARIANTS = [
 
 test('settings drain before native quit and remain saved after restart', async ({}, testInfo) => {
   const runtime = initializedRuntime(testInfo)
-  const desktop = new DesktopSession(runtime, testInfo, { nativeWindowLifecycle: true })
+  const desktop = new DesktopSession(runtime, testInfo, { nativeWindowLifecycle: true, preserveNavigation: true })
   const openSettings = async (): Promise<void> => {
     const page = desktop.page!
-    if (await page.getByTestId('account-settings-shell').isVisible()) {
-      await page.getByTestId('account-settings-nav-notifications').click()
-      return
-    }
-    await page.getByTestId('activity-account').evaluate((element: HTMLElement) => element.click())
-    await expect
-      .poll(async () => {
-        for (const surface of desktop.app!.windows()) {
-          if (
-            await surface
-              .getByTestId('account-menu-settings')
-              .isVisible()
-              .catch(() => false)
-          )
-            return true
-        }
-        return false
-      })
-      .toBe(true)
-    for (const surface of desktop.app!.windows()) {
-      const entry = surface.getByTestId('account-menu-settings')
-      if (await entry.isVisible().catch(() => false)) {
-        await entry.click()
-        break
-      }
-    }
+    if (!(await page.getByTestId('account-settings-shell').isVisible()))
+      await openAccountSettings(page)
     await page.getByTestId('account-settings-nav-notifications').click()
   }
   try {
     let page = await desktop.launch()
+    await enterWorkbenchShell(page)
     await openSettings()
-    const notifications = page.getByTestId('notification-desktop')
-    await expect(notifications).toHaveAttribute('aria-checked', 'true')
-    await notifications.click()
+    await expect(page.getByTestId('notification-desktop')).toHaveRole('button')
+    await page.getByTestId('account-settings-nav-files').click()
+    await expect(page.getByTestId('file-version-auto-save')).toBeChecked()
+    await page.getByTestId('file-version-auto-save').click()
+    await page.getByTestId('account-settings-nav-notifications').click()
     await page.getByTestId('notification-sound').click()
     await page.screenshot({ path: join(runtime.artifacts, 'preferences-before-quit.png') })
     const closed = desktop.app!.waitForEvent('close')
@@ -102,19 +82,22 @@ test('settings drain before native quit and remain saved after restart', async (
       diagnostics.some(
         (record) =>
           record.source === 'main' &&
-          record.changedFields?.includes('desktopNotifications') &&
+          record.changedFields?.includes('soundAlerts') &&
           record.submittedRevision === record.acknowledgedRevision &&
           record.submissionSources.includes('state-effect')
       )
     ).toBe(true)
     const saved = JSON.parse(readFileSync(join(runtime.userData, PREFERENCES_FILE), 'utf8'))
-    expect(saved.desktopNotifications).toBe(false)
+    expect(saved.autoSave).toBe(false)
     expect(saved.soundAlerts).toBe(false)
     await desktop.close()
     page = await desktop.launch()
+    await expect(page.getByTestId('account-settings-shell')).toBeVisible()
     await openSettings()
-    await expect(page.getByTestId('notification-desktop')).toHaveAttribute('aria-checked', 'false')
+    await expect(page.getByTestId('notification-desktop')).toHaveRole('button')
     await expect(page.getByTestId('notification-sound')).toHaveAttribute('aria-checked', 'false')
+    await page.getByTestId('account-settings-nav-files').click()
+    await expect(page.getByTestId('file-version-auto-save')).not.toBeChecked()
     await page.screenshot({ path: join(runtime.artifacts, 'preferences-after-restart.png') })
     desktop.assertNoPageErrors()
   } finally {

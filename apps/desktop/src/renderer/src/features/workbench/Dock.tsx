@@ -54,7 +54,9 @@ import {
 } from './Dragging'
 import { shouldMountDocumentView } from './residency'
 import { DocumentPanelActions, DocumentPanelHost } from './Inspector'
-import { DocumentTabMenu } from './Menu'
+import { DocumentTabMenu, WorkbenchTabMenu } from './Menu'
+import { NewTabButton } from './Pages'
+import { workbenchTabTitle } from './tabs'
 import { documentPanelContext } from './panel'
 import { SelectionActionHost } from './Selection'
 import { DocumentExternalOpen } from './External'
@@ -105,10 +107,18 @@ function TabStrip({ leaf }: { leaf: DockLeaf }): React.JSX.Element {
   const { t: shellText } = useTranslation('shell')
   const state = useDocumentWorkspace()
   const workspace = useWorkspaceController()
-  const tabs: NavigationTabItem[] = leaf.tabIds.flatMap((tabId) => {
+  const { state: appState, act } = useApp()
+  const { t: literature } = useTranslation('literature')
+  const tabs: NavigationTabItem[] = leaf.tabIds.flatMap<NavigationTabItem>((tabId) => {
     const tab = state.tabs[tabId]
+    if (tab?.embedded) return []
     const session = tab ? state.sessions[tab.sessionId] : null
-    if (!tab || !session) return []
+    if (!tab || !session) {
+      const page = appState.tabs.find((entry) => entry.id === tabId)
+      return page
+        ? [{ id: page.id, label: workbenchTabTitle(page, literature, t), closable: page.closable }]
+        : []
+    }
     const ResourceIcon = resourceFileIcon(tab.title)
     return [
       {
@@ -123,13 +133,22 @@ function TabStrip({ leaf }: { leaf: DockLeaf }): React.JSX.Element {
     <DocumentNavigationTabs
       aria-label={shellText('tabs.opened')}
       leaf={leaf}
-      onClose={(tabId) => workspace.requestClose(tabId)}
-      onContextMenuOpen={(tabId) => workspace.activate(leaf.id, tabId)}
-      onValueChange={(tabId) => workspace.activate(leaf.id, tabId)}
-      renderContextMenu={(tab) => <DocumentTabMenu tabId={tab.id} tabIds={leaf.tabIds} />}
+      onClose={(tabId) =>
+        state.tabs[tabId] ? workspace.requestClose(tabId) : act.closeWorkbenchTab(tabId)
+      }
+      onContextMenuOpen={(tabId) => act.activateTab(tabId)}
+      onValueChange={(tabId) => act.activateTab(tabId)}
+      renderContextMenu={(tab) =>
+        state.tabs[tab.id] ? (
+          <DocumentTabMenu tabId={tab.id} tabIds={leaf.tabIds} />
+        ) : (
+          <WorkbenchTabMenu tabId={tab.id} tabIds={leaf.tabIds} />
+        )
+      }
       showOverview={false}
       tabs={tabs}
       value={leaf.activeTabId ?? tabs[0]?.id}
+      trailing={<NewTabButton leafId={leaf.id} />}
     />
   )
 }
@@ -528,7 +547,7 @@ function LeafView({
   const workspace = useWorkspaceController()
   const state = useDocumentWorkspace()
   const drag = useDocumentDrag()
-  const tab = leaf.activeTabId ? state.tabs[leaf.activeTabId] : null
+  const { state: appState } = useApp()
   return (
     <section
       className={`vds-dock-leaf${state.focusedLeaf?.area === area && state.focusedLeaf.leafId === leaf.id ? ' is-focused' : ''}${showTabs ? ' !grid-rows-[auto_minmax(0,1fr)]' : ' is-tabless'}`}
@@ -573,22 +592,30 @@ function LeafView({
       }}
     >
       {showTabs && <TabStrip leaf={leaf} />}
-      {tab ? (
+      {leaf.tabIds.length ? (
         leaf.tabIds.map((tabId) => {
+          const page = appState.tabs.find((entry) => entry.id === tabId)
+          const viewer = page ? featureRegistry.viewers.get(page.kind) : undefined
+          const active = tabId === leaf.activeTabId
+          if (page && viewer?.dockable) {
+            return (
+              <div
+                key={`${page.id}:${page.kind}`}
+                className="vds-document-view-slot"
+                hidden={!active}
+              >
+                {viewer.render({ active, path: page.id, tabId: page.id })}
+              </div>
+            )
+          }
           const candidate = state.tabs[tabId]
-          if (!candidate) return null
+          if (!candidate || candidate.embedded) return null
           const session = state.sessions[candidate.sessionId]
-          const keepMounted = session
-            ? shouldMountDocumentView(candidate.id === tab.id, candidate.viewKind)
-            : false
-          if (!keepMounted && candidate.id !== tab.id) return null
+          const keepMounted = session ? shouldMountDocumentView(active, candidate.viewKind) : false
+          if (!keepMounted && !active) return null
           return (
-            <div
-              key={candidate.id}
-              className="vds-document-view-slot"
-              hidden={candidate.id !== tab.id}
-            >
-              <DocumentView active={candidate.id === tab.id} tab={candidate} />
+            <div key={candidate.id} className="vds-document-view-slot" hidden={!active}>
+              <DocumentView active={active} tab={candidate} />
             </div>
           )
         })

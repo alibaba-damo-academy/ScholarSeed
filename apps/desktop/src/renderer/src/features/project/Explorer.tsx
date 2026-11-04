@@ -141,8 +141,16 @@ export function Directory({
   onLoadingChange?: (path: string, loading: boolean) => void
 }): React.JSX.Element {
   const { t } = useTranslation('layout')
-  const [page, setPage] = useState<ProjectTreePage | null>(null)
+  const identity = JSON.stringify([project, path])
+  const [snapshot, setSnapshot] = useState<{ identity: string; page: ProjectTreePage | null }>({
+    identity,
+    page: null,
+  })
+  const page = snapshot.identity === identity ? snapshot.page : null
+  const pageRef = useRef(page)
+  pageRef.current = page
   const [loading, setLoading] = useState(true)
+  const [readFailed, setReadFailed] = useState(false)
   const [retry, setRetry] = useState(0)
   const [more, setMore] = useState(false)
   const [moreError, setMoreError] = useState(false)
@@ -152,24 +160,38 @@ export function Directory({
   const directoryId = path || '/'
   useLayoutEffect(() => {
     const requestGeneration = ++generation.current
+    const loadedCount = pageRef.current?.nodes.length ?? 0
     setLoading(true)
+    setReadFailed(false)
     onLoadingChange?.(path, true)
     morePending.current = false
     setMore(false)
     setMoreError(false)
     const settle = (value: ProjectTreePage | null): void => {
       if (generation.current !== requestGeneration) return
-      setPage(value)
+      if (value) setSnapshot({ identity, page: value })
+      setReadFailed(value === null)
       setLoading(false)
       onLoadingChange?.(path, false)
     }
-    void readProjectTree(project, path).then(settle, () => settle(null))
+    const refresh = async (): Promise<ProjectTreePage | null> => {
+      let replacement = await readProjectTree(project, path)
+      if (!replacement || generation.current !== requestGeneration) return null
+      // Replace the loaded range atomically, keeping existing rows mounted while reading.
+      while (replacement.nodes.length < Math.min(loadedCount, replacement.total)) {
+        const next = await readProjectTree(project, path, replacement.nodes.length)
+        if (generation.current !== requestGeneration || !next || !next.nodes.length) return null
+        replacement = { ...next, nodes: [...replacement.nodes, ...next.nodes] }
+      }
+      return replacement
+    }
+    void refresh().then(settle, () => settle(null))
     return () => {
       generation.current += 1
       morePending.current = false
       onLoadingChange?.(path, false)
     }
-  }, [project, path, revision, retry, onLoadingChange])
+  }, [identity, project, path, revision, retry, onLoadingChange])
   const loadMore = async (): Promise<void> => {
     if (!page || loading || morePending.current || page.nodes.length >= page.total) return
     const requestGeneration = generation.current
@@ -180,8 +202,10 @@ export function Directory({
       const next = await readProjectTree(project, path, page.nodes.length)
       if (generation.current !== requestGeneration) return
       if (next) {
-        setPage((current) =>
-          current === page ? { ...next, nodes: [...page.nodes, ...next.nodes] } : current
+        setSnapshot((current) =>
+          current.identity === identity && current.page === page
+            ? { identity, page: { ...next, nodes: [...page.nodes, ...next.nodes] } }
+            : current
         )
       } else setMoreError(true)
     } catch {
@@ -197,32 +221,34 @@ export function Directory({
   const pendingRow = creationRow ? (
     <div className="pl-[var(--vds-space-5)]">{creationRow}</div>
   ) : null
-  if (loading) return <>{pendingRow}</>
-  if (!page) {
+  if (loading && !page) return <>{pendingRow}</>
+  const failure = readFailed ? (
+    <Alert
+      tone="error"
+      data-testid={`explorer-directory-error-${directoryId}`}
+      title={t('readFailed')}
+      action={
+        <Button
+          variant="ghost"
+          data-testid={`explorer-directory-retry-${directoryId}`}
+          onClick={() => setRetry((value) => value + 1)}
+        >
+          {t('retry')}
+        </Button>
+      }
+    />
+  ) : null
+  if (!page || (page.nodes.length === 0 && page.total === 0))
     return (
       <>
         {pendingRow}
-        <Alert
-          tone="error"
-          data-testid={`explorer-directory-error-${directoryId}`}
-          title={t('readFailed')}
-          action={
-            <Button
-              variant="ghost"
-              data-testid={`explorer-directory-retry-${directoryId}`}
-              onClick={() => setRetry((value) => value + 1)}
-            >
-              {t('retry')}
-            </Button>
-          }
-        />
+        {failure}
       </>
     )
-  }
-  if (page.nodes.length === 0 && page.total === 0) return <>{pendingRow}</>
   return (
     <div className="flex min-w-0 flex-col gap-[var(--vds-space-1)] pl-[var(--vds-space-5)]">
       {creationRow}
+      {failure}
       {page.nodes.map((node) => {
         const isDir = node.kind === 'dir'
         const FileIcon = resourceFileIcon(node.name, node.kind)
@@ -353,6 +379,7 @@ export function Directory({
           variant="ghost"
           data-testid={`explorer-more-${directoryId}`}
           loading={more}
+          disabled={loading}
           onClick={() => void loadMore()}
         >
           {t('loadMore')}
@@ -362,7 +389,10 @@ export function Directory({
   )
 }
 
-export function Explorer({ tabId }: { tabId?: string } = {}): React.JSX.Element {
+export function Explorer({
+  tabId,
+  active = true,
+}: { tabId?: string; active?: boolean } = {}): React.JSX.Element {
   const { state, act } = useApp()
   const { t } = useTranslation('layout')
   const { t: resourceText } = useTranslation(['resources'])
@@ -405,7 +435,9 @@ export function Explorer({ tabId }: { tabId?: string } = {}): React.JSX.Element 
   const previewRequest = useRef(0)
   const pendingPreview = useRef<number | null>(null)
   const expectedPreview = useRef<string | null>(null)
-  const tab = preview ? documents.tabs[preview] : undefined
+  const previewTab = preview ? documents.tabs[preview] : undefined
+  // Promotion transfers the tab to the dock; it must not retain a second editor in its old host.
+  const tab = previewTab?.embedded && previewTab.hostTabId === tabId ? previewTab : undefined
   const previewSession = tab ? documents.sessions[tab.sessionId] : undefined
   const currentPath =
     previewSession?.source.kind === 'project' ? previewSession.source.path : previewPath
@@ -506,6 +538,17 @@ export function Explorer({ tabId }: { tabId?: string } = {}): React.JSX.Element 
     setRevision((value) => value + 1)
   }, [state.resource.tree])
   useEffect(() => {
+    const hosted = tabId
+      ? Object.values(documents.tabs).find(
+          (tab) => tab.embedded && tab.hostTabId === tabId && tab.activeInHost
+        )
+      : undefined
+    if (hosted && hosted.id !== preview && pendingPreview.current === null) {
+      const session = documents.sessions[hosted.sessionId]
+      setPreview(hosted.id)
+      if (session?.source.kind === 'project') setPreviewPath(session.source.path)
+      return
+    }
     if (preview && documents.tabs[preview] && preview === expectedPreview.current) {
       expectedPreview.current = null
       pendingPreview.current = null
@@ -515,7 +558,7 @@ export function Explorer({ tabId }: { tabId?: string } = {}): React.JSX.Element 
       setPreviewPath(null)
       setSelected(null)
     }
-  }, [documents.tabs, preview])
+  }, [documents.tabs, documents.sessions, preview, tabId])
   if (!project) return <></>
 
   const root: TreeNode = { path: '', name: project.name, kind: 'dir', available: true }
@@ -534,7 +577,7 @@ export function Explorer({ tabId }: { tabId?: string } = {}): React.JSX.Element 
         node.name,
         undefined,
         undefined,
-        { embedded: true }
+        { embedded: true, hostTabId: tabId }
       )
       .then((tabId) => {
         if (pendingPreview.current !== request) return
@@ -1171,7 +1214,7 @@ export function Explorer({ tabId }: { tabId?: string } = {}): React.JSX.Element 
           <DocumentView
             key={tab.id}
             tab={tab}
-            active
+            active={active}
             showBreadcrumb={false}
             modeControlHost={modeControlHost}
           />

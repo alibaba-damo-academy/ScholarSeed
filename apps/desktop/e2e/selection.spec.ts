@@ -1,7 +1,8 @@
+import { openAccountSettings } from './fixtures/menu'
 import { selectMarkdownMode } from './fixtures/markdown'
-import { createReadyProject } from './fixtures/projects'
+import { createReadyProject, openProjectMenu, openProjectExplorer, openProjectFile } from './fixtures/projects'
 import { ONBOARDING_GROUPS } from '../src/onboarding'
-import { DEFAULT_SELECTION_PROMPTS } from '../src/prompts'
+import { defaultSelectionPrompts } from '../src/prompts'
 import { WORKSPACE_WINDOW_MINIMUM, WORKSPACE_WINDOW_SIZE } from '../src/window'
 import { readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
@@ -47,13 +48,13 @@ test('short Markdown selection keeps its first block and scroll state stable', a
     )
     await page.reload()
     await enterWorkbenchShell(page)
-    await page.getByTestId('topbar-project').click()
+    await openProjectMenu(page)
     await page.getByTestId(`project-menu-option-${PROJECT_NAME}`).click()
-    await page.getByTestId('activity-resource').click()
-    await page.getByTestId('resource-refresh').click()
-    await page.getByTestId(`tree-${SOURCE_PATH}`).click()
+    await openProjectExplorer(page)
+    await page.getByTestId('explorer-refresh').click()
+    await openProjectFile(page, SOURCE_PATH)
     await selectMarkdownMode(page, 'edit')
-    const editor = page.getByTestId('markdown-visual-editor')
+    const editor = page.locator('[data-testid="markdown-visual-editor"]:visible')
     const paragraph = editor.getByText(SOURCE_TEXT, { exact: true })
     const heading = editor.locator('.ProseMirror > h1').first()
     const scroller = editor.locator(':scope > .milkdown')
@@ -143,16 +144,15 @@ test('real Markdown selection opens the shared menu and adds a pending source qu
     writeFileSync(join(project.root, SOURCE_PATH), `# Evidence\n\n${SOURCE_TEXT}\n`)
     await page.reload()
     await enterWorkbenchShell(page)
-    await page.getByTestId('topbar-project').click()
+    await openProjectMenu(page)
     await page.getByTestId(`project-menu-option-${PROJECT_NAME}`).click()
-    // 离开首页时进的是文献库视图, 资料树要用活动栏真实入口打开; 刷新一次让
-    // reload 之前写进磁盘的文件进入树。
-    await page.getByTestId('activity-resource').click()
-    await page.getByTestId('resource-refresh').click()
-    await page.getByTestId(`tree-${SOURCE_PATH}`).click()
+    // 选择项目已进入资料视图；刷新读取 reload 之前写进磁盘的文件。
+    await openProjectExplorer(page)
+    await page.getByTestId('explorer-refresh').click()
+    await openProjectFile(page, SOURCE_PATH)
     await selectMarkdownMode(page, 'edit')
     const paragraph = page
-      .getByTestId('markdown-visual-editor')
+      .locator('[data-testid="markdown-visual-editor"]:visible')
       .getByText(SOURCE_TEXT, { exact: true })
     await expect(paragraph).toBeVisible()
     const selectSourceText = async (): Promise<void> => {
@@ -210,14 +210,14 @@ test('real Markdown selection opens the shared menu and adds a pending source qu
     await selectSourceText()
     await expect(menu).toBeVisible()
     await menu.getByRole('button', { name: '粗体', exact: true }).click()
-    await expect(page.getByTestId('markdown-visual-editor').locator('strong')).toContainText(
+    await expect(page.locator('[data-testid="markdown-visual-editor"]:visible').locator('strong')).toContainText(
       SOURCE_TEXT
     )
     await selectSourceText()
     await expect(menu).toBeVisible()
     await page.screenshot({ path: join(runtime.artifacts, 'selection-menu.png') })
     // Real model calls belong to explicitly enabled live acceptance, not smoke.
-    await menu.getByRole('button', { name: '添加到对话', exact: true }).click()
+    await menu.getByRole('button', { name: '添加到任务', exact: true }).click()
     await expect(page.getByTestId('assistant-selection-quote')).toHaveCount(0)
     const pendingReference = page
       .getByTestId('ai-context-ref')
@@ -243,13 +243,13 @@ test('selection suggestions resize and move without losing the draft in a minimu
     writeFileSync(join(project.root, SOURCE_PATH), `# Evidence\n\n${SOURCE_TEXT}\n`)
     await page.reload()
     await enterWorkbenchShell(page)
-    await page.getByTestId('topbar-project').click()
+    await openProjectMenu(page)
     await page.getByTestId(`project-menu-option-${PROJECT_NAME}窗口缩放`).click()
-    await page.getByTestId('activity-resource').click()
-    await page.getByTestId('resource-refresh').click()
-    await page.getByTestId(`tree-${SOURCE_PATH}`).click()
+    await openProjectExplorer(page)
+    await page.getByTestId('explorer-refresh').click()
+    await openProjectFile(page, SOURCE_PATH)
     await selectMarkdownMode(page, 'edit')
-    const paragraph = page.getByTestId('markdown-visual-editor').getByText(SOURCE_TEXT, { exact: true })
+    const paragraph = page.locator('[data-testid="markdown-visual-editor"]:visible').getByText(SOURCE_TEXT, { exact: true })
     for (const label of ['AI 解释', 'AI 润色']) {
       await paragraph.click()
       await page.keyboard.press(process.platform === 'darwin' ? 'Meta+ArrowLeft' : 'Home')
@@ -306,14 +306,14 @@ test('selection AI actions show optional input and prompt settings guidance', as
     writeFileSync(join(project.root, SOURCE_PATH), `# Evidence\n\n${SOURCE_TEXT}\n`)
     await page.reload()
     await enterWorkbenchShell(page)
-    await page.getByTestId('topbar-project').click()
+    await openProjectMenu(page)
     await page.getByTestId(`project-menu-option-${PROJECT_NAME}提示词引导`).click()
-    await page.getByTestId('activity-resource').click()
-    await page.getByTestId('resource-refresh').click()
-    await page.getByTestId(`tree-${SOURCE_PATH}`).click()
+    await openProjectExplorer(page)
+    await page.getByTestId('explorer-refresh').click()
+    await openProjectFile(page, SOURCE_PATH)
     await selectMarkdownMode(page, 'edit')
     const paragraph = page
-      .getByTestId('markdown-visual-editor')
+      .locator('[data-testid="markdown-visual-editor"]:visible')
       .getByText(SOURCE_TEXT, { exact: true })
     const selectSourceText = async (): Promise<void> => {
       await paragraph.click()
@@ -348,7 +348,7 @@ test('selection AI actions show optional input and prompt settings guidance', as
         'AI 解释',
         'AI 润色',
         'AI 翻译',
-        '添加到对话',
+        '添加到任务',
         '粗体',
         '斜体',
         '删除线',
@@ -453,7 +453,7 @@ test('selection AI actions show optional input and prompt settings guidance', as
     await expect(
       pdfSelectionToolbar.getByRole('textbox', { name: '补充说明（选填）', exact: true })
     ).toBeVisible()
-    await page.getByTestId('pdf-page-1').click({ position: { x: 20, y: 20 } })
+    await page.locator('[data-testid="pdf-page-1"]:visible').click({ position: { x: 20, y: 20 } })
     await expect(pdfSelectionToolbar).toHaveCount(0)
     await selectPdfSourceText(SECOND_SOURCE_TEXT)
     await expect(pdfSelectionToolbar).toHaveAttribute('data-state', 'collapsed')
@@ -495,11 +495,11 @@ test('project PDF selection AI closes without restoring the legacy input', async
     writeFileSync(join(project.root, PDF_SOURCE_PATH), await pdf.save())
     await page.reload()
     await enterWorkbenchShell(page)
-    await page.getByTestId('topbar-project').click()
+    await openProjectMenu(page)
     await page.getByTestId(`project-menu-option-${PROJECT_NAME}PDF浮窗关闭`).click()
-    await page.getByTestId('activity-resource').click()
-    await page.getByTestId('resource-refresh').click()
-    await page.getByTestId(`tree-${PDF_SOURCE_PATH}`).click()
+    await openProjectExplorer(page)
+    await page.getByTestId('explorer-refresh').click()
+    await openProjectFile(page, PDF_SOURCE_PATH)
     const pdfText = page
       .getByTestId('pdf-page-1')
       .locator('.textLayer span')
@@ -524,7 +524,7 @@ test('project PDF selection AI closes without restoring the legacy input', async
     await expect(
       suggestion.getByRole('textbox', { name: '补充说明（选填）', exact: true })
     ).toBeFocused()
-    await page.getByTestId('pdf-page-1').click({ position: { x: 20, y: 20 } })
+    await page.locator('[data-testid="pdf-page-1"]:visible').click({ position: { x: 20, y: 20 } })
     await expect(suggestion).toHaveCount(0)
     await page.screenshot({ path: join(runtime.artifacts, 'pdf-selection-ai-dismissed.png') })
     desktop.assertNoPageErrors()
@@ -555,13 +555,13 @@ test('Markdown selection across blocks, inline code and code blocks opens the me
     writeFileSync(join(project.root, SOURCE_PATH), markdown)
     await page.reload()
     await enterWorkbenchShell(page)
-    await page.getByTestId('topbar-project').click()
+    await openProjectMenu(page)
     await page.getByTestId(`project-menu-option-${PROJECT_NAME}`).click()
-    await page.getByTestId('activity-resource').click()
-    await page.getByTestId('resource-refresh').click()
-    await page.getByTestId(`tree-${SOURCE_PATH}`).click()
+    await openProjectExplorer(page)
+    await page.getByTestId('explorer-refresh').click()
+    await openProjectFile(page, SOURCE_PATH)
     await selectMarkdownMode(page, 'edit')
-    const editor = page.getByTestId('markdown-visual-editor')
+    const editor = page.locator('[data-testid="markdown-visual-editor"]:visible')
     await expect(editor.getByText('Second paragraph text.', { exact: true })).toBeVisible()
     await expect(editor.locator('.cm-content')).toBeVisible()
     const menu = page.getByTestId('selection-action-host')
@@ -676,7 +676,7 @@ test('Markdown selection across blocks, inline code and code blocks opens the me
       if (scenario.name === 'into-code-block') {
         await expectPrintHighlight('code selection after drag')
       }
-      await menu.getByRole('button', { name: '添加到对话', exact: true }).click()
+      await menu.getByRole('button', { name: '添加到任务', exact: true }).click()
       if (scenario.name === 'into-code-block') {
         await expectPrintHighlight('code selection after adding context')
       }
@@ -709,8 +709,7 @@ test('selection prompts save through personal settings, survive restart, and res
     let page = await desktop.launch()
     const settings = async () => {
       if (!await page.getByTestId('account-settings-nav-prompts').isVisible()) {
-        await page.getByTestId('activity-account').click()
-        await page.getByTestId('account-menu-settings').click()
+        await openAccountSettings(page)
       }
       await page.getByTestId('account-settings-nav-prompts').click()
     }
@@ -735,7 +734,7 @@ test('selection prompts save through personal settings, survive restart, and res
       await expect(page.getByTestId(`selection-prompt-${action}`)).toHaveValue(value)
     await page.getByTestId('selection-prompt-restore-translate').click()
     await expect(page.getByTestId('selection-prompt-translate')).toHaveValue(
-      DEFAULT_SELECTION_PROMPTS.translate
+      defaultSelectionPrompts('zh').translate
     )
     await expect(page.getByTestId('selection-prompt-explain')).toHaveValue(prompts.explain)
     await expect(page.getByTestId('selection-prompt-polish')).toHaveValue(prompts.polish)
@@ -747,7 +746,7 @@ test('selection prompts save through personal settings, survive restart, and res
           JSON.parse(readFileSync(join(runtime.userData, 'renderer-preferences.json'), 'utf8'))
             .selectionPrompts
       )
-      .toEqual({ ...prompts, translate: DEFAULT_SELECTION_PROMPTS.translate })
+      .toEqual({ ...prompts, translate: defaultSelectionPrompts('zh').translate })
     await page.getByRole('heading', { name: 'AI 提示词', exact: true }).scrollIntoViewIfNeeded()
     await page.screenshot({ path: join(runtime.artifacts, 'selection-prompts-restored.png') })
     desktop.assertNoPageErrors()
@@ -765,16 +764,15 @@ test('Markdown selection link reuses the top bar icon and saves through the nati
     writeFileSync(join(project.root, SOURCE_PATH), `# Evidence\n\n${SOURCE_TEXT}\n`)
     await page.reload()
     await enterWorkbenchShell(page)
-    await page.getByTestId('topbar-project').click()
+    await openProjectMenu(page)
     await page.getByTestId(`project-menu-option-${PROJECT_NAME}`).click()
-    // 离开首页时进的是文献库视图, 资料树要用活动栏真实入口打开; 刷新一次让
-    // reload 之前写进磁盘的文件进入树。
-    await page.getByTestId('activity-resource').click()
-    await page.getByTestId('resource-refresh').click()
-    await page.getByTestId(`tree-${SOURCE_PATH}`).click()
+    // 选择项目已进入资料视图；刷新读取 reload 之前写进磁盘的文件。
+    await openProjectExplorer(page)
+    await page.getByTestId('explorer-refresh').click()
+    await openProjectFile(page, SOURCE_PATH)
     await selectMarkdownMode(page, 'edit')
     const paragraph = page
-      .getByTestId('markdown-visual-editor')
+      .locator('[data-testid="markdown-visual-editor"]:visible')
       .locator('.ProseMirror p')
       .filter({ hasText: SOURCE_TEXT })
     await expect(paragraph).toBeVisible()
@@ -782,7 +780,7 @@ test('Markdown selection link reuses the top bar icon and saves through the nati
     await paragraph.click({ clickCount: 3 })
     const menu = page.getByTestId('selection-action-host')
     await expect(menu).toBeVisible()
-    const topbar = page.getByTestId('markdown-visual-editor').locator('.milkdown-top-bar')
+    const topbar = page.locator('[data-testid="markdown-visual-editor"]:visible').locator('.milkdown-top-bar')
     for (const label of ['粗体', '斜体', '删除线', '链接', '行内代码', '行内公式']) {
       const quick = menu.getByRole('button', { name: label, exact: true })
       const top = topbar.locator('button').filter({ has: page.getByLabel(label, { exact: true }) })
@@ -798,16 +796,25 @@ test('Markdown selection link reuses the top bar icon and saves through the nati
       expect(quickSize.height).toBeGreaterThanOrEqual(topSize.height)
     }
     await menu.getByRole('button', { name: '行内公式', exact: true }).click()
-    await expect(page.getByTestId('markdown-visual-editor').locator('[data-type="math_inline"]')).toBeVisible()
-    await menu.getByRole('button', { name: '行内公式', exact: true }).click()
-    await expect(page.getByTestId('markdown-visual-editor').locator('[data-type="math_inline"]')).toHaveCount(0)
+    await expect(page.locator('[data-testid="markdown-visual-editor"]:visible').locator('[data-type="math_inline"]')).toBeVisible()
+    // An atomic formula has a native node selection, rather than a text Range.
+    // The same editor command reverses it through the persistent native toolbar.
+    const nativeMath = page.locator('[data-testid="markdown-editor-actions"]:visible')
+      .getByRole('button', { name: '行内公式', exact: true })
+    await nativeMath.click()
+    await expect(page.locator('[data-testid="markdown-visual-editor"]:visible').locator('[data-type="math_inline"]')).toHaveCount(0)
+    await paragraph.click()
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+ArrowLeft' : 'Home')
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+Shift+ArrowRight' : 'Shift+End')
+    expect(await page.evaluate(() => window.getSelection()?.toString())).toBe(SOURCE_TEXT)
+    await expect(menu).toBeVisible()
     await menu.getByRole('button', { name: '删除线', exact: true }).click()
-    await expect(page.getByTestId('markdown-visual-editor').locator('del')).toContainText(SOURCE_TEXT)
+    await expect(page.locator('[data-testid="markdown-visual-editor"]:visible').locator('del')).toContainText(SOURCE_TEXT)
     await menu.getByRole('button', { name: '删除线', exact: true }).click()
-    await expect(page.getByTestId('markdown-visual-editor').locator('del')).toHaveCount(0)
+    await expect(page.locator('[data-testid="markdown-visual-editor"]:visible').locator('del')).toHaveCount(0)
     const link = menu.getByRole('button', { name: '链接', exact: true })
     const nativeIcon = page
-      .getByTestId('markdown-visual-editor')
+      .locator('[data-testid="markdown-visual-editor"]:visible')
       .locator('.milkdown-top-bar')
       .getByLabel('链接', { exact: true })
       .locator('svg')
@@ -815,28 +822,26 @@ test('Markdown selection link reuses the top bar icon and saves through the nati
     expect(await link.locator('svg').innerHTML()).toBe(await nativeIcon.innerHTML())
     await page.screenshot({ path: join(runtime.artifacts, 'selection-link-menu.png') })
     await link.click()
-    const input = page.getByPlaceholder('粘贴链接')
+    const input = page.getByPlaceholder('粘贴链接').and(page.locator(':visible'))
     await expect(input).toBeVisible()
     await input.fill('https://example.com/')
     await input.press('Enter')
     await expect(
-      page.getByTestId('markdown-visual-editor').locator('a').filter({ hasText: SOURCE_TEXT })
+      page.locator('[data-testid="markdown-visual-editor"]:visible').locator('a').filter({ hasText: SOURCE_TEXT })
     ).toHaveAttribute('href', 'https://example.com/')
     await page.keyboard.press(process.platform === 'darwin' ? 'Meta+s' : 'Control+s')
     await expect
       .poll(() => readFileSync(join(project.root, SOURCE_PATH), 'utf8'))
       .toContain(`[${SOURCE_TEXT}](https://example.com/)`)
     await page.screenshot({ path: join(runtime.artifacts, 'selection-link.png') })
-    await paragraph.click()
-    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+ArrowLeft' : 'Home')
-    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+Shift+ArrowRight' : 'Shift+End')
+    // Saving the link restores the original text selection for the next quick action.
     expect(await page.evaluate(() => window.getSelection()?.toString())).toBe(SOURCE_TEXT)
     await menu.getByRole('button', { name: '行内公式', exact: true }).click()
     await page.keyboard.press(process.platform === 'darwin' ? 'Meta+s' : 'Control+s')
     await expect
       .poll(() => readFileSync(join(project.root, SOURCE_PATH), 'utf8'))
       .toContain(`$${SOURCE_TEXT}$`)
-    await menu.getByRole('button', { name: '行内公式', exact: true }).click()
+    await nativeMath.click()
     await page.keyboard.press(process.platform === 'darwin' ? 'Meta+s' : 'Control+s')
     await expect
       .poll(() => readFileSync(join(project.root, SOURCE_PATH), 'utf8'))

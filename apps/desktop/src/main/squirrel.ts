@@ -8,11 +8,28 @@ import { Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import type { EventEmitter } from 'node:events'
 import { readRecord, writeJson } from './journal.ts'
+import type { QualifiedRecordConsumer } from './journal.ts'
 import { commitWithActivation, type HandoffAuthorization } from './update-authorization.ts'
 
 const LOOPBACK = '127.0.0.1'
 const HANDOFF_TIMEOUT_MS = 10 * 60_000
 const RECORD_MAX_BYTES = 4096
+export const UPDATE_STATE_DIRECTORY = 'updates'
+const HANDOFF_FILE = 'squirrel.json'
+
+export function squirrelHandoffRecordPath(home: string): string {
+  return join(home, UPDATE_STATE_DIRECTORY, HANDOFF_FILE)
+}
+
+export function consumeSquirrelHandoff(
+  consumer: QualifiedRecordConsumer,
+  home: string,
+  expected: Buffer,
+  device: string,
+  inode: string
+): void {
+  consumer.consume(squirrelHandoffRecordPath(home), expected, device, inode)
+}
 
 // The pinned Squirrel version buffers downloads in NSData. CFData can round a
 // download above 1 GiB up to a 2 GiB allocation, which Electron rejects fatally.
@@ -131,28 +148,32 @@ export function discardOnTerminalSquirrelFailure(
   return undefined
 }
 
+export function decodeSquirrelHandoff(bytes: Buffer): SquirrelHandoff {
+  const value = JSON.parse(bytes.toString()) as SquirrelHandoff
+  if (
+    typeof value.version !== 'string' ||
+    !/^[A-Za-z0-9.+_-]{1,128}$/.test(value.version) ||
+    typeof value.buildNumber !== 'string' ||
+    !/^[A-Za-z0-9.+_-]{1,128}$/.test(value.buildNumber) ||
+    typeof value.candidate !== 'string' ||
+    !value.candidate ||
+    !Number.isSafeInteger(value.at) ||
+    value.at < 0 ||
+    !['requested', 'downloaded', 'installing', 'failed'].includes(value.state) ||
+    (value.nativeRequest !== undefined && !validSquirrelNativeRequest(value.nativeRequest)) ||
+    (value.binding !== undefined &&
+      (!validSquirrelBinding(value.binding) || value.binding.candidate !== value.candidate)) ||
+    (value.binding !== undefined &&
+      value.nativeRequest !== undefined &&
+      !sameSquirrelBinding(value.binding, value.nativeRequest.binding))
+  )
+    throw new Error('Invalid Squirrel handoff')
+  return value
+}
+
 export function readSquirrelHandoff(path: string): SquirrelHandoff | null {
   try {
-    const value = JSON.parse(readRecord(path, RECORD_MAX_BYTES).toString()) as SquirrelHandoff
-    if (
-      typeof value.version !== 'string' ||
-      !/^[A-Za-z0-9.+_-]{1,128}$/.test(value.version) ||
-      typeof value.buildNumber !== 'string' ||
-      !/^[A-Za-z0-9.+_-]{1,128}$/.test(value.buildNumber) ||
-      typeof value.candidate !== 'string' ||
-      !value.candidate ||
-      !Number.isSafeInteger(value.at) ||
-      value.at < 0 ||
-      !['requested', 'downloaded', 'installing', 'failed'].includes(value.state) ||
-      (value.nativeRequest !== undefined && !validSquirrelNativeRequest(value.nativeRequest)) ||
-      (value.binding !== undefined &&
-        (!validSquirrelBinding(value.binding) || value.binding.candidate !== value.candidate)) ||
-      (value.binding !== undefined &&
-        value.nativeRequest !== undefined &&
-        !sameSquirrelBinding(value.binding, value.nativeRequest.binding))
-    )
-      throw new Error('Invalid Squirrel handoff')
-    return value
+    return decodeSquirrelHandoff(readRecord(path, RECORD_MAX_BYTES))
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
     // An unreadable record is not proof that no installation is pending.

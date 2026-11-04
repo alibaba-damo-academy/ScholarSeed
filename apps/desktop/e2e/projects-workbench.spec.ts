@@ -2,7 +2,7 @@ import { existsSync } from 'fs'
 import { join } from 'path'
 import { expect, test } from '@playwright/test'
 import { apiBase, DesktopSession } from './fixtures/electron'
-import { createReadyProject } from './fixtures/projects'
+import { createReadyProject, openProjectMenu, projectOption } from './fixtures/projects'
 import { createRuntime } from './fixtures/runtime'
 import { skipQuarantined } from './fixtures/quarantine'
 
@@ -20,10 +20,10 @@ test('project creation waits for prepared storage and supports operation consume
   try {
     const page = await desktop.launch()
     const base = await apiBase(page)
-    await page.getByTestId('topbar-project').click()
+    await openProjectMenu(page)
     await page.getByTestId('project-menu-create').click()
     const dialog = page.getByTestId('project-new-modal')
-    await dialog.getByRole('textbox').fill(UI_PROJECT_NAME)
+    await dialog.getByTestId('project-create-name').fill(UI_PROJECT_NAME)
     const submitted = page.waitForResponse(
       (response) =>
         response.url() === `${base}${PROJECT_ROUTE}` && response.request().method() === 'POST'
@@ -49,9 +49,9 @@ test('project creation waits for prepared storage and supports operation consume
     const second = await createReadyProject(page, API_PROJECT_NAME)
     expect(second.id).not.toBe(result.result.id)
     await page.reload()
-    await page.getByTestId('topbar-project').click()
-    await expect(page.getByTestId(`project-menu-option-${UI_PROJECT_NAME}`)).toBeVisible()
-    await expect(page.getByTestId(`project-menu-option-${API_PROJECT_NAME}`)).toBeVisible()
+    await openProjectMenu(page)
+    await expect(projectOption(page, UI_PROJECT_NAME)).toBeVisible()
+    await expect(projectOption(page, API_PROJECT_NAME)).toBeVisible()
     await page.screenshot({ path: join(runtime.artifacts, 'prepared-projects.png') })
     desktop.assertNoPageErrors()
   } finally {

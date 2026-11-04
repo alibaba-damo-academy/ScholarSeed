@@ -283,6 +283,7 @@ class BrowserSearchFlowContract(unittest.IsolatedAsyncioTestCase):
         self.root = Path(temporary.name)
         self.source = self.root / "source"
         shutil.copytree(SEARCH_SOURCE, self.source / SEARCH_SOURCE.name)
+        shutil.copyfile(SEARCH_SOURCE.parents[1] / "registry.json", self.root / "registry.json")
         self.bundled = self.root / "bundled"
         compile_source_skills(self.bundled, self.source)
         manifest = self.bundled / "web-search/SKILL.md"

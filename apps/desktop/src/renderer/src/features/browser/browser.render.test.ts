@@ -11,7 +11,7 @@ import type { BrowserCommand } from '../../../../browser.ts'
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 
 test(
-  'browser tab reorder preserves selection and snapshot updates while keyboard navigation follows visual order',
+  'browser tab drag activates the pressed tab and preserves it through reorder and snapshot updates while keyboard navigation follows visual order',
   { timeout: 60_000 },
   async () => {
     const server = await createServer({
@@ -29,13 +29,15 @@ test(
       )
       const workspace = page.getByTestId('browser-workspace')
       const bar = workspace.getByRole('tablist')
+      await expect(bar.getByRole('tab', { selected: true })).toContainText('First')
       await bar
         .getByRole('tab', { name: /Second/ })
         .dragTo(bar.getByRole('tab', { name: /First/ }), { targetPosition: { x: 2, y: 16 } })
       await expect(bar.getByRole('tab')).toHaveText(['Second', 'First'])
-      await expect(bar.getByRole('tab', { selected: true })).toContainText('First')
+      await expect(bar.getByRole('tab', { selected: true })).toContainText('Second')
       await workspace.getByRole('button', { name: '刷新', exact: true }).click()
       await expect(bar.getByRole('tab')).toHaveText(['Second', 'First'])
+      await expect(bar.getByRole('tab', { selected: true })).toContainText('Second')
       await bar.getByRole('tab', { selected: true }).press('Home')
       await expect(bar.getByRole('tab', { selected: true })).toContainText('Second')
       await bar.getByRole('tab', { selected: true }).press('End')
@@ -1561,7 +1563,7 @@ test(
         ).href
       )
       await page.waitForFunction(
-        () => (window as unknown as { frameResizes: unknown[] }).frameResizes.length === 1
+        () => (window as unknown as { frameResizes?: unknown[] }).frameResizes?.length === 1
       )
       await page.evaluate(() =>
         (window as unknown as { selectBrowserTab(tabId: string): void }).selectBrowserTab('second')

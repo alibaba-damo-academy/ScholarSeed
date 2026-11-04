@@ -323,9 +323,14 @@ test('workbench return project belongs only to an explicitly contextual navigati
     storeSource.indexOf('const COMPOSER_RESET:')
   )
   assert.match(reset, /workbenchReturnProjectId: null/)
+  const resultStart = storeSource.indexOf('openLiteratureResult: (result) =>')
+  const resultAction = storeSource.slice(
+    resultStart,
+    storeSource.indexOf('openLiteratureSearch:', resultStart)
+  )
+  assert.match(resultAction, /projectId \? \{\} : \{ workbenchReturnProjectId: null/)
   for (const [start, end] of [
     ['selectProject: (projectId) =>', 'toggleSessionChildren:'],
-    ['openLiteratureResult: (result) =>', 'openLiteratureSearch:'],
     ['openLiteratureSearch: (task) =>', 'restoreLiteratureSearches:'],
     ['openLiteratureItem: async', 'markLiteratureFulltext:'],
   ]) {

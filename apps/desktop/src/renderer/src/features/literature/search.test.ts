@@ -265,7 +265,9 @@ test('opening a conversation literature result leaves fullscreen assistant cover
     storeSource.indexOf('openLiteratureResult: (result)'),
     storeSource.indexOf('openLiteratureSearch: (task)')
   )
-  assert.match(openResult, /mainView: 'literature'/)
+  assert.match(openResult, /literatureResultTab\(result, projectId\)/)
+  assert.match(openResult, /projectId \? 'resource' : 'literature'/)
+  assert.doesNotMatch(openResult, /homeSelectedProjectId: null/)
   assert.match(openResult, /aiPanel: \{ \.\.\.current\.aiPanel, cover: false \}/)
 })
 

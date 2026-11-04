@@ -76,7 +76,8 @@ export function orderedProjects(
     .sort(
       (left, right) =>
         Number(Boolean(right.pinned)) - Number(Boolean(left.pinned)) ||
-        (activity.get(right.path) ?? 0) - (activity.get(left.path) ?? 0) ||
+        Math.max(activity.get(right.path) ?? 0, right.directory_created_at ?? right.added_at ?? 0) -
+          Math.max(activity.get(left.path) ?? 0, left.directory_created_at ?? left.added_at ?? 0) ||
         (right.added_at ?? 0) - (left.added_at ?? 0)
     )
 }

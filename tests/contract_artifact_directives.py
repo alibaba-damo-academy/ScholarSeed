@@ -21,6 +21,7 @@ from scholarseed_codex.router import ThreadRouter
 from scholarseed_codex.session import CodexRuntimeSession
 from scholarseed_codex.turn import CodexTurnRuntime
 from scholarseed_codex.watch import WorkspaceWatch
+from scholarseed_runtime.contract import ModelConnectionMode, ModelIntent, ModelTransport
 from scholarseed_runtime.contract.artifact import ArtifactDirectiveSpec, ArtifactRole
 from scholarseed_runtime.contract.command import OpenSessionRequest
 from scholarseed_runtime.contract.event import DeliveryClass, RuntimeEventKind
@@ -34,9 +35,20 @@ class DeclarationContract(unittest.IsolatedAsyncioTestCase):
         temporary = tempfile.TemporaryDirectory(prefix="artifact-directive-")
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
-        with patch("scholarseed_codex.pool.CodexHostPool.prepare_home", return_value=(root, "")):
+        with patch("scholarseed_codex.pool.CodexHostPool.prepare_home", return_value=root):
             session = CodexRuntimeSession(
-                OpenSessionRequest("product", root, artifact_directives=SPEC)
+                OpenSessionRequest(
+                    "product",
+                    root,
+                    artifact_directives=SPEC,
+                    model=ModelIntent(
+                        model_ref="fixture",
+                        transport=ModelTransport(
+                            mode=ModelConnectionMode.REMOTE,
+                            endpoint="https://models.example.test/v1",
+                        ),
+                    ),
+                )
             )
         self.addAsyncCleanup(session._events.close)
         return session

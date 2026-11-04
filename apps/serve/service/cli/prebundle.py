@@ -39,7 +39,6 @@ from service.capabilities.service.source import (  # noqa: E402
     COMMUNITY_SKILLS_DIR,
     compile_source_skills,
     verify_source_pack,
-    write_source_lock,
 )
 from service.paths import SERVICE_BUNDLED_SKILLS_DIR  # noqa: E402
 
@@ -72,7 +71,7 @@ def _parse(argv: Sequence[str] | None) -> argparse.Namespace:
         "--source",
         type=Path,
         default=COMMUNITY_SKILLS_DIR,
-        help="仓库内技能源码根（默认 skills/community）。",
+        help="技能源码根（默认 skills/community），依赖政策取自同级 registry.json。",
     )
     parser.add_argument(
         "--lock",
@@ -135,10 +134,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0 if ok else 1
     if args.build:
         try:
-            built = compile_source_skills(args.target, args.source)
+            built = compile_source_skills(args.target, args.source, lock_path=args.lock)
             if args.lock:
-                frozen = write_source_lock(args.lock, args.source)
-                print(f"{LOG_PREFIX} lock={frozen}")
+                print(f"{LOG_PREFIX} lock={args.lock.expanduser().resolve()}")
         except (OSError, SkillPackError, ValueError) as exc:
             print(f"{LOG_PREFIX} FAILED: {exc}")
             traceback.print_exc()

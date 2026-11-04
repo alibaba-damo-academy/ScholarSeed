@@ -58,6 +58,7 @@ from service.capabilities.service.package import PACKAGE_MANIFEST  # noqa: E402
 from service.capabilities.service.skills import (  # noqa: E402
     SKILL_CATEGORY_USER,
     load_skill_state,
+    save_skill_state,
 )
 
 UPLOAD_URL = "/api/capabilities/skills/upload"
@@ -107,7 +108,18 @@ def main() -> int:
     (legacy / ".origin.json").write_text(
         json.dumps({"source": "clawhub", "slug": "old-skill"}), encoding="utf-8"
     )
-    with TestClient(create_app(workspace, auth=False)) as client:
+    app = create_app(workspace, auth=False)
+
+    async def configure_installed(*, state, **_kwargs):
+        # This contract owns HTTP/package validation and durable installation
+        # state. Runtime inventory/admission has separate native contracts.
+        save_skill_state(state)
+
+    app.state.runtime_service.configure_skills = AsyncMock(side_effect=configure_installed)
+    app.state.runtime_service.skill_inventory = AsyncMock(
+        side_effect=lambda **_kwargs: app.state.skill_catalog.installed_inventory(workspace)
+    )
+    with TestClient(app) as client:
         assert listed(client)["legacy-skill"]["installationSource"] == "unknown"
 
         preview = client.post(

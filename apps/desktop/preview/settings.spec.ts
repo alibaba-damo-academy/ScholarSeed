@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { writeFile } from 'node:fs/promises'
 import { openPreviewScenario, previewSurface, expect, test, type Page } from './testing'
 import type { RendererPreferences } from '../src/preferences'
-import { DEFAULT_SELECTION_PROMPTS } from '../src/prompts'
+import { defaultSelectionPrompts } from '../src/prompts'
 import { PREVIEW_CATALOG } from './catalog'
 import { previewConsumption } from './coverage'
 import { capturePreview } from './capture'
@@ -107,7 +107,7 @@ test('selection prompts page validates empty drafts, saves through the actual fo
   const settings = previewSurface(page).getByTestId('account-settings-prompts')
   const explain = settings.getByTestId('selection-prompt-explain')
   const save = settings.getByTestId('selection-prompts-save')
-  await expect(explain).toHaveValue(DEFAULT_SELECTION_PROMPTS.explain)
+  await expect(explain).toHaveValue(defaultSelectionPrompts('zh').explain)
   await expect(save).toBeDisabled()
   await explain.fill('')
   await expect(save).toBeDisabled()
@@ -121,10 +121,10 @@ test('selection prompts page validates empty drafts, saves through the actual fo
   await expect(explain).toHaveValue(revised)
   await page.screenshot({ path: testInfo.outputPath('settings-prompts-saved.png'), fullPage: true })
   await settings.getByTestId('selection-prompt-restore-explain').click()
-  await expect(explain).toHaveValue(DEFAULT_SELECTION_PROMPTS.explain)
-  await savePreferences(page, value => value.selectionPrompts.explain === DEFAULT_SELECTION_PROMPTS.explain, async () => { await save.click() })
+  await expect(explain).toHaveValue(defaultSelectionPrompts('zh').explain)
+  await savePreferences(page, value => value.selectionPrompts.explain === defaultSelectionPrompts('zh').explain, async () => { await save.click() })
   await page.reload()
-  await expect(explain).toHaveValue(DEFAULT_SELECTION_PROMPTS.explain)
+  await expect(explain).toHaveValue(defaultSelectionPrompts('zh').explain)
   await expect(save).toBeDisabled()
   await page.screenshot({ path: testInfo.outputPath('settings-prompts-restored.png'), fullPage: true })
 })

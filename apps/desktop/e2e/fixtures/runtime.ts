@@ -30,7 +30,7 @@ const AF_UNIX_PATH_LIMIT = 104
 const BRIDGE_SOCKET_DEPTH = 48
 
 /** mkdtemp 短根的前缀。 */
-const SHORT_HOME_PREFIX = 'scholarseed-e2e-'
+const SHORT_HOME_PREFIX = 'e2e-'
 
 /**
  * home 的短根。serve 会在 `<home>/service/bridge/endpoint-XXXXXXXX/api.sock` 绑
@@ -62,7 +62,7 @@ export interface RuntimePaths {
 export function seedRendererPreferences(userData: string): void {
   writeFileSync(
     join(userData, RENDERER_PREFERENCES_FILE),
-    JSON.stringify({ language: E2E_INTERFACE_LANGUAGE,
+    JSON.stringify({ language: E2E_INTERFACE_LANGUAGE, browserAutomationEnabled: false,
       onboarding: { seen: Object.fromEntries(ONBOARDING_GROUPS.map((group) => [group, true])) } })
   )
 }
@@ -83,6 +83,7 @@ export function createRuntime(testInfo: TestInfo): RuntimePaths {
   // The public desktop migration treats this marker as an already initialized home.
   // Pre-seeding runtime state avoids reading or adopting the developer's real ~/.scholarseed.
   writeFileSync(join(paths.home, '.adopted-from-veda'), 'isolated Playwright runtime\n')
+  writeFileSync(join(paths.home, '.e2e-owner.json'), JSON.stringify({ root, artifacts: paths.artifacts }))
   seedRendererPreferences(paths.userData)
   return paths
 }
@@ -95,6 +96,31 @@ export async function withIsolatedRuntime<T>(testInfo: TestInfo,
   } finally {
     rmSync(runtime.home, { recursive: true, force: true })
   }
+}
+
+/** Configure a local host for skill management tests that never invoke a model. */
+export function seedSkillHost(paths: RuntimePaths): void {
+  writeFileSync(join(paths.home, CONFIG_FILE), JSON.stringify({
+    selected_model_key: 'personal-fixture:fixture-skill-model',
+  }))
+  writeFileSync(join(paths.home, MODEL_PROFILES_FILE), JSON.stringify({
+    active_profile_id: 'personal-fixture',
+    profiles: {
+      'personal-fixture': {
+        id: 'personal-fixture',
+        owner_id: 'local',
+        enabled: true,
+        preview_name: 'Isolated skill host',
+        provider: 'openai',
+        wire_api: 'responses',
+        base_url: 'http://127.0.0.1:9/v1',
+        api_key: 'fixture-skill-host',
+        headers: {},
+        model_name: 'fixture-skill-model',
+        selected_models: [{ id: 'fixture-skill-model' }],
+      },
+    },
+  }), { mode: 0o600 })
 }
 
 export function seedLiveConfig(paths: RuntimePaths): string | null {

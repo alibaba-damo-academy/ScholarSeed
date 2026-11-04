@@ -325,6 +325,7 @@ class ProjectRef:
     unavailable_reason: str | None = None
     description: str = ""
     pinned: bool = False
+    directory_created_at: float | None = None
 
 
 @dataclass(frozen=True)

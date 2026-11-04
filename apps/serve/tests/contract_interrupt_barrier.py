@@ -38,7 +38,7 @@ class _Catalog:
         return ()
 
     def get(self, _session_id: str) -> SimpleNamespace:
-        return SimpleNamespace(last_turn_id="turn-1")
+        return SimpleNamespace(last_turn_id="turn-1", archived=False)
 
 
 class _Adapter:
@@ -63,9 +63,11 @@ def live_session(adapter: object, catalog: _Catalog) -> LiveSession:
     live.id = "interrupt-contract"
     live.vendor_thread_id = "interrupt-contract-thread"
     live.runtime_session = adapter
+    live.runtime_driver = None
     live._catalog = catalog  # type: ignore[assignment]
     live.interrupting = False
     live.termination_task = None
+    live._close_task = None
     live.terminating = False
     live.terminated = False
     live.interrupt_generation = 0

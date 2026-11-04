@@ -14,6 +14,7 @@ import {
   openFixedTab,
   LITERATURE_TAB,
   literatureNavigation,
+  literatureResultTab,
   literatureSearchTab,
   openLiteratureSearchTabs,
   openWorkbenchTab,
@@ -24,10 +25,34 @@ import {
   selectProjectTab,
   resolveProjectTabSelection,
   tabMatchesProject,
+  workbenchTabVisible,
   tabVisibleInCurrentView,
   versionDiffTab,
   type WorkbenchTab,
 } from './tabs.ts'
+
+test('conversation results stay in their project workspace', () => {
+  const result = { session_id: 'session', card_id: 'card', title: 'Results' }
+  const project = literatureResultTab(result, 'project-1')
+  const global = literatureResultTab(result, null)
+  assert.equal(workbenchTabVisible(project, 'resource'), true)
+  assert.equal(workbenchTabVisible(project, 'literature'), false)
+  assert.equal(tabMatchesProject(project, 'project-1'), true)
+  assert.equal(tabMatchesProject(project, 'project-2'), false)
+  assert.equal(workbenchTabVisible(global, 'literature'), true)
+  assert.equal(workbenchTabVisible(global, 'resource'), false)
+  assert.equal(
+    restoreProjectWorkbenchTab('project-1', project.id, [project], {
+      focusedTabId: null,
+      tabs: {},
+    }),
+    project.id
+  )
+  assert.equal(
+    closeTab([OVERVIEW_TAB, project], project.id, project.id, { view: 'resource' }).activeId,
+    OVERVIEW_TAB.id
+  )
+})
 
 test('project literature navigation selects the project files category without a separate library', () => {
   const navigation = literatureNavigation([OVERVIEW_TAB], 'project-1')
@@ -275,6 +300,30 @@ test('project surface selection does not reuse another project or another surfac
   }
 })
 
+test('project surface selection only reuses tabs in the requested pane', () => {
+  const blank = newProjectTab('project-1')
+  const surface = { ...newProjectTab('project-1'), kind: 'library' as const }
+  const tabs = [surface, blank]
+  const selection = resolveProjectTabSelection(tabs, blank.id, 'library', [blank.id])
+  assert.equal(selection.activeTab, blank.id)
+  assert.equal(selection.tabs[1].kind, 'library')
+  assert.equal(
+    resolveProjectTabSelection(tabs, blank.id, 'library', [surface.id, blank.id]).activeTab,
+    surface.id
+  )
+})
+
+test('closing a project page prefers the remaining document in its own pane', () => {
+  const first = newProjectTab('project-1')
+  const closing = newProjectTab('project-1')
+  const result = closeTab([first, closing], closing.id, closing.id, {
+    view: 'resource',
+    paneTabIds: ['document-in-right-pane', closing.id],
+  })
+  assert.equal(result.activeId, 'document-in-right-pane')
+  assert.deepEqual(result.tabs, [first])
+})
+
 test('browser is a non-closable global workbench surface retained across views', () => {
   const browser = FIXED_TAB_BY_VIEW.browser
   assert.ok(browser)
@@ -512,4 +561,55 @@ test('closing an inactive tab leaves the active tab untouched', () => {
 
   assert.equal(closed.activeId, search.id)
   assert.equal(closed.tabs.length, 3)
+})
+
+// The former web-search sidebar has no public UI entry in the 0.3.1 layout.
+// Keep its retained tab lifecycle covered at its owner boundary (UI101 retirement).
+test('retained web search tabs preserve project ownership, reuse and close independently', () => {
+  const alpha: WorkbenchTab = {
+    ...WEB_TAB,
+    id: 'web-search:alpha',
+    projectId: 'alpha',
+    title: 'Alpha search',
+  }
+  const beta: WorkbenchTab = {
+    ...WEB_TAB,
+    id: 'web-search:beta',
+    projectId: 'beta',
+    title: 'Beta search',
+  }
+  const both = openWorkbenchTab(openWorkbenchTab([], 'resource', alpha), 'resource', beta)
+  const returned = openWorkbenchTab(both, 'resource', alpha)
+  assert.equal(returned.filter((tab) => tab.id === alpha.id).length, 1)
+  assert.equal(returned.filter((tab) => tab.id === beta.id).length, 1)
+  assert.deepEqual(
+    returned.filter((tab) => tab.kind === 'web_search' && tabMatchesProject(tab, 'alpha')),
+    [alpha]
+  )
+  assert.deepEqual(
+    returned.filter((tab) => tab.kind === 'web_search' && tabMatchesProject(tab, 'beta')),
+    [beta]
+  )
+  assert.equal(
+    restoreProjectWorkbenchTab('alpha', alpha.id, returned, { focusedTabId: null, tabs: {} }),
+    alpha.id
+  )
+  assert.equal(
+    restoreProjectWorkbenchTab('beta', alpha.id, returned, { focusedTabId: null, tabs: {} }),
+    OVERVIEW_TAB.id
+  )
+  const closed = closeTab(returned, alpha.id, alpha.id, {
+    view: 'resource',
+    viewFallbackId: OVERVIEW_TAB.id,
+    projectId: 'alpha',
+  })
+  assert.equal(closed.activeId, OVERVIEW_TAB.id)
+  assert.equal(
+    closed.tabs.some((tab) => tab.id === alpha.id),
+    false
+  )
+  assert.equal(
+    closed.tabs.find((tab) => tab.id === beta.id),
+    beta
+  )
 })

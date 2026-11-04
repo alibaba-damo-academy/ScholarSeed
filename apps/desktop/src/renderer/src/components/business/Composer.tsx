@@ -78,7 +78,7 @@ import { ReferencePicker } from './References'
 import { SkillAdd } from './Skills'
 import { StatusStrip } from './StatusStrip'
 import { fuzzyFilter } from '../../fuzzy'
-import { skillCallable, skillDescription, skillName } from '../../skill'
+import { skillCallable, skillCategory, skillDescription, skillName } from '../../skill'
 import { SKILL_SURFACE_CONVERSATION, SKILL_SURFACE_SETTINGS } from '../../../../skills'
 import { useAccountAccess } from './access'
 import {
@@ -135,6 +135,7 @@ import {
 } from '../../runtime'
 import {
   canCancelQueuedMessage,
+  confirmQueuedOutcome,
   hasAcceptedMessageAwaitingRuntime,
   QUEUED_MESSAGE_SAFE_ERRORS,
   QUEUE_PRESENTATION_MESSAGE_KEYS,
@@ -448,6 +449,7 @@ export function Composer({
   const { t, i18n } = useTranslation('components')
   const language = i18n.resolvedLanguage || i18n.language
   const { t: assistantText } = useTranslation('assistant')
+  const { t: skillText } = useTranslation('skills')
   const contextText = useAssistantContextText()
   const collaborationModeLabel =
     COLLABORATION_MODE_OPTIONS.map((option) => ({
@@ -2436,18 +2438,16 @@ export function Composer({
     const sessionId = sidNow ?? ''
     if (!sessionId || queuedActionId) return
     setQueuedActionId(queued.queuedMessageId)
-    const result = await confirmUnknownTurn(
-      sessionId,
-      queued.nativeTurnId || queued.queuedMessageId
-    )
-    if (!result.ok) {
-      set({ foregroundError: feedback('components', 'composer.confirmContinueFailed') })
+    try {
+      const error = await confirmQueuedOutcome({
+        confirm: () => confirmUnknownTurn(sessionId, queued.nativeTurnId || queued.queuedMessageId),
+        refreshQueue: () => refreshQueuedMessages(sessionId),
+        refreshContext: () => act.loadAiContext(sessionId),
+      })
+      if (error) set({ foregroundError: error })
+    } finally {
       setQueuedActionId(null)
-      return
     }
-    await refreshQueuedMessages(sessionId)
-    await act.loadAiContext(sessionId)
-    setQueuedActionId(null)
   }
 
   const openCreditsPage = async (): Promise<void> => {
@@ -3426,7 +3426,7 @@ export function Composer({
                                                 </span>
                                               ) : s.category ? (
                                                 <span className="flex-none whitespace-nowrap rounded-[var(--vds-radius-2)] bg-[var(--bg-3)] px-[7px] py-[2px] text-[10px] text-[var(--text-3)]">
-                                                  {s.category}
+                                                  {skillCategory(s, skillText)}
                                                 </span>
                                               ) : null}
                                             </span>

@@ -59,16 +59,17 @@ frontmatter 扩展，例如 `version`、`description_zh` 和已有 `metadata`；
 |---|---|
 | `SKILL.md` 的 `version` | 源码身份版本 |
 | `VERSION` | 必须逐字等于 `SKILL.md` 版本 |
-| `.scholarseed-package.json` 的 `version` | 更新为同一版本，并同步文件大小与哈希 |
-| `skills/skills.lock.json` 中该 Skill 的 `version` | 从当前源码重新生成 |
+| `skills/skills.lock.json` 中该 Skill 的 `version` | 从当前源码重新生成并审核 |
+| 构建产物 `.scholarseed-package.json` 的 `version` | 由预打包器从源码版本生成，只验证，不手工修改 |
 | 构建产物 `.scholarseed.json` 的 `version` | 由预打包器生成，只验证，不手工修改 |
 
 版本必须使用仓库当前接受的格式。不要产生 `2026.09.20.3` 与
 `2026.9.20+3` 这类语义相同但字面不同的组合。工作区绑定读取 `VERSION`，产品目录读取
 生成的 `.scholarseed.json`；两者不同会造成版本身份漂移。
 
-`PACKAGE-MANIFEST.sha256` 主要服务打包期，不是运行时版本判断来源，但只要包内文件
-发生变化就必须同步。不能用“运行时不校验”作为保留陈旧清单的理由。
+`skills/registry.json` 是内置 Skill 依赖声明的真源。`.scholarseed-package.json`
+只在预打包产物中生成，记录最终负载的大小和哈希；独立 tar 打包器如有
+`PACKAGE-MANIFEST.sha256`，也只写入归档。
 
 ## 3. 隔离修改并维护清单
 
@@ -79,9 +80,11 @@ worktree 中修改。主 checkout 中用户已有的改动不得被切换、暂�
 
 1. `SKILL.md`、脚本、Schema、说明等真实源文件；
 2. `VERSION`；
-3. `PACKAGE-MANIFEST.sha256`；
-4. `.scholarseed-package.json` 的文件记录、`source_document_sha256` 和版本；
-5. `skills/skills.lock.json` 中该 Skill 的文件记录、payload 摘要和版本。
+3. 依赖变化时更新 `skills/registry.json` 中该 Skill 的声明；
+4. 提交前审核并更新 `skills/skills.lock.json` 中该 Skill 的文件记录、依赖、payload 摘要和版本。
+
+本地用仓库根的 `pnpm dev` 重建内置 pack 并启动 Electron，不要求先刷新审核锁。
+已有实例先退出再重启；从旧清单布局升级也应先用该入口重建。生成的发布清单不写回源码。
 
 使用仓库预打包器在临时目录生成完整结果，再把目标 Skill 的记录与产物核对：
 
@@ -114,6 +117,7 @@ task_archive_dir=$(mktemp -d /tmp/scholarseed-skill-archive.XXXXXX)
 
 ```bash
 git diff --check
+pnpm ops ci check skills product --mode manifest
 PYTHONPATH="apps/serve:packages/runtime" \
   .venv/bin/python -m apps.serve.tests.contract_skill_prebundle
 PYTHONPATH="apps/serve:packages/runtime" \

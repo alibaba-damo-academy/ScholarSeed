@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { defaultSelectionPrompts } from './prompts.ts'
 
 import {
   DEFAULT_RENDERER_PREFERENCES,
@@ -221,10 +222,14 @@ test('a persisted language survives detection, and only a missing or invalid one
   assert.equal(sanitizeRendererPreferences(null).language, DEFAULT_RENDERER_PREFERENCES.language)
 })
 
-test('defaultRendererPreferences substitutes the language without mutating the exported constant', () => {
+test('defaultRendererPreferences seeds the initial language and prompts without mutating the exported constant', () => {
   const detected = defaultRendererPreferences('en')
   assert.equal(detected.language, 'en')
-  assert.deepEqual(detected, { ...DEFAULT_RENDERER_PREFERENCES, language: 'en' })
+  assert.deepEqual(detected, {
+    ...DEFAULT_RENDERER_PREFERENCES,
+    language: 'en',
+    selectionPrompts: defaultSelectionPrompts('en'),
+  })
 
   assert.deepEqual(defaultRendererPreferences(), DEFAULT_RENDERER_PREFERENCES)
   assert.deepEqual(defaultRendererPreferences('zh'), DEFAULT_RENDERER_PREFERENCES)

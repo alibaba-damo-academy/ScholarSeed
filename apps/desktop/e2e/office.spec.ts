@@ -1,3 +1,4 @@
+import { documentSurface, openProjectExplorer } from './fixtures/projects'
 import { createHash } from 'crypto'
 import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'fs'
 import { basename, join } from 'path'
@@ -6,7 +7,7 @@ import { expect, test, type Locator, type Page, type TestInfo } from '@playwrigh
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate'
 import { ONBOARDING_GROUPS } from '../src/onboarding'
 
-import { apiBase, DesktopSession, waitForFinishedTurn } from './fixtures/electron'
+import { apiBase, DesktopSession, showProductWindow, waitForFinishedTurn } from './fixtures/electron'
 import { createRuntime, seedLiveConfig } from './fixtures/runtime'
 import { openFile, seedProject, selectProject } from './fixtures/workbench'
 import { skipQuarantined } from './fixtures/quarantine'
@@ -76,9 +77,10 @@ for (const item of COMPATIBILITY_CASES) {
       const resources = await seedProject(page, runtime)
       copyFileSync(source, join(resources, item.name))
       const originalHash = sha256(source)
-      await page.getByTestId('resource-refresh').click()
+      await openProjectExplorer(page)
+      await page.getByTestId('explorer-refresh').click()
       await openFile(page, item.name)
-      const preview = page.getByTestId('office-preview')
+      const preview = documentSurface(page).getByTestId('office-preview')
       await expect(preview).toHaveAttribute('data-office-title', item.name, { timeout: OFFICE_READY_TIMEOUT_MS })
       await expect(preview.getByRole('toolbar')).toHaveCount(0)
       if (await page.getByTestId('ai-panel').isVisible()) await page.getByTestId('ai-panel').getByRole('button', { name: '关闭', exact: true }).click()
@@ -142,7 +144,7 @@ for (const item of COMPATIBILITY_CASES) {
       else await dragPreviewText(page, target)
       const menu = page.getByTestId('selection-action-host')
       await expect(menu).toBeVisible()
-      await menu.getByRole('button', { name: '添加到对话', exact: true }).click()
+      await menu.getByRole('button', { name: '添加到任务', exact: true }).click()
       await expect(page.getByTestId('ai-context-ref').filter({ hasText: item.name })).toBeVisible()
       if (item.format === 'xlsx') await target.click()
       else await dragPreviewText(page, target)
@@ -173,10 +175,10 @@ for (const item of COMPATIBILITY_CASES) {
 }
 const OFFICE_FONT_RECORD_TRACE = process.env.SCHOLARSEED_OFFICE_RECORD_TRACE !== '0'
 const OFFICE_FONT_BASELINE = process.env.SCHOLARSEED_OFFICE_FONT_BASELINE
-const OFFICE_FONT_FAMILY = process.platform === 'win32' ? 'Microsoft YaHei' : 'PingFang SC'
+// The checked-in legacy DOC requests this family on both hosts; availability/fallback is recorded.
+const OFFICE_FONT_FAMILY = 'PingFang SC'
 const OFFICE_BUNDLED_FONT_FAMILY = 'Noto Sans CJK SC'
 const OFFICE_FONT_VIEWPORT = { width: 1280, height: 900 }
-const OFFICE_FONT_LAYOUT_PARAGRAPHS = 48
 const OFFICE_FONT_REPAINT_TIMEOUT_MS = 10_000
 
 interface OfficeDiagnostic {
@@ -219,7 +221,8 @@ test('Original Office document loads and real WASM failures recover visibly', as
     const page = await desktop.launch()
     const resources = await seedProject(page, runtime)
     copyFileSync(OFFICE_REGRESSION_DOCUMENT!, join(resources, name))
-    await page.getByTestId('resource-refresh').click()
+    await openProjectExplorer(page)
+      await page.getByTestId('explorer-refresh').click()
     await openFile(page, name)
     const frame = page.locator(`iframe[data-testid="office-editor"][title="${name}"]`)
     await expect(frame).toHaveAttribute('data-document-ready', 'true', { timeout: OFFICE_READY_TIMEOUT_MS })
@@ -284,7 +287,8 @@ test('Office recovery feedback remains visible in a narrow dark Desktop', async 
     const page = await desktop.launch()
     const resources = await seedProject(page, runtime)
     copyFileSync(OFFICE_REGRESSION_DOCUMENT!, join(resources, name))
-    await page.getByTestId('resource-refresh').click()
+    await openProjectExplorer(page)
+      await page.getByTestId('explorer-refresh').click()
     await openFile(page, name)
     const frame = page.locator(`iframe[data-testid="office-editor"][title="${name}"]`)
     await expect(frame).toHaveAttribute('data-document-ready', 'true', { timeout: OFFICE_READY_TIMEOUT_MS })
@@ -340,18 +344,22 @@ test('Office data download failure cancels preparation and retries with a new fr
   try {
     const page = await desktop.launch()
     const resources = await seedProject(page, runtime)
-    const name = 'font-recovery.docx'
-    writeFileSync(join(resources, name), documentArchive())
+    const name = 'font-recovery.doc'
+    copyFileSync(join(OFFICE_CORPUS_ROOT, 'doc/selection-multipage.doc'), join(resources, name))
     page.on('console', message => {
       const prefix = '[office-runtime] '
       if (message.text().startsWith(prefix)) diagnostics.push(JSON.parse(message.text().slice(prefix.length)) as OfficeDiagnostic)
     })
-    await page.context().route(dataRoute, route => route.abort('failed'))
-    await page.getByTestId('resource-refresh').click()
+    await openProjectExplorer(page)
+      await page.getByTestId('explorer-refresh').click()
     await openFile(page, name)
+    const frame = page.locator(`iframe[data-testid="office-editor"][title="${name}"]`)
+    await expect(frame).toHaveAttribute('data-document-ready', 'true', { timeout: OFFICE_READY_TIMEOUT_MS })
+    await page.context().route(dataRoute, route => route.abort('failed'))
+    diagnostics.length = 0
+    await page.reload()
     const loading = page.getByTestId('office-loading')
     await expect(loading).toHaveAttribute('data-stage', 'error', { timeout: OFFICE_READY_TIMEOUT_MS })
-    const frame = page.locator(`iframe[data-testid="office-editor"][title="${name}"]`)
     const failedSource = await frame.getAttribute('srcdoc')
     expect(failedSource).not.toBeNull()
     expect(diagnostics.filter(item => item.stage === 'runtime-ready')).toHaveLength(0)
@@ -383,25 +391,14 @@ test('Office font content comparison preserves Chinese weights and reuses the ru
       if (message.text().startsWith(prefix)) diagnostics.push(JSON.parse(message.text().slice(prefix.length)) as OfficeDiagnostic)
     })
     const resources = await seedProject(page, runtime)
-    const names = ['font-weights.docx', 'font-switch.docx']
-    const fontRuns = [
-      ['中文字体验证：普通字重 Normal', ''],
-      ['中文字体验证：粗体字重 Bold', '<w:b/><w:bCs/>'],
-      ['Latin italic and 中文字体 Italic', '<w:i/><w:iCs/>'],
-      ...Array.from({ length: OFFICE_FONT_LAYOUT_PARAGRAPHS }, (_, index) => [
-        `排版段落 ${index + 1}：用于检查自动换行、分页及中文标点。The same device must preserve line wrapping and pagination after font preparation changes.`,
-        index % 2 ? '<w:b/><w:bCs/>' : ''
-      ])
-    ]
-    const fontParagraphs = fontRuns.map(([text, format]) => `<w:p><w:r><w:rPr><w:rFonts w:ascii="${OFFICE_FONT_FAMILY}" w:hAnsi="${OFFICE_FONT_FAMILY}" w:eastAsia="${OFFICE_FONT_FAMILY}"/><w:sz w:val="24"/><w:szCs w:val="24"/>${format}</w:rPr><w:t>${text}</w:t></w:r></w:p>`).join('')
-    const fontDocument = archive({
-      '[Content_Types].xml': '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
-      '_rels/.rels': '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
-      'word/document.xml': `<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${fontParagraphs}<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr></w:body></w:document>`
-    })
+    // OOXML uses the native preview now. Exercise font preparation/cache in the actual legacy engine.
+    // fonts.doc was generated from fixtures/fonts.rtf with macOS textutil -convert doc.
+    const names = ['font-weights.doc', 'font-switch.doc']
+    const fontDocument = readFileSync(join(__dirname, 'fixtures/fonts.doc'))
     writeFileSync(join(resources, names[0]), fontDocument)
-    writeFileSync(join(resources, names[1]), documentArchive())
-    await page.getByTestId('resource-refresh').click()
+    copyFileSync(join(OFFICE_CORPUS_ROOT, 'doc/selection-multipage.doc'), join(resources, names[1]))
+    await openProjectExplorer(page)
+      await page.getByTestId('explorer-refresh').click()
     await armOfficeOpen(page, names[0])
     await openFile(page, names[0])
     const first = page.locator(`iframe[data-testid="office-editor"][title="${names[0]}"]`)
@@ -449,9 +446,9 @@ test('Office font content comparison preserves Chinese weights and reuses the ru
       const painted = await officeCanvasContentScreenshot(page, first.contentFrame().locator('#qtcanvas'), join(runtime.artifacts, 'office-font-reopened-content.png'))
       return createHash('sha256').update(painted).digest('hex')
     }, { timeout: OFFICE_FONT_REPAINT_TIMEOUT_MS, message: 'Reopened document canvas must repaint the same typography and layout' }).toBe(initialCanvasHash)
-    // DOCX resources are intentionally registered readonly by the service. Reopening
+    // These legacy DOC resources are registered readonly by the service. Reopening
     // proves document/runtime reuse; it must not be reported as a save acceptance.
-    await expect(page.getByTestId('document-save')).toHaveCount(0)
+    await expect(documentSurface(page).getByTestId('document-save')).toHaveCount(0)
     const rendering = {
       platform: process.platform, fontFamily: OFFICE_FONT_FAMILY,
       viewport: OFFICE_FONT_VIEWPORT, requestedFontAvailability, opened, reopened,
@@ -599,7 +596,7 @@ function sha256(path: string): string {
   return createHash('sha256').update(readFileSync(path)).digest('hex')
 }
 
-async function dragPreviewText(page: Page, start: Locator, end: Locator = start, word?: string): Promise<void> {
+async function dragPreviewText(page: Page, start: Locator, end: Locator = start, word?: string): Promise<number> {
   const endpoint = async (target: Locator, last: boolean) => {
     await target.scrollIntoViewIfNeeded()
     return target.evaluate((element, { last, word }) => {
@@ -624,11 +621,13 @@ async function dragPreviewText(page: Page, start: Locator, end: Locator = start,
   await page.mouse.down()
   const endPoint = await endpoint(end, true)
   await page.mouse.move(endPoint.x, endPoint.y, { steps: 24 })
+  const releasedAt = Date.now()
   await page.mouse.up()
+  return releasedAt
 }
 
 async function nativePreview(page: Page, format: string, title?: string): Promise<Locator> {
-  const preview = page.getByTestId('office-preview')
+  const preview = documentSurface(page).getByTestId('office-preview')
   if (title) await expect(preview).toHaveAttribute('data-office-title', title)
   await expect(preview).toHaveAttribute('data-office-format', format)
   await expect(preview.getByRole('alert')).toHaveCount(0)
@@ -703,11 +702,12 @@ test('OOXML previews retain real source selections and conversation actions with
     const page = await desktop.launch()
     const resources = await seedProject(page, runtime)
     for (const file of files) writeFileSync(join(resources, file.name), file.bytes)
-    await page.getByTestId('resource-refresh').click()
+    await openProjectExplorer(page)
+      await page.getByTestId('explorer-refresh').click()
     for (const file of files) {
       const before = sha256(join(resources, file.name))
       await openFile(page, file.name)
-      const preview = page.getByTestId('office-preview')
+      const preview = documentSurface(page).getByTestId('office-preview')
       await expect(preview).toContainText(file.text)
       await expect(page.locator('[data-testid="office-editor"][data-runtime-view]:not([data-runtime-view=""])')).toHaveCount(0)
       const target = preview.locator(file.selector).filter({ hasText: file.text }).first()
@@ -718,7 +718,7 @@ test('OOXML previews retain real source selections and conversation actions with
       await expect(menu).toBeVisible()
       await expect(menu.getByRole('button', { name: 'AI 润色', exact: true })).toHaveCount(0)
       await page.screenshot({ path: join(runtime.artifacts, `native-selection-${file.name}.png`) })
-      await menu.getByRole('button', { name: '添加到对话', exact: true }).click()
+      await menu.getByRole('button', { name: '添加到任务', exact: true }).click()
       await expect(page.getByTestId('ai-context-ref').filter({ hasText: file.name })).toBeVisible()
       await expect(preview.getByRole('toolbar')).toHaveCount(0)
       expect(sha256(join(resources, file.name))).toBe(before)
@@ -740,7 +740,8 @@ test('OOXML page layout and merged workbook selections preserve source bytes', a
     writeFileSync(join(resources, documentName), multipageDocumentArchive())
     writeFileSync(join(resources, workbookName), richSpreadsheetArchive())
     const hashes = [documentName, workbookName].map(name => sha256(join(resources, name)))
-    await page.getByTestId('resource-refresh').click()
+    await openProjectExplorer(page)
+      await page.getByTestId('explorer-refresh').click()
     await openFile(page, documentName)
     const document = await nativePreview(page, 'docx')
     const pages = document.locator('section[class^="scholarseed-docx-"]')
@@ -775,7 +776,7 @@ test('OOXML page layout and merged workbook selections preserve source bytes', a
     await expect(menu).toBeHidden()
     await grid.locator('[data-cell="A1"]').click()
     await expect(menu).toContainText('Second · A1:A1')
-    await menu.getByRole('button', { name: '添加到对话', exact: true }).click()
+    await menu.getByRole('button', { name: '添加到任务', exact: true }).click()
     await page.getByTestId('ai-context-ref').filter({ hasText: workbookName }).hover()
     await expect(page.getByTestId('assistant-selection-quote')).toContainText('Second sheet evidence')
     await page.screenshot({ path: join(runtime.artifacts, 'ooxml-second-sheet-selection.png') })
@@ -797,7 +798,7 @@ test('native previews coexist with one warmed runtime', async ({}, testInfo) => 
   const desktop = new DesktopSession(runtime, testInfo, { nativeWindowLifecycle: true })
   const diagnostics: OfficeDiagnostic[] = []
   try {
-    const page = await desktop.launch()
+    let page = await desktop.launch()
     page.on('console', (message) => {
       const prefix = '[office-runtime] '
       if (!message.text().startsWith(prefix)) return
@@ -823,15 +824,16 @@ test('native previews coexist with one warmed runtime', async ({}, testInfo) => 
     writeFileSync(join(resources, pptxName), presentationArchive())
     writeFileSync(join(resources, xlsxName), spreadsheetArchive())
     const readonlyHashes = Object.fromEntries([csvName, docxName, pptxName, xlsxName].map((name) => [name, sha256(join(resources, name))]))
-    await page.getByTestId('resource-refresh').click()
+    await openProjectExplorer(page)
+      await page.getByTestId('explorer-refresh').click()
 
-    await expect(page.getByTestId(`tree-resources/${csvName}`)).toBeVisible({ timeout: OFFICE_READY_TIMEOUT_MS })
+    await expect(page.getByTestId(`explorer-select-resources/${csvName}`)).toBeVisible({ timeout: OFFICE_READY_TIMEOUT_MS })
     await openFile(page, csvName)
-    const csvFrame = page.getByTestId('csv-grid')
+    const csvFrame = documentSurface(page).getByTestId('csv-grid')
     await expect(csvFrame.locator('[data-cell="A2"]')).toHaveText('字体实验')
     await expect(csvFrame.locator('[data-cell="B2"]')).toHaveText('通过')
     await expect(page.locator('[data-testid="office-editor"][data-runtime-view]:not([data-runtime-view=""])')).toHaveCount(0)
-    await expect(page.getByTestId('document-save')).toBeDisabled()
+    await expect(documentSurface(page).getByTestId('document-save')).toBeDisabled()
     await page.waitForTimeout(OFFICE_PAINT_SETTLE_MS)
     expect(diagnostics.filter(item => item.stage === 'document-ready')).toEqual([])
     await expect(warmedHost).toHaveCount(1)
@@ -874,18 +876,18 @@ test('native previews coexist with one warmed runtime', async ({}, testInfo) => 
     await expect(docxFrame).toHaveAttribute('data-office-revision', revisionBeforeLanguageChange!)
     await expect(docxFrame.getByRole('toolbar')).toHaveCount(0)
     await expect(docxFrame).toContainText('Document-private Helvetica runtime')
-    await expect(page.getByTestId('document-save')).toHaveCount(0)
+    await expect(documentSurface(page).getByTestId('document-save')).toHaveCount(0)
     await page.waitForTimeout(OFFICE_PAINT_SETTLE_MS)
     await page.screenshot({ path: join(runtime.artifacts, 'office-docx-readonly-content.png') })
     const externalOpenButton = page.getByTestId('office-open-external')
     await expect(externalOpenButton).toContainText('打开')
     await expect(externalOpenButton.locator('img')).toHaveCount(1)
-    const documentToolbar = page.locator('.vds-document-toolbar')
+    const documentToolbar = documentSurface(page).locator('.vds-document-toolbar')
     await expect(documentToolbar.getByTestId('office-open-external')).toHaveCount(1)
     await expect(page.locator('.vds-top-bar-actions').getByTestId('office-open-external')).toHaveCount(0)
     const externalOpenBounds = await externalOpenButton.boundingBox()
     const documentToolbarBounds = await documentToolbar.boundingBox()
-    const versionHistoryBounds = await page.getByTestId('document-version-history').boundingBox()
+    const versionHistoryBounds = await documentSurface(page).getByTestId('document-version-history').boundingBox()
     expect(externalOpenBounds?.height).toBe(28)
     expect(versionHistoryBounds?.height).toBe(28)
     expect((externalOpenBounds?.x ?? 0) + (externalOpenBounds?.width ?? 0)).toBeLessThanOrEqual(
@@ -911,25 +913,28 @@ test('native previews coexist with one warmed runtime', async ({}, testInfo) => 
     await expect(externalOpenMenu).toBeHidden()
 
     let releaseWriter: (() => void) | undefined
-    let writerRequested: (() => void) | undefined
+    let writerRequested = false
     const writerGate = new Promise<void>((resolve) => { releaseWriter = resolve })
-    const writerRequest = new Promise<void>((resolve) => { writerRequested = resolve })
     await page.route('**/api/workbench/content?**', async (route) => {
       const path = new URL(route.request().url()).searchParams.get('path')
       if (path === `resources/${settlingDocxName}`) {
-        writerRequested?.()
+        writerRequested = true
         await writerGate
       }
       await route.continue()
     })
-    await openFile(page, settlingDocxName)
-    await writerRequest
-    await expect(page.getByRole('tab', { name: new RegExp(docxName) })).toBeVisible()
-    await expect(page.getByRole('tab', { name: new RegExp(settlingDocxName) })).toHaveCount(0)
-    await expect(docxFrame).toContainText('Document-private Helvetica runtime')
-    await expect(page.getByTestId('office-switch-mask')).toHaveCount(0)
-    await page.screenshot({ path: join(runtime.artifacts, 'office-switch-keeps-current-owner.png') })
-    releaseWriter?.()
+    await page.getByTestId('project-library').click()
+    try {
+      await page.getByTestId(`material-resources/${settlingDocxName}`).getByRole('button', { name: settlingDocxName, exact: true }).click()
+      await expect.poll(() => writerRequested).toBe(true)
+      await expect(page.getByRole('tab', { name: new RegExp(docxName) })).toBeVisible()
+      await expect(page.getByRole('tab', { name: settlingDocxName, exact: true })).toHaveAttribute('aria-selected', 'true')
+      const loadingSlot = page.getByTestId('document-dock').locator('.vds-document-view-slot:visible')
+      await expect(loadingSlot).toContainText(`正在打开 ${settlingDocxName}`)
+      await expect(loadingSlot).not.toContainText('Document-private Helvetica runtime')
+      await expect(page.getByTestId('office-switch-mask')).toHaveCount(0)
+      await page.screenshot({ path: join(runtime.artifacts, 'office-switch-keeps-current-owner.png') })
+    } finally { releaseWriter?.() }
     const settlingFrame = await nativePreview(page, 'docx')
     await expect(page.getByRole('tab', { name: new RegExp(settlingDocxName) })).toBeVisible()
     await expect(settlingFrame).toContainText('Document-private Helvetica runtime')
@@ -953,7 +958,7 @@ test('native previews coexist with one warmed runtime', async ({}, testInfo) => 
       await expect(warmedHost).toHaveAttribute('data-runtime-slot', warmedSlot!)
       expect(diagnostics.filter(item => item.stage === 'runtime-ready')).toHaveLength(runtimeReadyCount)
       expect(diagnostics.filter(item => item.stage === 'document-ready')).toHaveLength(readyBeforeNativePreview)
-      await expect(page.getByTestId('document-save')).toHaveCount(0)
+      await expect(documentSurface(page).getByTestId('document-save')).toHaveCount(0)
       if (name === pptxName) {
         const firstPage = officeFrame.locator('[data-preview-shape]').filter({ hasText: 'Presentation page 1' })
         const secondPage = officeFrame.locator('[data-preview-shape]').filter({ hasText: 'Presentation page 2' })
@@ -976,14 +981,23 @@ test('native previews coexist with one warmed runtime', async ({}, testInfo) => 
 
     const xlsxFrame = await nativePreview(page, 'xlsx')
     const revisionBeforeThemeChange = await xlsxFrame.getAttribute('data-office-revision')
-    await page.evaluate(() => { document.documentElement.dataset.theme = 'dark' })
+    // There is no public live theme entry in this baseline. Exercise real dark
+    // startup independently, rather than changing presentation through DOM injection.
+    await desktop.close()
+    const preferencesPath = join(runtime.userData, 'renderer-preferences.json')
+    const preferences = JSON.parse(readFileSync(preferencesPath, 'utf8'))
+    writeFileSync(preferencesPath, JSON.stringify({ ...preferences, theme: 'dark' }))
+    page = await desktop.launch()
+    await selectProject(page)
+    await openFile(page, xlsxName)
+    const darkFrame = await nativePreview(page, 'xlsx')
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
-    await expect(xlsxFrame).toHaveAttribute('data-office-revision', revisionBeforeThemeChange!)
-    await expect(xlsxFrame).toContainText('Readonly spreadsheet')
-    expect(diagnostics.filter(item => item.stage === 'document-ready')).toHaveLength(readyBeforeNativePreview)
-    await expect(warmedHost).toHaveCount(1)
-    await expect(warmedHost).toHaveAttribute('data-runtime-slot', warmedSlot!)
-    expect(diagnostics.filter(item => item.stage === 'runtime-ready')).toHaveLength(runtimeReadyCount)
+    await expect(darkFrame).toHaveAttribute('data-office-revision', revisionBeforeThemeChange!)
+    await expect(darkFrame).toContainText('Readonly spreadsheet')
+    const darkRuntime = page.getByTestId('office-editor')
+    await expect(darkRuntime).toHaveCount(1)
+    await expect(darkRuntime).toHaveAttribute('data-runtime-ready', 'true', { timeout: OFFICE_READY_TIMEOUT_MS })
+    await expect(darkRuntime).toHaveAttribute('data-runtime-view', '')
     await page.waitForTimeout(OFFICE_PAINT_SETTLE_MS)
     await page.screenshot({ path: join(runtime.artifacts, 'office-xlsx-readonly-content-dark.png') })
 
@@ -1014,7 +1028,8 @@ test('readonly Office formats ignore keyboard text input', async ({}, testInfo) 
     const resources = await seedProject(page, runtime)
     for (const file of files) writeFileSync(join(resources, file.name), file.bytes)
     const hashes = Object.fromEntries(files.map(file => [file.name, sha256(join(resources, file.name))]))
-    await page.getByTestId('resource-refresh').click()
+    await openProjectExplorer(page)
+      await page.getByTestId('explorer-refresh').click()
 
     for (const file of files) {
       await openFile(page, file.name)
@@ -1046,7 +1061,8 @@ test('large Calc selections preserve a version-bound reference for AI', async ({
     const page = await desktop.launch()
     const resources = await seedProject(page, runtime)
     writeFileSync(join(resources, filename), largeSpreadsheetArchive())
-    await page.getByTestId('resource-refresh').click()
+    await openProjectExplorer(page)
+      await page.getByTestId('explorer-refresh').click()
     await openFile(page, filename)
     const preview = await nativePreview(page, 'xlsx')
     const column = preview.getByRole('columnheader', { name: 'B', exact: true })
@@ -1063,7 +1079,7 @@ test('large Calc selections preserve a version-bound reference for AI', async ({
     await explanation.getByRole('button', { name: '关闭', exact: true }).click()
     await column.click()
     await expect(menu).toBeVisible()
-    await menu.getByRole('button', { name: '添加到对话', exact: true }).click()
+    await menu.getByRole('button', { name: '添加到任务', exact: true }).click()
     const pendingReference = page.getByTestId('ai-context-ref').filter({ hasText: `${filename} · 选区` })
     await pendingReference.hover()
     const quote = page.getByTestId('assistant-selection-quote')
@@ -1090,9 +1106,10 @@ test('Calc whole-column selections stop at the last content cell sent to AI', as
     const resources = await seedProject(page, runtime)
     const rows = Array.from({ length: 11 }, (_, index) => `A${index + 1},B${index + 1},C${index + 1}`)
     writeFileSync(join(resources, filename), rows.join('\n') + '\n')
-    await page.getByTestId('resource-refresh').click()
+    await openProjectExplorer(page)
+      await page.getByTestId('explorer-refresh').click()
     await openFile(page, filename)
-    const frame = page.getByTestId('csv-grid')
+    const frame = documentSurface(page).getByTestId('csv-grid')
     await expect(frame.locator('[data-cell="C1"]')).toHaveText('C1')
     await expect(page.locator('[data-testid="office-editor"][data-runtime-view]:not([data-runtime-view=""])')).toHaveCount(0)
     await frame.getByRole('columnheader', { name: 'C', exact: true }).click()
@@ -1101,7 +1118,7 @@ test('Calc whole-column selections stop at the last content cell sent to AI', as
     await expect(menu).toContainText('C1:C11')
     await expect(menu).not.toContainText('C1:C1048576')
     await page.screenshot({ path: join(runtime.artifacts, 'calc-column-selection-bounded.png') })
-    await menu.getByRole('button', { name: '添加到对话', exact: true }).click()
+    await menu.getByRole('button', { name: '添加到任务', exact: true }).click()
     const pendingSelection = page.getByTestId('ai-context-ref').filter({ hasText: `${filename} · 选区` })
     await pendingSelection.hover()
     const quote = page.getByTestId('assistant-selection-quote')
@@ -1131,7 +1148,8 @@ test('readonly Office formats expose selection actions without AI polish', async
     const page = await desktop.launch()
     const resources = await seedProject(page, runtime)
     for (const file of files) writeFileSync(join(resources, file.name), file.bytes)
-    await page.getByTestId('resource-refresh').click()
+    await openProjectExplorer(page)
+      await page.getByTestId('explorer-refresh').click()
 
     for (const file of files) {
       await openFile(page, file.name)
@@ -1151,7 +1169,7 @@ test('readonly Office formats expose selection actions without AI polish', async
       await expect(menu.getByRole('button', { name: 'AI 润色', exact: true })).toHaveCount(0)
       await page.screenshot({ path: join(runtime.artifacts, `readonly-selection-${file.name}.png`) })
       if (file.kind === 'impress') {
-        await menu.getByRole('button', { name: '添加到对话', exact: true }).click()
+        await menu.getByRole('button', { name: '添加到任务', exact: true }).click()
         const reference = page.getByTestId('ai-context-ref').filter({ hasText: file.name })
         await reference.hover()
         const quote = page.getByTestId('assistant-selection-quote')
@@ -1178,16 +1196,24 @@ test('PPT selection remains usable after the window loses focus', async ({}, tes
     const page = await desktop.launch()
     const resources = await seedProject(page, runtime)
     writeFileSync(join(resources, filename), presentationArchive())
-    await page.getByTestId('resource-refresh').click()
+    await openProjectExplorer(page)
+      await page.getByTestId('explorer-refresh').click()
     await openFile(page, filename)
     const preview = await nativePreview(page, 'pptx')
     await dragPreviewText(page, preview.locator('[data-preview-shape] span').first())
+    await expect(page.getByTestId('selection-action-host')).toBeVisible()
     await desktop.app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.blur())
 
     const menu = page.getByTestId('selection-action-host')
+    // The shared focus owner clears selection on window blur. Focus, reselect,
+    // and use the actual action to prove the reader remains usable.
+    await expect(menu).toHaveCount(0)
+    await showProductWindow(page)
+    await dragPreviewText(page, preview.locator('[data-preview-shape] span').first())
     await expect(menu).toBeVisible()
+    await menu.getByRole('button', { name: '添加到任务', exact: true }).click()
+    await expect(page.getByTestId('ai-context-ref').filter({ hasText: filename })).toBeVisible()
     await expect(page.getByTestId('office-font-warmup')).toHaveCount(0)
-    await desktop.app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.focus())
     await page.screenshot({ path: join(runtime.artifacts, 'ppt-selection-clipboard-focus.png') })
     desktop.assertNoPageErrors()
   } finally {
@@ -1208,7 +1234,8 @@ test('readonly Writer documents expose selection actions across pages', async ({
     const resources = await seedProject(page, runtime)
     const filename = 'multipage.docx'
     writeFileSync(join(resources, filename), multipageDocumentArchive())
-    await page.getByTestId('resource-refresh').click()
+    await openProjectExplorer(page)
+      await page.getByTestId('explorer-refresh').click()
     await openFile(page, filename)
     const preview = await nativePreview(page, 'docx')
     const paragraphs = preview.locator('[class*="scholarseed-paragraph-"] span')
@@ -1217,7 +1244,7 @@ test('readonly Writer documents expose selection actions across pages', async ({
     await expect(menu).toBeVisible()
     await expect(menu.getByRole('button', { name: 'AI 润色', exact: true })).toHaveCount(0)
     await page.screenshot({ path: join(runtime.artifacts, 'readonly-writer-cross-page-selection.png') })
-    await menu.getByRole('button', { name: '添加到对话', exact: true }).click()
+    await menu.getByRole('button', { name: '添加到任务', exact: true }).click()
     await page.getByTestId('ai-context-ref').filter({ hasText: filename }).hover()
     await expect(page.getByTestId('assistant-selection-quote')).toContainText('First page selection evidence.')
     await expect(page.getByTestId('assistant-selection-quote')).toContainText('Second page selection evidence.')
@@ -1240,7 +1267,8 @@ test('DOCX selection autoscroll starts from the bottom line inside the workspace
     const resources = await seedProject(page, runtime)
     const filename = 'selection-autoscroll.docx'
     writeFileSync(join(resources, filename), autoscrollDocumentArchive())
-    await page.getByTestId('resource-refresh').click()
+    await openProjectExplorer(page)
+      await page.getByTestId('explorer-refresh').click()
     await openFile(page, filename)
     const preview = await nativePreview(page, 'docx')
     const canvas = preview.getByTestId('office-preview-content')
@@ -1270,7 +1298,7 @@ test('DOCX selection autoscroll starts from the bottom line inside the workspace
 
     const menu = page.getByTestId('selection-action-host')
     await expect(menu).toBeVisible({ timeout: SELECTION_MENU_BUDGET_MS })
-    await menu.getByRole('button', { name: '添加到对话', exact: true }).click()
+    await menu.getByRole('button', { name: '添加到任务', exact: true }).click()
     await page.getByTestId('ai-context-ref').filter({ hasText: filename }).hover()
     const quote = page.getByTestId('assistant-selection-quote')
     await expect(quote).toContainText('Autoscroll page 1 evidence.')
@@ -1298,7 +1326,8 @@ test('DOCX selection autoscroll retracts when the pointer moves upward', async (
     const page = await desktop.launch()
     const resources = await seedProject(page, runtime)
     for (const file of files) writeFileSync(join(resources, file.filename), bidirectionalAutoscrollDocumentArchive())
-    await page.getByTestId('resource-refresh').click()
+    await openProjectExplorer(page)
+      await page.getByTestId('explorer-refresh').click()
     const selectedLastLines: number[] = []
     for (const file of files) {
       await openFile(page, file.filename)
@@ -1326,7 +1355,7 @@ test('DOCX selection autoscroll retracts when the pointer moves upward', async (
       await attachSelectionDiagnostics(testInfo, canvas, file.filename)
       const menu = page.getByTestId('selection-action-host')
       await expect(menu).toBeVisible({ timeout: SELECTION_MENU_BUDGET_MS })
-      await menu.getByRole('button', { name: '添加到对话', exact: true }).click()
+      await menu.getByRole('button', { name: '添加到任务', exact: true }).click()
       await page.getByTitle(`${file.filename} · 选区`, { exact: true }).hover()
       const quoteText = await page.getByTestId('assistant-selection-quote').innerText()
       const selectedLines = [...quoteText.matchAll(/Bidirectional line (\d+) evidence\./g)]
@@ -1357,7 +1386,8 @@ test('real DOC selection autoscroll starts from the bottom line inside the works
     const resources = await seedProject(page, runtime)
     const filename = 'selection-autoscroll.doc'
     copyFileSync(source, join(resources, filename))
-    await page.getByTestId('resource-refresh').click()
+    await openProjectExplorer(page)
+      await page.getByTestId('explorer-refresh').click()
     await openFile(page, filename)
     const frame = page.locator(`iframe[data-testid="office-editor"][title="${filename}"]`)
     await expect(frame).toHaveAttribute('data-document-ready', 'true', { timeout: OFFICE_READY_TIMEOUT_MS })
@@ -1386,7 +1416,7 @@ test('real DOC selection autoscroll starts from the bottom line inside the works
 
     const menu = page.getByTestId('selection-action-host')
     await expect(menu).toBeVisible({ timeout: LEGACY_DOC_SELECTION_MENU_TIMEOUT_MS })
-    await menu.getByRole('button', { name: '添加到对话', exact: true }).click()
+    await menu.getByRole('button', { name: '添加到任务', exact: true }).click()
     await page.getByTestId('ai-context-ref').filter({ hasText: filename }).hover()
     const quote = page.getByTestId('assistant-selection-quote')
     await expect(quote).toContainText('Normal + Courier New, 12pt')
@@ -1416,14 +1446,15 @@ test('CSV and XLSX selection autoscroll follows the pointer beyond the workspace
     const resources = await seedProject(page, runtime)
     for (const file of files) {
       writeFileSync(join(resources, file.name), file.bytes)
-      await page.getByTestId('resource-refresh').click()
+      await openProjectExplorer(page)
+      await page.getByTestId('explorer-refresh').click()
       await openFile(page, file.name)
       let canvas: Locator
       if (file.name.endsWith('.xlsx')) {
         const preview = await nativePreview(page, 'xlsx')
         canvas = preview.getByTestId('office-workbook-grid')
       } else {
-        canvas = page.getByTestId('csv-grid')
+        canvas = documentSurface(page).getByTestId('csv-grid')
         await expect(canvas).toBeVisible({ timeout: OFFICE_READY_TIMEOUT_MS })
         await expect(canvas.locator('[data-cell="A5"]')).toContainText('Autoscroll CSV row 5')
         await expect(page.locator('[data-testid="office-editor"][data-runtime-view]:not([data-runtime-view=""])')).toHaveCount(0)
@@ -1471,7 +1502,8 @@ test('real XLS selection autoscroll follows the pointer beyond the workspace', a
     const resources = await seedProject(page, runtime)
     const filename = 'selection-autoscroll.xls'
     copyFileSync(source, join(resources, filename))
-    await page.getByTestId('resource-refresh').click()
+    await openProjectExplorer(page)
+      await page.getByTestId('explorer-refresh').click()
     await openFile(page, filename)
     const frame = page.locator(`iframe[data-testid="office-editor"][title="${filename}"]`)
     await expect(frame).toHaveAttribute('data-document-ready', 'true', { timeout: OFFICE_READY_TIMEOUT_MS })
@@ -1535,7 +1567,8 @@ test('real DOC and DOCX selections present their action menu within budget', asy
       const filename = fixture.relativePath.split('/').pop()!
       copyFileSync(join(OFFICE_CORPUS_ROOT!, fixture.relativePath), join(resources, filename))
     }
-    await page.getByTestId('resource-refresh').click()
+    await openProjectExplorer(page)
+      await page.getByTestId('explorer-refresh').click()
 
     for (const fixture of fixtures) {
       const filename = fixture.relativePath.split('/').pop()!
@@ -1574,8 +1607,8 @@ test('real DOC and DOCX selections present their action menu within budget', asy
         await page.mouse.up()
       }
       else {
-        startedAt = Date.now()
-        await dragPreviewText(page, canvas.locator('.scholarseed-paragraph-1 span').first())
+        // The latency contract starts at release, matching the legacy DOC path.
+        startedAt = await dragPreviewText(page, canvas.locator('.scholarseed-paragraph-1 span').first())
       }
       const menu = page.getByTestId('selection-action-host')
       await expect(menu).toBeVisible({ timeout: SELECTION_MENU_BUDGET_MS })
@@ -1595,7 +1628,7 @@ test('real DOC and DOCX selections present their action menu within budget', asy
       await page.waitForTimeout(OFFICE_PAINT_SETTLE_MS / 4)
       await page.screenshot({ path: join(runtime.artifacts, fixture.screenshot) })
       if (fixture.crossPageDrag) {
-        await menu.getByRole('button', { name: '添加到对话', exact: true }).click()
+        await menu.getByRole('button', { name: '添加到任务', exact: true }).click()
         const reference = page.getByTestId('ai-context-ref').filter({ hasText: filename })
         await reference.hover()
         const quote = page.getByTestId('assistant-selection-quote')
@@ -1636,7 +1669,8 @@ test('large Calc AI actions use authoritative cell content', async ({}, testInfo
     const resources = await seedProject(page, runtime)
     const filename = 'large-selection.xlsx'
     writeFileSync(join(resources, filename), largeSpreadsheetArchive())
-    await page.getByTestId('resource-refresh').click()
+    await openProjectExplorer(page)
+      await page.getByTestId('explorer-refresh').click()
     await openFile(page, filename)
     const column = page.getByTestId('office-workbook-grid').getByRole('columnheader', { name: 'B', exact: true })
     await column.click()
@@ -1709,7 +1743,7 @@ test('large Calc AI actions use authoritative cell content', async ({}, testInfo
     await explanation.getByRole('button', { name: /关闭/ }).click()
     await column.click()
     await expect(menu).toBeVisible()
-    await menu.getByRole('button', { name: '添加到对话', exact: true }).click()
+    await menu.getByRole('button', { name: '添加到任务', exact: true }).click()
     await page.getByTestId('composer-input').fill('只根据已添加的表格选区，回复首个值和最后一个值，中间用逗号分隔。')
     await page.getByTestId('composer-send').click()
     await waitForFinishedTurn(page)
@@ -1746,7 +1780,8 @@ test('OOXML history switches immutable native previews without editor or Agent s
       const path = `resources/${name}`
       const capabilityUrl = `${base}/api/resource/capability?${projectQuery}&path=${encodeURIComponent(path)}`
       writeFileSync(join(resources, name), item.bytes)
-      await page.getByTestId('resource-refresh').click()
+      await openProjectExplorer(page)
+      await page.getByTestId('explorer-refresh').click()
       await openFile(page, name)
       await expect(await nativePreview(page, item.format)).toContainText(item.original)
       const seal = async (key: string) => {
@@ -1785,9 +1820,10 @@ test('OOXML history switches immutable native previews without editor or Agent s
         expect(response.ok(), await response.text()).toBe(true)
         expect(await response.body()).toEqual(Buffer.from(bytes))
       }
-      await page.getByTestId('resource-refresh').click()
+      await openProjectExplorer(page)
+      await page.getByTestId('explorer-refresh').click()
       await openFile(page, name)
-      await page.getByTestId('document-version-history').click()
+      await documentSurface(page).getByTestId('document-version-history').click()
       const row = page.getByTestId('version-history-row-action').filter({ has: page.locator('strong', { hasText: new RegExp(`^v${historical.sequence}$`) }) })
       await expect(row).toBeEnabled()
       await row.click()
@@ -1801,7 +1837,7 @@ test('OOXML history switches immutable native previews without editor or Agent s
       if (item.format === 'xlsx') await text.click()
       else await dragPreviewText(page, text)
       await expect(page.getByTestId('selection-action-host')).toHaveCount(0)
-      await expect(page.getByTestId('document-save')).toHaveCount(0)
+      await expect(documentSurface(page).getByTestId('document-save')).toHaveCount(0)
       await expect(preview.locator('[contenteditable="true"], textarea')).toHaveCount(0)
       await page.screenshot({ path: join(runtime.artifacts, `ooxml-historical-${item.format}.png`) })
       await comparison.getByRole('button', { name: '当前版本', exact: true }).click()
@@ -1843,7 +1879,8 @@ test('original CSV bounded reference saves dirty content before real Agent expla
     const resources = await seedProject(page, runtime)
     const target = join(resources, name)
     copyFileSync(source, target)
-    await page.getByTestId('resource-refresh').click()
+    await openProjectExplorer(page)
+      await page.getByTestId('explorer-refresh').click()
     await openFile(page, name)
     const document = page.getByTestId('csv-document')
     const grid = document.getByTestId('csv-grid')
@@ -1855,7 +1892,7 @@ test('original CSV bounded reference saves dirty content before real Agent expla
     await editor.press('Enter')
     await expect(grid.locator('[data-cell="A2"]')).toHaveText(changed)
     expect(sha256(target)).toBe(originalHash)
-    await expect(page.getByTestId('document-save')).toBeEnabled()
+    await expect(documentSurface(page).getByTestId('document-save')).toBeEnabled()
     const selectReference = async (): Promise<void> => {
       await grid.evaluate(element => { element.scrollTop = 0; element.scrollLeft = 0 })
       await grid.locator('[data-cell="A1"]').click()
@@ -1869,9 +1906,9 @@ test('original CSV bounded reference saves dirty content before real Agent expla
     }
     await selectReference()
     const save = page.waitForResponse(response => response.request().method() === 'PUT' && response.url().includes('/api/workbench/content?'))
-    await page.getByTestId('selection-action-host').getByRole('button', { name: '添加到对话', exact: true }).click()
+    await page.getByTestId('selection-action-host').getByRole('button', { name: '添加到任务', exact: true }).click()
     expect((await save).status()).toBe(204)
-    await expect(page.getByTestId('document-save')).toBeDisabled()
+    await expect(documentSurface(page).getByTestId('document-save')).toBeDisabled()
     expect(readFileSync(target, 'utf8')).toContain(changed)
     const committedRevision = await document.getAttribute('data-document-revision')
     expect(committedRevision).toBeTruthy()
@@ -1938,7 +1975,8 @@ test('original CSV edit and save produce immutable native history without editor
     copyFileSync(source, target)
     const originalHash = sha256(source)
     const originalBytes = readFileSync(source)
-    await page.getByTestId('resource-refresh').click()
+    await openProjectExplorer(page)
+      await page.getByTestId('explorer-refresh').click()
     await openFile(page, name)
     const liveDocument = page.getByTestId('csv-document')
     const grid = liveDocument.getByTestId('csv-grid')
@@ -1979,9 +2017,9 @@ test('original CSV edit and save produce immutable native history without editor
     await editor.press('Enter')
     await expect(grid.locator('[data-cell="A2"]')).toHaveText(changed)
     expect(sha256(target)).toBe(originalHash)
-    await expect(page.getByTestId('document-save')).toBeEnabled()
-    await page.getByTestId('document-save').click()
-    await expect(page.getByTestId('document-save')).toBeDisabled()
+    await expect(documentSurface(page).getByTestId('document-save')).toBeEnabled()
+    await documentSurface(page).getByTestId('document-save').click()
+    await expect(documentSurface(page).getByTestId('document-save')).toBeDisabled()
     await expect.poll(() => sha256(target)).not.toBe(originalHash)
     const currentBytes = readFileSync(target)
     const current = await seal('csv-native-saved')
@@ -1992,7 +2030,7 @@ test('original CSV edit and save produce immutable native history without editor
       expect(await response.body()).toEqual(bytes)
     }
 
-    await page.getByTestId('document-version-history').click()
+    await documentSurface(page).getByTestId('document-version-history').click()
     const row = page.getByTestId('version-history-row-action').filter({ has: page.locator('strong', { hasText: new RegExp(`^v${historical.sequence}$`) }) })
     await expect(row).toBeEnabled()
     await row.click()
@@ -2007,7 +2045,7 @@ test('original CSV edit and save produce immutable native history without editor
     await expect(snapshot.locator('[data-cell="A2"]')).toHaveText('PB-100001')
     await expect(page.getByTestId('selection-action-host')).toHaveCount(0)
     await expect(page.getByTestId('csv-cell-editor')).toHaveCount(0)
-    await expect(page.getByTestId('document-save')).toHaveCount(0)
+    await expect(documentSurface(page).getByTestId('document-save')).toHaveCount(0)
     await expect(page.locator('[data-testid="office-editor"][data-runtime-view]:not([data-runtime-view=""])')).toHaveCount(0)
     await page.screenshot({ path: join(runtime.artifacts, 'original-csv-historical-native.png') })
     await comparison.getByRole('button', { name: '当前版本', exact: true }).click()
@@ -2052,7 +2090,8 @@ test('native DOCX and PPTX selections reach the real explanation model with sour
     for (const item of cases) {
       const name = `source-explanation.${item.format}`
       writeFileSync(join(resources, name), item.bytes)
-      await page.getByTestId('resource-refresh').click()
+      await openProjectExplorer(page)
+      await page.getByTestId('explorer-refresh').click()
       await openFile(page, name)
       const preview = await nativePreview(page, item.format)
       await dragPreviewText(page, preview.locator(item.selector).first())
@@ -2096,7 +2135,8 @@ test('native PPTX bullet and numbered paragraphs retain source text in conversat
     const page = await desktop.launch()
     const resources = await seedProject(page, runtime)
     writeFileSync(join(resources, name), bytes)
-    await page.getByTestId('resource-refresh').click()
+    await openProjectExplorer(page)
+      await page.getByTestId('explorer-refresh').click()
     await openFile(page, name)
     const preview = await nativePreview(page, 'pptx')
     await expect(preview).toContainText(firstText)
@@ -2108,7 +2148,7 @@ test('native PPTX bullet and numbered paragraphs retain source text in conversat
     const menu = page.getByTestId('selection-action-host')
     await expect(menu).toBeVisible()
     await expect(menu.getByRole('button', { name: 'AI 润色', exact: true })).toHaveCount(0)
-    await menu.getByRole('button', { name: '添加到对话', exact: true }).click()
+    await menu.getByRole('button', { name: '添加到任务', exact: true }).click()
     await page.getByTestId('ai-context-ref').filter({ hasText: name }).hover()
     const quote = page.getByTestId('assistant-selection-quote')
     await expect(quote).toContainText(firstText)
@@ -2157,16 +2197,17 @@ test('Calc whole-row translation keeps authoritative CSV selection evidence', as
       'PB-100004,2025-12-01,Birchwood Interiors,British Columbia,API Add-on,Software,8,99.0,792.0,Refunded',
       'PB-100005,2025-02-02,Northwind Logistics,Ontario,Workflow Platform License,Software,9,1200.0,10800.0,Paid'
     ].join('\n') + '\n')
-    await page.getByTestId('resource-refresh').click()
+    await openProjectExplorer(page)
+      await page.getByTestId('explorer-refresh').click()
     await openFile(page, filename)
-    const frame = page.getByTestId('csv-grid')
+    const frame = documentSurface(page).getByTestId('csv-grid')
     await expect(frame.locator('[data-cell="A5"]')).toHaveText('PB-100004')
     await expect(page.locator('[data-testid="office-editor"][data-runtime-view]:not([data-runtime-view=""])')).toHaveCount(0)
     await frame.getByRole('rowheader', { name: '5', exact: true }).click()
     const menu = page.getByTestId('selection-action-host')
     await expect(menu).toBeVisible()
     await expect(menu).toContainText('A5:J5')
-    await menu.getByRole('button', { name: '添加到对话', exact: true }).click()
+    await menu.getByRole('button', { name: '添加到任务', exact: true }).click()
     const pendingSelection = page.getByTestId('ai-context-ref').filter({ hasText: `${filename} · 选区` })
     await pendingSelection.hover()
     const quote = page.getByTestId('assistant-selection-quote')

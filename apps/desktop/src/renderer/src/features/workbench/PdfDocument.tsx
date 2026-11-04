@@ -1226,6 +1226,7 @@ export function PdfDocument({
   }, [currentPage, zoom])
   useEffect(() => {
     const onShortcut = (event: KeyboardEvent): void => {
+      if (!active) return
       if (controller.getSnapshot().focusedTabId !== tabId) return
       const target = event.target instanceof HTMLElement ? event.target : null
       const searchFocused = target === searchInputRef.current
@@ -1285,6 +1286,7 @@ export function PdfDocument({
     window.addEventListener('keydown', onShortcut)
     return () => window.removeEventListener('keydown', onShortcut)
   }, [
+    active,
     activeMark,
     controller,
     currentPage,

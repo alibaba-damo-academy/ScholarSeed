@@ -1,3 +1,5 @@
+import { focusBrowserAddress, restoreBrowser, setBrowserDevtools } from './fixtures/browser'
+import { openAccountSettings } from './fixtures/menu'
 import { test, expect, chromium } from '@playwright/test'
 import { build } from 'esbuild'
 import { spawn } from 'node:child_process'
@@ -42,7 +44,7 @@ for (const theme of START_PAGE_THEMES) test(`native activity tooltips preserve t
     await nativeWindow.evaluate(native => { native.show(); native.focus() })
     await expect.poll(() => nativeWindow.evaluate(native => native.isFocused())).toBe(true)
     await page.getByTestId('ai-panel').getByRole('button', { name: '关闭', exact: true }).click()
-    await page.getByTestId('activity-browser').click()
+    await restoreBrowser(page)
     const destination = 'https://example.com/'
     const address = page.getByRole('textbox', { name: '网址', exact: true })
     await address.fill(destination)
@@ -94,25 +96,25 @@ for (const theme of START_PAGE_THEMES) test(`native activity tooltips preserve t
       expect(await page.getByTestId('browser-viewport').boundingBox()).toEqual(viewport)
     }
     const nativeTooltip = async () => (await observe()).find(view => view.visible && view.page.tooltip)
-    const literature = page.getByRole('button', { name: '文献中心', exact: true })
+    const activity = page.getByRole('button', { name: '扩展', exact: true })
     for (const cycle of ['first', 'repeat']) {
       await desktop.app!.evaluate(({ app }) => app.focus({ steal: true }))
       await nativeWindow.evaluate(native => native.focus())
       await expect.poll(() => nativeWindow.evaluate(native => native.isFocused())).toBe(true)
       await page.mouse.move(500, 20)
       await expect.poll(async () => Boolean(await nativeTooltip())).toBe(false)
-      await literature.hover()
+      await activity.hover()
       await expect.poll(() => page.evaluate(() => [...document.querySelectorAll<HTMLElement>('[role=tooltip]')]
-        .some(element => element.textContent === '文献中心' && element.getBoundingClientRect().height > 0))).toBe(true)
+        .some(element => element.textContent === '扩展' && element.getBoundingClientRect().height > 0))).toBe(true)
       const tooltipRect = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>('[role=tooltip]')]
-        .find(element => element.textContent === '文献中心')!.getBoundingClientRect().toJSON())
+        .find(element => element.textContent === '扩展')!.getBoundingClientRect().toJSON())
       expect(tooltipRect.bottom, 'exercise the original overlapping sidebar tooltip').toBeGreaterThan(baseline.bounds.y)
       const hovered = await observe()
       await writeFile(join(directory, `${theme}-${cycle}-hover-state.json`), JSON.stringify({ baseline, viewport, tooltipRect, views: hovered }, null, 2))
       if (!hovered.find(view => view.url === destination)?.visible) await capture(`${cycle}-hover`)
       expect(hovered.find(view => view.url === destination)?.visible, 'hover must not hide the live webpage').toBe(true)
       try {
-        await expect.poll(async () => (await nativeTooltip())?.page.tooltip).toBe('文献中心')
+        await expect.poll(async () => (await nativeTooltip())?.page.tooltip).toBe('扩展')
       } catch (error) {
         const windowState = await nativeWindow.evaluate(native => ({ focused: native.isFocused(), visible: native.isVisible(), productFocused: native.webContents.isFocused() }))
         const renderer = await page.evaluate(() => ({ hidden: document.hidden, focused: document.hasFocus(), tooltips: [...document.querySelectorAll<HTMLElement>('[role=tooltip]')]
@@ -127,10 +129,10 @@ for (const theme of START_PAGE_THEMES) test(`native activity tooltips preserve t
       expect(overlay.page.tooltipRect.y).toBeGreaterThanOrEqual(0)
       expect(overlay.page.tooltipRect.right).toBeLessThanOrEqual(overlay.page.width)
       expect(overlay.page.tooltipRect.bottom).toBeLessThanOrEqual(overlay.page.height)
-      expect(Math.abs(overlay.bounds.x - tooltipRect.x)).toBeLessThanOrEqual(NATIVE_PIXEL_ALIGNMENT_TOLERANCE)
-      expect(Math.abs(overlay.bounds.y - tooltipRect.y)).toBeLessThanOrEqual(NATIVE_PIXEL_ALIGNMENT_TOLERANCE)
-      expect(Math.abs(overlay.bounds.width - tooltipRect.width)).toBeLessThanOrEqual(NATIVE_PIXEL_ALIGNMENT_TOLERANCE)
-      expect(Math.abs(overlay.bounds.height - tooltipRect.height)).toBeLessThanOrEqual(NATIVE_PIXEL_ALIGNMENT_TOLERANCE)
+      expect(Math.abs(overlay.bounds.x + overlay.page.tooltipRect.x - tooltipRect.x)).toBeLessThanOrEqual(NATIVE_PIXEL_ALIGNMENT_TOLERANCE)
+      expect(Math.abs(overlay.bounds.y + overlay.page.tooltipRect.y - tooltipRect.y)).toBeLessThanOrEqual(NATIVE_PIXEL_ALIGNMENT_TOLERANCE)
+      expect(Math.abs(overlay.page.tooltipRect.width - tooltipRect.width)).toBeLessThanOrEqual(NATIVE_PIXEL_ALIGNMENT_TOLERANCE)
+      expect(Math.abs(overlay.page.tooltipRect.height - tooltipRect.height)).toBeLessThanOrEqual(NATIVE_PIXEL_ALIGNMENT_TOLERANCE)
       await unchanged()
       await capture(`${cycle}-hover`)
       await desktop.app!.evaluate(({ app }) => app.focus({ steal: true }))
@@ -140,10 +142,10 @@ for (const theme of START_PAGE_THEMES) test(`native activity tooltips preserve t
       await expect.poll(async () => Boolean(await nativeTooltip())).toBe(false)
       await unchanged()
     }
-    await literature.hover()
-    await expect.poll(async () => (await nativeTooltip())?.page.tooltip).toBe('文献中心')
-    await page.getByTestId('activity-browser').hover()
-    await expect.poll(async () => (await nativeTooltip())?.page.tooltip).toBe('浏览器')
+    await activity.hover()
+    await expect.poll(async () => (await nativeTooltip())?.page.tooltip).toBe('扩展')
+    await page.getByTestId('activity-home').hover()
+    await expect(page.getByRole('tooltip', { name: '项目中心', exact: true })).toBeVisible()
     await unchanged()
     await page.mouse.move(500, 20)
     await expect.poll(async () => Boolean(await nativeTooltip())).toBe(false)
@@ -156,7 +158,8 @@ for (const theme of START_PAGE_THEMES) test(`native address suggestions preserve
   test.setTimeout(120_000)
   const runtime = createRuntime(testInfo)
   await writeFile(join(runtime.userData, RENDERER_PREFERENCES_FILE), JSON.stringify({
-    language: 'zh', theme, onboarding: { seen: Object.fromEntries(ONBOARDING_GROUPS.map(group => [group, true])) }
+    language: 'zh', theme, browserAutomationEnabled: false,
+    onboarding: { seen: Object.fromEntries(ONBOARDING_GROUPS.map(group => [group, true])) }
   }))
   const desktop = new DesktopSession(runtime, testInfo, { browserEnabled: true, nativeWindowLifecycle: true })
   const directory = resolve('../../tmp/test_snapshot/desktop/browser-overlay')
@@ -170,7 +173,7 @@ for (const theme of START_PAGE_THEMES) test(`native address suggestions preserve
     await nativeWindow.evaluate(native => { native.show(); native.focus() })
     await expect.poll(() => nativeWindow.evaluate(native => native.isFocused())).toBe(true)
     await page.getByTestId('ai-panel').getByRole('button', { name: '关闭', exact: true }).click()
-    await page.getByTestId('activity-browser').click()
+    await restoreBrowser(page)
     const address = page.getByRole('textbox', { name: '网址', exact: true })
     const destination = 'https://example.com/'
     await address.fill(destination)
@@ -232,6 +235,7 @@ for (const theme of START_PAGE_THEMES) test(`native address suggestions preserve
       const closed = (await observe()).find(view => view.url === destination)!
       const rect = await page.getByTestId('browser-viewport').boundingBox()
       await capture(size ? 'narrow-closed' : 'closed')
+      await focusBrowserAddress(page)
       await address.click()
       await address.fill('')
       await address.fill('example.com')
@@ -257,6 +261,9 @@ for (const theme of START_PAGE_THEMES) test(`native address suggestions preserve
       expect(samples[1]).toBeGreaterThan(samples[0])
       await writeFile(join(directory, `${theme}-${size ? 'narrow' : 'normal'}-bounds.json`), JSON.stringify({ rect, closed, expanded, samples }, null, 2))
       await capture(size ? 'narrow-expanded' : 'expanded')
+      await focusBrowserAddress(page)
+      await address.click()
+      await waitOptions()
       await address.press('ArrowDown')
       const focused = () => nativeWindow.evaluate(async native => {
         const overlay = native.contentView.children.find(child => (child as Electron.WebContentsView).webContents.getURL().includes('overlay.html')) as Electron.WebContentsView
@@ -295,7 +302,7 @@ for (const theme of START_PAGE_THEMES) test(`native address suggestions preserve
         const reply = await page.evaluate(() => window.scholarseed.browser.snapshot())
         return reply.ok && reply.snapshot.tabs.every(tab => !tab.loading)
       }, { timeout: PUBLIC_NAVIGATION_TIMEOUT_MS }).toBe(true)
-      await nativeWindow.evaluate(native => native.webContents.focus())
+      await focusBrowserAddress(page)
       await address.click()
       await address.fill('')
       await address.fill('example.com')
@@ -309,7 +316,7 @@ for (const theme of START_PAGE_THEMES) test(`native address suggestions preserve
     await address.press('ArrowDown')
     await overlayKey('Tab')
     await dismissed()
-    await expect(page.getByRole('button', { name: '前往', exact: true })).toBeFocused()
+    await expect(page.getByRole('button', { name: '浏览器提示与状态', exact: true })).toBeFocused()
     await expand()
     await address.press('ArrowDown')
     await overlayKey('Enter')
@@ -353,9 +360,7 @@ for (const theme of START_PAGE_THEMES) test(`native address suggestions preserve
     await expect.poll(async () => (await observe()).find(view => view.url === destination)?.visible).toBe(true)
     await expect(address).toHaveValue(destination)
     await expand()
-    await page.getByTestId('activity-account').click()
-    await dismissed()
-    await page.getByTestId('account-menu-settings').click()
+    await openAccountSettings(page)
     await expect(page.getByRole('dialog', { name: '设置' })).toBeVisible()
     await dismissed()
     await page.getByTestId('account-settings-nav-browser').click()
@@ -369,9 +374,8 @@ for (const theme of START_PAGE_THEMES) test(`native address suggestions preserve
       expect(external.contexts()[0].pages().map(candidate => candidate.url())).toEqual([destination])
     } finally { await external.close() }
     await address.press('Escape')
-    await page.getByRole('button', { name: '打开开发者工具', exact: true }).click()
-    await expect(page.getByRole('button', { name: '关闭开发者工具', exact: true })).toBeVisible()
-    await page.getByRole('button', { name: '关闭开发者工具', exact: true }).click()
+    await setBrowserDevtools(page, true)
+    await setBrowserDevtools(page, false)
     desktop.assertNoPageErrors()
   } finally { await desktop.attachArtifacts() }
 })
@@ -386,7 +390,7 @@ for (const theme of START_PAGE_THEMES) test(`browser start page ${theme} is repl
   try {
     const page = await desktop.launch()
     await page.getByTestId('ai-panel').getByRole('button', { name: '关闭', exact: true }).click()
-    await page.getByTestId('activity-browser').click()
+    await restoreBrowser(page)
     await expect(page.getByRole('tab', { name: '新标签页', exact: true, selected: true })).toBeVisible()
     await expect(page.getByTestId('browser-start-page')).toBeVisible()
     await expect(page.locator('html')).toHaveAttribute('data-theme', theme)
@@ -436,7 +440,7 @@ test('first Desktop browser navigation retains the submitted address while the p
     }
     const page = await launching
     await page.getByTestId('ai-panel').getByRole('button', { name: '关闭', exact: true }).click()
-    await page.getByTestId('activity-browser').click()
+    await restoreBrowser(page)
     const address = page.getByRole('textbox', { name: '网址', exact: true })
     await address.fill(destination)
     await address.press('Enter')
@@ -480,7 +484,7 @@ for (const addressCase of [
       }
       const page = await launching
       await page.getByTestId('ai-panel').getByRole('button', { name: '关闭', exact: true }).click()
-      await page.getByTestId('activity-browser').click()
+      await restoreBrowser(page)
       await expect(page.getByTestId('browser-workspace')).toBeVisible()
       const address = page.getByRole('textbox', { name: '网址', exact: true })
       const nativeWindow = await desktop.browserWindow(page)
@@ -546,14 +550,13 @@ test('external Playwright process controls only pages in the real Desktop browse
     }
     const page = await launching
     await page.getByTestId('ai-panel').getByRole('button', { name: '关闭', exact: true }).click()
-    await page.getByTestId('activity-browser').click()
+    await restoreBrowser(page)
     await expect(page.getByTestId('browser-workspace')).toBeVisible()
     const address = page.getByRole('textbox', { name: '网址', exact: true })
     await address.fill(`${await apiBase(page)}/api/healthz`)
     await address.press('Enter')
     await expect.poll(async () => (await page.evaluate(() => window.scholarseed.browser.snapshot())).ok).toBe(true)
-    await page.getByTestId('activity-account').click()
-    await page.getByTestId('account-menu-settings').click()
+    await openAccountSettings(page)
     await page.getByTestId('account-settings-nav-browser').click()
     await expect(page.getByTestId('account-settings-browser')).toBeVisible()
     await page.getByRole('switch', { name: '启用浏览器自动化', exact: true }).click()
@@ -611,7 +614,7 @@ test('external Playwright process controls only pages in the real Desktop browse
     expect(privateRequests).toBe(0)
     const invalid = new WebSocket(`${endpoint}invalid`)
     await expect(once(invalid, 'open')).rejects.toThrow()
-    await page.getByRole('button', { name: '打开开发者工具', exact: true }).click()
+    await setBrowserDevtools(page, true)
     const devtools = (body: string) => nativeWindow.evaluate(async (native, expression) => {
       const active = native.contentView.children.find(child => child.getVisible()) as Electron.WebContentsView | undefined
       const frontend = active?.webContents.devToolsWebContents
@@ -653,11 +656,10 @@ test('external Playwright process controls only pages in the real Desktop browse
     expect(targets.result.targetInfos).toHaveLength(1)
     expect((await cdpCommand(conflict, 'Target.attachToTarget', { targetId: targets.result.targetInfos[0].targetId, flatten: true })).error.message).toBe('devtools_conflict')
     conflict.close()
-    await page.getByRole('button', { name: '关闭开发者工具', exact: true }).click()
+    await setBrowserDevtools(page, false)
     expect(await runExternal(join(directory, 'product-cdp-reconnected.png'))).toMatchObject({ pages: 1 })
     expect(privateRequests).toBe(0)
-    await page.getByTestId('activity-account').click()
-    await page.getByTestId('account-menu-settings').click()
+    await openAccountSettings(page)
     await page.getByTestId('account-settings-nav-browser').click()
     await page.getByRole('switch', { name: '停用浏览器自动化', exact: true }).click()
     await page.getByRole('dialog', { name: '设置' }).getByRole('button', { name: '关闭', exact: true }).click()
@@ -676,7 +678,7 @@ test('external Playwright process controls only pages in the real Desktop browse
       return reply.ok ? reply.snapshot.tabs.length : 0
     }).toBe(2)
     await expect(page.getByTestId('browser-workspace').getByRole('tab')).toHaveCount(2)
-    await expect(page.getByTestId('browser-workspace').getByRole('tab', { selected: true })).toContainText('新建网页标签')
+    await expect(page.getByTestId('browser-workspace').getByRole('tab', { selected: true })).toContainText('新标签页')
     await expect(page.getByTestId('browser-workspace')).toHaveAttribute('aria-busy', 'false')
     desktop.assertNoPageErrors()
   } finally {
@@ -698,12 +700,11 @@ test('public navigation remains available after disabling browser automation', a
     }
     const page = await launching
     await page.getByTestId('ai-panel').getByRole('button', { name: '关闭', exact: true }).click()
-    await page.getByTestId('activity-browser').click()
+    await restoreBrowser(page)
     await expect(page.getByTestId('browser-workspace')).toBeVisible()
     const address = page.getByRole('textbox', { name: '网址', exact: true })
     const nativeWindow = await desktop.browserWindow(page)
-    await page.getByTestId('activity-account').click()
-    await page.getByTestId('account-menu-settings').click()
+    await openAccountSettings(page)
     await page.getByTestId('account-settings-nav-browser').click()
     await page.getByRole('switch', { name: '启用浏览器自动化', exact: true }).click()
     await page.getByRole('switch', { name: '停用浏览器自动化', exact: true }).click()
@@ -748,7 +749,7 @@ test('external Playwright controls a public form inside the product browser', as
     }
     const page = await launching
     await page.getByTestId('ai-panel').getByRole('button', { name: '关闭', exact: true }).click()
-    await page.getByTestId('activity-browser').click()
+    await restoreBrowser(page)
     const address = page.getByRole('textbox', { name: '网址', exact: true })
     await address.fill(formUrl)
     await address.press('Enter')
@@ -758,8 +759,7 @@ test('external Playwright controls a public form inside the product browser', as
       const active = reply.snapshot.tabs.find(tab => tab.tabId === reply.snapshot.activeTabId)
       return active && { url: active.url, loading: active.loading, error: active.navigationError }
     }, { timeout: 45_000 }).toEqual({ url: formUrl, loading: false, error: null })
-    await page.getByTestId('activity-account').click()
-    await page.getByTestId('account-menu-settings').click()
+    await openAccountSettings(page)
     await page.getByTestId('account-settings-nav-browser').click()
     await page.getByRole('switch', { name: '启用浏览器自动化', exact: true }).click()
     await page.getByRole('button', { name: '复制 CDP 地址', exact: true }).click()

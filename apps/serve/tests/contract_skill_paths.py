@@ -49,17 +49,7 @@ class SkillPathContracts(unittest.TestCase):
             f"---\nname: {SKILL_NAME}\ndescription: Long path fixture\nversion: 1.0.0\n---\n",
             encoding="utf-8",
         )
-        (skill / ".scholarseed-package.json").write_bytes(
-            json_bytes(
-                {
-                    "schema": 1,
-                    "name": SKILL_NAME,
-                    "version": "1.0.0",
-                    "dependencies": {},
-                    "files": [],
-                }
-            )
-        )
+        (self.root / "registry.json").write_bytes(json_bytes({"dependencies": {SKILL_NAME: {}}}))
 
     def build(self) -> None:
         compiler.compile_source_skills(ordinaryPath(self.target), ordinaryPath(self.source))
@@ -94,6 +84,7 @@ class SkillPathContracts(unittest.TestCase):
         longSource = self.target.parent / "source"
         longSource.parent.mkdir(parents=True)
         self.source.rename(longSource)
+        (self.root / "registry.json").rename(longSource.parent / "registry.json")
         self.source = longSource
         defaults = self.target.parent / "defaults"
         config = defaults / SKILL_NAME / "runtime.json"

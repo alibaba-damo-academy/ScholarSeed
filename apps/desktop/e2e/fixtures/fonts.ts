@@ -56,7 +56,7 @@ export interface OfficeRenderingSnapshot {
 
 /** Browser clock from the actual click through the ready DOM mutation, excluding Playwright polling. */
 export async function armOfficeOpen(page: Page, name: string): Promise<void> {
-  await page.getByTestId(`tree-resources/${name}`).evaluate((node, { name, measure }) => {
+  await page.getByTestId(`explorer-select-resources/${name}`).evaluate((node, { name, measure }) => {
     performance.clearMarks(measure)
     performance.clearMeasures(measure)
     node.addEventListener('click', () => {

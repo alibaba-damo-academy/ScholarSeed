@@ -240,6 +240,7 @@ function NavigationTabsReorderDemo(): JSX.Element {
     { id: 'locked', label: 'Locked.md' },
   ])
   const [value, setValue] = useState('second')
+  const [activations, setActivations] = useState(0)
   const [callbacks, setCallbacks] = useState(0)
   const [dragEvents, setDragEvents] = useState(0)
   const [dropEvents, setDropEvents] = useState(0)
@@ -249,7 +250,10 @@ function NavigationTabsReorderDemo(): JSX.Element {
         data-testid="render-navigation-tabs-reorder"
         tabs={tabs}
         value={value}
-        onValueChange={setValue}
+        onValueChange={(id) => {
+          setValue(id)
+          setActivations((count) => count + 1)
+        }}
         onClose={(id) => setTabs((current) => current.filter((tab) => tab.id !== id))}
         onReorder={(ids) => {
           setTabs((current) => ids.flatMap((id) => current.filter((tab) => tab.id === id)))
@@ -262,6 +266,7 @@ function NavigationTabsReorderDemo(): JSX.Element {
         })}
       />
       <output data-testid="render-navigation-reorders">{callbacks}</output>
+      <output data-testid="render-navigation-activations">{activations}</output>
       <output data-testid="render-navigation-drag-events">{dragEvents}</output>
       <output data-testid="render-navigation-drop-events">{dropEvents}</output>
       <NavigationTabs

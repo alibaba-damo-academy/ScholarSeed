@@ -244,6 +244,8 @@ QUERY_CASES = (
     "test_route_lists_flat_project_relative_pages_without_cross_project_leakage",
     "test_route_warns_when_an_authorized_root_is_unavailable",
     "test_route_rejects_invalid_parameters",
+    "test_foreign_read_requires_the_active_frozen_explicit_file",
+    "test_read_accepts_optional_project_without_expanding_listing",
     "test_route_discards_a_listing_if_the_turn_changes_during_scan",
     "test_directory_is_bounded_and_same_registry",
     "test_new_response_contracts_match_real_queries",

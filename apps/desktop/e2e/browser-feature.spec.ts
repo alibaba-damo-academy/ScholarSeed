@@ -1,3 +1,5 @@
+import { restoreBrowser } from './fixtures/browser'
+import { openAccountSettings } from './fixtures/menu'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { expect, test } from '@playwright/test'
@@ -76,8 +78,7 @@ test('disabled browser cannot be restored, rendered, approved or reopened throug
     await page.getByTestId('ai-panel').getByRole('button', { name: '关闭', exact: true }).click()
     await page.getByTestId('activity-home').click()
     await captureProduct(desktop, page, 'off-workbench')
-    await page.getByTestId('activity-account').click()
-    await page.getByTestId('account-menu-settings').click()
+    await openAccountSettings(page)
     await expect(page.getByTestId('account-settings-nav-browser')).toHaveCount(0)
     await expect(page.getByTestId('account-settings-nav-notifications')).toBeVisible()
     await captureProduct(desktop, page, 'off-settings')
@@ -94,7 +95,7 @@ test('disabled browser cannot be restored, rendered, approved or reopened throug
 test('explicit browser on retains current pages, settings and CDP; full restart off closes the old endpoint', async ({}, testInfo) => {
   test.setTimeout(180_000)
   const runtime = createRuntime(testInfo)
-  writeFileSync(join(runtime.userData, RENDERER_PREFERENCES_FILE), JSON.stringify({ language: 'zh', onboarding: SEEN_ONBOARDING }))
+  writeFileSync(join(runtime.userData, RENDERER_PREFERENCES_FILE), JSON.stringify({ language: 'zh', browserAutomationEnabled: false, onboarding: SEEN_ONBOARDING }))
   const enabled = new DesktopSession(runtime, testInfo, { browserEnabled: true, nativeWindowLifecycle: true, preserveRuntime: true })
   const disabled = new DesktopSession(runtime, testInfo, { browserEnabled: false, nativeWindowLifecycle: true, preserveRuntime: true })
   mkdirSync(ARTIFACTS, { recursive: true })
@@ -104,7 +105,7 @@ test('explicit browser on retains current pages, settings and CDP; full restart 
     const base = await apiBase(page)
     expect((await (await fetch(`${base}/api/healthz`)).json()).features.browser).toBe(true)
     await page.getByTestId('ai-panel').getByRole('button', { name: '关闭', exact: true }).click()
-    await page.getByTestId('activity-browser').click()
+    await restoreBrowser(page)
     await expect(page.getByTestId('browser-workspace')).toBeVisible()
     await page.getByRole('textbox', { name: '网址', exact: true }).fill(`${base}/api/healthz`)
     await page.getByRole('textbox', { name: '网址', exact: true }).press('Enter')
@@ -122,8 +123,7 @@ test('explicit browser on retains current pages, settings and CDP; full restart 
     await expect.poll(() => menuWindow.evaluate(native => native.isVisible())).toBe(true)
     await menuPage.keyboard.press('Escape').catch(error => { if (!menuPage.isClosed()) throw error })
     await expect(page.getByRole('button', { name: '更多浏览器功能', exact: true })).toHaveAttribute('aria-expanded', 'false')
-    await page.getByTestId('activity-account').click()
-    await page.getByTestId('account-menu-settings').click()
+    await openAccountSettings(page)
     await page.getByTestId('account-settings-nav-browser').click()
     await expect(page.getByTestId('account-settings-browser')).toBeVisible()
     await page.getByTestId('browser-settings-cdp').getByRole('switch').click()

@@ -60,6 +60,8 @@ bool directory_list(struct directory *directory, size_t entries, size_t limit,
 void directory_records_free(struct directory_records *records);
 bool directory_create(struct directory *directory, const char *name, const unsigned char *buffer,
                       size_t length, struct directory_error *error);
+bool directory_consume(struct directory *directory, const char *name, const unsigned char *expected,
+                       size_t length, uint64_t device, uint64_t inode, struct directory_error *error);
 bool directory_child(struct directory *directory, const char *name,
                      char identity[DIRECTORY_IDENTITY_BYTES], struct directory_error *error);
 const char *directory_identity(struct directory *directory);

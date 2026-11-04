@@ -395,6 +395,7 @@ test('foreground split focus, moves and close fallback synchronize once without 
     runInNewContext(compiled, {
       documents: workspace.getSnapshot(),
       state,
+      workspace,
       documentNavigationView,
       React: {
         useRef: () => [previousFocus, synchronizedResourceFile][refIndex++],
@@ -522,6 +523,7 @@ test('closing a citation document returns to the fullscreen assistant without re
     runInNewContext(compiled, {
       documents: workspace.getSnapshot(),
       state: stateRef.current,
+      workspace,
       documentNavigationView,
       React: {
         useRef: () => [previousFocus, synchronizedResourceFile][refIndex++],
@@ -542,7 +544,7 @@ test('closing a citation document returns to the fullscreen assistant without re
   )
   runInNewContext(
     transformSync(
-      block(workbench, '  useEffect(() => {', '  if (documents.tabs[state.activeTab])'),
+      block(workbench, '  useEffect(() => {', '  if (documents.tabs[state.activeTab]'),
       {
         loader: 'ts',
       }
@@ -1075,7 +1077,7 @@ test('persisted UX state is rehydrated from the host bridge instead of being har
   assert.match(initialBlock, /onboarding: sanitizeOnboarding\(INITIAL_PREFERENCES\.onboarding\)/)
   assert.match(
     initialBlock,
-    /selectionPrompts: sanitizeSelectionPrompts\(INITIAL_PREFERENCES\.selectionPrompts\)/
+    /selectionPrompts:\s*sanitizeSelectionPrompts\(\s*INITIAL_PREFERENCES\.selectionPrompts\s*,\s*INITIAL_PREFERENCES\.language\s*,?\s*\)/
   )
   assert.match(
     initialBlock,

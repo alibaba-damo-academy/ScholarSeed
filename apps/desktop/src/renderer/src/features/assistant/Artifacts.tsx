@@ -46,6 +46,7 @@ import {
 import { assistantFailureDetail } from './failure'
 import { ResourceSaveDialog } from './Save'
 import { GeneratedImage, GeneratedImages } from './Images'
+import { isImageArtifact } from './pictures'
 import { LiteratureCollections } from './Collections'
 
 const IMPORT_ERROR_TEXT = {
@@ -310,9 +311,12 @@ export function ArtifactCard({
 }): React.JSX.Element {
   const { state } = useApp()
   const thread = activeThread(state)
+  const groups = artifactVersionGroups(items)
   const group = (
-    <ArtifactGroup>
-      {artifactVersionGroups(items).map((versions) => (
+    <ArtifactGroup
+      stacked={Boolean(thread.sessionId) && groups.some(([item]) => isImageArtifact(item.artifact))}
+    >
+      {groups.map((versions) => (
         <ArtifactEntry
           key={versions[0].artifact.artifact_id}
           primary={versions[0].artifact}
@@ -326,7 +330,7 @@ export function ArtifactCard({
       {thread.sessionId ? (
         <GeneratedImages
           sessionId={thread.sessionId}
-          artifacts={artifactVersionGroups(items).map((versions) => versions[0].artifact)}
+          artifacts={groups.map((versions) => versions[0].artifact)}
           renderActions={(artifact) => (
             <ArtifactEntry
               key={artifact.artifact_id + ':' + artifact.sha256}

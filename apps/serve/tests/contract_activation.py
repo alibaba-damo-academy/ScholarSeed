@@ -38,11 +38,11 @@ from service.chat.runtime.activation import (
     SessionActivation,
     SessionActivationError,
 )
-from service.chat.runtime.composition import LiveSessionService
+from service.chat.runtime.composition import LiveSessionService, RuntimeOpening
 from service.chat.runtime.timing import ActivationStage, ActivationTiming, TimingStatus
 from service.chat.service.completions import CompletionBridge
 from service.chat.service.models import ModelService, SessionModelUnavailableError
-from service.platform.activity import Activities
+from service.platform.activity import Activities, ActivityDomain
 from service.settings.connections import ModelProfileStore, personal_model_key
 from service.settings.credentials import CredentialState
 
@@ -100,6 +100,12 @@ class ProductFixture:
     def __init__(self, session_id: str = "product") -> None:
         self.id = session_id
         self.runtime_id = RUNTIME_ID
+        self.project_id = "target-project"
+        self.project_path = Path("/target-project")
+        self.runtime_workdir = self.project_path
+        self.output_root = self.project_path
+        self.writable_roots = (Path("/linked-source"),)
+        self.attachment_activity = None
         self.lifecycle_lock = asyncio.Lock()
         self.activation_lock = asyncio.Lock()
         self.runtime_session = None
@@ -193,6 +199,104 @@ class ActivationContract(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self) -> None:
         await self.activation.aclose()
+
+    async def test_directory_release_does_not_touch_unrelated_running_session(self) -> None:
+        self.assertTrue(callable(getattr(self.activation, "release_directory_attachments", None)))
+        self.live.running = True
+        blocked = await self.activation.release_directory_attachments(
+            "another-project", Path("/another-source")
+        )
+        self.assertEqual(blocked, ())
+        self.assertEqual(self.live.suspensions, 0)
+
+    async def test_directory_release_rejects_target_running_session(self) -> None:
+        self.live.running = True
+        blocked = await self.activation.release_directory_attachments(
+            self.live.project_id, Path("/another-source")
+        )
+        self.assertEqual(blocked, (self.live.id,))
+        self.assertEqual(self.live.suspensions, 0)
+
+    async def test_directory_release_detects_shared_source_in_another_project(self) -> None:
+        self.live.running = True
+        blocked = await self.activation.release_directory_attachments(
+            "another-project", Path("/linked-source/child")
+        )
+        self.assertEqual(blocked, (self.live.id,))
+
+    async def test_directory_release_suspends_only_idle_matching_attachment(self) -> None:
+        self.live.runtime_session = AttachmentFixture()
+        blocked = await self.activation.release_directory_attachments(
+            self.live.project_id, Path("/linked-source")
+        )
+        self.assertEqual(blocked, ())
+        self.assertIsNone(self.live.runtime_session)
+        self.assertEqual(self.live.suspensions, 1)
+
+    async def test_directory_release_retains_unknown_native_execution(self) -> None:
+        self.live.runtime_session = AttachmentFixture(idle=False)
+        blocked = await self.activation.release_directory_attachments(
+            self.live.project_id, Path("/linked-source")
+        )
+        self.assertEqual(blocked, (self.live.id,))
+        self.assertIsNotNone(self.live.runtime_session)
+
+    async def test_directory_release_rechecks_sessions_created_during_suspend(self) -> None:
+        self.live.runtime_session = AttachmentFixture()
+        newcomer = ProductFixture("newcomer")
+        newcomer.running = True
+        sessions = {self.live.id: self.live}
+        self.activation.bind_sessions(sessions)
+        suspend = self.live.suspend_runtime
+
+        async def suspend_and_open() -> bool:
+            released = await suspend()
+            sessions[newcomer.id] = newcomer
+            return released
+
+        self.live.suspend_runtime = suspend_and_open
+        blocked = await self.activation.release_directory_attachments(
+            self.live.project_id, Path("/linked-source")
+        )
+        self.assertEqual(blocked, (newcomer.id,))
+
+    async def test_directory_release_rejects_related_oneshot_and_uncertain_opening(self) -> None:
+        service = object.__new__(LiveSessionService)
+        service.activation = self.activation
+        service._uncertain_attachments = {}
+        service._one_shot_directories = {"related-invocation": (Path("/linked-source/child"),)}
+        self.assertEqual(
+            await service.release_directory_attachments(
+                "another-project", Path("/linked-source"), Path("/another-project")
+            ),
+            ("related-invocation",),
+        )
+        service._one_shot_directories = {"unrelated-invocation": (Path("/elsewhere"),)}
+        self.assertEqual(
+            await service.release_directory_attachments(
+                "another-project", Path("/linked-source"), Path("/another-project")
+            ),
+            (),
+        )
+        lease = self.activities.enter(ActivityDomain.RUNTIME)
+        service._uncertain_attachments = {
+            "opening": RuntimeOpening(
+                RUNTIME_ID,
+                "unknown-session",
+                lease,
+                project_id="another-project",
+                directories=(Path("/another-project"),),
+            )
+        }
+        try:
+            self.assertEqual(
+                await service.release_directory_attachments(
+                    "another-project", Path("/linked-source"), Path("/another-project")
+                ),
+                ("unknown-session",),
+            )
+        finally:
+            lease.close()
 
     async def test_turn_refresh_releases_dormant_attachment_before_admission(self) -> None:
         self.provider.resource_policy = ResourcePolicy(30.0, 0.0, refresh_before_turn=True)

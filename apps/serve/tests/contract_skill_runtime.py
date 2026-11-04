@@ -23,11 +23,10 @@ from scholarseed_runtime.contract.evidence import NOOP_RUNTIME_TIMING
 from scholarseed_runtime.contract.inventory import SkillAvailability, SkillInventory, SkillView
 from service.capabilities.service import source as source_compiler
 from service.capabilities.service.dependencies import (
-    declaration,
     provision_dependencies,
     verify_dependencies,
 )
-from service.capabilities.service.package import PackageError, json_bytes
+from service.capabilities.service.package import PackageError, declaration, digest, json_bytes
 from service.capabilities.service.prebundle import (
     SkillPackError,
     compile_bundled_skills,
@@ -55,6 +54,85 @@ from .contract_skill_prebundle import _inputs
 
 
 class SkillRuntimeContracts(unittest.TestCase):
+    def test_category_provenance_marks_only_generated_defaults(self) -> None:
+        cases = (
+            ("builtin", {}, "系统预置", "builtin"),
+            ("user", {}, "用户安装", "user"),
+            ("builtin", {"category": "系统预置"}, "系统预置", None),
+            ("user", {"category": "用户安装"}, "用户安装", None),
+            ("user", {"category": "Research"}, "Research", None),
+            ("user", {"category": "系统预置", "category_source": "builtin"}, "系统预置", None),
+            (
+                "builtin",
+                {"category": "系统预置", "category_source": "builtin"},
+                "系统预置",
+                "builtin",
+            ),
+            ("builtin", {"category": "Research", "category_source": "unknown"}, "Research", None),
+        )
+        for source, metadata, category, expected in cases:
+            with (
+                self.subTest(source=source, metadata=metadata),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                manifest = root / source / "example" / "SKILL.md"
+                manifest.parent.mkdir(parents=True)
+                manifest.write_text("---\nname: example\ndescription: Example\n---\n")
+                (manifest.parent / ".scholarseed.json").write_bytes(json_bytes(metadata))
+                native = SkillView(
+                    name="example",
+                    path=manifest,
+                    description="Example",
+                    enabled=True,
+                    availability=SkillAvailability.AVAILABLE,
+                )
+                inventory = SkillInventory(cwd=root, skills=(native,))
+                catalog = SkillCatalog(bundled_root=root / "builtin", user_root=root / "user")
+                for locale in ("en", "zh", "en"):
+                    row = catalog.payloads(inventory, SkillProductState(), locale=locale)[0]
+                    self.assertEqual(row.get("category_source"), expected)
+                    self.assertEqual(row["category"], category)
+                    self.assertEqual(row["path"], str(manifest.resolve()))
+                    self.assertEqual(
+                        json.loads((manifest.parent / ".scholarseed.json").read_bytes()), metadata
+                    )
+
+    def test_both_skill_compilers_mark_generated_category_without_changing_source(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lock, cache = _inputs(root)
+            legacy_pack = root / "legacy-pack"
+            compile_bundled_skills(lock, cache, legacy_pack)
+            legacy_metadata = json.loads((legacy_pack / "example/.scholarseed.json").read_bytes())
+            self.assertEqual(legacy_metadata.get("category_source"), "builtin")
+            self.assertTrue(verify_locked_pack(lock, legacy_pack).ok)
+            source = root / "source"
+            manifest = source / "example/SKILL.md"
+            manifest.parent.mkdir(parents=True)
+            original = "---\nname: example\ndescription: Example\nversion: 1.0.0\n---\n"
+            manifest.write_text(original)
+            pack = root / "source-pack"
+            compile_source_skills(pack, source)
+            metadata = json.loads((pack / "example/.scholarseed.json").read_bytes())
+            self.assertEqual(metadata.get("category_source"), "builtin")
+            self.assertEqual(metadata["category"], "系统预置")
+            self.assertTrue(source_compiler.verify_source_pack(pack, source)[0])
+            self.assertEqual(manifest.read_text(), original)
+            for compiled in (legacy_pack, pack):
+                catalog = SkillCatalog(bundled_root=compiled, user_root=root / "user")
+                native = SkillView(
+                    name="example",
+                    path=compiled / "example/SKILL.md",
+                    description="Example",
+                    enabled=True,
+                    availability=SkillAvailability.AVAILABLE,
+                )
+                row = catalog.payloads(
+                    SkillInventory(cwd=root, skills=(native,)), SkillProductState()
+                )[0]
+                self.assertEqual(row["category_source"], "builtin")
+
     def test_builtin_titles_follow_locale_without_changing_native_identity(self) -> None:
         presentation = load_skill_presentation()
         names = presentation.surfaces["settings"].skills
@@ -130,17 +208,7 @@ class SkillRuntimeContracts(unittest.TestCase):
                 "---\nname: example\ndescription: Example skill\nversion: 1.0.0\n---\n",
                 encoding="utf-8",
             )
-            (skill / ".scholarseed-package.json").write_bytes(
-                json_bytes(
-                    {
-                        "schema": 1,
-                        "name": "example",
-                        "version": "1.0.0",
-                        "dependencies": {},
-                        "files": [],
-                    }
-                )
-            )
+            (base / "registry.json").write_bytes(json_bytes({"dependencies": {"example": {}}}))
             deep = base / ("nested-" * 10) / ("nested-" * 10) / ("nested-" * 10)
             pack = deep / "skills"
             lock = deep / "skills.lock.json"
@@ -181,7 +249,7 @@ class SkillRuntimeContracts(unittest.TestCase):
                 shutil.rmtree(filesystem_path(base / ("nested-" * 10)), ignore_errors=False)
 
     def test_prebundle_build_preserves_exception_chain(self) -> None:
-        def fail(*_args):
+        def fail(*_args, **_kwargs):
             try:
                 raise OSError("deep copy failure")
             except OSError as error:
@@ -215,11 +283,14 @@ class SkillRuntimeContracts(unittest.TestCase):
             reference = skill / "references" / "example.md"
             reference.parent.mkdir()
             reference.write_text("reference", encoding="utf-8")
+            (root / "registry.json").write_bytes(json_bytes({"dependencies": {"example": {}}}))
             pack = root / "pack"
             compile_source_skills(pack, source)
             # Replacing an existing pack must retain the same policy and clean staging.
             compile_source_skills(pack, source)
-            self.assertEqual({path.name for path in root.iterdir()}, {"source", "pack"})
+            self.assertEqual(
+                {path.name for path in root.iterdir()}, {"source", "pack", "registry.json"}
+            )
             script = (
                 "$ErrorActionPreference='Stop'; "
                 "$acl=Get-Acl -LiteralPath $env:SKILL_ACL_PROBE; "
@@ -339,6 +410,9 @@ class SkillRuntimeContracts(unittest.TestCase):
                 encoding="utf-8",
             )
             (skill / "VERSION").write_text("1.2.4\n", encoding="utf-8")
+            (source.parent / "registry.json").write_bytes(
+                json_bytes({"dependencies": {"example": {}}})
+            )
 
             with self.assertRaisesRegex(
                 SkillPackError,
@@ -356,17 +430,7 @@ class SkillRuntimeContracts(unittest.TestCase):
                 "---\nname: example\ndescription: Example skill\nversion: 1.2.3\n---\n",
                 encoding="utf-8",
             )
-            (skill / ".scholarseed-package.json").write_bytes(
-                json_bytes(
-                    {
-                        "schema": 1,
-                        "name": "example",
-                        "version": "1.2.3",
-                        "dependencies": {},
-                        "files": [],
-                    }
-                )
-            )
+            (root / "registry.json").write_bytes(json_bytes({"dependencies": {"example": {}}}))
             defaults = root / "defaults"
             runtime_default = defaults / "example" / "config" / "runtime.json"
             runtime_default.parent.mkdir(parents=True)
@@ -451,15 +515,7 @@ class SkillRuntimeContracts(unittest.TestCase):
                 "---\nname: example\ndescription: Example skill\nversion: 1.2.3\n---\n",
                 encoding="utf-8",
             )
-            manifest = {
-                "schema": 1,
-                "name": "example",
-                "version": "1.2.3",
-                "dependencies": {},
-                "files": [],
-            }
-            manifest_path = skill / ".scholarseed-package.json"
-            manifest_path.write_bytes(json_bytes(manifest))
+            (root / "registry.json").write_bytes(json_bytes({"dependencies": {"example": {}}}))
             pack = root / "pack"
             lock = root / "skills.lock.json"
             compile_source_skills(pack, source)
@@ -487,6 +543,7 @@ class SkillRuntimeContracts(unittest.TestCase):
             self.assertTrue(installed_report.is_file())
 
             installed_manifest = pack / "example" / ".scholarseed-package.json"
+            manifest = json.loads(installed_manifest.read_bytes())
             installed_manifest.write_bytes(
                 json_bytes({**manifest, "dependencies": {"python": ["unsafe==1.0.0"]}})
             )
@@ -494,6 +551,45 @@ class SkillRuntimeContracts(unittest.TestCase):
                 with self.assertRaises((SkillPackError, PackageError)):
                     provision_dependencies(lock, pack)
                 command.assert_not_called()
+
+    def test_source_edit_regenerates_package_manifest_without_updating_reviewed_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            skill = source / "example"
+            skill.mkdir(parents=True)
+            (root / "registry.json").write_bytes(
+                json_bytes({"dependencies": {"example": {"imports": ["json"]}}})
+            )
+            (skill / "SKILL.md").write_bytes(
+                b"---\nname: example\ndescription: Example skill\nversion: 1.2.3\n---\n"
+            )
+            script = skill / "script.py"
+            script.write_bytes(b"print(1)\n")
+            pack = root / "pack"
+            reviewed = root / "skills.lock.json"
+            write_source_lock(reviewed, source)
+            original_lock = reviewed.read_bytes()
+            compile_source_skills(pack, source)
+            installed_manifest = pack / "example" / ".scholarseed-package.json"
+            original_manifest = installed_manifest.read_bytes()
+            script.write_bytes(b"print(200)\n")
+            self.assertFalse(source_compiler.verify_source_pack(pack, source)[0])
+            compile_source_skills(pack, source)
+            self.assertNotEqual(installed_manifest.read_bytes(), original_manifest)
+            manifest = json.loads(installed_manifest.read_bytes())
+            self.assertEqual(manifest["dependencies"], {"imports": ["json"]})
+            record = next(row for row in manifest["files"] if row["path"] == script.name)
+            self.assertEqual(record["size"], len(script.read_bytes()))
+            self.assertEqual(record["sha256"], digest(script.read_bytes()))
+            self.assertEqual(reviewed.read_bytes(), original_lock)
+            self.assertFalse(source_compiler.verify_source_locked_pack(reviewed, pack).ok)
+            self.assertTrue(source_compiler.verify_source_pack(pack, source)[0])
+            self.assertFalse((skill / installed_manifest.name).exists())
+            installed_manifest.write_bytes(original_manifest)
+            self.assertFalse(source_compiler.verify_source_pack(pack, source)[0])
+            with self.assertRaisesRegex(SkillPackError, "integrity mismatch"):
+                source_compiler.verify_compiled_skill(pack / "example")
 
     def test_dependencies_are_reviewed_pins_and_safe_module_paths(self) -> None:
         self.assertEqual(
@@ -982,7 +1078,8 @@ class SkillEnablementCompositionContracts(unittest.IsolatedAsyncioTestCase):
         state = SkillProductState()
         service = object.__new__(LiveSessionService)
         service._activities = Activities()
-        service.skill_inventory = AsyncMock(return_value=inventory)
+        service.toolchain = ToolchainReadiness()
+        service._configure_skills = AsyncMock(return_value=inventory)
         service.configure_skills = AsyncMock(
             side_effect=AssertionError("global refresh is not attachment admission")
         )
@@ -1004,10 +1101,11 @@ class SkillEnablementCompositionContracts(unittest.IsolatedAsyncioTestCase):
             await asyncio.gather(
                 *(service._prepare_attachment(live, NOOP_RUNTIME_TIMING) for live in sessions)
             )
-        self.assertEqual(service.skill_inventory.await_count, 2)
-        for call in service.skill_inventory.await_args_list:
+        self.assertEqual(service._configure_skills.await_count, 2)
+        for call in service._configure_skills.await_args_list:
             self.assertEqual(call.kwargs["user_id"], USER_ID)
             self.assertEqual(call.kwargs["model_id"], "actor-model")
+            self.assertTrue(call.kwargs["cached"])
             self.assertFalse(call.kwargs.get("force_reload", False))
         self.assertTrue(
             all(

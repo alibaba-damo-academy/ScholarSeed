@@ -21,6 +21,7 @@ const TEST_FILES = Object.freeze([
   'scripts/dev/__tests__/lease.test.cjs',
   'scripts/shared/__tests__/temporary-cleanup.test.cjs',
   'scripts/cd/__tests__/build.test.cjs',
+  'scripts/recovery.test.ts',
   'scripts/cd/__tests__/signer.test.cjs',
   'scripts/cd/__tests__/wheels.test.cjs',
   'scripts/cd/__tests__/velobundle.test.mjs',
@@ -29,12 +30,14 @@ const TEST_FILES = Object.freeze([
   'scripts/dev/__tests__/supervision.test.mjs',
   'scripts/dev/__tests__/worker.test.cjs',
   'scripts/shared/__tests__/native.test.cjs',
+  'native/observations.test.cjs',
   'scripts/shared/__tests__/styles.test.cjs',
   'scripts/pre/__tests__/office.test.cjs',
   'scripts/ci/__tests__/reuse.test.mjs',
   'scripts/ci/__tests__/commands.test.cjs',
   'scripts/ci/__tests__/lifecycle.test.cjs',
   'scripts/ci/__tests__/types.test.cjs',
+  'scripts/ci/__tests__/native-contract.test.cjs',
   ...Object.keys(TEST_GLOBS),
 ])
 const NODE_ARGS = Object.freeze(['--experimental-transform-types', '--test'])

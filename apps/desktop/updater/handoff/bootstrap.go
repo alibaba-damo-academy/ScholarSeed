@@ -43,6 +43,7 @@ type StartupMessages struct {
 	Cancel      string `json:"cancel"`
 }
 type BootstrapProgress struct {
+	Text     string
 	Phase    string
 	Received int64
 	Total    int64

@@ -33,7 +33,7 @@ async function cachedNativeInputs() {
 }
 
 export async function buildPdfe(origin = PREVIEW_ORIGIN) {
-  execFileSync(process.execPath, [path.join(desktop, 'scripts/security.cjs'), '--check'], { cwd: desktop, stdio: 'inherit' })
+  execFileSync(process.execPath, [path.join(desktop, 'scripts/pre/security.cjs'), '--check'], { cwd: desktop, stdio: 'inherit' })
   const artifacts = await cachedNativeInputs()
   ensurePrivateDirectory(artifactRoot)
   const output = fs.mkdtempSync(path.join(artifactRoot, 'run-'))

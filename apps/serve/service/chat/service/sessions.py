@@ -101,6 +101,7 @@ from service.chat.persistence.catalog import (
     LEGACY_RUNTIME_ID,
     UNCERTAINTY_CONFIRMATION_KEY,
     HilStatus,
+    OpenState,
     SessionAccessError,
     SessionCatalogRecord,
     SessionCatalogStore,
@@ -1661,6 +1662,22 @@ class SessionService:
         self._update_shutdown_generation = None
         self._update_shutdown_prepared = False
 
+    async def interrupt_running_for_shutdown(self) -> None:
+        async def stop(live: LiveSession, task: asyncio.Task[Any]) -> None:
+            while not task.done() and not live.ledger.active_turn_id:
+                await asyncio.sleep(SESSION_RELOCATE_STOP_POLL_SECONDS)
+            if not task.done():
+                await live.interrupt(cleanup_background_processes=True)
+            await asyncio.shield(task)
+
+        await asyncio.gather(
+            *(
+                stop(live, live.current_task)
+                for live in tuple(self._sessions.values())
+                if live.current_task is not None and not live.current_task.done()
+            )
+        )
+
     async def interrupt_running_for_update(self) -> None:
         """Honor the confirmed restart for every session owned by this Serve instance.
 
@@ -2117,6 +2134,8 @@ class SessionService:
                 raise SessionAccessError("session not found")
             if record.archived == archived:
                 return {"ok": True, "session_id": session_id, "archived": archived}, HTTP_OK
+            if archived and await self._archive_if_idle(record, principal):
+                return {"ok": True, "session_id": session_id, "archived": archived}, HTTP_OK
             if archived:
                 payload, status = await self._stop_for_removal(
                     record, principal, actor_id, skill_environment
@@ -2125,6 +2144,46 @@ class SessionService:
                     return {"ok": False, "error": SESSION_ARCHIVE_STOP_FAILED}, status
             self._access.set_archived(session_id, principal, archived)
             return {"ok": True, "session_id": session_id, "archived": archived}, HTTP_OK
+
+    async def _archive_if_idle(
+        self, record: SessionCatalogRecord, principal: SessionPrincipal
+    ) -> bool:
+        session_id = record.session_id
+        live = self._sessions.get(session_id)
+        async with AsyncExitStack() as scope:
+            if live is not None:
+                await scope.enter_async_context(live.lifecycle_lock)
+                if (
+                    live.running
+                    or live.interrupting
+                    or live.closing
+                    or (live.resource_task is not None and not live.resource_task.done())
+                ):
+                    return False
+            pending = self._access.pending_turn_settlement(session_id)
+            if (
+                live is None
+                and record.status in {SessionStatus.RUNNING, SessionStatus.WAITING_HIL}
+                and not (pending is not None and pending.recovery_blocked)
+            ) or self._access.queued_messages(session_id):
+                return False
+            if live is not None and live.pending_hil_snapshot():
+                return False
+            activation = self._access.activation(session_id)
+            if activation is not None and activation.open_state in {
+                OpenState.OPENING,
+                OpenState.OPEN_UNKNOWN,
+            }:
+                return False
+            if live is not None and live.runtime_session is not None:
+                try:
+                    activity = await live.runtime_session.activity()
+                except Exception:
+                    return False
+                if not activity.idle or not activity.execution_tree_idle:
+                    return False
+            self._access.set_archived(session_id, principal, True)
+            return True
 
     async def _stop_for_removal(
         self,

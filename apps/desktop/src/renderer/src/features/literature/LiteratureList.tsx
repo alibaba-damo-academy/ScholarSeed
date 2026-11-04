@@ -1947,7 +1947,11 @@ export function LiteratureList({
           renderSelection(
             <div
               data-testid="literature-selection-toolbar"
-              className="flex min-w-max flex-1 items-center justify-end gap-[var(--vds-space-2)] whitespace-nowrap text-[length:var(--vds-font-body-lv2)] text-[var(--vds-text-primary)]"
+              className={
+                projectPresentation
+                  ? 'flex min-w-max flex-1 items-center justify-end gap-[var(--vds-space-2)] whitespace-nowrap text-[length:var(--vds-font-body-lv2)] text-[var(--vds-text-primary)]'
+                  : 'flex min-w-0 flex-1 flex-wrap items-center justify-end gap-[var(--vds-space-2)] whitespace-nowrap text-[length:var(--vds-font-body-lv2)] text-[var(--vds-text-primary)]'
+              }
             >
               <span className="font-[var(--vds-fw-regular)]">
                 {literature('batch.selected', { count: selected.length })}

@@ -13,6 +13,7 @@ import (
 )
 
 const jobPrefix = `Local\ScholarSeedHandoff-`
+const jobPollInterval = 25 * time.Millisecond
 
 type windowsJob struct{ handle syscall.Handle }
 type jobLimits struct {
@@ -77,10 +78,16 @@ func newUpdateJob(nonce string) (updateJob, error) {
 	return job, nil
 }
 func (j *windowsJob) Close() error { return syscall.CloseHandle(j.handle) }
-func (j *windowsJob) Quiesce(timeout time.Duration) error {
+func (job *windowsJob) Terminate() error {
+	ok, _, err := kernel.NewProc("TerminateJobObject").Call(uintptr(job.handle), 1)
+	if ok == 0 {
+		return err
+	}
+	return nil
+}
+func (j *windowsJob) Wait(timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
-	terminated := false
-	for time.Now().Before(deadline) {
+	for {
 		var accounting jobAccounting
 		ok, _, err := kernel.NewProc("QueryInformationJobObject").Call(uintptr(j.handle), 1, uintptr(unsafe.Pointer(&accounting)), unsafe.Sizeof(accounting), 0)
 		if ok == 0 {
@@ -89,23 +96,20 @@ func (j *windowsJob) Quiesce(timeout time.Duration) error {
 		if accounting.Active == 0 {
 			return nil
 		}
-		// The worker has already exited. Any remaining updater descendants are
-		// this invocation's processes, and must finish before app restoration.
-		if !terminated {
-			ok, _, err = kernel.NewProc("TerminateJobObject").Call(uintptr(j.handle), 1)
-			if ok == 0 {
-				return err
-			}
-			terminated = true
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return errors.New("updater process family did not exit")
 		}
-		time.Sleep(25 * time.Millisecond)
+		if remaining > jobPollInterval {
+			remaining = jobPollInterval
+		}
+		time.Sleep(remaining)
 	}
-	return errors.New("updater process family did not exit")
 }
 
 type updaterJob struct {
-	handle     syscall.Handle
-	attributes []byte
+	handle   syscall.Handle
+	admitted bool
 }
 
 func openUpdaterJob(nonce string) (updaterInvocation, error) {
@@ -114,38 +118,38 @@ func openUpdaterJob(nonce string) (updaterInvocation, error) {
 	if h == 0 {
 		return nil, err
 	}
-	j := &updaterJob{handle: syscall.Handle(h)}
-	var size uintptr
-	initialize := kernel.NewProc("InitializeProcThreadAttributeList")
-	initialize.Call(0, 1, 0, uintptr(unsafe.Pointer(&size)))
-	if size == 0 || size > 65536 {
-		j.Close()
-		return nil, errors.New("invalid process attribute size")
-	}
-	j.attributes = make([]byte, size)
-	ok, _, err := initialize.Call(uintptr(unsafe.Pointer(&j.attributes[0])), 1, 0, uintptr(unsafe.Pointer(&size)))
-	if ok == 0 {
-		j.attributes = nil
-		j.Close()
-		return nil, err
-	}
-	// Windows 10 JOB_LIST assigns the process atomically at creation, avoiding
-	// an orphan between suspended creation and a separate assignment call.
-	ok, _, err = kernel.NewProc("UpdateProcThreadAttribute").Call(uintptr(unsafe.Pointer(&j.attributes[0])), 0, 0x0002000d, uintptr(unsafe.Pointer(&j.handle)), unsafe.Sizeof(j.handle), 0, 0)
-	if ok == 0 {
-		j.Close()
-		return nil, err
-	}
-	return j, nil
+	return &updaterJob{handle: syscall.Handle(h)}, nil
 }
 func (j *updaterJob) Close() error {
-	if len(j.attributes) != 0 {
-		kernel.NewProc("DeleteProcThreadAttributeList").Call(uintptr(unsafe.Pointer(&j.attributes[0])))
-		j.attributes = nil
+	if j.handle == 0 {
+		return nil
 	}
-	return syscall.CloseHandle(j.handle)
+	handle := j.handle
+	j.handle = 0
+	return syscall.CloseHandle(handle)
+}
+func (job *updaterJob) Admit() error {
+	if job.admitted || job.handle == 0 {
+		return errors.New("updater worker job admission is unavailable")
+	}
+	process, err := syscall.GetCurrentProcess()
+	if err != nil {
+		return err
+	}
+	ok, _, err := kernel.NewProc("AssignProcessToJobObject").Call(uintptr(job.handle), uintptr(process))
+	if ok == 0 {
+		return err
+	}
+	if err = job.Close(); err != nil {
+		return err
+	}
+	job.admitted = true
+	return nil
 }
 func (j *updaterJob) Run(executable string, args []string) error {
+	if !j.admitted || j.handle != 0 {
+		return errors.New("updater worker has not completed job admission")
+	}
 	quoted := []string{syscall.EscapeArg(executable)}
 	for _, arg := range args {
 		quoted = append(quoted, syscall.EscapeArg(arg))
@@ -159,15 +163,12 @@ func (j *updaterJob) Run(executable string, args []string) error {
 		return err
 	}
 	directory, _ := syscall.UTF16PtrFromString(filepath.Dir(executable))
-	startup := struct {
-		info       syscall.StartupInfo
-		attributes *byte
-	}{attributes: &j.attributes[0]}
-	startup.info.Cb = uint32(unsafe.Sizeof(startup))
-	startup.info.Flags = syscall.STARTF_USESHOWWINDOW
-	startup.info.ShowWindow = syscall.SW_HIDE
+	startup := syscall.StartupInfo{}
+	startup.Cb = uint32(unsafe.Sizeof(startup))
+	startup.Flags = syscall.STARTF_USESHOWWINDOW
+	startup.ShowWindow = syscall.SW_HIDE
 	var process syscall.ProcessInformation
-	if err = syscall.CreateProcess(exe, line, nil, nil, false, 0x00080000|0x08000000, nil, directory, &startup.info, &process); err != nil {
+	if err = syscall.CreateProcess(exe, line, nil, nil, false, 0x08000000, nil, directory, &startup, &process); err != nil {
 		return err
 	}
 	defer syscall.CloseHandle(process.Process)

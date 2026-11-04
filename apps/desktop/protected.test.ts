@@ -228,7 +228,7 @@ test(
   }
 )
 
-test('actual config Main and ordinary preload compile unchanged closed snapshot; preload load mutations reject', { timeout: 60000 }, async () => {
+test('actual config Main and ordinary preload compile unchanged closed snapshot', { timeout: 60000 }, async () => {
   const fixture = isolatedSource()
   try {
     const resolved = await resolveConfig({ root: fixture.root, configFile: join(fixture.root, 'electron.vite.config.ts') }, 'serve')
@@ -238,6 +238,12 @@ test('actual config Main and ordinary preload compile unchanged closed snapshot;
     for (const owner of [resolved.config.main, resolved.config.preload]) {
       await compile({ ...owner, root: fixture.root, configFile: false, logLevel: 'error', build: { ...owner.build, write: false, watch: null } })
     }
+  } finally { fixture.dispose() }
+})
+
+test('closed snapshot rejects preload, Main and menu source mutations during compilation', { timeout: 60000 }, async () => {
+  const fixture = isolatedSource()
+  try {
     const bundle = await buildProtected({ desktopRoot: fixture.root, command: 'build', mode: 'production' })
     const protocol = join(fixture.root, 'src/vault.ts')
     const original = readFileSync(protocol, 'utf8')

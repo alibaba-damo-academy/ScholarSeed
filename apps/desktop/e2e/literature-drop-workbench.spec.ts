@@ -1,3 +1,4 @@
+import { openProjectMenu } from './fixtures/projects'
 import { expect, test, type JSHandle, type Page } from '@playwright/test'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -134,20 +135,21 @@ test('literature list accepts copied PDF drops and stays open after parsing', as
       return (await response.json()).total
     }).toBe(3)
 
-    await page.getByTestId('topbar-project').click()
+    await openProjectMenu(page)
     await page.getByTestId('project-menu-create').click()
     const projectDialog = page.getByTestId('project-new-modal')
-    await projectDialog.getByRole('textbox').fill('Drop project')
+    await projectDialog.getByTestId('project-create-name').fill('Drop-project')
     await projectDialog.getByTestId('project-create').click()
     await expect(projectDialog).toHaveCount(0)
     const projectsResponse = await page.request.get(`${base}/api/content/projects`)
     expect(projectsResponse.ok(), await projectsResponse.text()).toBe(true)
     const projects = await projectsResponse.json()
     const project = projects.projects.find(
-      (item: { name: string }) => item.name === 'Drop project'
+      (item: { name: string }) => item.name === 'Drop-project'
     )
     expect(project).toBeTruthy()
-    await page.getByTestId('activity-literature').click()
+    await page.getByTestId('project-library').click()
+    await page.getByTestId('project-library-content').getByRole('tab', { name: '文献', exact: true }).click()
 
     const projectTarget = page.getByTestId('literature-drop-target')
     const projectTransfer = await dataTransfer(page, [second])
@@ -163,10 +165,7 @@ test('literature list accepts copied PDF drops and stays open after parsing', as
     })
     await importDialog.getByRole('button', { name: '完成', exact: true }).click()
     await expect(projectTarget).toBeVisible()
-    await expect(page.getByTestId('activity-literature')).toHaveAttribute(
-      'aria-current',
-      'true'
-    )
+    await expect(page.getByTestId('project-library-content').getByRole('tab', { name: '文献', exact: true })).toHaveAttribute('aria-selected', 'true')
     await expect(page.getByTestId('workbench-home-space')).toHaveCount(0)
     await page.screenshot({
       path: resolve(runtime.artifacts, 'stayed-after-project-import.png'),

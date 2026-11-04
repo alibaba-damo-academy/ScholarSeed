@@ -225,6 +225,8 @@ or open action. Supply one direct child per artifact; retain each child's own
 identity and operation state. Images and auxiliary path links keep their own
 presentations rather than becoming duplicate file cards. Empty groups render
 nothing. Single cards retain the demo's bounded reading width.
+Set `stacked` for unequal-height image/file cards to preserve order in a bounded
+single column without empty grid-row space. The default wrapping layout is unchanged.
 
 `Conversation.Message` preserves literal user text instead of interpreting Markdown.
 Long messages expand/collapse without changing the copied source; HTTP(S) links

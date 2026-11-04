@@ -15,10 +15,9 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import tomlkit
 
-from scholarseed_codex.admission import NativeAdmission, NativeQuiescence
+from scholarseed_codex.admission import NativeAdmission
 from scholarseed_codex.configuration import NativeMcpConfiguration
 from scholarseed_codex.coordination import (
-    MCP_APPLICATION_POLL_SECONDS,
     MCP_UNAPPLIED_REVISION,
     McpCoordinator,
 )
@@ -28,13 +27,13 @@ from scholarseed_codex.isolation import managed_codex_launch
 from scholarseed_codex.mcp import NativeMcpInventory
 from scholarseed_codex.pool import CodexHostPool
 from scholarseed_codex.process import (
-    NATIVE_CALLBACK_PENDING,
     NATIVE_COMMAND_UNSETTLED,
     CodexProcessHost,
 )
 from scholarseed_codex.projection import CodexConfigurationEditor, McpProjectionError
 from scholarseed_codex.protocol.mcp import McpReloadRequest, McpToolCallRequest
 from scholarseed_codex.protocol.session import CodexSessionOpenRequest
+from scholarseed_codex.protocol.state import AppServerError, CodexProcessState
 from scholarseed_codex.provider import CodexRuntimeProvider
 from scholarseed_codex.thread import CodexThreadSession
 from scholarseed_runtime.contract.mcp import (
@@ -56,7 +55,24 @@ MCP_CONTRACT_TIMEOUT = 15
 MCP_CONTRACT_POLL_SECONDS = 0.02
 
 
-class McpQuiescenceDiagnosticTests(unittest.IsolatedAsyncioTestCase):
+class McpConcurrentReloadTests(unittest.IsolatedAsyncioTestCase):
+    async def test_process_reload_uses_generation_without_idle_ticket(self) -> None:
+        host = CodexProcessHost()
+        host._generation = 2
+        host.state = CodexProcessState.READY
+        host._request_connected = AsyncMock(return_value={})
+        host.configuration_quiescence_current = Mock(return_value=False)
+        async with host.admission.enter():
+            await host.reload_mcp(2)
+            self.assertEqual(host.admission.active, 1)
+        host._request_connected.assert_awaited_once_with(
+            "config/mcpServer/reload", None, generation=2
+        )
+        host.configuration_quiescence_current.assert_not_called()
+        with self.assertRaises(AppServerError):
+            await host.reload_mcp(1)
+        self.assertEqual(host._request_connected.await_count, 1)
+
     async def asyncSetUp(self) -> None:
         self.coordinator = McpCoordinator(Mock(runtime_home=Path.cwd()))
         self.addAsyncCleanup(self.coordinator.aclose)
@@ -75,61 +91,38 @@ class McpQuiescenceDiagnosticTests(unittest.IsolatedAsyncioTestCase):
             verify_mcp_configuration=AsyncMock(return_value=NativeMcpInventory("verified")),
         )
         self.coordinator.register("diagnostic-host", self.host)
+        self.host.admission.applied(1)
 
-    async def test_quiescence_wait_logs_only_changed_safe_state(self) -> None:
-        with self.assertLogs("scholarseed_codex.coordination", level="INFO") as logs:
-            self.assertFalse(await self.coordinator._apply(self.configuration))
-            self.assertFalse(await self.coordinator._apply(self.configuration))
-            self.host.configuration_blockers = (NATIVE_CALLBACK_PENDING,)
-            self.assertFalse(await self.coordinator._apply(self.configuration))
-            self.host.process_generation = 3
-            self.assertFalse(await self.coordinator._apply(self.configuration))
-            changed = replace(self.configuration, revision=2)
-            self.coordinator._desired = changed
-            self.assertFalse(await self.coordinator._apply(changed))
-        self.assertEqual(len(logs.records), 4)
-        self.assertIn("host_id=diagnostic-host", logs.output[0])
-        self.assertIn("generation=2", logs.output[0])
-        self.assertIn("revision=1", logs.output[0])
-        self.assertIn("admission_active=0", logs.output[0])
-        self.assertIn("native_command_unsettled", logs.output[0])
-        self.assertIn("native_callback_pending", logs.output[1])
-        self.assertIn("generation=3", logs.output[2])
-        self.assertIn("revision=2", logs.output[3])
-        self.assertNotIn(str(Path.cwd()), " ".join(logs.output))
+    async def test_native_activity_does_not_block_reload(self) -> None:
+        self.assertTrue(await self.coordinator._apply(self.configuration))
+        self.host.reload_mcp.assert_awaited_once_with(2)
+        self.host.configuration_quiescence.assert_not_awaited()
         self.assertTrue(self.host.admission.accepting)
-        self.host.reload_mcp.assert_not_awaited()
         self.host.verify_mcp_configuration.assert_not_awaited()
 
-    async def test_resolved_wait_does_not_suppress_a_later_identical_wait(self) -> None:
-        with self.assertLogs("scholarseed_codex.coordination", level="INFO") as logs:
-            self.assertFalse(await self.coordinator._apply(self.configuration))
-            self.host.configuration_quiescence.return_value = NativeQuiescence(1, 2, 0, 1)
-            self.assertTrue(await self.coordinator._apply(self.configuration))
-            self.assertTrue(self.host.admission.accepting)
-            entry = self.coordinator._hosts["diagnostic-host"]
-            entry.inventory = NativeMcpInventory()
-            entry.applied_revision = MCP_UNAPPLIED_REVISION
-            self.host.admission.freeze(1)
-            self.host.configuration_quiescence.return_value = None
-            self.assertFalse(await self.coordinator._apply(self.configuration))
-            self.assertFalse(await self.coordinator._apply(self.configuration))
-        self.assertEqual(len(logs.records), 2)
-        self.assertEqual(logs.records[0].getMessage(), logs.records[1].getMessage())
+    async def test_process_generation_change_discards_reload_result(self) -> None:
+        async def restart(generation):
+            self.assertEqual(generation, 2)
+            self.host.process_generation = 3
+
+        self.host.reload_mcp.side_effect = restart
+        self.assertFalse(await self.coordinator._apply(self.configuration))
+        entry = self.coordinator._hosts["diagnostic-host"]
+        self.assertEqual(entry.applied_revision, MCP_UNAPPLIED_REVISION)
+        self.host.reload_mcp.side_effect = None
+        self.assertTrue(await self.coordinator._apply(self.configuration))
+        self.host.reload_mcp.assert_awaited_with(3)
+        self.assertEqual(entry.generation, 3)
         self.assertTrue(self.host.admission.accepting)
 
-    async def test_active_operation_wait_logs_count_without_requesting_quiescence(self) -> None:
-        self.host.admission.applied(1)
-        with self.assertLogs("scholarseed_codex.coordination", level="INFO") as logs:
+    async def test_reload_failure_does_not_freeze_active_execution(self) -> None:
+        self.host.reload_mcp.side_effect = AppServerError("reload unavailable")
+        with self.assertLogs("scholarseed_codex.coordination", level="ERROR"):
             async with self.host.admission.enter():
-                self.host.admission.freeze(1)
-                self.assertFalse(await self.coordinator._apply(self.configuration))
-                self.assertFalse(await self.coordinator._apply(self.configuration))
-                self.host.configuration_quiescence.assert_not_awaited()
-            self.assertFalse(await self.coordinator._apply(self.configuration))
-        self.assertEqual(len(logs.records), 2)
-        self.assertIn("admission_active=1", logs.output[0])
-        self.assertIn("admission_active=0", logs.output[1])
+                self.assertTrue(await self.coordinator._apply(self.configuration))
+                self.assertEqual(self.host.admission.active, 1)
+        self.assertEqual(self.coordinator.receipt().hosts[0].state, McpApplicationState.FAILED)
+        self.host.configuration_quiescence.assert_not_awaited()
         self.assertTrue(self.host.admission.accepting)
 
 
@@ -396,7 +389,7 @@ class McpProjectionTests(unittest.IsolatedAsyncioTestCase):
                 while (ticket := await host.configuration_quiescence(revision)) is None:
                     await asyncio.sleep(MCP_CONTRACT_POLL_SECONDS)
             await asyncio.to_thread(self.editor.publish, servers)
-            await host.reload_mcp(ticket)
+            await host.reload_mcp(ticket.process_generation)
             async with asyncio.timeout(MCP_CONTRACT_TIMEOUT):
                 while True:
                     inventory = await host.verify_mcp_configuration(ticket, frozenset(servers))

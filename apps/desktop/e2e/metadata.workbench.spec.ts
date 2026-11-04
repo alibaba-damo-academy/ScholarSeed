@@ -4,7 +4,7 @@ import { expect, test, type Locator } from '@playwright/test'
 
 import { DesktopSession, apiBase, enterWorkbenchShell } from './fixtures/electron'
 import { createRuntime } from './fixtures/runtime'
-import { createReadyProject } from './fixtures/projects'
+import { createReadyProject, openLiteratureScope } from './fixtures/projects'
 import { skipQuarantined } from './fixtures/quarantine'
 
 test.beforeEach(async ({}, testInfo) => { skipQuarantined(testInfo) })
@@ -12,7 +12,7 @@ test.beforeEach(async ({}, testInfo) => { skipQuarantined(testInfo) })
 const ENTRY_COUNT = 362
 const SMALL_ENTRY_COUNT = 2
 const PROJECT_NAME = 'Metadata batch acceptance'
-const EVIDENCE_ROOT = resolve('../../tmp/test_snapshot/desktop/metadata-batch')
+
 const WINDOW_SIZES = [
   [1400, 900],
   [1040, 660],
@@ -69,7 +69,7 @@ for (const scope of ['global', 'project'] as const) {
       JSON.stringify({ ...preferences, theme: scope === 'global' ? 'light' : 'dark' })
     )
     const desktop = new DesktopSession(runtime, testInfo)
-    mkdirSync(EVIDENCE_ROOT, { recursive: true })
+    const EVIDENCE_ROOT = runtime.artifacts
     try {
       const page = await desktop.launch()
       const base = await apiBase(page)
@@ -93,17 +93,12 @@ for (const scope of ['global', 'project'] as const) {
       expect((await imported.json()).count).toBe(ENTRY_COUNT)
       await page.reload()
       await enterWorkbenchShell(page)
-      await page.getByTestId('topbar-project').click()
-      await page
-        .getByTestId(
-          scope === 'project' ? `project-menu-option-${PROJECT_NAME}` : 'project-menu-literature'
-        )
-        .click()
-      await page.getByTestId('activity-literature').click()
-      const rows = page.locator('.lit-row')
-      await expect(rows).toHaveCount(ENTRY_COUNT)
-      const selectAll = page.locator('.lit-table-head').getByRole('checkbox')
+      await openLiteratureScope(page, scope === 'project' ? PROJECT_NAME : undefined)
+      const rows = page.locator('.lit-row:visible')
+      const selectAll = page.locator('.lit-table-head:visible').getByRole('checkbox')
+      await expect(rows.first()).toBeVisible()
       await selectAll.check()
+      await expect(page.getByText(`已选 ${ENTRY_COUNT} 篇`, { exact: true })).toBeVisible()
       await page.getByRole('button', { name: '同步元数据', exact: true }).click()
       const dialog = page
         .getByRole('dialog')
@@ -113,19 +108,21 @@ for (const scope of ['global', 'project'] as const) {
         .getByRole('button', { name: '关闭', exact: true })
       await expect(dialog).toBeVisible()
       for (const [width, height] of WINDOW_SIZES) {
-        await desktop.app!.evaluate(
+        const contentSize = await desktop.app!.evaluate(
           ({ BrowserWindow }, size) => {
             const window = BrowserWindow.getAllWindows().find(
               (candidate) => candidate.webContents.getURL() === size.url
             )
             if (!window) throw new Error('Metadata acceptance window not found')
             window.setContentSize(size.width, size.height)
+            const [width, height] = window.getContentSize()
+            return { width, height }
           },
           { width, height, url: page.url() }
         )
         await expect
           .poll(() => page.evaluate(() => ({ width: innerWidth, height: innerHeight })))
-          .toEqual({ width, height })
+          .toEqual(contentSize)
         await assertScrollBoundary(dialog)
         await page.screenshot({
           path: join(EVIDENCE_ROOT, `${scope}-running-${width}x${height}.png`),
@@ -134,6 +131,7 @@ for (const scope of ['global', 'project'] as const) {
       await close.focus()
       await page.keyboard.press('Enter')
       await expect(dialog).toHaveCount(0)
+      await page.screenshot({ path: join(EVIDENCE_ROOT, `${scope}-toolbar-narrow.png`) })
       await page.getByRole('button', { name: '同步进度', exact: true }).click()
       await expect(dialog.getByRole('button', { name: '停止同步', exact: true })).toBeEnabled()
       await assertScrollBoundary(dialog)

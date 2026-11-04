@@ -14,4 +14,5 @@ BOOL SSReadinessFailedRequest(NSURL *source, NSURL *target);
 BOOL SSReadinessPublishBound(NSURL *source, NSURL *target, NSDictionary *binding, BOOL success, NSInteger code, NSError **error);
 NSInteger SSReadinessReadBound(NSURL *source, NSURL *target, NSDictionary *binding, NSError **error);
 BOOL SSReadinessFailedRequestBound(NSURL *source, NSURL *target, NSDictionary *binding);
+NSDictionary *SSReadinessFailureSnapshot(NSURL *source, NSURL *target, NSDictionary *binding, NSInteger code, NSError **error);
 BOOL SSReadinessRemove(NSURL *source, NSError **error);

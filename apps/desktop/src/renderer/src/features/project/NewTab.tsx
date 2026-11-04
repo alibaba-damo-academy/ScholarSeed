@@ -5,13 +5,17 @@ import { ChevronRight, FolderTree, Folders } from 'lucide-react'
 import { Button } from '../../components/ui'
 import { useApp } from '../../store'
 import { resolveProjectTabSelection } from '../workbench/tabs'
+import { useWorkspaceController } from '../workbench/workspace'
 
 export function NewTab({ tabId }: { tabId?: string }): React.JSX.Element {
   const { t } = useTranslation('workbench')
   const { set } = useApp()
+  const workspace = useWorkspaceController()
   const choose = (kind: 'library' | 'explorer'): void => {
     if (!tabId) return
-    set((current) => resolveProjectTabSelection(current.tabs, tabId, kind))
+    set((current) =>
+      resolveProjectTabSelection(current.tabs, tabId, kind, workspace.pageTabsInLeaf(tabId))
+    )
   }
 
   return (

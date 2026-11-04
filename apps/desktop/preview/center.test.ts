@@ -64,18 +64,28 @@ test('headless project center consumes declared scenarios, page actions and shar
   const page = await fixture.page(context)
   await page.setViewportSize(WORKSPACE_WINDOW_SIZE)
   const errors: string[] = []
+  const requests: { event: string; path: string; at: number; status?: number }[] = []
+  page.on('request', request => {
+    if (request.url().startsWith(fixture.url)) requests.push({ event: 'request', path: new URL(request.url()).pathname, at: Date.now() })
+  })
   const unhandled = new Set<string>()
   page.on('response', response => {
+    if (response.url().startsWith(fixture.url)) requests.push({ event: 'response', path: new URL(response.url()).pathname, status: response.status(), at: Date.now() })
     if (response.status() === 501) unhandled.add(response.request().method() + ' ' + new URL(response.url()).pathname)
   })
   page.on('pageerror', error => { errors.push(error.message); context.diagnostic(error.stack ?? error.message) })
   page.on('console', message => { if (message.type() === 'error') context.diagnostic(message.text()) })
   page.on('requestfailed', request => context.diagnostic(request.url() + ': ' + request.failure()?.errorText))
   const open = async (scene: string) => {
+    requests.length = 0
     const reset = await page.request.post(fixture.url + '__preview/reset?previewInstance=center-ui', { data: { pageId: 'page-home', scene } })
     assert.equal(reset.status(), 200)
-    await page.goto(fixture.url + '?previewInstance=center-ui&page=page-home&scene=' + scene)
     const policy = PREVIEW_CATALOG.find(page => page.id === 'page-home')!.scenarios.find(entry => entry.id === scene)?.home
+    const projectRead = page.waitForResponse(response => new URL(response.url()).pathname === '/api/content/projects' && response.request().method() === 'GET')
+    await page.goto(fixture.url + '?previewInstance=center-ui&page=page-home&scene=' + scene)
+    // Navigation finishes before the dynamically imported renderer bootstraps.
+    // Observe its real startup read (including declared failures) before checking UI.
+    await (await projectRead).finished()
     if (policy?.projectRead === 'failed') {
       await expect(page.getByRole('button', { name: '重新加载', exact: true })).toBeVisible()
       await expect(page.getByTestId('home-projects-empty')).toHaveCount(0)
@@ -85,7 +95,7 @@ test('headless project center consumes declared scenarios, page actions and shar
     }
     try { await expect(page.getByTestId('project-center')).toBeVisible() }
     catch (error) {
-      writeFileSync(join(OUTPUT, 'startup-failure.json'), JSON.stringify({ scene, url: page.url(), errors, text: await page.locator('body').innerText() }, null, 2))
+      writeFileSync(join(OUTPUT, 'startup-failure.json'), JSON.stringify({ scene, url: page.url(), errors, requests, text: await page.locator('body').innerText() }, null, 2))
       await page.screenshot({ path: join(OUTPUT, 'startup-failure.png') })
       throw error
     }

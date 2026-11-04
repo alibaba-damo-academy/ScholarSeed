@@ -1179,8 +1179,8 @@ class _DisconnectedSubscriptions:
         return True
 
 
-def test_subscription_disabled_default_is_auto_switched() -> None:
-    """订阅连接断开后，默认模型和执行选择都回落到可用个人连接。"""
+def test_subscription_disabled_default_requires_explicit_selection() -> None:
+    """订阅断开后保留选择与禁用原因，不能静默切换另一计费连接。"""
 
     store = ModelProfileStore(shared_ownership=True)
     for existing in store.list()["profiles"]:
@@ -1221,13 +1221,20 @@ def test_subscription_disabled_default_is_auto_switched() -> None:
             str(sorted(rows)),
         )
         check(
-            "订阅置灰的默认键回落并落盘",
-            payload["current_model"] == personal_key and selected["model"] == personal_key,
+            "订阅置灰保留默认键，等待用户显式选择",
+            payload["current_model"] == subscription_key and selected["model"] == subscription_key,
             str(payload["current_model"]),
         )
+        try:
+            service.selected_model_key(subscription_key, user_id=LOCAL_USER_ID)
+        except SessionModelUnavailableError:
+            refused = True
+        else:
+            refused = False
+        check("执行面拒绝失效订阅，不能静默切换计费连接", refused)
         check(
-            "订阅失效的执行选择回落到可用个人连接",
-            service.selected_model_key(subscription_key, user_id=LOCAL_USER_ID) == personal_key,
+            "显式选择的个人连接仍可执行",
+            service.selected_model_key(personal_key, user_id=LOCAL_USER_ID) == personal_key,
         )
         row = rows[subscription_key]
         check(
@@ -2119,7 +2126,7 @@ def main() -> int:
     test_builtin_models_greyed_out_when_signed_out()
     test_signed_out_default_auto_switches_to_first_available_model()
     test_signed_out_without_available_models_keeps_the_readable_error()
-    test_subscription_disabled_default_is_auto_switched()
+    test_subscription_disabled_default_requires_explicit_selection()
     test_machine_axis_splits_gateway_gate_and_personal_connection_identities()
     test_declared_empty_legacy_connection_uses_product_gateway()
     test_credential_fields_never_erase_the_builtin_catalog()

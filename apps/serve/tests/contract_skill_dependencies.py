@@ -4,13 +4,23 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import re
+import subprocess
 import sys
+import sysconfig
+import tempfile
 import tomllib
 from pathlib import Path
 
 from service.capabilities.service.package import PACKAGE_MANIFEST
-from service.capabilities.service.source import source_lock
+from service.capabilities.service.source import (
+    compile_source_skills,
+    discover_source_skills,
+    source_lock,
+)
+from service.paths import SERVICE_BUNDLED_SKILLS_DIR
+from service.platform.vocabulary import BRIDGE_SESSION_ENV
 
 PASS = 0
 FAIL = 0
@@ -25,9 +35,6 @@ DEPENDENCIES = (
     REPO_ROOT / "apps" / "serve" / "service" / "capabilities" / "service" / "dependencies.py"
 )
 BACKEND_SOURCE = REPO_ROOT / "apps" / "desktop" / "src" / "main" / "backend.ts"
-# 依赖政策有两份声明: registry.json 是构建期政策(scripts/shared/dependencies.py 校验它进 desktop
-# 闭包), 技能清单是 provision/verify 真正读取的那份(dependencies.py:_inputs)。两者必须逐字
-# 一致, 否则"评审过的政策"与"实际被供给的依赖"会静默分叉。
 SKILL_REGISTRY = REPO_ROOT / "skills" / "registry.json"
 COMMUNITY_SKILLS = REPO_ROOT / "skills" / "community"
 # 随包原生工具链的资产清单: 它是"哪些命令由产品供给"的唯一来源, 技能声明必须是它的子集。
@@ -99,23 +106,30 @@ def _product_dependencies_are_declared() -> None:
 
 def _registry_and_package_manifests_agree() -> None:
     policy = json.loads(SKILL_REGISTRY.read_text(encoding="utf-8"))["dependencies"]
-    directories = sorted(item.name for item in COMMUNITY_SKILLS.iterdir() if item.is_dir())
-    manifests = {}
-    for slug in directories:
-        manifest = COMMUNITY_SKILLS / slug / PACKAGE_MANIFEST
-        if manifest.is_file():
-            manifests[slug] = json.loads(manifest.read_text(encoding="utf-8"))
-    without_manifest = sorted(slug for slug in directories if slug not in manifests)
-    check("每个内置技能都带依赖清单", not without_manifest, str(without_manifest))
+    directories = discover_source_skills(COMMUNITY_SKILLS)
+    checked_in = [
+        slug for slug in directories if (COMMUNITY_SKILLS / slug / PACKAGE_MANIFEST).exists()
+    ]
+    check("源码不携带生成的依赖清单", not checked_in, str(checked_in))
+    with tempfile.TemporaryDirectory(prefix="skill-dependency-contract-") as temporary:
+        pack = Path(temporary) / "skills"
+        compile_source_skills(pack, COMMUNITY_SKILLS)
+        manifests = {
+            slug: json.loads((pack / slug / PACKAGE_MANIFEST).read_bytes())
+            for slug in directories
+            if (pack / slug / PACKAGE_MANIFEST).is_file()
+        }
+    missing = sorted(set(directories) - set(manifests))
+    check("每个内置技能产物都带生成的依赖清单", not missing, str(missing))
     check(
         "registry 没有指向不存在的技能目录",
-        not sorted(set(policy) - set(manifests)),
-        str(sorted(set(policy) - set(manifests))),
+        not sorted(set(policy) - set(directories)),
+        str(sorted(set(policy) - set(directories))),
     )
     check(
         "每个技能目录都在 registry 登记政策",
-        not sorted(set(manifests) - set(policy)),
-        str(sorted(set(manifests) - set(policy))),
+        not sorted(set(directories) - set(policy)),
+        str(sorted(set(directories) - set(policy))),
     )
     versions = {row["slug"]: row["version"] for row in source_lock(COMMUNITY_SKILLS)["skills"]}
     for slug in sorted(set(policy) & set(manifests)):
@@ -289,6 +303,82 @@ def _bundled_toolchain_is_staged_and_proved() -> None:
     check("打包期编译技能真实前导作为 oracle", "smoke_publication.py" in build)
 
 
+def _generation_json_uses_product_launcher() -> None:
+    """Execute the admitted bundle, including the real POSIX stage seam."""
+    scripts = Path(sysconfig.get_path("scripts"))
+    launcher = scripts / (
+        "scholarseed-skill-python.exe" if os.name == "nt" else "scholarseed-skill-python"
+    )
+    skill = SERVICE_BUNDLED_SKILLS_DIR / "literature-review"
+    helper = skill / "scripts/generation/_fast/status.py"
+    environment = dict(os.environ)
+    environment.pop(BRIDGE_SESSION_ENV, None)
+    environment["SLR_HOME"] = str(skill)
+    environment["PATH"] = str(scripts) + os.pathsep + environment.get("PATH", "")
+    with tempfile.TemporaryDirectory(prefix="generation-status-") as directory:
+        document = Path(directory) / "结果 with spaces.json"
+        document.write_text(
+            json.dumps({"items": [{"id": "甲"}, {"id": "乙"}], "nested": {"value": "中文"}}),
+            encoding="utf-8",
+        )
+        cases = (
+            (("len", str(document), "items"), "2"),
+            (("get", str(document), "nested.value"), "中文"),
+            (("ids", str(document), "items", "id"), '["甲", "乙"]'),
+            (("pick", str(document), "absent"), '{"absent": null}'),
+            (("get", str(document.with_suffix(".missing")), "value"), ""),
+        )
+        for arguments, expected in cases:
+            result = subprocess.run(
+                [str(launcher), str(helper), *arguments],
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+            check(
+                f"产品启动器 JSON helper {arguments[0]}",
+                result.returncode == 0 and result.stdout.strip() == expected,
+                result.stderr,
+            )
+        if os.name != "nt":
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    '. "$SLR_HOME/scripts/generation/_fast/_json.sh"; json_len "$1" items; json_get "$1" nested.value; json_ids "$1" items id; json_pick "$1" absent; emit_status generate SUCCESS 完成 count=2 ids=\'["甲","乙"]\'',
+                    "status",
+                    str(document),
+                ],
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+            lines = result.stdout.splitlines()
+            check(
+                "真实 generation shell seam 复用受审脚本",
+                result.returncode == 0
+                and lines[:4] == [expected for _arguments, expected in cases[:4]],
+                result.stderr,
+            )
+            status = json.loads(lines[-1]) if lines else {}
+            check(
+                "stage handshake 保留类型与中文",
+                status
+                == {
+                    "stage": "generate",
+                    "status": "SUCCESS",
+                    "status_reason": "完成",
+                    "count": 2,
+                    "ids": ["甲", "乙"],
+                },
+                str(status),
+            )
+
+
 def main() -> int:
     _product_dependencies_are_declared()
     _registry_and_package_manifests_agree()
@@ -296,6 +386,7 @@ def main() -> int:
     _runtime_uses_one_interpreter()
     _skills_use_product_python_command()
     _bundled_toolchain_is_staged_and_proved()
+    _generation_json_uses_product_launcher()
     print(f"\n{PASS} passed, {FAIL} failed")
     return 1 if FAIL else 0
 

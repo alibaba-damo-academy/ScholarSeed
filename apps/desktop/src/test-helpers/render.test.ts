@@ -31,9 +31,10 @@ async function root(
 }
 
 test('shared renderer resources keep each case isolated and close before process exit', async (context) => {
-  let fixture: Awaited<ReturnType<typeof renderFixture>> | undefined
-  const directory = await root(context, () => [fixture?.close() ?? Promise.resolve()])
-  fixture = await renderFixture(directory)
+  const owned: { fixture?: Awaited<ReturnType<typeof renderFixture>> } = {}
+  const directory = await root(context, () => [owned.fixture?.close() ?? Promise.resolve()])
+  const fixture = await renderFixture(directory)
+  owned.fixture = fixture
   const active = fixture
   for (const iteration of ['first', 'second']) {
     await context.test(iteration, async (child) => {
@@ -58,9 +59,10 @@ test('shared renderer resources keep each case isolated and close before process
 })
 
 test('page initialization failure retains its error and releases the real context through its registered hook', async (context) => {
-  let fixture: Awaited<ReturnType<typeof renderFixture>> | undefined
-  const directory = await root(context, () => [fixture?.close() ?? Promise.resolve()])
-  fixture = await renderFixture(directory)
+  const owned: { fixture?: Awaited<ReturnType<typeof renderFixture>> } = {}
+  const directory = await root(context, () => [owned.fixture?.close() ?? Promise.resolve()])
+  const fixture = await renderFixture(directory)
+  owned.fixture = fixture
   const browser = fixture.browser
   const createContext = browser.newContext.bind(browser)
   const hooks: (() => void | Promise<void>)[] = []
@@ -166,14 +168,18 @@ test('browser cleanup failure does not prevent listener cleanup or hide the surv
 })
 
 test('two fixtures with the same source root never share an optimizer cache or lifecycle', async (context) => {
-  let first: Awaited<ReturnType<typeof renderFixture>> | undefined
-  let second: Awaited<ReturnType<typeof renderFixture>> | undefined
+  const owned: {
+    first?: Awaited<ReturnType<typeof renderFixture>>
+    second?: Awaited<ReturnType<typeof renderFixture>>
+  } = {}
   const directory = await root(context, () => [
-    first?.close() ?? Promise.resolve(),
-    second?.close() ?? Promise.resolve(),
+    owned.first?.close() ?? Promise.resolve(),
+    owned.second?.close() ?? Promise.resolve(),
   ])
-  first = await renderFixture(directory)
-  second = await renderFixture(directory)
+  const first = await renderFixture(directory)
+  owned.first = first
+  const second = await renderFixture(directory)
+  owned.second = second
   assert.notEqual(first.server.config.cacheDir, second.server.config.cacheDir)
   await first.close()
   assert.equal(second.server.httpServer?.listening, true)

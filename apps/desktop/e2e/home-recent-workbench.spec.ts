@@ -10,7 +10,7 @@ test.beforeEach(async ({}, testInfo) => { skipQuarantined(testInfo) })
 const PDF_FIXTURE = resolve(__dirname, 'fixtures/data/minimal-project/sample.pdf')
 const PAGE_SIZE = 50
 
-test('home opens a recent PDF beyond the first literature page and reports a missing item', async ({}, testInfo) => {
+test('restored PDF resolves beyond the first literature page and returns home for a missing item', async ({}, testInfo) => {
   const runtime = createRuntime(testInfo)
   writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
     language: 'zh',
@@ -36,6 +36,9 @@ test('home opens a recent PDF beyond the first literature page and reports a mis
     await oldest.click()
     await page.getByRole('button', { name: '打开', exact: true }).click()
     await expect(page.getByTestId('pdf-document')).toBeVisible()
+    const preferencesPath = join(runtime.userData, 'renderer-preferences.json')
+    await expect.poll(() => JSON.parse(readFileSync(preferencesPath, 'utf8')).lastLocation?.target?.kind).toBe('document')
+    const savedLocation = JSON.parse(readFileSync(preferencesPath, 'utf8')).lastLocation
 
     for (let index = 0; index < PAGE_SIZE; index += 1) {
       await importPdf(`new-${String(index).padStart(2, '0')}.pdf`)
@@ -47,24 +50,28 @@ test('home opens a recent PDF beyond the first literature page and reports a mis
     expect(listing.items.some((item) => item.id === oldestId)).toBe(false)
 
     await page.reload()
-    await page.getByTestId('activity-home').click()
-    const recent = page.getByTestId(`home-recent-literature-${oldestId}`)
-    await expect(recent).toBeVisible()
-    await recent.click()
     await expect(page.getByTestId('pdf-document')).toBeVisible()
     await expect(page.getByTestId('pdf-page-1')).toBeVisible()
     await expect(page.getByText('正在载入 PDF...')).toHaveCount(0)
     await page.screenshot({ path: testInfo.outputPath('recent-older-pdf-open.png') })
 
-    await page.getByTestId('activity-home').click()
-    await expect(recent).toBeVisible()
     const deleted = await page.request.post(`${base}/api/v1/literatures/bulk-delete`, {
       data: { literature_ids: [oldestId] }
     })
     expect(deleted.ok(), await deleted.text()).toBe(true)
-    await recent.click()
-    await expect(page.getByText('文献或附件暂不可打开，请在文献库中检查。')).toBeVisible()
-    await page.screenshot({ path: testInfo.outputPath('recent-missing-pdf-error.png') })
+    await desktop.close()
+    const preferences = JSON.parse(readFileSync(preferencesPath, 'utf8'))
+    writeFileSync(preferencesPath, JSON.stringify({ ...preferences, lastLocation: savedLocation }))
+    const restart = new DesktopSession(runtime, testInfo, { preserveNavigation: true })
+    try {
+      const restarted = await restart.launch()
+      await expect(restarted.getByTestId('project-center')).toBeVisible()
+      await expect(restarted.getByTestId('pdf-document')).toHaveCount(0)
+      await restarted.screenshot({ path: testInfo.outputPath('recent-missing-pdf-error.png') })
+      restart.assertNoPageErrors()
+    } finally {
+      await restart.attachArtifacts()
+    }
     desktop.assertNoPageErrors()
   } finally {
     await desktop.attachArtifacts()

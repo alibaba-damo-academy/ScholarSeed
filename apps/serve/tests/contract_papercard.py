@@ -93,7 +93,8 @@ class PaperCardContracts(unittest.TestCase):
                 "result=asyncio.run(_process_single_paper(None,'paper',"
                 "{'title':'Evidence Paper'},json.load(sys.stdin),'full','theory',"
                 "with_source_map=True)); "
-                "assert result[5]['card_from_hub']; "
+                "assert result[0]['info_type']=='card'; "
+                "assert result[0]['card']['findings']=='Generated synthesis'; "
                 "print(json.dumps({'paper_card':result[0],'source_mapping':result[3]}))",
             ],
             input=json.dumps(source),
@@ -105,8 +106,9 @@ class PaperCardContracts(unittest.TestCase):
             },
             capture_output=True,
             text=True,
-            check=True,
+            check=False,
         )
+        self.assertEqual(result.returncode, 0, result.stderr)
         root = Path(self.temp.name)
         target = root / "card.json"
         raw = json.loads(result.stdout)

@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -32,6 +33,9 @@ func main() {
 	flag.Parse()
 	sandboxRequested := *sandboxHome != "" || *sandboxVersion != "" || *sandboxRuntime != "" || *sandboxParent != 0 || *sandboxSnapshot != ""
 	p, err := handoff.ParsePolicy(buildPolicy)
+	if err == nil && *request != "" && *worker == "" {
+		err = p.ValidateRecoveryMessages()
+	}
 	if err == nil && *check && !sandboxRequested {
 		raw, _ := base64.StdEncoding.DecodeString(buildPolicy)
 		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"schema": handoff.Schema, "event": "policy", "policy_sha256": handoff.Hash(raw)})
@@ -67,6 +71,22 @@ func main() {
 			os.Exit(handoff.SandboxExitCode(err))
 		}
 		_ = json.NewEncoder(os.Stdout).Encode(handoff.Event{Event: "error", Message: err.Error()})
+		if failure := recoveryFailure(*request, *worker, err); failure != nil {
+			if presentationErr := showRecovery(p.RecoveryMessages, failure); presentationErr != nil {
+				fmt.Fprintln(os.Stderr, presentationErr)
+			}
+		}
 		os.Exit(1)
 	}
+}
+
+func recoveryFailure(request, worker string, failure error) *handoff.UpdateRecoveryError {
+	if request == "" || worker != "" {
+		return nil
+	}
+	var recovery *handoff.UpdateRecoveryError
+	if errors.As(failure, &recovery) {
+		return recovery
+	}
+	return nil
 }

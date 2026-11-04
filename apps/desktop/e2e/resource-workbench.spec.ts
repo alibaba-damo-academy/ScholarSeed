@@ -1,3 +1,4 @@
+import { openProjectExplorer } from './fixtures/projects'
 import { expect, test } from '@playwright/test'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -32,8 +33,8 @@ test('resource tree keeps expanded rows and scroll position while opening and re
     if (await page.getByTestId('landing-dialog').isVisible()) {
       await page.getByTestId('landing-skip').click()
     }
-    await page.getByTestId('home-project-empty').click()
-    await page.getByRole('textbox', { name: '项目名 *' }).fill(PROJECT_NAME)
+    await page.getByTestId('home-project-create-top').click()
+    await page.getByTestId('project-create-name').fill(PROJECT_NAME)
     const created = page.waitForResponse(response =>
       response.url().endsWith('/api/content/projects') && response.request().method() === 'POST')
     const committed = page.waitForResponse(async response =>
@@ -47,21 +48,22 @@ test('resource tree keeps expanded rows and scroll position while opening and re
     for (let index = 0; index < FILE_COUNT; index += 1) {
       writeFileSync(join(directory, fileName(index)), fileText(index))
     }
-    await page.getByTestId('resource-refresh').click()
+    await openProjectExplorer(page)
+    await page.getByTestId('explorer-refresh').click()
     let relative = RESOURCE_DIRECTORY
     for (const name of DIRECTORY_NAMES) {
       relative += `/${name}`
-      await page.getByTestId(`tree-${relative}`).click()
+      await page.getByTestId(`explorer-select-${relative}`).click()
     }
-    const tree = page.getByTestId('resource-tree-root')
-    const firstPageCount = await tree.locator('.vds-tree-row[data-testid$=".md"]').count()
-    await page.getByTestId(`tree-load-more-${DIRECTORY_NAMES.length}`).click()
-    await expect(page.getByTestId(`tree-load-more-${DIRECTORY_NAMES.length}`)).toHaveCount(0)
+    const tree = page.getByTestId('explorer-tree').locator(':scope > .overflow-auto')
+    const firstPageCount = await tree.locator('[data-testid^="explorer-node-"][data-testid$=".md"]').count()
+    await page.getByTestId(`explorer-more-${relative}`).click()
+    await expect(page.getByTestId(`explorer-more-${relative}`)).toHaveCount(0)
     const firstPath = `${relative}/${fileName(OPEN_FILE_INDICES[0])}`
-    await page.getByTestId(`tree-${firstPath}`).scrollIntoViewIfNeeded()
+    await page.getByTestId(`explorer-select-${firstPath}`).scrollIntoViewIfNeeded()
     await tree.evaluate(element => {
       const scroll = element
-      const rows = [...element.querySelectorAll('.vds-tree-row[data-testid]')]
+      const rows = [...element.querySelectorAll('[data-testid^="explorer-node-"]')]
         .map(row => row.getAttribute('data-testid')!)
       const samples: { scroll: number; missing: string[] }[] = []
       Object.assign(window, { resourceTreeProbe: { samples, scroll: scroll.scrollTop, rows } })
@@ -74,11 +76,11 @@ test('resource tree keeps expanded rows and scroll position while opening and re
     })
     const requests: string[] = []
     page.on('request', request => {
-      if (new URL(request.url()).pathname === '/api/resource/tree') requests.push(request.url())
+      if (new URL(request.url()).pathname.endsWith('/tree')) requests.push(request.url())
     })
     for (const index of OPEN_FILE_INDICES) {
-      await page.getByTestId(`tree-${relative}/${fileName(index)}`).click()
-      await expect(page.getByTestId('markdown-paper').getByRole('textbox')).toHaveText(fileText(index))
+      await page.getByTestId(`explorer-select-${relative}/${fileName(index)}`).click()
+      await expect(page.getByTestId('explorer-preview').getByTestId('markdown-paper').getByRole('textbox')).toHaveText(fileText(index))
     }
     await page.screenshot({ path: testInfo.outputPath('opened-files.png') })
     const openingRequests = [...requests]
@@ -87,7 +89,7 @@ test('resource tree keeps expanded rows and scroll position while opening and re
     }).resourceTreeProbe)
     expect(openingProbe.samples.flatMap(sample => sample.missing)).toEqual([])
     expect(openingProbe.samples.map(sample => sample.scroll)).toEqual(openingProbe.samples.map(() => openingProbe.scroll))
-    await page.getByTestId(`tree-${relative}/${fileName(FILE_COUNT - 1)}`).scrollIntoViewIfNeeded()
+    await page.getByTestId(`explorer-select-${relative}/${fileName(FILE_COUNT - 1)}`).scrollIntoViewIfNeeded()
     await tree.evaluate(element => {
       const probe = (window as unknown as {
         resourceTreeProbe: { scroll: number; samples: unknown[] }
@@ -96,13 +98,14 @@ test('resource tree keeps expanded rows and scroll position while opening and re
       probe.samples.length = 0
     })
     const refreshed = page.waitForResponse(response =>
-      new URL(response.url()).pathname === '/api/resource/tree' &&
+      new URL(response.url()).pathname.endsWith('/tree') &&
       new URL(response.url()).searchParams.get('path') === relative &&
-      Number(new URL(response.url()).searchParams.get('offset')) === firstPageCount)
-    await page.getByTestId('resource-refresh').click()
-    await refreshed
-    await expect(page.getByTestId(`tree-${firstPath}`)).toHaveCount(1)
-    await expect(page.getByTestId('markdown-paper').getByRole('textbox')).toHaveText(fileText(OPEN_FILE_INDICES.at(-1)!))
+      Number(new URL(response.url()).searchParams.get('offset')) === firstPageCount).catch(() => null)
+    await page.getByTestId('explorer-refresh').click()
+    await expect(tree.locator('[data-testid^="explorer-node-"][data-testid$=".md"]')).toHaveCount(FILE_COUNT)
+    expect(await refreshed).not.toBeNull()
+    await expect(page.getByTestId(`explorer-select-${firstPath}`)).toHaveCount(1)
+    await expect(page.getByTestId('explorer-preview').getByTestId('markdown-paper').getByRole('textbox')).toHaveText(fileText(OPEN_FILE_INDICES.at(-1)!))
     await page.evaluate(() => new Promise<void>(resolve =>
       requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
     const probe = await page.evaluate(() => (window as unknown as {
@@ -113,7 +116,7 @@ test('resource tree keeps expanded rows and scroll position while opening and re
     await testInfo.attach('tree-observations', { path: observations, contentType: 'application/json' })
     await page.screenshot({ path: testInfo.outputPath('refreshed-tree.png') })
     expect(await tree.evaluate(element => element.scrollTop)).toBe(probe.scroll)
-    await expect(tree.locator('.vds-tree-row[data-testid$=".md"]')).toHaveCount(FILE_COUNT)
+    await expect(tree.locator('[data-testid^="explorer-node-"][data-testid$=".md"]')).toHaveCount(FILE_COUNT)
     expect(probe.scroll).toBeGreaterThan(0)
     expect(probe.samples.flatMap(sample => sample.missing)).toEqual([])
     expect(probe.samples.map(sample => sample.scroll)).toEqual(probe.samples.map(() => probe.scroll))

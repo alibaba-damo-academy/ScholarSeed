@@ -27,7 +27,7 @@ import {
 import { strikethroughSchema } from '@milkdown/kit/preset/gfm'
 import { uploadConfig } from '@milkdown/kit/plugin/upload'
 import { redoCommand, undoCommand } from '@milkdown/kit/plugin/history'
-import { replaceAll } from '@milkdown/kit/utils'
+import { $prose, replaceAll } from '@milkdown/kit/utils'
 import { TextSelection } from '@milkdown/kit/prose/state'
 import type { EditorView } from '@milkdown/kit/prose/view'
 import React, {
@@ -119,6 +119,7 @@ import {
 import { MonacoDocument } from './MonacoDocument'
 import { markdownSourceRange, whitespaceSelection, type MarkdownSyntaxNode } from './mapping'
 import { tableColumnInheritancePlugin } from './table'
+import { createMarkdownFindPlugin, markdownFindKey } from './highlight'
 import {
   selectionFingerprint,
   selectionViewport,
@@ -815,6 +816,14 @@ function MarkdownVisualEditor({
     return () => onToolbarChange(null)
   }, [onToolbarChange, readOnly, runFormat, t, toolbarItems, toolbarPressed])
 
+  const clearFindMatch = useCallback((): void => {
+    if (!crepeReadyRef.current) return
+    crepeRef.current?.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx)
+      view.dispatch(view.state.tr.setMeta(markdownFindKey, null))
+    })
+  }, [])
+
   const runFind = useCallback(
     (direction: 1 | -1): void => {
       const crepe = crepeRef.current
@@ -826,6 +835,7 @@ function MarkdownVisualEditor({
         const view = ctx.get(editorViewCtx)
         const matches = markdownTextMatches(view.state.doc, findQuery)
         if (!matches.length) {
+          view.dispatch(view.state.tr.setMeta(markdownFindKey, null))
           setFindResult({ current: 0, total: 0 })
           return
         }
@@ -845,6 +855,7 @@ function MarkdownVisualEditor({
         view.dispatch(
           view.state.tr
             .setSelection(TextSelection.create(view.state.doc, match.from, match.to))
+            .setMeta(markdownFindKey, match)
             .scrollIntoView()
         )
         const scroller = hostRef.current?.querySelector<HTMLElement>(':scope > .milkdown')
@@ -860,11 +871,13 @@ function MarkdownVisualEditor({
   )
 
   const closeFind = useCallback((): void => {
+    clearFindMatch()
+    setFindResult(null)
     setFindOpen(false)
     requestAnimationFrame(() => {
       crepeRef.current?.editor.action((ctx) => ctx.get(editorViewCtx).focus())
     })
-  }, [])
+  }, [clearFindMatch])
 
   const runMarkdownShortcut = useCallback(
     (id: ShortcutCommandId): void => {
@@ -1195,6 +1208,7 @@ function MarkdownVisualEditor({
       .use(mathCompatibilityPlugin)
       .use(literalLatexSchema)
       .use(tableColumnInheritancePlugin)
+      .use($prose(createMarkdownFindPlugin))
     crepe.editor.config((ctx) => {
       configureCitationLinks(ctx)
       ctx.update(uploadConfig.key, (config) => ({
@@ -1572,6 +1586,7 @@ function MarkdownVisualEditor({
                 placeholder={t('markdown.findPlaceholder')}
                 value={findQuery}
                 onChange={(event) => {
+                  clearFindMatch()
                   setFindQuery(event.target.value)
                   setFindResult(null)
                 }}

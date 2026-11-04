@@ -3435,13 +3435,13 @@ def test_session_skill_configuration() -> None:
 
         async def verify_configuration() -> None:
             @asynccontextmanager
-            async def mutation():
+            async def reading():
                 yield
 
             @asynccontextmanager
             async def control(**_context):
                 yield SimpleNamespace(
-                    mutation=mutation,
+                    reading=reading,
                     skill_control=SimpleNamespace(
                         configure=AsyncMock(), list_skills=AsyncMock(return_value=native)
                     ),
@@ -3819,9 +3819,14 @@ def test_inventory_projection() -> None:
             inventory_control=inventory_control,
             session_id="native-session",
         )
-        return await session.inventory(
-            InventoryRequest((InventoryKind.MODELS, InventoryKind.SKILLS, InventoryKind.MCP))
-        )
+        for refresh in (False, True):
+            inventory = await session.inventory(
+                InventoryRequest(
+                    (InventoryKind.MODELS, InventoryKind.SKILLS, InventoryKind.MCP),
+                    refresh=refresh,
+                )
+            )
+        return inventory
 
     inventory = asyncio.run(scenario())
     values = dict(inventory.values) if isinstance(inventory.values, dict) else {}
@@ -5567,7 +5572,7 @@ def test_upstream_inspection_launch() -> None:
     check("inspection releases its borrow", lease.close.await_count == 1)
 
 
-def test_skill_refresh_uses_exclusive_control() -> None:
+def test_skill_refresh_does_not_require_exclusive_control() -> None:
     events = []
     roots = (ROOT / "bundled-skills", ROOT / "user-skills")
     host = HostWarmupRequest(
@@ -5615,8 +5620,8 @@ def test_skill_refresh_uses_exclusive_control() -> None:
 
     asyncio.run(scenario())
     check(
-        "only forced refresh mutates, without expanding roots",
-        events == [("list", False), ("mutation", "enter"), ("list", True), ("mutation", "exit")],
+        "skill refresh does not freeze the shared execution host or expand roots",
+        events == [("list", False), ("list", True)],
     )
 
 
@@ -6602,7 +6607,7 @@ def main() -> int:
     test_preack_process_exit_releases_command_activity()
     test_evidence_cursor()
     test_upstream_inspection_launch()
-    test_skill_refresh_uses_exclusive_control()
+    test_skill_refresh_does_not_require_exclusive_control()
     test_codex_flattened_stream_disconnect_recovers_transient_semantics()
     test_codex_retry_exhaustion_preserves_provider_status()
     test_subscription_capability_rejection_is_terminal()

@@ -1628,6 +1628,30 @@ class ContinuationContracts(unittest.IsolatedAsyncioTestCase):
         turns._schedule_locked.assert_called_once()
         self.assertEqual(self.catalog.queued_messages(SESSION_ID), queued)
 
+    async def test_reconciled_original_still_creates_exactly_one_automatic_successor(self):
+        turns = await self.queued_recovery()
+        self.catalog.claim_uncertainty(
+            SESSION_ID, UncertaintyKind.TURN, NATIVE_ID, state=UncertaintyState.UNKNOWN
+        )
+        self.catalog.transition_uncertainty(
+            SESSION_ID, UncertaintyKind.TURN, NATIVE_ID, UncertaintyState.RECONCILED
+        )
+        original = self.catalog.queued_message(SESSION_ID, CLIENT_ID)
+        self.assertTrue(
+            self.catalog.remove_reconciled_unknown_message(
+                SESSION_ID, CLIENT_ID, original.operation_seq
+            )
+        )
+        await self.recover()
+        turns._schedule_locked.assert_called_once()
+        await turns._enqueue_recovery(
+            self.live, self.recovery._checkpoints[SESSION_ID], "generation-2"
+        )
+        turns._schedule_locked.assert_called_once()
+        queued = self.catalog.queued_messages(SESSION_ID)
+        self.assertEqual(len(queued), 1)
+        self.assertEqual(queued[0].purpose, QUEUE_PURPOSE_RECOVERY)
+
     async def refreshed_recovery(self, *, authority=None):
         turns = await self.queued_recovery()
         binding = RuntimeBinding(

@@ -1,3 +1,4 @@
+import { openProjectMenu, openProjectExplorer } from './fixtures/projects'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { _electron as electron, expect, test, type ElectronApplication, type Page } from '@playwright/test'
@@ -64,7 +65,7 @@ test('installed package creates a project and document, completes a real model t
       let session = await startInstalled(installed.executable, runtime)
       app = session.app
       const page = session.page
-      await page.getByTestId('topbar-project').click()
+      await openProjectMenu(page)
       await page.getByTestId('project-menu-create').click()
       const dialog = page.getByTestId('project-new-modal')
       await dialog.getByRole('textbox').fill(PROJECT_NAME)
@@ -76,10 +77,10 @@ test('installed package creates a project and document, completes a real model t
       const projects = await response.json() as { projects: Array<{ name: string; root: string }> }
       const project = projects.projects.find(item => item.name === PROJECT_NAME)
       expect(project).toBeTruthy()
-      await page.getByTestId('topbar-project').click()
+      await openProjectMenu(page)
       await page.getByTestId(`project-menu-option-${PROJECT_NAME}`).click()
-      if (!await page.getByTestId('resource-panel').isVisible().catch(() => false)) {
-        await page.getByTestId('activity-resource').click()
+      if (!await page.getByTestId('explorer-tree').isVisible().catch(() => false)) {
+        await openProjectExplorer(page)
       }
       await page.getByTestId('resource-add').click()
       await page.getByTestId('resource-new-doc').click()
@@ -106,7 +107,7 @@ test('installed package creates a project and document, completes a real model t
       session = await startInstalled(installed.executable, runtime)
       app = session.app
       const restarted = session.page
-      await restarted.getByTestId('topbar-project').click()
+      await openProjectMenu(restarted)
       await expect(restarted.getByTestId(`project-menu-option-${PROJECT_NAME}`)).toBeVisible()
       expect(readFileSync(documentPath, 'utf8')).toContain(DOCUMENT_NAME)
       if (!await restarted.getByTestId('ai-panel').isVisible().catch(() => false)) {

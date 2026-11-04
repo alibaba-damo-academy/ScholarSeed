@@ -45,7 +45,8 @@ test('every failed preparation, smoke or build stops the pipeline and preserves 
 test('real npm entry preserves argv and stops after any failed child process', () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'distribution-gate-'))
   const capture = path.join(directory, 'calls.jsonl')
-  const npm = npmCommand({ ...process.env, PATH: process.env.PATH, npm_execpath: process.env.npm_execpath })
+  // This contract executes npm even when the containing test was launched by pnpm.
+  const npm = npmCommand({ ...process.env, npm_execpath: undefined })
   const forwarded = ['--channel', 'preview', '--result', path.join(directory, 'result & 中文.json')]
   try {
     fs.mkdirSync(path.join(directory, 'scripts/ci'), { recursive: true })

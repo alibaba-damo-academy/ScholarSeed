@@ -1,3 +1,4 @@
+import { openProjectMenu, openProjectExplorer } from './fixtures/projects'
 import { createHash } from 'node:crypto'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -137,7 +138,7 @@ test('background Office warmup precedes every file open and reuses one foregroun
     // seedProject reloads the page. Use the actual project creation UI without a reload,
     // so all measurements and host identities belong to this one app initialization.
     const base = await apiBase(page)
-    await page.getByTestId('topbar-project').click()
+    await openProjectMenu(page)
     await page.getByTestId('project-menu-create').click()
     const dialog = page.getByTestId('project-new-modal')
     await dialog.getByRole('textbox').fill(PROJECT_NAME)
@@ -163,8 +164,8 @@ test('background Office warmup precedes every file open and reuses one foregroun
     const resources = join(result.result.root, 'resources')
     mkdirSync(resources, { recursive: true })
     for (const file of originals) copyFileSync(file.path, join(resources, file.name))
-    await page.getByTestId('activity-resource').click()
-    await page.getByTestId('resource-refresh').click()
+    await openProjectExplorer(page)
+    await page.getByTestId('explorer-refresh').click()
     if (await page.getByTestId('ai-panel').isVisible())
       await page.getByTestId('ai-panel').getByRole('button', { name: '关闭', exact: true }).click()
 
@@ -222,7 +223,7 @@ test('background Office warmup precedes every file open and reuses one foregroun
         await canvas.click({ position: { x: 90, y: 65 } })
         const menu = page.getByTestId('selection-action-host')
         await expect(menu).toBeVisible({ timeout: READY_TIMEOUT_MS })
-        await menu.getByRole('button', { name: '添加到对话', exact: true }).click()
+        await menu.getByRole('button', { name: '添加到任务', exact: true }).click()
         const reference = page.getByTestId('ai-context-ref').filter({ hasText: name })
         await expect(reference).toBeVisible()
         await reference.hover()

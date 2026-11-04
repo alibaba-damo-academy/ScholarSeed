@@ -9,6 +9,8 @@
 #include "security.h"
 #include <stdio.h>
 
+#define CONSUME_IDENTITY_DIGITS 20
+
 #ifdef _WIN32
 #include <windows.h>
 #define MAX_PATH_UNITS 32760
@@ -572,6 +574,64 @@ static napi_value create_at(napi_env env, napi_callback_info info) {
   return result;
 }
 
+#ifdef __APPLE__
+static bool consume_identity(const char *text, uint64_t *value) {
+  size_t length = strlen(text);
+  if (!length || length > CONSUME_IDENTITY_DIGITS || (length > 1 && text[0] == '0')) return false;
+  *value = 0;
+  for (size_t index = 0; index < length; index++) {
+    if (text[index] < '0' || text[index] > '9') return false;
+    uint64_t digit = (uint64_t)(text[index] - '0');
+    if (*value > (UINT64_MAX - digit) / 10) return false;
+    *value = *value * 10 + digit;
+  }
+  return true;
+}
+#endif
+
+static napi_value consume_at(napi_env env, napi_callback_info info) {
+#ifndef __APPLE__
+  (void)info;
+  return fail(env, "ERR_LEASE_PLATFORM", 0);
+#else
+  size_t argc = 6, length = 0;
+  napi_value argv[6], result;
+  void *data = NULL, *buffer = NULL;
+  bool is_buffer = false;
+  if (napi_get_cb_info(env, info, &argc, argv, NULL, &data) != napi_ok || argc != 5 ||
+      napi_is_buffer(env, argv[2], &is_buffer) != napi_ok || !is_buffer ||
+      napi_get_buffer_info(env, argv[2], &buffer, &length) != napi_ok ||
+      !length || length > DIRECTORY_READ_LIMIT)
+    return fail(env, "ERR_LEASE_ARGUMENT", 0);
+  struct lease *parent = lookup(env, data, argv[0]);
+  if (!parent) return NULL;
+  if (parent->state != LEASE_HELD) return fail(env, "ERR_LEASE_CLOSED", 0);
+  if (!parent->directory) return fail(env, "ERR_LEASE_ARGUMENT", 0);
+  char *name = text_argument(env, argv[1], DIRECTORY_NAME_BYTES);
+  if (!name) return NULL;
+  char *device = text_argument(env, argv[3], CONSUME_IDENTITY_DIGITS);
+  if (!device) { free(name); return NULL; }
+  char *inode = text_argument(env, argv[4], CONSUME_IDENTITY_DIGITS);
+  if (!inode) { free(name); free(device); return NULL; }
+  uint64_t expected_device = 0, expected_inode = 0;
+  bool valid = consume_identity(device, &expected_device) && consume_identity(inode, &expected_inode);
+  free(device);
+  free(inode);
+  if (!valid) { free(name); return fail(env, "ERR_LEASE_ARGUMENT", 0); }
+  struct directory_error error = {0};
+  bool consumed = directory_consume(parent->directory, name, buffer, length,
+                                    expected_device, expected_inode, &error);
+  free(name);
+  if (!consumed) {
+    if (!strcmp(error.code, "ERR_LEASE_RELEASE") || !strcmp(error.code, "ERR_LEASE_SYNC"))
+      parent->state = LEASE_UNCERTAIN;
+    return fail_directory(env, &error);
+  }
+  if (napi_get_undefined(env, &result) != napi_ok) return fail(env, "ERR_LEASE_NATIVE", 0);
+  return result;
+#endif
+}
+
 /* Plain own enumerable data properties; defineProperty avoids __proto__ setters. */
 static napi_value list_at(napi_env env, napi_callback_info info) {
   size_t argc = 4;
@@ -670,6 +730,7 @@ static napi_value initialize(napi_env env, napi_value exports) {
       {"reclaimAt", NULL, reclaim_at, NULL, NULL, NULL, napi_default, owner},
       {"createChild", NULL, create_child, NULL, NULL, NULL, napi_default, owner},
       {"createAt", NULL, create_at, NULL, NULL, NULL, napi_default, owner},
+      {"consumeAt", NULL, consume_at, NULL, NULL, NULL, napi_default, owner},
       {"listAt", NULL, list_at, NULL, NULL, NULL, napi_default, owner},
       {"readAt", NULL, read_at, NULL, NULL, NULL, napi_default, owner},
   };

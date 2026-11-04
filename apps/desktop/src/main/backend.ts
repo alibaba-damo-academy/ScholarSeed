@@ -423,6 +423,7 @@ const SCHOLARSEED_DESKTOP_ENV = 'SCHOLARSEED_DESKTOP'
 const SCHOLARSEED_APP_VERSION_ENV = 'SCHOLARSEED_APP_VERSION'
 const SCHOLARSEED_LOG_LEVEL_ENV = 'SCHOLARSEED_LOG_LEVEL'
 const DESKTOP_DEFAULT_LOG_LEVEL = 'debug'
+const QUIET_DESKTOP_POLL_ACCESS_FLAG = '--quiet-desktop-poll-access'
 // /api/healthz includes the Codex version and login preflight. Each vendor command has a
 // 10-second budget and the two commands run sequentially, so a desktop probe must outlive
 // that readiness contract. A shorter HTTP timeout repeatedly cancels a healthy cold start.
@@ -1041,6 +1042,7 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
       DESKTOP_OWNERSHIP_AXIS,
       '--log-level',
       logLevel,
+      QUIET_DESKTOP_POLL_ACCESS_FLAG,
     ]
 
     enterPhase(BACKEND_STARTUP_PHASE.log)
@@ -1096,6 +1098,8 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
         : {}),
       [PATH_ENV]: executablePath,
       PYTHONUNBUFFERED: '1',
+      PYTHONUTF8: '1',
+      PYTHONIOENCODING: 'utf-8',
       [SCHOLARSEED_DESKTOP_ENV]: '1',
       [SOURCE_BASELINE_ENV]: sourceIdentity || '',
       [SCHOLARSEED_APP_VERSION_ENV]: clientVersion(
@@ -1248,18 +1252,17 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
 
     let startupDiagnostic = ''
     let firstOutput = true
-    const onData = (buf: Buffer) => {
+    const onData = (s: string) => {
       if (firstOutput) {
         firstOutput = false
         checkpoint('first-output-received')
       }
-      const s = buf.toString()
       startupDiagnostic = (startupDiagnostic + s).slice(-BACKEND_STARTUP_DIAGNOSTIC_CHARS)
       stamper?.push(s)
       log(s)
     }
-    proc.stdout?.on('data', onData)
-    proc.stderr?.on('data', onData)
+    proc.stdout?.setEncoding('utf8').on('data', onData)
+    proc.stderr?.setEncoding('utf8').on('data', onData)
     proc.once('error', (error) => {
       control.close()
       void agentTransport?.close()

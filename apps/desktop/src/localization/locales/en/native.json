@@ -41,13 +41,21 @@
     "title": "ScholarSeed update recovery",
     "message": "All update protection processes have stopped unexpectedly. Save your work, restart your computer, then open ScholarSeed again to retry recovery. Your existing data has been retained. This dialog will not restart your computer."
   },
+  "updateInterrupted": {
+    "title": "ScholarSeed update did not complete",
+    "stopped": "The update exceeded its execution limit or its outcome could not be confirmed. The update processes have stopped. ScholarSeed was not restarted because the installation may be incomplete. Use a trusted ScholarSeed installer to repair the installation, or contact support with the diagnostics below. Your existing research data has not been deleted.",
+    "unconfirmed": "The update outcome and process shutdown could not be confirmed. ScholarSeed was not restarted. Do not start another update or repair while update processes may still be running. Contact support with the diagnostics below. Your existing research data has not been deleted."
+  },
   "admissionRecovery": {
     "title": "ScholarSeed startup recovery",
     "message": "ScholarSeed cannot start safely yet",
     "detail": "The update may still be in progress, or startup security checks did not pass. The workbench has not started, update records have been retained, and the data location has not changed. Wait until installation has finished, then retry. If this continues, copy the diagnostics and contact support.",
     "retry": "Retry startup",
     "copy": "Copy diagnostics",
-    "quit": "Quit"
+    "quit": "Quit",
+    "installing": "ScholarSeed is installing an update. This launch has exited to avoid blocking installation. Wait for the updater to reopen the app. Find diagnostics by searching for ScholarSeedStartup in macOS Console. Do not delete update records.",
+    "restoring": "Recovery from a failed update is still finishing. This launch has exited. Wait for the updater to stop, then open the app again. If startup still fails, search for ScholarSeedStartup in macOS Console and contact support.",
+    "unconfirmed": "The update outcome could not be confirmed. This launch has exited safely; update records and research data are retained. Search for ScholarSeedStartup in macOS Console and contact support. Do not start another update, replace the app, or delete update records until the updater is confirmed stopped."
   },
   "browserDownload": {
     "recoveryTitle": "A browser download needs your attention",
@@ -58,6 +66,13 @@
     "delete": "Delete download",
     "later": "Decide later",
     "recoveryFailed": "Could not save the download; the retained file was not deleted"
+  },
+  "updateProgress": {
+    "title": "Updating ScholarSeed",
+    "preparing": "Preparing update components. ScholarSeed will reopen automatically…",
+    "installing": "Installing the update. ScholarSeed will reopen automatically…",
+    "restarting": "Opening the updated ScholarSeed…",
+    "failed": "The update could not finish. Keep these details when contacting support. Close this message to continue recovery."
   },
   "startup": {
     "title": "ScholarSeed startup",

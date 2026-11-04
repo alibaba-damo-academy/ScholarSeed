@@ -455,12 +455,13 @@ test(
 
 // OS contract fixture only: this is not a signed Squirrel update acceptance test.
 test(
-  'native probe ignores a terminal acknowledgement while the helper is alive and accepts it after exit',
+  'native probe distinguishes terminal restoration from installation without admitting a live helper',
   { skip: process.platform !== 'darwin', timeout: 30_000 },
   async (t) => {
     const directory = await mkdtemp(join(tmpdir(), 'squirrel-probe-'))
-    let helper: ReturnType<typeof spawn> | undefined
+    const owned: { helper?: ReturnType<typeof spawn> } = {}
     t.after(async () => {
+      const helper = owned.helper
       if (helper && helper.exitCode === null && helper.signalCode === null) {
         const exited = once(helper, 'exit')
         helper.kill()
@@ -494,19 +495,25 @@ test(
     await writeFile(acknowledgement, JSON.stringify(terminalRecord(source, application)), {
       mode: 0o600,
     })
-    helper = spawn(join(framework, 'Resources', 'ShipIt'), [], {
+    const helper = spawn(join(framework, 'Resources', 'ShipIt'), [], {
       stdio: 'ignore',
     })
+    owned.helper = helper
     await once(helper, 'spawn')
     const current = {
       ...handoff,
       at: Date.now(),
       nativeRequest: terminalRecord(source, application),
     }
+    assert.equal(await inspectSquirrelStartup(current, directory, bundle, application), 'restoring')
+    await rm(acknowledgement)
     assert.equal(
       await inspectSquirrelStartup(current, directory, bundle, application),
       'installing'
     )
+    await writeFile(acknowledgement, JSON.stringify(terminalRecord(source, application)), {
+      mode: 0o600,
+    })
     const exited = once(helper, 'exit')
     helper.kill()
     await exited
@@ -541,6 +548,19 @@ test('startup waits for native launch to settle and retains terminal evidence re
     'unconfirmed'
   )
   assert.equal(probes, 2)
+})
+
+test('terminal restoration waits for helper exit before granting failed admission', async () => {
+  let probes = 0
+  assert.equal(
+    await settleSquirrelStartup(async () => (++probes < 3 ? 'restoring' : 'failed')),
+    'failed'
+  )
+  assert.equal(probes, 3)
+  assert.equal(
+    squirrelAdmission({ version: '0.2.0', buildNumber: '202610130001' }, handoff, 'restoring'),
+    'exit'
+  )
 })
 
 test('native settling deadline retains installing status and never grants failure admission', async () => {

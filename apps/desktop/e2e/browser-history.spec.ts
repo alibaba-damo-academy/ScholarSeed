@@ -1,3 +1,5 @@
+import { restoreBrowser, selectBrowserMenuItem } from './fixtures/browser'
+import { openAccountSettings } from './fixtures/menu'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { chromium, expect, test, type Page } from '@playwright/test'
@@ -29,8 +31,7 @@ test('real Desktop persists and clears browser history through Browser settings'
       return page
     }
     const settings = async (page: Awaited<ReturnType<typeof start>>) => {
-      await page.getByTestId('activity-account').click()
-      await page.getByTestId('account-menu-settings').click()
+      await openAccountSettings(page)
       await page.getByTestId('account-settings-nav-browser').click()
       const panel = page.getByTestId('account-settings-browser')
       await expect(panel).toBeVisible()
@@ -62,15 +63,12 @@ test('real Desktop persists and clears browser history through Browser settings'
       }, { timeout: HISTORY_TIMEOUT_MS }).toBe(HISTORY_URL)
     }
     const page = await start()
-    await page.getByTestId('activity-browser').click()
+    await restoreBrowser(page)
     const address = page.getByRole('textbox', { name: '网址', exact: true })
     await address.fill('example.com')
     await address.press('Enter')
     await assertHistoryNavigation(page)
-    await page.getByRole('button', { name: '更多浏览器功能', exact: true }).click()
-    await expect.poll(() => desktop.app!.windows().some(candidate => candidate.url().includes('/menu.html'))).toBe(true)
-    const menuPage = desktop.app!.windows().find(candidate => candidate.url().includes('/menu.html'))!
-    await menuPage.getByRole('menuitem', { name: '历史记录', exact: true }).click()
+    await selectBrowserMenuItem(page, '历史记录')
     const historySection = page.getByTestId('account-settings-browser-history')
     await expect(historySection).toBeVisible()
     await expect(historySection.getByRole('heading', { name: '历史记录', exact: true })).toBeVisible()
@@ -155,8 +153,8 @@ test('real Desktop persists and clears browser history through Browser settings'
     }).toBe(0)
     await writeFile(join(directory, 'history-cleared.png'), await restarted.screenshot())
     await restarted.getByRole('dialog', { name: '设置' }).getByRole('button', { name: '关闭', exact: true }).click()
-    await restarted.getByTestId('activity-browser').click()
-    await restarted.getByRole('button', { name: '新建网页标签', exact: true }).click()
+    await restoreBrowser(restarted)
+    await restarted.getByRole('button', { name: '打开新的标签页', exact: true }).click()
     await expect.poll(async () => {
       const reply = await restarted.evaluate(() => window.scholarseed.browser.snapshot())
       return reply.ok ? reply.snapshot.tabs.length : null
@@ -215,8 +213,7 @@ test('real Desktop shows Browser settings failures at the affected controls', as
     }
     const page = await launching
     await page.getByTestId('ai-panel').getByRole('button', { name: '关闭', exact: true }).click()
-    await page.getByTestId('activity-account').click()
-    await page.getByTestId('account-menu-settings').click()
+    await openAccountSettings(page)
     await page.getByTestId('account-settings-nav-browser').click()
     const panel = page.getByTestId('account-settings-browser')
     const history = panel.getByTestId('browser-settings-history')

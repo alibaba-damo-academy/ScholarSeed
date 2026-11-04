@@ -106,7 +106,6 @@ test(
     const { browser, url, close } = await renderFixture(ROOT)
     try {
       const page = await browser.newPage()
-      page.setDefaultTimeout(5000)
       const errors: string[] = []
       page.on('pageerror', (error) => errors.push(error.message))
       const directHilRequests: string[] = []
@@ -124,6 +123,8 @@ test(
         )
       await page.goto(new URL('/components/browser-approval.render.fixture.html', url).href)
       const trigger = page.getByRole('button', { name: 'Open approval' })
+      await trigger.waitFor({ state: 'visible' })
+      page.setDefaultTimeout(5000)
       await trigger.click()
       const dialog = page.getByRole('alertdialog', { name: '浏览器访问请求' })
       await dialog.waitFor()

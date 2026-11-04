@@ -17,6 +17,9 @@ const LAUNCHER = 'ScholarSeed.exe'
 const UNINSTALLER = 'Uninstall.exe'
 const LAUNCHER_LICENSE = 'LAUNCHER-GO-LICENSE.txt'
 const VELOPACK_LIBRARY = 'libvelopack.dll'
+const NATIVE_LANGUAGES = ['en', 'zh']
+const RECOVERY_MESSAGE_SECTION = 'updateInterrupted'
+const RECOVERY_MESSAGE_FIELDS = ['title', 'stopped', 'unconfirmed']
 const DEPENDENCIES = new Set([
   'scholarseed.local/desktop/updater/handoff',
   'scholarseed.local/desktop/updater/cmd/handoff',
@@ -38,6 +41,8 @@ function policyFor(context) {
     pack_version: `${context.version}-build.${context.product.config.build_number}`,
     executable: `${context.productName}.exe`,
     runtime_sha256: context.runtime.manifestSha256,
+    recovery_messages: recoveryMessages(),
+    update_messages: updateMessages(),
     keys: context.runtime.keys,
     signing: context.signingRequired
       ? { mode: 'authenticode', publisher: context.product.config.expected_windows_publisher }
@@ -70,7 +75,7 @@ function sourceDigest(folders = ['handoff', 'cmd/handoff']) {
   const files = []
   for (const folder of new Set([...folders, 'internal/security'])) {
     for (const name of fs.readdirSync(path.join(MODULE, folder)).sort()) {
-      if (name.endsWith('.go') || name.endsWith('.json') || (folder === 'cmd/launcher' && name === 'logo.png')) files.push([`${folder}/${name}`, fileHash(path.join(MODULE, folder, name))])
+      if (name.endsWith('.go') || name.endsWith('.json') || (folder === 'handoff' && name === 'logo.png')) files.push([`${folder}/${name}`, fileHash(path.join(MODULE, folder, name))])
     }
   }
   files.push(['go.mod', fileHash(path.join(MODULE, 'go.mod'))])
@@ -85,6 +90,15 @@ function assertDependencies(output) {
 }
 
 function validatePolicy(policy) {
+  if (Object.keys(policy.update_messages || {}).sort().join(',') !== 'en,zh')
+    throw new Error('invalid frozen update languages')
+  for (const language of ['en', 'zh']) {
+    const messages = policy.update_messages[language]
+    if (!messages || Object.values(messages).some(value => typeof value !== 'string' || !value || value.length > 4096 || value.includes('\0')) ||
+        ['title', 'brand', 'elapsed', 'preparing', 'failed', 'exit', 'checking', 'publishing', 'ready', 'installing', 'restarting'].some(key => !messages[key]) ||
+        ['{{name}}', '{{percent}}', '{{count}}', '{{total}}'].some(key => !messages.extracting?.includes(key)))
+      throw new Error('invalid frozen update messages')
+  }
   if (policy.schema !== 1 || policy.app_id !== 'scholarseed' || policy.target !== 'win32-x86_64' ||
       policy.executable !== 'ScholarSeed.exe' || !/^[a-f0-9]{64}$/.test(policy.runtime_sha256) ||
       !/^\d+\.\d+\.\d+-build\.\d{12}$/.test(policy.pack_version) ||
@@ -94,6 +108,11 @@ function validatePolicy(policy) {
       !['unsigned-dev', 'authenticode'].includes(policy.signing.mode) ||
       (policy.signing.mode === 'authenticode' && !policy.signing.publisher))
     throw new Error('invalid frozen handoff policy')
+  if (!policy.recovery_messages || Object.keys(policy.recovery_messages).length !== NATIVE_LANGUAGES.length ||
+      NATIVE_LANGUAGES.some(language => RECOVERY_MESSAGE_FIELDS.some(field =>
+        typeof policy.recovery_messages[language]?.[field] !== 'string' ||
+        !policy.recovery_messages[language][field].trim() || policy.recovery_messages[language][field].includes('\0'))))
+    throw new Error('invalid frozen handoff recovery messages')
   for (const [id, key] of Object.entries(policy.keys)) {
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(id) || typeof key !== 'string' ||
         Buffer.from(key, 'base64').length !== 32 || Buffer.from(key, 'base64').toString('base64') !== key)
@@ -156,13 +175,44 @@ async function prepareHandoff({ runDirectory, verificationRoot, repo, outputDire
 }
 
 function launcherMessages() {
-  return Object.fromEntries(['en', 'zh'].map(language => {
+  return Object.fromEntries(NATIVE_LANGUAGES.map(language => {
     const source = JSON.parse(fs.readFileSync(path.join(__dirname, '../../src/localization/locales', language, 'native.json'), 'utf8'))
     const text = source.startup
     return [language, { title: text.title, brand: text.brand, elapsed: text.elapsed, preparing: text.stages.components,
       verifying: text.stages.verifying, downloading: text.componentDownloading, extracting: text.componentExpanding,
       failed: text.componentFailed, retry: text.retry, exit: text.exit,
       stopping: text.stopping, cancel: source.tray.cancel }]
+  }))
+}
+
+function updateMessages() {
+  return Object.fromEntries(Object.entries(launcherMessages()).map(([language, startup]) => {
+    const source = JSON.parse(fs.readFileSync(path.join(__dirname, '../../src/localization/locales', language, 'native.json'), 'utf8'))
+    return [language, { ...startup, ...source.updateProgress, checking: source.startup.componentChecking,
+      extracting: source.startup.componentExtracting, publishing: source.startup.componentPublishing,
+      ready: source.startup.componentReady }]
+  }))
+}
+
+function recoveryMessages() {
+  return Object.fromEntries(NATIVE_LANGUAGES.map(language => {
+    const filename = path.join(__dirname, '../../src/localization/locales', language, 'native.json')
+    const location = `${filename}#${RECOVERY_MESSAGE_SECTION}`
+    let source
+    try {
+      source = JSON.parse(fs.readFileSync(filename, 'utf8'))
+    } catch (cause) {
+      throw new Error(`invalid native handoff recovery messages: ${location}`, { cause })
+    }
+    const messages = source?.[RECOVERY_MESSAGE_SECTION]
+    if (!messages || typeof messages !== 'object' || Array.isArray(messages))
+      throw new Error(`invalid native handoff recovery messages: ${location}`)
+    return [language, Object.fromEntries(RECOVERY_MESSAGE_FIELDS.map(field => {
+      const message = messages[field]
+      if (typeof message !== 'string' || !message.trim() || message.includes('\0'))
+        throw new Error(`invalid native handoff recovery messages: ${location}.${field}`)
+      return [field, message]
+    }))]
   }))
 }
 
@@ -263,5 +313,5 @@ function readHandoff(directory, frozen) {
   return { ...frozen, path: executable }
 }
 
-module.exports = { prepareHandoff, readHandoff, prepareLauncher, readLauncher, launcherMessages,
+module.exports = { prepareHandoff, readHandoff, prepareLauncher, readLauncher, launcherMessages, updateMessages,
   policyFor, validatePolicy, assertDependencies, testHandoff }

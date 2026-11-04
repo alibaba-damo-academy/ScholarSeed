@@ -1,3 +1,4 @@
+import { openProjectMenu } from './fixtures/projects'
 import { expect, test, type Locator, type Page } from '@playwright/test'
 import { writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -12,7 +13,7 @@ const SAMPLE_PDF = resolve('e2e/fixtures/data/minimal-project/sample.pdf')
 const PROJECT_PDF = resolve('e2e/fixtures/preview_pdf_1MB.pdf')
 const METADATA_BIB = resolve('e2e/fixtures/data/minimal-project/metadata-only.bib')
 const BIB_TITLE = 'Row Menu Metadata Only Entry'
-const PROJECT_NAME = 'Row menu project'
+const PROJECT_NAME = 'Row-menu-project'
 const IMPORT_PARSE_TIMEOUT_MS = 90_000
 
 interface LiteratureRow {
@@ -156,10 +157,10 @@ test('literature rows carry a right click menu with scoped destructive action', 
       .toBe(1)
 
     // ---- 项目文献库: 同一条菜单的最后一项变成「移出项目」 ----
-    await page.getByTestId('topbar-project').click()
+    await openProjectMenu(page)
     await page.getByTestId('project-menu-create').click()
     const projectDialog = page.getByTestId('project-new-modal')
-    await projectDialog.getByRole('textbox').fill(PROJECT_NAME)
+    await projectDialog.getByTestId('project-create-name').fill(PROJECT_NAME)
     await projectDialog.getByTestId('project-create').click()
     await expect(projectDialog).toHaveCount(0)
     const projectsResponse = await page.request.get(`${base}/api/content/projects`)
@@ -168,7 +169,8 @@ test('literature rows carry a right click menu with scoped destructive action', 
     const project = projects.projects.find((item: { name: string }) => item.name === PROJECT_NAME)
     expect(project).toBeTruthy()
 
-    await page.getByTestId('activity-literature').click()
+    await page.getByTestId('project-library').click()
+    await page.getByTestId('project-library-content').getByRole('tab', { name: '文献', exact: true }).click()
     await importFiles(page, '选择要导入的 PDF', PROJECT_PDF)
     await dismissImportDialog(page)
     await expect
@@ -199,8 +201,7 @@ test('literature rows carry a right click menu with scoped destructive action', 
       .toBe(2)
 
     // ---- 添加附件: 打开详情附件页并唤起选择器 (放最后, 系统对话框可能模态) ----
-    await page.getByTestId('topbar-project').click()
-    await page.getByTestId('project-menu-literature').click()
+    await page.getByTestId('activity-literature').click()
     const overviewRow = page.locator('.lit-row').filter({ hasText: pdfTitle }).first()
     await expect(overviewRow).toBeVisible()
     const chooser = page.waitForEvent('filechooser', { timeout: 15_000 }).catch(() => null)

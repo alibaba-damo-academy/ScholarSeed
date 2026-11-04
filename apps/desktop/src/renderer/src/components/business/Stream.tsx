@@ -419,7 +419,12 @@ export function Stream({
   // Track the latest terminal turn outcome for screen reader announcements.
   const [scrollbarVisible, setScrollbarVisible] = useState(false)
   const lastAnnouncedRef = useRef<string | null>(null)
-  const [turnAnnouncement, setTurnAnnouncement] = useState<string | null>(null)
+  const [turnAnnouncementKey, setTurnAnnouncementKey] = useState<
+    | 'stream.turnCompletedAnnouncement'
+    | 'stream.turnFailedAnnouncement'
+    | 'stream.turnInterruptedAnnouncement'
+    | null
+  >(null)
   useEffect(() => {
     if (!thread.turnOutcomes) return
     const entries = Object.entries(thread.turnOutcomes)
@@ -429,11 +434,11 @@ export function Stream({
     const key = `${thread.sessionId}:${entries.length}:${latestOutcome}`
     if (key === lastAnnouncedRef.current) return
     lastAnnouncedRef.current = key
-    if (latestOutcome === 'completed') setTurnAnnouncement(t('stream.turnCompletedAnnouncement'))
-    else if (latestOutcome === 'failed') setTurnAnnouncement(t('stream.turnFailedAnnouncement'))
+    if (latestOutcome === 'completed') setTurnAnnouncementKey('stream.turnCompletedAnnouncement')
+    else if (latestOutcome === 'failed') setTurnAnnouncementKey('stream.turnFailedAnnouncement')
     else if (latestOutcome === 'interrupted')
-      setTurnAnnouncement(t('stream.turnInterruptedAnnouncement'))
-  }, [thread.turnOutcomes, thread.sessionId, t])
+      setTurnAnnouncementKey('stream.turnInterruptedAnnouncement')
+  }, [thread.turnOutcomes, thread.sessionId])
   const finalAgentRows = new Set<number>()
   const turnsWithFinalAgent = new Set<string>()
   for (let index = rows.length - 1; index >= 0; index -= 1) {
@@ -854,9 +859,9 @@ export function Stream({
     >
       <CopySessionContext.Provider value={thread.sessionId ?? ''}>
         <CopyItemsContext.Provider value={currentConv}>
-          {turnAnnouncement && (
+          {turnAnnouncementKey && (
             <div role="status" aria-live="polite" className="sr-only">
-              {turnAnnouncement}
+              {t(turnAnnouncementKey)}
             </div>
           )}
           <div

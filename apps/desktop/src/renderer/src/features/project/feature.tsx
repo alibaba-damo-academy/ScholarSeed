@@ -36,9 +36,17 @@ export function projectFeature(): FeatureModule {
     ],
     viewerPlugins: [
       { kind: 'projects', render: () => <ProjectCards /> },
-      { kind: 'new_tab', render: ({ tabId }) => <NewTab tabId={tabId} /> },
-      { kind: 'library', render: ({ tabId }) => <Library key={tabId} tabId={tabId} /> },
-      { kind: 'explorer', render: ({ tabId }) => <Explorer key={tabId} tabId={tabId} /> },
+      { kind: 'new_tab', dockable: true, render: ({ tabId }) => <NewTab tabId={tabId} /> },
+      {
+        kind: 'library',
+        dockable: true,
+        render: ({ tabId }) => <Library key={tabId} tabId={tabId} />,
+      },
+      {
+        kind: 'explorer',
+        dockable: true,
+        render: ({ tabId, active }) => <Explorer key={tabId} tabId={tabId} active={active} />,
+      },
     ],
   }
 }

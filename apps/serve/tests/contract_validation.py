@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -15,8 +16,10 @@ from service.capabilities.service.source import (
     COMMUNITY_SKILLS_DIR,
     SKILLS_LOCK_FILE,
     compile_source_skills,
-    verify_source_locked_pack,
+    load_source_lock,
+    verify_source_pack,
 )
+from service.paths import SERVICE_BUNDLED_SKILLS_DIR
 from service.platform.vocabulary import BRIDGE_SESSION_ENV
 
 VALIDATION_SKILL = "design-research-validation"
@@ -45,6 +48,11 @@ class ValidationContracts(unittest.TestCase):
         cls.pack = cls.root / "pack"
         compile_source_skills(cls.pack, COMMUNITY_SKILLS_DIR)
         cls.skill = cls.pack / VALIDATION_SKILL
+        # Check the actual host compilation, including its native mode semantics.
+        # Windows cannot represent the POSIX executable bits in the repository lock.
+        installed, problems = verify_source_pack(SERVICE_BUNDLED_SKILLS_DIR, COMMUNITY_SKILLS_DIR)
+        if not installed:
+            raise AssertionError(f"build the current product pack before execution: {problems}")
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -65,8 +73,13 @@ class ValidationContracts(unittest.TestCase):
         # Offline integration only: live-session admission is covered separately.
         environment.pop(BRIDGE_SESSION_ENV, None)
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        # The real launcher admits reviewed scripts from its product bundle,
+        # never arbitrary scripts copied to the contract's scratch pack.
+        chosen = skill or self.skill
+        script = SERVICE_BUNDLED_SKILLS_DIR / chosen.name / "scripts" / name
+        self.assertEqual(script.read_bytes(), (chosen / "scripts" / name).read_bytes())
         result = subprocess.run(
-            [str(launcher), str((skill or self.skill) / "scripts" / name), *arguments],
+            [str(launcher), str(script), *arguments],
             cwd=self.root,
             env=environment,
             text=True,
@@ -84,8 +97,21 @@ class ValidationContracts(unittest.TestCase):
             if path.is_file()
         }
         self.assertEqual(actual, VALIDATION_FILES)
-        verified = verify_source_locked_pack(SKILLS_LOCK_FILE, self.pack)
-        self.assertTrue(verified.ok, str(verified))
+        verified, problems = verify_source_pack(self.pack, COMMUNITY_SKILLS_DIR)
+        self.assertTrue(verified, str(problems))
+        # Preserve the reviewed, platform-independent byte inventory as well as
+        # the host-native permissions and generated metadata checked above.
+        locked = load_source_lock(SKILLS_LOCK_FILE)["skills"]
+        self.assertEqual(
+            {path.name for path in self.pack.iterdir()}, {row["slug"] for row in locked}
+        )
+        for row in locked:
+            for entry in row["files"]:
+                payload = (self.pack / row["slug"] / entry["path"]).read_bytes()
+                self.assertEqual(len(payload), entry["size"], entry["path"])
+                self.assertEqual(
+                    hashlib.sha256(payload).hexdigest(), entry["sha256"], entry["path"]
+                )
         for name in (VALIDATION_SKILL, PARTNER_SKILL):
             skill = self.pack / name
             metadata, _ = parse_skill_frontmatter((skill / "SKILL.md").read_text(encoding="utf-8"))
@@ -209,7 +235,7 @@ class ValidationContracts(unittest.TestCase):
                     )
 
     def test_idea_activation_script_binds_the_actual_bundled_skill(self) -> None:
-        partner = self.pack / PARTNER_SKILL
+        partner = SERVICE_BUNDLED_SKILLS_DIR / PARTNER_SKILL
         workspace = self.root / "agentic-search-results/topic with spaces"
         workspace.mkdir(parents=True, exist_ok=True)
         report = self.run_script("task.py", str(workspace.relative_to(self.root)), skill=partner)

@@ -346,7 +346,7 @@ def register_content_routes(app: FastAPI) -> None:
         root_id: str,
         project_id: str | None = Query(default=None, alias="project"),
     ) -> JSONResponse:
-        """Drain owners before revoking and releasing the external directory."""
+        """Revoke an idle relationship without releasing physical directory qualifications."""
         operations: ContentOperations = request.app.state.content_operations
         identity = operations.submit(
             str(getattr(request.state, "user_id", "local")),

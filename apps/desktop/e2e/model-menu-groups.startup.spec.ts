@@ -1,7 +1,7 @@
 import { join } from 'path'
 import { writeFileSync } from 'fs'
 import { expect, test } from '@playwright/test'
-import { DesktopSession, enterWorkbenchShell } from './fixtures/electron'
+import { DesktopSession, enterWorkbenchShell, apiBase } from './fixtures/electron'
 import { createRuntime } from './fixtures/runtime'
 import { skipQuarantined } from './fixtures/quarantine'
 
@@ -68,7 +68,10 @@ test('model menus fit content within bounds and animate without moving the main 
       JSON.stringify({ language: 'zh', onboarding: { seen: { home: true, project: true, globalLib: true, pdf: true } } })
     )
     const page = await desktop.launch()
-    await page.route('**/api/serve/models', (route) => route.fulfill({ json: catalog }))
+    const actualCatalog = await (await page.request.get(`${await apiBase(page)}/api/serve/models`)).json()
+    await page.route('**/api/serve/models', (route) => route.fulfill({ json: {
+      ...actualCatalog, ...catalog, configured: true,
+    } }))
     await page.reload()
     await enterWorkbenchShell(page)
     if (!await page.getByTestId('ai-panel').isVisible().catch(() => false)) {
@@ -160,6 +163,7 @@ test('model menus fit content within bounds and animate without moving the main 
     for (const [label, minimum, maximum] of [['Qwen', 200, 200], ['Medium length model name', 201, 319]] as const) {
       await page.unroute('**/api/serve/models')
       await page.route('**/api/serve/models', (route) => route.fulfill({ json: {
+        ...actualCatalog, configured: true,
         available_models: [{ key: 'qwen', label, source: 'builtin', billing: 'api' }],
         current_model: 'qwen', subscription_groups: []
       } }))

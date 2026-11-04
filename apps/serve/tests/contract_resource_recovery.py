@@ -57,6 +57,13 @@ class RecoverySettings:
         return None
 
 
+class HistoricalFormats(WorkbenchFormatPolicy):
+    """Capture the old PDF review format solely to seed retained Delivery rows."""
+
+    def reviewable(self, path: str) -> bool:
+        return path.endswith(".pdf") or super().reviewable(path)
+
+
 def check(name: str, condition: bool, detail: str = "") -> None:
     global PASS, FAIL
     if condition:
@@ -85,7 +92,7 @@ async def exercise() -> None:
         settings = RecoverySettings()
         retention = ResourceRetentionService(content, settings)
         annotations = PdfRecordStore(content)
-        versions = ResourceVersionService(content, retention, WorkbenchFormatPolicy(), annotations)
+        versions = ResourceVersionService(content, retention, HistoricalFormats(), annotations)
         supervisor = ResourceVersionSupervisor(
             content, versions, WorkbenchFormatPolicy(), settings, activities=Activities()
         )

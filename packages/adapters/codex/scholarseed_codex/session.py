@@ -1776,14 +1776,10 @@ class CodexRuntimeSession:
                 if kind is InventoryKind.MODELS:
                     values[kind.value] = json_value(await control.model_control.list_models())
                 elif kind is InventoryKind.SKILLS:
-                    if request.refresh:
-                        async with control.mutation():
-                            skills = await control.skill_control.list_skills(
-                                cwd=self._request.cwd,
-                                force_reload=True,
-                            )
-                    else:
-                        skills = await control.skill_control.list_skills(cwd=self._request.cwd)
+                    skills = await control.skill_control.list_skills(
+                        cwd=self._request.cwd,
+                        force_reload=request.refresh,
+                    )
                     skills = session_skill_inventory(skills, self._skill_configurations)
                     values[kind.value] = json_value(skills)
                     revisions.append(skills.revision)

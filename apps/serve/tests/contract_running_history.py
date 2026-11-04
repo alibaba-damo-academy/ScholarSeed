@@ -111,6 +111,7 @@ def live_with_history(entries: tuple[HistoryEntry, ...] = ()) -> LiveSession:
     live.interrupting = False
     live.terminating = False
     live.termination_task = None
+    live._close_task = None
     live.terminated = False
     live.current_task = None
     live.turn_lock = asyncio.Lock()

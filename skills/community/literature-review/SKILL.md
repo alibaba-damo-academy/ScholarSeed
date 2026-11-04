@@ -12,8 +12,8 @@ description_zh: >-
   带引用的正文撰写、图表生成，并核验 Markdown 或 PDF 交付物。需要已配置的
   模型后端，新文献检索依赖独立安装的 agentic-search skill。
 metadata:
-  version: "2026.10.30+1"
-version: "2026.10.30+1"
+  version: "2026.10.30+2"
+version: "2026.10.30+2"
 ---
 
 # Literature review — main-agent contract

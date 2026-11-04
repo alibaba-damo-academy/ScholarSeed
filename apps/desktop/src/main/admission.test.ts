@@ -25,6 +25,7 @@ async function launch(
     observed?: boolean
     error?: string
     admission?: string | string[]
+    status?: string
     platform?: string
     selectedHome?: string
   } = {}
@@ -63,8 +64,19 @@ async function launch(
       },
     },
     startupAdmissionResolved: platform !== 'darwin',
+    pendingUpdateLaunch: null,
+    MacStartupAdmissionError: class extends Error {
+      constructor(
+        readonly status: string,
+        cause?: unknown
+      ) {
+        super('Mac update startup admission is unresolved', { cause })
+      }
+    },
+    recoveryErrors: [] as { status?: string }[],
     headless: false,
-    recoverStartupAdmission: async () => {
+    recoverStartupAdmission: async (error: { status?: string }) => {
+      scope.recoveryErrors.push(error)
       actions.push('recovery-surface')
     },
     MACOS_PLATFORM: 'darwin',
@@ -98,9 +110,12 @@ async function launch(
     updater: {
       macStartupAdmission: async (home: string, _log: unknown, expected: unknown) => {
         actions.push(`admission:${home}:${Boolean(expected)}`)
-        return Array.isArray(options.admission)
-          ? options.admission[admissionCall++]
-          : (options.admission ?? 'allow')
+        return {
+          admission: Array.isArray(options.admission)
+            ? options.admission[admissionCall++]
+            : (options.admission ?? 'allow'),
+          status: options.status,
+        }
       },
     },
     selectStorage: () => {
@@ -156,6 +171,18 @@ test('default-profile unresolved handoff shows recovery before product writes', 
     'recovery-surface',
   ])
 })
+
+for (const observed of [false, true]) {
+  for (const status of ['installing', 'restoring', 'unconfirmed']) {
+    test(`actual ${observed ? 'custom' : 'default'} entry preserves ${status} refusal for nonblocking recovery`, async () => {
+      const current = await launch({ observed, admission: 'exit', status })
+      assert.equal(current.scope.recoveryErrors[0].status, status)
+      assert.equal(current.actions.includes('restore-profile'), false)
+      assert.equal(current.actions.includes('reclamation'), false)
+      assert.equal(current.scope.startupAdmissionResolved, false)
+    })
+  }
+}
 
 test('a terminal custom transaction restores only after its context-bound admission and rechecks the selected home', async () => {
   const current = await launch({ observed: true, admission: 'failed' })
@@ -263,10 +290,10 @@ async function probe(
   )
   const result = await (
     scope as typeof scope & {
-      admit(home: string, log: () => void, expected: unknown): Promise<string>
+      admit(home: string, log: () => void, expected: unknown): Promise<{ admission: string }>
     }
   ).admit('/custom', () => undefined, expected)
-  return { result, inspected }
+  return { result: result.admission, inspected }
 }
 
 test('superseded admission requires idle native state and unchanged matching handoff', async () => {

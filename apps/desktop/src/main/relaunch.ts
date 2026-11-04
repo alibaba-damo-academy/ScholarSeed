@@ -6,6 +6,7 @@ import type { DomainNative } from '../../native/domains.cjs'
 import { acquireDirectoryWriter } from './writer.ts'
 import { isValidAbsoluteRoot } from './storage-record.ts'
 import { writeJson, writeRecord } from './journal.ts'
+import type { QualifiedRecordConsumer } from './journal.ts'
 import { explicitUpdateDebugPort, isValidDebugPort } from './debuglaunch.ts'
 import { BUILD_NUMBER_PATTERN } from './version.ts'
 
@@ -69,6 +70,22 @@ export function updateLaunchDirectory(coordinator: string, application: string):
     CONTEXT_DIRECTORY,
     createHash('sha256').update(application).digest('hex')
   )
+}
+export function updateLaunchContextPath(coordinator: string, application: string): string {
+  return join(updateLaunchDirectory(coordinator, application), CONTEXT_FILE)
+}
+export function acquireUpdateLaunchRecordLock(native: DomainNative, pin: unknown): unknown {
+  return native.acquireAt(pin, CONTEXT_LOCK, true)
+}
+export function consumeUpdateLaunchContext(
+  consumer: QualifiedRecordConsumer,
+  coordinator: string,
+  application: string,
+  expected: Buffer,
+  device: string,
+  inode: string
+): void {
+  consumer.consume(updateLaunchContextPath(coordinator, application), expected, device, inode)
 }
 function directoryIdentity(native: DomainNative, path: string, schema = SCHEMA): string {
   const pin = native.pin(path, false)

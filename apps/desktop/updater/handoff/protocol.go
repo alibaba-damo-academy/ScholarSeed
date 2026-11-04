@@ -17,9 +17,54 @@ import (
 )
 
 const WorkerWait = 30 * time.Minute
+const WorkerStopWait = 15 * time.Second
 
 const operationGroup = "group"
 const operationInspect = "inspect"
+
+type UpdateRecoveryError struct {
+	ProcessesExited bool
+	Cause           error
+}
+
+func (failure *UpdateRecoveryError) Error() string {
+	message := "update interrupted; installation requires repair"
+	if !failure.ProcessesExited {
+		message = "update interrupted; process cleanup is unconfirmed"
+	}
+	if failure.Cause != nil {
+		message += ": " + failure.Cause.Error()
+	}
+	return message
+}
+
+func (failure *UpdateRecoveryError) Unwrap() error { return failure.Cause }
+
+func remainingWait(deadline time.Time) time.Duration {
+	remaining := time.Until(deadline)
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
+}
+
+func interruptUpdate(worker workerProcess, job updateJob, cause error, budget time.Duration) *UpdateRecoveryError {
+	deadline := time.Now().Add(budget)
+	terminationErr := job.Terminate()
+	_, workerErr := worker.Wait(remainingWait(deadline))
+	jobErr := job.Wait(remainingWait(deadline))
+	return &UpdateRecoveryError{
+		ProcessesExited: workerErr == nil && jobErr == nil,
+		Cause:           errors.Join(cause, terminationErr, workerErr, jobErr),
+	}
+}
+
+func drainUpdate(worker workerProcess, job updateJob, deadline time.Time) *UpdateRecoveryError {
+	if err := job.Wait(remainingWait(deadline)); err != nil {
+		return interruptUpdate(worker, job, err, WorkerStopWait)
+	}
+	return nil
+}
 
 var requestName = regexp.MustCompile(`^request-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.json$`)
 
@@ -360,7 +405,13 @@ func (p Policy) Coordinate(filename string) (err error) {
 	if err != nil {
 		return err
 	}
-	defer func() { r.close(); cleanupRequest(filename) }()
+	cleanupConfirmed := true
+	defer func() {
+		r.close()
+		if cleanupConfirmed {
+			cleanupRequest(filename)
+		}
+	}()
 	done()
 	timing.event.Version = r.request.Operation
 	p.toolAdmission = r.admission
@@ -451,7 +502,11 @@ func (p Policy) Coordinate(filename string) (err error) {
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(working)
+	defer func() {
+		if cleanupConfirmed {
+			os.RemoveAll(working)
+		}
+	}()
 	status := filepath.Join(working, "status.json")
 	control := filepath.Join(working, "control.json")
 	nonceBytes := make([]byte, 24)
@@ -515,6 +570,11 @@ func (p Policy) Coordinate(filename string) (err error) {
 		return err
 	}
 	defer worker.Close()
+	interrupted := func(cause error) error {
+		failure := interruptUpdate(worker, job, cause, WorkerStopWait)
+		cleanupConfirmed = failure.ProcessesExited
+		return failure
+	}
 	committed := false
 	defer func() {
 		if !committed {
@@ -530,78 +590,105 @@ func (p Policy) Coordinate(filename string) (err error) {
 		return err
 	}
 	// The caller treats writing commit as irrevocable. From here this process
-	// owns waiting and restoring the existing valid current, including failures.
+	// owns waiting or terminating the invocation before reporting its outcome.
 	committed = true
+	operationDeadline := time.Now().Add(WorkerWait)
 	err = writeWorkerStatus(controlFile, workerStatus{Nonce: nonce, Event: "commit"})
 	if err != nil {
+		if job != nil {
+			return interrupted(err)
+		}
 		worker.Terminate()
 	} else if r.request.Operation == "apply" {
 		emit(Event{Event: "started"})
 	}
-	code, waitErr := waitWorkerProgress(worker, statusFile, nonce, r.request.Operation == "prepare")
-	if waitErr != nil { // Never restart while a worker or updater might still run.
-		return fmt.Errorf("worker completion unconfirmed: %w", waitErr)
-	}
-	if job != nil {
-		if err = job.Quiesce(WorkerWait); err != nil {
-			return err
+	var resume func() error
+	finish := func(observe func(ComponentProgress)) error {
+		workerBudget := WorkerWait
+		if job != nil {
+			workerBudget = remainingWait(operationDeadline)
 		}
-	}
-	if r.request.Operation == "prepare" || r.request.Operation == operationGroup {
-		if err != nil {
-			return err
+		code, waitErr := waitWorkerProgress(worker, statusFile, nonce, r.request.Operation == "prepare" || r.request.Operation == "apply", workerBudget, observe)
+		if waitErr != nil { // Never restart while a worker or updater might still run.
+			if job != nil {
+				return interrupted(waitErr)
+			}
+			return fmt.Errorf("worker completion unconfirmed: %w", waitErr)
+		}
+		if job != nil {
+			if failure := drainUpdate(worker, job, operationDeadline); failure != nil {
+				cleanupConfirmed = failure.ProcessesExited
+				return failure
+			}
+		}
+		if r.request.Operation == "prepare" || r.request.Operation == operationGroup {
+			if err != nil {
+				return err
+			}
+			if code != 0 {
+				return errors.New("runtime preparation failed")
+			}
+			state, err := readWorkerStatus(statusFile, nonce)
+			if err != nil {
+				return err
+			}
+			if r.request.Operation == operationGroup {
+				if state.Event != "complete" {
+					return errors.New("sandbox group worker did not complete")
+				}
+				principal, resolveErr := resolveToolPrincipal()
+				if resolveErr != nil {
+					return resolveErr
+				}
+				if principal != state.PrincipalSID {
+					return errors.New("sandbox group worker result differs from the local principal")
+				}
+				emit(Event{Event: "complete", PrincipalSID: principal})
+			} else {
+				principal, principalErr := resolveToolPrincipal()
+				if principalErr != nil || state.Event != "complete" || principal != state.PrincipalSID || principal != p.toolAdmission.principal {
+					return errors.Join(principalErr, errors.New("runtime preparation principal differs at completion"))
+				}
+				emit(Event{Event: "complete", Components: state.Components, PrincipalSID: principal})
+			}
+			return nil
+		}
+		if err = r.main.Wait(remainingWait(operationDeadline)); err != nil {
+			return interrupted(err)
+		}
+		// Do not restore backups or judge health. Only start a structurally valid
+		// existing installation after all owned installer processes have finished.
+		current, versionErr := installedVersion(r.request.Root)
+		if versionErr != nil {
+			return versionErr
+		}
+		if current != p.PackVersion && current != r.release.PackVersion {
+			return errors.New("unexpected installed version after apply")
+		}
+		// Resolve/write diagnostics only in the original-user coordinator, after the
+		// old app has exited. Workers never use this optional diagnostic path.
+		if observe != nil {
+			observe(ComponentProgress{Phase: updateRestarting})
+		}
+		resume = func() error {
+			restartLog := openRestartDiagnostics(filename, r.request.DiagnosticFile, p.PackVersion, r.release.PackVersion)
+			defer restartLog.close()
+			return restartUpdatedApplication(joinPath(r.request.Root, "current/"+p.Executable), r.request.RestartArgs, refreshApplicationIcons, restart, restartLog)
 		}
 		if code != 0 {
-			return errors.New("runtime preparation failed")
-		}
-		state, err := readWorkerStatus(statusFile, nonce)
-		if err != nil {
-			return err
-		}
-		if r.request.Operation == operationGroup {
-			if state.Event != "complete" {
-				return errors.New("sandbox group worker did not complete")
-			}
-			principal, resolveErr := resolveToolPrincipal()
-			if resolveErr != nil {
-				return resolveErr
-			}
-			if principal != state.PrincipalSID {
-				return errors.New("sandbox group worker result differs from the local principal")
-			}
-			emit(Event{Event: "complete", PrincipalSID: principal})
-		} else {
-			principal, principalErr := resolveToolPrincipal()
-			if principalErr != nil || state.Event != "complete" || principal != state.PrincipalSID || principal != p.toolAdmission.principal {
-				return errors.Join(principalErr, errors.New("runtime preparation principal differs at completion"))
-			}
-			emit(Event{Event: "complete", Components: state.Components, PrincipalSID: principal})
+			return fmt.Errorf("update failed (%d); existing current will restart after this notice closes", code)
 		}
 		return nil
 	}
-	if err = r.main.Wait(WorkerWait); err != nil {
-		return err
+	if r.request.Operation == "apply" {
+		return presentUpdate(func(observe func(ComponentProgress)) (func() error, error) {
+			outcome := finish(observe)
+			return resume, outcome
+		}, func(run func(func(ComponentProgress)) error) error {
+			return updateWindow(p.UpdateMessages, run)
+		})
 	}
-	// Do not restore backups or judge health. Only start a structurally valid
-	// existing installation after all owned installer processes have finished.
-	current, versionErr := installedVersion(r.request.Root)
-	if versionErr != nil {
-		return versionErr
-	}
-	if current != p.PackVersion && current != r.release.PackVersion {
-		return errors.New("unexpected installed version after apply")
-	}
-	// Resolve/write diagnostics only in the original-user coordinator, after the
-	// old app has exited. Workers never use this optional diagnostic path.
-	restartLog := openRestartDiagnostics(filename, r.request.DiagnosticFile, p.PackVersion, r.release.PackVersion)
-	defer restartLog.close()
-	if err = restartUpdatedApplication(joinPath(r.request.Root, "current/"+p.Executable), r.request.RestartArgs, refreshApplicationIcons, restart, restartLog); err != nil {
-		return err
-	}
-	if code != 0 {
-		return fmt.Errorf("update failed (%d); existing current restarted", code)
-	}
-	return nil
+	return finish(nil)
 }
 
 func cleanupRequest(filename string) {
@@ -615,6 +702,7 @@ func cleanupRequest(filename string) {
 }
 
 type workerStatus struct {
+	Stage        string             `json:"stage,omitempty"`
 	Progress     *ComponentProgress `json:"progress,omitempty"`
 	Timings      []ComponentTiming  `json:"timings,omitempty"`
 	Nonce        string             `json:"nonce"`
@@ -728,6 +816,9 @@ func (p Policy) Worker(filename, status, control, nonce string, parent uint32) (
 			return fmt.Errorf("updater job authorization failed: %w", err)
 		}
 		defer updaterJob.Close()
+		if err = updaterJob.Admit(); err != nil {
+			return fmt.Errorf("updater worker job admission failed: %w", err)
+		}
 	}
 	if err = writeWorkerStatus(statusFile, workerStatus{Nonce: nonce, Event: "authorized"}); err != nil {
 		return err
@@ -776,7 +867,7 @@ func (p Policy) Worker(filename, status, control, nonce string, parent uint32) (
 	}
 	defer unlock()
 	var progressErr error
-	if r.request.Operation == "prepare" {
+	if r.request.Operation == "prepare" || r.request.Operation == "apply" {
 		p.observeProgress = func(progress ComponentProgress) {
 			if progressErr == nil {
 				progressErr = writeWorkerStatus(statusFile, workerStatus{Nonce: nonce, Event: "progress", Progress: &progress})
@@ -787,7 +878,13 @@ func (p Policy) Worker(filename, status, control, nonce string, parent uint32) (
 	if err != nil {
 		return err
 	}
+	if progressErr != nil {
+		return fmt.Errorf("component progress channel failed: %w", progressErr)
+	}
 	if r.request.Operation == "apply" {
+		if err = writeWorkerStatus(statusFile, workerStatus{Nonce: nonce, Event: "progress", Stage: updateInstalling}); err != nil {
+			return err
+		}
 		updater := joinPath(r.request.Root, "Update.exe")
 		if err = checkLineage(updater); err != nil {
 			return err
@@ -843,38 +940,51 @@ type processWaiter interface {
 	Close() error
 }
 type updateJob interface {
-	Quiesce(time.Duration) error
+	Terminate() error
+	Wait(time.Duration) error
 	Close() error
 }
 
 type updaterInvocation interface {
+	Admit() error
 	Run(string, []string) error
 	Close() error
 }
 
 // Poll only the existing nonce-bound channel. Progress cannot authorize or complete a handoff.
-func waitWorkerProgress(worker workerProcess, file *os.File, nonce string, observe bool) (uint32, error) {
+func waitWorkerProgress(worker workerProcess, file *os.File, nonce string, observe bool, timeout time.Duration, report func(ComponentProgress)) (uint32, error) {
 	if !observe {
-		return worker.Wait(WorkerWait)
+		return worker.Wait(timeout)
 	}
 	type result struct {
 		code uint32
 		err  error
 	}
 	finished := make(chan result, 1)
-	go func() { code, err := worker.Wait(WorkerWait); finished <- result{code, err} }()
+	go func() { code, err := worker.Wait(timeout); finished <- result{code, err} }()
 	ticker := time.NewTicker(progressInterval)
 	defer ticker.Stop()
 	var previous ComponentProgress
+	var previousStage string
 	for {
 		select {
 		case done := <-finished:
 			return done.code, done.err
 		case <-ticker.C:
 			state, err := readWorkerStatus(file, nonce)
+			// Keep update-only stages private; public component progress stays unchanged.
+			if err == nil && state.Event == "progress" && state.Stage == updateInstalling && state.Stage != previousStage {
+				previousStage = state.Stage
+				if report != nil {
+					report(ComponentProgress{Kind: "application", Phase: updateInstalling})
+				}
+			}
 			if err == nil && state.Event == "progress" && state.Progress != nil && *state.Progress != previous {
 				previous = *state.Progress
 				emit(Event{Event: "progress", Progress: state.Progress})
+				if report != nil {
+					report(*state.Progress)
+				}
 			}
 		}
 	}

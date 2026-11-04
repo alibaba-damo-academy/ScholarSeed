@@ -11,8 +11,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
-from contract_ui_dependency import ui_payload
-
 from scholarseed_runtime.contract.input import InputItem, InputKind, TurnInput
 from service.capabilities.service.components import ComponentRegistry
 from service.capabilities.service.descriptor import (
@@ -29,11 +27,13 @@ from service.capabilities.service.plugins import (
     installed_snapshot,
 )
 from service.capabilities.service.presentation import TurnSkillBinding, component_reference
+from service.capabilities.service.source import COMMUNITY_SKILLS_DIR, compile_source_skills
 from service.capabilities.service.ui import read_ui, resolve_ui
 from service.chat.runtime.live import LiveSession
 from service.literature.service.cards import LiteratureReferences
 from service.literature.service.result import SearchResult
 from service.literature.service.review import ReviewSnapshot
+from tests.contract_ui_dependency import ui_payload
 
 
 class ComponentContract(unittest.TestCase):
@@ -42,7 +42,7 @@ class ComponentContract(unittest.TestCase):
         turn = TurnInput((selected,), client_user_message_id="turn-one")
         binding = TurnSkillBinding.from_input(turn, {"review": "1.0.0"}, 3)
         self.assertIsNotNone(binding)
-        self.assertEqual(binding.skill_path, "/skills/review")
+        self.assertEqual(binding.skill_path, str(selected.path.parent))
         self.assertTrue(binding.current("turn-one", 3))
         self.assertFalse(binding.current("turn-two", 3))
         self.assertFalse(binding.current("turn-one", 4))
@@ -194,7 +194,7 @@ class ComponentContract(unittest.TestCase):
                 )
 
     def test_remaining_bundled_packages_have_verified_components_and_scenarios(self):
-        source = Path(__file__).resolve().parents[3] / "skills" / "community"
+        source = COMMUNITY_SKILLS_DIR
         expected = {
             "agentic-search": {
                 "display.literature-search",
@@ -233,12 +233,14 @@ class ComponentContract(unittest.TestCase):
         self.assertEqual(set().union(*expected.values()) - custom_slots, PUBLIC_COMPONENT_SLOTS)
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
+        pack = Path(temporary.name).resolve() / "skills"
+        compile_source_skills(pack)
         registry = ComponentRegistry(Path(temporary.name) / "components.sqlite3")
         official_ui = read_ui(ui_payload(exports=["Button", "React", "mount", "Conversation"]))
         registry.install_ui(official_ui)
         snapshots = {
             name: installed_snapshot(
-                source / name,
+                pack / name,
                 host_version="0.2.0",
                 capabilities=PLUGIN_CAPABILITIES,
                 bundled=True,

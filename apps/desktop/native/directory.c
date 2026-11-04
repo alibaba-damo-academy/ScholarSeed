@@ -46,6 +46,8 @@ struct directory {
   wchar_t *path;
   PSID user;
   PSECURITY_DESCRIPTOR security;
+#else
+  char *path;
 #endif
 };
 
@@ -113,8 +115,8 @@ uint32_t directory_close(struct directory *directory) {
     error = close_handle(directory->handles[--directory->count]);
     if (error) return error;
   }
-#ifdef _WIN32
   free(directory->path);
+#ifdef _WIN32
   free(directory->user);
   if (directory->security) LocalFree(directory->security);
 #endif
@@ -671,6 +673,8 @@ static struct directory *open_directory(const char *path, bool create, bool alia
   struct directory *directory = calloc(1, sizeof(*directory));
   char *name = strdup(path);
   if (!directory || !name) { free(directory); free(name); failure(error, "ERR_LEASE_ALLOCATION", 0); return NULL; }
+  directory->path = strdup(path);
+  if (!directory->path) { free(directory); free(name); failure(error, "ERR_LEASE_ALLOCATION", 0); return NULL; }
   directory->role = role;
   int descriptor = open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
   if (descriptor < 0) { failure(error, "ERR_LEASE_NATIVE", (uint32_t)errno); goto failed; }
@@ -889,6 +893,95 @@ done:
 }
 #endif
 
+
+#ifdef __APPLE__
+static bool consume_namespace(struct directory *directory, struct directory_error *error) {
+  struct directory *current = open_directory(directory->path, false, true, directory->role, error);
+  if (!current) return false;
+  bool valid = !strcmp(directory_identity(directory), directory_identity(current)) &&
+               directory_depth(directory) == directory_depth(current);
+  for (size_t index = 0; valid && index < directory_depth(directory); index++)
+    valid = !strcmp(directory_ancestor(directory, index), directory_ancestor(current, index));
+  uint32_t closed = directory_close(current);
+  if (closed) { failure(error, "ERR_LEASE_RELEASE", closed); return false; }
+  if (!valid) failure(error, "ERR_LEASE_CHANGED", 0);
+  return valid;
+}
+
+static bool consume_same_record(const struct stat *before, const struct stat *after) {
+  return before->st_dev == after->st_dev && before->st_ino == after->st_ino &&
+    before->st_size == after->st_size && before->st_mode == after->st_mode &&
+    before->st_uid == after->st_uid && before->st_gid == after->st_gid && after->st_nlink == 1 &&
+    before->st_mtimespec.tv_sec == after->st_mtimespec.tv_sec &&
+    before->st_mtimespec.tv_nsec == after->st_mtimespec.tv_nsec &&
+    before->st_ctimespec.tv_sec == after->st_ctimespec.tv_sec &&
+    before->st_ctimespec.tv_nsec == after->st_ctimespec.tv_nsec;
+}
+#endif
+
+bool directory_consume(struct directory *directory, const char *name, const unsigned char *expected,
+                       size_t length, uint64_t device, uint64_t inode, struct directory_error *error) {
+#ifndef __APPLE__
+  (void)directory; (void)name; (void)expected; (void)length; (void)device; (void)inode;
+  failure(error, "ERR_LEASE_PLATFORM", 0);
+  return false;
+#else
+  if (!leaf_name(name) || !expected || !length || length > DIRECTORY_READ_LIMIT) {
+    failure(error, "ERR_LEASE_ARGUMENT", 0); return false;
+  }
+  if (!consume_namespace(directory, error)) return false;
+  int parent = directory->handles[directory->count - 1];
+  int file = openat(parent, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+  if (file < 0) {
+    failure(error, errno == ENOENT ? "ERR_LEASE_MISSING" : "ERR_LEASE_NATIVE", (uint32_t)errno);
+    return false;
+  }
+  bool valid = false;
+  unsigned char *observed = NULL;
+  struct stat before, after, located;
+  if (fstat(file, &before)) { failure(error, "ERR_LEASE_NATIVE", (uint32_t)errno); goto done; }
+  if (!S_ISREG(before.st_mode) || before.st_nlink != 1 || before.st_uid != geteuid()) {
+    failure(error, "ERR_LEASE_FILE", 0); goto done;
+  }
+  if (!permissions(file, false, error)) goto done;
+  if (before.st_size <= 0 || (uint64_t)before.st_size > DIRECTORY_READ_LIMIT) {
+    failure(error, "ERR_LEASE_SIZE", 0); goto done;
+  }
+  if ((uint64_t)before.st_dev != device || (uint64_t)before.st_ino != inode ||
+      (uint64_t)before.st_size != length) {
+    failure(error, "ERR_LEASE_CHANGED", 0); goto done;
+  }
+  observed = malloc(length + 1);
+  if (!observed) { failure(error, "ERR_LEASE_ALLOCATION", 0); goto done; }
+  size_t received = 0;
+  while (received <= length) {
+    ssize_t count = read(file, observed + received, length + 1 - received);
+    if (count < 0) { failure(error, "ERR_LEASE_NATIVE", (uint32_t)errno); goto done; }
+    if (!count) break;
+    received += (size_t)count;
+  }
+  if (received != length || memcmp(observed, expected, length)) {
+    failure(error, "ERR_LEASE_CHANGED", 0); goto done;
+  }
+  if (fstat(file, &after)) { failure(error, "ERR_LEASE_NATIVE", (uint32_t)errno); goto done; }
+  if (!consume_same_record(&before, &after)) { failure(error, "ERR_LEASE_CHANGED", 0); goto done; }
+  if (!permissions(file, false, error) || !consume_namespace(directory, error)) goto done;
+  if (fstatat(parent, name, &located, AT_SYMLINK_NOFOLLOW)) {
+    failure(error, "ERR_LEASE_CHANGED", (uint32_t)errno); goto done;
+  }
+  if (!consume_same_record(&after, &located)) { failure(error, "ERR_LEASE_CHANGED", 0); goto done; }
+  if (unlinkat(parent, name, 0)) { failure(error, "ERR_LEASE_NATIVE", (uint32_t)errno); goto done; }
+  if (fsync(parent)) { failure(error, "ERR_LEASE_SYNC", (uint32_t)errno); goto done; }
+  valid = consume_namespace(directory, error);
+done:
+  free(observed);
+  {
+    uint32_t closed = close_handle(file);
+    if (closed) { failure(error, "ERR_LEASE_RELEASE", closed); return false; }
+  }
+  return valid;
+#endif
+}
 
 void directory_records_free(struct directory_records *records) {
   for (size_t i = 0; i < records->count; i++) free(records->items[i].data);

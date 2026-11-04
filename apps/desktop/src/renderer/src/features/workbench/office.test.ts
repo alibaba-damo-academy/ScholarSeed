@@ -1191,8 +1191,11 @@ test('the document tab menu uses an existing opaque surface token', () => {
 })
 
 test('Office tabs expose neither drag relocation nor context-menu layout actions', () => {
-  assert.match(draggingSource, /workspace\.canRelocateTab\(tab\.id\)/)
-  assert.match(draggingSource, /if \(!tab \|\| !workspace\.canRelocateTab\(tab\.id\)\)/)
+  assert.match(draggingSource, /if \(!documentTabIds\.has\(item\.id\)\) return \{\}/)
+  assert.match(
+    draggingSource,
+    /if \(!workspace\.canRelocateTab\(item\.id\)\)\s*\{\s*return \{ draggable: false/
+  )
   assert.match(draggingSource, /return \{ draggable: false, 'data-testid':/)
   assert.match(menuSource, /workspace\.canSplitTab\(tab\.id, direction, false\)/)
   assert.match(menuSource, /workspace\.moveTargetsForTab\(tab\.id\)/)

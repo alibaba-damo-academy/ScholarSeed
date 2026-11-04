@@ -1,15 +1,10 @@
 {
   "namespace": "scholarseed",
-  "protocol_version": 2,
+  "protocol_version": 3,
   "skills": [
     {
+      "dependencies": {},
       "files": [
-        {
-          "mode": 420,
-          "path": ".scholarseed-package.json",
-          "sha256": "e1da6089ed5be8406af56ad7a0d97df8144a2d752d037631e5bc395959ed87fd",
-          "size": 777
-        },
         {
           "mode": 420,
           "path": "SKILL.md",
@@ -30,23 +25,22 @@
         }
       ],
       "namespace": "scholarseed",
-      "payload_sha256": "b4c6d0500ea2ffbd18f89cab3e5e67b73cb3c37e7f8a1bbd2d1fd3fc90601d43",
+      "payload_sha256": "add51e569e078f6b53259593a883a79459fc5d1131634061b94501bcd3a2d6e2",
       "slug": "academic-research-guidance",
       "version": "2026.10.8"
     },
     {
+      "dependencies": {
+        "skills": [
+          "web-search"
+        ]
+      },
       "files": [
         {
           "mode": 420,
           "path": ".gitignore",
           "sha256": "280b7f989f3d3bd4e8b429f4c7efc4e2dcb4a0ba5cd1d624a2ff4970835c7242",
           "size": 1486
-        },
-        {
-          "mode": 420,
-          "path": ".scholarseed-package.json",
-          "sha256": "31d300df5344f8cb60b86f4b4e8d1b239787ee182b8e1ef923346cba744af92b",
-          "size": 6994
         },
         {
           "mode": 420,
@@ -272,18 +266,22 @@
         }
       ],
       "namespace": "scholarseed",
-      "payload_sha256": "8fd3a2898f43c2d010c8233e970d68cc63beca4bfea8d9bab31a89df44a56320",
+      "payload_sha256": "3ee0a72b630c32b6fbcd6561e8be4f0f12c6433916262bee9ca6c55800379165",
       "slug": "agentic-search",
       "version": "1.1.8"
     },
     {
+      "dependencies": {
+        "executables": [
+          "scholarseed-skill-python"
+        ],
+        "skills": [
+          "agentic-search",
+          "pdf-evidence",
+          "project-literature"
+        ]
+      },
       "files": [
-        {
-          "mode": 420,
-          "path": ".scholarseed-package.json",
-          "sha256": "af4202543a77d0cf3e0e798a5f19cb57d8672fbdaf9ebe0c41c3531417340c20",
-          "size": 2172
-        },
         {
           "mode": 420,
           "path": "SKILL.md",
@@ -346,18 +344,17 @@
         }
       ],
       "namespace": "scholarseed",
-      "payload_sha256": "cbd9a094c034dc35d632f80fb65dfcd6c57bace2b472a1b1c8964fe47fa4f1d6",
+      "payload_sha256": "09c52fa04eb56f78e88a74877843247d045bfe45d87c9ec81f4f773c8a9ebc4d",
       "slug": "design-research-validation",
       "version": "1.0.9"
     },
     {
+      "dependencies": {
+        "skills": [
+          "web-search"
+        ]
+      },
       "files": [
-        {
-          "mode": 420,
-          "path": ".scholarseed-package.json",
-          "sha256": "ac64525c65567155a262295e5fd7688ec0ccda82c4ca1fe9a5c1eafb2f002178",
-          "size": 4444
-        },
         {
           "mode": 420,
           "path": "README.md",
@@ -504,29 +501,18 @@
         }
       ],
       "namespace": "scholarseed",
-      "payload_sha256": "6751557aea1e536b5849f0935551ae58ed12cc1830af4eb9c8c6afebb920002a",
+      "payload_sha256": "70e811d9a65b1e397c169eda93733e3f6baa64cc465eb69d7398d59845136bbd",
       "slug": "fast-search",
       "version": "1.2.0"
     },
     {
+      "dependencies": {},
       "files": [
-        {
-          "mode": 420,
-          "path": ".scholarseed-package.json",
-          "sha256": "367ab4baa39d6b889d5a50b0641ddd78f2543d2506deace555e47d6affd9b86f",
-          "size": 1237
-        },
         {
           "mode": 420,
           "path": "NOTICE.md",
           "sha256": "ca85b5018b070743d0af3d67919d58dd10c8b524e95ec60fa4adafe6151f6a3c",
           "size": 812
-        },
-        {
-          "mode": 420,
-          "path": "PACKAGE-MANIFEST.sha256",
-          "sha256": "9aaf55b4e58c97a6103c861b707384526239959cbef07d180fdc49e1d4be61c0",
-          "size": 390
         },
         {
           "mode": 420,
@@ -554,11 +540,39 @@
         }
       ],
       "namespace": "scholarseed",
-      "payload_sha256": "527d85cbc2e7941f69e2642a517174b9fb47107f95cc7dec6b83794a79741eca",
+      "payload_sha256": "fadb48abb04218d2612238f928bd4cfc93f41e01b858902025b83afffcdc1d97",
       "slug": "find-skill",
       "version": "2026.10.28"
     },
     {
+      "dependencies": {
+        "bundled_executables": [
+          "xelatex",
+          "pdflatex",
+          "bibtex",
+          "kpsewhich"
+        ],
+        "imports": [
+          "openai",
+          "httpx",
+          "socksio",
+          "pypdfium2",
+          "pdfplumber",
+          "pypdf",
+          "matplotlib",
+          "PIL",
+          "pysbd",
+          "filelock"
+        ],
+        "python": [
+          "matplotlib==3.10.8",
+          "pysbd==0.3.4",
+          "socksio==1.0.0"
+        ],
+        "skills": [
+          "agentic-search"
+        ]
+      },
       "files": [
         {
           "mode": 420,
@@ -574,14 +588,8 @@
         },
         {
           "mode": 420,
-          "path": ".scholarseed-package.json",
-          "sha256": "9d9be63f92e3daeade07d5cbf0592cb0fa51f9a0e7e86aeded99bee8b7c2d059",
-          "size": 45734
-        },
-        {
-          "mode": 420,
           "path": ".scholarseed-plugin.json",
-          "sha256": "d1fff116aeaa80b7016246ead0ad6be30970b4f64e346a6783e4a7aaaa713158",
+          "sha256": "41d2adc3ff4fa79de09b0109569df2f8e1429b35c4db927c866b1a249fb0d8d1",
           "size": 3452
         },
         {
@@ -592,26 +600,20 @@
         },
         {
           "mode": 420,
-          "path": "PACKAGE-MANIFEST.sha256",
-          "sha256": "b88b259f4f7c50acaf9031512edba435ec77693e4f21670533ada5a439b824aa",
-          "size": 23919
-        },
-        {
-          "mode": 420,
           "path": "README.md",
-          "sha256": "5096a1b64d096902e1ec0a60dd162f103397f59ab061ecf8c8186f049abba11a",
-          "size": 31066
+          "sha256": "179e9a900b3e12c1a1f2e8be75a71761b9a0eda160b85c26d2db568a5da0b269",
+          "size": 31156
         },
         {
           "mode": 420,
           "path": "SKILL.md",
-          "sha256": "3135e23bb2f093d790712b90db387fb7eebfd119beadc063cd993dba355f23d0",
+          "sha256": "e8b4b3e1572840a86c8a619ee07c2f0ff0e3fd344d99372c25aa6aebba863d4c",
           "size": 47193
         },
         {
           "mode": 420,
           "path": "VERSION",
-          "sha256": "4f9af028e77e82c8f838afcadb126e9b87082f5808ae2894b918238abeae6e0d",
+          "sha256": "b9e59c581cd03725bae7db569e12bc34b6371d90a1add34c26d2a1a5455fb48e",
           "size": 13
         },
         {
@@ -1103,8 +1105,8 @@
         {
           "mode": 493,
           "path": "scripts/generation/_fast/_json.sh",
-          "sha256": "8e62e511761176016e50144e945beaf6bcdf76c9519bbb7a60c0b4f1765ff569",
-          "size": 5262
+          "sha256": "bd8c45f6ac835f6de0b62ab1148e1d390e19f358ba849a449075e1eceb4fe647",
+          "size": 703
         },
         {
           "mode": 420,
@@ -1135,6 +1137,12 @@
           "path": "scripts/generation/_fast/stages/generation_publish.sh",
           "sha256": "4a3959ea4665876ac57d951bcf37a07f5e5f839b472ca4f0353b938bbbad340f",
           "size": 7896
+        },
+        {
+          "mode": 420,
+          "path": "scripts/generation/_fast/status.py",
+          "sha256": "0406c8b6f4fa21e5ebbb93a8b45536497a3d9ae11cf1953e91f1ba45a33bc281",
+          "size": 2438
         },
         {
           "mode": 420,
@@ -2032,18 +2040,13 @@
         }
       ],
       "namespace": "scholarseed",
-      "payload_sha256": "f5a74333d64be71200466e25ae23935006bff62c10bc67c531014f88acacb2b2",
+      "payload_sha256": "c9b543b770b18d033a850c2f3c545909bd0de9907c5ade02e52fec8c3e735683",
       "slug": "literature-review",
-      "version": "2026.10.30+1"
+      "version": "2026.10.30+2"
     },
     {
+      "dependencies": {},
       "files": [
-        {
-          "mode": 420,
-          "path": ".scholarseed-package.json",
-          "sha256": "b0f7eb4d7673cc897af3bf5fc135f99fd1f33013e4f8d38317b9699d382e6ab3",
-          "size": 732
-        },
         {
           "mode": 420,
           "path": "SKILL.md",
@@ -2064,35 +2067,30 @@
         }
       ],
       "namespace": "scholarseed",
-      "payload_sha256": "e1abcf4120faeedbaad3d609dd9a2af87204cc23be4a11ade0803975c8cfccca",
+      "payload_sha256": "18a313961ea1929ebf03addae5a48f0467e41c868763df0eac5efa01903b57d0",
       "slug": "pdf-evidence",
       "version": "0.1.0"
     },
     {
+      "dependencies": {},
       "files": [
         {
           "mode": 420,
-          "path": ".scholarseed-package.json",
-          "sha256": "7a1ad599d8b65ec670e1d2e6d478685ee0e9c9edb2878d7dbdaff3fc73c9abbc",
-          "size": 2131
-        },
-        {
-          "mode": 420,
           "path": "SKILL.md",
-          "sha256": "c58b7b58016f9a27f8a2e559ecdb206ee46cf007f022da2c58dd12b3b6817968",
+          "sha256": "d39c4c7f1f020f1ca20fceb624ae6ae5c6bd757d2dd80c0ba93bcaf34ecd3810",
           "size": 19766
         },
         {
           "mode": 420,
           "path": "VERSION",
-          "sha256": "ac3bf208eb88be6542e3fc750b511b112cf25bc40e46dca2a50819e43cf59096",
+          "sha256": "f669b5e9183901b78b0952eb71f8fe54bdcff9cc3d155710c61e25be7b35b058",
           "size": 6
         },
         {
           "mode": 420,
           "path": "references/contract.json",
-          "sha256": "988e732182df5689cbf4542b08444c094c9668a9b7437cdf713ced8bc8979896",
-          "size": 30362
+          "sha256": "4cb0072cc7531ca22ce2358a882436c8f587608608337181f83a4e1895015f8e",
+          "size": 30557
         },
         {
           "mode": 420,
@@ -2144,18 +2142,26 @@
         }
       ],
       "namespace": "scholarseed",
-      "payload_sha256": "e5ad7ed9173b42cc3061b44bf644399e8327cc00a10ffcf4020f641a05a0b50f",
+      "payload_sha256": "ac4383327e5bfb0b68efe36e073fa31803c56ab3828193bda2fa8d0ea2dad3cd",
       "slug": "plugin-create",
-      "version": "0.5.5"
+      "version": "0.5.6"
     },
     {
+      "dependencies": {
+        "imports": [
+          "paper_dl"
+        ],
+        "modules": [
+          "paper_dl"
+        ],
+        "skills": [
+          "web-search"
+        ],
+        "wheels": [
+          "vendor/paper_fulltext_dl-0.1.3-py3-none-any.whl"
+        ]
+      },
       "files": [
-        {
-          "mode": 420,
-          "path": ".scholarseed-package.json",
-          "sha256": "08891bee35126e6ba0aa6a71fdab068518767bf858d57315ecb82c985ca4569b",
-          "size": 18464
-        },
         {
           "mode": 420,
           "path": ".scholarseed-plugin.json",
@@ -2746,18 +2752,17 @@
         }
       ],
       "namespace": "scholarseed",
-      "payload_sha256": "243e4a89fbdc59506c08c002cfee8e621f18613bea288d0a49e1ea10a64d3214",
+      "payload_sha256": "a12db2eeae31ef7b8b19e6de1a68f1e4352efd67e490103d74be47a3906742a2",
       "slug": "precise-literature-search",
       "version": "1.0.37"
     },
     {
+      "dependencies": {
+        "executables": [
+          "scholarseed-bridge"
+        ]
+      },
       "files": [
-        {
-          "mode": 420,
-          "path": ".scholarseed-package.json",
-          "sha256": "21509b7c476781f643d55959a8622b8b92dc3d6e4ec06f0215d82ec82444073b",
-          "size": 803
-        },
         {
           "mode": 420,
           "path": "SKILL.md",
@@ -2778,18 +2783,21 @@
         }
       ],
       "namespace": "scholarseed",
-      "payload_sha256": "61c0bd436a9cff21de8b248596d3e76e12364d3d9d078d8c95af5215e97b8717",
+      "payload_sha256": "e36c223a4252c9e13440df5cb1de9b1df19b6e435dee9eaae23b9978428291e3",
       "slug": "project-literature",
       "version": "2026.10.21+1"
     },
     {
+      "dependencies": {
+        "executables": [
+          "scholarseed-bridge",
+          "scholarseed-skill-python"
+        ],
+        "skills": [
+          "agentic-search"
+        ]
+      },
       "files": [
-        {
-          "mode": 420,
-          "path": ".scholarseed-package.json",
-          "sha256": "515408f4ff309f8cd8535bb1b187b81b6d230f3b5fd9a3f8ba9151194f4e0575",
-          "size": 2987
-        },
         {
           "mode": 420,
           "path": ".scholarseed-plugin.json",
@@ -2882,35 +2890,24 @@
         }
       ],
       "namespace": "scholarseed",
-      "payload_sha256": "51b85df6dcd58e18f4320c82cc30c84aa1d30f9b5994fdaaf01f8cc8bc53154f",
+      "payload_sha256": "f67242084cf97e5d68c9e534e887f2b569af32d07e8cc61b8ce3b01f2282e9d4",
       "slug": "research-idea-partner",
       "version": "1.2.18"
     },
     {
+      "dependencies": {},
       "files": [
         {
           "mode": 420,
-          "path": ".scholarseed-package.json",
-          "sha256": "1d045beb746bd4bb91c24fdc52f3925f358c477b9622975fac5d2adbe0f3b2cf",
-          "size": 1807
-        },
-        {
-          "mode": 420,
-          "path": "PACKAGE-MANIFEST.sha256",
-          "sha256": "e437ede96f64d260cbc023700351424cf47e4afa6390fc81413d31883bdf14a1",
-          "size": 677
-        },
-        {
-          "mode": 420,
           "path": "SKILL.md",
-          "sha256": "6fd8eb4ed16ef0876084b42e45dbcf46ba2854787170ca59c24b85d70906f2a3",
-          "size": 8395
+          "sha256": "e8eb3a7732081d2a9b2c93debe0911f12d080882ea19d09e176dd2991140f082",
+          "size": 8393
         },
         {
           "mode": 420,
           "path": "VERSION",
-          "sha256": "87f5b13e3a4330f0625276d4dc586b8d3623decb5779db215fc7a20d736128eb",
-          "size": 13
+          "sha256": "608e4e99377ee984c8f62e794ad18d1963ff490393dbe51a6a3ef0ed8bae1898",
+          "size": 12
         },
         {
           "mode": 420,
@@ -2933,8 +2930,8 @@
         {
           "mode": 420,
           "path": "references/plans.md",
-          "sha256": "d2da6d9cd468d360de54014f2a2b442ab89cdae788fd6bc56a0fe6220aff1169",
-          "size": 4187
+          "sha256": "01c84f2b17062754e4e7a65c595aa531fd41fbfa32df038366c18136b7f1a5d8",
+          "size": 4736
         },
         {
           "mode": 420,
@@ -2950,18 +2947,17 @@
         }
       ],
       "namespace": "scholarseed",
-      "payload_sha256": "6dd93b6d19497c438141e29dbf7227f1d598326e959844e912ceabd7aeab5335",
+      "payload_sha256": "5a73c4dbaf90e52a9f19dd7468b42a7f24d2d4dc5f853361db136a25f7936f2a",
       "slug": "scholarseed-product-operations",
-      "version": "2026.10.29+4"
+      "version": "2026.11.3+1"
     },
     {
+      "dependencies": {
+        "imports": [
+          "playwright"
+        ]
+      },
       "files": [
-        {
-          "mode": 420,
-          "path": ".scholarseed-package.json",
-          "sha256": "e1acde1a9bf81a6e0f86988829152b45da58d5d889b39d3f12c298e54aa9100d",
-          "size": 2324
-        },
         {
           "mode": 420,
           "path": "CONTRACT.md",
@@ -3036,7 +3032,7 @@
         }
       ],
       "namespace": "scholarseed",
-      "payload_sha256": "ec9bf3fb8ffb1b0a453fba5000995a6290a5f0efca251289f499ba860ae7b12c",
+      "payload_sha256": "fd1166dd9d14d7cfbb32673edb645a946dec505ac3298dcf5d8c3a6ae8b85f0c",
       "slug": "web-search",
       "version": "0.1.10"
     }

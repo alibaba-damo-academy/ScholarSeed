@@ -695,7 +695,7 @@ test('annotation save failures use toast feedback instead of an inline alert', (
 })
 
 test('same-project resource and literature document tabs share the top navigation while split panes expose closable leaf tabs', () => {
-  assert.match(tabBarSource, /tabVisibleInCurrentView,/)
+  assert.match(tabBarSource, /workbenchTabVisible\(tab, state\.mainView\)/)
   assert.match(
     workbenchTabsSource,
     /mainView === 'literature'\) return kind === 'literature' \|\| kind === 'literature_search'/
@@ -756,7 +756,7 @@ test('same-project resource and literature document tabs share the top navigatio
   assert.match(storeSource, /workspace\.focusTab\(activeTab\)/)
   assert.match(
     workbenchSource,
-    /if \(documents\.tabs\[state\.activeTab\]\) return <DocumentDock \/>/
+    /if \(documents\.tabs\[state\.activeTab\] \|\| pageTabs\.some\(\(page\) => page\.id === state\.activeTab\)\)\s*return <DocumentDock \/>/
   )
   assert.match(workbenchSource, /const viewer = featureRegistry\.viewers\.get\(kind\)/)
   assert.match(

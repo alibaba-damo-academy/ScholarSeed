@@ -3,6 +3,15 @@
 // The installer holds SSCleanupOpen's lock as well for the complete lifecycle.
 BOOL SSPreparationOpen(NSString *label, NSError **error);
 BOOL SSPreparationOpenDirectory(NSString *directory, NSError **error);
+BOOL SSPreparationOpenExistingDirectory(NSString *directory, NSError **error);
+int SSPreparationUncertaintyCode(void);
+typedef NS_ENUM(NSInteger, SSPreparationActivity) {
+    SSPreparationActivityUnknown = -1,
+    SSPreparationActivityActive = 0,
+    SSPreparationActivityAbsent = 1,
+};
+NSDictionary *SSPreparationFailureSnapshot(NSURL *source, NSURL *target, NSDictionary *binding,
+    NSURL *state, SSPreparationActivity (^activity)(void), NSError **error);
 // Prepare before waiting for termination. Reuse does not replace signature validation.
 NSURL *SSPreparationCopy(NSURL *source, NSURL *target, NSDictionary *binding, NSError **error);
 BOOL SSPreparationValidate(NSURL *source, NSURL *target, NSDictionary *binding, NSURL *candidate, NSError **error);
@@ -24,3 +33,4 @@ BOOL SSPreparationFinishFailure(NSURL *source, NSURL *target, NSDictionary *bind
     BOOL (^running)(void), BOOL (^launch)(void), NSError **error);
 BOOL SSPreparationRetire(NSURL *source, NSURL *target, NSError **error);
 void SSPreparationClose(void);
+BOOL SSPreparationCloseChecked(NSError **error);

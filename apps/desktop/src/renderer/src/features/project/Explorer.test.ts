@@ -59,7 +59,7 @@ test('explorer creates entries on blur or Enter and cancels only empty drafts or
   let pickedSources = ['/fixture/import.md']
   const project = { id: 'toolbar-project', name: 'Research', path: '/research' }
   const documents = {
-    tabs: { document: { id: 'document', sessionId: 'session' } },
+    tabs: { document: { id: 'document', sessionId: 'session', embedded: true } },
     sessions: { session: { source: { kind: 'project', path: 'tasks/report.md' } } },
   }
   const dependencies: Record<string, unknown> = {
@@ -146,7 +146,7 @@ test('explorer creates entries on blur or Enter and cancels only empty drafts or
       },
     },
   }
-  const loaded = { exports: {} as { Explorer: () => Element } }
+  const loaded = { exports: {} as { Explorer: (props?: { active?: boolean }) => Element } }
   runInNewContext(compiled, {
     module: loaded,
     exports: loaded.exports,
@@ -164,10 +164,10 @@ test('explorer creates entries on blur or Enter and cancels only empty drafts or
       return dependencies[name]
     },
   })
-  const render = (): Element => {
+  const render = (active = true): Element => {
     cursor = 0
     refCursor = 0
-    return loaded.exports.Explorer()
+    return loaded.exports.Explorer({ active })
   }
   for (const collapsed of [false, true, false]) {
     const surface = render()
@@ -292,6 +292,19 @@ test('explorer creates entries on blur or Enter and cancels only empty drafts or
     ])
   )
   directory().props.onSelect({ path: 'tasks', name: 'tasks', kind: 'dir', available: true })
+  const inactiveSplit = descendants(render(false)).find((child) => child.type === 'ResizablePanel')!
+  assert.equal(
+    descendants(inactiveSplit.props.rightPanel).find((child) => child.type === 'DocumentView')!
+      .props.active,
+    false
+  )
+  documents.tabs.document.embedded = false
+  const promotedSplit = descendants(render()).find((child) => child.type === 'ResizablePanel')!
+  assert.equal(
+    descendants(promotedSplit.props.rightPanel).some((child) => child.type === 'DocumentView'),
+    false
+  )
+  documents.tabs.document.embedded = true
   const breadcrumb = descendants(render()).find((child) => child.type === 'Breadcrumb')!
   assert.equal(breadcrumb.props.title, 'tasks/report.md')
   assert.ok(

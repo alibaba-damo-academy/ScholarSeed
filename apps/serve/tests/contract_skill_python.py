@@ -20,9 +20,8 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi import FastAPI
 
-from service.capabilities.service.package import pack_skill
 from service.capabilities.service.skills import SKILL_PRODUCT_METADATA_FILE
-from service.capabilities.service.source import product_metadata_from_source, source_lock
+from service.capabilities.service.source import compile_source_skills
 from service.cli import serve, skill_python
 from service.platform import executables
 from service.platform.activity import Activities
@@ -39,45 +38,92 @@ TEST_TIMEOUT_SECONDS = 10
 
 
 def reviewed_script(directory: str, source: str = "print('run')") -> Path:
-    root = Path(directory) / "fixture"
-    root.mkdir()
-    (root / "SKILL.md").write_text(
-        "---\nname: fixture\ndescription: Reviewed fixture\nversion: 1.0.0\n---\n",
-        encoding="utf-8",
-    )
-    script = root / "run.py"
-    script.write_text(source, encoding="utf-8")
-    package = pack_skill(
-        root, Path(directory) / "fixture.zip", "1.0.0", {}, expected_name="fixture"
-    )
-    for name, payload in package.files.items():
-        (root / name).write_bytes(payload.data)
-    inventory = source_lock(Path(directory))["skills"][0]
-    (root / SKILL_PRODUCT_METADATA_FILE).write_bytes(product_metadata_from_source(root, inventory))
-    return script
+    with tempfile.TemporaryDirectory() as inputs:
+        source_root = Path(inputs) / "source"
+        skill = source_root / "fixture"
+        skill.mkdir(parents=True)
+        (Path(inputs) / "registry.json").write_bytes(b'{"dependencies":{"fixture":{}}}')
+        (skill / "SKILL.md").write_text(
+            "---\nname: fixture\ndescription: Reviewed fixture\nversion: 1.0.0\n---\n",
+            encoding="utf-8",
+        )
+        (skill / "run.py").write_text(source, encoding="utf-8")
+        compile_source_skills(Path(directory), source_root)
+    return Path(directory) / "fixture" / "run.py"
 
 
 class SkillPythonContracts(unittest.TestCase):
+    def test_reviewed_script_and_descendant_keep_utf8_under_legacy_environment(self) -> None:
+        text = "中文目录 空格 😀"
+        with tempfile.TemporaryDirectory() as directory:
+            document = Path(directory) / "中文正文.txt"
+            document.write_text(text, encoding="utf-8")
+            script = reviewed_script(
+                directory,
+                "import json,sys,subprocess\nfrom pathlib import Path\n"
+                "text=Path(sys.argv[1]).read_text()\n"
+                "print(json.dumps([text,sys.argv[2],sys.flags.utf8_mode],ensure_ascii=False),flush=True)\n"
+                "subprocess.run([sys.executable,'-B','-c',"
+                "'import sys;print(sys.flags.utf8_mode)'],check=True)\n"
+                "raise SystemExit(7)\n",
+            )
+            bootstrap = (
+                "import sys\nfrom pathlib import Path\n"
+                "from service.cli import skill_python\n"
+                "skill_python.SERVICE_BUNDLED_SKILLS_DIR=Path(sys.argv[1])\n"
+                "raise SystemExit(skill_python.main(sys.argv[2:]))\n"
+            )
+            environment = {
+                **os.environ,
+                "PYTHONUTF8": "0",
+                "PYTHONIOENCODING": "cp1252",
+            }
+            environment.pop(BRIDGE_SESSION_ENV, None)
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-B",
+                    "-c",
+                    bootstrap,
+                    directory,
+                    str(script),
+                    str(document),
+                    text,
+                ],
+                env=environment,
+                capture_output=True,
+                timeout=TEST_TIMEOUT_SECONDS,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 7, result.stderr.decode("utf-8", errors="replace"))
+            lines = result.stdout.decode("utf-8").splitlines()
+            self.assertEqual(json.loads(lines[0]), [text, text, 1])
+            self.assertEqual(lines[1], "1")
+
     def test_authoring_contract_uses_product_launcher_without_arbitrary_modules(self) -> None:
-        snapshot = (
-            Path(__file__).resolve().parents[3]
-            / "skills/community/plugin-create/references/contract.json"
-        )
-        response = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "service.cli.skill_python",
-                "-m",
-                "service.cli.plugins",
-                "prepare",
-                str(snapshot),
-            ],
+        # Verify launcher dispatch against a current contract fixture. A bundled
+        # author's snapshot can legitimately lag a host contract; freshness is
+        # reported by prepare, not part of the Python module allowlist contract.
+        command = [sys.executable, "-m", "service.cli.skill_python", "-m", "service.cli.plugins"]
+        described = subprocess.run(
+            [*command, "describe"],
             capture_output=True,
             text=True,
             timeout=TEST_TIMEOUT_SECONDS,
             check=False,
         )
+        self.assertEqual(described.returncode, 0, described.stderr)
+        contract = json.loads(described.stdout)
+        with tempfile.TemporaryDirectory() as directory:
+            snapshot = Path(directory) / "contract.json"
+            snapshot.write_text(json.dumps(contract), encoding="utf-8")
+            response = subprocess.run(
+                [*command, "prepare", str(snapshot)],
+                capture_output=True,
+                text=True,
+                timeout=TEST_TIMEOUT_SECONDS,
+                check=False,
+            )
         self.assertEqual(response.returncode, 0, response.stderr)
         result = json.loads(response.stdout)
         self.assertTrue(result["matched"])
@@ -89,7 +135,7 @@ class SkillPythonContracts(unittest.TestCase):
             redirect_stdout(io.StringIO()) as output,
             patch.object(skill_python, "admit_script") as admit,
             patch.object(skill_python.subprocess, "run") as run,
-            patch.object(skill_python.os, "execv") as execute,
+            patch.object(skill_python.os, "execve") as execute,
         ):
             self.assertEqual(skill_python.main(["--diagnostic-v1"]), 0)
         self.assertEqual(json.loads(output.getvalue())["event"], "launcher_ready")
@@ -143,9 +189,9 @@ class SkillPythonContracts(unittest.TestCase):
         for timeout in (False, True):
             with self.subTest(timeout=timeout):
 
-                def run(command, **kwargs):
+                def run(command, *, probe_times_out=timeout, **kwargs):
                     kwargs["stderr"].write(payload)
-                    if timeout:
+                    if probe_times_out:
                         raise subprocess.TimeoutExpired(
                             command, executables.COMMAND_PROBE_TIMEOUT_SECONDS
                         )
@@ -242,28 +288,32 @@ class SkillPythonContracts(unittest.TestCase):
             with (
                 self.subTest(platform=platform),
                 patch.object(skill_python.sys, "platform", platform),
-                patch.object(skill_python.os, "execv") as replace,
+                patch.object(skill_python.os, "execve") as replace,
                 patch.object(
                     skill_python.subprocess, "run", return_value=SimpleNamespace(returncode=7)
                 ) as run,
             ):
                 self.assertEqual(skill_python.main(["--version"]), 7 if platform == "win32" else 0)
-                command = [sys.executable, "-B", "--version"]
+                command = [sys.executable, "-B", "-X", "utf8", "--version"]
                 if platform == "win32":
-                    run.assert_called_once_with(command, executable=sys.executable, check=False)
+                    self.assertEqual(run.call_count, 1)
+                    self.assertEqual(run.call_args.args, (command,))
+                    self.assertEqual(run.call_args.kwargs["executable"], sys.executable)
+                    self.assertFalse(run.call_args.kwargs["check"])
+                    environment = run.call_args.kwargs["env"]
                     replace.assert_not_called()
                 else:
-                    replace.assert_called_once_with(sys.executable, command)
+                    self.assertEqual(replace.call_count, 1)
+                    self.assertEqual(replace.call_args.args[:2], (sys.executable, command))
+                    environment = replace.call_args.args[2]
                     run.assert_not_called()
+                self.assertEqual(environment["PYTHONUTF8"], "1")
+                self.assertEqual(environment["PYTHONIOENCODING"], "utf-8")
 
-    def test_build_inventory_not_legacy_package_manifest_authorizes_current_source(self) -> None:
+    def test_rebuilt_inventory_authorizes_current_source(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            script = reviewed_script(directory)
-            (script.parent / "README.md").write_text("Current reviewed source\n", encoding="utf-8")
-            inventory = source_lock(Path(directory))["skills"][0]
-            (script.parent / SKILL_PRODUCT_METADATA_FILE).write_bytes(
-                product_metadata_from_source(script.parent, inventory)
-            )
+            reviewed_script(directory)
+            script = reviewed_script(directory, "print('current reviewed source')")
             with (
                 patch.object(skill_python, "SERVICE_BUNDLED_SKILLS_DIR", Path(directory)),
                 patch.dict(os.environ, {}, clear=True),
@@ -341,7 +391,7 @@ class SkillPythonContracts(unittest.TestCase):
         ):
             with (
                 self.subTest(arguments=arguments),
-                patch.object(skill_python.os, "execv") as execute,
+                patch.object(skill_python.os, "execve") as execute,
                 patch.object(skill_python.subprocess, "run") as run,
                 redirect_stderr(io.StringIO()),
             ):
@@ -592,16 +642,20 @@ class SkillPythonContracts(unittest.TestCase):
         with (
             patch.object(skill_python, "admit_script"),
             patch.object(skill_python.sys, "platform", "darwin"),
-            patch.object(skill_python.os, "execv") as execute,
+            patch.object(skill_python.os, "execve") as execute,
         ):
             self.assertEqual(skill_python.main(arguments), 0)
-        execute.assert_called_once_with(
-            skill_python.sys.executable,
-            [skill_python.sys.executable, "-B", *arguments],
+        self.assertEqual(execute.call_count, 1)
+        self.assertEqual(
+            execute.call_args.args[:2],
+            (
+                skill_python.sys.executable,
+                [skill_python.sys.executable, "-B", "-X", "utf8", *arguments],
+            ),
         )
 
     def test_cli_rejects_an_empty_invocation(self) -> None:
-        with patch.object(skill_python.os, "execv") as execute:
+        with patch.object(skill_python.os, "execve") as execute:
             self.assertEqual(skill_python.main([]), 2)
         execute.assert_not_called()
 
@@ -615,7 +669,7 @@ class SkillPythonContracts(unittest.TestCase):
                     skill_python, "request", return_value={"ok": True, "builtin": True}
                 ) as admit,
                 patch.object(skill_python.sys, "platform", "darwin"),
-                patch.object(skill_python.os, "execv") as execute,
+                patch.object(skill_python.os, "execve") as execute,
             ):
                 self.assertEqual(skill_python.main([str(script)]), 0)
                 admit.assert_called_once()
@@ -665,7 +719,7 @@ class SkillPythonContracts(unittest.TestCase):
                     patch.object(skill_python, "SERVICE_BUNDLED_SKILLS_DIR", Path(directory)),
                     patch.dict(os.environ, {BRIDGE_SESSION_ENV: "session"}, clear=True),
                     patch.object(skill_python, "request", side_effect=error),
-                    patch.object(skill_python.os, "execv") as execute,
+                    patch.object(skill_python.os, "execve") as execute,
                     patch.object(skill_python.subprocess, "run") as run,
                 ):
                     self.assertEqual(skill_python.main([str(script)]), 1)

@@ -12,6 +12,7 @@ import {
   skillDocumentBody,
   skillIcon,
   skillDescription,
+  skillCategory,
   skillName,
   skillCallable,
   SKILL_GROUPS,
@@ -112,6 +113,37 @@ test('skill labels prefer display names and fall back without changing identity'
   assert.equal(skillName({ ...skill, display_name: '' }), 'agentic-search')
   assert.equal(skillName({ name: skill.name }), 'agentic-search')
   assert.equal(skill.name, 'agentic-search')
+})
+
+test('skill categories translate only explicit defaults and preserve same-name custom content', async () => {
+  const localization = createLocalization(
+    'en',
+    {
+      zh: { skills: chineseSkills },
+      en: { skills: englishSkills },
+    },
+    { report() {} }
+  )
+  const defaults = [
+    { category: '系统预置', category_source: 'builtin' as const },
+    { category: '用户安装', category_source: 'user' as const },
+  ]
+  const original = structuredClone(defaults)
+  for (const language of ['en', 'zh', 'en'] as const) {
+    await localization.changeLanguage(language)
+    const translate = localization.getFixedT(null, 'skills')
+    assert.deepEqual(
+      defaults.map((skill) => skillCategory(skill, translate)),
+      language === 'en' ? ['System preset', 'User installed'] : ['系统预置', '用户安装']
+    )
+    for (const category of ['系统预置', '用户安装', 'Research', '']) {
+      assert.equal(skillCategory({ category }, translate), category)
+      assert.equal(skillCategory({ category, category_source: null }, translate), category)
+      assert.equal(skillCategory({ category, category_source: 'unknown' }, translate), category)
+    }
+    assert.equal(skillCategory({}, translate), '')
+    assert.deepEqual(defaults, original)
+  }
 })
 
 test('callability separates local preference from current account and dependency availability', () => {

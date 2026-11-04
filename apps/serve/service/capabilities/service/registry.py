@@ -13,10 +13,10 @@ from urllib.parse import quote, unquote, urljoin, urlsplit
 
 import httpx
 
-from service.capabilities.service.dependencies import declaration
 from service.capabilities.service.package import (
     MAX_PACKAGE_BYTES,
     PackageError,
+    declaration,
     digest,
     read_package,
 )

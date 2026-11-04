@@ -1025,7 +1025,8 @@
               "pause",
               "block",
               "fail",
-              "partial"
+              "partial",
+              "reconcile"
             ],
             "title": "Action",
             "type": "string"
@@ -1052,7 +1053,7 @@
         ],
         "title": "PlanAction",
         "type": "object",
-        "x-bridge-guidance": "Read plan/get and choose from actions for the stable step IDs. Start before work, finish after actual work, pause for a checkpoint and start before handling its result. If work happened without a start, block with the observed reason; never fabricate a bookkeeping start/finish. These actions preserve the entire tree and real timing rules.",
+        "x-bridge-guidance": "Read plan/get and choose from actions for the stable step IDs. Start before work, finish after actual work, pause for a checkpoint and start before handling its result. If work already completed without a start, verify its result and use reconcile with a reason stating the observed completion evidence. Reconcile records completion without a start or execution time; never fabricate a bookkeeping start/finish. Block only for an actual obstacle. These actions preserve the entire tree and real timing rules.",
         "x-bridge-prerequisites": [
           {
             "capability": "plan",
@@ -1132,6 +1133,6 @@
   "bridge_request_max_bytes": 16384,
   "identity": {
     "version": "1.0.0",
-    "sha256": "9aee13ecb83195947894ba1bd7bc20c8d1da41f40d511d832bfc1766aebab9b6"
+    "sha256": "41a5a266538b8eba457445a8b0e9a3b692d6587d7f2f86dfddcbbf3f5bf435f6"
   }
 }

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import path from 'node:path'
+import { tmpdir } from 'node:os'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { chromium, expect, type Page } from '@playwright/test'
@@ -88,14 +89,23 @@ test(
           ),
         })
       })
+      const initialWorkspaceRead = page.waitForResponse(
+        (response) =>
+          new URL(response.url()).pathname === WORKSPACE_PATH &&
+          response.request().method() === 'GET'
+      )
       await page.goto(
         new URL('/components/business/storage.render.fixture.html', server.resolvedUrls!.local[0])
           .href
       )
+      await (await initialWorkspaceRead).finished()
       await expect(page.getByTestId('storage-container-root-value')).toHaveText(WORKSPACE.root)
       await home(page, false)
       await expect(page.getByTestId('storage-data-home-error')).toBeVisible()
-      await page.screenshot({ path: '/tmp/storage-render-home-error.png', fullPage: true })
+      await page.screenshot({
+        path: path.join(tmpdir(), 'storage-render-home-error.png'),
+        fullPage: true,
+      })
       await expect(page.getByTestId('storage-container-root-value')).toHaveText(WORKSPACE.root)
       await page.getByTestId('storage-data-home-retry').click()
       await expect(page.getByTestId('storage-data-home-loading')).toBeVisible()
@@ -175,7 +185,10 @@ test(
       await expect(page.getByTestId('storage-container-root-change')).toBeEnabled()
       await page.getByTestId('fixture-english').click()
       await expect(page.getByTestId('account-settings-storage')).toContainText('Data storage')
-      await page.screenshot({ path: '/tmp/storage-render-ready-english.png', fullPage: true })
+      await page.screenshot({
+        path: path.join(tmpdir(), 'storage-render-ready-english.png'),
+        fullPage: true,
+      })
       const fixtureUrl = new URL(
         '/components/business/storage.render.fixture.html',
         server.resolvedUrls!.local[0]
@@ -201,7 +214,10 @@ test(
       await expect(page.getByTestId('storage-first-launch-read-error')).toBeVisible()
       await expect(page.getByTestId('fixture-seen')).toHaveText('false')
       await expect(page.getByTestId('storage-first-launch-dialog')).toHaveCount(0)
-      await page.screenshot({ path: '/tmp/storage-render-firstlaunch-error.png', fullPage: true })
+      await page.screenshot({
+        path: path.join(tmpdir(), 'storage-render-firstlaunch-error.png'),
+        fullPage: true,
+      })
       await page.getByTestId('storage-first-launch-read-retry').click()
       await home(page, true)
       await expect(page.getByTestId('storage-first-launch-dialog')).toBeVisible()

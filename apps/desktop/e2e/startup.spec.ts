@@ -1,11 +1,13 @@
+import { openAccountSettings } from './fixtures/menu'
 import { execFile, execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
+import { createServer } from 'node:http'
 import { copyFileSync, existsSync, writeFileSync, readFileSync, readdirSync, mkdirSync } from 'fs'
 import { join, resolve } from 'path'
 import { expect, test } from '@playwright/test'
 import { apiBase, DesktopSession } from './fixtures/electron'
-import { createRuntime } from './fixtures/runtime'
-import { createReadyProject } from './fixtures/projects'
+import { createRuntime, seedSkillHost } from './fixtures/runtime'
+import { createReadyProject, openProjectMenu, openProjectExplorer } from './fixtures/projects'
 import { STARTUP_BUDGET_ONE_TIME_MS, STARTUP_BUDGET_STEADY_MS } from '../src/main/startupmarker'
 import { ONBOARDING_GROUPS } from '../src/onboarding'
 import { SUBSCRIPTION_CHANNEL, type SubscriptionReply } from '../src/subscriptions'
@@ -97,6 +99,8 @@ test('historical projects restart and recover pending work without losing files'
   try {
     let page = await desktop.launch()
     const template = await createReadyProject(page, '启动验收模板')
+    const existingProjects = (await (await page.request.get(`${await apiBase(page)}/api/content/projects`)).json()).projects
+    const expectedProjects = existingProjects.length + HISTORICAL_PROJECT_COUNT - 1
     writeFileSync(join(template.root, 'resources', STARTUP_NOTE_FILENAME), STARTUP_NOTE_CONTENT)
     await desktop.close()
     const repository = resolve(__dirname, '../../..')
@@ -112,26 +116,29 @@ test('historical projects restart and recover pending work without losing files'
     expect(elapsedMs).toBeLessThan(STARTUP_BUDGET_STEADY_MS)
     const response = await page.request.get(`${await apiBase(page)}/api/content/projects`)
     expect(response.ok()).toBe(true)
-    expect((await response.json()).projects).toHaveLength(HISTORICAL_PROJECT_COUNT)
+    expect((await response.json()).projects).toHaveLength(expectedProjects)
     for (const root of [template.root, ...fixture.roots]) {
       expect(readFileSync(join(root, 'resources', STARTUP_NOTE_FILENAME), 'utf8')).toBe(STARTUP_NOTE_CONTENT)
     }
     const backendLog = readFileSync(join(runtime.home, 'logs', 'backend.log'), 'utf8')
-    expect(backendLog).toContain(`startup_project_inspection_completed projects=${HISTORICAL_PROJECT_COUNT}`)
+    expect(backendLog).toMatch(new RegExp(
+      String.raw`startup_phase phase=source.project_storage event=finished[^\n]*counts=\{'projects': ${expectedProjects + 1}\}[^\n]*validation_calls=0`
+    ))
     expect(backendLog).toContain(`content_operation_completed operation_id=${fixture.operation} command=ReconcileProjectRemoval state=succeeded`)
     const operation = await page.request.get(`${await apiBase(page)}/api/content/operations/${fixture.operation}`)
     expect(operation.ok()).toBe(true)
     expect((await operation.json()).state).toBe('succeeded')
     await expect(page.getByTestId('composer-send')).toBeVisible()
     await page.screenshot({ path: join(runtime.artifacts, 'historical-projects-restarted.png') })
-    await page.getByTestId('topbar-project').click()
+    await openProjectMenu(page)
     await page.getByTestId(`project-menu-option-${template.name}`).click()
-    await page.getByTestId('resource-refresh').click()
-    await page.getByTestId(`tree-resources/${STARTUP_NOTE_FILENAME}`).dblclick()
+    await openProjectExplorer(page)
+    await page.getByTestId('explorer-refresh').click()
+    await page.getByTestId(`explorer-select-resources/${STARTUP_NOTE_FILENAME}`).dblclick()
     await expect(page.getByText(STARTUP_NOTE_CONTENT, { exact: true }).first()).toBeVisible()
     await page.screenshot({ path: join(runtime.artifacts, 'historical-projects-files-preserved.png') })
     const outcome = {
-      projects: HISTORICAL_PROJECT_COUNT,
+      projects: expectedProjects,
       elapsedMs,
       filesPreserved: fixture.roots.length + 1,
       recoveredOperation: fixture.operation
@@ -238,7 +245,9 @@ test('model menu excludes retired native Codex and offers configured connections
 })
 
 test('conversation skill pickers refresh after user skill installation and activation changes', async ({}, testInfo) => {
-  const desktop = new DesktopSession(createRuntime(testInfo), testInfo)
+  const runtime = createRuntime(testInfo)
+  seedSkillHost(runtime)
+  const desktop = new DesktopSession(runtime, testInfo)
   const skillName = 'user-skill-search-check'
   const skillDocument = `---\nname: ${skillName}\ndescription: A local skill for checking conversation selection.\n---\n\nExplain the user's selected topic in one sentence.\n`
   try {
@@ -246,12 +255,12 @@ test('conversation skill pickers refresh after user skill installation and activ
     const search = page.getByRole('searchbox', { name: '搜索已启用的技能' })
     const candidate = page.getByTestId(`composer-skill-${skillName}`)
     const openSkills = async (): Promise<void> => {
-      await page.getByTestId('activity-account').click()
-      await page.getByTestId('account-menu-settings').click()
-      await page.getByTestId('account-settings-nav-skills').click()
+      await page.getByTestId('activity-skills').click()
+      await page.getByTestId('skills-tab-user').click()
+      await expect(page.getByTestId('skills-page')).toBeVisible()
     }
     const newChat = async (): Promise<void> => {
-      await page.getByRole('dialog', { name: '设置', exact: true }).getByRole('button', { name: '关闭', exact: true }).click()
+      await page.getByTestId('activity-literature').click()
       await page.getByTestId('ai-new-session').click()
     }
     const openPicker = async (): Promise<void> => {
@@ -266,12 +275,18 @@ test('conversation skill pickers refresh after user skill installation and activ
     await openPicker()
     await expect(candidate).toHaveCount(0)
     await page.getByTestId('composer-skill-add').click()
+    await page.getByTestId('composer-skill-upload').click()
     await page.getByTestId('skill-upload-input').setInputFiles({
       name: 'SKILL.md',
       mimeType: 'text/markdown',
       buffer: Buffer.from(skillDocument),
     })
     await page.getByTestId('skill-install').click()
+    await expect.poll(async () => {
+      if (await page.getByTestId('skill-upload-error').isVisible())
+        return page.getByTestId('skill-upload-error').innerText()
+      return await page.getByTestId('skill-add-modal').count() ? 'installing' : 'installed'
+    }).toBe('installed')
     await expect(page.getByTestId('skill-add-modal')).toHaveCount(0)
     await openSkills()
     await expect(page.getByTestId(`skill-card-${skillName}`)).toBeVisible()
@@ -321,8 +336,9 @@ test('conversation skill pickers refresh after user skill installation and activ
     await expect(page.getByRole('button', { name: `移除技能 ${skillName}` })).toBeVisible()
 
     await openSkills()
+    await page.getByTestId(`skill-more-${skillName}`).click()
     await page.getByTestId(`skill-remove-${skillName}`).click()
-    await page.getByTestId('skill-remove-confirm').getByRole('button', { name: '确认删除', exact: true }).click()
+    await page.getByTestId('skill-remove-confirm').getByTestId('skill-remove-ok').click()
     await expect(page.getByTestId(`skill-card-${skillName}`)).toHaveCount(0)
     await newChat()
     await openPicker()
@@ -338,8 +354,7 @@ test('ChatGPT subscription connection can be created in Desktop without CLI logi
   const desktop = new DesktopSession(createRuntime(testInfo), testInfo, { preserveRuntime: true })
   try {
     const page = await desktop.launch()
-    await page.getByTestId('activity-account').click()
-    await page.getByTestId('account-menu-settings').click()
+    await openAccountSettings(page)
     await page.getByTestId('account-settings-nav-models').click()
     await page.getByTestId('model-connection-add').click()
     await page.getByTestId('model-endpoint-provider').click()
@@ -380,8 +395,7 @@ test('ChatGPT subscription connection can be created in Desktop without CLI logi
         .filter({ hasText: 'Endpoint alongside ChatGPT' })
     ).toContainText('Endpoint alongside ChatGPT')
     await page.reload()
-    await page.getByTestId('activity-account').click()
-    await page.getByTestId('account-menu-settings').click()
+    await openAccountSettings(page)
     await page.getByTestId('account-settings-nav-models').click()
     await page
       .locator('[data-testid^="model-connection-pick-"]')
@@ -398,10 +412,21 @@ test('ChatGPT subscription connection can be created in Desktop without CLI logi
 
 test('saved API key stays masked and clearing requires replacement before saving', async ({}, testInfo) => {
   const desktop = new DesktopSession(createRuntime(testInfo), testInfo, { preserveRuntime: true })
+  // A loopback upstream fixture exercises real connection validation and persistence.
+  // It never calls a model service or substitutes the product's profile mutation.
+  const upstream = createServer((request, response) => {
+    request.resume()
+    response.setHeader('Content-Type', 'application/json')
+    response.end(JSON.stringify(request.url?.endsWith('/models')
+      ? { data: [{ id: 'fixture-model' }] }
+      : { id: 'fixture-response', object: 'response', output: [] }))
+  })
+  await new Promise<void>(resolve => upstream.listen(0, '127.0.0.1', resolve))
+  const address = upstream.address()
+  if (!address || typeof address === 'string') throw new Error('upstream fixture did not bind')
   try {
     const page = await desktop.launch()
-    await page.getByTestId('activity-account').click()
-    await page.getByTestId('account-menu-settings').click()
+    await openAccountSettings(page)
     await page.getByTestId('account-settings-nav-models').click()
     await page.getByTestId('model-connection-add').click()
     await page.getByTestId('model-endpoint-provider').click()
@@ -409,7 +434,7 @@ test('saved API key stays masked and clearing requires replacement before saving
       .getByRole('option', { name: '自定义（自建服务或未列出的供应商）', exact: true })
       .click()
     await page.getByTestId('model-endpoint-name').fill('API key mask regression')
-    await page.getByTestId('model-endpoint-base-url').fill('http://127.0.0.1:8000/v1')
+    await page.getByTestId('model-endpoint-base-url').fill(`http://127.0.0.1:${address.port}/v1`)
     await page.getByTestId('model-endpoint-api-key').fill('fixture-key-not-for-network')
     await page.getByTestId('model-endpoint-manual-model').fill('fixture-model')
     await page.getByTestId('model-endpoint-add-model').click()
@@ -420,8 +445,7 @@ test('saved API key stays masked and clearing requires replacement before saving
     await expect(connection).toBeVisible()
 
     await page.reload()
-    await page.getByTestId('activity-account').click()
-    await page.getByTestId('account-menu-settings').click()
+    await expect(page.getByTestId('account-settings-shell')).toBeVisible()
     await page.getByTestId('account-settings-nav-models').click()
     await connection.click()
     const apiKey = page.getByTestId('model-endpoint-api-key')
@@ -444,7 +468,10 @@ test('saved API key stays masked and clearing requires replacement before saving
     await page.screenshot({ path: join(desktop.runtime.artifacts, 'saved-api-key-masked.png') })
     desktop.assertNoPageErrors()
   } finally {
-    await desktop.attachArtifacts()
+    try { await desktop.attachArtifacts() }
+    finally {
+      await new Promise<void>((resolve, reject) => upstream.close(error => error ? reject(error) : resolve()))
+    }
   }
 })
 
@@ -467,21 +494,21 @@ test('leaving model settings cancels a subscription login delivered after unmoun
             })
       )
     }, SUBSCRIPTION_CHANNEL)
-    await page.getByTestId('activity-account').click()
-    await page.getByTestId('account-menu-settings').click()
+    await openAccountSettings(page)
     await page.getByTestId('account-settings-nav-models').click()
     await page.getByTestId('model-connection-add').click()
     await page.getByTestId('model-endpoint-provider').click()
     await page.getByRole('option', { name: 'ChatGPT（订阅登录）', exact: true }).click()
     const section = page.getByRole('region', { name: 'ChatGPT 订阅连接' })
     await section.getByRole('button', { name: '连接 ChatGPT', exact: true }).click()
-    const login = section.getByRole('button', { name: '登录 ChatGPT', exact: true })
+    const login = section.getByRole('button', { name: '继续使用 ChatGPT', exact: true })
+    await expect(login).toBeVisible()
     await login.click()
     await expect(login).toBeDisabled()
     await expect.poll(() => desktop.app!.evaluate(() => Boolean(
       (globalThis as typeof globalThis & { releaseSubscriptionLogin?: unknown }).releaseSubscriptionLogin
     ))).toBe(true)
-    await page.getByTestId('account-settings-nav-skills').click()
+    await page.getByTestId('account-settings-nav-prompts').click()
     await expect(section).toHaveCount(0)
     await page.route(`**/login/${transactionId}`, (route) =>
       route.fulfill({
@@ -521,8 +548,7 @@ test('preset provider connects with only an API key and keeps custom configurati
   const desktop = new DesktopSession(createRuntime(testInfo), testInfo, { preserveRuntime: true })
   try {
     const page = await desktop.launch()
-    await page.getByTestId('activity-account').click()
-    await page.getByTestId('account-menu-settings').click()
+    await openAccountSettings(page)
     await page.getByTestId('account-settings-nav-models').click()
     await page.getByTestId('model-connection-add').click()
     await expect(page.getByTestId('model-endpoint-provider')).toContainText('自定义')
@@ -596,28 +622,55 @@ test('model selection closes immediately while a slow switch is pending', async 
       ],
       current_model: 'stable-model', subscription_groups: []
     }
-    await page.route('**/api/serve/models', (route) => route.fulfill({ json: catalog }))
+    const actualCatalog = await (await page.request.get(`${await apiBase(page)}/api/serve/models`)).json()
+    await page.route('**/api/serve/models', (route) => route.fulfill({ json: {
+      ...actualCatalog, ...catalog, configured: true,
+    } }))
     // Hold the response until after asserting the click feedback; no latency sleeps.
     const gate = new Promise<void>((resolve) => {
       release = resolve
     })
-    await page.route('**/api/serve/models/default', async (route) => {
+    let attempts = 0
+    await page.route('**/api/serve/runtime/prepare', async (route) => {
+      if (route.request().postDataJSON().model_id !== 'slow-switch-model') {
+        await route.fallback()
+        return
+      }
+      attempts += 1
       await gate
-      await route.fulfill({ status: 500, json: { detail: 'switch failed' } })
+      const request = route.request().postDataJSON()
+      // HTTP 500 is an unknown submission outcome and is reconciled by polling.
+      // This case exercises a declared terminal preparation rejection.
+      await route.fulfill({ json: {
+        request_id: request.request_id, session_id: null,
+        model_id: request.model_id, service_instance_id: request.service_instance_id,
+        state: 'rejected', error: 'fixture_prepare_rejected',
+      } })
     })
     await page.reload()
     await page.getByTestId('activity-literature').click()
     if (!(await page.getByTestId('ai-panel').isVisible()))
       await page.getByTestId('topbar-ai').click()
     await page.getByTestId('model-selector-toggle').click()
+    const preparing = page.waitForRequest(request =>
+      new URL(request.url()).pathname === '/api/serve/runtime/prepare' &&
+      request.postDataJSON().model_id === 'slow-switch-model'
+    )
     await page.getByTestId('model-option-slow-switch-model').click()
+    await preparing
     await expect(page.getByTestId('model-option-slow-switch-model')).toHaveCount(0)
-    await expect(page.getByTestId('model-selector-toggle')).toContainText('切换中')
-    await expect(page.getByTestId('model-selector-toggle')).toBeDisabled()
+    // Draft selection is immediate; its preparation runs in the background and
+    // must keep the chooser usable so another model can supersede the request.
+    await expect(page.getByTestId('model-selector-toggle')).toContainText('Slow switch model')
+    await expect(page.getByTestId('model-selector-toggle')).toBeEnabled()
     release!()
     await expect(page.getByTestId('model-selector-toggle')).toBeEnabled()
-    await expect(page.getByTestId('model-selector-toggle')).not.toContainText('Slow switch model')
-    await expect(page.getByText('模型切换失败。', { exact: true })).toBeVisible()
+    await expect(page.getByTestId('model-selector-toggle')).toContainText('Slow switch model')
+    await expect(page.getByText('模型切换失败，请重试。', { exact: true })).toBeVisible()
+    await page.getByTestId('model-selector-toggle').click()
+    await page.getByTestId('model-option-slow-switch-model').click()
+    await expect.poll(() => attempts).toBe(2)
+    await expect(page.getByTestId('model-selector-menu')).toHaveCount(0)
     desktop.assertNoPageErrors()
   } finally {
     release?.()
@@ -639,8 +692,7 @@ test('DeepSeek flash reasoning declarations save and survive catalog reload', as
   try {
     const page = await desktop.launch()
     const openSettings = async (): Promise<void> => {
-      await page.getByTestId('activity-account').click()
-      await page.getByTestId('account-menu-settings').click()
+      await openAccountSettings(page)
       await page.getByTestId('account-settings-nav-model-settings').click()
     }
     await openSettings()

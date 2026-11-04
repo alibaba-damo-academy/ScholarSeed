@@ -60,6 +60,7 @@ PROJECT_STATE_DIRNAME = ".scholarseed"
 ROOT_UNAVAILABLE_ERROR = "root_unavailable"
 PROJECT_RECOVERY_PENDING = "project_recovery_pending"
 ROOT_SOURCE_CHANGED_ERROR = "root_source_changed"
+ROOT_BUSY_ERROR = "root_busy"
 PATH_OUTSIDE_ROOT_ERROR = "path_outside_root"
 READ_FAILED = "read_failed"
 

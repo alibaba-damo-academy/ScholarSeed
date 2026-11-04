@@ -2826,6 +2826,7 @@ export interface Project {
   path: string
   /** Registration time in seconds. */
   added_at?: number
+  directory_created_at?: number | null
   /** Bounded count of visible top-level entries; null means the root is unavailable. */
   file_count?: number | null
   file_count_capped?: boolean
@@ -2876,6 +2877,7 @@ export async function listProjects(includeArchived = false): Promise<ProjectsRes
       layout: string
       available: boolean
       created_at?: number | null
+      directory_created_at?: number | null
       archived_at?: number | null
       description?: string
       pinned?: boolean
@@ -2891,6 +2893,7 @@ export async function listProjects(includeArchived = false): Promise<ProjectsRes
       name: project.name,
       path: project.root,
       added_at: project.created_at ?? 0,
+      directory_created_at: project.directory_created_at ?? null,
       layout: project.layout,
       available: project.available,
       archived_at: project.archived_at ?? null,
@@ -2932,12 +2935,19 @@ async function submitProject(
     )
     if (response.status === 401) window.dispatchEvent(new CustomEvent('scholarseed:auth-required'))
     if (!response.ok) return null
-    const created = (await response.json()) as { id: string; name: string; root: string }
+    const created = (await response.json()) as {
+      id: string
+      name: string
+      root: string
+      created_at?: number | null
+      directory_created_at?: number | null
+    }
     return {
       id: created.id,
       name: created.name,
       path: created.root,
-      added_at: Math.floor(Date.now() / 1000),
+      added_at: created.created_at ?? Math.floor(Date.now() / 1000),
+      directory_created_at: created.directory_created_at ?? null,
     }
   } catch {
     return null
@@ -3324,6 +3334,7 @@ export interface SkillInfo extends SkillAttributionInfo {
   group: SkillGroup
   /** 卡片领域标签；页签只由 group 驱动。 */
   category?: string
+  category_source?: 'builtin' | 'user' | null
   /** Server-owned controlled icon token (doc/search/play); unknown values use the product fallback. */
   icon?: string
   /** PRD 2.1.6 技能列表展示用的一句话中文说明（后端专供 UI，不同于给 LLM 的 description）。 */

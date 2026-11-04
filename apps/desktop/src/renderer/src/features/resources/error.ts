@@ -14,8 +14,10 @@ export const SOURCE_OVERLAP_ERROR = 'source_overlap'
  * 子关联时才退回普通报错, 所以这里仍登记一条文案兜底。
  */
 export const SOURCE_COVERS_LINKS_ERROR = 'source_covers_links'
+export const ROOT_BUSY_ERROR = 'root_busy'
 
 const RESOURCE_ERROR_KEYS = {
+  [ROOT_BUSY_ERROR]: 'operationError.root_busy',
   version_admission_unavailable: 'operationError.version_admission_unavailable',
   version_admission_failed: 'operationError.version_admission_failed',
   review_batch_unavailable: 'operationError.review_batch_unavailable',
@@ -65,13 +67,14 @@ const RESOURCE_ERROR_KEYS = {
 } as const
 
 export interface ResourceErrorMessage {
-  key: typeof RESOURCE_ERROR_KEYS[keyof typeof RESOURCE_ERROR_KEYS] | 'operationError.unknown'
+  key: (typeof RESOURCE_ERROR_KEYS)[keyof typeof RESOURCE_ERROR_KEYS] | 'operationError.unknown'
   detail?: string
 }
 
 export function resourceErrorMessage(code?: string): ResourceErrorMessage {
-  const key = code && Object.prototype.hasOwnProperty.call(RESOURCE_ERROR_KEYS, code)
-    ? RESOURCE_ERROR_KEYS[code as keyof typeof RESOURCE_ERROR_KEYS]
-    : 'operationError.unknown'
+  const key =
+    code && Object.prototype.hasOwnProperty.call(RESOURCE_ERROR_KEYS, code)
+      ? RESOURCE_ERROR_KEYS[code as keyof typeof RESOURCE_ERROR_KEYS]
+      : 'operationError.unknown'
   return { key, detail: undefined }
 }

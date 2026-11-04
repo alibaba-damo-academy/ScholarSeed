@@ -35,7 +35,7 @@ const UNSAFE_WRITE_MODE = 0o022
 const PRODUCT_CONFIG_BYTES = 64 * 1024
 const SOURCE_PRODUCT_CONFIG = ['Contents', 'Resources', 'product.json']
 const run = promisify(execFile)
-export type SquirrelStartupStatus = 'installing' | 'failed' | 'unconfirmed'
+export type SquirrelStartupStatus = 'installing' | 'restoring' | 'failed' | 'unconfirmed'
 export type SquirrelAdmission = 'allow' | 'exit' | 'failed' | 'superseded'
 
 export function squirrelLaunchSuperseded(
@@ -104,8 +104,15 @@ export function squirrelAdmission(
   handoff: SquirrelHandoff | null,
   status: SquirrelStartupStatus
 ): SquirrelAdmission {
-  if (!handoff || isNewerRelease(current, handoff) === false) return 'allow'
-  return status === 'failed' ? 'failed' : 'exit'
+  if (!handoff) return 'allow'
+  const newer = isNewerRelease(current, handoff)
+  if (newer === false) return 'allow'
+  return newer === true &&
+    status === 'failed' &&
+    validSquirrelBinding(handoff.binding) &&
+    handoff.binding.candidate === handoff.candidate
+    ? 'failed'
+    : 'exit'
 }
 
 function readNativeRecord(path: string, limit: number): Buffer {
@@ -355,7 +362,7 @@ export async function settleSquirrelStartup(
 ): Promise<SquirrelStartupStatus> {
   const deadline = performance.now() + NATIVE_SETTLE_TIMEOUT_MS
   let status = await probe()
-  while (status === 'installing' && performance.now() < deadline) {
+  while (['installing', 'restoring'].includes(status) && performance.now() < deadline) {
     await delay(NATIVE_SETTLE_INTERVAL_MS)
     status = await probe()
   }
@@ -426,8 +433,7 @@ export async function inspectSquirrelStartup(
       },
       Date.now()
     )
-    if (status !== 'unconfirmed' || observed.some((entry) => entry.endsWith(` ${executable}`)))
-      return status
+    const active = observed.some((entry) => entry.endsWith(` ${executable}`))
     const source = await run(
       '/usr/bin/plutil',
       [
@@ -440,10 +446,12 @@ export async function inspectSquirrelStartup(
       ],
       options
     )
-    if (!sameSquirrelBinding(handoff.binding, handoff.nativeRequest?.binding)) return 'unconfirmed'
-    return (await readSquirrelFailure(source.stdout.trim(), application, handoff.nativeRequest))
-      ? 'failed'
-      : 'unconfirmed'
+    if (
+      sameSquirrelBinding(handoff.binding, handoff.nativeRequest?.binding) &&
+      (await readSquirrelFailure(source.stdout.trim(), application, handoff.nativeRequest))
+    )
+      return active ? 'restoring' : 'failed'
+    return status
   } catch {
     // Missing/stale native state, command failure and timeout never release the handoff.
     return 'unconfirmed'

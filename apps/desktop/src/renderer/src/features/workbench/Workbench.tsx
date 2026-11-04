@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react'
+import React, { useEffect, useLayoutEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { featureRegistry } from '../../app/composition'
@@ -10,20 +10,37 @@ import {
   FIXED_TAB_BY_VIEW,
   synchronizeWorkbenchTab,
   tabMatchesProject,
-  tabVisibleInCurrentView,
+  workbenchTabVisible,
   viewerForPath,
 } from './tabs'
-import { documentNavigationView, useDocumentWorkspace } from './workspace'
+import { documentNavigationView, useDocumentWorkspace, useWorkspaceController } from './workspace'
 
 export function Workbench(): React.JSX.Element {
   const { t } = useTranslation('workbench')
   const { state, set } = useApp()
   const documents = useDocumentWorkspace()
+  const workspace = useWorkspaceController()
+  const pageTabs = state.tabs.filter(
+    (tab) =>
+      availabilityPolicy.tabAvailable(tab) &&
+      tabMatchesProject(tab, state.homeSelectedProjectId) &&
+      featureRegistry.viewers.get(tab.kind)?.dockable
+  )
+  const pageIds = JSON.stringify(pageTabs.map((tab) => tab.id))
+  useLayoutEffect(() => {
+    const ids: string[] = JSON.parse(pageIds)
+    workspace.synchronizePageTabs(ids)
+    if (ids.includes(state.activeTab)) workspace.focusTab(state.activeTab)
+    else if (workspace.getSnapshot().tabs[state.activeTab]?.embedded) {
+      workspace.setTabEmbedded(state.activeTab, false)
+      workspace.focusTab(state.activeTab)
+    }
+  }, [workspace, pageIds, state.activeTab])
   const visibleTabs = state.tabs.filter(
     (entry) =>
       availabilityPolicy.tabAvailable(entry) &&
       tabMatchesProject(entry, state.homeSelectedProjectId) &&
-      tabVisibleInCurrentView(entry.kind, state.mainView)
+      workbenchTabVisible(entry, state.mainView)
   )
   const activeTab = visibleTabs.find((entry) => entry.id === state.activeTab)
   const focusedTab = documents.focusedTabId ? documents.tabs[documents.focusedTabId] : undefined
@@ -55,7 +72,8 @@ export function Workbench(): React.JSX.Element {
     set,
   ])
 
-  if (documents.tabs[state.activeTab]) return <DocumentDock />
+  if (documents.tabs[state.activeTab] || pageTabs.some((page) => page.id === state.activeTab))
+    return <DocumentDock />
   if (activeTabNeedsSync && focusedDocument) return <DocumentDock />
   if (tab && !contributedViewActive && Object.keys(documents.tabs).length > 0) {
     return <DocumentDock />

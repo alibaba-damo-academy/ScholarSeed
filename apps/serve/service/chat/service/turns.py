@@ -332,8 +332,18 @@ class TurnService:
             ):
                 return
             original = live.catalog.queued_message(live.id, checkpoint.client_id)
-            if original is None or original.state is not QueuedMessageState.OUTCOME_UNKNOWN:
+            if original is None or original.state not in {
+                QueuedMessageState.OUTCOME_UNKNOWN,
+                QueuedMessageState.COMPLETED,
+            }:
                 return
+            settled = original.state is QueuedMessageState.COMPLETED
+            if settled:
+                uncertainty = live.catalog.uncertainty(
+                    live.id, UncertaintyKind.TURN, original.native_turn_id or checkpoint.client_id
+                )
+                if uncertainty is None or uncertainty.state is not UncertaintyState.RECONCILED:
+                    return
             request_id = uuid.uuid5(uuid.NAMESPACE_OID, f"{live.id}:{checkpoint.client_id}").hex
             await recovery.claim(live, checkpoint, generation)
             body = {
@@ -366,21 +376,25 @@ class TurnService:
                         return
                 if not await recovery.eligible(live, checkpoint):
                     return
-                if not await live.persistence.run(
-                    live.catalog.remove_reconciled_unknown_message,
-                    live.id,
-                    checkpoint.client_id,
-                    int(original.operation_seq or 0),
-                ):
-                    return
-                await live.publish(
-                    PRODUCT_EVENT_MESSAGE_REMOVED,
-                    {"queued_message_id": checkpoint.client_id, "reason": AUTOMATIC_CRASH_RETRY},
-                    turn_id=checkpoint.client_id,
-                    idempotency_key=recovery_key(
-                        checkpoint.client_id, AUTOMATIC_CRASH_RETRY, checkpoint.epoch
-                    ),
-                )
+                if not settled:
+                    if not await live.persistence.run(
+                        live.catalog.remove_reconciled_unknown_message,
+                        live.id,
+                        checkpoint.client_id,
+                        int(original.operation_seq or 0),
+                    ):
+                        return
+                    await live.publish(
+                        PRODUCT_EVENT_MESSAGE_REMOVED,
+                        {
+                            "queued_message_id": checkpoint.client_id,
+                            "reason": AUTOMATIC_CRASH_RETRY,
+                        },
+                        turn_id=checkpoint.client_id,
+                        idempotency_key=recovery_key(
+                            checkpoint.client_id, AUTOMATIC_CRASH_RETRY, checkpoint.epoch
+                        ),
+                    )
                 if await recovery.current(live, body[RECOVERY_SOURCE]):
                     self._schedule_locked(live, request_id)
 
@@ -438,6 +452,9 @@ class TurnService:
                     return {"ok": False, "error": PREVIOUS_TURN_ACTIVITY_UNAVAILABLE}, HTTP_CONFLICT
             task: asyncio.Task[TurnResult] | None = None
             async with live.lifecycle_lock:
+                record = live.catalog.get(live.id)
+                if record is not None and record.archived:
+                    return {"ok": False, "error": SESSION_ARCHIVED_ERROR}, HTTP_CONFLICT
                 if live.closing:
                     return {"ok": False, "error": SESSION_TERMINATED}, HTTP_CONFLICT
                 if (
@@ -628,8 +645,10 @@ class TurnService:
     ) -> asyncio.Task[TurnResult] | None:
         """Own exactly one resource admission without claiming native execution."""
 
+        record = live.catalog.get(live.id)
         if (
             self._sessions.get(live.id) is not live
+            or (record is not None and record.archived)
             or live.running
             or live.interrupting
             or live.closing
@@ -719,6 +738,9 @@ class TurnService:
                         on_wait=on_wait,
                     )
             async with live.lifecycle_lock:
+                record = live.catalog.get(live.id)
+                if record is not None and record.archived:
+                    raise asyncio.CancelledError
                 if self._sessions.get(live.id) is not live or live.interrupting or live.closing:
                     raise asyncio.CancelledError
                 recovery = None

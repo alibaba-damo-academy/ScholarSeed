@@ -230,6 +230,8 @@ class RuntimeOpening:
     session_id: str
     activity: ActivityLease
     settled: bool = False
+    project_id: str = ""
+    directories: tuple[Path, ...] = ()
 
 
 class LiveSessionService:
@@ -293,6 +295,7 @@ class LiveSessionService:
         self._one_shot_close_failures: dict[str, BaseException] = {}
         self._one_shot_drivers: dict[str, tuple[str, RuntimeDriver]] = {}
         self._one_shot_tasks: dict[str, tuple[str, asyncio.Task[Any]]] = {}
+        self._one_shot_directories: dict[str, tuple[Path, ...]] = {}
         self._project_id_for_path: Callable[[Path], str] | None = None
         self._local_socket: Path | None = None
         self._publications: PublicationService | None = None
@@ -1069,6 +1072,36 @@ class LiveSessionService:
     def bind_sessions(self, sessions: Mapping[str, LiveSession]) -> None:
         self.activation.bind_sessions(sessions)
 
+    async def release_directory_attachments(
+        self, project_id: str, source: Path, project_root: Path
+    ) -> tuple[str, ...]:
+        blocked = set(await self.activation.release_directory_attachments(project_id, source))
+        related = {live.id for live in self.activation.directory_sessions(project_id, source)}
+        blocked.update(
+            opening.session_id
+            for opening in self._uncertain_attachments.values()
+            if opening.session_id in related
+            or opening.project_id == project_id
+            or not opening.directories
+            or any(
+                path.is_relative_to(project_root)
+                or path.is_relative_to(source)
+                or source.is_relative_to(path)
+                for path in opening.directories
+            )
+        )
+        blocked.update(
+            identity
+            for identity, paths in self._one_shot_directories.items()
+            if any(
+                path.is_relative_to(project_root)
+                or path.is_relative_to(source)
+                or source.is_relative_to(path)
+                for path in paths
+            )
+        )
+        return tuple(sorted(blocked))
+
     async def start(self) -> None:
         await self.activation.start()
         self.schedule_readiness()
@@ -1791,7 +1824,13 @@ class LiveSessionService:
         runtime_session = None
         opening = self._activities.enter(ActivityDomain.RUNTIME)
         opening_id = uuid.uuid4().hex
-        opening_record = RuntimeOpening(live.runtime_id, live.id, opening)
+        opening_record = RuntimeOpening(
+            live.runtime_id,
+            live.id,
+            opening,
+            project_id=live.project_id,
+            directories=(live.runtime_workdir, live.output_root, *live.writable_roots),
+        )
         self._uncertain_attachments[opening_id] = opening_record
         release_opening = True
         try:
@@ -1986,6 +2025,10 @@ class LiveSessionService:
         if invocation_task is None:
             raise RuntimeError("one-shot invocation requires an asyncio task")
         self._one_shot_tasks[invocation_id] = (owner_id, invocation_task)
+        self._one_shot_directories[invocation_id] = (
+            cwd,
+            *(permission.writable_roots if permission is not None else writable_roots),
+        )
         if permission is not None:
             permission_mode = permission.mode
             network_access = permission.network_access
@@ -1993,6 +2036,9 @@ class LiveSessionService:
         driver: RuntimeDriver | None = None
         runtime_session: RuntimeSession | None = None
         submitted = False
+        opening_id = uuid.uuid4().hex
+        opening_record: RuntimeOpening | None = None
+        release_opening = False
         service_callbacks: set[asyncio.Task[None]] = set()
         try:
             trace = SessionTrace(invocation_id, cwd, runtime_id=self.runtime_id)
@@ -2182,9 +2228,20 @@ class LiveSessionService:
                     )
                 with timing.measure(ActivationStage.ATTACH):
                     try:
-                        runtime_session = await provider.open(
-                            replace(request, reservation_id=receipt.reservation_id)
+                        opening_record = RuntimeOpening(
+                            self.runtime_id,
+                            invocation_id,
+                            self._activities.enter(ActivityDomain.RUNTIME),
+                            directories=self._one_shot_directories[invocation_id],
                         )
+                        self._uncertain_attachments[opening_id] = opening_record
+                        try:
+                            runtime_session = await provider.open(
+                                replace(request, reservation_id=receipt.reservation_id)
+                            )
+                        except RuntimeOpenNotAppliedError as error:
+                            release_opening = error.reservation_id == receipt.reservation_id
+                            raise
                         driver = RuntimeDriver(runtime_session, observe)
                     finally:
                         await provider.cancel_resource(receipt.reservation_id)
@@ -2267,6 +2324,11 @@ class LiveSessionService:
                 except BaseException as error:
                     failures.append(error)
             self._one_shot_tasks.pop(invocation_id, None)
+            if opening_record is not None:
+                opening_record.settled = True
+                if not failures and (release_opening or runtime_session is not None):
+                    self._uncertain_attachments.pop(opening_id, None)
+                    opening_record.activity.close()
             if failures:
                 cleanup_error = (
                     failures[0]
@@ -2275,6 +2337,7 @@ class LiveSessionService:
                 )
                 self._one_shot_close_failures[invocation_id] = cleanup_error
                 raise cleanup_error
+            self._one_shot_directories.pop(invocation_id, None)
 
     async def interrupt_invocations_for_update(self) -> None:
         """Interrupt this instance's admitted one-shots without releasing ownership.

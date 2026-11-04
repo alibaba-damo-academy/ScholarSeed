@@ -14,6 +14,8 @@ from hashlib import sha256
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
+from packaging.requirements import Requirement
+
 from service.capabilities.domain import PACKAGE_MANIFEST, SKILL_MANIFEST_NAME
 from service.capabilities.service.install import (
     MAX_PACKAGE_BYTES,
@@ -37,6 +39,21 @@ ZIP_TIMESTAMP = (2026, 1, 1, 0, 0, 0)
 FRONTMATTER_BOUNDARY = "---"
 DESCRIPTION_PREFIX = "description: "
 VERSION_PREFIX = "version:"
+DIRECTORY_PROVENANCE_KIND = "directory"
+DEPENDENCY_FIELDS = frozenset(
+    {
+        "skills",
+        "python",
+        "wheels",
+        "imports",
+        "modules",
+        "executables",
+        "bundled_executables",
+        "optional_executables",
+    }
+)
+MODULE_PATTERN = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\Z")
+EXECUTABLE_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 
 
 class PackageError(ValueError):
@@ -98,6 +115,40 @@ def safe_path(value: str) -> str:
         or any(part.endswith((" ", ".")) for part in path.parts)
     ):
         raise PackageError(f"invalid package path: {value!r}")
+    return value
+
+
+def declaration(value: dict[str, Any]) -> dict[str, list[str]]:
+    if not isinstance(value, dict) or set(value) - DEPENDENCY_FIELDS:
+        raise PackageError("unsupported skill dependency declaration")
+    for key, rows in value.items():
+        if not isinstance(rows, list) or not all(isinstance(row, str) and row for row in rows):
+            raise PackageError(f"dependency field must be a list of nonempty strings: {key}")
+        if len(set(rows)) != len(rows):
+            raise PackageError(f"duplicate dependency: {key}")
+        for row in rows:
+            if key == "python":
+                requirement = Requirement(row)
+                pins = list(requirement.specifier)
+                if (
+                    requirement.url
+                    or requirement.marker
+                    or requirement.extras
+                    or len(pins) != 1
+                    or pins[0].operator != "=="
+                    or "*" in pins[0].version
+                ):
+                    raise PackageError(
+                        "skill Python dependencies require exact reviewed name==version pins"
+                    )
+            elif key == "wheels":
+                if not safe_path(row).endswith(".whl"):
+                    raise PackageError("skill wheel dependency must name a package payload .whl")
+            elif key in {"imports", "modules"}:
+                if not MODULE_PATTERN.fullmatch(row):
+                    raise PackageError("invalid dependency module name")
+            elif not EXECUTABLE_PATTERN.fullmatch(row):
+                raise PackageError("invalid dependency skill/executable name")
     return value
 
 
@@ -253,6 +304,27 @@ def _archive_files(source: Path) -> tuple[dict[str, Payload], dict[str, Any]]:
     }
 
 
+def package_manifest(
+    name: str,
+    version: str,
+    provenance: Mapping[str, Any],
+    source_document_sha256: str,
+    dependencies: Mapping[str, Any],
+    files: list[dict[str, Any]],
+) -> bytes:
+    return json_bytes(
+        {
+            "schema": PACKAGE_SCHEMA,
+            "name": name,
+            "version": version,
+            "source": dict(provenance),
+            "source_document_sha256": source_document_sha256,
+            "dependencies": dict(dependencies),
+            "files": files,
+        }
+    )
+
+
 def pack_skill(
     source: Path, output: Path, version: str, dependencies: Mapping[str, Any], *, expected_name: str
 ) -> SkillPackage:
@@ -261,7 +333,7 @@ def pack_skill(
     if source.is_symlink():
         raise PackageError("source cannot be a symlink")
     if source.is_dir():
-        files, provenance = _directory_files(source), {"kind": "directory"}
+        files, provenance = _directory_files(source), {"kind": DIRECTORY_PROVENANCE_KIND}
     else:
         files, provenance = _archive_files(source)
     for generated in (PACKAGE_MANIFEST, PRODUCT_METADATA):
@@ -278,16 +350,16 @@ def pack_skill(
         raise PackageError("source skill name differs from selected dependency policy")
     files[SKILL_MANIFEST_NAME] = Payload(document)
     validate_paths(list(files))
-    manifest = {
-        "schema": PACKAGE_SCHEMA,
-        "name": name,
-        "version": version,
-        "source": provenance,
-        "source_document_sha256": digest(original_document),
-        "dependencies": dict(dependencies),
-        "files": [item.record(path) for path, item in sorted(files.items())],
-    }
-    files[PACKAGE_MANIFEST] = Payload(json_bytes(manifest))
+    files[PACKAGE_MANIFEST] = Payload(
+        package_manifest(
+            name,
+            version,
+            provenance,
+            digest(original_document),
+            dependencies,
+            [item.record(path) for path, item in sorted(files.items())],
+        )
+    )
     _check_sizes(files)
     output.parent.mkdir(parents=True, exist_ok=True)
     # Never overwrite an operator's previous release package.

@@ -7,7 +7,7 @@ const path = require('node:path')
 const { runInNewContext } = require('node:vm')
 const { createRequire } = require('node:module')
 const crypto = require('node:crypto')
-const { policyFor, validatePolicy, assertDependencies, readLauncher, launcherMessages } = require('../handoff.cjs')
+const { policyFor, validatePolicy, assertDependencies, readLauncher, launcherMessages, updateMessages } = require('../handoff.cjs')
 const sourceRequire = createRequire(path.join(sourceDirectory, 'handoff.cjs'))
 
 test('handoff policy freezes the actual component envelope and product identity', () => {
@@ -19,10 +19,80 @@ test('handoff policy freezes the actual component envelope and product identity'
   assert.equal(validatePolicy(policy), policy)
   assert.equal(policy.pack_version, '0.2.0-build.202610170001')
   assert.equal(policy.runtime_sha256, context.runtime.manifestSha256)
+  assert.deepEqual(Object.keys(policy.recovery_messages), ['en', 'zh'])
+  for (const language of ['en', 'zh']) {
+    const source = JSON.parse(fs.readFileSync(path.join(sourceDirectory,
+      '../../src/localization/locales', language, 'native.json'), 'utf8'))
+    assert.deepEqual(policy.recovery_messages[language], source.updateInterrupted)
+    for (const message of Object.values(policy.recovery_messages[language]))
+      assert.equal(typeof message === 'string' && message.length > 0, true)
+  }
   assert.throws(() => validatePolicy({ ...policy, runtime_sha256: '' }))
   assert.throws(() => validatePolicy({ ...policy, keys: { test: 'invalid' } }))
+  assert.throws(() => validatePolicy({ ...policy, recovery_messages: undefined }))
+  assert.throws(() => validatePolicy({ ...policy, recovery_messages: {
+    ...policy.recovery_messages, zh: { title: 'title', stopped: '', unconfirmed: '' },
+  } }))
   assert.throws(() => policyFor({ ...context, runtime: undefined }))
+  assert.throws(() => validatePolicy({ ...policy, update_messages: undefined }))
+  assert.throws(() => validatePolicy({ ...policy, update_messages: { en: policy.update_messages.en } }))
 })
+
+test('update UI freezes bilingual stages and real extraction file and byte parameters', () => {
+  for (const [language, text] of Object.entries(updateMessages())) {
+    const source = JSON.parse(fs.readFileSync(path.join(sourceDirectory, '../../src/localization/locales', language, 'native.json')))
+    assert.equal(text.title, source.updateProgress.title)
+    assert.equal(text.installing, source.updateProgress.installing)
+    assert.equal(text.restarting, source.updateProgress.restarting)
+    assert.equal(text.extracting, source.startup.componentExtracting)
+    assert.equal(text.failed, source.updateProgress.failed)
+    for (const param of ['{{name}}', '{{percent}}', '{{count}}', '{{total}}']) assert.ok(text.extracting.includes(param))
+  }
+})
+
+for (const language of ['en', 'zh']) {
+  test(`handoff recovery diagnostics identify invalid ${language} locale resources`, () => {
+    const filename = path.join(sourceDirectory, '../../src/localization/locales', language, 'native.json')
+    const source = JSON.parse(fs.readFileSync(filename, 'utf8'))
+    const context = { appId: 'scholarseed', version: '0.2.0', productName: 'ScholarSeed',
+      product: { config: { product_id: 'scholarseed', bundle_id: 'scholarseed',
+        update_channel: 'preview', build_number: '202610170001' } },
+      runtime: { manifestSha256: 'a'.repeat(64), keys: {} } }
+    const readError = Object.assign(new Error('locale is unavailable'), { code: 'ENOENT' })
+    const cases = [
+      { label: 'unreadable locale', key: 'updateInterrupted', read: () => { throw readError }, cause: readError },
+      { label: 'invalid JSON', key: 'updateInterrupted', read: () => '{', causeName: 'SyntaxError' },
+      ...[undefined, null, [], 'messages'].map(value => ({
+        label: `invalid section ${JSON.stringify(value)}`, key: 'updateInterrupted',
+        read: () => JSON.stringify({ ...source, updateInterrupted: value }),
+      })),
+      ...['title', 'stopped', 'unconfirmed'].flatMap(field =>
+        [undefined, null, 7, '', ' \t', 'message\0'].map(value => ({
+          label: `invalid ${field} ${JSON.stringify(value)}`, key: `updateInterrupted.${field}`,
+          read: () => JSON.stringify({ ...source, updateInterrupted: {
+            ...source.updateInterrupted, [field]: value,
+          } }),
+        }))),
+    ]
+    for (const scenario of cases) {
+      const module = { exports: {} }
+      const requireMock = name => name === 'node:fs' ? {
+        ...fs,
+        readFileSync(received, ...options) {
+          return received === filename ? scenario.read() : fs.readFileSync(received, ...options)
+        },
+      } : sourceRequire(name)
+      runInNewContext(fs.readFileSync(path.join(sourceDirectory, 'handoff.cjs'), 'utf8'),
+        { require: requireMock, module, __dirname: sourceDirectory, process, Buffer })
+      assert.throws(() => module.exports.policyFor(context), error => {
+        assert.equal(error.message, `invalid native handoff recovery messages: ${filename}#${scenario.key}`)
+        if (scenario.cause) assert.equal(error.cause, scenario.cause)
+        if (scenario.causeName) assert.equal(error.cause?.name, scenario.causeName)
+        return true
+      }, scenario.label)
+    }
+  })
+}
 
 test('independent helper cannot acquire historical store dependencies', () => {
   const own = 'scholarseed.local/desktop/updater/handoff\nscholarseed.local/desktop/updater/cmd/handoff\nscholarseed.local/desktop/updater/internal/security'

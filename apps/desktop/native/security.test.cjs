@@ -11,7 +11,7 @@ const policy = require('./security.json')
 test('ACL generated artifacts match the single decision IR', () => {
   const result = spawnSync(
     process.execPath,
-    [path.join(__dirname, '../scripts/security.cjs'), '--check'],
+    [path.join(__dirname, '../scripts/pre/security.cjs'), '--check'],
     { encoding: 'utf8' }
   )
   assert.equal(result.status, 0, result.stderr)

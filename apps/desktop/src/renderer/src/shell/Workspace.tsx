@@ -13,7 +13,6 @@ import {
   Minus,
   MoreVertical,
   PanelRight,
-  Plus,
   Square,
   SquareArrowDownRight,
   SquareArrowUpLeft,
@@ -43,12 +42,10 @@ import { AssistantPanel } from '../features/assistant/Panel'
 import { TaskOverview, TaskOverviewLayout } from '../features/assistant/Overview'
 import { useAttention } from '../features/assistant/attention'
 import { Workbench } from '../features/workbench/Workbench'
-import {
-  newProjectTab,
-  tabMatchesProject,
-  tabVisibleInCurrentView,
-} from '../features/workbench/tabs'
-import { useDocumentWorkspace } from '../features/workbench/workspace'
+import { newProjectTab, tabMatchesProject, workbenchTabVisible } from '../features/workbench/tabs'
+import { useDocumentWorkspace, useWorkspaceController } from '../features/workbench/workspace'
+import { NewTabButton } from '../features/workbench/Pages'
+import { hasSplitPanes } from '../features/workbench/layout'
 import { activeThread, useApp } from '../store'
 import { findSessionNode } from '../tree'
 import { changeProjectLayout } from '../../../layout'
@@ -88,13 +85,15 @@ export function Workspace({
   const [tabOverflowTarget, setTabOverflowTarget] = useState<HTMLSpanElement | null>(null)
   const layout = state.workbenchLayout
   const documents = useDocumentWorkspace()
+  const workspace = useWorkspaceController()
+  const workspaceActionSize = hasSplitPanes(documents.layout) ? 'xs' : 'md'
   const workspaceTabCount =
     state.tabs.filter(
       (tab) =>
         tab.kind !== 'overview' &&
         availabilityPolicy.tabAvailable(tab) &&
         tabMatchesProject(tab, state.homeSelectedProjectId) &&
-        tabVisibleInCurrentView(tab.kind, state.mainView)
+        workbenchTabVisible(tab, state.mainView)
     ).length +
     (state.mainView === 'resource' || state.mainView === 'literature'
       ? Object.values(documents.tabs).filter(
@@ -472,8 +471,9 @@ export function Workspace({
   }
   const navigation = featureRegistry.panels.find((panel) => panel.slot === 'navigation')
   const openNewTab = (): void => {
+    const tab = newProjectTab(state.homeSelectedProjectId)
+    workspace.openPageTab(tab.id)
     set((current) => {
-      const tab = newProjectTab(current.homeSelectedProjectId)
       return { activeTab: tab.id, tabs: [...current.tabs, tab] }
     })
     patch({ open: true, taskTab: false })
@@ -860,23 +860,12 @@ export function Workspace({
                   data-workbench-motion="workspace"
                   style={conversationFull ? { visibility: 'hidden' } : undefined}
                 >
-                  <header className="drag relative z-[var(--vds-z-local-control)] flex h-[var(--vds-workbench-header-height)] min-w-0 shrink-0 items-center border-b border-[var(--vds-divider-default)] bg-[var(--vds-bg-gray-default)] [&_button]:[-webkit-app-region:no-drag] [&_svg]:[stroke-width:var(--vds-project-header-icon-stroke)]">
+                  <header className="drag relative z-[var(--vds-z-local-control)] flex h-[var(--vds-workbench-header-height)] min-w-0 shrink-0 items-center [background:linear-gradient(to_bottom,transparent_calc(100%_-_var(--vds-navigation-tab-outline-width)),var(--vds-divider-default)_0),var(--vds-bg-gray-default)] [&_button]:[-webkit-app-region:no-drag] [&_svg]:[stroke-width:var(--vds-project-header-icon-stroke)]">
                     <div className="drag min-w-0 flex-1 self-stretch">
                       <TabBar
                         leading={!conversationHeaderLeading && sidebarToggle}
                         overflowTarget={tabOverflowTarget}
-                        trailing={
-                          <div className="flex items-center">
-                            <IconButton
-                              variant="ghostIcon"
-                              size="md"
-                              label={t('newTab')}
-                              icon={<Plus />}
-                              onClick={openNewTab}
-                              data-testid="workspace-new-tab"
-                            />
-                          </div>
-                        }
+                        trailing={(leaf) => <NewTabButton leafId={leaf.id} />}
                         actions={
                           <div
                             className="ml-auto flex shrink-0 items-center gap-[var(--vds-space-1)] pr-[var(--vds-space-4)]"
@@ -904,9 +893,9 @@ export function Workspace({
                             <Tooltip content={t(layout.full ? 'exitFull' : 'full')} side="bottom">
                               <IconButton
                                 variant="ghostIcon"
-                                size="md"
                                 title={undefined}
                                 label={t(layout.full ? 'exitFull' : 'full')}
+                                size={workspaceActionSize}
                                 icon={layout.full ? <Minimize2 /> : <Maximize2 />}
                                 onClick={() => changeLayout('toggleFull')}
                                 data-testid="workspace-full"
@@ -915,9 +904,9 @@ export function Workspace({
                             <Tooltip content={t('hideTabs')} side="bottom">
                               <IconButton
                                 variant="ghostIcon"
-                                size="md"
                                 title={undefined}
                                 label={t('hideTabs')}
+                                size={workspaceActionSize}
                                 icon={<PanelRight />}
                                 aria-expanded={layout.open}
                                 aria-pressed={layout.open}
