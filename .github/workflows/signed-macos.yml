@@ -1,10 +1,6 @@
 name: Signed macOS package
 
 on:
-  # 双架构首次验收完成后移除此分支入口。
-  push:
-    branches:
-      - feature/0.3-github-ci-packaging
   workflow_dispatch:
     inputs:
       channel:
@@ -20,20 +16,21 @@ permissions:
   contents: read
 
 concurrency:
-  group: signed-macos-${{ inputs.channel || 'preview' }}
+  group: signed-macos-${{ inputs.channel }}
   cancel-in-progress: false
 
 jobs:
   package:
     name: Signed macOS (${{ matrix.arch }})
-    # 双架构试跑仅临时放行当前 feature 分支。
-    if: github.repository == 'alibaba-damo-academy/ScholarSeed' && (github.ref == 'refs/heads/main' || (github.event_name == 'push' && github.ref == 'refs/heads/feature/0.3-github-ci-packaging'))
+    # 签名仅允许维护者从主分支手动触发。
+    if: github.repository == 'alibaba-damo-academy/ScholarSeed' && github.ref == 'refs/heads/main'
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          # 本轮仅重试 x64，ARM64 正在上一轮完成验收；结束后恢复双架构。
+          - arch: arm64
+            runner: macos-15
           - arch: x64
             runner: macos-15-intel
     timeout-minutes: 180
@@ -42,7 +39,7 @@ jobs:
         shell: bash
     env:
       NODE_OPTIONS: --max-old-space-size=4096
-      PACKAGE_CHANNEL: ${{ inputs.channel || 'preview' }}
+      PACKAGE_CHANNEL: ${{ inputs.channel }}
       PACKAGE_ARCH: ${{ matrix.arch }}
 
     steps:
@@ -166,7 +163,7 @@ jobs:
       - name: Upload verified signed package
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: scholarseed-${{ inputs.channel || 'preview' }}-darwin-${{ matrix.arch }}-signed-${{ github.run_id }}
+          name: scholarseed-${{ inputs.channel }}-darwin-${{ matrix.arch }}-signed-${{ github.run_id }}
           path: ${{ runner.temp }}/signed-artifacts/
           if-no-files-found: error
           compression-level: 0
