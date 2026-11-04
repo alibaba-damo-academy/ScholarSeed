@@ -3297,7 +3297,8 @@ for (const code of ['ETIMEDOUT', 'EACCES']) {
     const parsed = ts.createSourceFile(filename, fs.readFileSync(filename, 'utf8'), ts.ScriptTarget.Latest, true)
     const declaration = parsed.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === 'trustCommand').getText(parsed)
     const events = []
-    const failure = Object.assign(new Error('policy check failed'), {code, status: 1, signal: null, pid: 23, stderr: 'x'.repeat(9000)})
+    const failure = Object.assign(new Error('policy check failed'), {code, status: 68, signal: null, pid: 23,
+      stdout: 'x'.repeat(9000) + 'CloudKit network connection was lost', stderr: 'x'.repeat(9000)})
     const execute = runInNewContext(`${declaration}\ntrustCommand`, {
       MAC_TRUST_TIMEOUT_MS: 300000, TRUST_DIAGNOSTIC_BYTES: 4096,
       console: {log: line => events.push(JSON.parse(line.slice(line.indexOf('{')))), error: line => events.push(JSON.parse(line.slice(line.indexOf('{'))))},
@@ -3308,6 +3309,9 @@ for (const code of ['ETIMEDOUT', 'EACCES']) {
     assert.equal(events[1].status, 'failed')
     assert.equal(events[1].code, code)
     assert.equal(events[1].pid, 23)
+    assert.equal(events[1].exit_code, 68)
+    assert.equal(events[1].stdout.length, 4096)
+    assert.match(events[1].stdout, /CloudKit network connection was lost$/)
     assert.equal(events[1].stderr.length, 4096)
   })
 }
