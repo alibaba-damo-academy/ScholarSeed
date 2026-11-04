@@ -18,3 +18,5 @@
 - 开发包 workflow 暂时改名为 `package.yml.disabled` 停用；签名发布 workflow 显示名为 `Package Sigend`，文件仍为 `signed-macos.yml`。
 
 - 面向公开用户的 GitHub Release 正文和下载摘要统一使用英文；模板位于 `.github/scripts/release.cjs`。
+
+- 历史构建的 workflow 与当前默认分支不同时，GitHub 创建 Release 需要 Workflows 写权限；发布支持可选 `RELEASE_TOKEN`（Contents/Workflows write），默认内置 token 无此权限。

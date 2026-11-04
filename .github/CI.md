@@ -51,7 +51,8 @@ macOS 签名 job 按 [GitHub runner 官方临时方案](https://github.com/actio
 - 发布前复核双架构提交、渠道、版本、构建号、签名、公证、挂载验收和下载后 SHA256；tag 指向构建提交，Release 正文链接原始构建报告。
 - Release 只包含两个 `.dmg` 和对应的 `.dmg.sha256`，不含 `result.json`。GitHub 自动附加的 Source code 压缩包是源码，不是安装程序。
 - 下载后将 DMG 和校验文件放在同一目录，执行 `shasum -a 256 -c <安装包文件名>.sha256`。
-- 只有手动 Release job 拥有 `contents: write` 和 `actions: read`，使用内置 `GITHUB_TOKEN`，无需新增 PAT 或 Secrets；签名构建仅有只读权限。
+- 只有手动 Release job 拥有 `contents: write` 和 `actions: read`，默认使用内置 `GITHUB_TOKEN`；签名构建仅有只读权限。
+- GitHub 对历史提交另有权限限制：所选提交的 `.github/workflows/` 与当前默认分支不同时，创建 Release 需要 Workflows 写权限，内置 `GITHUB_TOKEN` 无法获得。此时需配置仓库 Secret `RELEASE_TOKEN`，使用仅授权本仓库、具有 Contents: write 与 Workflows: write 的 fine-grained PAT（组织可能要求审批）；发布步骤会优先使用它。不要为了绕过限制将 tag 指向其他提交。见 [GitHub Release API 权限说明](https://docs.github.com/en/rest/releases/releases#create-a-release)。
 - 已有 tag 拒绝覆盖。上传中断可能留下未发布草稿，请检查并清理该次草稿后重跑；不要覆盖已发布版本。
 
 ## Windows
