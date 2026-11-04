@@ -1,10 +1,14 @@
 name: Signed macOS package
 
 on:
+  # 首次 Release 联调完成后移除此 feature 入口。
+  push:
+    branches:
+      - feature/0.3-github-ci-packaging
   workflow_dispatch:
     inputs:
       channel:
-        description: Package update channel (does not publish a version)
+        description: Release channel (preview creates a GitHub prerelease)
         type: choice
         options:
           - preview
@@ -16,14 +20,14 @@ permissions:
   contents: read
 
 concurrency:
-  group: signed-macos-${{ inputs.channel }}
+  group: signed-macos-${{ inputs.channel || 'preview' }}
   cancel-in-progress: false
 
 jobs:
   package:
     name: Signed macOS (${{ matrix.arch }})
-    # 签名仅允许维护者从主分支手动触发。
-    if: github.repository == 'alibaba-damo-academy/ScholarSeed' && github.ref == 'refs/heads/main'
+    # 主分支手动触发；当前 feature 分支用于首次 Release 联调。
+    if: github.repository == 'alibaba-damo-academy/ScholarSeed' && (github.ref == 'refs/heads/main' || (github.event_name == 'push' && github.ref == 'refs/heads/feature/0.3-github-ci-packaging'))
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -39,7 +43,7 @@ jobs:
         shell: bash
     env:
       NODE_OPTIONS: --max-old-space-size=4096
-      PACKAGE_CHANNEL: ${{ inputs.channel }}
+      PACKAGE_CHANNEL: ${{ inputs.channel || 'preview' }}
       PACKAGE_ARCH: ${{ matrix.arch }}
 
     steps:
@@ -161,10 +165,63 @@ jobs:
           exit "$cleanup_status"
 
       - name: Upload verified signed package
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: scholarseed-${{ inputs.channel }}-darwin-${{ matrix.arch }}-signed-${{ github.run_id }}
-          path: ${{ runner.temp }}/signed-artifacts/
+          path: ${{ runner.temp }}/signed-artifacts/*.dmg
+          archive: false
           if-no-files-found: error
-          compression-level: 0
           retention-days: 14
+
+      - name: Upload installer checksum
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          path: ${{ runner.temp }}/signed-artifacts/*.dmg.sha256
+          archive: false
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build report
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: build-report-${{ inputs.channel || 'preview' }}-darwin-${{ matrix.arch }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/signed-artifacts/result.json
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish GitHub Release
+    needs: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+
+      - name: Download signed installers and checksums
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          pattern: "*.dmg*"
+          path: ${{ runner.temp }}/release-assets
+          merge-multiple: true
+
+      - name: Download build evidence
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          pattern: build-report-*
+          path: ${{ runner.temp }}/release-reports
+
+      - name: Verify assets and publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE_CHANNEL: ${{ inputs.channel || 'preview' }}
+        run: node .github/scripts/release.cjs "$RUNNER_TEMP/release-assets" "$RUNNER_TEMP/release-reports"

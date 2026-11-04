@@ -42,7 +42,7 @@ jobs:
           "$RUNNER_TEMP/actionlint" .github/workflows/*.yml
 
       - name: Check package artifacts
-        run: node --test .github/scripts/package.test.cjs
+        run: node --test .github/scripts/*.test.cjs
 
   test:
     name: Public source build and distribution contracts

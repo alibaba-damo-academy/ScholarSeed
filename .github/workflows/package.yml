@@ -92,14 +92,48 @@ jobs:
           NODE_OPTIONS: --max-old-space-size=4096
         run: npm run ops -- --package-manager npm cd build local --stage installer
 
-      - name: Upload package artifacts
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+      - name: Calculate installer checksum
+        shell: bash
+        run: |
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const crypto = require('node:crypto');
+          async function main() {
+            const files = [...fs.globSync(['apps/desktop/release/**/artifacts/*.dmg', 'apps/desktop/release/**/artifacts/velopack/*Setup.exe'])];
+            if (files.length !== 1) throw new Error('Expected exactly one installer');
+            const filename = files[0];
+            const hash = crypto.createHash('sha256');
+            for await (const chunk of fs.createReadStream(filename)) hash.update(chunk);
+            fs.writeFileSync(`${filename}.sha256`, `${hash.digest('hex')}  ${path.basename(filename)}\n`);
+          }
+          main().catch(error => { console.error(error.message); process.exitCode = 1; });
+          NODE
+
+      - name: Upload installer
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: scholarseed-${{ runner.os }}-${{ runner.arch }}
           path: |
             apps/desktop/release/**/artifacts/*.dmg
             apps/desktop/release/**/artifacts/velopack/*Setup.exe
-            apps/desktop/release/**/result.json
+          archive: false
           if-no-files-found: error
-          compression-level: 0
+          retention-days: 14
+
+      - name: Upload installer checksum
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          path: |
+            apps/desktop/release/**/artifacts/*.dmg.sha256
+            apps/desktop/release/**/artifacts/velopack/*Setup.exe.sha256
+          archive: false
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build report
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: build-report-${{ runner.os }}-${{ runner.arch }}
+          path: apps/desktop/release/**/result.json
+          if-no-files-found: error
           retention-days: 14

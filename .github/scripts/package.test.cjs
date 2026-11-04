@@ -41,8 +41,8 @@ function fixture(context, arch = 'arm64') {
 test('only the verified DMG, result and checksum enter the artifact directory', async context => {
   const state = fixture(context)
   await state.collect()
-  assert.deepEqual(fs.readdirSync(state.destination).sort(), ['SHA256SUMS', 'ScholarSeed.dmg', 'result.json'])
-  assert.match(fs.readFileSync(path.join(state.destination, 'SHA256SUMS'), 'utf8'), /^[a-f0-9]{64}  ScholarSeed\.dmg\n$/)
+  assert.deepEqual(fs.readdirSync(state.destination).sort(), ['ScholarSeed.dmg', 'ScholarSeed.dmg.sha256', 'result.json'])
+  assert.match(fs.readFileSync(path.join(state.destination, 'ScholarSeed.dmg.sha256'), 'utf8'), /^[a-f0-9]{64}  ScholarSeed\.dmg\n$/)
 })
 
 test('collects the native x64 build using its x86_64 result architecture', async context => {

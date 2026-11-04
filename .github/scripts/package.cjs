@@ -9,8 +9,7 @@ async function sha256(filename) {
   return hash.digest('hex')
 }
 
-async function collect(resultFile, destination, { repo, commit, channel, arch }) {
-  const result = JSON.parse(fs.readFileSync(resultFile, 'utf8'))
+function validateResult(result, { commit, channel, arch }) {
   assert.ok(commit && ['preview', 'release'].includes(channel), 'Expected source and channel are required')
   assert.ok(['arm64', 'x64'].includes(arch), 'Expected macOS architecture is required')
   assert.equal(result.status, 'passed', 'Build did not pass')
@@ -29,6 +28,12 @@ async function collect(resultFile, destination, { repo, commit, channel, arch })
   assert.equal(dmg.installed_check?.detached, true)
   assert.equal(dmg.installed_check?.package_check?.ok, true)
   assert.equal(dmg.installed_check?.sha256, dmg.sha256)
+  return dmg
+}
+
+async function collect(resultFile, destination, { repo, commit, channel, arch }) {
+  const result = JSON.parse(fs.readFileSync(resultFile, 'utf8'))
+  const dmg = validateResult(result, { commit, channel, arch })
   const root = fs.realpathSync(path.join(repo, 'apps/desktop/release'))
   const filename = fs.realpathSync(dmg.path)
   const relative = path.relative(root, filename)
@@ -41,10 +46,10 @@ async function collect(resultFile, destination, { repo, commit, channel, arch })
   fs.copyFileSync(filename, target, fs.constants.COPYFILE_EXCL)
   assert.equal(await sha256(target), dmg.sha256, 'Copied DMG digest changed')
   fs.writeFileSync(path.join(destination, 'result.json'), `${JSON.stringify(result, null, 2)}\n`, { flag: 'wx' })
-  fs.writeFileSync(path.join(destination, 'SHA256SUMS'), `${dmg.sha256}  ${path.basename(filename)}\n`, { flag: 'wx' })
+  fs.writeFileSync(`${target}.sha256`, `${dmg.sha256}  ${path.basename(filename)}\n`, { flag: 'wx' })
 }
 
-module.exports = { collect }
+module.exports = { collect, sha256, validateResult }
 if (require.main === module) {
   const [resultFile, destination] = process.argv.slice(2)
   collect(resultFile, destination, {
