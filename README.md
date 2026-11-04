@@ -12,7 +12,7 @@
 ![Electron](https://img.shields.io/badge/Electron-React%20%2B%20TypeScript-47848F)
 ![Python](https://img.shields.io/badge/Python-FastAPI-3776AB)
 
-[Why ScholarSeed](#why-scholarseed) · [Research Papers](#research-papers) · [From Papers to Progress](#from-papers-to-progress) · [Get Started](#get-started) · [Installation](#run-from-source) · [Development](#development) · [Plugins](#plugins) · [Community](#community-and-support)
+[Why ScholarSeed](#why-scholarseed) · [Research Papers](#research-papers) · [From Papers to Progress](#from-papers-to-progress) · [Get Started](#get-started) · [Installation](#run-from-source) · [Plugins](#plugins) · [Community](#community-and-support)
 
 </div>
 
@@ -195,10 +195,6 @@ The default user data directory is `~/.scholarseed`. Set `SCHOLARSEED_HOME` to u
 
 Keep user data and credentials outside the repository. Review diagnostic bundles before sharing them.
 
-## Development
-
-Environment setup, development commands, testing, and the project map are in [CONTRIBUTING.md](CONTRIBUTING.md).
-
 ## Plugins
 
 **ScholarSeed plugins connect research steps, conversation cards, and material organization into a reusable workflow. Have the AI analyze materials using your research method, ask for decisions at key steps, then produce reports, save notes, and organize papers.**
@@ -206,6 +202,8 @@ Environment setup, development commands, testing, and the project map are in [CO
 Start with a Skill—a set of research workflow instructions. In `SKILL.md`, describe the research steps, required materials, and expected outputs. Add conversation cards where researchers need to make choices before continuing the analysis and organizing their papers.
 
 Plugins are currently in developer preview. See the [plugin guide (Chinese)](doc/plugins.md) for development and installation.
+
+Research Skill sources are located in `skills/community/`. Build the Skill pack with `npx --yes pnpm@12.14.0 ops cd build local --target skills` and check its consistency with the source using `npx --yes pnpm@12.14.0 ops ci check skills product --mode source`.
 
 ### Take Actions in ScholarSeed, Not Just Generate Content
 
