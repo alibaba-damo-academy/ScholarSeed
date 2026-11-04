@@ -1,0 +1,229 @@
+name: Signed macOS package
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Release channel (preview creates a GitHub prerelease)
+        type: choice
+        options:
+          - preview
+          - release
+        default: preview
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signed-macos-${{ inputs.channel }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Signed macOS (${{ matrix.arch }})
+    # 签名与发布仅允许维护者从主分支手动触发。
+    if: github.repository == 'alibaba-damo-academy/ScholarSeed' && github.ref == 'refs/heads/main'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: x64
+            runner: macos-15-intel
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash
+    env:
+      NODE_OPTIONS: --max-old-space-size=4096
+      PACKAGE_CHANNEL: ${{ inputs.channel }}
+      PACKAGE_ARCH: ${{ matrix.arch }}
+
+    steps:
+      - name: Use TCP for Apple ticket service
+        # https://github.com/actions/runner-images/issues/14924
+        run: |
+          printf 'block return out quick proto udp from any to any port 443\n' | sudo pfctl -f -
+          sudo pfctl -E
+
+      - name: Prepare Intel runner directory permissions
+        if: matrix.arch == 'x64'
+        run: |
+          sudo chmod g-w /System/Volumes/Data
+          stat -f '%N uid=%u gid=%g mode=%Lp' /System/Volumes/Data
+
+      - name: Set physical temporary directory
+        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+
+      - name: Setup npm
+        run: npm install -g npm@11.13.0
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@ed21f2f24f8dd64503750218de024bcf64c7250a # v7.1.5
+        with:
+          version: "0.12.11"
+          enable-cache: false
+
+      - name: Check signing configuration
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          for name in MACOS_CERTIFICATE_P12_BASE64 MACOS_CERTIFICATE_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Missing repository secret: $name"
+              exit 1
+            fi
+          done
+          node - <<'NODE'
+          const { parseActivationKeys } = require('./apps/desktop/src/main/update-authorization.ts');
+          const keys = parseActivationKeys(require('./.github/signing/activation-public-keys.json'));
+          if (!Object.keys(keys).length) throw new Error('Update activation public keys are required');
+          if (process.platform !== 'darwin' || process.arch !== process.env.PACKAGE_ARCH) throw new Error('Runner architecture differs from the package matrix');
+          NODE
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Verify native lease permissions and artifact handling
+        run: node --test scripts/shared/__tests__/permissions.test.cjs scripts/shared/__tests__/lease.test.cjs apps/desktop/scripts/cd/__tests__/osx-sign.test.cjs .github/scripts/package.test.cjs
+
+      - name: Import signing identity and notarization credentials
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          umask 077
+          signing_dir="$RUNNER_TEMP/scholarseed-signing"
+          mkdir "$signing_dir"
+          security list-keychains -d user > "$signing_dir/original-keychains.txt"
+          keychain="$signing_dir/signing.keychain-db"
+          keychain_password=$(openssl rand -hex 32)
+          echo "::add-mask::$keychain_password"
+          printf '%s' "$MACOS_CERTIFICATE_P12_BASE64" | base64 --decode > "$signing_dir/certificate.p12"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$signing_dir/certificate.p12" -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain"
+          security find-identity -v -p codesigning "$keychain" | grep -F "Developer ID Application:" | grep -F "($APPLE_TEAM_ID)"
+          xcrun notarytool store-credentials scholarseed-actions \
+            --apple-id "$APPLE_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" --keychain "$keychain"
+          rm "$signing_dir/certificate.p12"
+
+      - name: Build signed and notarized DMG
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          SCHOLARSEED_NOTARY_KEYCHAIN_PROFILE: scholarseed-actions
+        run: |
+          export SCHOLARSEED_UPDATE_BASE_URL
+          SCHOLARSEED_UPDATE_BASE_URL=$(node -p "require('./apps/desktop/resources/product.json').update_base_url")
+          export SCHOLARSEED_UPDATE_ACTIVATION_PUBLIC_KEYS="$GITHUB_WORKSPACE/.github/signing/activation-public-keys.json"
+          npm run ops -- --package-manager npm cd build release \
+            --channel "$PACKAGE_CHANNEL" --stage installer \
+            --result "$RUNNER_TEMP/signed-result.json"
+
+      - name: Verify and collect artifacts
+        run: node .github/scripts/package.cjs "$RUNNER_TEMP/signed-result.json" "$RUNNER_TEMP/signed-artifacts"
+
+      - name: Remove signing credentials
+        if: always()
+        run: |
+          cleanup_status=0
+          signing_dir="$RUNNER_TEMP/scholarseed-signing"
+          if [[ -f "$signing_dir/original-keychains.txt" ]]; then
+            python3 - <<'PY' || cleanup_status=1
+          import os, pathlib, shlex, subprocess
+          saved = pathlib.Path(os.environ['RUNNER_TEMP']) / 'scholarseed-signing/original-keychains.txt'
+          subprocess.run(['security', 'list-keychains', '-d', 'user', '-s', *shlex.split(saved.read_text())], check=True)
+          PY
+          fi
+          if [[ -f "$signing_dir/signing.keychain-db" ]]; then
+            security delete-keychain "$signing_dir/signing.keychain-db" || cleanup_status=1
+          fi
+          rm -f "$signing_dir/certificate.p12" "$signing_dir/original-keychains.txt" || cleanup_status=1
+          exit "$cleanup_status"
+
+      - name: Upload verified signed package
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          path: ${{ runner.temp }}/signed-artifacts/*.dmg
+          archive: false
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload installer checksum
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          path: ${{ runner.temp }}/signed-artifacts/*.dmg.sha256
+          archive: false
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build report
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: build-report-${{ inputs.channel }}-darwin-${{ matrix.arch }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/signed-artifacts/result.json
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish GitHub Release
+    needs: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+
+      - name: Download signed installers and checksums
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          pattern: "*.dmg*"
+          path: ${{ runner.temp }}/release-assets
+          merge-multiple: true
+
+      - name: Download build evidence
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          pattern: build-report-*
+          path: ${{ runner.temp }}/release-reports
+
+      - name: Verify assets and publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE_CHANNEL: ${{ inputs.channel }}
+        run: node .github/scripts/release.cjs "$RUNNER_TEMP/release-assets" "$RUNNER_TEMP/release-reports"

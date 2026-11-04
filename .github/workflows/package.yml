@@ -11,6 +11,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: package-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   package:
     name: Native installer (${{ matrix.name }})
@@ -20,20 +24,28 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: macOS DMG
-            runner: macos-14
+          - name: macOS ARM64 DMG
+            runner: macos-15
+          - name: macOS x64 DMG
+            runner: macos-15-intel
           - name: Windows EXE
             runner: windows-2022
 
     steps:
+      - name: Prepare Intel runner directory permissions
+        if: runner.os == 'macOS' && runner.arch == 'X64'
+        shell: bash
+        run: |
+          sudo chmod g-w /System/Volumes/Data
+          stat -f '%N uid=%u gid=%g mode=%Lp' /System/Volumes/Data
+
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
-          lfs: true
           persist-credentials: false
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
         with:
           node-version-file: .node-version
           cache: npm
@@ -45,7 +57,7 @@ jobs:
         run: npm install -g npm@11.13.0
 
       - name: Setup uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@ed21f2f24f8dd64503750218de024bcf64c7250a # v7.1.5
         with:
           version: "0.12.11"
           enable-cache: true
@@ -80,12 +92,48 @@ jobs:
           NODE_OPTIONS: --max-old-space-size=4096
         run: npm run ops -- --package-manager npm cd build local --stage installer
 
-      - name: Upload package artifacts
-        uses: actions/upload-artifact@v4
+      - name: Calculate installer checksum
+        shell: bash
+        run: |
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const crypto = require('node:crypto');
+          async function main() {
+            const files = [...fs.globSync(['apps/desktop/release/**/artifacts/*.dmg', 'apps/desktop/release/**/artifacts/velopack/*Setup.exe'])];
+            if (files.length !== 1) throw new Error('Expected exactly one installer');
+            const filename = files[0];
+            const hash = crypto.createHash('sha256');
+            for await (const chunk of fs.createReadStream(filename)) hash.update(chunk);
+            fs.writeFileSync(`${filename}.sha256`, `${hash.digest('hex')}  ${path.basename(filename)}\n`);
+          }
+          main().catch(error => { console.error(error.message); process.exitCode = 1; });
+          NODE
+
+      - name: Upload installer
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: scholarseed-${{ runner.os }}-${{ runner.arch }}
           path: |
             apps/desktop/release/**/artifacts/*.dmg
             apps/desktop/release/**/artifacts/velopack/*Setup.exe
+          archive: false
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload installer checksum
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          path: |
+            apps/desktop/release/**/artifacts/*.dmg.sha256
+            apps/desktop/release/**/artifacts/velopack/*Setup.exe.sha256
+          archive: false
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build report
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: build-report-${{ runner.os }}-${{ runner.arch }}
+          path: apps/desktop/release/**/result.json
           if-no-files-found: error
           retention-days: 14

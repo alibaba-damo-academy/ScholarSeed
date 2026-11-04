@@ -608,6 +608,7 @@ function trustCommand(stage, executable, args) {
   } catch (error) {
     console.error(`[mac-trust] ${JSON.stringify({stage, status: 'failed', seconds: (Date.now() - started) / 1000,
       code: error.code, exit_code: error.status, signal: error.signal, pid: error.pid,
+      stdout: String(error.stdout || '').slice(-TRUST_DIAGNOSTIC_BYTES),
       stderr: String(error.stderr || '').slice(-TRUST_DIAGNOSTIC_BYTES)})}`)
     throw error
   }
@@ -1028,6 +1029,7 @@ async function verify(builderContext) {
 
 module.exports = verify
 module.exports.atomicJSON = atomicJSON
+module.exports.trustCommand = trustCommand
 module.exports.packageCheckLog = packageCheckLog
 module.exports.nativeStageRecords = nativeStageRecords
 module.exports.componentTimingRecords = componentTimingRecords
