@@ -179,10 +179,11 @@ On Windows x64, follow the [Windows setup commands](CONTRIBUTING.md#windows); th
 git clone https://github.com/alibaba-damo-academy/ScholarSeed.git
 cd ScholarSeed
 npx --yes pnpm@12.14.0 install --frozen-lockfile
-npx --yes pnpm@12.14.0 ops dev
+npx --yes pnpm@12.14.0 ops pre install python --mode desktop
+npx --yes pnpm@12.14.0 dev
 ```
 
-The first run needs internet access to download dependencies and the pinned Python/runtime assets; no separate Python installation or Git LFS is needed. Keep the terminal running; press Ctrl+C to stop. After launch, configure your model in Settings or sign in to ScholarSeed. For setup and troubleshooting, see the [development guide](CONTRIBUTING.md).
+The preparation step installs the pinned Python environment; `dev` then builds the bundled Skill pack from repository sources before starting Electron. Do not skip these steps on a fresh clone. The first run needs internet access; no separate Python installation or Git LFS is needed. Keep the terminal running; press Ctrl+C to stop. After launch, configure your model in Settings or sign in to ScholarSeed. For daily development and troubleshooting, see the [development guide](CONTRIBUTING.md).
 
 ## Model and Service Configuration
 

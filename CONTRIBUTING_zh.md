@@ -78,10 +78,15 @@ Node 必须显示 `v24.16.0`，uv 不低于 `0.12.11`，pnpm 显示 `12.14.0`。
 git clone https://github.com/alibaba-damo-academy/ScholarSeed.git
 cd ScholarSeed
 npx --yes pnpm@12.14.0 install --frozen-lockfile
-npx --yes pnpm@12.14.0 ops dev
+npx --yes pnpm@12.14.0 ops pre install python --mode desktop
+npx --yes pnpm@12.14.0 dev
 ```
 
 后续命令均在仓库根目录执行。首次安装和启动需要下载依赖，请等待完成。使用应用时保持终端运行，在该终端按 Ctrl+C 停止。启动后，在设置中配置模型连接，或登录书深账号。文献服务和模型调用需要相应访问权限。
+
+全新克隆必须先准备 Python 环境，再编译技能。`dev` 会将 `skills/community/` 编译到 Git 忽略的运行目录 `apps/serve/service/capabilities/skills/`，然后启动 Electron。Git 中包含技能源码，不包含生成的技能包；仅能启动 Electron 不代表内置技能已就绪。
+
+后续启动仅在技能包已生成、且技能源码没有变化时，可使用 `npx --yes pnpm@12.14.0 ops dev`。修改技能源码或遇到“未找到技能”时，请先停止当前实例，再执行 `npx --yes pnpm@12.14.0 dev` 重建并启动。
 
 如果已安装 pnpm 12.14.0，可将本指南中的 `npx --yes pnpm@12.14.0` 替换为 `pnpm`。不要直接使用 Homebrew 或 Corepack 默认选中的其他版本。
 
@@ -93,6 +98,7 @@ npx --yes pnpm@12.14.0 ops dev
 | `pnpm ... expected 12.14.0` | 使用上面的 `npx --yes pnpm@12.14.0 ...`，不使用全局其他版本。 |
 | 找不到 Node 或 Node 版本错误 | 完成 Node 24.16.0 安装，重新打开终端，检查 PATH 或版本管理器。 |
 | `uv: command not found` | 将 uv 安装目录加入 PATH，在启动应用的终端确认 `uv --version`。 |
+| 未找到内置技能 | 先停止 Electron，再重跑上面的 Python 准备和 `dev` 命令。全新克隆不能只执行 `ops dev`，也不要将用户技能手工复制进内置技能包。 |
 | 下载失败 | 根据日志中的失败 URL 检查网络／代理，恢复访问后重跑原命令，不绕过摘要校验。 |
 | 构建提示环境被占用 | 先在开发终端按 Ctrl+C 停止实例，再打包；不要删除活跃进程的锁。 |
 

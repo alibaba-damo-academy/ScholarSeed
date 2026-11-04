@@ -78,10 +78,15 @@ In a writable local directory, run:
 git clone https://github.com/alibaba-damo-academy/ScholarSeed.git
 cd ScholarSeed
 npx --yes pnpm@12.14.0 install --frozen-lockfile
-npx --yes pnpm@12.14.0 ops dev
+npx --yes pnpm@12.14.0 ops pre install python --mode desktop
+npx --yes pnpm@12.14.0 dev
 ```
 
 Run subsequent commands from the repository root. Allow the first installation/startup to finish downloading dependencies. Keep the terminal running while using the application; press Ctrl+C there to stop it. Configure your model connection in Settings or sign in to ScholarSeed. Literature services and model calls require the corresponding access permissions.
+
+The Python preparation step must precede the Skill build on a fresh clone. `dev` compiles `skills/community/` into the ignored runtime directory `apps/serve/service/capabilities/skills/`, then starts Electron. Skill sources are included in Git; the generated pack is not. Successful Electron startup alone does not prove the built-in Skills are available.
+
+For later starts, `npx --yes pnpm@12.14.0 ops dev` is sufficient only when the pack already exists and Skill sources have not changed. After changing Skill sources or seeing a missing-Skill error, stop the current instance and run `npx --yes pnpm@12.14.0 dev` to rebuild before starting again.
 
 If you already have pnpm 12.14.0, you can replace `npx --yes pnpm@12.14.0` with `pnpm` throughout this guide. Do not replace the pinned version with whichever version Homebrew or Corepack selects.
 
@@ -93,6 +98,7 @@ If you already have pnpm 12.14.0, you can replace `npx --yes pnpm@12.14.0` with 
 | `pnpm ... expected 12.14.0` | Use the explicit `npx --yes pnpm@12.14.0 ...` commands above instead of the globally installed pnpm. |
 | `node: command not found` / wrong Node version | Finish installing Node 24.16.0, reopen the terminal, and check PATH or your version manager. |
 | `uv: command not found` | Add uv's installation directory to PATH and verify `uv --version` in the launch terminal. |
+| Built-in Skill not found | Stop Electron, then rerun the Python preparation and `dev` commands above. Do not use `ops dev` alone on a fresh clone or manually copy user Skills into the bundled pack. |
 | Download failure | Check the failing URL in the log and your network/proxy access. Rerun the same command after restoring access; do not bypass checksum verification. |
 | Build reports an environment is in use | Stop the development instance with Ctrl+C before packaging; do not delete an active process's lock. |
 

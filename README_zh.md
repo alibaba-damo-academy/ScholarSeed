@@ -151,10 +151,11 @@ Windows x64 请按[Windows 环境准备命令](CONTRIBUTING_zh.md#windows)操作
 git clone https://github.com/alibaba-damo-academy/ScholarSeed.git
 cd ScholarSeed
 npx --yes pnpm@12.14.0 install --frozen-lockfile
-npx --yes pnpm@12.14.0 ops dev
+npx --yes pnpm@12.14.0 ops pre install python --mode desktop
+npx --yes pnpm@12.14.0 dev
 ```
 
-首次运行需要联网下载依赖及固定版本 Python／运行时，无需另外安装 Python 或 Git LFS。使用时保持终端运行，按 Ctrl+C 停止。启动后，在设置中配置模型连接，或登录书深账号。环境安装和常见问题见[开发指南](CONTRIBUTING_zh.md)。
+准备步骤会安装固定版本 Python 环境，`dev` 随后从仓库源码构建内置 Skill 包，再启动 Electron；全新克隆请勿跳过这两步。首次运行需要联网，无需另外安装 Python 或 Git LFS。使用时保持终端运行，按 Ctrl+C 停止。启动后，在设置中配置模型连接，或登录书深账号。日常开发和常见问题见[开发指南](CONTRIBUTING_zh.md)。
 
 ## 插件
 
