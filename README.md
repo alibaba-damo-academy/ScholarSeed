@@ -12,7 +12,7 @@
 ![Electron](https://img.shields.io/badge/Electron-React%20%2B%20TypeScript-47848F)
 ![Python](https://img.shields.io/badge/Python-FastAPI-3776AB)
 
-[Why ScholarSeed](#why-scholarseed) · [Research Paper](#research-paper) · [From Papers to Progress](#from-papers-to-progress) · [Get Started](#get-started) · [Installation](#run-from-source) · [Development](#development) · [Plugins](#plugins) · [Community](#community-and-support)
+[Why ScholarSeed](#why-scholarseed) · [Research Papers](#research-papers) · [From Papers to Progress](#from-papers-to-progress) · [Get Started](#get-started) · [Installation](#run-from-source) · [Development](#development) · [Plugins](#plugins) · [Community](#community-and-support)
 
 </div>
 
@@ -28,13 +28,32 @@ ScholarSeed is a local-first AI research workbench built around your projects. I
 
 ---
 
-## Research Paper
+## Research Papers
 
-**ScholarStack: Layered Research Asset Orchestration and Cross-Task Reuse for Scientific Agents**
+### ScholarSeed: An Integrated Agentic Workbench for Human–AI Collaborative Research
+
+**Manuscript preview · arXiv forthcoming**
+
+<details>
+<summary>Abstract</summary>
+
+Recent advances in AI have brought powerful capabilities to scientific research, from literature search and analysis to writing and problem-solving. Yet leveraging these capabilities often requires programming-oriented tools or switching between disconnected applications, creating barriers to adoption and disrupting research workflows. More importantly, research is not a collection of isolated tasks but an evolving process of exploring questions, accumulating knowledge, evaluating evidence, and refining directions. Existing tools offer limited support for this continuity, making it difficult to carry research context and findings across tasks.
+
+We present **ScholarSeed**, an open-source research workbench that brings frontier AI capabilities into researchers' familiar workflows. Rather than moving research materials into separate AI tools, ScholarSeed embeds AI assistance directly into activities such as reading and annotating papers, managing notes, and academic writing. It supports the accumulation and reuse of research materials, evidence, and findings across tasks. Researchers can interact with AI in context, trace results to their sources, revise content and methods, and guide subsequent work. Built on an open and extensible architecture, ScholarSeed also supports the integration of new AI models, agents, and diverse research tools.
+
+We plan to evaluate ScholarSeed through literature search, idea generation, literature review, and research tasks in mathematics and operations research, assessing its effectiveness in lowering adoption barriers, reducing context loss, and supporting research continuity and knowledge reuse.
+
+ScholarSeed is available as an open-source desktop application at [github.com/alibaba-damo-academy/ScholarSeed](https://github.com/alibaba-damo-academy/ScholarSeed).
+
+</details>
+
+### [ScholarStack: Layered Research Asset Orchestration and Cross-Task Reuse for Scientific Agents](https://arxiv.org/abs/2609.23735v3)
 
 ScholarSeed AI Team
 
-### Let understanding from one task support the next
+[arXiv:2609.23735v3](https://arxiv.org/abs/2609.23735v3)
+
+#### Let understanding from one task support the next
 
 Research accumulates across tasks. Methods and terminology identified during search help organize a review; disagreements and limitations found in that review motivate new ideas; comparisons made during novelty assessment inform experimental baselines. When this understanding remains inside a single conversation or report, later tasks must reread the same papers and reconstruct earlier judgments.
 
@@ -44,7 +63,7 @@ Research accumulates across tasks. Methods and terminology identified during sea
 
 *Figure 1 from the paper: compile a document collection into research assets, then assemble task-specific Knowledge Views. Tasks use the layers they need. Selected task outputs may be registered as candidate assets after checks; registration does not itself establish semantic verification.*
 
-### Three layers connecting source evidence and research understanding
+#### Three layers connecting source evidence and research understanding
 
 | Layer | What it preserves | How it supports subsequent research |
 | --- | --- | --- |
@@ -54,7 +73,7 @@ Research accumulates across tasks. Methods and terminology identified during sea
 
 Agents retrieve, select, expand, compare, and synthesize assets into a task-specific **Knowledge View**. Single-paper questions may primarily use L1; cross-paper comparisons can combine L2 with original study conditions; reviews may additionally use L3. When a source or asset changes, dependent judgments require rechecking, while earlier versions retain the basis of previous outputs.
 
-### From literature understanding to research outputs
+#### From literature understanding to research outputs
 
 The same assets support multiple tasks: organizing references and positioning contributions in related work; synthesizing themes, developments, and disagreements in reviews; recovering settings, baselines, and limitations for experimental design; and identifying open questions for new research ideas.
 
@@ -62,7 +81,7 @@ The same assets support multiple tasks: organizing references and positioning co
 
 *Figure 4 from the paper: tasks combine the required layers to organize, compare, and synthesize evidence, with claims linked back to sources. Reported findings, synthesized interpretations, and proposed hypotheses remain distinct.*
 
-### Selected experimental results
+#### Selected experimental results
 
 The paper evaluates **ten settings across four task families: literature retrieval, scientific question answering, evidence-grounded generation, and claim and consistency assessment**. Selected results from the current manuscript are shown below.
 
