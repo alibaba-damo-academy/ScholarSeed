@@ -163,65 +163,18 @@ The executable Agent provider currently included by ScholarSeed is Codex. Runtim
 
 ## Requirements
 
-- Git
-- Node.js `24.16.0`
-- pnpm `12.14.0` (default; npm and Yarn are also supported)
-- Python `3.12+` (downloaded automatically for the default desktop setup)
-- uv `0.12.11+`
-- Native build tools for the target platform
-
-Installers are built natively for macOS arm64, macOS x86_64, or Windows x86_64. Cross-platform packaging is not supported.
+Git, **Node.js 24.16.0** (including npm/npx), **uv ≥ 0.12.11**, and native build tools for your platform (Xcode Command Line Tools on macOS). The commands below use **pnpm 12.14.0** without requiring a global installation. See the [development guide](CONTRIBUTING.md#environment-setup) for setup instructions.
 
 ## Run From Source
-
-### First-time setup on macOS
-
-Homebrew is not required. In Terminal, install Apple's Command Line Tools:
-
-```bash
-xcode-select --install
-```
-
-Complete the system installation dialog before continuing. If the tools are already installed, macOS will say so. Install **Node.js 24.16.0** using the [official macOS installer](https://nodejs.org/download/release/v24.16.0/node-v24.16.0.pkg), then open a new Terminal window. An unversioned `brew install node` or `brew install pnpm` may install a version that this checkout rejects.
-
-Install uv using its [official installer](https://docs.astral.sh/uv/getting-started/installation/):
-
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-export PATH="$HOME/.local/bin:$PATH"
-git --version
-node --version
-npm --version
-uv --version
-xcode-select -p
-```
-
-`node --version` must report `v24.16.0`; uv must be at least `0.12.11`. If Node reports another version, select 24.16.0 in your existing version manager or fix PATH before continuing. The desktop commands download the pinned Python runtime and prepare `.venv`; a separate Python installation is not needed for this default desktop path. Keep the terminal open for the following steps.
-
-### Install and launch
-
-Clone with Git, not a source ZIP, so packaging can record the source commit. Run these commands in a writable local directory. The explicit pnpm version works even if pnpm is absent or Homebrew/Corepack selects another version:
 
 ```bash
 git clone https://github.com/alibaba-damo-academy/ScholarSeed.git
 cd ScholarSeed
-npx --yes pnpm@12.14.0 --version
 npx --yes pnpm@12.14.0 install --frozen-lockfile
 npx --yes pnpm@12.14.0 ops dev
 ```
 
-`pnpm ops dev` prepares the repository-pinned Python runtime and development environment before starting Electron. You normally do not need to install the workspace packages manually. To use another supported manager, run `npm ci` or `yarn install` in the root and Desktop package directories as applicable; the scripts detect the invoking manager.
-Keep the terminal running while using the app; press Ctrl+C there to stop the development instance. Allow the first installation/startup to finish downloading its dependencies. If you already have pnpm 12.14.0, you can use `pnpm` directly. Otherwise, replace `pnpm` in the development and packaging commands below with `npx --yes pnpm@12.14.0`.
-
-### Installation troubleshooting
-
-- **`ERR_PNPM_NO_LOCKFILE`**: run `git pull --ff-only` in the clone and confirm `pnpm-lock.yaml` exists beside `package.json`, then rerun the frozen install. Do not generate a replacement lockfile by removing `--frozen-lockfile`.
-- **`pnpm ... expected 12.14.0`**: use the explicit `npx --yes pnpm@12.14.0 ...` commands above; installing the latest pnpm with Homebrew does not satisfy this checkout's version requirement.
-- **`uv: command not found` / `node: command not found`**: finish the corresponding installation and PATH setup above, then check the versions in the same terminal used to launch the app.
-
-Runtime binaries are downloaded from the reviewed HTTPS URLs in the manifests, verified by size and SHA-256, and cached locally. Git LFS and GitHub Release access are not required. The first build needs network access; `SCHOLARSEED_ARTIFACT_CACHE` selects an alternative cache directory.
-
-`pnpm ops dev` enables DevTools and the copy-session-ID button by default on macOS and Windows. Set `SCHOLARSEED_DEVTOOLS=0` to disable them.
+The first run needs internet access to download dependencies and the pinned Python/runtime assets; no separate Python installation or Git LFS is needed. Keep the terminal running; press Ctrl+C to stop. After launch, configure your model in Settings or sign in to ScholarSeed. For setup and troubleshooting, see the [development guide](CONTRIBUTING.md).
 
 ## Model and Service Configuration
 
@@ -244,26 +197,7 @@ Keep user data and credentials outside the repository. Review diagnostic bundles
 
 ## Development
 
-Common repository commands are exposed from the root `package.json`:
-
-```bash
-# Build the desktop application
-pnpm ops cd build local --stage app
-
-# Run deterministic desktop tests
-pnpm ops ci test --scope desktop
-
-# Check Python types
-pnpm ops ci check types python
-
-# Check formatting and import rules
-pnpm ops ci format
-
-# Inspect the local toolchain and runtime
-pnpm ops pre doctor
-```
-
-`pnpm ops ci check --profile python` runs static checks; it is not a substitute for real Electron, backend, model, and tool-flow acceptance.
+Environment setup, development commands, testing, and the project map are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Plugins
 
@@ -317,26 +251,7 @@ References: [Codex Skills](https://developers.openai.com/codex/skills), [OpenAI 
 
 ## Packaging
 
-Build installers on the matching native operating system:
-
-```bash
-# Build and verify an unpacked application without signing or an installer
-pnpm ops cd build release --stage dir --candidate
-
-# Build a local development installer
-pnpm ops cd build local
-
-# Build a release installer; signing and notarization credentials come from CI
-pnpm ops cd build release --workflow distribution
-```
-
-| Target | Native build host | Installer |
-| --- | --- | --- |
-| macOS arm64 | Apple Silicon macOS | DMG |
-| macOS x86_64 | Intel macOS | DMG |
-| Windows x86_64 | Windows x64 | NSIS EXE |
-
-Release credentials must be supplied through protected CI variables or the local secure credential store. Certificates, private keys, notarization secrets, and internal upload addresses must never be committed.
+To build a native macOS DMG or Windows EXE, follow [Packaging](CONTRIBUTING.md#packaging) in the development guide.
 
 ## Community and Support
 
