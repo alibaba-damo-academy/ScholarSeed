@@ -12,3 +12,6 @@
 - GitHub Release 由签名 workflow 的发布 job 汇总同一提交的双架构产物；preview 使用带构建号的预发布 tag，release 使用版本 tag，拒绝覆盖已有 tag。Release 仅含 DMG 与各自 SHA256，result.json 留在 Actions。
 - macOS 托管 runner 的 stapler 可能因 Apple CloudKit HTTP/3 连接中断失败（Intel 实测返回 68，ARM64 也出现票据附加失败）；按 actions/runner-images#14924 的官方方案仅在临时 runner 阻断 UDP/443，改走 HTTPS/TCP，保留 stapler validate 与 Gatekeeper 验收。
 - 票据附加与 macOS 信任验证统一调用 verify.trustCommand；失败时保留退出码、stdout/stderr 尾部，避免 stapler 把网络原因写到 stdout 后丢失诊断。
+
+- main 推送自动触发双架构签名与 preview Release；手动入口可选择 preview/release，push 事件没有 inputs.channel，渠道和并发组统一回退到 preview。
+- Windows 打包暂时暂停，`package.yml` 的 Windows 矩阵项和构建步骤保留为注释。

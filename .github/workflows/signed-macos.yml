@@ -1,6 +1,8 @@
 name: Signed macOS package
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       channel:
@@ -16,13 +18,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: signed-macos-${{ inputs.channel }}
+  group: signed-macos-${{ inputs.channel || 'preview' }}
   cancel-in-progress: false
 
 jobs:
   package:
     name: Signed macOS (${{ matrix.arch }})
-    # 签名与发布仅允许维护者从主分支手动触发。
+    # 主分支推送自动发布 preview，也支持维护者手动选择渠道。
     if: github.repository == 'alibaba-damo-academy/ScholarSeed' && github.ref == 'refs/heads/main'
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -39,7 +41,7 @@ jobs:
         shell: bash
     env:
       NODE_OPTIONS: --max-old-space-size=4096
-      PACKAGE_CHANNEL: ${{ inputs.channel }}
+      PACKAGE_CHANNEL: ${{ inputs.channel || 'preview' }}
       PACKAGE_ARCH: ${{ matrix.arch }}
 
     steps:
@@ -185,7 +187,7 @@ jobs:
       - name: Upload build report
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: build-report-${{ inputs.channel }}-darwin-${{ matrix.arch }}-${{ github.run_id }}
+          name: build-report-${{ inputs.channel || 'preview' }}-darwin-${{ matrix.arch }}-${{ github.run_id }}
           path: ${{ runner.temp }}/signed-artifacts/result.json
           if-no-files-found: error
           retention-days: 14
@@ -225,5 +227,5 @@ jobs:
       - name: Verify assets and publish release
         env:
           GH_TOKEN: ${{ github.token }}
-          PACKAGE_CHANNEL: ${{ inputs.channel }}
+          PACKAGE_CHANNEL: ${{ inputs.channel || 'preview' }}
         run: node .github/scripts/release.cjs "$RUNNER_TEMP/release-assets" "$RUNNER_TEMP/release-reports"

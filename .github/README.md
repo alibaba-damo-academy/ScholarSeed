@@ -5,8 +5,8 @@
 | 工作流 | 触发 | 产物和验证 |
 | --- | --- | --- |
 | CI | Pull request、推送 main | 公开源码编译、发行契约；独立检查 workflow 语法和工件筛选逻辑 |
-| Package | 推送 main、v 开头的 tag、手动 | macOS ARM64 / x64 开发 DMG、Windows x64 开发 EXE，不使用签名凭证 |
-| Signed macOS package | 在 main 上手动运行 | macOS ARM64 / x64 签名、公证、挂载验收，成功后发布 GitHub Release |
+| Package | 推送 main、v 开头的 tag、手动 | macOS ARM64 / x64 开发 DMG，不使用签名凭证；Windows 暂停 |
+| Signed macOS package | 推送 main 自动运行，也可在 main 上手动运行 | macOS ARM64 / x64 签名、公证、挂载验收，成功后发布 GitHub Release |
 
 签名任务使用现有 `ops cd build release --stage installer` 直接发行入口，不调用私有分发仓库，不运行 OSS 上传，两个架构通过后发布 GitHub Release；不把私有更新服务的版本变更为 published。它保留原生 lease 检查和构建器的签名、公证、安装验收；不等同于私有 distribution 工作流的完整冒烟集。
 
@@ -30,13 +30,13 @@ macOS 签名 job 按 [GitHub runner 官方临时方案](https://github.com/actio
 
 更新服务地址取 `apps/desktop/resources/product.json` 的 `update_base_url`；更新授权公钥取 `signing/activation-public-keys.json`，沿用已有分发使用的公钥。该文件只含 Ed25519 公钥，不含私钥；服务端轮换授权密钥时需同步审阅更新。`preview`/`release` 选择的是包内更新渠道，两者都执行正式签名和公证。
 
-在 Actions → Signed macOS package → Run workflow，选择 main 和渠道。该 workflow 必须先合入默认分支才能通过页面触发。只有 main 能运行签名 job；PR 和其他分支不运行该 job。能修改 main/workflow 的维护者能够使用仓库 Secrets，应保护 main 的写入和评审权限；需要独立签名审批时，由仓库管理员迁移到带审批和分支限制的 Environment。
+推送或合并到 main 后自动执行签名打包，并发布 preview 预发布版本。需要正式 release 时，在 Actions → Signed macOS package → Run workflow，选择 main 和 release 渠道。该 workflow 必须先合入默认分支才能通过页面触发。只有 main 能运行签名 job；PR 和其他分支不运行该 job。能修改 main/workflow 的维护者能够使用仓库 Secrets，应保护 main 的写入和评审权限；需要独立签名审批时，由仓库管理员迁移到带审批和分支限制的 Environment。
 
 ## Release 下载与版本
 
 成功后从仓库 [Releases](https://github.com/alibaba-damo-academy/ScholarSeed/releases) 下载安装包：每个架构一个 `.dmg` 和一个同名 `.dmg.sha256`。下载后将两者放在同一目录，执行 `shasum -a 256 -c <安装包文件名>.sha256`。GitHub 自动提供的 Source code 压缩包是源码，不是安装程序。
 
-- `preview`：发布预发布版本，tag 为 `v<版本>-preview.<构建号>`，不替换 Latest。
+- `preview`（main 推送默认渠道）：发布预发布版本，tag 为 `v<版本>-preview.<构建号>`，不替换 Latest。
 - `release`：发布正式版本，tag 为 `v<版本>`；已有 tag 拒绝覆盖，发布新版前先更新应用版本号。
 - 构建号沿用源码提交时间生成的北京时间 `YYYYMMDDHHMM`，两个架构必须一致。
 - 发布 job 等待两个架构全部成功，复核提交、渠道、版本、签名、公证、挂载验收和下载后的摘要，只上传四个安装/校验文件。
@@ -46,7 +46,7 @@ macOS 签名 job 按 [GitHub runner 官方临时方案](https://github.com/actio
 
 ## Windows
 
-现有 Package 继续构建未签名 Windows 开发包。正式 Windows 包还需要项目专用签名客户端、可访问的签名服务、更新载荷签名与组件分发配置；Apple 的五项 Secrets 不提供这些能力。本次没有把 Windows 开发包标记为正式签名包。
+Windows 开发包矩阵项及构建步骤已注释，暂不运行 Windows 打包；恢复时取消对应注释。正式 Windows 包还需要项目专用签名客户端、可访问的签名服务、更新载荷签名与组件分发配置；Apple 的五项 Secrets 不提供这些能力。本次没有把 Windows 开发包标记为正式签名包。
 
 ## 本地检查
 

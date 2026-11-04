@@ -28,8 +28,8 @@ jobs:
             runner: macos-15
           - name: macOS x64 DMG
             runner: macos-15-intel
-          - name: Windows EXE
-            runner: windows-2022
+          # - name: Windows EXE
+          #   runner: windows-2022
 
     steps:
       - name: Prepare Intel runner directory permissions
@@ -86,11 +86,11 @@ jobs:
           echo "macOS build open-file limit: $(ulimit -Sn)"
           npm run ops -- --package-manager npm cd build local --stage installer
 
-      - name: Build Windows package
-        if: runner.os == 'Windows'
-        env:
-          NODE_OPTIONS: --max-old-space-size=4096
-        run: npm run ops -- --package-manager npm cd build local --stage installer
+      # - name: Build Windows package
+      #   if: runner.os == 'Windows'
+      #   env:
+      #     NODE_OPTIONS: --max-old-space-size=4096
+      #   run: npm run ops -- --package-manager npm cd build local --stage installer
 
       - name: Calculate installer checksum
         shell: bash
