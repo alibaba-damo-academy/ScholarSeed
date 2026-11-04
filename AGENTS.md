@@ -16,3 +16,5 @@
 - main 推送自动触发双架构签名与 preview Release；手动入口可选择 preview/release，push 事件没有 inputs.channel，渠道和并发组统一回退到 preview。
 - Windows 打包暂时暂停，`package.yml.disabled` 的 Windows 矩阵项和构建步骤保留为注释。
 - 开发包 workflow 暂时改名为 `package.yml.disabled` 停用；签名发布 workflow 显示名为 `Package Sigend`，文件仍为 `signed-macos.yml`。
+
+- 面向公开用户的 GitHub Release 正文和下载摘要统一使用英文；模板位于 `.github/scripts/release.cjs`。

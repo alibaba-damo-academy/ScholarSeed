@@ -40,14 +40,14 @@ async function publish(assetsDirectory, reportsDirectory, env = process.env) {
   assert.ok(!refs.some(ref => ref.ref === `refs/tags/${release.tag}`), `Tag ${release.tag} already exists; published versions must not be overwritten`)
   const notes = path.join(env.RUNNER_TEMP, 'release-notes.md')
   fs.writeFileSync(notes, [
-    'macOS 安装包已完成 Developer ID 签名、Apple 公证及 DMG 挂载启动验收。',
+    'The macOS installers are signed with Developer ID and notarized by Apple. DMG mounting and application launch checks have passed.',
     '',
-    '- Apple Silicon（M 系列）请选择 `arm64` 安装包。',
-    '- Intel Mac 请选择 `x86_64` 安装包。',
-    '- 下载对应的 `.dmg.sha256` 后，在同一目录执行 `shasum -a 256 -c <文件名>.dmg.sha256`。',
+    '- For Apple Silicon (M-series), download the `arm64` installer.',
+    '- For Intel Macs, download the `x86_64` installer.',
+    '- Download the matching `.dmg.sha256` file and run `shasum -a 256 -c <filename>.dmg.sha256` from the same directory.',
     '',
-    `源码提交：${env.GITHUB_SHA}`,
-    `构建与验收报告：https://github.com/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`,
+    `Source commit: ${env.GITHUB_SHA}`,
+    `Build and verification reports: https://github.com/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`,
     '',
   ].join('\n'))
   const url = gh(['release', 'create', release.tag, ...release.assets,
@@ -56,7 +56,7 @@ async function publish(assetsDirectory, reportsDirectory, env = process.env) {
     ...(release.prerelease ? ['--prerelease', '--latest=false'] : []),
   ]).trim()
   console.log(url)
-  if (env.GITHUB_STEP_SUMMARY) fs.appendFileSync(env.GITHUB_STEP_SUMMARY, `安装包下载：[${release.title}](${url})\n`)
+  if (env.GITHUB_STEP_SUMMARY) fs.appendFileSync(env.GITHUB_STEP_SUMMARY, `Download installers: [${release.title}](${url})\n`)
 }
 
 module.exports = { prepare, publish }
