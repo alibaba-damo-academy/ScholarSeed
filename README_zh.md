@@ -157,6 +157,8 @@ npx --yes pnpm@12.14.0 dev
 
 准备步骤会安装固定版本 Python 环境，`dev` 随后从仓库源码构建内置 Skill 包，再启动 Electron；全新克隆请勿跳过这两步。首次运行需要联网，无需另外安装 Python 或 Git LFS。使用时保持终端运行，按 Ctrl+C 停止。启动后，在设置中配置模型连接，或登录书深账号。日常开发和常见问题见[开发指南](CONTRIBUTING_zh.md)。
 
+Windows 遇到 [Electron 下载停滞](CONTRIBUTING_zh.md#windows-下载排查)、[`stale ACL policy outputs`](CONTRIBUTING_zh.md#windows-检出换行)或[构建目录权限拒绝](CONTRIBUTING_zh.md#windows-私有构建目录)时，请按对应步骤恢复。
+
 ## 插件
 
 **书深插件可以把科研步骤、对话卡片和资料整理串成一个可重复使用的流程。让 AI 按你的研究方法分析材料，在关键步骤请研究者作出选择，再生成报告、保存笔记和整理文献。**
