@@ -18,7 +18,9 @@ const UI_MANIFEST = '.scholarseed-ui.json'
 const FILE_MODE = 0o644
 const TAILWIND_IMPORT = "'tailwindcss'"
 const TAILWIND_STYLESHEET = desktopRequire.resolve('tailwindcss/index.css').replaceAll('\\', '/')
-const ARCHIVE_MTIME = new Date('1980-01-01T00:00:00Z')
+// ZIP stores local-time fields and starts at 1980-01-01 00:00. Build the date from local components so the encoded
+// bytes are identical in every timezone; a UTC literal falls in 1979 west of UTC and fflate rejects it.
+const ARCHIVE_MTIME = new Date(1980, 0, 1, 0, 0, 0)
 const ARCHIVE_COMPRESSION_LEVEL = 6
 const CATALOG_EVALUATION_TIMEOUT_MS = 1000
 const FORBIDDEN_INPUTS = [/\/store\//, /\/store\.tsx?$/, /\/api\.tsx?$/, /\/literature\/catalog\.ts$/, /\/fileOpen\.ts$/]
