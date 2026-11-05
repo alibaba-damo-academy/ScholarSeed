@@ -49,14 +49,15 @@ Node 必须显示 `v24.16.0`。如果显示其他版本，请先通过版本管�
 
 使用 Windows x64 电脑和 PowerShell。先通过 [Node.js 官方 Windows x64 安装包](https://nodejs.org/download/release/v24.16.0/node-v24.16.0-x64.msi) 安装 **24.16.0**，保留 npm 和加入 PATH 的安装选项，不要改用最新版 Node。
 
-尚未安装 Git 和 uv 时，按 [Git for Windows](https://git-scm.com/install/windows) 和 [uv 官方说明](https://docs.astral.sh/uv/getting-started/installation/#winget)执行：
+尚未安装 Git、uv 和 Visual C++ 2015-2022 x64 运行库时，按 [Git for Windows](https://git-scm.com/install/windows)、[uv 官方说明](https://docs.astral.sh/uv/getting-started/installation/#winget) 和 [微软下载页](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist)执行：
 
 ```powershell
+winget install --id Microsoft.VCRedist.2015+.x64 -e --source winget
 winget install --id Git.Git -e --source winget
 winget install --id astral-sh.uv -e --source winget
 ```
 
-如果没有 WinGet，改用上述链接中的 Git 安装包和 uv 安装方式。工具安装完成后重新打开 PowerShell，再检查：
+如果没有 WinGet，改用上述链接中的 Git 安装包、uv 安装方式和运行库安装包。工具安装完成后重新打开 PowerShell，再检查：
 
 ```powershell
 git --version
@@ -98,6 +99,7 @@ npx --yes pnpm@12.14.0 dev
 | `pnpm ... expected 12.14.0` | 使用上面的 `npx --yes pnpm@12.14.0 ...`，不使用全局其他版本。 |
 | 找不到 Node 或 Node 版本错误 | 完成 Node 24.16.0 安装，重新打开终端，检查 PATH 或版本管理器。 |
 | `uv: command not found` | 将 uv 安装目录加入 PATH，在启动应用的终端确认 `uv --version`。 |
+| `Cannot find native binding` | 缺少 Visual C++ 运行库；按上面的命令安装后重跑。 |
 | 未找到内置技能 | 先停止 Electron，再重跑上面的 Python 准备和 `dev` 命令。全新克隆不能只执行 `ops dev`，也不要将用户技能手工复制进内置技能包。 |
 | 下载失败 | 根据日志中的失败 URL 检查网络／代理，恢复访问后重跑原命令，不绕过摘要校验。 |
 | 安装停在 `scripts/pre/electron.cjs` / `Running...` | 见 [Windows 下载排查](#windows-下载排查)。此阶段会单独下载 Electron 二进制，不是 npm 包下载已完成就能启动。 |
