@@ -9,7 +9,10 @@ import {
 import {
   DEFAULT_RENDERER_PREFERENCES,
   defaultRendererPreferences,
+  rendererLanguagePatch,
   sanitizeRendererPreferences,
+  systemRendererPreferences,
+  SYSTEM_LANGUAGE_MODE,
 } from './preferences.ts'
 import { defaultSelectionPrompts, selectionInstruction } from './prompts.ts'
 
@@ -20,6 +23,105 @@ function deferred<T>() {
   })
   return { promise, resolve }
 }
+
+test('system refresh is read-only and stops after an explicit language choice', async () => {
+  const initial = systemRendererPreferences('zh')
+  const applied: string[] = []
+  let reads = 0
+  let writes = 0
+  const writer = new PreferenceWriter(initial, {
+    save: async (value) => {
+      writes += 1
+      return value
+    },
+    reconcile: async () => {
+      reads += 1
+      return systemRendererPreferences('en')
+    },
+    apply: async (value) => {
+      applied.push(value.language)
+    },
+    failed: () => assert.fail('unexpected preference failure'),
+  })
+  await writer.refreshSystemLanguage(() => false)
+  assert.equal(reads, 0)
+  await writer.refreshSystemLanguage(() => true)
+  assert.equal(writer.current().language, 'en')
+  assert.equal(writer.current().languageMode, SYSTEM_LANGUAGE_MODE)
+  assert.deepEqual(applied, ['en'])
+  assert.equal(writes, 0)
+
+  assert.equal(await writer.submitConfirmed(rendererLanguagePatch('en')), true)
+  await writer.refreshSystemLanguage(() => true)
+  assert.equal(reads, 1)
+  assert.equal(writes, 1)
+})
+
+for (const stage of ['read', 'apply'] as const) {
+  test(`system refresh ${stage} failure is observable, blocks shutdown and retries without writing`, async () => {
+    const initial = systemRendererPreferences('zh')
+    let failing = true
+    let failures = 0
+    let projected = initial.language
+    const writer = new PreferenceWriter(initial, {
+      save: async () => assert.fail('refresh must not write'),
+      reconcile: async () => {
+        if (stage === 'read' && failing) throw new Error('read failed')
+        return systemRendererPreferences('en')
+      },
+      apply: async (value) => {
+        projected = value.language
+        if (stage === 'apply' && failing && value.language === 'en') throw new Error('apply failed')
+      },
+      failed: () => {
+        failures += 1
+      },
+    })
+    await writer.refreshSystemLanguage(() => true)
+    assert.equal(failures, 1)
+    assert.equal(writer.current().language, 'zh')
+    assert.equal(projected, 'zh')
+    await assert.rejects(writer.prepareShutdown(), /ERR_PREFERENCES_UNSAVED/)
+    writer.resume()
+    failing = false
+    await writer.retry()
+    assert.equal(writer.current().language, 'en')
+    assert.equal(projected, 'en')
+    await writer.prepareShutdown()
+  })
+}
+
+test('a confirmed explicit choice repairs a failed system refresh before shutdown', async () => {
+  const writer = new PreferenceWriter(systemRendererPreferences('zh'), {
+    save: async (value) => value,
+    reconcile: async () => {
+      throw new Error('read failed')
+    },
+    apply: async () => undefined,
+    failed: () => undefined,
+  })
+  await writer.refreshSystemLanguage(() => true)
+  assert.equal(await writer.submitConfirmed(rendererLanguagePatch('en')), true)
+  await writer.prepareShutdown()
+  assert.equal(writer.current().language, 'en')
+})
+
+test('a focus refresh does not replace an editor projection that became unsafe during IPC', async () => {
+  const initial = systemRendererPreferences('en')
+  const response = deferred<typeof initial>()
+  let safe = true
+  const writer = new PreferenceWriter(initial, {
+    save: async () => assert.fail('focus must not write preferences'),
+    reconcile: () => response.promise,
+    apply: async () => assert.fail('editor state must stay intact'),
+    failed: () => assert.fail('unexpected preference failure'),
+  })
+  const refresh = writer.refreshSystemLanguage(() => safe)
+  safe = false
+  response.resolve(systemRendererPreferences('zh'))
+  await refresh
+  assert.equal(writer.current().language, 'en')
+})
 
 test('prompt defaults only become durable through an explicit save and language changes retain one instruction map', async () => {
   let disk = defaultRendererPreferences('zh')

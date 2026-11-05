@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { sanitizeRendererPreferences } from '../preferences.ts'
+import {
+  persistedRendererPreferences,
+  sanitizeRendererPreferences,
+  SYSTEM_LANGUAGE_MODE,
+} from '../preferences.ts'
 import { defaultSelectionPrompts, SELECTION_PROMPT_ACTIONS } from '../prompts.ts'
 import { decodeRendererPreferences, RENDERER_PREFERENCES_MAX_BYTES } from './preferences-record.ts'
 
@@ -25,6 +29,23 @@ test('persisted language wins over detection while missing selection uses detect
   assert.equal(decodeRendererPreferences(Buffer.from('{"language":"zh"}'), 'en').language, 'zh')
   assert.equal(decodeRendererPreferences(Buffer.from('{}'), 'en').language, 'en')
   assert.equal(decodeRendererPreferences(null, 'en').language, 'en')
+})
+
+test('system mode persists intent without pinning the detected language', () => {
+  const initial = decodeRendererPreferences(null, 'en')
+  const record = persistedRendererPreferences({ ...initial, theme: 'dark' })
+  assert.equal(record.languageMode, SYSTEM_LANGUAGE_MODE)
+  assert.ok(!Object.hasOwn(record, 'language'))
+
+  const restored = decodeRendererPreferences(Buffer.from(JSON.stringify(record)), 'zh')
+  assert.equal(restored.language, 'zh')
+  assert.equal(restored.languageMode, SYSTEM_LANGUAGE_MODE)
+  assert.equal(restored.theme, 'dark')
+  assert.deepEqual(restored.selectionPrompts, initial.selectionPrompts)
+  assert.equal(
+    decodeRendererPreferences(Buffer.from('{"language":"en"}'), 'zh').languageMode,
+    undefined
+  )
 })
 
 test('new preference records seed prompts in their initial language and old values survive decoding', () => {

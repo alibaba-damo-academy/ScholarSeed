@@ -9,6 +9,9 @@ import {
   MAX_TRACKED_RECENT_SESSIONS,
   MAX_MODEL_KEY_LENGTH,
   defaultRendererPreferences,
+  rendererLanguagePatch,
+  systemRendererPreferences,
+  SYSTEM_LANGUAGE_MODE,
   rendererPreferencesEqual,
   sanitizeRecentFiles,
   sanitizeRecentLiterature,
@@ -237,6 +240,22 @@ test('defaultRendererPreferences seeds the initial language and prompts without 
   // 兜底语言是检测链的最终结果，常量本身必须保持中文不动。
   assert.equal(DEFAULT_RENDERER_PREFERENCES.language, 'zh')
   assert.notEqual(detected, DEFAULT_RENDERER_PREFERENCES)
+})
+
+test('fixed locale snapshots and fresh profiles preserve distinct language intent', () => {
+  const fixed = defaultRendererPreferences('en')
+  const following = systemRendererPreferences('en')
+  assert.equal(sanitizeRendererPreferences(fixed, 'zh').language, 'en')
+  assert.equal(sanitizeRendererPreferences(following, 'zh').language, 'zh')
+  assert.equal(following.languageMode, SYSTEM_LANGUAGE_MODE)
+
+  const pinned = { ...following, ...rendererLanguagePatch('en') }
+  assert.deepEqual(sanitizeRendererPreferences(pinned, 'zh'), sanitizeRendererPreferences(fixed))
+  assert.equal(
+    sanitizeRendererPreferences({ ...pinned, ...rendererLanguagePatch(SYSTEM_LANGUAGE_MODE) }, 'zh')
+      .language,
+    'zh'
+  )
 })
 
 test('recent files are validated, de-duplicated by project and path, sorted, and bounded', () => {

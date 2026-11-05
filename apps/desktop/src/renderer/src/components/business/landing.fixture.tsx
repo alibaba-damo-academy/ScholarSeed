@@ -57,7 +57,7 @@ export function Fixture(): JSX.Element {
       },
     },
   })
-  const store = { state: { lang: 'zh' }, act: {} } as unknown as Store
+  const store = { state: { lang: 'zh', languageMode: 'zh' }, act: {} } as unknown as Store
   return (
     <I18nextProvider i18n={localization}>
       <StoreContext.Provider value={store}>

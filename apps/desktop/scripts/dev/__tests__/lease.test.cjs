@@ -24,6 +24,8 @@ test('development host is a fixed internal entry requiring the full Desktop leas
 test('development shutdown uncertainty retains the environment lease', async context => {
   context.mock.method(childProcess, 'spawn', () => {
     const child = new EventEmitter()
+    child.stdout = new (require('node:stream').PassThrough)()
+    child.stderr = new (require('node:stream').PassThrough)()
     process.nextTick(() => child.emit('close', PROCESS_TREE_UNCONFIRMED_EXIT, null))
     return child
   })
@@ -64,8 +66,11 @@ test('Windows development accepts only its private final receipt and forwards ex
   let messages = []
   context.mock.method(childProcess, 'spawn', (_executable, args, options) => {
     assert.deepEqual(args, ['--experimental-transform-types', path.resolve(__dirname, '../supervision.mjs')])
-    assert.deepEqual(options.stdio, ['inherit', 'inherit', 'inherit', 'ipc'])
+    assert.deepEqual(options.stdio, ['ignore', 'pipe', 'pipe', 'ipc'])
+    assert.equal(options.detached, true)
     const child = new EventEmitter()
+    child.stdout = new (require('node:stream').PassThrough)()
+    child.stderr = new (require('node:stream').PassThrough)()
     child.connected = true
     child.send = message => { messages.push(message) }
     process.nextTick(() => {
@@ -105,7 +110,8 @@ test('Desktop Python lease follows the backend interpreter rather than VENV', co
     return { prefix: '/runtime/actual-prefix' }
   })
   const resolved = desktopPythonPrefix({ VENV: 'other-env' })
-  assert.equal(resolved.executable, path.join(path.resolve(__dirname, '../../../../..'), '.venv', 'bin', 'python'))
+  assert.equal(resolved.executable, path.join(path.resolve(__dirname, '../../../../..'), '.venv',
+    ...(process.platform === 'win32' ? ['Scripts', 'python.exe'] : ['bin', 'python'])))
   assert.equal(resolved.prefix, '/runtime/actual-prefix')
   assert.deepEqual(observed, [resolved.executable])
 })

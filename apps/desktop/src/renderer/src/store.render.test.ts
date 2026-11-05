@@ -896,14 +896,14 @@ test(
         const probe = Reflect.get(window, 'preferenceProbe')
         probe.hold = true
         void probe.prompts('confirmed instruction')
-        return probe.state.selectionPrompts.translate
+        return { prompt: probe.state.selectionPrompts.translate, language: probe.state.lang }
       })
       await page.waitForFunction(() => Reflect.get(window, 'preferenceProbe').pending === 1)
       assert.equal(
         await page.evaluate(
           () => Reflect.get(window, 'preferenceProbe').state.selectionPrompts.translate
         ),
-        initial
+        initial.prompt
       )
       await page.evaluate(() => Reflect.get(window, 'preferenceProbe').release())
       await page.waitForFunction(
@@ -911,15 +911,19 @@ test(
           Reflect.get(window, 'preferenceProbe').state.selectionPrompts.translate ===
           'confirmed instruction'
       )
-      await page.evaluate(() => {
-        void Reflect.get(window, 'preferenceProbe').language('en')
-      })
+      const targetLanguage = initial.language === 'zh' ? 'en' : 'zh'
+      await page.evaluate((language) => {
+        void Reflect.get(window, 'preferenceProbe').language(language)
+      }, targetLanguage)
       await page.waitForFunction(() => Reflect.get(window, 'preferenceProbe').pending === 1)
       assert.equal(
         await page.evaluate(() => Reflect.get(window, 'preferenceProbe').state.lang),
-        'zh'
+        initial.language
       )
       await page.evaluate(() => Reflect.get(window, 'preferenceProbe').release())
-      await page.waitForFunction(() => Reflect.get(window, 'preferenceProbe').state.lang === 'en')
+      await page.waitForFunction(
+        (language) => Reflect.get(window, 'preferenceProbe').state.lang === language,
+        targetLanguage
+      )
     })
 )

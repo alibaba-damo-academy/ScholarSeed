@@ -86,9 +86,13 @@ async function start(entry, args, lease) {
   process.on('SIGTERM', onTerminate)
   try {
     child = spawn(process.execPath, [...(development ? ['--experimental-transform-types'] : []), entry, ...args], {
-      cwd: DESKTOP, env: process.env, stdio: controlled ? ['inherit', 'inherit', 'inherit', 'ipc'] : 'inherit', windowsHide: true,
-      detached: process.platform !== 'win32'
+      cwd: DESKTOP, env: process.env, stdio: controlled ? ['ignore', 'pipe', 'pipe', 'ipc'] : 'inherit', windowsHide: true,
+      detached: controlled || process.platform !== 'win32'
     })
+    if (controlled) {
+      child.stdout.pipe(process.stdout, { end: false })
+      child.stderr.pipe(process.stderr, { end: false })
+    }
     if (controlled) child.on('message', message => {
       if (developmentStopped || !message || Array.isArray(message) ||
           Object.keys(message).length !== 2 || message.kind !== DEVELOPMENT_STOPPED || message.version !== DEVELOPMENT_PROTOCOL_VERSION) {

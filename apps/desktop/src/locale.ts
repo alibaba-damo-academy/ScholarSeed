@@ -1,9 +1,9 @@
-// locale.ts — 首次运行时「默认界面语言」的判定策略，宿主无关的纯函数。
+// locale.ts — Host-independent detection for the system language mode.
 //
 // 判定链（用户口径，按序取第一个非 null）：
-//   ① 时区属中国大陆 → 中文
-//   ② 时区可判定且非中国大陆 → 英文
-//   ③ 时区判定不出来 → 看 OS 系统语言定中英
+//   ① System language → Chinese for zh, otherwise English
+//   ② Mainland China time zone → Chinese
+//   ③ Other usable time zone → English
 //   ④ 全都失败 → 中文
 //
 // 本模块只吃「信号」不采信号：Electron 侧由 src/main/locale.ts 采集，浏览器形态在
@@ -43,12 +43,12 @@ export const CHINA_TIME_ZONES: ReadonlySet<string> = new Set([
   'Asia/Chongqing',
   'Asia/Harbin',
   'Asia/Kashgar',
-  'PRC'
+  'PRC',
 ])
 
 /**
- * 裸 UTC/GMT 视为「时区判定不出来」而不是「非中国时区」。这是未配置时区的容器 / CI
- * 的典型形态；判成英文会把一批中文用户误伤，交棒给 OS 语言检测器更合理。
+ * UTC/GMT does not determine a regional fallback. System languages have already
+ * been checked; when neither signal is usable, the final fallback is Chinese.
  */
 export const INDETERMINATE_TIME_ZONES: ReadonlySet<string> = new Set([
   'UTC',
@@ -67,7 +67,7 @@ export const INDETERMINATE_TIME_ZONES: ReadonlySet<string> = new Set([
   'Etc/GMT-0',
   'Etc/Zulu',
   'Etc/Universal',
-  'Etc/Greenwich'
+  'Etc/Greenwich',
 ])
 
 export const CHINESE_PRIMARY_SUBTAG = 'zh'
@@ -120,8 +120,8 @@ function systemLanguageDetector(signals: LocaleSignals): PreferenceLanguage | nu
 }
 
 export const LANGUAGE_DETECTORS: readonly LanguageDetector[] = [
+  systemLanguageDetector,
   timeZoneDetector,
-  systemLanguageDetector
 ]
 
 export function detectPreferenceLanguage(signals: LocaleSignals): PreferenceLanguage {

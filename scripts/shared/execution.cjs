@@ -70,7 +70,7 @@ function launchLong(executable, args, options = {}) {
     }
     const onSignal = signal => {
       interrupted ||= signal
-      forward(signal)
+      if (process.platform !== 'win32' || signal !== 'SIGINT') forward(signal)
       if (signalTimers.length) return
       signalTimers.push(setTimeout(() => forward('SIGTERM'), GROUP_SHUTDOWN_TIMEOUT_MS))
       signalTimers.push(setTimeout(() => forward('SIGKILL'), GROUP_SHUTDOWN_TIMEOUT_MS + GROUP_TERMINATE_TIMEOUT_MS))

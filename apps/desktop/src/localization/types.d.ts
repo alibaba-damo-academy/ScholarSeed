@@ -1487,6 +1487,7 @@ declare module 'i18next' {
             "presentationFailed": "账户菜单未能打开，请重试。"
         },
         "preferences": {
+            "followSystemLanguage": "跟随系统",
             "language": "语言",
             "appearance": "外观",
             "light": "浅色",

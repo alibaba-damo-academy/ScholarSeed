@@ -10,7 +10,7 @@ This guide covers source setup, local development, troubleshooting, testing, and
 | --- | --- |
 | Git | Available in your terminal; clone the repository rather than downloading a source ZIP |
 | Node.js | **24.16.0**, including npm/npx |
-| pnpm | **12.14.0**; the commands below invoke it with npx, so a global installation is optional |
+| pnpm | **12.14.0**, available as `pnpm` on PATH |
 | uv | **≥ 0.12.11**, available on PATH |
 | Native tools | macOS: Xcode Command Line Tools or a working full Xcode toolchain; Windows x64: the scripts prepare the pinned LLVM-MinGW compiler |
 
@@ -26,6 +26,12 @@ xcode-select --install
 
 Install **Node.js 24.16.0** using the [official macOS installer](https://nodejs.org/download/release/v24.16.0/node-v24.16.0.pkg), then open a new terminal. An unversioned `brew install node` or `brew install pnpm` may select an incompatible version.
 
+Install pnpm once after installing Node:
+
+```bash
+npm install --global pnpm@12.14.0
+```
+
 Install uv using its [official installer](https://docs.astral.sh/uv/getting-started/installation/):
 
 ```bash
@@ -39,6 +45,7 @@ Confirm the tools in the same terminal you will use to launch ScholarSeed:
 git --version
 node --version
 npm --version
+pnpm --version
 uv --version
 xcode-select -p
 ```
@@ -63,11 +70,12 @@ If WinGet is unavailable, use the Git installer, uv installation instructions an
 git --version
 node --version
 npm.cmd --version
+npm.cmd install --global pnpm@12.14.0
+pnpm.cmd --version
 uv --version
-npx.cmd --yes pnpm@12.14.0 --version
 ```
 
-Node must report `v24.16.0`, uv must be at least `0.12.11`, and pnpm must report `12.14.0`. In the installation and development commands below, Windows users can use `npx.cmd` instead of `npx`; this avoids invoking PowerShell's `npx.ps1` wrapper and does not require changing the global execution policy.
+Node must report `v24.16.0`, uv must be at least `0.12.11`, and pnpm must report `12.14.0`. In the installation and development commands below, Windows users can use `pnpm.cmd` instead of `pnpm`; this avoids invoking PowerShell's `pnpm.ps1` wrapper and does not require changing the global execution policy.
 
 The native build entry downloads and verifies its pinned LLVM-MinGW compiler and related inputs. You do not need to install Visual Studio or a separate compiler for these modules. Do not run `xcode-select` or the macOS shell installer on Windows. These are source-development prerequisites, not requirements for running a prebuilt installer; the instructions do not certify a clean Windows end-to-end run.
 
@@ -78,29 +86,35 @@ In a writable local directory, run:
 ```bash
 git clone https://github.com/alibaba-damo-academy/ScholarSeed.git
 cd ScholarSeed
-npx --yes pnpm@12.14.0 install --frozen-lockfile
-npx --yes pnpm@12.14.0 ops pre install python --mode desktop
-npx --yes pnpm@12.14.0 dev
+pnpm ops pre
+pnpm ops dev
 ```
 
 Run subsequent commands from the repository root. Allow the first installation/startup to finish downloading dependencies. Keep the terminal running while using the application; press Ctrl+C there to stop it. Configure your model connection in Settings or sign in to ScholarSeed. Literature services and model calls require the corresponding access permissions.
 
-The Python preparation step must precede the Skill build on a fresh clone. `dev` compiles `skills/community/` into the ignored runtime directory `apps/serve/service/capabilities/skills/`, then starts Electron. Skill sources are included in Git; the generated pack is not. Successful Electron startup alone does not prove the built-in Skills are available.
+`pnpm ops pre` checks the toolchain, installs the locked Desktop dependencies and pinned Python environment, builds `skills/community/` into the ignored runtime directory `apps/serve/service/capabilities/skills/`, prepares Office assets, and checks the environment. It does not install global tools, change user credentials, or require private developer Skill links. Skill sources are included in Git; the generated pack is not.
 
-For later starts, `npx --yes pnpm@12.14.0 ops dev` is sufficient only when the pack already exists and Skill sources have not changed. After changing Skill sources or seeing a missing-Skill error, stop the current instance and run `npx --yes pnpm@12.14.0 dev` to rebuild before starting again.
+`pnpm ops dev` starts the isolated Electron development instance. For later starts it is sufficient when dependencies and Skill sources are unchanged. After pulling changes to dependencies or Skills, or seeing a missing-Skill error, stop the current instance and rerun `pnpm ops pre`, then `pnpm ops dev`.
 
-If you already have pnpm 12.14.0, you can replace `npx --yes pnpm@12.14.0` with `pnpm` throughout this guide. Do not replace the pinned version with whichever version Homebrew or Corepack selects.
+Use pnpm 12.14.0, not whichever version Homebrew or Corepack selects. If you cannot install pnpm, the optional equivalent is to replace `pnpm` with `npx --yes pnpm@12.14.0`.
+
+pnpm is the recommended path, not a required package-manager binding. The project does not set `packageManager`; the existing npm/Yarn command paths remain available. For npm, the equivalent preparation and startup commands are:
+
+```bash
+npm run ops -- pre
+npm run ops -- dev
+```
 
 ## Troubleshooting
 
 | Symptom | Action |
 | --- | --- |
 | `ERR_PNPM_NO_LOCKFILE` | Confirm you are at the repository root and `pnpm-lock.yaml` is beside `package.json`. For an outdated clone, run `git pull --ff-only`, then retry the frozen install. Do not remove `--frozen-lockfile` to generate a replacement lock. |
-| `pnpm ... expected 12.14.0` | Use the explicit `npx --yes pnpm@12.14.0 ...` commands above instead of the globally installed pnpm. |
+| `pnpm ... expected 12.14.0` | Install/select pnpm 12.14.0, then check `pnpm --version` before retrying. |
 | `node: command not found` / wrong Node version | Finish installing Node 24.16.0, reopen the terminal, and check PATH or your version manager. |
 | `uv: command not found` | Add uv's installation directory to PATH and verify `uv --version` in the launch terminal. |
 | `Cannot find native binding` | The Visual C++ runtime is missing; install it with the `winget install --id Microsoft.VCRedist.2015+.x64` command above, then rerun. |
-| Built-in Skill not found | Stop Electron, then rerun the Python preparation and `dev` commands above. Do not use `ops dev` alone on a fresh clone or manually copy user Skills into the bundled pack. |
+| Built-in Skill not found | Stop Electron, then run `pnpm ops pre` and `pnpm ops dev`. Do not skip preparation on a fresh clone or manually copy user Skills into the bundled pack. |
 | Download failure | Check the failing URL in the log and your network/proxy access. Rerun the same command after restoring access; do not bypass checksum verification. |
 | Install stays at `scripts/pre/electron.cjs` / `Running...` | See [Windows download diagnostics](#windows-download-diagnostics). This stage downloads the Electron binary separately from npm packages. |
 | `stale ACL policy outputs` on Windows | See [Windows checkout line endings](#windows-checkout-line-endings). Do not regenerate reviewed security outputs just to suppress this error. |
@@ -117,7 +131,7 @@ If the original installation is still running, stop that command with Ctrl+C bef
 
 ```powershell
 $env:DEBUG = '@electron/get*'
-npx.cmd --yes pnpm@12.14.0 install --frozen-lockfile --reporter=append-only
+pnpm.cmd install --frozen-lockfile --reporter=append-only
 ```
 
 Check access to the URL reported in the log using your approved network/proxy. If GitHub release downloads are unavailable and your organization permits the npm mirror, set the following in the same PowerShell session and retry the install command:
@@ -126,7 +140,7 @@ Check access to the URL reported in the log using your approved network/proxy. I
 $env:ELECTRON_MIRROR = 'https://npmmirror.com/mirrors/electron/'
 ```
 
-Changing the npm package registry alone does not change Electron's binary download URL. These environment settings affect this terminal and its child processes, not global configuration; a new PowerShell terminal starts without these temporary overrides. Keep the pinned pnpm version, lifecycle scripts and checksum verification enabled. After installation exits successfully, continue with the Python preparation and `dev` commands in this guide. The first `dev` also builds native modules and the frontend; inspect its stage output before assuming it has stalled.
+Changing the npm package registry alone does not change Electron's binary download URL. These environment settings affect this terminal and its child processes, not global configuration; a new PowerShell terminal starts without these temporary overrides. Keep the pinned pnpm version, lifecycle scripts and checksum verification enabled. After installation exits successfully, run `pnpm ops pre` and `pnpm ops dev`. The first startup also builds native modules and the frontend; inspect its stage output before assuming it has stalled.
 
 ### Windows checkout line endings
 
@@ -153,42 +167,49 @@ Some development tools grant other accounts write access to the user temporary d
 
 ```powershell
 $env:SCHOLARSEED_NATIVE_BUILD_ROOT = Join-Path $HOME '.ss-debug\native-build'
-npx.cmd --yes pnpm@12.14.0 dev
+pnpm.cmd ops pre
+pnpm.cmd ops dev
 ```
 
 The build creates and protects a new directory, and still validates its owner, permissions and ancestors. This setting affects only the current terminal and its child processes; it does not change the system temporary directory or global ACLs. If the selected location is also rejected, retain the error and choose a genuinely private local location with your administrator rather than weakening the policy. This addresses native-build directory selection only, not model authentication or general application acceptance.
+
+### Windows application-control policy
+
+If native compilation reports `spawnSync ... installation-test.exe UNKNOWN`, retain the executable path, exit details and the `native-command` output. `UNKNOWN` alone does not identify the cause. If Windows explicitly reports that an administrator policy blocked the executable, ask your administrator to review the verified build artifact through the organization's application-control process. Changing the build directory does not override application-control policy. Do not disable security software or policy, or repeatedly reinstall dependencies.
+
+A failed build may also report `[native-cleanup]` when a temporary file remains locked. The original compilation or execution error stays first; the cleanup failure is supplementary and must not be mistaken for the root cause. Keep the diagnostic log before retrying. A policy-blocked native build means Desktop startup and publication acceptance have not passed.
 
 ## Development and Testing
 
 Inspect the local toolchain:
 
 ```bash
-npx --yes pnpm@12.14.0 ops pre doctor
+pnpm ops pre doctor
 ```
 
 Build the desktop frontend without producing an installer:
 
 ```bash
-npx --yes pnpm@12.14.0 ops cd build local --stage app
+pnpm ops cd build local --stage app
 ```
 
 Run desktop tests and type checks after installing dependencies:
 
 ```bash
-npx --yes pnpm@12.14.0 --dir apps/desktop test
-npx --yes pnpm@12.14.0 --dir apps/desktop run typecheck
+pnpm --dir apps/desktop test
+pnpm --dir apps/desktop run typecheck
 ```
 
 Select tests relevant to your changes and exercise the affected flow in the real application. A passing build or type check does not prove that model calls, login, or tools work. Real-model tests require your own authorized credentials and may incur charges.
 
-Research skills live in `skills/community/`. Build them with `npx --yes pnpm@12.14.0 ops cd build local --target skills`. For the developer-preview plugin interfaces, see the [plugin guide](doc/plugins.md).
+Research skills live in `skills/community/`. Build them with `pnpm ops cd build local --target skills`. For the developer-preview plugin interfaces, see the [plugin guide](doc/plugins.md).
 
 ## Packaging
 
 Stop the development instance first. Build a local development installer on the target machine:
 
 ```bash
-npx --yes pnpm@12.14.0 ops cd build local
+pnpm ops cd build local
 ```
 
 | Native host | Installer |
@@ -202,10 +223,10 @@ Cross-platform packaging is not supported. Read the exact output paths and statu
 To build and check an unpacked candidate without producing an installer or requiring release signing credentials, use a clean, committed checkout:
 
 ```bash
-npx --yes pnpm@12.14.0 ops cd build release --stage dir --candidate
+pnpm ops cd build release --stage dir --candidate
 ```
 
-The production distribution entry is `npx --yes pnpm@12.14.0 ops cd build release --workflow distribution`. It requires release configuration and signing credentials; macOS production releases also require notarization. Supply secrets through protected CI variables or a secure credential store, never through committed files. Candidate checks and local packages do not replace native installer validation or authorize publication.
+The production distribution entry is `pnpm ops cd build release --workflow distribution`. It requires release configuration and signing credentials; macOS production releases also require notarization. Supply secrets through protected CI variables or a secure credential store, never through committed files. Candidate checks and local packages do not replace native installer validation or authorize publication.
 
 ## Project Map
 

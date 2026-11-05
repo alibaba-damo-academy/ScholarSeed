@@ -100,9 +100,9 @@ const PREPARATION_PROFILE = Object.freeze({
   id: 'desktop-development',
   steps: Object.freeze([
     node('scripts/pre/toolchain.cjs', ['check']),
-    node('scripts/pre/symlinks.cjs', ['repair']),
     node('scripts/pre/toolchain.cjs', ['ensure']),
     workspace('install'),
+    workspace('skillsInstall'),
     node('apps/desktop/scripts/pre/office-assets.cjs'),
     node('scripts/pre/toolchain.cjs', ['doctor'])
   ])

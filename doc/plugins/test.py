@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import tempfile
 import unittest
 from html.parser import HTMLParser
@@ -9,7 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import unquote
 
-from build import OUTPUT, PAGES, ROOT, build, render_page
+from build import OUTPUT, PAGES, ROOT, build, pages, render_page
 
 
 class Inventory(HTMLParser):
@@ -55,11 +56,70 @@ class GuideTest(unittest.TestCase):
         self.assertNotIn('<script src="', self.content)
 
     def test_content_and_warning_exist_without_running_javascript(self) -> None:
-        self.assertIn("破坏兼容性的变更", self.content)
+        self.assertTrue("breaking changes" in self.content)
         self.assertIn("plugin-create", self.content)
         self.assertIn("capabilities_unchecked", self.content)
         self.assertNotIn("<article hidden", self.content)
         self.assertNotIn("{{ARTICLES}}", self.content)
+
+    def test_language_variants_are_complete_and_generated(self) -> None:
+        for language, filename, tag, warning in (
+            ("en", "plugins.html", "en", "breaking changes"),
+            ("zh", "plugins.zh.html", "zh-CN", "破坏兼容性的变更"),
+        ):
+            with self.subTest(language=language):
+                content = build(language)
+                inventory = Inventory()
+                inventory.feed(content)
+                self.assertEqual((ROOT / filename).read_text(encoding="utf-8"), content)
+                self.assertIn(f'<html lang="{tag}">', content)
+                self.assertIn(warning, content)
+                self.assertEqual(inventory.pages, [row[0] for row in PAGES])
+                self.assertEqual(len(inventory.ids), len(set(inventory.ids)))
+                self.assertNotIn("{{", content.replace("${", ""))
+                for target in inventory.links:
+                    if target.startswith("#"):
+                        self.assertIn(unquote(target[1:]), inventory.ids, target)
+                for target in inventory.assets:
+                    self.assertNotIn("://", target)
+                    self.assertTrue((ROOT / target).is_file(), target)
+
+    def test_language_navigation_and_source_links(self) -> None:
+        for language, alternate, source in (
+            ("en", "plugins.zh.html", "plugins.md"),
+            ("zh", "plugins.html", "plugins.zh.md"),
+        ):
+            with self.subTest(language=language):
+                content = build(language)
+                self.assertIn(f'href="{alternate}#guide"', content)
+                self.assertIn(f'href="{source}"', content)
+                self.assertIn('id="language-link"', content)
+                self.assertIn(f'href="{alternate}#create"', content)
+
+    def test_public_sources_do_not_require_private_code_host(self) -> None:
+        for language in ("en", "zh"):
+            with self.subTest(language=language):
+                self.assertNotIn("code.alibaba-inc.com", build(language))
+
+    def test_build_works_without_private_repository_files(self) -> None:
+        expected = {language: build(language) for language in ("en", "zh")}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve() / "doc"
+            shutil.copytree(ROOT, root)
+            self.assertFalse((root.parent / "scripts").exists())
+            with patch("build.ROOT", root), patch("build.TEMPLATE", root / "plugins/layout.html"):
+                for language, content in expected.items():
+                    with self.subTest(language=language):
+                        self.assertEqual(build(language), content)
+
+    def test_markdown_links_to_matching_offline_topic(self) -> None:
+        for language, offline in (("en", "plugins.html"), ("zh", "plugins.zh.html")):
+            for page, _, filename in pages(language):
+                with self.subTest(language=language, page=page):
+                    if page != "guide":
+                        self.assertIn(
+                            f"../{offline}#{page}", (ROOT / filename).read_text(encoding="utf-8")
+                        )
 
     def test_repository_links_preserve_fragments_and_reject_escape(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

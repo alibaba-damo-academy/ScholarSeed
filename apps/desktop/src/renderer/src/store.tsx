@@ -74,12 +74,14 @@ import {
 } from './features/assistant/candidates'
 import {
   DEFAULT_RENDERER_PREFERENCES,
+  rendererLanguagePatch,
   sanitizeShortcutOverrides,
   sanitizeLiteratureAiModels,
   touchRecentFile,
   touchRecentLiterature,
   touchRecentSession,
   type PreferenceShortcutBinding,
+  type PreferenceLanguageMode,
   type PreferenceShortcutOverrides,
   type LiteratureAiModelAction,
   type LiteratureAiModelPreferences,
@@ -463,7 +465,7 @@ export interface TurnLaunch {
 }
 
 export interface LanguageSwitchState {
-  target: Lang
+  target: PreferenceLanguageMode
   dirtyCount: number
   saving: boolean
   failure: 'save' | 'preferences' | null
@@ -509,6 +511,7 @@ export interface AppState {
   onboarding: OnboardingPreferences
   theme: Theme
   lang: Lang
+  languageMode: PreferenceLanguageMode
   editorRuntimeRevision: number
   languageSwitch: LanguageSwitchState | null
   sidebarOpen: boolean
@@ -824,6 +827,7 @@ const INITIAL: AppState = {
   ),
   theme: INITIAL_PREFERENCES.theme,
   lang: INITIAL_PREFERENCES.language,
+  languageMode: INITIAL_PREFERENCES.languageMode ?? INITIAL_PREFERENCES.language,
   editorRuntimeRevision: 0,
   languageSwitch: null,
   sidebarOpen: INITIAL_PREFERENCES.sidebarOpen,
@@ -1273,7 +1277,7 @@ export interface Actions extends AssistantIngress {
   clearTaskMessages: (dismissals: Record<string, number>) => Promise<void>
   setLiteratureAiModel: (action: LiteratureAiModelAction, modelKey: string) => void
   setTheme: (theme: Theme) => void
-  setLang: (lang: Lang, beforeConfirmation?: () => Promise<void>) => Promise<void>
+  setLang: (mode: PreferenceLanguageMode, beforeConfirmation?: () => Promise<void>) => Promise<void>
   confirmLanguageSwitch: () => Promise<void>
   cancelLanguageSwitch: () => void
   setAutoDownloadUpdates: (enabled: boolean) => void
@@ -1696,6 +1700,7 @@ export function StoreProvider({
         await applyRendererLanguage(saved.language)
         updateState((current) => {
           const value = project()
+          const languageMode = value.languageMode ?? value.language
           const selectionPrompts = sanitizeSelectionPrompts(value.selectionPrompts, value.language)
           const samePrompts = selectionPromptsEqual(current.selectionPrompts, selectionPrompts)
           const taskMessageDismissals = value.taskMessageDismissals ?? {}
@@ -1705,10 +1710,19 @@ export function StoreProvider({
             Object.entries(taskMessageDismissals).every(
               ([key, sequence]) => current.taskMessageDismissals[key] === sequence
             )
-          if (current.lang === value.language && samePrompts && sameDismissals) return current
+          if (
+            current.lang === value.language &&
+            current.languageMode === languageMode &&
+            samePrompts &&
+            sameDismissals
+          )
+            return current
           return {
             ...current,
             lang: value.language,
+            languageMode,
+            editorRuntimeRevision:
+              current.editorRuntimeRevision + Number(current.lang !== value.language),
             selectionPrompts: samePrompts ? current.selectionPrompts : selectionPrompts,
             taskMessageDismissals: sameDismissals
               ? current.taskMessageDismissals
@@ -1732,6 +1746,20 @@ export function StoreProvider({
   }
 
   const stateRef = useRef(state)
+  useEffect(() => {
+    let active = true
+    const refresh = (): void => {
+      void preferenceWriter.current?.refreshSystemLanguage(
+        () =>
+          active && !stateRef.current.languageSwitch && documentWorkspaces.dirtyEditorCount() === 0
+      )
+    }
+    window.addEventListener('focus', refresh)
+    return () => {
+      active = false
+      window.removeEventListener('focus', refresh)
+    }
+  }, [])
   const rememberedProjectId = useRef<string | null>(null)
   const rememberedProjectTabs = useRef(new Map<string, string>())
   useLayoutEffect(() => {
@@ -2113,17 +2141,20 @@ export function StoreProvider({
     return () => selectExternalRootProject(null)
   }, [state.homeSelectedProjectId])
 
-  const switchEditorLanguage = useCallback(async (language: Lang): Promise<boolean> => {
-    if (preferenceWriter.current!.isFrozen()) return false
-    await preferenceWriter.current!.submit({ language }, PREFERENCE_SUBMISSION_SOURCE.language)
-    if (preferenceWriter.current!.current().language !== language) return false
-    setState((current) => ({
-      ...current,
-      editorRuntimeRevision: current.editorRuntimeRevision + 1,
-      languageSwitch: null,
-    }))
-    return true
-  }, [])
+  const switchEditorLanguage = useCallback(
+    async (mode: PreferenceLanguageMode): Promise<boolean> => {
+      const changed = await preferenceWriter.current!.submitConfirmed(
+        rendererLanguagePatch(mode),
+        PREFERENCE_SUBMISSION_SOURCE.language
+      )
+      if (!changed) return false
+      setState((current) =>
+        current.languageSwitch ? { ...current, languageSwitch: null } : current
+      )
+      return true
+    },
+    []
+  )
 
   // 文献列表/阅读器/全局搜索的「打开」都汇到 catalog recorder 与下面两个
   // action；MRU 只在这里落 state，避免各调用点重复记时间戳。
@@ -2678,16 +2709,16 @@ export function StoreProvider({
         }),
       setTheme: (theme) =>
         setState((current) => (current.theme === theme ? current : { ...current, theme })),
-      setLang: async (lang, beforeConfirmation) => {
-        if (lang === stateRef.current.lang) return
+      setLang: async (mode, beforeConfirmation) => {
+        if (mode === stateRef.current.languageMode) return
         const dirtyCount = documentWorkspaces.dirtyEditorCount()
-        if (dirtyCount > 0) {
+        if (dirtyCount > 0 && mode !== stateRef.current.lang) {
           await beforeConfirmation?.()
           setState((current) => ({
             ...current,
             accountMenuOpen: false,
             languageSwitch: {
-              target: lang,
+              target: mode,
               dirtyCount,
               saving: false,
               failure: null,
@@ -2695,7 +2726,7 @@ export function StoreProvider({
           }))
           return
         }
-        await switchEditorLanguage(lang)
+        await switchEditorLanguage(mode)
       },
       confirmLanguageSwitch: async () => {
         const pending = stateRef.current.languageSwitch

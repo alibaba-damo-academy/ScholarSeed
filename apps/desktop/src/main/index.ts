@@ -3231,7 +3231,8 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
   ipcMain.handle(PREFERENCES_RECONCILE_CHANNEL, async (event) => {
     const diagnostics = new PreferenceDiagnostics('main', logPreferenceDiagnostic)
     const result = await diagnostics.run('ipc-reconcile', async () => {
-      if (!isMainWindowSender(event.sender)) throw new Error('Invalid preference sender')
+      if (!event.senderFrame || !isMainWindowSender(event.sender, event.senderFrame))
+        throw new Error('Invalid preference sender')
       return reconcileRendererPreferences(diagnostics)
     })
     diagnostics.completed('ipc-reconcile')

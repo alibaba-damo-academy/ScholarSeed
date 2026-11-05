@@ -6,12 +6,29 @@ import * as browser from './browser.ts'
 for (const [index, factor] of browser.PAGE_ZOOM_FACTORS.entries()) {
   test(`zoom steps distinguish configured ${factor} from its conversion noise`, () => {
     const noise = Number.EPSILON * Math.max(1, factor) * 2
-    for (const actual of [factor, factor - noise, factor + noise, Math.pow(1.2, Math.log(factor) / Math.log(1.2))]) {
-      assert.deepEqual(browser.pageZoomSteps(actual), {
-        lower: browser.PAGE_ZOOM_FACTORS[index - 1], higher: browser.PAGE_ZOOM_FACTORS[index + 1],
-        reset: factor !== browser.PAGE_ZOOM_DEFAULT
-      }, `actual ${actual}`)
-      if (actual !== factor) assert.throws(() => browser.parsePageRequest({ kind: 'zoom', target: { tabId: 'tab', instanceId: 'instance', navigationId: 1 }, factor: actual }))
+    for (const actual of [
+      factor,
+      factor - noise,
+      factor + noise,
+      Math.pow(1.2, Math.log(factor) / Math.log(1.2)),
+    ]) {
+      assert.deepEqual(
+        browser.pageZoomSteps(actual),
+        {
+          lower: browser.PAGE_ZOOM_FACTORS[index - 1],
+          higher: browser.PAGE_ZOOM_FACTORS[index + 1],
+          reset: factor !== browser.PAGE_ZOOM_DEFAULT,
+        },
+        `actual ${actual}`
+      )
+      if (actual !== factor)
+        assert.throws(() =>
+          browser.parsePageRequest({
+            kind: 'zoom',
+            target: { tabId: 'tab', instanceId: 'instance', navigationId: 1 },
+            factor: actual,
+          })
+        )
     }
   })
 }
@@ -31,27 +48,61 @@ test('zoom steps preserve genuine off-table factors and use only a narrow equiva
 test('page commands require an exact expected target and a supported zoom level', () => {
   assert.equal(typeof browser.parsePageRequest, 'function')
   const target = { tabId: 'tab', instanceId: 'instance', navigationId: 1 }
-  assert.deepEqual(browser.parsePageRequest({ kind: 'zoom', target, factor: 1.25 }), { kind: 'zoom', target, factor: 1.25 })
-  for (const input of [{ kind: 'zoom', target, factor: 1.21 }, { kind: 'print', target, bytes: 'bad' },
-    { kind: 'print', target: { ...target, navigationId: 0 } }]) assert.throws(() => browser.parsePageRequest(input))
+  assert.deepEqual(browser.parsePageRequest({ kind: 'zoom', target, factor: 1.25 }), {
+    kind: 'zoom',
+    target,
+    factor: 1.25,
+  })
+  for (const input of [
+    { kind: 'zoom', target, factor: 1.21 },
+    { kind: 'print', target, bytes: 'bad' },
+    { kind: 'print', target: { ...target, navigationId: 0 } },
+  ])
+    assert.throws(() => browser.parsePageRequest(input))
 })
 
 test('find scene accepts only bounded typed queries without relaxing menu values', () => {
   const ack = { sessionId: 'session', revision: 1 }
-  const query = { ...ack, kind: 'find', requestId: 'query', querySequence: 1, text: 'needle', direction: 'forward' }
+  const query = {
+    ...ack,
+    kind: 'find',
+    requestId: 'query',
+    querySequence: 1,
+    text: 'needle',
+    direction: 'forward',
+  }
   assert.deepEqual(menu.parseMenuEvent(query), query)
-  for (const input of [{ ...query, text: 'x'.repeat(4097) }, { ...query, selector: 'body' },
-    { ...query, direction: 'anything' }, { ...query, querySequence: 0 }]) assert.throws(() => menu.parseMenuEvent(input))
+  for (const input of [
+    { ...query, text: 'x'.repeat(4097) },
+    { ...query, selector: 'body' },
+    { ...query, direction: 'anything' },
+    { ...query, querySequence: 0 },
+  ])
+    assert.throws(() => menu.parseMenuEvent(input))
 })
 
 test('account projection rejects secrets and distinguishes failed credits from a zero balance', () => {
-  const parse = (menu as unknown as { parseAccountMenuView: (value: unknown) => unknown }).parseAccountMenuView
+  const parse = (menu as unknown as { parseAccountMenuView: (value: unknown) => unknown })
+    .parseAccountMenuView
   assert.equal(typeof parse, 'function')
-  const view = { alias: '138****8001', avatar: '13', credits: { phase: 'error', value: null, unlimited: false }, availableActions: ['account.logout', 'account.settings', 'account.language'], logoutBusy: false, logoutError: null, locale: 'zh-CN' }
+  const view = {
+    alias: '138****8001',
+    avatar: '13',
+    credits: { phase: 'error', value: null, unlimited: false },
+    availableActions: ['account.logout', 'account.settings', 'account.language'],
+    logoutBusy: false,
+    logoutError: null,
+    locale: 'zh-CN',
+  }
   assert.deepEqual(parse(view), view)
+  assert.deepEqual(parse({ ...view, languageMode: 'system' }), { ...view, languageMode: 'system' })
+  assert.throws(() => parse({ ...view, languageMode: 'unknown' }))
   assert.throws(() => parse({ ...view, cloudUrl: 'https://secret.test' }))
   assert.throws(() => parse({ ...view, alias: '13812348001' }))
   assert.throws(() => parse({ ...view, credits: { ...view.credits, value: 0 } }))
-  assert.deepEqual(parse({ ...view, credits: { phase: 'ready', value: 0, unlimited: false } }), { ...view, credits: { phase: 'ready', value: 0, unlimited: false } })
+  assert.deepEqual(parse({ ...view, credits: { phase: 'ready', value: 0, unlimited: false } }), {
+    ...view,
+    credits: { phase: 'ready', value: 0, unlimited: false },
+  })
   assert.throws(() => parse({ ...view, availableActions: ['account.arbitrary'] }))
 })

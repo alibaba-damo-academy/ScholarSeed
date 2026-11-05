@@ -6,6 +6,7 @@ import { useThemeEffect } from '../src/renderer/src/theme'
 import { PREVIEW_HOME } from './home.ts'
 import '../src/renderer/src/styles.css'
 import type { PreferenceLanguage, PreferenceTheme, RendererPreferences } from '../src/preferences.ts'
+import { rendererLanguagePatch } from '../src/preferences.ts'
 import { PREVIEW_CATALOG, type PreviewScenario } from './catalog.ts'
 import { DEFAULT_PREVIEW_SCENE, PREVIEW_DIAGNOSTIC_EVENT, PREVIEW_INSTANCE_PARAMETER, PREVIEW_SCENE_PARAMETER, previewStatePath } from './bridge.ts'
 import zh from './locales/zh.json'
@@ -118,7 +119,7 @@ function PreviewConsole(): React.JSX.Element {
   const reset = async (scene: string, targetPage: string): Promise<void> => {
     await native.openScenario({ pageId: targetPage, sceneId: scene })
   }
-  const saveAppearance = async (patch: Partial<Pick<RendererPreferences, 'theme' | 'language'>>): Promise<void> => {
+  const saveAppearance = async (patch: Partial<Pick<RendererPreferences, 'theme' | 'language' | 'languageMode'>>): Promise<void> => {
     const state = await request(previewStatePath(instance, currentScene, initialPage.id))
     const saved = await request(previewStatePath(instance, currentScene, initialPage.id), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ preferences: { ...state.preferences, ...patch } }) })
     setTheme(saved.preferences.theme)
@@ -141,7 +142,7 @@ function PreviewConsole(): React.JSX.Element {
             if (section === 'features' && materials) void run(() => native.openScenario(pdfeFeatureTarget(sessionStorage.getItem(featureTargetKey))))
           }} />
           <div className={SECTION_CLASS}>
-            <PdfeControls theme={theme} language={language} login={login} accountControl={accountControl} pending={pending} translate={translate} onTheme={theme => void run(() => saveAppearance({ theme }))} onLanguage={language => void run(() => saveAppearance({ language }))} onLogin={mode => void run(async () => {
+            <PdfeControls theme={theme} language={language} login={login} accountControl={accountControl} pending={pending} translate={translate} onTheme={theme => void run(() => saveAppearance({ theme }))} onLanguage={language => void run(() => saveAppearance(rendererLanguagePatch(language)))} onLogin={mode => void run(async () => {
               const saved = await request(PREVIEW_LOGIN.path + '?' + new URLSearchParams({ [PREVIEW_INSTANCE_PARAMETER]: instance }), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode }) })
               if (!isPreviewLoginMode(saved.login)) throw new Error('Invalid preview login control state')
               setLogin(saved.login)

@@ -12,6 +12,7 @@ const desktopOwner = require('../shared/desktop.cjs')
 const { prepareDesktop } = desktopOwner
 const pythonOwner = require('../shared/python.cjs')
 const workspaceLeases = require('../shared/lease.cjs')
+const { packageManagerName } = require('../pre/toolchain.cjs')
 const { watchRestartSources, supervise, debugPaths } = require('../dev/desktop.cjs')
 const net = require('node:net')
 
@@ -140,6 +141,32 @@ test('default CI and CD chains reuse their exact specialized recipe', () => {
   assert.ok(preparation.some(step => step.file === 'apps/desktop/scripts/pre/office-assets.cjs'))
   assert.equal(resolveCommand(['pre']).profile, PREPARATION_PROFILE.id)
   assert.equal(PREPARATION_PROFILE.id, 'desktop-development')
+})
+
+test('two-command startup prepares dependencies and bundled skills without private host links', () => {
+  assert.deepEqual(resolveCommand(['pre']).steps, [
+    { kind: 'node', file: 'scripts/pre/toolchain.cjs', args: ['check'] },
+    { kind: 'node', file: 'scripts/pre/toolchain.cjs', args: ['ensure'] },
+    { kind: 'workspace', method: 'install', args: [] },
+    { kind: 'workspace', method: 'skillsInstall', args: [] },
+    { kind: 'node', file: 'apps/desktop/scripts/pre/office-assets.cjs', args: [] },
+    { kind: 'node', file: 'scripts/pre/toolchain.cjs', args: ['doctor'] }
+  ])
+  assert.deepEqual(resolveCommand(['dev']).steps, [
+    { kind: 'node', file: 'scripts/dev/desktop.cjs', args: [] }
+  ])
+  assert.equal(resolveCommand(['pre', 'repair', 'links']).steps[0].file, 'scripts/pre/symlinks.cjs')
+})
+
+test('startup recommends pnpm without binding Corepack or excluding npm and Yarn', () => {
+  for (const filename of ['package.json', 'apps/desktop/package.json']) {
+    const metadata = JSON.parse(fs.readFileSync(path.join(ROOT, filename), 'utf8'))
+    assert.equal(Object.hasOwn(metadata, 'packageManager'), false, filename)
+    assert.equal(metadata.toolchain.defaultPackageManager, 'pnpm@12.14.0', filename)
+  }
+  for (const manager of ['pnpm', 'npm', 'yarn']) {
+    assert.equal(packageManagerName({ npm_config_user_agent: `${manager}/1.0.0` }), manager)
+  }
 })
 
 test('real, mock, coverage and package candidate keep separate Owner recipes', () => {

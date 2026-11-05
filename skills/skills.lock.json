@@ -57,8 +57,8 @@
         {
           "mode": 420,
           "path": "SETUP.md",
-          "sha256": "328fe198bb07e9e33369f93672840bb91331ee880059309b0c2694eb41359bc1",
-          "size": 11937
+          "sha256": "3e1bd2845c6b6d73380ef449930360fa8eb794a21a675f898d2fc16f0e949e4c",
+          "size": 11768
         },
         {
           "mode": 420,
@@ -122,12 +122,6 @@
         },
         {
           "mode": 420,
-          "path": "docs/PAPERHUB_WEB_SEARCH_PRODUCT_MIGRATION.md",
-          "sha256": "5dd2af36bbd33080a6a7d0d040f5b3a8430ec42d9d62b87a84d8ba43b38d185e",
-          "size": 5604
-        },
-        {
-          "mode": 420,
           "path": "docs/TIERED_SEARCH.md",
           "sha256": "d361f59b6e171f0b3321b33f8e18dad13c84c5be37714f874809fb1f1c4b6d90",
           "size": 6484
@@ -183,14 +177,14 @@
         {
           "mode": 420,
           "path": "tools/install_codex.py",
-          "sha256": "bbf4165671876a8b08ee794652455153c314cb2f304d77cdf31a1047e684fbf3",
-          "size": 7467
+          "sha256": "aa725c5153059423be5d8043e71198f3167290532064060045fb852ee3631a28",
+          "size": 7151
         },
         {
           "mode": 420,
           "path": "tools/localconf.py",
-          "sha256": "cdfdcf5f585c0a7e1ce1335594a64a788213bf68bf092e082c2fe3760bbb8c18",
-          "size": 4843
+          "sha256": "e69e26e17893ddbbaca03ed1104650a0d64af466a72e0f66f49bbbc6ba5e995a",
+          "size": 4510
         },
         {
           "mode": 420,
@@ -255,8 +249,8 @@
         {
           "mode": 420,
           "path": "tools/tests/test_product_endpoints.py",
-          "sha256": "876e7019e807d7b38355d2f67bab02e4938efcfdf12f286db93f2f9d09e06799",
-          "size": 4859
+          "sha256": "e4556323b6cf7a966940460a4b89de8037784ba9cfe90d2c77dc8861624d5d4b",
+          "size": 4612
         },
         {
           "mode": 420,
@@ -266,7 +260,7 @@
         }
       ],
       "namespace": "scholarseed",
-      "payload_sha256": "3ee0a72b630c32b6fbcd6561e8be4f0f12c6433916262bee9ca6c55800379165",
+      "payload_sha256": "78a8e8ff9d498f354feb5d165b63faf53c2176b7dd6e72c37d99f27dcfa65aa5",
       "slug": "agentic-search",
       "version": "1.1.8"
     },
@@ -364,8 +358,8 @@
         {
           "mode": 420,
           "path": "SETUP.md",
-          "sha256": "a952f3bca656ce90860eaefcd664b2c98f927c1612c54d09c9f173d1a6df6ab1",
-          "size": 16516
+          "sha256": "ae7474e7a01c9cd78d0674edc7f1cd4c3cbef829a4896b7cb6f3d70e5b7d0a8b",
+          "size": 16298
         },
         {
           "mode": 420,
@@ -412,14 +406,14 @@
         {
           "mode": 420,
           "path": "tools/install_codex.py",
-          "sha256": "4bd018fbb24d8c16111fc97314c9279dc60fa0c4aa3646aebfeac2e34274eca6",
-          "size": 6149
+          "sha256": "c79b97821f82899480ca62f056adb897892d7a6f96657ed1505aa6d641272bc9",
+          "size": 5833
         },
         {
           "mode": 420,
           "path": "tools/localconf.py",
-          "sha256": "ccc36f63dc529833a1d1763efee20dc57085bdef29113200fd17972221e9b0ae",
-          "size": 4392
+          "sha256": "36419216a180e7ccb0ea253e05642622e45202e45bf4e43ea802dbcdd8ddf856",
+          "size": 3949
         },
         {
           "mode": 420,
@@ -501,7 +495,7 @@
         }
       ],
       "namespace": "scholarseed",
-      "payload_sha256": "70e811d9a65b1e397c169eda93733e3f6baa64cc465eb69d7398d59845136bbd",
+      "payload_sha256": "f1640d2e9612fc08a3f4a37acc01d43786bbcf10423d632243910ad1f2ff304c",
       "slug": "fast-search",
       "version": "1.2.0"
     },
@@ -811,8 +805,8 @@
         {
           "mode": 420,
           "path": "lib/endpoint_defaults.py",
-          "sha256": "57fa0a7bcbd224541e249e83ae40f08f2e9bd29493c3acd027bf7977a29923ee",
-          "size": 646
+          "sha256": "bb993bb9ba53a010b88ffc6804420819fcfd5d9d7f855d11595d5b4b16f4c36a",
+          "size": 283
         },
         {
           "mode": 420,
@@ -1705,8 +1699,8 @@
         {
           "mode": 420,
           "path": "scripts/test_local_papers.py",
-          "sha256": "b3ea58cd35e8deeb2666c76c56e660cdad0562cd0bf13c48dd57b45b18a2c820",
-          "size": 11333
+          "sha256": "181ad782554f9f7210ff8e0b722738604e4dec6b1f1ec972b5d7d34a62c3aba7",
+          "size": 11139
         },
         {
           "mode": 420,
@@ -2040,7 +2034,7 @@
         }
       ],
       "namespace": "scholarseed",
-      "payload_sha256": "c9b543b770b18d033a850c2f3c545909bd0de9907c5ade02e52fec8c3e735683",
+      "payload_sha256": "b4770d1e0c0b20d40f73843ad4505a2c16ade270fcb70d45f0397d97478c0062",
       "slug": "literature-review",
       "version": "2026.10.30+2"
     },

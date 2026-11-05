@@ -122,21 +122,18 @@ export interface RecentSessionEntry {
   openedAt: number
 }
 
-/**
- * 界面语言。PRD「偏好设置」①。
- *
- * 首次运行（没有已持久化的用户选择）时按用户环境检测：时区属中国大陆 → 中文，
- * 可判定的非中国时区 → 英文，时区判定不出来 → 看 OS 系统语言，全都失败 → 中文。
- * 判定策略见 `src/locale.ts`；用户一旦手选过，后续启动不再检测，也不被时区变化覆盖。
- *
- * 只作用于产品界面文字，不翻译用户内容，也不决定 AI 回答语言（PRD ③④）。
- */
 export type PreferenceLanguage = 'zh' | 'en'
+export const SYSTEM_LANGUAGE_MODE = 'system'
+export type PreferenceLanguageMode = PreferenceLanguage | typeof SYSTEM_LANGUAGE_MODE
 
 /** 外观。PRD「偏好设置」⑤：首次使用默认浅色；`system` 跟随系统。 */
 export type PreferenceTheme = 'dark' | 'light' | 'system'
 
 export const PREFERENCE_LANGUAGES: readonly PreferenceLanguage[] = ['zh', 'en']
+
+export function isPreferenceLanguage(value: unknown): value is PreferenceLanguage {
+  return PREFERENCE_LANGUAGES.includes(value as PreferenceLanguage)
+}
 
 export const PREFERENCE_THEMES: readonly PreferenceTheme[] = ['light', 'dark', 'system']
 
@@ -163,6 +160,7 @@ export interface RendererPreferences {
   shortcutOverrides: PreferenceShortcutOverrides
   dataSharingMode: 'private'
   language: PreferenceLanguage
+  languageMode?: typeof SYSTEM_LANGUAGE_MODE
   theme: PreferenceTheme
   recentFiles: RecentFileEntry[]
   recentLiterature: RecentLiteratureEntry[]
@@ -198,19 +196,39 @@ export const DEFAULT_RENDERER_PREFERENCES: RendererPreferences = {
   recentProjectId: null,
 }
 
-/**
- * 带语言兜底的默认偏好。用于「没有已持久化用户选择」的场景，由调用方把检测出的
- * 语言传进来；不传则退回常量里的最终兜底。返回浅拷贝，绝不改动导出的常量对象。
- */
 export function defaultRendererPreferences(
-  fallbackLanguage?: PreferenceLanguage
+  language: PreferenceLanguage = DEFAULT_RENDERER_PREFERENCES.language
 ): RendererPreferences {
-  const language = fallbackLanguage ?? DEFAULT_RENDERER_PREFERENCES.language
   return {
     ...DEFAULT_RENDERER_PREFERENCES,
     selectionPrompts: defaultSelectionPrompts(language),
     language,
   }
+}
+
+export function systemRendererPreferences(
+  detectedLanguage?: PreferenceLanguage
+): RendererPreferences {
+  return {
+    ...defaultRendererPreferences(detectedLanguage),
+    languageMode: SYSTEM_LANGUAGE_MODE,
+  }
+}
+
+export function rendererLanguagePatch(
+  mode: PreferenceLanguageMode
+): Partial<Pick<RendererPreferences, 'language' | 'languageMode'>> {
+  return mode === SYSTEM_LANGUAGE_MODE
+    ? { languageMode: mode }
+    : { language: mode, languageMode: undefined }
+}
+
+export function persistedRendererPreferences(
+  preferences: RendererPreferences
+): Omit<RendererPreferences, 'language'> & { language?: PreferenceLanguage } {
+  if (preferences.languageMode !== SYSTEM_LANGUAGE_MODE) return preferences
+  const { language: _resolvedLanguage, ...record } = preferences
+  return record
 }
 
 function activityMap(value: unknown): Record<string, number> {
@@ -439,6 +457,7 @@ export function rendererPreferencesEqual(
     shortcutOverridesEqual(left.shortcutOverrides, right.shortcutOverrides) &&
     left.dataSharingMode === right.dataSharingMode &&
     left.language === right.language &&
+    left.languageMode === right.languageMode &&
     left.theme === right.theme &&
     selectionPromptsEqual(left.selectionPrompts, right.selectionPrompts) &&
     recentFilesEqual(left.recentFiles, right.recentFiles) &&
@@ -466,17 +485,6 @@ export function touchRecentSession(
   entry: RecentSessionEntry
 ): RecentSessionEntry[] {
   return sanitizeRecentSessions([entry, ...current])
-}
-
-/**
- * 语言只有在持久化记录里是 `PREFERENCE_LANGUAGES` 成员时，才算用户显式选过。
- * 缺失或非法都当作「没选过」，交回调用方传入的检测结果（首次运行即环境检测，
- * 早于 `language` 字段的旧偏好文件因此也会走检测，而不是被静默钉成中文）。
- */
-function parseLanguage(value: unknown, fallback: PreferenceLanguage): PreferenceLanguage {
-  return PREFERENCE_LANGUAGES.includes(value as PreferenceLanguage)
-    ? (value as PreferenceLanguage)
-    : fallback
 }
 
 function parseTheme(value: unknown): PreferenceTheme {
@@ -531,12 +539,16 @@ export function sanitizeRendererPreferences(
   value: unknown,
   fallbackLanguage?: PreferenceLanguage
 ): RendererPreferences {
-  const fallback = defaultRendererPreferences(fallbackLanguage)
+  const fallback = systemRendererPreferences(fallbackLanguage)
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return fallback
   }
   const parsed = value as Partial<RendererPreferences>
-  const language = parseLanguage(parsed.language, fallback.language)
+  const pinnedLanguage =
+    parsed.languageMode !== SYSTEM_LANGUAGE_MODE && isPreferenceLanguage(parsed.language)
+      ? parsed.language
+      : undefined
+  const language = pinnedLanguage ?? fallback.language
   return {
     taskMessageDismissals:
       parsed.taskMessageDismissals &&
@@ -601,6 +613,7 @@ export function sanitizeRendererPreferences(
     shortcutOverrides: sanitizeShortcutOverrides(parsed.shortcutOverrides),
     dataSharingMode: 'private',
     language,
+    ...(pinnedLanguage ? {} : { languageMode: SYSTEM_LANGUAGE_MODE }),
     theme: parseTheme(parsed.theme),
     recentFiles: sanitizeRecentFiles(parsed.recentFiles),
     recentLiterature: sanitizeRecentLiterature(parsed.recentLiterature),

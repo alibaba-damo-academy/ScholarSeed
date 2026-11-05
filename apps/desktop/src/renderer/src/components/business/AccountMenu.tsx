@@ -18,6 +18,7 @@ import { getAuthMe, getAuthStatus, type AuthUser } from '../../api'
 import { Icon } from '../../icons'
 import { logoutDesktopSession } from '../../logout'
 import { useApp } from '../../store'
+import { SYSTEM_LANGUAGE_MODE } from '../../../../preferences'
 import {
   MENU_ACTION,
   type AccountMenuAction,
@@ -367,6 +368,7 @@ export function AccountMenu(props: AccountMenuProps): React.JSX.Element | null {
     logoutBusy: props.logoutBusy,
     logoutError: props.logoutError || null,
     locale: state.lang === 'en' ? 'en' : 'zh-CN',
+    ...(state.languageMode === SYSTEM_LANGUAGE_MODE ? { languageMode: SYSTEM_LANGUAGE_MODE } : {}),
   }
   const live = React.useRef({ props, view, lease: { ...revisions.current } })
   live.current = { props, view, lease: { ...revisions.current } }
@@ -410,8 +412,10 @@ export function AccountMenu(props: AccountMenuProps): React.JSX.Element | null {
       )
         return
       if (action === MENU_ACTION.language) {
-        if (value.kind !== 'choice' || !['en', 'zh-CN'].includes(value.value)) return
-        await act.setLang(value.value === 'en' ? 'en' : 'zh', () => close('action'))
+        if (value.kind !== 'choice') return
+        const mode = value.value === 'zh-CN' ? 'zh' : value.value
+        if (mode !== 'en' && mode !== 'zh' && mode !== SYSTEM_LANGUAGE_MODE) return
+        await act.setLang(mode, () => close('action'))
         return
       }
       if (value.kind !== 'none') return

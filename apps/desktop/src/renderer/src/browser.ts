@@ -12,7 +12,12 @@
 
 import { detectPreferenceLanguage, readTimeZone } from '../../locale'
 import type { LocaleSignals } from '../../locale'
-import { defaultRendererPreferences, sanitizeRendererPreferences } from '../../preferences'
+import {
+  systemRendererPreferences,
+  persistedRendererPreferences,
+  sanitizeRendererPreferences,
+  SYSTEM_LANGUAGE_MODE,
+} from '../../preferences'
 import type { RendererPreferences } from '../../preferences'
 import { createBrowserBridge } from './app/browser'
 
@@ -51,11 +56,11 @@ function localeSignals(): LocaleSignals {
 function readPreferences(): RendererPreferences {
   const detected = detectPreferenceLanguage(localeSignals())
   const raw = window.localStorage.getItem(PREFERENCES_STORAGE_KEY)
-  if (!raw) return defaultRendererPreferences(detected)
+  if (!raw) return systemRendererPreferences(detected)
   try {
     return sanitizeRendererPreferences(JSON.parse(raw), detected)
   } catch {
-    return defaultRendererPreferences(detected)
+    return systemRendererPreferences(detected)
   }
 }
 
@@ -75,20 +80,31 @@ function deviceInfo(): { device_id: string; device_label: string } {
 }
 
 if (!window.scholarseed) {
+  let currentPreferences = readPreferences()
   window.scholarseed = createBrowserBridge({
     platform: platform(),
     version: WEB_VERSION,
-    preferences: readPreferences(),
+    preferences: currentPreferences,
     reconcilePreferences: async () => {
       const raw = window.localStorage.getItem(PREFERENCES_STORAGE_KEY)
       const detected = detectPreferenceLanguage(localeSignals())
-      return raw === null
-        ? defaultRendererPreferences(detected)
-        : sanitizeRendererPreferences(JSON.parse(raw), detected)
+      currentPreferences =
+        raw === null
+          ? systemRendererPreferences(detected)
+          : sanitizeRendererPreferences(JSON.parse(raw), detected)
+      return currentPreferences
     },
     savePreferences: async (preferences) => {
-      const sanitized = sanitizeRendererPreferences(preferences)
-      window.localStorage.setItem(PREFERENCES_STORAGE_KEY, JSON.stringify(sanitized))
+      const language =
+        currentPreferences.languageMode === SYSTEM_LANGUAGE_MODE
+          ? preferences.language
+          : detectPreferenceLanguage(localeSignals())
+      const sanitized = sanitizeRendererPreferences(preferences, language)
+      window.localStorage.setItem(
+        PREFERENCES_STORAGE_KEY,
+        JSON.stringify(persistedRendererPreferences(sanitized))
+      )
+      currentPreferences = sanitized
       return sanitized
     },
     openExternal: async (url) => {
