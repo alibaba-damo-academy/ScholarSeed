@@ -49,14 +49,15 @@ Node must report `v24.16.0`. If another version appears, select 24.16.0 in your 
 
 Use a Windows x64 machine and PowerShell. First install **Node.js 24.16.0** from the [official Windows x64 installer](https://nodejs.org/download/release/v24.16.0/node-v24.16.0-x64.msi), including npm and adding Node to PATH. Do not substitute the latest Node version.
 
-Install Git and uv if they are not already available, using the commands documented by [Git for Windows](https://git-scm.com/install/windows) and [uv](https://docs.astral.sh/uv/getting-started/installation/#winget):
+Install Git, uv and the Microsoft Visual C++ 2015-2022 x64 runtime if they are not already available, using the commands documented by [Git for Windows](https://git-scm.com/install/windows), [uv](https://docs.astral.sh/uv/getting-started/installation/#winget) and [Microsoft](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist):
 
 ```powershell
+winget install --id Microsoft.VCRedist.2015+.x64 -e --source winget
 winget install --id Git.Git -e --source winget
 winget install --id astral-sh.uv -e --source winget
 ```
 
-If WinGet is unavailable, use the Git installer and uv installation instructions linked above instead. Open a new PowerShell window after installing the tools, then check:
+If WinGet is unavailable, use the Git installer, uv installation instructions and runtime installer linked above instead. Open a new PowerShell window after installing the tools, then check:
 
 ```powershell
 git --version
@@ -98,6 +99,7 @@ If you already have pnpm 12.14.0, you can replace `npx --yes pnpm@12.14.0` with 
 | `pnpm ... expected 12.14.0` | Use the explicit `npx --yes pnpm@12.14.0 ...` commands above instead of the globally installed pnpm. |
 | `node: command not found` / wrong Node version | Finish installing Node 24.16.0, reopen the terminal, and check PATH or your version manager. |
 | `uv: command not found` | Add uv's installation directory to PATH and verify `uv --version` in the launch terminal. |
+| `Cannot find native binding` | The Visual C++ runtime is missing; install it with the `winget install --id Microsoft.VCRedist.2015+.x64` command above, then rerun. |
 | Built-in Skill not found | Stop Electron, then rerun the Python preparation and `dev` commands above. Do not use `ops dev` alone on a fresh clone or manually copy user Skills into the bundled pack. |
 | Download failure | Check the failing URL in the log and your network/proxy access. Rerun the same command after restoring access; do not bypass checksum verification. |
 | Build reports an environment is in use | Stop the development instance with Ctrl+C before packaging; do not delete an active process's lock. |
