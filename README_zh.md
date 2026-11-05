@@ -137,7 +137,7 @@ ScholarSeed 采用桌面客户端、本地服务与 Agent 运行时分层架构�
 
 ### 从源码运行
 
-环境要求：Git、**Node.js 24.16.0**（含 npm/npx）、**uv ≥ 0.12.11**，以及本机平台的原生构建工具（macOS 为 Xcode Command Line Tools）。以下命令使用 **pnpm 12.14.0**，无需全局安装。环境安装方法见[开发指南](CONTRIBUTING_zh.md#环境准备)。
+环境要求：Git、**Node.js 24.16.0**、**pnpm 12.14.0**、**uv ≥ 0.12.11**，以及本机平台的原生构建工具（macOS 为 Xcode Command Line Tools）。环境安装方法见[开发指南](CONTRIBUTING_zh.md#环境准备)。
 
 macOS 首次从源码运行前执行以下命令，并按系统提示完成安装；已安装可用的 Xcode 工具链时无需重复安装：
 
@@ -150,12 +150,11 @@ Windows x64 请按[Windows 环境准备命令](CONTRIBUTING_zh.md#windows)操作
 ```bash
 git clone https://github.com/alibaba-damo-academy/ScholarSeed.git
 cd ScholarSeed
-npx --yes pnpm@12.14.0 install --frozen-lockfile
-npx --yes pnpm@12.14.0 ops pre install python --mode desktop
-npx --yes pnpm@12.14.0 dev
+pnpm ops pre
+pnpm ops dev
 ```
 
-准备步骤会安装固定版本 Python 环境，`dev` 随后从仓库源码构建内置 Skill 包，再启动 Electron；全新克隆请勿跳过这两步。首次运行需要联网，无需另外安装 Python 或 Git LFS。使用时保持终端运行，按 Ctrl+C 停止。启动后，在设置中配置模型连接，或登录书深账号。日常开发和常见问题见[开发指南](CONTRIBUTING_zh.md)。
+`pnpm ops pre` 安装固定版本的 JavaScript／Python 依赖、准备 Office 资源并构建内置 Skill 包；`pnpm ops dev` 启动 Electron。全新克隆依次执行这两条命令；后续启动只需 `pnpm ops dev`，更新依赖或技能源码后请先停止应用并重跑 `pnpm ops pre`。首次运行需要联网，无需另外安装 Python 或 Git LFS。使用时保持终端运行，按 Ctrl+C 停止。启动后，在设置中配置模型连接，或登录书深账号。日常开发和常见问题见[开发指南](CONTRIBUTING_zh.md)。
 
 Windows 遇到 [Electron 下载停滞](CONTRIBUTING_zh.md#windows-下载排查)、[`stale ACL policy outputs`](CONTRIBUTING_zh.md#windows-检出换行)或[构建目录权限拒绝](CONTRIBUTING_zh.md#windows-私有构建目录)时，请按对应步骤恢复。
 
@@ -167,7 +166,7 @@ Windows 遇到 [Electron 下载停滞](CONTRIBUTING_zh.md#windows-下载排查)�
 
 插件目前为开发者预览，开发与安装方式见[插件文档](doc/plugins.md)。
 
-科研技能源码位于 `skills/community/`。通过 `npx --yes pnpm@12.14.0 ops cd build local --target skills` 构建技能包，通过 `npx --yes pnpm@12.14.0 ops ci check skills product --mode source` 检查与源码的一致性。
+科研技能源码位于 `skills/community/`。通过 `pnpm ops cd build local --target skills` 构建技能包，通过 `pnpm ops ci check skills product --mode source` 检查与源码的一致性。
 
 ### 不只生成内容，也能操作书深
 

@@ -1,46 +1,48 @@
 ---
 id: guide-plugin-developers
-title: Plugin 概览
+title: Plugin Overview
 doc_type: design
 category: skills
 status: active
 keywords: [skill, sdk, hil]
-summary: 了解 Plugin 能做什么，以及如何创建、安装和在对话中使用。
+summary: Learn what plugins can do and how to create, install, and use them in a conversation.
 ---
 
-# Plugin 概览
+# Plugin Overview
 
-Plugin 把 Skill 和对话卡片打包成一个可安装的工作流。用 Skill 告诉 AI 怎样完成任务，用卡片展示结果或收集用户选择。
+**English** · [简体中文](plugins.zh.md) · [Read offline](plugins.html)
+
+A plugin packages a Skill and conversation cards into an installable workflow. The Skill tells the AI how to perform a task; cards display results or collect user decisions.
 
 > [!WARNING]
-> 插件能力处于**开发者预览**阶段，正在快速迭代，**未来可能出现破坏兼容性的变更**。
+> Plugins are in **developer preview** and evolving rapidly. Future versions may introduce **breaking changes**.
 
-## Plugin 可以做什么
+## What Plugins Can Do
 
-- **组织业务流程**：读取获准材料、调用后端、处理用户选择，再交付结果。
-- **在对话中展示卡片**：复用公共业务卡片，或编写自己的交互。
-- **复用官方 UI**：使用书深提供的 React、控件和 Conversation 组件。
-- **交付可检查的安装包**：生成 ZIP 与摘要，由用户确认安装。
+- **Organize workflows:** Read authorized materials, call backend operations, handle user decisions, and deliver results.
+- **Show conversation cards:** Reuse public business cards or build your own interactions.
+- **Reuse the official UI:** Use the React runtime, controls, and Conversation components provided by ScholarSeed.
+- **Deliver inspectable packages:** Produce a ZIP and digest for the user to review and confirm installation.
 
-Plugin 不提供全局工具拦截、自动批准或任意书深内部事件 hook。需要调用业务能力时，由 Skill 使用[可用 API](plugins/api.md)，不能只在界面里加一个按钮。
+Plugins do not provide global tool interception, automatic approval, or arbitrary hooks into ScholarSeed events. To perform business operations, the Skill must use the [available APIs](plugins/api.md); adding a button alone does not connect an operation.
 
-## 创建 Plugin
+## Create a Plugin
 
-- **对话生成**：在书深对话中指名 `plugin-create`，描述你要的流程，让 AI 生成并修改插件。
-- **自己编写**：[按照教程](plugins/create.md#自己编写)学习 Skill、描述符与界面代码如何协作。示例使用普通 `.js` 和书深提供的 React，无需另装 Node.js、前端打包工具或编译 JSX/TypeScript；交付前仍需检查并打包 ZIP。
+- **Through a conversation:** Ask ScholarSeed to use `plugin-create` and describe your workflow. The AI can generate and revise the plugin.
+- **Write it yourself:** Follow the [creation tutorial](plugins/create.md#write-it-yourself) to connect a Skill, descriptor, and UI. Its example uses plain `.js` and ScholarSeed's React runtime: no separate Node.js installation, frontend bundler, or JSX/TypeScript compilation is required for that example. Validate and package the ZIP before delivery.
 
-## 安装和使用
+## Install and Use
 
-在技能中心点 **添加技能**，检查 ZIP 的身份、版本和风险后确认安装。对话生成的插件也可通过安装卡片交付；卡片发布不等于安装成功。
+In the Skills center, choose **Add skill**, review the ZIP identity, version, and risks, and confirm installation. AI-generated plugins can also be delivered through an installation card; publishing a card does not mean installation succeeded.
 
-安装并启用后，在对话中要求 AI 使用它，无需先通过技能选择器绑定。
+After installation and enabling the plugin, ask the AI to use it in a conversation. You do not need to bind it through the Skill picker first.
 
-只安装可信来源的插件。组件 iframe 的隔离不等于 Skill 脚本拥有通用沙箱；插件包中不应包含凭据、登录缓存或环境文件。
+Install plugins only from trusted sources. An isolated component iframe does not mean Skill scripts run in a general-purpose sandbox. Never include credentials, login caches, or environment files in a package.
 
-## 开发文档
+## Guides
 
-- [创建 Plugin](plugins/create.md)：让 AI 生成，或自己写出第一个插件。
-- [Plugin 公共对话卡片](plugins/cards.md)：选择公共 slot、组合组件和基础控件。
-- [Plugin 运行原理](plugins/runtime.md)：了解数据、状态、回答和旧卡片如何流转。
-- [Plugin 可用 API](plugins/api.md)：查询前端 SDK、后端能力和实际契约。
-- [Plugin 测试](plugins/testing.md)：检查插件包，运行真实任务并排障。
+- [Create a Plugin](plugins/create.md): Generate a plugin with AI or write your first one.
+- [Public Conversation Cards](plugins/cards.md): Choose public slots, Conversation components, and UI controls.
+- [How Plugins Run](plugins/runtime.md): Understand rendering, drafts, answers, updates, and historical cards.
+- [Available APIs](plugins/api.md): Find frontend SDK methods, backend operations, and their actual contracts.
+- [Test a Plugin](plugins/testing.md): Validate a package, run a real task, and troubleshoot failures.

@@ -3,17 +3,28 @@
 import asyncio
 import json
 import logging
+import sys
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, AsyncIterable, AsyncIterator, Callable, Mapping
 
-from scholarseed_codex.diagnostic import RPC_REJECTED_ERROR, native_diagnostic, rpc_failure
-from scholarseed_codex.protocol.state import RPC_METHOD_NOT_FOUND, AppServerError
+from scholarseed_codex.diagnostic import (
+    RPC_DIAGNOSTIC_CHANNEL,
+    RPC_REJECTED_ERROR,
+    WINDOWS_PLATFORM,
+    native_diagnostic,
+    rpc_failure,
+)
+from scholarseed_codex.protocol.state import (
+    RPC_METHOD_NOT_FOUND,
+    SANDBOX_EXECUTION_METHOD,
+    AppServerError,
+)
 from scholarseed_runtime.contract.incident import RuntimeRetryability
 
 LOGGER = logging.getLogger(__name__)
 MAX_PENDING_RPC_REQUESTS = 1024
-RPC_DIAGNOSTIC_CHANNEL = "rpc"
+RPC_INTERNAL_ERROR = -32603
 
 
 class FramingError(StrEnum):
@@ -194,7 +205,14 @@ class PendingRequests:
             raw_message = error.get("message")
             safe_error = rpc_failure(pending.method, pending.thread_id, raw_code, raw_message)
             diagnostic = native_diagnostic(
-                RPC_DIAGNOSTIC_CHANNEL, raw_message if isinstance(raw_message, str) else ""
+                RPC_DIAGNOSTIC_CHANNEL,
+                raw_message if isinstance(raw_message, str) else "",
+                windows_command_failure=(
+                    sys.platform == WINDOWS_PLATFORM
+                    and pending.method == SANDBOX_EXECUTION_METHOD
+                    and type(raw_code) is int
+                    and raw_code == RPC_INTERNAL_ERROR
+                ),
             )
             latency_ms = max(
                 0, int((asyncio.get_running_loop().time() - pending.started_at) * 1000)
@@ -217,6 +235,13 @@ class PendingRequests:
                     method=pending.method,
                     generation=generation,
                     rpc_code=raw_code if type(raw_code) is int else None,
+                    rpc_latency_ms=latency_ms,
+                    rpc_request_id=int(str(request_id)),
+                    rpc_pid=pid,
+                    native_reason=diagnostic.reason,
+                    native_stage=diagnostic.native_stage,
+                    native_code_type=diagnostic.code_type,
+                    native_code=diagnostic.code,
                     retryability=(
                         RuntimeRetryability.USER_RETRYABLE
                         if safe_error == RPC_REJECTED_ERROR

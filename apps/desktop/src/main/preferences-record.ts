@@ -1,5 +1,5 @@
 import {
-  defaultRendererPreferences,
+  systemRendererPreferences,
   sanitizeRendererPreferences,
   type PreferenceLanguage,
   type RendererPreferences,
@@ -13,7 +13,7 @@ export function decodeRendererPreferences(
   bytes: Uint8Array | null,
   fallbackLanguage?: PreferenceLanguage
 ): RendererPreferences {
-  if (bytes === null) return defaultRendererPreferences(fallbackLanguage)
+  if (bytes === null) return systemRendererPreferences(fallbackLanguage)
   if (bytes.byteLength > RENDERER_PREFERENCES_MAX_BYTES)
     throw new Error('Renderer preference record exceeds size limit')
   const source = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes)

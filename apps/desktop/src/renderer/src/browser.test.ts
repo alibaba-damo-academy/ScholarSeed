@@ -79,6 +79,7 @@ test('Web bridge preserves saved preferences, defaults and save/reconcile behavi
     const saved = await bridge.savePreferences({
       ...bridge.preferences,
       language: 'en',
+      languageMode: undefined,
       theme: 'dark',
     })
     assert.equal(JSON.parse(storage.get(storageKey)!).theme, 'dark')

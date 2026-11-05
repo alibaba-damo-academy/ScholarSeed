@@ -11,6 +11,7 @@ import {
 } from 'lucide-react'
 import type { AccountMenuAction, AccountMenuView, MenuItem, MenuValue } from '../../../../menu'
 import { MENU_ACTION } from '../../../../menu'
+import { SYSTEM_LANGUAGE_MODE } from '../../../../preferences'
 import { FEEDBACK_SHORTCUT } from '../../../../feedback'
 import { currentShortcutPlatform } from '../../shortcuts'
 import { IconFont } from '../primitive'
@@ -113,14 +114,19 @@ export function AccountMenuPanel({
                           languageTrigger.current?.focus({ preventScroll: true })
                         }}
                       >
-                        <IconFont
-                          type={
-                            option.value.kind === 'choice' && option.value.value === 'en'
-                              ? 'icon-yingwen'
-                              : 'icon-zhongwen'
-                          }
-                          className="inline-flex size-[var(--vds-icon-8)] shrink-0 items-center justify-center text-[length:var(--vds-icon-8)] leading-none text-[var(--vds-text-tertiary)]"
-                        />
+                        {option.value.kind === 'choice' &&
+                        option.value.value === SYSTEM_LANGUAGE_MODE ? (
+                          <Globe className="size-[var(--vds-icon-8)] shrink-0 text-[var(--vds-text-tertiary)]" />
+                        ) : (
+                          <IconFont
+                            type={
+                              option.value.kind === 'choice' && option.value.value === 'en'
+                                ? 'icon-yingwen'
+                                : 'icon-zhongwen'
+                            }
+                            className="inline-flex size-[var(--vds-icon-8)] shrink-0 items-center justify-center text-[length:var(--vds-icon-8)] leading-none text-[var(--vds-text-tertiary)]"
+                          />
+                        )}
                         {option.label}
                       </DropdownMenuItem>
                     )

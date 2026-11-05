@@ -7,7 +7,7 @@ import {
   FALLBACK_LANGUAGE,
   LANGUAGE_DETECTORS,
   primaryLanguageSubtag,
-  readTimeZone
+  readTimeZone,
 } from './locale.ts'
 import { DEFAULT_RENDERER_PREFERENCES } from './preferences.ts'
 import type { LocaleSignals } from './locale.ts'
@@ -20,31 +20,31 @@ function detect(timeZone: string | null, languages: readonly string[]): string {
   return detectPreferenceLanguage(signals(timeZone, languages))
 }
 
-test('rule 1: mainland China time zones resolve to Chinese even when the OS language is not', () => {
-  for (const zone of CHINA_TIME_ZONES) {
-    assert.equal(detect(zone, ['en-US']), 'zh', `zone ${zone}`)
-  }
-  assert.equal(detect('Asia/Shanghai', ['en-US']), 'zh')
-  assert.equal(detect('Asia/Urumqi', ['en']), 'zh')
-  // 已废弃的大陆别名同样判中文，防旧 tzdata 或其它信号源给出别名。
-  assert.equal(detect('PRC', ['en']), 'zh')
-  assert.equal(detect('Asia/Chongqing', ['en']), 'zh')
-  assert.equal(detect('Asia/Harbin', ['en']), 'zh')
-  assert.equal(detect('Asia/Kashgar', ['en']), 'zh')
+test('system language takes precedence over conflicting time zones', () => {
+  assert.equal(detect('Asia/Shanghai', ['en-US']), 'en')
+  assert.equal(detect('America/New_York', ['zh-Hans-CN']), 'zh')
+  assert.equal(detect('Asia/Shanghai', ['fr-FR', 'zh-CN']), 'en')
 })
 
-test('rule 2: a determinable non-China time zone resolves to English even when the OS language is Chinese', () => {
-  // 口径是严格大陆时区，不是整个 UTC+8：同偏移地区一律判英文。
-  assert.equal(detect('Asia/Singapore', ['zh-CN']), 'en')
-  assert.equal(detect('Asia/Taipei', ['zh-Hant']), 'en')
-  assert.equal(detect('Asia/Hong_Kong', ['zh-HK']), 'en')
-  assert.equal(detect('Australia/Perth', ['zh']), 'en')
-  assert.equal(detect('Asia/Manila', ['zh']), 'en')
-  assert.equal(detect('Asia/Tokyo', ['ja-JP']), 'en')
-  assert.equal(detect('America/New_York', ['en-US']), 'en')
-  assert.equal(detect('Europe/Berlin', ['de-DE']), 'en')
-  // 时区可判定但不在表里：按「非中国时区」处理，不退回 OS 语言。
-  assert.equal(detect('Mars/Olympus', ['zh-CN']), 'en')
+test('mainland China time zones resolve to Chinese when system language is unavailable', () => {
+  for (const zone of CHINA_TIME_ZONES) {
+    assert.equal(detect(zone, []), 'zh', `zone ${zone}`)
+  }
+})
+
+test('a non-China time zone falls back to English when no language is usable', () => {
+  for (const zone of [
+    'Asia/Singapore',
+    'Asia/Taipei',
+    'Asia/Hong_Kong',
+    'Australia/Perth',
+    'Asia/Manila',
+    'Asia/Tokyo',
+    'America/New_York',
+    'Europe/Berlin',
+  ]) {
+    assert.equal(detect(zone, ['', 'x-private']), 'en', `zone ${zone}`)
+  }
 })
 
 test('rule 3: an indeterminate time zone hands over to the OS system language', () => {

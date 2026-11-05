@@ -554,6 +554,7 @@
     "presentationFailed": "The account menu could not open. Please try again."
   },
   "preferences": {
+    "followSystemLanguage": "Follow system",
     "language": "Language",
     "appearance": "Appearance",
     "light": "Light",

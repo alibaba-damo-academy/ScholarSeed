@@ -1,87 +1,87 @@
 ---
 id: reference-plugin-testing
-title: Plugin 测试
+title: Test a Plugin
 doc_type: design
 category: skills
 status: active
 keywords: [skill, sdk, hil]
-summary: 检查插件包，用真实任务验证卡片和后端结果，并定位常见失败。
+summary: Validate packages, verify cards and backend results in real tasks, and diagnose failures.
 ---
 
-# Plugin 测试
+# Test a Plugin
 
-[Plugin 概览](../plugins.md)
+**English** · [简体中文](testing.zh.md) · [Read offline](../plugins.html#testing)
 
-用[论文阅读笔记插件](create.md)走完检查、安装和对话使用流程。
+[Plugin Overview](../plugins.md)
 
-## 检查插件包
+Use the [paper-reading-notes tutorial](create.md) to exercise validation, installation, and conversation use.
 
-按[创建教程](create.md#检查和打包)执行 validate 和 pack。validate 使用 `request.json` 中的内层请求。
+## Validate the Package
 
-收到外部 ZIP，或需要核对传输后的字节时执行：
+Follow [Validate and Package](create.md#validate-and-package) for `validate` and `pack`. The validation file contains the inner `request` object.
+
+Check a ZIP received from someone else, or verify its bytes after transfer, in a Python environment with the matching ScholarSeed backend installed:
 
 ```sh
 python -m service.cli.plugins check ./paper-reading-notes-0.1.0.zip
 ```
 
-- 核对包身份、版本、实际 SHA-256 和每个 issue。
-- 检查场景覆盖所有动作，以及每个动作的提交值。
-- ZIP 放在源码目录外，路径使用可移植相对路径；不要带绝对路径、盘符、反斜杠、.. 或 Windows 保留名。
-- 不打包凭据、.env、登录缓存、虚拟环境或无关文件。
+- Review the package identity, version, actual SHA-256, and every reported issue.
+- Check that scenarios cover every action and its submitted values.
+- Keep the ZIP outside the source directory. Paths must be portable and relative: no absolute paths, drive letters, backslashes, `..`, or Windows reserved names.
+- Do not package credentials, `.env`, login caches, virtual environments, or unrelated files.
 
-`capabilities_unchecked` 表示还需要在书深中验证实际调用。
+`capabilities_unchecked` means actual calls still need verification inside ScholarSeed.
 
-## 导入书深并完成第一次对话
+## Install and Complete a First Conversation
 
-准备 `paper-reading-notes-0.1.0.zip` 和一篇你要阅读的论文。
+Prepare `paper-reading-notes-0.1.0.zip` and a paper you are authorized to use.
 
-1. 打开书深，进入**技能中心 → 添加技能**，选择 ZIP。
-2. 核对插件名称、版本和检查结果，确认安装。
-3. 在自己的技能列表中找到 `paper-reading-notes` 并启用。通过 AI 创建的插件，也可以直接在对话安装卡片中确认安装。
-4. 打开自己的对话，上传论文或粘贴摘录，发送下方指令。
-5. 等到“选择阅读重点”卡片出现，点**理解方法**，检查笔记是否包含研究问题、方法步骤和适用条件，并标注来源位置。
-6. 再发起一次任务，选择**核对证据**，检查是否改为整理主要结论、对应证据和局限。材料未说明的内容应标为“未说明”。
+1. Open ScholarSeed and go to the Skills center → **Add skill**, then select the ZIP.
+2. Review the plugin name, version, and check results, and confirm installation.
+3. Find `paper-reading-notes` in your skills list and enable it. For an AI-generated plugin, you can instead confirm installation on its conversation card.
+4. Open your conversation, upload the paper or paste an excerpt, and send the prompt below.
+5. When the reading-focus card appears, choose **Understand the method**. Verify that notes cover the research question, method steps, and applicable conditions, with source locations.
+6. Start another task and choose **Check the evidence**. Verify that notes instead cover conclusions, supporting evidence, and limitations. Missing information must be marked as not stated.
 
-可以直接发送：
+Example prompt:
 
-> 请使用 paper-reading-notes 为我刚上传的论文整理阅读笔记，先让我选择阅读重点。
+> Please use paper-reading-notes to make reading notes for the paper I just uploaded. Let me choose the reading focus first.
 
-无需先通过技能选择器绑定插件。若没有出现卡片，检查插件是否启用，以及工具记录中是否发起了 `component/request`。
+No prior binding through the Skill picker is required. If no card appears, check that the plugin is enabled and the tool history contains a `component/request` call.
 
-![书深添加技能入口与 ZIP 上传界面](../assets/plugins/upload.png)
+## Check Task Results
 
-## 检查任务结果
-
-| 测试 | 预期结果 |
+| Test | Expected result |
 | --- | --- |
-| 选择“理解方法” | 回答中的 `focus` 为 `method`，生成方法笔记并附来源。 |
-| 选择“核对证据” | 回答中的 `focus` 为 `evidence`，生成证据笔记并附来源。 |
-| 取消阅读重点选择 | 不再生成本轮笔记。 |
-| 只提供论文摘要 | 笔记注明仅基于摘要，不补写全文中的实验或结论。 |
-| 使用下载、保存或入库能力的插件 | 在对应文件目录、资料库或文献库中核对实际结果。 |
+| Choose Understand the method | The answer has `focus: "method"`; method notes include sources. |
+| Choose Check the evidence | The answer has `focus: "evidence"`; evidence notes include sources. |
+| Cancel the focus selection | No further notes are generated for that request. |
+| Provide only an abstract | Notes state that they are based only on the abstract; they do not invent full-text experiments or conclusions. |
+| Use a plugin that downloads, saves, or imports | Verify actual files, project resources, or literature-library entries. |
 
-记录任务输入、工具返回和输出笔记，保留出错时的截图或录屏。
+Record input, tool results, and notes. Preserve screenshots or recordings of failures without exposing credentials or private research materials.
 
-## 检查界面和更新
+## Check UI and Updates
 
-对于自定义卡片，调用 `setCopyContent()` 后点击消息下方的复制按钮。将剪贴板粘贴到文本编辑器，核对正文、卡片、后续结论的顺序，以及选择、引用和链接是否完整。切换会话再返回，确认历史卡片内容仍包含在复制结果中；修改草稿后应重新登记，不能继续复制旧选择。未登记文本时，复制结果应明确标出缺失的卡片内容。
+For a custom card, call `setCopyContent()` and use the message's copy button. Paste into a text editor and verify the order of prose, cards, and subsequent conclusions, including choices, citations, and links. Switch conversations and return: copying history must still include the card. Register new copy content after editing a draft; do not copy stale choices. Missing card text must be explicitly indicated when none is registered.
 
-- **界面**：明暗主题、窄窗口、键盘、长文本和错误提示。
-- **状态**：重绘保留编辑，旧保存回执不覆盖新输入，取消后不继续。
-- **更新**：新包、新摘要、新安装确认；slot 冲突不接管其他插件，失败保留旧版。
-- **旧卡片**：按固定版本恢复，并重新检查当前权限。
-- **平台**：macOS 与 Windows 分别验证受影响的安装和运行。
+- **UI:** Light/dark themes, narrow windows, keyboard use, long text, and errors.
+- **State:** Re-rendering preserves edits; old save responses do not overwrite new input; cancellation does not continue the task.
+- **Updates:** A new package, digest, and installation confirmation; slot conflicts do not take over other plugins; failures preserve the old version.
+- **Historical cards:** Restore their pinned version and recheck current permissions.
+- **Platforms:** Verify affected installation and runtime behavior separately on macOS and Windows.
 
-## 排障
+## Troubleshooting
 
-| 现象 | 先检查 |
+| Symptom | Check first |
 | --- | --- |
-| 找不到创建或预览按钮 | 页面入口隐藏；在对话中指名 plugin-create |
-| 对话无法使用 plugin-create | 当前版本是否包含技能、是否启用、书深技能清单是否正常 |
-| host 不兼容 | 后端 distribution 版本、描述符范围和实际契约 |
-| 已安装但没卡片 | 启用状态、component/catalog、slot 和真实工具请求 |
-| component_value_invalid | data、动作 values、output_schema；不要把外层回答信封当 values |
-| plugin_capability_unavailable | 当前卡片是否有实际处理器；能力声明不是接通操作 |
-| ui_dependency_unavailable | 官方资源、compatibility、实际 exports；不要自带 React 冒充书深提供的资源 |
-| 保存后输入丢失 | 本地编辑与快照合并，旧回执是否覆盖了新输入 |
-| 技能列表失败或 503 | 书深技能清单与初始化日志；恢复后重试，不模拟成功 |
+| Cannot find a creation or preview button | These page entries are hidden; ask for `plugin-create` in a conversation. |
+| Cannot use `plugin-create` | Whether this version includes and enables the Skill, and whether the skill catalog initialized correctly. |
+| Incompatible host | Backend distribution version, descriptor range, and actual contract. |
+| Installed but no card | Enabled status, `component/catalog`, slot, and actual tool request. |
+| `component_value_invalid` | `data`, action `values`, and `output_schema`; do not treat the outer answer envelope as `values`. |
+| `plugin_capability_unavailable` | Whether this card has an actual handler; declaration is not connection. |
+| `ui_dependency_unavailable` | Official resources, compatibility, and actual exports; do not substitute a bundled React runtime for the official one. |
+| Input disappears after saving | Local-edit/snapshot merging and whether an old response overwrote newer input. |
+| Skills list fails or returns 503 | Skill catalog and initialization logs; retry after recovery, without simulating success. |

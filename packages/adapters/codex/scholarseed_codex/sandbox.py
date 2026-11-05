@@ -13,8 +13,13 @@ import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping
 
+from scholarseed_codex.diagnostic import (
+    NATIVE_SETUP_CANCELLED,
+    NATIVE_SETUP_CODES,
+    WINDOWS_PLATFORM,
+)
 from scholarseed_codex.protocol.session import CodexRuntimeLaunchArgument
-from scholarseed_codex.protocol.state import AppServerError
+from scholarseed_codex.protocol.state import SANDBOX_EXECUTION_METHOD, AppServerError
 from scholarseed_runtime.contract.incident import RuntimeRetryability
 from scholarseed_runtime.contract.resource import RESOURCE_LIFECYCLE_LOGGER
 from scholarseed_runtime.contract.sandbox import (
@@ -30,7 +35,6 @@ from scholarseed_runtime.contract.sandbox import (
     SandboxResources,
 )
 
-WINDOWS_PLATFORM = "win32"
 RESTRICTED_SANDBOX_POLICIES = frozenset({"workspace-write", "read-only"})
 SANDBOX_MODE = "elevated"
 SANDBOX_ARGUMENT = CodexRuntimeLaunchArgument(
@@ -47,48 +51,15 @@ SANDBOX_COMPLETED_METHOD = "windowsSandbox/setupCompleted"
 SANDBOX_READY = "ready"
 SANDBOX_UPDATE_REQUIRED = "updateRequired"
 SANDBOX_SETUP_TIMEOUT_SECONDS = 120
-SANDBOX_EXECUTION_METHOD = "command/exec"
 SANDBOX_EXECUTION_TIMEOUT_MS = 30000
+PROBE_RPC_STAGE = "rpc"
+PROBE_VALIDATION_STAGE = "validation"
 WINDOWS_SYSTEM_PATH_CAPACITY = 32768
 SANDBOX_DISCONNECTED = "disconnected"
-NATIVE_SETUP_CANCELLED = "orchestrator_helper_launch_canceled"
 SANDBOX_RESOURCE_VERSIONS = frozenset(
     {"0.159.0", "codex-cli 0.159.0", "0.163.0", "codex-cli 0.163.0", "0.165.0", "codex-cli 0.165.0"}
 )
 DIAGNOSTIC_UNKNOWN = "unknown"
-# Reviewed native codes only; never print an arbitrary prefix from the native error.
-NATIVE_SETUP_CODES = frozenset(
-    {
-        "orchestrator_sandbox_dir_create_failed",
-        "orchestrator_elevation_check_failed",
-        "orchestrator_elevation_required",
-        "orchestrator_payload_serialize_failed",
-        "orchestrator_helper_launch_failed",
-        NATIVE_SETUP_CANCELLED,
-        "orchestrator_helper_exit_nonzero",
-        "orchestrator_helper_report_read_failed",
-        "orchestrator_helper_incomplete",
-        "helper_request_args_failed",
-        "helper_sandbox_dir_create_failed",
-        "helper_log_failed",
-        "helper_user_provision_failed",
-        "helper_users_group_create_failed",
-        "helper_user_create_or_update_failed",
-        "helper_dpapi_protect_failed",
-        "helper_users_file_write_failed",
-        "helper_setup_marker_write_failed",
-        "helper_sid_resolve_failed",
-        "helper_capability_sid_failed",
-        "helper_firewall_com_init_failed",
-        "helper_firewall_policy_access_failed",
-        "helper_firewall_policy_ineffective",
-        "helper_firewall_rule_create_or_add_failed",
-        "helper_firewall_rule_verify_failed",
-        "helper_read_acl_helper_spawn_failed",
-        "helper_sandbox_lock_failed",
-        "helper_unknown_error",
-    }
-)
 SANDBOX_USERS_GROUP = "CodexSandboxUsers"
 SANDBOX_RECOVERY_VERSIONS = frozenset(
     {"0.163.0", "codex-cli 0.163.0", "0.165.0", "codex-cli 0.165.0"}
@@ -135,6 +106,12 @@ def _failure(
         generation=cause.generation if cause is not None else 0,
         rpc_code=cause.rpc_code if cause is not None else None,
         rpc_latency_ms=cause.rpc_latency_ms if cause is not None else 0,
+        rpc_request_id=cause.rpc_request_id if cause is not None else None,
+        rpc_pid=cause.rpc_pid if cause is not None else None,
+        native_reason=cause.native_reason if cause is not None else "",
+        native_stage=cause.native_stage if cause is not None else None,
+        native_code_type=cause.native_code_type if cause is not None else None,
+        native_code=cause.native_code if cause is not None else None,
     )
 
 
@@ -282,6 +259,7 @@ class WindowsSandboxBootstrap:
                         entry,
                     )
                     result = {}
+                    stage = PROBE_RPC_STAGE
                     try:
                         async with asyncio.timeout_at(deadline):
                             # Windows command/exec rejects outputBytesCap. Keep the
@@ -296,12 +274,22 @@ class WindowsSandboxBootstrap:
                                     "env": dict(probe.environment),
                                 },
                             )
+                            stage = PROBE_VALIDATION_STAGE
                             await self._resources.validate_probe(probe, result)
                     except Exception as error:
+                        nativeFailure = (
+                            error
+                            if stage == PROBE_RPC_STAGE and isinstance(error, AppServerError)
+                            else None
+                        )
                         LOGGER.warning(
-                            "windows_sandbox_tool_check event=failed kind=%s entry=%s error_type=%s exit_code=%s",
+                            "windows_sandbox_tool_check event=failed kind=%s entry=%s "
+                            "stage=%s error_type=%s exit_code=%s rpc_request_id=%s rpc_code=%s "
+                            "pid=%s generation=%s rpc_latency_ms=%s native_reason=%s "
+                            "native_stage=%s native_code_type=%s native_code=%s",
                             probe.kind,
                             entry,
+                            stage,
                             type(error).__name__,
                             (
                                 result.get("exitCode")
@@ -309,6 +297,15 @@ class WindowsSandboxBootstrap:
                                 and not isinstance(result.get("exitCode"), bool)
                                 else None
                             ),
+                            nativeFailure.rpc_request_id if nativeFailure is not None else None,
+                            nativeFailure.rpc_code if nativeFailure is not None else None,
+                            nativeFailure.rpc_pid if nativeFailure is not None else None,
+                            nativeFailure.generation if nativeFailure is not None else None,
+                            nativeFailure.rpc_latency_ms if nativeFailure is not None else None,
+                            nativeFailure.native_reason if nativeFailure is not None else "",
+                            nativeFailure.native_stage if nativeFailure is not None else None,
+                            nativeFailure.native_code_type if nativeFailure is not None else None,
+                            nativeFailure.native_code if nativeFailure is not None else None,
                         )
                         retryability = (
                             error.retryability
@@ -324,7 +321,7 @@ class WindowsSandboxBootstrap:
                             "Windows bundled tool verification failed",
                             SANDBOX_PROBE_ERROR,
                             retryability=retryability,
-                            cause=error if isinstance(error, AppServerError) else None,
+                            cause=nativeFailure,
                             method=SANDBOX_EXECUTION_METHOD,
                         ) from error
                     LOGGER.info(

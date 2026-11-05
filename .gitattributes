@@ -31,3 +31,4 @@ apps/desktop/updater/internal/security/evaluate.go text eol=lf
 apps/serve/service/platform/security.py text eol=lf
 packages/adapters/codex/scholarseed_codex/permissions.py text eol=lf
 scripts/shared/security.cjs text eol=lf
+scripts/cd/public/overlay.patch text eol=lf

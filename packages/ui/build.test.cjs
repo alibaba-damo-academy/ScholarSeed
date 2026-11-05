@@ -4,12 +4,16 @@ const fs = require('node:fs/promises')
 const os = require('node:os')
 const path = require('node:path')
 const crypto = require('node:crypto')
+const { spawnSync } = require('node:child_process')
 const { createRequire } = require('node:module')
 const desktopRequire = createRequire(path.resolve(__dirname, '../../apps/desktop/package.json'))
 const { unzipSync } = desktopRequire('fflate')
 const yaml = desktopRequire('yaml')
 const { buildOfficialUI, buildExample, buildArchive } = require('./build.cjs')
 const { buildComponents } = require('../../apps/desktop/scripts/cd/components.cjs')
+
+const ARCHIVE_TIMEZONES = ['UTC', 'America/Los_Angeles', 'Asia/Shanghai', 'Pacific/Kiritimati']
+const ARCHIVE_BUILD_TIMEOUT_MS = 120000
 
 test('review composition consumes the official runtime without copying React, styles or cards', async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'review-composition-'))
@@ -84,6 +88,29 @@ test('official and example archives preserve the exact complete inventory and de
         assert.equal(descriptor.version, inventory.version)
       }
       for (const entry of inventory.files) assert.equal(crypto.createHash('sha256').update(files[entry.path]).digest('hex'), entry.sha256)
+    }
+  } finally { await fs.rm(temporary, { recursive: true, force: true }) }
+})
+
+test('official and example archive CLI builds produce identical bytes across timezones', async context => {
+  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'ui-archive-timezones-'))
+  try {
+    for (const mode of ['--archive', '--example']) {
+      let expectedHash
+      for (const [index, timezone] of ARCHIVE_TIMEZONES.entries()) {
+        const output = path.join(temporary, `${mode.slice(2)}-${index}.zip`)
+        const result = spawnSync(process.execPath, [path.join(__dirname, 'build.cjs'), mode, output], {
+          cwd: path.resolve(__dirname, '../..'), env: { ...process.env, TZ: timezone },
+          encoding: 'utf8', timeout: ARCHIVE_BUILD_TIMEOUT_MS,
+        })
+        assert.ifError(result.error)
+        assert.equal(result.status, 0, `${mode} in ${timezone}: ${result.stderr}`)
+        const bytes = await fs.readFile(output)
+        const hash = crypto.createHash('sha256').update(bytes).digest('hex')
+        expectedHash ??= hash
+        assert.equal(hash, expectedHash, `${mode} changed in ${timezone}`)
+        context.diagnostic(`${mode} ${timezone}: ${hash}`)
+      }
     }
   } finally { await fs.rm(temporary, { recursive: true, force: true }) }
 })

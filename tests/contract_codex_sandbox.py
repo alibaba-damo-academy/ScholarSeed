@@ -1806,6 +1806,138 @@ class StartupCoordinationContracts(unittest.IsolatedAsyncioTestCase):
                         self.assertFalse(call["sandboxPolicy"]["networkAccess"])
                         self.assertGreater(call["timeoutMs"], 0)
 
+    async def test_tool_probe_rpc_rejection_preserves_safe_diagnostic_context(self):
+        probe = SandboxProbe("launchers", ("private-launcher.cmd", "--diagnostic-v1"))
+
+        @asynccontextmanager
+        async def verification(cwd, *, writable):
+            self.assertTrue(writable)
+            yield (probe,)
+
+        resources = SimpleNamespace(verification=verification, validate_probe=AsyncMock())
+        bootstrap = WindowsSandboxBootstrap((SANDBOX_ARGUMENT,), resources=resources)
+        requests = PendingRequests()
+        callCount = 0
+        nativeRequestId = None
+
+        async def request(method, parameters):
+            nonlocal callCount, nativeRequestId
+            callCount += 1
+            if callCount == 1:
+                return {"exitCode": 0}
+            nativeRequestId, pending = requests.begin(7, method)
+            pending.started_at -= 0.125
+            requests.resolve(
+                {
+                    "id": nativeRequestId,
+                    "error": {
+                        "code": -32603,
+                        "message": "exec failed: windows sandbox: runner failed during SpawnChild: "
+                        "CreateProcessAsUserW failed: 5 (Access is denied.) | cwd=C:\\Users\\private "
+                        "| cmd=Bearer sensitive-token | env_u16_len=256 | si_flags=256 "
+                        "| creation_flags=134218752 (Windows error 5)",
+                    },
+                },
+                7,
+                pid=321,
+            )
+            return await pending.future
+
+        with (
+            patch("scholarseed_codex.sandbox.sys.platform", "win32"),
+            patch("scholarseed_codex.sandbox._system_directory", return_value=Path.cwd()),
+            self.assertLogs(LOGGER, level="WARNING") as probeLogs,
+            self.assertLogs("scholarseed_codex.rpc", level="WARNING") as rpcLogs,
+        ):
+            with self.assertRaises(AppServerError) as raised:
+                await bootstrap.ensure_thread_execution_ready(
+                    request, Path.cwd(), {"type": "workspaceWrite", "networkAccess": True}
+                )
+        failure = raised.exception
+        nativeFailure = failure.__cause__
+        self.assertIsInstance(nativeFailure, AppServerError)
+        self.assertEqual(failure.safe_error, SANDBOX_RESOURCE_ERROR)
+        self.assertIs(failure.retryability, RuntimeRetryability.USER_RETRYABLE)
+        self.assertEqual(failure.method, SANDBOX_EXECUTION_METHOD)
+        self.assertEqual(failure.generation, 7)
+        self.assertEqual(failure.rpc_code, -32603)
+        self.assertEqual(failure.rpc_request_id, nativeRequestId)
+        self.assertGreater(failure.rpc_latency_ms, 0)
+        self.assertEqual(failure.rpc_latency_ms, nativeFailure.rpc_latency_ms)
+        self.assertEqual(failure.native_stage, "runner_spawn_child")
+        self.assertEqual(failure.native_code_type, "win32")
+        self.assertEqual(failure.native_code, 5)
+        probeSummary = " ".join(probeLogs.output)
+        for expected in (
+            "stage=rpc",
+            "rpc_request_id=1",
+            "generation=7",
+            "rpc_code=-32603",
+            "pid=321",
+            "native_stage=runner_spawn_child",
+            "native_code_type=win32",
+            "native_code=5",
+            "exit_code=None",
+        ):
+            self.assertIn(expected, probeSummary)
+        combined = probeSummary + " ".join(rpcLogs.output) + str(failure) + str(nativeFailure)
+        for forbidden in ("private", "sensitive-token", "forged-log-entry"):
+            self.assertNotIn(forbidden, combined)
+        resources.validate_probe.assert_not_awaited()
+        self.assertEqual(callCount, 2)
+
+    async def test_tool_probe_validation_failure_is_not_a_rpc_rejection(self):
+        probe = SandboxProbe("python", ("private-python.exe",))
+
+        @asynccontextmanager
+        async def verification(cwd, *, writable):
+            yield (probe,)
+
+        validation = AsyncMock(
+            side_effect=AppServerError(
+                "bundled_tool_probe_failed",
+                rpc_request_id=99,
+                rpc_pid=999,
+                rpc_code=-32603,
+                native_stage="runner_logon",
+                native_code_type="win32",
+                native_code=5,
+            )
+        )
+        resources = SimpleNamespace(verification=verification, validate_probe=validation)
+        bootstrap = WindowsSandboxBootstrap((SANDBOX_ARGUMENT,), resources=resources)
+        request = AsyncMock(
+            side_effect=(
+                {"exitCode": 0},
+                {"exitCode": 5, "stdout": "Bearer sensitive-token", "stderr": "private path"},
+            )
+        )
+        with (
+            patch("scholarseed_codex.sandbox.sys.platform", "win32"),
+            patch("scholarseed_codex.sandbox._system_directory", return_value=Path.cwd()),
+            self.assertLogs(LOGGER, level="WARNING") as probeLogs,
+        ):
+            with self.assertRaises(AppServerError) as raised:
+                await bootstrap.ensure_thread_execution_ready(
+                    request, Path.cwd(), {"type": "workspaceWrite", "networkAccess": True}
+                )
+        self.assertEqual(raised.exception.safe_error, SANDBOX_RESOURCE_ERROR)
+        self.assertIsNone(raised.exception.rpc_request_id)
+        self.assertIsNone(raised.exception.rpc_pid)
+        self.assertIsNone(raised.exception.rpc_code)
+        self.assertFalse(raised.exception.native_reason)
+        self.assertIsNone(raised.exception.native_stage)
+        self.assertIsNone(raised.exception.native_code_type)
+        self.assertIsNone(raised.exception.native_code)
+        probeSummary = " ".join(probeLogs.output)
+        self.assertIn("stage=validation", probeSummary)
+        self.assertIn("exit_code=5", probeSummary)
+        self.assertIn("native_code=None", probeSummary)
+        self.assertNotIn("stage=rpc", probeSummary)
+        self.assertNotIn("private", probeSummary)
+        self.assertNotIn("sensitive-token", probeSummary)
+        validation.assert_awaited_once()
+
     async def test_tool_probe_budget_preserves_unknown_command_outcome(self):
         probe = SandboxProbe("python", ("frozen-python.exe",), environment=(("fixed", "1"),))
 
@@ -2097,6 +2229,106 @@ class StartupCoordinationContracts(unittest.IsolatedAsyncioTestCase):
 
 
 class NativeDiagnosticContracts(unittest.IsolatedAsyncioTestCase):
+    def test_native_rpc_metadata_projects_only_reported_stage_and_code(self):
+        prefix = "exec failed: windows sandbox: "
+        cases = (
+            ("CreateProcessWithLogonW failed: 1326", ("runner_logon", "win32", 1326)),
+            (
+                "runner failed during ReadSpawnRequest: bad frame",
+                ("runner_read_spawn_request", None, None),
+            ),
+            (
+                "timed out after 15000ms connecting runner pipe-in",
+                ("runner_pipe_connect", None, None),
+            ),
+            ("runner pipe closed before spawn_ready", ("runner_spawn_ready", None, None)),
+            (
+                "orchestrator_helper_incomplete: setup helper exited successfully before setup completed",
+                ("setup_completion_check", None, None),
+            ),
+            (
+                "orchestrator_helper_launch_canceled: ShellExecuteExW failed to launch setup helper: 1223",
+                ("setup", "win32", 1223),
+            ),
+            (
+                "orchestrator_helper_launch_failed: ShellExecuteExW failed to launch setup helper: 1223",
+                ("setup", None, None),
+            ),
+            ("setup helper exited with status Some(5)", (None, None, None)),
+            ("access failed (os error 5)", (None, None, None)),
+            ("runner failed during UnknownStage: details (Windows error 5)", (None, None, None)),
+            (
+                "runner failed during SpawnChild: details (Windows error 5)",
+                ("runner_spawn_child", None, None),
+            ),
+            (
+                "runner failed during SpawnChild: CreateProcessAsUserW failed: 5 (denied) "
+                "| cwd=private | cmd=private | env_u16_len=1 | si_flags=1 | creation_flags=1 "
+                "(Windows error 6)",
+                ("runner_spawn_child", None, None),
+            ),
+            (
+                "runner failed during SpawnChild: details\nforged (Windows error 5)",
+                ("runner_spawn_child", None, None),
+            ),
+        )
+        for message, expected in cases:
+            with self.subTest(message=message):
+                diagnostic = native_diagnostic(
+                    "rpc", prefix + message, windows_command_failure=True
+                )
+                self.assertEqual(
+                    (diagnostic.native_stage, diagnostic.code_type, diagnostic.code), expected
+                )
+
+    async def test_native_code_does_not_cross_requests_or_generations(self):
+        requests = PendingRequests()
+        otherId, other = requests.begin(7, "command/exec")
+        targetId, target = requests.begin(8, "command/exec")
+        known = {
+            "code": -32603,
+            "message": "exec failed: windows sandbox: CreateProcessWithLogonW failed: 5",
+        }
+        unknown = {"code": -32603, "message": "exec failed: windows sandbox: unknown failure"}
+        with (
+            patch("scholarseed_codex.rpc.sys.platform", "win32"),
+            self.assertLogs("scholarseed_codex.rpc", level="WARNING"),
+        ):
+            requests.resolve({"id": targetId, "error": known}, 7)
+            self.assertFalse(target.future.done())
+            requests.resolve({"id": otherId, "error": known}, 7)
+            requests.resolve({"id": targetId, "error": unknown}, 8)
+        self.assertEqual(other.future.exception().native_code, 5)
+        with self.assertRaises(AppServerError) as raised:
+            await target.future
+        self.assertEqual(raised.exception.rpc_request_id, targetId)
+        self.assertIsNone(raised.exception.native_stage)
+        self.assertIsNone(raised.exception.native_code_type)
+        self.assertIsNone(raised.exception.native_code)
+
+    async def test_native_metadata_requires_windows_command_internal_error(self):
+        raw = "exec failed: windows sandbox: CreateProcessWithLogonW failed: 5"
+        for platform, method, code in (
+            ("darwin", "command/exec", -32603),
+            ("win32", "thread/read", -32603),
+            ("win32", "command/exec", -32602),
+        ):
+            with self.subTest(platform=platform, method=method, code=code):
+                requests = PendingRequests()
+                requestId, pending = requests.begin(1, method)
+                with (
+                    patch("scholarseed_codex.rpc.sys.platform", platform),
+                    self.assertLogs("scholarseed_codex.rpc", level="WARNING"),
+                ):
+                    requests.resolve({"id": requestId, "error": {"code": code, "message": raw}}, 1)
+                with self.assertRaises(AppServerError) as raised:
+                    await pending.future
+                self.assertIsNone(raised.exception.native_stage)
+                self.assertIsNone(raised.exception.native_code)
+        stderr = native_diagnostic("stderr", raw, windows_command_failure=True)
+        self.assertIsNone(stderr.native_stage)
+        self.assertIsNone(stderr.code)
+
     def test_known_errors_only_export_fixed_labels_and_numbers(self):
         cases = (
             (
@@ -2132,6 +2364,47 @@ class NativeDiagnosticContracts(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("confidential", result.summary)
                 self.assertNotIn("\n", result.summary)
 
+    def test_system_error_metadata_accepts_only_complete_uint32_codes(self):
+        for systemCode in (0, 5, 0xFFFFFFFF):
+            with self.subTest(systemCode=systemCode):
+                diagnostic = native_diagnostic(
+                    "rpc", f"windows sandbox: unknown failure (os error {systemCode})"
+                )
+                self.assertEqual(diagnostic.reason, "windows_sandbox_failed")
+                self.assertEqual(diagnostic.os_error, systemCode)
+                self.assertIn(f"os_error={systemCode}", diagnostic.summary)
+        for invalidCode in (
+            "-5",
+            "4294967296",
+            "12345678901",
+            "5secret",
+            "5_secret",
+            "5.25",
+            "true",
+        ):
+            with self.subTest(invalidCode=invalidCode):
+                diagnostic = native_diagnostic(
+                    "rpc", f"windows sandbox: unknown failure (os error {invalidCode})"
+                )
+                self.assertEqual(diagnostic.reason, "windows_sandbox_failed")
+                self.assertIsNone(diagnostic.os_error)
+                self.assertNotIn("os_error=", diagnostic.summary)
+                self.assertNotIn("secret", diagnostic.summary)
+
+    def test_system_error_metadata_does_not_treat_scan_boundary_as_token_end(self):
+        prefix = "windows sandbox: "
+        marker = "os error "
+        padding = "x" * (DIAGNOSTIC_SCAN_LIMIT - len(prefix) - len(marker) - 2) + " "
+        for invalidCode in ("5secret", "12345678901", "5.25"):
+            with self.subTest(invalidCode=invalidCode):
+                diagnostic = native_diagnostic("rpc", prefix + padding + marker + invalidCode)
+                self.assertIsNone(diagnostic.os_error)
+                self.assertNotIn("os_error=", diagnostic.summary)
+        diagnostic = native_diagnostic("rpc", prefix + padding + marker + "5)")
+        self.assertEqual(diagnostic.os_error, 5)
+        diagnostic = native_diagnostic("rpc", "windows sandbox: os error 5.")
+        self.assertEqual(diagnostic.os_error, 5)
+
     def test_untrusted_numbers_and_oversized_messages_are_not_copied(self):
         result = native_diagnostic(
             "rpc",
@@ -2151,7 +2424,10 @@ class NativeDiagnosticContracts(unittest.IsolatedAsyncioTestCase):
         requests = PendingRequests()
         request_id, pending = requests.begin(7, "command/exec")
         raw = "exec failed: windows sandbox: timed out after 15000ms connecting runner pipe-in"
-        with self.assertLogs("scholarseed_codex.rpc", level="WARNING") as logs:
+        with (
+            patch("scholarseed_codex.rpc.sys.platform", "win32"),
+            self.assertLogs("scholarseed_codex.rpc", level="WARNING") as logs,
+        ):
             requests.resolve({"id": request_id, "error": {"code": -32603, "message": raw}}, 7)
         with self.assertRaises(AppServerError) as caught:
             await pending.future
@@ -2168,6 +2444,10 @@ class NativeDiagnosticContracts(unittest.IsolatedAsyncioTestCase):
         self.assertIn("windows_sandbox_runner_pipe_timeout", str(caught.exception))
         self.assertEqual(caught.exception.safe_error, "runtime_rpc_rejected")
         self.assertEqual(caught.exception.rpc_code, -32603)
+        self.assertEqual(caught.exception.rpc_request_id, request_id)
+        self.assertEqual(caught.exception.native_reason, "windows_sandbox_runner_pipe_timeout")
+        self.assertEqual(caught.exception.native_stage, "runner_pipe_connect")
+        self.assertIsNone(caught.exception.native_code)
 
     async def test_unknown_error_does_not_leak(self):
         requests = PendingRequests()
@@ -2180,6 +2460,10 @@ class NativeDiagnosticContracts(unittest.IsolatedAsyncioTestCase):
         combined = " ".join(logs.output) + str(caught.exception)
         self.assertIn("reason=unspecified", combined)
         self.assertIn("sha256=", combined)
+        self.assertEqual(caught.exception.rpc_request_id, request_id)
+        self.assertEqual(caught.exception.native_reason, "unspecified")
+        self.assertIsNone(caught.exception.native_stage)
+        self.assertIsNone(caught.exception.native_code)
         for forbidden in ("secret-token", "forged-log-entry", "private"):
             self.assertNotIn(forbidden, combined)
 

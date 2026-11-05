@@ -88,6 +88,16 @@ function nativeBuildDirectory(environment = process.env) {
   return fs.mkdtempSync(path.join(ensurePrivateDirectory(root), 'run-'))
 }
 
+function cleanupNativeBuild(directory, failure) {
+  try {
+    fs.rmSync(directory, { recursive: true, force: true })
+  } catch (error) {
+    if (!failure) throw error
+    failure.message += `\n[native-cleanup] ${error.message}`
+    failure.cleanupError = error
+  }
+}
+
 function nativeSourceFiles(platform) {
   return [
     'lease.c',
@@ -156,6 +166,7 @@ async function compileNative({
     downloaded[name] = { sha256: expected.sha256, bytes: expected.bytes }
     return filename
   }
+  let failure
   try {
     const headers = await input('headers', policy.headers)
     const headersDirectory = platform === 'win32'
@@ -387,12 +398,15 @@ async function compileNative({
       flag: 'wx',
     })
     return result
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
-    fs.rmSync(temporary, { recursive: true, force: true })
+    cleanupNativeBuild(temporary, failure)
   }
 }
 
-module.exports = { compileNative, nativeSourceFiles, nativeBuildDirectory, validateDarwinToolchain, supportsNoDefaultConfig, invoke }
+module.exports = { compileNative, nativeSourceFiles, nativeBuildDirectory, cleanupNativeBuild, validateDarwinToolchain, supportsNoDefaultConfig, invoke }
 
 if (require.main === module) {
   const args = process.argv.slice(2)

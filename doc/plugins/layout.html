@@ -1,11 +1,11 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="{{TAG}}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="description" content="书深插件开发专题指南：对话创建、界面绘制、组件、交互、API 与测试。">
+  <meta name="description" content="{{DESCRIPTION}}">
   <link rel="icon" href="data:,">
-  <title>插件开发指南 · 书深</title>
+  <title>{{TITLE}}</title>
   <style>
 /* Hallmark · shape: documentation workbench · theme: existing ScholarSeed · scope: app · v2.0.0 */
 /* Critique: source-first reading, green active navigation, no decorative hero. */
@@ -98,23 +98,25 @@ footer { border-top: 1px solid var(--line); padding: 24px 0; font-size: 13px; co
   </style>
 </head>
 <body>
-  <a class="skip" href="#guide--plugin-概览">跳转到正文</a>
-  <header><div class="mast"><a class="brand" href="#guide">书深 / 插件开发指南</a><span>从业务流程到真实对话</span></div></header>
+  <a class="skip" href="#content">{{SKIP}}</a>
+  <header><div class="mast"><a class="brand" href="#guide">{{BRAND}}</a><span>{{TAGLINE}}</span><a id="language-link" href="{{ALTERNATE}}#guide" lang="{{LANGUAGE_TAG}}" hreflang="{{LANGUAGE_TAG}}">{{LANGUAGE_LABEL}}</a></div></header>
   <div class="workspace">
-    <aside class="sidebar" aria-label="专题导航">
-      <nav aria-label="插件专题"><p class="nav-title">开发指南</p>{{NAVIGATION}}</nav>
+    <aside class="sidebar" aria-label="{{NAVIGATION_LABEL}}">
+      <nav aria-label="{{TOPICS}}"><p class="nav-title">{{GUIDES}}</p>{{NAVIGATION}}</nav>
       <section class="search" hidden>
-        <label for="search">搜索全部专题</label><input id="search" type="search" placeholder="搜索 slot、草稿或安装…" autocomplete="off">
+        <label for="search">{{SEARCH_LABEL}}</label><input id="search" type="search" placeholder="{{SEARCH_PLACEHOLDER}}" autocomplete="off">
         <p class="help" id="search-status" role="status"></p><ul class="results" id="results"></ul>
       </section>
-      <p class="help">离线可读，无需登录或启动后端。</p>
+      <p class="help">{{OFFLINE}}</p>
     </aside>
-    <main id="content">{{ARTICLES}}<footer>正文由仓库 Markdown 生成。修改源文档后运行 <code>.venv/bin/python doc/plugins/build.py</code> 更新本页。</footer></main>
-    <aside class="outline" aria-label="本页目录"><h2>本页目录</h2><div id="outline"></div></aside>
+    <main id="content" tabindex="-1">{{ARTICLES}}<footer>{{FOOTER}} <code>python doc/plugins/build.py</code> {{FOOTER_END}}</footer></main>
+    <aside class="outline" aria-label="{{OUTLINE}}"><h2>{{OUTLINE}}</h2><div id="outline"></div></aside>
   </div>
   <script>
 (() => {
   'use strict';
+  const messages = {{SCRIPT_MESSAGES}};
+  const searchLimit = 12;
   const pages = [...document.querySelectorAll('article[data-page]')];
   const outline = document.querySelector('#outline');
   const search = document.querySelector('#search');
@@ -144,7 +146,8 @@ footer { border-top: 1px solid var(--line); padding: 24px 0; font-size: 13px; co
       link.textContent = heading.textContent;
       outline.append(link);
     }
-    document.title = selected.getAttribute('aria-label') + ' | 书深插件开发指南';
+    document.title = selected.getAttribute('aria-label') + ' | ' + messages.title;
+    document.querySelector('#language-link').hash = selected.dataset.page;
     const target = document.getElementById(fragment);
     if (target && fragment.includes('--')) target.scrollIntoView();
     else window.scrollTo(0, 0);
@@ -158,8 +161,8 @@ footer { border-top: 1px solid var(--line); padding: 24px 0; font-size: 13px; co
     for (const record of records) {
       if (record.text.toLocaleLowerCase().includes(query) && !found.has(record.id)) found.set(record.id, record);
     }
-    status.textContent = found.size ? '找到 ' + found.size + ' 个相关章节' + (found.size > 12 ? '，显示前 12 项' : '') : '没有匹配章节，请换个关键词。';
-    for (const record of [...found.values()].slice(0, 12)) {
+    status.textContent = found.size ? messages.found.replace('{count}', found.size) + (found.size > searchLimit ? messages.limited.replace('{count}', searchLimit) : '') : messages.empty;
+    for (const record of [...found.values()].slice(0, searchLimit)) {
       const item = document.createElement('li');
       const link = document.createElement('a');
       const topic = document.createElement('small');
@@ -181,24 +184,30 @@ footer { border-top: 1px solid var(--line); padding: 24px 0; font-size: 13px; co
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'copy';
-    button.textContent = '复制代码';
+    button.textContent = messages.copy;
     button.addEventListener('click', async () => {
       const code = block.querySelector('code');
       try {
         await navigator.clipboard.writeText(code.textContent);
-        button.textContent = '已复制';
+        button.textContent = messages.copied;
       } catch {
         const selection = window.getSelection();
         const range = document.createRange();
         range.selectNodeContents(code);
         selection.removeAllRanges();
         selection.addRange(range);
-        button.textContent = '请按 Ctrl/Cmd+C 复制';
+        button.textContent = messages.manual;
       }
     });
     block.append(button);
   }
   window.addEventListener('hashchange', showPage);
+  document.querySelector('.skip').addEventListener('click', event => {
+    event.preventDefault();
+    const content = document.querySelector('#content');
+    content.focus();
+    content.scrollIntoView();
+  });
   showPage();
 })();
   </script>

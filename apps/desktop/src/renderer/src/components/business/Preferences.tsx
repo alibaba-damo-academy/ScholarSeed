@@ -2,9 +2,10 @@ import React from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { LOCALES } from '../../../../localization/catalog'
+import { SYSTEM_LANGUAGE_MODE, type PreferenceLanguageMode } from '../../../../preferences'
 import { Globe, Palette, Save } from 'lucide-react'
 
-import { type Lang, type Theme } from '../../model'
+import { type Theme } from '../../model'
 import { Icon } from '../../icons'
 import { useApp } from '../../store'
 import { IconFont } from '../primitive'
@@ -66,8 +67,21 @@ const LANGUAGE_COMPACT_POPOVER_STYLE = { transform: 'translateX(-12px)' } as con
 export function LanguageSwitchDialog(): React.JSX.Element {
   const { state, act } = useApp()
   const { t } = useTranslation('workbench')
+  const { t: preferenceText } = useTranslation('components')
   const pending = state.languageSwitch
   const failure = pending?.failure
+  let language = ''
+  if (pending) {
+    language =
+      pending.target === SYSTEM_LANGUAGE_MODE
+        ? preferenceText('preferences.followSystemLanguage')
+        : LOCALES[pending.target].label
+  }
+  const failureKey =
+    failure === 'save' ? 'languageSwitch.saveFailed' : 'languageSwitch.preferencesFailed'
+  const description = failure
+    ? t(failureKey)
+    : t('languageSwitch.description', { count: pending?.dirtyCount ?? 0, language })
   return (
     <AlertDialog
       open={Boolean(pending)}
@@ -79,18 +93,7 @@ export function LanguageSwitchDialog(): React.JSX.Element {
         <AlertDialogContent data-testid="language-switch-dialog">
           <AlertDialogHeader>
             <AlertDialogTitle>{t('languageSwitch.title')}</AlertDialogTitle>
-            <AlertDialogDescription>
-              {failure
-                ? t(
-                    failure === 'save'
-                      ? 'languageSwitch.saveFailed'
-                      : 'languageSwitch.preferencesFailed'
-                  )
-                : t('languageSwitch.description', {
-                    count: pending?.dirtyCount ?? 0,
-                    language: pending ? LOCALES[pending.target].label : '',
-                  })}
-            </AlertDialogDescription>
+            <AlertDialogDescription>{description}</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={pending?.saving}>
@@ -130,15 +133,18 @@ export function LanguagePopoverControl({
   const { state, act } = useApp()
   const [open, setOpen] = React.useState(false)
   const { t } = useTranslation('components')
-  const currentLabel = LOCALES[state.lang].label
+  const currentLabel =
+    state.languageMode === SYSTEM_LANGUAGE_MODE
+      ? t('preferences.followSystemLanguage')
+      : LOCALES[state.languageMode].label
 
-  const selectLanguage = (value: Lang): void => {
-    act.setLang(value)
+  const selectLanguage = (value: PreferenceLanguageMode): void => {
+    void act.setLang(value)
     setOpen(false)
   }
   const handleLanguagePointerDown = (
     event: React.PointerEvent<HTMLButtonElement>,
-    value: Lang
+    value: PreferenceLanguageMode
   ): void => {
     event.preventDefault()
     event.stopPropagation()
@@ -179,50 +185,43 @@ export function LanguagePopoverControl({
         side={variant === 'compact' ? 'auto' : 'right'}
         style={variant === 'compact' ? LANGUAGE_COMPACT_POPOVER_STYLE : undefined}
       >
-        <Button
-          type="button"
-          aria-pressed={state.lang === 'zh'}
-          className={
-            variant === 'compact'
-              ? `${LANGUAGE_COMPACT_OPTION_CLASS_NAME} ${state.lang === 'zh' ? LANGUAGE_COMPACT_OPTION_ACTIVE_CLASS_NAME : ''}`
-              : `${LANGUAGE_OPTION_CLASS_NAME} ${state.lang === 'zh' ? LANGUAGE_OPTION_ACTIVE_CLASS_NAME : ''}`
-          }
-          size="content"
-          variant="ghost"
-          onPointerDown={(event) => handleLanguagePointerDown(event, 'zh')}
-        >
-          <IconFont
-            className={
-              variant === 'compact'
-                ? LANGUAGE_COMPACT_OPTION_MARK_CLASS_NAME
-                : LANGUAGE_OPTION_MARK_CLASS_NAME
-            }
-            type="icon-zhongwen"
-          />
-          {LOCALES.zh.label}
-        </Button>
-        <Button
-          type="button"
-          aria-pressed={state.lang === 'en'}
-          className={
-            variant === 'compact'
-              ? `${LANGUAGE_COMPACT_OPTION_CLASS_NAME} ${state.lang === 'en' ? LANGUAGE_COMPACT_OPTION_ACTIVE_CLASS_NAME : ''}`
-              : `${LANGUAGE_OPTION_CLASS_NAME} ${state.lang === 'en' ? LANGUAGE_OPTION_ACTIVE_CLASS_NAME : ''}`
-          }
-          size="content"
-          variant="ghost"
-          onPointerDown={(event) => handleLanguagePointerDown(event, 'en')}
-        >
-          <IconFont
-            className={
-              variant === 'compact'
-                ? LANGUAGE_COMPACT_OPTION_MARK_CLASS_NAME
-                : LANGUAGE_OPTION_MARK_CLASS_NAME
-            }
-            type="icon-yingwen"
-          />
-          {LOCALES.en.label}
-        </Button>
+        {(['zh', 'en', SYSTEM_LANGUAGE_MODE] as const).map((mode) => {
+          const selected = state.languageMode === mode
+          return (
+            <Button
+              key={mode}
+              type="button"
+              aria-pressed={selected}
+              className={
+                variant === 'compact'
+                  ? `${LANGUAGE_COMPACT_OPTION_CLASS_NAME} ${selected ? LANGUAGE_COMPACT_OPTION_ACTIVE_CLASS_NAME : ''}`
+                  : `${LANGUAGE_OPTION_CLASS_NAME} ${selected ? LANGUAGE_OPTION_ACTIVE_CLASS_NAME : ''}`
+              }
+              size="content"
+              variant="ghost"
+              onClick={(event) => {
+                if (event.detail === 0) selectLanguage(mode)
+              }}
+              onPointerDown={(event) => handleLanguagePointerDown(event, mode)}
+            >
+              {mode === SYSTEM_LANGUAGE_MODE ? (
+                <Globe size={PREFERENCE_ICON_SIZE} />
+              ) : (
+                <IconFont
+                  className={
+                    variant === 'compact'
+                      ? LANGUAGE_COMPACT_OPTION_MARK_CLASS_NAME
+                      : LANGUAGE_OPTION_MARK_CLASS_NAME
+                  }
+                  type={mode === 'zh' ? 'icon-zhongwen' : 'icon-yingwen'}
+                />
+              )}
+              {mode === SYSTEM_LANGUAGE_MODE
+                ? t('preferences.followSystemLanguage')
+                : LOCALES[mode].label}
+            </Button>
+          )
+        })}
       </PopoverContent>
     </Popover>
   )
@@ -240,13 +239,21 @@ export function PreferenceControls({
           <Globe size={PREFERENCE_ICON_SIZE} strokeWidth={1.75} />
           {t('preferences.language')}
         </span>
-        <Select value={state.lang} onValueChange={(value) => act.setLang(value as Lang)}>
+        <Select
+          value={state.languageMode}
+          onValueChange={(value) => {
+            void act.setLang(value as PreferenceLanguageMode)
+          }}
+        >
           <SelectTrigger aria-label={t('preferences.language')}>
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="zh">中文</SelectItem>
-            <SelectItem value="en">English</SelectItem>
+            <SelectItem value="zh">{LOCALES.zh.label}</SelectItem>
+            <SelectItem value="en">{LOCALES.en.label}</SelectItem>
+            <SelectItem value={SYSTEM_LANGUAGE_MODE}>
+              {t('preferences.followSystemLanguage')}
+            </SelectItem>
           </SelectContent>
         </Select>
       </div>

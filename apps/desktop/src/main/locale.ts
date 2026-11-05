@@ -11,15 +11,12 @@ import type { LocaleSignals } from '../locale'
 import type { PreferenceLanguage } from '../preferences'
 
 export function collectLocaleSignals(): LocaleSignals {
-  // getPreferredSystemLanguages 在部分 Linux 桌面会返回空数组，此时退回单一 getLocale。
-  const preferred = app.getPreferredSystemLanguages()
   return {
     timeZone: readTimeZone(),
-    languages: preferred.length ? preferred : [app.getLocale()]
+    languages: app.getPreferredSystemLanguages(),
   }
 }
 
-/** 首次运行（无已持久化选择）时的默认界面语言。 */
 export function detectRendererLanguage(): PreferenceLanguage {
   return detectPreferenceLanguage(collectLocaleSignals())
 }

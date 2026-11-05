@@ -1,6 +1,7 @@
 import {
   rendererPreferencesEqual,
   sanitizeRendererPreferences,
+  SYSTEM_LANGUAGE_MODE,
   type RendererPreferences,
 } from './preferences.ts'
 import {
@@ -35,6 +36,8 @@ export class PreferenceWriter {
   private pending: Partial<RendererPreferences> = {}
   private retryPatch: Partial<RendererPreferences> = {}
   private needsReconciliation = false
+  private systemLanguageRefresh: (() => boolean) | undefined
+  private retrySystemLanguageRefresh: (() => boolean) | undefined
   private running: Promise<void> | undefined
   private frozen = false
   private revision = 0
@@ -102,6 +105,8 @@ export class PreferenceWriter {
 
   retry(): Promise<void> {
     if (this.frozen) return Promise.resolve()
+    if (this.retrySystemLanguageRefresh)
+      this.systemLanguageRefresh = this.retrySystemLanguageRefresh
     this.pendingSources.add(PREFERENCE_SUBMISSION_SOURCE.retry)
     const generation = ++this.intentGeneration
     for (const key of Object.keys(this.retryPatch) as (keyof RendererPreferences)[])
@@ -118,6 +123,13 @@ export class PreferenceWriter {
 
   current(): RendererPreferences {
     return this.committed
+  }
+
+  refreshSystemLanguage(canApply: () => boolean): Promise<void> {
+    if (this.frozen || this.committed.languageMode !== SYSTEM_LANGUAGE_MODE || !canApply())
+      return Promise.resolve()
+    this.systemLanguageRefresh = canApply
+    return this.start()
   }
 
   isFrozen(): boolean {
@@ -146,7 +158,11 @@ export class PreferenceWriter {
     diagnostics.completed('freeze')
     await diagnostics.run('flush', async () => {
       while (this.running) await this.running
-      if (Object.keys(this.retryPatch).length || this.needsReconciliation)
+      if (
+        Object.keys(this.retryPatch).length ||
+        this.needsReconciliation ||
+        this.retrySystemLanguageRefresh
+      )
         throw new Error(PREFERENCE_SHUTDOWN_ERROR.unsaved)
     })
     createDiagnostics().completed('flush')
@@ -157,7 +173,7 @@ export class PreferenceWriter {
     if (!this.running) {
       this.running = this.drain().finally(() => {
         this.running = undefined
-        if (Object.keys(this.pending).length) void this.start()
+        if (Object.keys(this.pending).length || this.systemLanguageRefresh) void this.start()
       })
     }
     return this.running
@@ -167,7 +183,11 @@ export class PreferenceWriter {
     return this.port.apply(value, () => {
       const automatic: Partial<RendererPreferences> = {}
       for (const [key, intent] of this.fieldIntents)
-        if (key !== 'language' && intent.source === PREFERENCE_SUBMISSION_SOURCE.automatic)
+        if (
+          key !== 'language' &&
+          key !== 'languageMode' &&
+          intent.source === PREFERENCE_SUBMISSION_SOURCE.automatic
+        )
           Object.assign(automatic, { [key]: intent.value })
       return sanitizeRendererPreferences(
         { ...this.committed, ...automatic },
@@ -195,8 +215,57 @@ export class PreferenceWriter {
           this.matches(this.acknowledgedPreferences, confirmation.patch)
   }
 
+  private async refreshLanguage(canApply: () => boolean): Promise<void> {
+    if (
+      this.frozen ||
+      this.needsReconciliation ||
+      this.committed.languageMode !== SYSTEM_LANGUAGE_MODE ||
+      !canApply()
+    )
+      return
+    const diagnostics = new PreferenceDiagnostics('renderer', this.port.diagnostic)
+    const previous = this.committed
+    let projectionStarted = false
+    try {
+      const current = await diagnostics.run('reconcile', () => this.port.reconcile())
+      if (
+        this.frozen ||
+        !canApply() ||
+        current.languageMode !== SYSTEM_LANGUAGE_MODE ||
+        (current.language === previous.language && !this.retrySystemLanguageRefresh)
+      )
+        return
+      this.committed = { ...previous, language: current.language }
+      projectionStarted = true
+      await diagnostics.run('reconcile-apply', () => this.apply(this.committed))
+      this.acknowledgedPreferences = {
+        ...this.acknowledgedPreferences,
+        language: current.language,
+      }
+      this.retrySystemLanguageRefresh = undefined
+      diagnostics.completed('reconcile')
+    } catch {
+      this.committed = previous
+      this.retrySystemLanguageRefresh = canApply
+      if (projectionStarted) {
+        try {
+          await diagnostics.run('reconcile-apply', () => this.apply(previous))
+        } catch {
+          this.retrySystemLanguageRefresh = canApply
+        }
+      }
+      this.port.failed()
+    }
+  }
+
   private async drain(): Promise<void> {
-    while (Object.keys(this.pending).length) {
+    while (Object.keys(this.pending).length || this.systemLanguageRefresh) {
+      if (!Object.keys(this.pending).length) {
+        const refresh = this.systemLanguageRefresh
+        this.systemLanguageRefresh = undefined
+        if (refresh) await this.refreshLanguage(refresh)
+        continue
+      }
       let diagnostics = new PreferenceDiagnostics('renderer', this.port.diagnostic)
       if (this.needsReconciliation) {
         try {
@@ -258,6 +327,7 @@ export class PreferenceWriter {
         this.committed = saved
         this.retireIntents(patch, generation)
         await diagnostics.run('apply', () => this.apply(saved))
+        this.retrySystemLanguageRefresh = undefined
         this.confirm(generation, saved)
         diagnostics.completed('save')
         for (const key of Object.keys(patch) as (keyof RendererPreferences)[])

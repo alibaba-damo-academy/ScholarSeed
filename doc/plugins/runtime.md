@@ -1,60 +1,60 @@
 ---
 id: reference-plugin-runtime
-title: Plugin 运行原理
+title: How Plugins Run
 doc_type: design
 category: skills
 status: active
 keywords: [skill, sdk, hil]
-summary: 了解 AI、插件组件与书深前后端怎样协作，以及回答和版本如何流转。
+summary: Understand how the AI, plugin components, and ScholarSeed exchange data, state, answers, and versions.
 ---
 
-# Plugin 运行原理
+# How Plugins Run
 
-[Plugin 概览](../plugins.md)
+**English** · [简体中文](runtime.zh.md) · [Read offline](../plugins.html#runtime)
 
-AI 按 Skill 的指令发起请求，书深后端校验后，在书深对话界面展示卡片。用户提交选择后，AI 根据回答继续完成任务。
+[Plugin Overview](../plugins.md)
 
-![自定义 Plugin 从用户任务、AI 与命令行调用，到后端校验、对话卡片及回答回传的链路](../assets/plugins/runtime-v2.png)
+The AI follows the Skill to issue a request. After backend validation, ScholarSeed displays a conversation card. The user's answer returns to the AI so it can continue the task.
 
-以[论文阅读笔记](create.md)为例：AI 请求 `reading.focus` → 书深后端检查数据 → 对话界面加载 `focus.js` → 用户选择“理解方法” → 后端返回 `{focus: "method"}` → AI 生成方法笔记。
+For the [paper-reading-notes example](create.md): request `reading.focus` → validate the request → load `focus.js` → choose **Understand the method** → return `{focus: "method"}` → generate method notes.
 
-## 从加载到绘制
+## From Loading to Rendering
 
-1. 安装检查通过后，用户确认安装并启用。AI 在真实任务中发现并使用 Skill。
-2. AI 查询组件目录，向可用 slot 发出请求；公共业务卡片由领域工具驱动。
-3. 书深固定本次交互的插件和 UI 资源版本：自定义组件在隔离 iframe 中加载包内 entry；公共卡片使用书深前端实现，不提供包内 entry。
-4. 自定义组件通过 `mount(render)` 接收快照、切换语言和主题并绘制到 `#root`。不要同时创建第二个 React root 或重复订阅渲染链。
+1. The package passes installation checks and the user confirms installation and enables it. The AI discovers and uses the Skill during a real task.
+2. The AI queries the component catalog and requests an available slot. Public business cards are driven by domain tools.
+3. ScholarSeed pins the plugin and UI resource versions for the interaction. Custom components load their package entry in an isolated iframe; public cards use ScholarSeed's implementation and have no package entry.
+4. Custom components use `mount(render)` to receive snapshots and render into `#root`, including language and theme changes. Do not create a second React root or duplicate render subscriptions.
 
-`component/request` 等待用户回答；`component/display` 只展示。发布记录不表示相关业务已经完成。
+`component/request` waits for an answer; `component/display` only displays content. A published record does not prove the business operation completed.
 
-## 处理草稿与回答
+## Drafts and Answers
 
-| 数据 | 用途 | 校验 |
+| Data | Purpose | Validation |
 | --- | --- | --- |
-| data | 书深传给组件的业务输入 | 组件 input_schema |
-| draft | 已保存的界面草稿 | 保存流程；不是批准或执行结果 |
-| values | 用户提交的值 | 动作 input_schema；interaction.answer 还校验组件 output_schema |
-| {action, values} | 回到 AI 的回答信封 | 书深后端封装；不要把外层信封写进 values 的 schema |
+| `data` | Business input provided by ScholarSeed | Component `input_schema` |
+| `draft` | Saved UI draft | Draft-saving flow; not approval or an execution result |
+| `values` | Submitted values | Action `input_schema`; `interaction.answer` also validates component `output_schema` |
+| `{action, values}` | Answer envelope returned to the AI | Wrapped by the backend; do not include this outer envelope in the `values` schema |
 
-使用 `onState` 接收当前快照及后续 data、draft、status、language、slot、theme。使用 mount 时，渲染订阅已经接好。
+Use `onState` for the current snapshot and subsequent `data`, `draft`, `status`, `language`, `slot`, and `theme` updates. `mount` already connects the render subscription.
 
-- `save(values)` 保存草稿，不让 AI 继续；失败时保留输入。
-- `submit(actionId, values)` 回答当前交互，仅在 pending 时提交；完成情况看后续状态。
-- 主题、语言或状态更新不能清空未保存输入，旧保存回执不能覆盖更新的编辑。
-- 取消、失败、过期或未知结果，不推进依赖这个回答的步骤。
+- `save(values)` saves a draft without continuing the AI task. Preserve input on failure.
+- `submit(actionId, values)` answers the current interaction. Submit only while pending; determine completion from subsequent state.
+- Theme, language, and state updates must not clear unsaved input. An old save response must not overwrite newer edits.
+- Do not advance dependent steps after cancellation, failure, expiration, or an unknown result.
 
-方法签名与返回值见[前端 SDK](api.md#前端-sdk)。
+See the [frontend SDK](api.md#frontend-sdk) for signatures and return values.
 
-## 更新和旧卡片
+## Updates and Historical Cards
 
-修改插件后递增 Skill 与描述符版本，重新生成 ZIP 和摘要，通过新安装卡片或技能中心确认更新。slot 冲突或更新失败时保留旧版，不静默接管其他插件。
+Increment the Skill and descriptor versions, rebuild the ZIP and digest, and confirm the update through a new installation card or the Skills center. Preserve the old version on a slot conflict or update failure; do not silently take over another plugin.
 
-旧交互固定原插件、UI 资源、数据、草稿和动作语义；新版不能重新解释旧回答。关闭插件只阻止新绑定，旧卡仍需当前权限和状态校验，不等于授权永久有效。
+Historical interactions retain their original plugin version, UI resources, data, draft, and action semantics. New versions must not reinterpret old answers. Disabling prevents new bindings, but old cards still require current permission and state checks; their authorization is not permanent.
 
-## 权限边界
+## Permission Boundaries
 
-组件只能使用书深给出的数据和已声明且已接通的动作。iframe 没有 Node、Electron、preload 或父文档权限，不是任意文件、HTTP 或命令代理。
+Components can use only supplied data and actions that are both declared and actually connected. Their iframe has no Node, Electron, preload, or parent-document privileges. It is not an arbitrary file, HTTP, or command proxy.
 
-Skill 调用后端与前端 SDK 是两个调用面；声明 capability 不会自动接通处理器或授予业务权限。本协议没有全局事件拦截、工具重写或自动批准接口。
+Skill backend calls and frontend SDK calls are separate interfaces. Declaring a capability neither connects a handler nor grants business permissions. This protocol has no global event interception, tool rewriting, or automatic approval API.
 
-接下来：[可用 API](api.md) · [测试状态与更新](testing.md)。
+Next: [Available APIs](api.md) · [Testing and Updates](testing.md).

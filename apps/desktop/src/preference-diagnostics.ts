@@ -9,6 +9,7 @@ export const PREFERENCE_FIELDS = [
   ...Object.keys(DEFAULT_RENDERER_PREFERENCES),
   'onboarding',
   'reasoningPreferences',
+  'languageMode',
 ] as (keyof RendererPreferences)[]
 export const PREFERENCE_SUBMISSION_SOURCE = {
   explicit: 'explicit',

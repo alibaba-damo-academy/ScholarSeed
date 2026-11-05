@@ -136,6 +136,7 @@ CODEX_STDERR_DIAGNOSTIC_CHANNEL = "stderr"
 
 
 RPC_METHOD_NOT_FOUND = -32601
+SANDBOX_EXECUTION_METHOD = "command/exec"
 
 
 RPC_INVALID_PARAMS = -32602
@@ -341,6 +342,12 @@ class AppServerError(RuntimeError):
         generation: int = 0,
         rpc_code: int | None = None,
         rpc_latency_ms: int = 0,
+        rpc_request_id: int | None = None,
+        rpc_pid: int | None = None,
+        native_reason: str = "",
+        native_stage: str | None = None,
+        native_code_type: str | None = None,
+        native_code: int | None = None,
         retryability: RuntimeRetryability = RuntimeRetryability.USER_RETRYABLE,
         submission_not_applied: bool = False,
     ) -> None:
@@ -350,6 +357,12 @@ class AppServerError(RuntimeError):
         self.generation = generation
         self.rpc_code = rpc_code
         self.rpc_latency_ms = rpc_latency_ms
+        self.rpc_request_id = rpc_request_id
+        self.rpc_pid = rpc_pid
+        self.native_reason = native_reason
+        self.native_stage = native_stage
+        self.native_code_type = native_code_type
+        self.native_code = native_code
         self.retryability = retryability
         self.submission_not_applied = submission_not_applied
 

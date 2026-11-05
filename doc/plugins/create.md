@@ -1,78 +1,78 @@
 ---
 id: guide-plugin-create
-title: 创建 Plugin
+title: Create a Plugin
 doc_type: design
 category: skills
 status: active
 keywords: [skill, sdk, hil]
-summary: 让 AI 生成插件，或按四文件示例自己编写并交付。
+summary: Generate a plugin with AI, or write and package the complete four-file example.
 ---
 
-# 创建 Plugin
+# Create a Plugin
 
-[Plugin 概览](../plugins.md)
+**English** · [简体中文](create.zh.md) · [Read offline](../plugins.html#create)
 
-本教程创建一个**论文阅读笔记**插件：用户提供论文材料，选择“理解方法”或“核对证据”，AI 按阅读重点生成带来源的笔记。
+[Plugin Overview](../plugins.md)
 
-## 让 AI 创建
+This tutorial builds **paper-reading-notes**. A user supplies a paper or excerpt, chooses **Understand the method** or **Check the evidence**, and receives focused notes with source locations.
 
-在书深对话中发送：
+## Ask the AI to Create It
 
-> 请使用 plugin-create 创建 paper-reading-notes 插件。用户提供论文或摘录后，先用卡片询问阅读重点：“理解方法”或“核对证据”。理解方法时整理研究问题、方法步骤和适用条件；核对证据时整理主要结论、对应证据和局限。笔记附上页码或段落位置，材料未提到的内容标为未说明。生成源码、检查并打包 ZIP，再提供安装卡片。
+Send this in a ScholarSeed conversation:
 
-AI 会生成 Skill、描述符、组件和场景。检查交付的源码和报告后，在安装卡片中确认安装。
+> Use plugin-create to create a paper-reading-notes plugin. After the user supplies a paper or excerpt, show a card asking for a reading focus: Understand the method or Check the evidence. For method notes, summarize the research question, method steps, and applicable conditions. For evidence notes, summarize conclusions, supporting evidence, and limitations. Include page or paragraph locations and mark missing information as not stated. Generate the source, validate and package the ZIP, then provide an installation card.
 
-要修改它，在同一对话继续指名 `plugin-create` 并描述变更；不用重新创建一个相同身份的插件。
+The AI generates the Skill, descriptor, component, and scenarios. Review the source and reports before confirming installation. To revise it, ask `plugin-create` for changes in the same conversation; do not create a second plugin with the same identity.
 
-## 自己编写
+## Write It Yourself
 
-在安装了目标版本书深后端的 Python 环境中，查询 `host` 字段需要填写的值：
+In a Python environment with the target ScholarSeed backend installed, obtain the required `host` value:
 
 ```sh
 python -c "from importlib.metadata import version; print('==' + version('scholarseed'))"
 ```
 
-创建以下文件：
+Create these files:
 
 ```text
-paper-reading-notes/                 # 插件源码，也是打包输入目录
-├── SKILL.md                         # 论文阅读流程与笔记要求
-├── .scholarseed-plugin.json          # 插件身份、兼容设置、卡片与动作
+paper-reading-notes/                 # Source and package input directory
+├── SKILL.md                         # Reading workflow and note requirements
+├── .scholarseed-plugin.json          # Identity, compatibility, cards, and actions
 └── components/
-    ├── focus.js                     # 阅读重点选择卡片
-    └── focus.preview.json           # 卡片的示例输入与提交样例
-request.json                        # 校验用请求，放在插件目录外
+    ├── focus.js                     # Reading-focus card
+    └── focus.preview.json           # Example input and submissions
+request.json                        # Validation request, outside the plugin directory
 ```
 
-`.scholarseed-package.json` 是打包工具生成的包清单，不需要手写。
+The packaging tool generates `.scholarseed-package.json`; do not write it by hand.
 
 ### 1 SKILL.md
 
-`SKILL.md` 使用[标准 Skill 格式](https://agentskills.io/specification)（[GitHub](https://github.com/agentskills/agentskills)）。
+Use the [standard Skill format](https://agentskills.io/specification) ([source](https://github.com/agentskills/agentskills)). This is an example inside the plugin, not a modification to ScholarSeed's bundled Skills.
 
 ```markdown
 ---
 name: paper-reading-notes
-description: 按用户选择的阅读重点，为论文或摘录整理方法笔记或证据笔记。
+description: Produce method notes or evidence notes for a paper or excerpt, according to the user's chosen reading focus.
 version: "0.1.0"
 ---
 
-# 论文阅读笔记
+# Paper Reading Notes
 
-1. 确认用户提供的论文或摘录；缺少材料时请用户补充。
-2. 查询 component/catalog，确认 reading.focus 可用。
-3. 使用 component/request 发布“选择阅读重点”卡片，传入 question 和唯一 request_id。
-4. 等待回答，从 result.answers 解析 JSON {action, values}。
-5. action 为 confirm 时，按 values.focus 生成笔记：
-   - method：研究问题、方法步骤、适用条件。
-   - evidence：主要结论、对应证据、研究局限。
-6. 为每条笔记附上页码或段落位置；材料未说明的内容标为“未说明”。
-7. 收到取消或失败结果时停止；仅有摘要或摘录时，注明笔记覆盖的材料范围。
+1. Confirm the supplied paper or excerpt; ask for materials if missing.
+2. Query component/catalog and check that reading.focus is available.
+3. Use component/request to publish a reading-focus card with a question and unique request_id.
+4. Wait for the answer and parse JSON {action, values} from result.answers.
+5. When action is confirm, use values.focus to generate:
+   - method: research question, method steps, and applicable conditions.
+   - evidence: conclusions, supporting evidence, and limitations.
+6. Include page or paragraph locations for every note. Mark missing information as not stated.
+7. Stop on cancellation or failure. If only an abstract or excerpt is available, state that coverage limit.
 ```
 
 ### 2 .scholarseed-plugin.json
 
-描述符声明插件身份、卡片入口和输入输出。复制下面的内容，将 `__HOST__` 替换为上方命令的完整输出。
+The descriptor declares identity, card entry, and input/output contracts. Replace `__HOST__` with the complete output of the command above, including `==`.
 
 ```json
 {
@@ -122,45 +122,45 @@ version: "0.1.0"
 }
 ```
 
-#### 顶层字段
+#### Top-Level Fields
 
-| 字段 | 含义 | 本教程怎么填 |
+| Field | Meaning | Value in this example |
 | --- | --- | --- |
-| `schema` | 书深使用的描述符格式版本 | 填数字 `2`。 |
-| `host` | 插件支持的书深后端版本 | 复制查询命令的完整输出，包含开头的 `==`。 |
-| `id` | 插件的唯一名称 | 填 `paper-reading-notes`，与 Skill 的 `name` 一致。更新时保持不变。 |
-| `version` | 插件自身的发布版本 | 填 `0.1.0`，与 Skill 和打包命令一致；发布更新时递增。 |
-| `skill` | Skill 入口路径 | 填 `SKILL.md`。 |
-| `ui.compatibility` | 书深 UI 接口版本 | 填 `"1.0"`。 |
-| `ui.exports` | 组件使用的官方 UI 导出 | 填 `React`、`mount`、`Button`；增加控件时同步补充。 |
-| `capabilities` | 卡片动作需要的能力 | 此例只提交用户选择，填 `["interaction.answer"]`。 |
-| `components` | 卡片列表 | 此例声明一张 `focus` 卡片，字段见下表。 |
-| `configuration` | 可选的配置项声明 | 此例没有配置，填 `[]`。 |
+| `schema` | Descriptor format | The number `2`. |
+| `host` | Supported backend distribution version | The exact queried version, prefixed by `==`. |
+| `id` | Unique plugin name | `paper-reading-notes`, matching the Skill name; preserve it on updates. |
+| `version` | Plugin release version | `0.1.0`, matching the Skill and packaging command; increment for updates. |
+| `skill` | Skill entry path | `SKILL.md`. |
+| `ui.compatibility` | ScholarSeed UI API version | `"1.0"`. |
+| `ui.exports` | Official exports used by the component | `React`, `mount`, and `Button`; update when adding controls. |
+| `capabilities` | Capabilities required by card actions | `["interaction.answer"]`. |
+| `components` | Cards | One `focus` component, described below. |
+| `configuration` | Optional configuration declarations | `[]` in this example. |
 
-#### 每张卡片的字段
+#### Card Fields
 
-| 字段 | 怎么填 |
+| Field | How to set it |
 | --- | --- |
-| `id` | 插件内唯一的组件名称，此例填 `focus`。 |
-| `slot` | AI 请求卡片时使用的名称，此例填 `reading.focus`。使用两个以点分隔的名称段，各段以小写字母开头，可包含数字和连字符。 |
-| `public` | 默认 `false`。自己的组件保持默认；引用[公共卡片](cards.md#公共业务-slot)才设为 `true`，使用已有公共 slot，并且不能提供 `entry`。 |
-| `entry` | 界面的 JavaScript 路径，此例填 `components/focus.js`。 |
-| `preview` | 检查场景的 JSON 路径，此例填 `components/focus.preview.json`。 |
-| `input_schema` | 卡片 `data` 的 JSON Schema；省略时默认为对象。写清必填字段和允许的数据类型。 |
-| `output_schema` | 用户回答中 `values` 的 JSON Schema；省略时默认为对象。不要套上 `{action, values}` 外层信封。 |
-| `actions` | 动作数组，默认 `[]`。每项的 `id` 是代码传给 `submit` 或 `request` 的名称；`capability` 必须出现在顶层能力数组；`input_schema` 校验该动作的 `values`，默认对象。动作 ID 在卡片内唯一。 |
+| `id` | Component name, unique within the plugin: `focus`. |
+| `slot` | Name requested by the AI: `reading.focus`. Use two dot-separated segments; each starts with a lowercase letter and may contain digits or hyphens. |
+| `public` | Defaults to `false`. Set `true` only to reference an existing [public card](cards.md#public-business-slots), using its slot and no `entry`. |
+| `entry` | Relative JavaScript path: `components/focus.js`. |
+| `preview` | Scenario JSON path: `components/focus.preview.json`. |
+| `input_schema` | JSON Schema for card `data`; defaults to an object. Declare required fields and types. |
+| `output_schema` | JSON Schema for answer `values`; defaults to an object. Do not wrap it in `{action, values}`. |
+| `actions` | Defaults to `[]`. Each action has a unique `id` used by `submit` or `request`, a `capability` declared at top level, and an `input_schema` for its `values` (default object). |
 
-例如 `submit("confirm", {focus: "method"})`：`confirm` 对应动作 ID，`{focus: "method"}` 同时接受动作和卡片输出 schema 的校验。
+For `submit("confirm", {focus: "method"})`, `confirm` is the action ID. Both the action schema and component output schema validate `{focus: "method"}`.
 
-#### 配置项与填写约束
+#### Configuration and Validation Rules
 
-需要声明配置时，每项填写 `key`（唯一名称）、`type`（`string`、`integer` 或 `boolean`）、`label`（显示名称），可附 `required` 和同类型的 `default`。配置声明目前不提供设置页面或值的存取接口。
+Each configuration declaration needs a unique `key`, a `type` (`string`, `integer`, or `boolean`), and a display `label`. It may include `required` and a `default` of the declared type. Declarations currently do not provide a settings page or value read/write API.
 
-描述符不接受未知字段。资源路径使用 `/`，相对插件根目录，不使用 `..`、绝对路径或 Windows 保留名。Schema 不使用 `$ref` 或 `$dynamicRef`；改动后重新运行检查。
+Unknown descriptor fields are rejected. Resource paths use `/` and are relative to the plugin root; no `..`, absolute paths, or Windows reserved names. Schemas cannot use `$ref` or `$dynamicRef`. Revalidate after edits.
 
 ### 3 components/focus.js
 
-按钮把所选方式提交给书深；仅在 pending 状态允许操作。需要可编辑表单时，再接入[草稿与状态](runtime.md#处理草稿与回答)。
+The buttons submit the chosen focus. Actions are enabled only while pending. For editable forms, also handle [drafts and state](runtime.md#drafts-and-answers).
 
 ```javascript
 (() => {
@@ -187,13 +187,15 @@ version: "0.1.0"
 })();
 ```
 
+The example intentionally includes both Chinese and English button labels, selected using the language supplied by ScholarSeed.
+
 ### 4 components/focus.preview.json
 
-场景文件为 `focus.js` 提供检查数据，通过描述符的 `preview` 字段关联。`data` 是示例输入，`responses` 是模拟动作响应，`submissions` 是待检查的提交值。正式对话使用实际请求数据，不读取这个文件。
+The descriptor's `preview` field connects this scenario to `focus.js`. `data` is sample input, `responses` simulates action responses, and `submissions` lists values to validate. A real conversation uses actual request data, not this file.
 
 ```json
 {
-  "data": {"question": "这篇论文，你想重点了解什么？"},
+  "data": {"question": "What would you like to focus on in this paper?"},
   "responses": {
     "confirm": {"state": "resolved", "data": {"focus": {"$input": "focus"}}}
   },
@@ -203,9 +205,9 @@ version: "0.1.0"
 }
 ```
 
-## 请求卡片
+## Request the Card
 
-安装并启用后，AI 使用以下 `scholarseed_bridge` 工具参数请求卡片：
+After installation and enabling, the AI requests the card with these `scholarseed_bridge` arguments:
 
 ```json
 {
@@ -215,42 +217,40 @@ version: "0.1.0"
     "request_id": "reading-focus-1",
     "slot": "reading.focus",
     "data": {
-      "question": "这篇论文，你想重点了解什么？"
+      "question": "What would you like to focus on in this paper?"
     },
-    "title": "选择阅读重点",
-    "prompt": "选择后生成对应的论文阅读笔记。"
+    "title": "Choose a reading focus",
+    "prompt": "Choose a focus to generate the corresponding reading notes."
   }
 }
 ```
 
-书深后端返回用户选择后，AI 从 `result.answers` 解析 `{action, values}`，按 `values.focus` 生成方法笔记或证据笔记。
+When the backend returns the answer, parse `{action, values}` from `result.answers` and generate notes according to `values.focus`.
 
-发布前按[API 参考](api.md#查询组件与-slot)检查 `reading.focus` 是否与已启用插件冲突。每次新问题使用不同的 `request_id`。
+Before requesting the card, [preflight the slot](api.md#discover-components-and-slots) for conflicts with enabled plugins. Use a new `request_id` for each new question.
 
-## 检查和打包
+## Validate and Package
 
-把上面 JSON 的**内层 request** 保存为 `request.json`，从插件父目录运行：
+Save the **inner `request` object** above as `request.json`. From the plugin's parent directory, run:
 
 ```sh
 python -m service.cli.plugins validate ./paper-reading-notes/.scholarseed-plugin.json ./request.json
 python -m service.cli.plugins pack ./paper-reading-notes --name paper-reading-notes --version 0.1.0 --output ./paper-reading-notes-0.1.0.zip
 ```
 
-输出 `valid=true` 后，保留 ZIP 和 SHA-256。ZIP 放在源码目录外；发布更新时递增版本并生成新包。
+After `valid=true`, retain the ZIP and SHA-256. Keep the ZIP outside the source directory. Increment the version and build a new package for updates.
 
-`capabilities_unchecked` 表示尚未核验书深运行时的实际能力。离线通过不等于已经安装或运行，下一步仍需[导入并完成端到端测试](testing.md#导入书深并完成第一次对话)。
+`capabilities_unchecked` means runtime capabilities have not been verified. Offline validation is not installation or execution; continue with [a real end-to-end task](testing.md#install-and-complete-a-first-conversation).
 
-## 安装并试用
+## Install and Try It
 
-- **AI 生成**：在已发布的安装卡片上核对报告并确认安装。`published` 只表示卡片已发布。
-- **自己编写**：技能中心 → **添加技能**，选择 ZIP，检查后确认安装。
+- **AI-generated:** Review the report on the installation card and confirm installation. `published` means only that the card was published.
+- **Hand-written:** In the Skills center, choose **Add skill**, select the ZIP, review the checks, and confirm installation.
 
-![书深开发版添加技能弹窗，可选择 ZIP 或文件夹](../assets/plugins/upload.png)
+After enabling the plugin, send:
 
-安装并启用后，发送：
+> Please use paper-reading-notes to make reading notes for the paper I just uploaded. Let me choose the reading focus first.
 
-> 请使用 paper-reading-notes 为我刚上传的论文整理阅读笔记，先让我选择阅读重点。
+**Understand the method** should produce the research question, method steps, and applicable conditions. **Check the evidence** should produce conclusions, evidence, and limitations. Both must include source locations. Follow [Test a Plugin](testing.md#install-and-complete-a-first-conversation) for the complete checks.
 
-选择“理解方法”后，应得到研究问题、方法步骤和适用条件；选择“核对证据”后，应得到结论、证据和局限。两类笔记都应包含来源位置。完整检查步骤见[Plugin 测试](testing.md#导入书深并完成第一次对话)。
-
-接下来：[公共对话卡片](cards.md) · [运行原理](runtime.md)。
+Next: [Public Conversation Cards](cards.md) · [How Plugins Run](runtime.md).

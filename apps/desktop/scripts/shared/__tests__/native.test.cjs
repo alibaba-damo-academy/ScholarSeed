@@ -9,6 +9,7 @@ const leaseModule = import('../lease.mjs')
 const {
   compileNative,
   nativeBuildDirectory,
+  cleanupNativeBuild,
   validateDarwinToolchain,
   supportsNoDefaultConfig,
   invoke,
@@ -208,6 +209,23 @@ test('native command termination retains platform exit and signal metadata in th
     }
   )
 })
+test('native cleanup retains the original command failure and secondary cleanup diagnostics', (t) => {
+  const failure = Object.assign(new Error('blocked executable\n[native-command] details'), { code: 'UNKNOWN' })
+  const cleanup = Object.assign(new Error('locked build directory'), { code: 'EPERM' })
+  t.mock.method(fs, 'rmSync', () => { throw cleanup })
+  cleanupNativeBuild('unused-build-fixture', failure)
+  assert.equal(failure.code, 'UNKNOWN')
+  assert.match(failure.message, /blocked executable\n\[native-command\] details/)
+  assert.match(failure.message, /\[native-cleanup\] locked build directory/)
+  assert.equal(failure.cleanupError, cleanup)
+})
+
+test('native cleanup failure still rejects an otherwise successful build', (t) => {
+  const cleanup = Object.assign(new Error('locked build directory'), { code: 'EPERM' })
+  t.mock.method(fs, 'rmSync', () => { throw cleanup })
+  assert.throws(() => cleanupNativeBuild('unused-build-fixture'), error => error === cleanup)
+})
+
 test('native successful commands retain their trimmed output contract', () => {
   assert.equal(
     invoke(process.execPath, ['-e', 'process.stdout.write(" result \\n")'], process.env),

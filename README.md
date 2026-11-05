@@ -163,7 +163,7 @@ The executable Agent provider currently included by ScholarSeed is Codex. Runtim
 
 ## Requirements
 
-Git, **Node.js 24.16.0** (including npm/npx), **uv ≥ 0.12.11**, and native build tools for your platform (Xcode Command Line Tools on macOS). The commands below use **pnpm 12.14.0** without requiring a global installation. See the [development guide](CONTRIBUTING.md#environment-setup) for setup instructions.
+Git, **Node.js 24.16.0**, **pnpm 12.14.0**, **uv ≥ 0.12.11**, and native build tools for your platform (Xcode Command Line Tools on macOS). See the [development guide](CONTRIBUTING.md#environment-setup) for setup instructions.
 
 On macOS, install the command-line tools before your first source run and complete the system dialog (skip this if a working Xcode toolchain is already installed):
 
@@ -178,12 +178,11 @@ On Windows x64, follow the [Windows setup commands](CONTRIBUTING.md#windows); th
 ```bash
 git clone https://github.com/alibaba-damo-academy/ScholarSeed.git
 cd ScholarSeed
-npx --yes pnpm@12.14.0 install --frozen-lockfile
-npx --yes pnpm@12.14.0 ops pre install python --mode desktop
-npx --yes pnpm@12.14.0 dev
+pnpm ops pre
+pnpm ops dev
 ```
 
-The preparation step installs the pinned Python environment; `dev` then builds the bundled Skill pack from repository sources before starting Electron. Do not skip these steps on a fresh clone. The first run needs internet access; no separate Python installation or Git LFS is needed. Keep the terminal running; press Ctrl+C to stop. After launch, configure your model in Settings or sign in to ScholarSeed. For daily development and troubleshooting, see the [development guide](CONTRIBUTING.md).
+`pnpm ops pre` installs the pinned JavaScript/Python dependencies, prepares Office assets, and builds the bundled Skill pack; `pnpm ops dev` starts Electron. On a fresh clone, run both commands in order. For later starts, use `pnpm ops dev`; after updating dependencies or Skill sources, stop the app and rerun `pnpm ops pre` first. The first run needs internet access; no separate Python installation or Git LFS is needed. Keep the terminal running; press Ctrl+C to stop. After launch, configure your model in Settings or sign in to ScholarSeed. For daily development and troubleshooting, see the [development guide](CONTRIBUTING.md).
 
 On Windows, see the specific recovery steps for [Electron download stalls](CONTRIBUTING.md#windows-download-diagnostics), [`stale ACL policy outputs`](CONTRIBUTING.md#windows-checkout-line-endings), and [private build directory rejection](CONTRIBUTING.md#windows-private-build-directory).
 
@@ -214,7 +213,7 @@ Start with a Skill—a set of research workflow instructions. In `SKILL.md`, des
 
 Plugins are currently in developer preview. See the [plugin guide (Chinese)](doc/plugins.md) for development and installation.
 
-Research Skill sources are located in `skills/community/`. Build the Skill pack with `npx --yes pnpm@12.14.0 ops cd build local --target skills` and check its consistency with the source using `npx --yes pnpm@12.14.0 ops ci check skills product --mode source`.
+Research Skill sources are located in `skills/community/`. Build the Skill pack with `pnpm ops cd build local --target skills` and check its consistency with the source using `pnpm ops ci check skills product --mode source`.
 
 ### Take Actions in ScholarSeed, Not Just Generate Content
 
