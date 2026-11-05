@@ -100,9 +100,61 @@ npx --yes pnpm@12.14.0 dev
 | `uv: command not found` | 将 uv 安装目录加入 PATH，在启动应用的终端确认 `uv --version`。 |
 | 未找到内置技能 | 先停止 Electron，再重跑上面的 Python 准备和 `dev` 命令。全新克隆不能只执行 `ops dev`，也不要将用户技能手工复制进内置技能包。 |
 | 下载失败 | 根据日志中的失败 URL 检查网络／代理，恢复访问后重跑原命令，不绕过摘要校验。 |
+| 安装停在 `scripts/pre/electron.cjs` / `Running...` | 见 [Windows 下载排查](#windows-下载排查)。此阶段会单独下载 Electron 二进制，不是 npm 包下载已完成就能启动。 |
+| Windows 报 `stale ACL policy outputs` | 见 [Windows 检出换行](#windows-检出换行)。不要为消除报错而重新生成已审核的安全产物。 |
+| `native.compile` 报 `writable or replaceable private state ACL` | 见 [Windows 私有构建目录](#windows-私有构建目录)。这是实际文件系统权限被拒绝，与换行不匹配不同。 |
 | 构建提示环境被占用 | 先在开发终端按 Ctrl+C 停止实例，再打包；不要删除活跃进程的锁。 |
 
 可通过 `SCHOLARSEED_ARTIFACT_CACHE` 指定运行时制品缓存目录。`pnpm ops dev` 默认启用 DevTools 和会话 ID 复制按钮，可设置 `SCHOLARSEED_DEVTOOLS=0` 关闭。排错时不要删除用户数据或覆盖模型凭据。
+
+### Windows 下载排查
+
+`Packages ... done` 不代表安装结束：Electron 的 postinstall 还会下载对应平台的二进制，pnpm 可能折叠内层日志。GitHub 克隆超时与 Electron release 下载超时是两个独立的网络故障；npm 的 `email` 警告、可选 Playwright Skill 的审批提示，都不能证明是下载卡住的原因。
+
+如果原安装仍在运行，先按 Ctrl+C 停止该命令，再重试。在仓库根目录的 PowerShell 中显示下载 URL，并保留展开的日志：
+
+```powershell
+$env:DEBUG = '@electron/get*'
+npx.cmd --yes pnpm@12.14.0 install --frozen-lockfile --reporter=append-only
+```
+
+根据日志中的 URL 检查已获准使用的网络／代理。如果无法访问 GitHub release 下载，且组织允许使用 npm 镜像，可在同一个 PowerShell 会话中设置以下变量，再重试安装命令：
+
+```powershell
+$env:ELECTRON_MIRROR = 'https://npmmirror.com/mirrors/electron/'
+```
+
+仅修改 npm 包 registry 不会改变 Electron 二进制的下载 URL。这些设置仅影响当前终端及其子进程，不修改全局配置；新开的 PowerShell 不会继承这些临时覆盖。保留固定 pnpm 版本、生命周期脚本和摘要校验。安装成功退出后，再继续本指南中的 Python 准备和 `dev` 命令。首次 `dev` 还会构建原生模块与前端，应先查看阶段日志，而不是仅凭等待时间判断卡死。
+
+### Windows 检出换行
+
+已审核的 ACL 策略文件及生成产物需要逐字节匹配。旧 Windows 克隆在 `core.autocrlf=true` 时，可能将审核记录要求的 LF 转成 CRLF。当前 `.gitattributes` 已为这些文件固定 LF；不要全局关闭 `core.autocrlf`，也不要移除安全检查。
+
+保存本地工作后，在干净的克隆中执行 `git pull --ff-only` 更新，再检查：
+
+```powershell
+git ls-files --eol -- apps/desktop/native/security.json apps/desktop/native/security.outputs.json apps/desktop/native/security.h apps/desktop/updater/internal/security/evaluate.go apps/serve/service/platform/security.py packages/adapters/codex/scholarseed_codex/permissions.py scripts/shared/security.cjs
+node apps/desktop/scripts/pre/security.cjs --check
+```
+
+工作区预期显示 `w/lf`。旧克隆即使拉取了新属性，也可能保留 `w/crlf`；Git 认为未变化的文件，执行恢复命令也不保证重新写入字节。最稳妥且不破坏原目录的恢复方式，是将最新仓库克隆到一个**新的、尚未使用的目录**，再按本指南安装。保留旧目录中的本地改动和恢复材料，不要把旧 `node_modules`、`.venv` 或生成的安全产物复制到新克隆。如果文件已为 LF 仍然失败，应排查具体策略／产物差异，而不是重写审核记录或跳过校验。
+
+### Windows 私有构建目录
+
+原生编译要求构建目录私有，且祖先目录不可被不受信任的账户替换。如果错误指向 `%TEMP%`，先在 PowerShell 查看权限：
+
+```powershell
+Get-Acl -LiteralPath $env:TEMP | Format-List Owner,AccessToString
+```
+
+部分开发工具会向其他账户授予用户临时目录的写权限。即使当前用户是所有者，这种目录也不适合保存私有编译状态。不要删除其他工具的 ACL 条目、改用管理员运行或关闭权限检查。应先停止失败的开发命令，再在同一终端使用已有的原生构建目录配置：
+
+```powershell
+$env:SCHOLARSEED_NATIVE_BUILD_ROOT = Join-Path $HOME '.ss-debug\native-build'
+npx.cmd --yes pnpm@12.14.0 dev
+```
+
+构建会创建并保护新目录，仍然检查所有者、权限和祖先路径。此设置仅影响当前终端及其子进程，不修改系统临时目录或全局 ACL。如果所选位置也被拒绝，保留报错并与管理员选择真正私有的本地位置，不要放宽策略。此步骤只处理原生构建目录选择，不代表模型认证或应用全部功能已验收。
 
 ## 开发与测试
 

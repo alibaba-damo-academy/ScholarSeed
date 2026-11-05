@@ -100,9 +100,61 @@ If you already have pnpm 12.14.0, you can replace `npx --yes pnpm@12.14.0` with 
 | `uv: command not found` | Add uv's installation directory to PATH and verify `uv --version` in the launch terminal. |
 | Built-in Skill not found | Stop Electron, then rerun the Python preparation and `dev` commands above. Do not use `ops dev` alone on a fresh clone or manually copy user Skills into the bundled pack. |
 | Download failure | Check the failing URL in the log and your network/proxy access. Rerun the same command after restoring access; do not bypass checksum verification. |
+| Install stays at `scripts/pre/electron.cjs` / `Running...` | See [Windows download diagnostics](#windows-download-diagnostics). This stage downloads the Electron binary separately from npm packages. |
+| `stale ACL policy outputs` on Windows | See [Windows checkout line endings](#windows-checkout-line-endings). Do not regenerate reviewed security outputs just to suppress this error. |
+| `writable or replaceable private state ACL` during `native.compile` | See [Windows private build directory](#windows-private-build-directory). This is an actual filesystem permission rejection, not a line-ending mismatch. |
 | Build reports an environment is in use | Stop the development instance with Ctrl+C before packaging; do not delete an active process's lock. |
 
 `SCHOLARSEED_ARTIFACT_CACHE` selects an alternative runtime-asset cache directory. `pnpm ops dev` enables DevTools and the copy-session-ID button by default; set `SCHOLARSEED_DEVTOOLS=0` to disable them. Do not delete user data or overwrite model credentials while troubleshooting.
+
+### Windows download diagnostics
+
+`Packages ... done` does not mean installation has finished: the Electron postinstall downloads its platform binary, and pnpm may collapse the nested output. A GitHub clone timeout and an Electron release download timeout are separate network failures. Neither an npm `email` warning nor the optional Playwright Skill approval notice establishes the cause of a stalled download.
+
+If the original installation is still running, stop that command with Ctrl+C before retrying. From the repository root in PowerShell, show the download URL and keep the log expanded:
+
+```powershell
+$env:DEBUG = '@electron/get*'
+npx.cmd --yes pnpm@12.14.0 install --frozen-lockfile --reporter=append-only
+```
+
+Check access to the URL reported in the log using your approved network/proxy. If GitHub release downloads are unavailable and your organization permits the npm mirror, set the following in the same PowerShell session and retry the install command:
+
+```powershell
+$env:ELECTRON_MIRROR = 'https://npmmirror.com/mirrors/electron/'
+```
+
+Changing the npm package registry alone does not change Electron's binary download URL. These environment settings affect this terminal and its child processes, not global configuration; a new PowerShell terminal starts without these temporary overrides. Keep the pinned pnpm version, lifecycle scripts and checksum verification enabled. After installation exits successfully, continue with the Python preparation and `dev` commands in this guide. The first `dev` also builds native modules and the frontend; inspect its stage output before assuming it has stalled.
+
+### Windows checkout line endings
+
+Reviewed ACL policy files and generated outputs are checked byte-for-byte. Older Windows checkouts with `core.autocrlf=true` can contain CRLF bytes where the reviewed receipt expects LF. The current `.gitattributes` pins these files to LF; do not disable `core.autocrlf` globally or remove the security check.
+
+After saving any local work, update a clean checkout with `git pull --ff-only`, then inspect it:
+
+```powershell
+git ls-files --eol -- apps/desktop/native/security.json apps/desktop/native/security.outputs.json apps/desktop/native/security.h apps/desktop/updater/internal/security/evaluate.go apps/serve/service/platform/security.py packages/adapters/codex/scholarseed_codex/permissions.py scripts/shared/security.cjs
+node apps/desktop/scripts/pre/security.cjs --check
+```
+
+The expected working-tree marker is `w/lf`. An existing checkout can retain `w/crlf` even after pulling the new attributes; restoring a file that Git considers unchanged is not guaranteed to rewrite its bytes. The least destructive recovery is to clone the latest repository into a **new, unused directory** and follow the setup steps there. Keep the old directory for local changes and recovery; do not copy its `node_modules`, `.venv` or generated security outputs into the new clone. If the check still fails with LF files, investigate the reported policy/output differences instead of regenerating the receipt or skipping verification.
+
+### Windows private build directory
+
+Native compilation requires a private directory with non-replaceable ancestors. If the error names `%TEMP%`, inspect its permissions in PowerShell:
+
+```powershell
+Get-Acl -LiteralPath $env:TEMP | Format-List Owner,AccessToString
+```
+
+Some development tools grant other accounts write access to the user temporary directory. Such a directory is unsuitable for private compiler state, even when the current user owns it. Do not remove another tool's ACL entries, run as administrator, or disable the permission check. Instead, stop the failed development command and select the existing native-build override in the same terminal:
+
+```powershell
+$env:SCHOLARSEED_NATIVE_BUILD_ROOT = Join-Path $HOME '.ss-debug\native-build'
+npx.cmd --yes pnpm@12.14.0 dev
+```
+
+The build creates and protects a new directory, and still validates its owner, permissions and ancestors. This setting affects only the current terminal and its child processes; it does not change the system temporary directory or global ACLs. If the selected location is also rejected, retain the error and choose a genuinely private local location with your administrator rather than weakening the policy. This addresses native-build directory selection only, not model authentication or general application acceptance.
 
 ## Development and Testing
 

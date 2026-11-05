@@ -185,6 +185,8 @@ npx --yes pnpm@12.14.0 dev
 
 The preparation step installs the pinned Python environment; `dev` then builds the bundled Skill pack from repository sources before starting Electron. Do not skip these steps on a fresh clone. The first run needs internet access; no separate Python installation or Git LFS is needed. Keep the terminal running; press Ctrl+C to stop. After launch, configure your model in Settings or sign in to ScholarSeed. For daily development and troubleshooting, see the [development guide](CONTRIBUTING.md).
 
+On Windows, see the specific recovery steps for [Electron download stalls](CONTRIBUTING.md#windows-download-diagnostics), [`stale ACL policy outputs`](CONTRIBUTING.md#windows-checkout-line-endings), and [private build directory rejection](CONTRIBUTING.md#windows-private-build-directory).
+
 ## Model and Service Configuration
 
 ScholarSeed requires a model connection that you are authorized to use. Configure the provider endpoint, model name, and credential in the application settings. Local HTTP authentication and model authorization are separate concerns: a healthy local service does not imply that a model account is authorized.
