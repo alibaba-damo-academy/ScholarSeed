@@ -135,8 +135,14 @@ def _included(path: Path, root: Path) -> bool:
     return path.relative_to(root).as_posix() != SKILL_PRODUCT_METADATA_FILE
 
 
-def skill_source_files(directory: Path) -> tuple[SkillSourceFile, ...]:
-    """列出一个技能源码目录里参与打包的全部文件（稳定排序）。"""
+def skill_source_files(
+    directory: Path, *, file_modes: Mapping[Path, int] | None = None
+) -> tuple[SkillSourceFile, ...]:
+    """列出一个技能源码目录里参与打包的全部文件（稳定排序）。
+
+    `file_modes` 使用 `filesystem_path(...).resolve()` 得到的绝对路径作为键，
+    并须覆盖目录下参与清单的每个文件。
+    """
 
     root = filesystem_path(directory).resolve()
     rows: list[SkillSourceFile] = []
@@ -147,12 +153,15 @@ def skill_source_files(directory: Path) -> tuple[SkillSourceFile, ...]:
             raise SkillPackError(f"技能源码不得包含特殊文件: {path.relative_to(root)}")
         if not path.is_file() or not _included(path, root):
             continue
+        mode = _portable_mode(path) if file_modes is None else file_modes.get(path)
+        if type(mode) is not int or mode not in {FILE_MODE, EXECUTABLE_MODE}:
+            raise SkillPackError(f"missing or invalid frozen source mode: {path}")
         rows.append(
             SkillSourceFile(
                 relative=path.relative_to(root).as_posix(),
                 size=path.stat().st_size,
                 sha256=_sha256(path),
-                executable=bool(path.stat().st_mode & stat.S_IXUSR),
+                executable=mode == EXECUTABLE_MODE,
             )
         )
     return tuple(rows)
@@ -162,6 +171,8 @@ def _product_default_files(
     name: str,
     source_files: tuple[SkillSourceFile, ...],
     defaults: Path | None = None,
+    *,
+    file_modes: Mapping[Path, int] | None = None,
 ) -> tuple[SkillSourceFile, ...]:
     """Return product-owned runtime defaults without changing skill source trees."""
 
@@ -169,7 +180,7 @@ def _product_default_files(
     if not root.is_dir():
         return ()
     source_paths = {row.relative for row in source_files}
-    rows = skill_source_files(root)
+    rows = skill_source_files(root, file_modes=file_modes)
     collisions = sorted(source_paths & {row.relative for row in rows})
     if collisions:
         raise SkillPackError(f"产品默认文件不得覆盖技能源码: {name}/" + ", ".join(collisions))
@@ -180,11 +191,16 @@ def _effective_files(
     directory: Path,
     name: str,
     defaults: Path | None = None,
+    *,
+    file_modes: Mapping[Path, int] | None = None,
 ) -> tuple[SkillSourceFile, ...]:
-    source_files = skill_source_files(directory)
+    source_files = skill_source_files(directory, file_modes=file_modes)
     return tuple(
         sorted(
-            (*source_files, *_product_default_files(name, source_files, defaults)),
+            (
+                *source_files,
+                *_product_default_files(name, source_files, defaults, file_modes=file_modes),
+            ),
             key=lambda row: row.relative,
         )
     )
@@ -300,12 +316,17 @@ def _payload_digest(files: list[dict[str, Any]], dependencies: Mapping[str, Any]
     return payload_digest.hexdigest()
 
 
-def source_lock(source: Path = COMMUNITY_SKILLS_DIR) -> dict[str, Any]:
+def source_lock(
+    source: Path = COMMUNITY_SKILLS_DIR, *, file_modes: Mapping[Path, int] | None = None
+) -> dict[str, Any]:
     """由仓库内技能源码生成 lock —— 开源版构建输入的权威记录。
 
     与 Skillhub 版 lock 的区别：``source`` 为 ``repository``，不含 Hub 版本 id、
     ZIP 摘要与安全扫描证据；改为记录逐文件 sha256/size/mode，用于打包期冻结校验
     与产物比对。
+
+    `file_modes` 须覆盖技能源码和产品默认文件两棵树中纳入清单的文件，
+    键为 `filesystem_path(...).resolve()` 得到的绝对路径。
     """
 
     root = filesystem_path(source.expanduser()).resolve()
@@ -332,7 +353,7 @@ def source_lock(source: Path = COMMUNITY_SKILLS_DIR) -> dict[str, Any]:
                 "sha256": row.sha256,
                 "mode": EXECUTABLE_MODE if row.executable else FILE_MODE,
             }
-            for row in _effective_files(directory, name)
+            for row in _effective_files(directory, name, file_modes=file_modes)
         ]
         rows.append(
             {
@@ -424,12 +445,15 @@ def load_source_lock(path: Path) -> dict[str, Any]:
 
 
 def write_source_lock(
-    destination: Path = SKILLS_LOCK_FILE, source: Path = COMMUNITY_SKILLS_DIR
+    destination: Path = SKILLS_LOCK_FILE,
+    source: Path = COMMUNITY_SKILLS_DIR,
+    *,
+    file_modes: Mapping[Path, int] | None = None,
 ) -> Path:
     """把源码 lock 原子写入磁盘，供打包期冻结与产物比对使用。"""
 
     destination = filesystem_path(destination.expanduser())
-    atomic_write(destination, json_bytes(source_lock(source)))
+    atomic_write(destination, json_bytes(source_lock(source, file_modes=file_modes)))
     return destination.expanduser().resolve()
 
 

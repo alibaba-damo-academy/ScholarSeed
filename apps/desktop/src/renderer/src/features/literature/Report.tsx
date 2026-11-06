@@ -3,7 +3,12 @@ import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
 import type { ConversationSearchResult, ResultLibraryState } from '../../contracts/literature'
 import type { LiteratureSearchViewProps } from './Matches'
-import { conversationSearchPapers, searchWarningKeys, RESULT_LABELS } from './result'
+import {
+  conversationSearchPapers,
+  searchCriteria,
+  searchWarningKeys,
+  RESULT_LABELS,
+} from './result'
 
 const SOURCE_LABELS = {
   success: 'result.sourceStatus.success',
@@ -32,8 +37,9 @@ export function ResultReport({
 }): React.JSX.Element {
   const { t } = useTranslation('literature')
   const statusWarningText = statusWarning ? t('result.statusUnavailable') : ''
+  const criteria = searchCriteria(result, t)
   const overview = [
-    ...result.criteria,
+    ...criteria,
     result.selection?.artifact_id
       ? t('result.pending', { count: result.retained })
       : t('result.counts', {
@@ -63,7 +69,7 @@ export function ResultReport({
       : 'failed'
   return (
     <View
-      query={result.criteria[0] || t('result.query')}
+      query={criteria[0] || t('result.query')}
       papers={conversationSearchPapers(result.papers)}
       status={status}
       output={overview}

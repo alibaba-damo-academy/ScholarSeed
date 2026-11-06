@@ -463,7 +463,7 @@ class ProjectRegistry:
 
     # ---- 变更 ----
 
-    def plan_creation(self, name: str) -> ProjectRow:
+    def plan_creation(self, name: str, *, preserve_display_name: bool = False) -> ProjectRow:
         """Freeze identity and location without creating files or catalog rows."""
         display = naming.normalize_display_name(name)
         if not display:
@@ -477,7 +477,11 @@ class ProjectRegistry:
         directory = self.creation_directory(display)
         return ProjectRow(
             project_id=project_id,
-            display_name=directory.name,
+            display_name=(
+                f"{display}{directory.name.removeprefix(naming.creation_stem(display))}"
+                if preserve_display_name
+                else directory.name
+            ),
             dir_root=str(directory),
             layout=ProjectLayout.MANAGED.value,
             created_at=created_at,
@@ -2243,9 +2247,11 @@ class ContentService:
     def projects(self) -> tuple[ProjectRef, ...]:
         return self._registry.projects()
 
-    def plan_project_creation(self, name: str) -> ProjectRow:
+    def plan_project_creation(
+        self, name: str, *, preserve_display_name: bool = False
+    ) -> ProjectRow:
         with self._activities.enter(ActivityDomain.RESOURCE):
-            return self._registry.plan_creation(name)
+            return self._registry.plan_creation(name, preserve_display_name=preserve_display_name)
 
     def preview_project_directory(self, name: str) -> str:
         return str(self._registry.creation_directory(name))

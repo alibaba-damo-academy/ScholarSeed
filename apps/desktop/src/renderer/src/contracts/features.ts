@@ -1,6 +1,6 @@
 import type { ForegroundMessage } from './feedback'
 import type { PublicComponentContribution } from './components'
-import type { PluginReference } from '../../../plugins'
+import type { PluginCopyContent, PluginReference } from '../../../plugins'
 /**
  * Feature 统一贡献协议（开发 7 拥有，开发 1～6 实现）。
  *
@@ -261,6 +261,7 @@ export interface DisplayCardContribution {
 }
 
 export interface InteractionQuestion {
+  presentation?: Record<string, unknown>
   id?: string
   header?: string
   question: string
@@ -274,7 +275,7 @@ export type InteractionDirectPresentation = 'options' | 'primary-secondary'
 /** A feature-scoped refinement of an existing question card. Unmatched cards keep the global behavior. */
 export interface InteractionPolicyContribution {
   id: string
-  title: string
+  title: string | ((localization: i18n) => string)
   matches: (questions: readonly InteractionQuestion[]) => boolean
   /** Optional immediate decision mode. When present, option clicks respond or cancel without a second confirmation. */
   directDecision?: (
@@ -298,6 +299,11 @@ export interface InteractionPolicyContribution {
   ) => string | undefined
   presentQuestion?: (question: InteractionQuestion, localization: i18n) => InteractionQuestion
   presentAnswer?: (question: InteractionQuestion, answer: string, localization: i18n) => string
+  copyQuestion?: (
+    question: InteractionQuestion,
+    data: Record<string, unknown>,
+    localization: i18n
+  ) => PluginCopyContent | null
   /** Optional terminal copy after a feature-owned immediate cancellation succeeds. */
   cancelledLabel?: (question: InteractionQuestion) => string
   complete?: (

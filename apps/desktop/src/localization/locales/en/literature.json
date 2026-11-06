@@ -1,4 +1,25 @@
 {
+  "outlineConfirmation": {
+    "title": "Confirm outline and output settings",
+    "question": "Start writing with the outline above and the output settings below? You can also enter changes to the outline or output settings.",
+    "settings": "Output format: {{format}}; Citation style: {{citationStyle}}.",
+    "required": "Confirm or enter changes. Writing will start only after confirmation.",
+    "timeout_one": "Confirm or enter changes within {{count}} minute. If there is no reply, the workflow will continue with these settings.",
+    "timeout_other": "Confirm or enter changes within {{count}} minutes. If there is no reply, the workflow will continue with these settings.",
+    "confirm": "Start writing with the current plan",
+    "description": "Use the current outline and output settings."
+  },
+  "curation": {
+    "separator": "; ",
+    "header": "Literature library confirmation",
+    "question_one": "AI requests the destructive operation {{operation}}, affecting {{count}} item: {{titles}}. Allow it?",
+    "question_other": "AI requests the destructive operation {{operation}}, affecting {{count}} items: {{titles}}. Allow it?",
+    "unknown": "Unknown items",
+    "confirm": "Confirm execution",
+    "confirmDescription": "Execute immediately. This cannot be undone.",
+    "cancel": "Cancel",
+    "cancelDescription": "Reject this operation and leave the library unchanged."
+  },
   "copyRegistrationFailed": "Could not save the card's copyable text. Retry or reopen the card.",
   "tagFilter": {
     "label": "Filter tags",
@@ -547,6 +568,16 @@
     "missingDescription": "This task may have been deleted in another window."
   },
   "result": {
+    "criteria": {
+      "any": "Any",
+      "separator": "; ",
+      "years": "Years: {{start}}–{{end}}",
+      "limit_one": "Result limit: {{count}} paper",
+      "limit_other": "Result limit: {{count}} papers",
+      "paperTypes": "Paper types: {{values}}",
+      "include": "Key criteria: {{values}}",
+      "exclude": "Exclusions: {{values}}"
+    },
     "unreadable": "Search results are currently unavailable.",
     "retryDescription": "These search results are currently unavailable. Try again.",
     "opening": "Opening search results…",

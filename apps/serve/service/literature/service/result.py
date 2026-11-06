@@ -136,11 +136,28 @@ class SearchSource(SearchRecord):
     candidates: int | None = None
 
 
+SearchCriterionKind = Literal[
+    "intent", "years", "limit", "paper_types", "include_criteria", "exclude_criteria"
+]
+SEARCH_CRITERION_FIELDS: tuple[tuple[SearchCriterionKind, str], ...] = (
+    ("paper_types", "文献类型"),
+    ("include_criteria", "关键条件"),
+    ("exclude_criteria", "排除条件"),
+)
+
+
+class SearchCriterion(SearchRecord):
+    kind: SearchCriterionKind
+    text: str
+    values: list[str]
+
+
 class SearchResult(SearchRecord):
     schema_version: Literal["1.0"] = SEARCH_VERSION
     run_id: str
     round: int = Field(ge=1)
     criteria: list[str]
+    criteria_details: list[SearchCriterion] = Field(default_factory=list)
     status: Literal[
         "success",
         "partial",
@@ -208,22 +225,34 @@ def _relative(value: Any) -> str:
         raise ValueError("literature_result_path_invalid") from error
 
 
-def _criteria(intent: dict) -> list[str]:
-    result = [_text(intent.get("precise_intent"))]
+def _criteria(intent: dict) -> list[SearchCriterion]:
+    result: list[SearchCriterion] = []
+    if precise := _text(intent.get("precise_intent")):
+        result.append(SearchCriterion(kind="intent", text=precise, values=[precise]))
     time = intent.get("time_range") or {}
     if isinstance(time, dict) and (time.get("from_year") or time.get("to_year")):
-        result.append(f"年份：{time.get('from_year') or '不限'}–{time.get('to_year') or '不限'}")
+        start, end = str(time.get("from_year") or ""), str(time.get("to_year") or "")
+        result.append(
+            SearchCriterion(
+                kind="years",
+                text=f"年份：{start or '不限'}–{end or '不限'}",
+                values=[start, end],
+            )
+        )
     if _count(intent.get("max_results")):
-        result.append(f"本轮结果上限：{intent['max_results']} 篇")
-    for field, label in (
-        ("paper_types", "文献类型"),
-        ("include_criteria", "关键条件"),
-        ("exclude_criteria", "排除条件"),
-    ):
-        values = _strings(intent.get(field))
-        if values:
-            result.append(f"{label}：{'；'.join(values)}")
-    return [item for item in result if item]
+        result.append(
+            SearchCriterion(
+                kind="limit",
+                text=f"本轮结果上限：{intent['max_results']} 篇",
+                values=[str(intent["max_results"])],
+            )
+        )
+    for kind, label in SEARCH_CRITERION_FIELDS:
+        if values := _strings(intent.get(kind)):
+            result.append(
+                SearchCriterion(kind=kind, text=f"{label}：{'；'.join(values)}", values=values)
+            )
+    return result
 
 
 @dataclass(frozen=True)
@@ -538,10 +567,12 @@ def prepare_result(
     report_bytes = read_scoped_file(workdir, str(report_path), SEARCH_FILE_BYTES)
     if not report_bytes.strip():
         raise ValueError("literature_result_report_empty")
+    criteria = _criteria(intent)
     card = SearchResult(
         run_id=metadata["run_id"],
         round=metadata["round"],
-        criteria=_criteria(intent),
+        criteria=[criterion.text for criterion in criteria],
+        criteria_details=criteria,
         status=status,
         sources=sources,
         candidates=candidate_count,

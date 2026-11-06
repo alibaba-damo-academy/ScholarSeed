@@ -1812,6 +1812,7 @@ async function startManagedBackend(
   const generation = preparedGeneration ?? startupState.begin()
   const historyOwner = {}
   const next = startBackend(pushLog, {
+    defaultProjectName: mainLocalization().t('project:defaultName'),
     ...(preferredPort == null ? {} : { port: preferredPort }),
     testHarness: headless,
     toolPrincipal: preparedToolPrincipal,

@@ -854,7 +854,11 @@ class SubscriptionContract(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("max_output_tokens", body)
         self.assertNotIn("output_token_limit_supported", body)
         self.assertEqual(body["instructions"], "translate")
-        self.assertEqual(body["input"][0]["content"], [{"type": "input_text", "text": "source"}])
+        content = body["input"][0]["content"]
+        self.assertEqual(content[0], {"type": "input_text", "text": "source"})
+        self.assertEqual(len(content), 2)
+        self.assertEqual(content[1]["type"], "input_text")
+        self.assertIn("JSON object", content[1]["text"])
         self.assertEqual(body["text"], {"format": {"type": "json_object"}})
         self.assertEqual(body["tools"], [])
         self.assertEqual(body["tool_choice"], "none")

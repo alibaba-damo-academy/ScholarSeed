@@ -43,10 +43,14 @@ from service.capabilities.service.skills import (
     workspace_recovery_key,
 )
 from service.capabilities.service.source import (
+    EXECUTABLE_MODE,
     compile_source_skills,
+    skill_source_files,
     source_lock,
     verify_source_pack,
+    write_source_lock,
 )
+from service.platform.storage import filesystem_path
 
 from .contract_skill_distribution import locked_fixture
 
@@ -649,7 +653,45 @@ def _source_verification_checks_payloads() -> None:
             check("bytecode directory symlink cannot bypass validation", False)
 
 
+def _source_inventory_modes() -> None:
+    with tempfile.TemporaryDirectory(prefix="skill-mode-contract-") as temporary:
+        root = filesystem_path(temporary).resolve()
+        source = root / "skills/community"
+        skill = source / "example"
+        skill.mkdir(parents=True)
+        manifest = skill / "SKILL.md"
+        manifest.write_text(
+            '---\nname: example\ndescription: Fixture\nversion: "1.0.0"\n---\nFixture\n',
+            encoding="utf-8",
+        )
+        script = skill / "run"
+        script.write_text("fixture payload\n", encoding="utf-8")
+        script.chmod(FILE_MODE)
+        (source.parent / "registry.json").write_text(
+            json.dumps({"dependencies": {"example": {}}}), encoding="utf-8"
+        )
+        modes = {manifest: FILE_MODE, script: EXECUTABLE_MODE}
+        generated = source_lock(source, file_modes=modes)
+        record = next(row for row in generated["skills"][0]["files"] if row["path"] == "run")
+        check("frozen modes override host execute bits", record["mode"] == EXECUTABLE_MODE)
+        destination = root / "frozen.json"
+        write_source_lock(destination, source, file_modes=modes)
+        check("lock writer retains frozen modes", json.loads(destination.read_bytes()) == generated)
+        script.chmod(EXECUTABLE_MODE)
+        regular = source_lock(source, file_modes={manifest: FILE_MODE, script: FILE_MODE})
+        record = next(row for row in regular["skills"][0]["files"] if row["path"] == "run")
+        check("frozen regular mode clears a host execute bit", record["mode"] == FILE_MODE)
+        for invalid in ({manifest: FILE_MODE}, {manifest: FILE_MODE, script: 0o777}):
+            try:
+                skill_source_files(skill, file_modes=invalid)
+            except SkillPackError:
+                check("missing or invalid frozen modes fail closed", True)
+            else:
+                check("missing or invalid frozen modes fail closed", False)
+
+
 def main() -> int:
+    _source_inventory_modes()
     _plugin_create_identity()
     _locked_source_compiles_exactly()
     _official_skills_remain_agent_visible()

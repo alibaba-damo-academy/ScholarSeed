@@ -1,9 +1,219 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { readFileSync } from 'node:fs'
+import { createInstance } from 'i18next'
+import en from '../../../../localization/locales/en/literature.json' with { type: 'json' }
+import zh from '../../../../localization/locales/zh/literature.json' with { type: 'json' }
+import {
+  literatureOutlineConfirmation,
+  literatureRetrievalAuthorization,
+} from '../../features/literature/interaction.ts'
+import { literatureCopy } from '../../features/literature/copy.ts'
 import type { AnswerSource, ConvItem } from '../../model.ts'
 import { answerCopyText, hasCopyCard, readCardCopy, replyCopyText } from './copying.ts'
 
 const reference = { plugin: 'notes', component: 'focus', fingerprint: 'v1', binding: 'binding' }
+
+test('private outline copy uses product-owned snapshot projection rather than stale plugin text', async () => {
+  const localization = createInstance()
+  await localization.init({
+    lng: 'en',
+    resources: { en: { literature: en }, zh: { literature: zh } },
+    interpolation: { escapeValue: false },
+  })
+  const snapshot = JSON.parse(
+    readFileSync(
+      new URL(
+        '../../../../../../../skills/community/literature-review/components/outline.json',
+        import.meta.url
+      ),
+      'utf8'
+    )
+  ).data
+  const question = {
+    id: 'outline-review:private',
+    question: '原始中文确认问题',
+    component: {
+      plugin: 'literature-review',
+      component: 'outline',
+      fingerprint: 'frozen',
+      binding: 'private-outline',
+    },
+    componentData: snapshot,
+    options: [{ label: '按当前方案开始撰写' }],
+    presentation: {
+      kind: 'literature-outline-confirmation',
+      format: 'PDF',
+      citation_style: 'IEEE',
+      timeout_seconds: null,
+    },
+  }
+  const items: ConvItem[] = [
+    {
+      kind: 'interaction_reply',
+      turnId: 'one',
+      requestId: 'request',
+      questions: [question],
+      answers: { [question.id]: '按当前方案开始撰写' },
+    },
+  ]
+  let pluginReads = 0
+  const read = async () => {
+    pluginReads += 1
+    return { text: '旧的中文插件复制缓存' }
+  }
+  const copied = await replyCopyText(items, 'one', read, 'missing', undefined, {
+    policies: [literatureOutlineConfirmation],
+    localization,
+  })
+  assert.equal(pluginReads, 0)
+  assert.match(copied, /Start writing with the outline above/)
+  assert.match(copied, /\[x\] Start writing with the current plan/)
+  assert.ok(copied.includes(snapshot.title))
+  assert.doesNotMatch(copied, /原始中文确认问题|按当前方案开始撰写|旧的中文插件复制缓存|missing/)
+  question.presentation.kind = 'unknown'
+  assert.match(
+    await replyCopyText(items, 'one', read, 'missing', undefined, {
+      policies: [literatureOutlineConfirmation],
+      localization,
+    }),
+    /旧的中文插件复制缓存/
+  )
+  assert.equal(pluginReads, 1)
+})
+
+test('localized reply copy keeps normalized historical authorization options selected', async () => {
+  const localization = createInstance()
+  await localization.init({
+    lng: 'en',
+    resources: { en: { literature: en } },
+    interpolation: { escapeValue: false },
+  })
+  const question = {
+    id: 'literature-review-fulltext:copy',
+    header: '综述检索授权',
+    question: '原始授权问题',
+    component: reference,
+    options: [{ label: '一键授权 (Recommended)' }, { label: '拒绝' }],
+  }
+  const items: ConvItem[] = [
+    {
+      kind: 'interaction_reply',
+      turnId: 'one',
+      requestId: 'request',
+      questions: [question],
+      answers: { [question.id]: '一键授权' },
+    },
+  ]
+  const copied = await replyCopyText(
+    items,
+    'one',
+    async (_reference, data) =>
+      literatureCopy('interaction.question', data, localization.getFixedT(null, 'literature')),
+    'missing',
+    undefined,
+    { policies: [literatureRetrievalAuthorization], localization }
+  )
+  assert.match(copied, /\[x\] Authorize/)
+  assert.doesNotMatch(copied, /\[ \] Authorize/)
+})
+
+test('current copy presentation survives stale plugin state without changing server business data', async (context) => {
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  context.after(() => {
+    if (original) Object.defineProperty(globalThis, 'window', original)
+    else Reflect.deleteProperty(globalThis, 'window')
+  })
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      scholarseed: {
+        deviceSkills: async () => ({
+          status: 200,
+          body: JSON.stringify({
+            content: null,
+            data: { question: '服务端原文', unchanged: 7 },
+            state: {
+              displayQuestion: '旧语言问题',
+              options: [{ label: '按当前方案开始撰写', displayLabel: '旧语言选项' }],
+              answers: [],
+            },
+          }),
+        }),
+      },
+    },
+  })
+  const options = [
+    { label: '按当前方案开始撰写', displayLabel: 'Start writing with the current plan' },
+  ]
+  const answers = ['按当前方案开始撰写']
+  await readCardCopy(
+    reference,
+    'session',
+    (data) => {
+      assert.equal(data.question, '服务端原文')
+      assert.equal(data.unchanged, 7)
+      assert.equal(data.displayQuestion, 'Current English question')
+      assert.deepEqual(data.options, options)
+      assert.deepEqual(data.answers, answers)
+      return { text: 'English copy' }
+    },
+    { question: '客户端原文', displayQuestion: 'Current English question', options, answers }
+  )
+})
+
+test('whole reply copies outline presentation in the current language, including cold history', async () => {
+  const localization = createInstance()
+  await localization.init({
+    lng: 'en',
+    resources: { en: { literature: en }, zh: { literature: zh } },
+    interpolation: { escapeValue: false },
+  })
+  const question = {
+    id: 'outline-review:copy',
+    question: '是否按上述大纲开始撰写？',
+    component: reference,
+    options: [{ label: '按当前方案开始撰写' }],
+    presentation: {
+      kind: 'literature-outline-confirmation',
+      format: 'PDF',
+      citation_style: 'IEEE',
+      timeout_seconds: null,
+    },
+  }
+  const items: ConvItem[] = [
+    {
+      kind: 'interaction_reply',
+      turnId: 'one',
+      requestId: 'request',
+      questions: [question],
+      answers: { [question.id]: '按当前方案开始撰写' },
+    },
+  ]
+  const copy = () =>
+    replyCopyText(
+      items,
+      'one',
+      async (_reference, data) =>
+        literatureCopy('interaction.question', data, localization.getFixedT(null, 'literature')),
+      'missing',
+      undefined,
+      { policies: [literatureOutlineConfirmation], localization }
+    )
+  const english = await copy()
+  assert.match(english, /Start writing with the outline above/)
+  assert.match(english, /\[x\] Start writing with the current plan/)
+  assert.doesNotMatch(english, /[\p{Script=Han}]/u)
+  await localization.changeLanguage('zh')
+  assert.match(await copy(), /是否按上述大纲/)
+  await localization.changeLanguage('en')
+  assert.equal(await copy(), english)
+  assert.equal(question.options[0].label, '按当前方案开始撰写')
+  assert.equal(
+    items[0].kind === 'interaction_reply' && items[0].answers[question.id],
+    '按当前方案开始撰写'
+  )
+})
 
 test('answered paper questions retain their displayed default selection and empty prompt', async () => {
   for (const papers of [[{ id: 'paper', label: 'Paper' }], []]) {

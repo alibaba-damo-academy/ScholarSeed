@@ -119,6 +119,9 @@ function parseLatest(
     ...(typeof source.release_notes === 'string' && source.release_notes.trim()
       ? { release_notes: source.release_notes.trim() }
       : {}),
+    ...(typeof source.release_notes_en === 'string' && source.release_notes_en.trim()
+      ? { release_notes_en: source.release_notes_en.trim() }
+      : {}),
   }
   if (identityMismatches(latest, config, expectedArchType).length) {
     throw new Error('update response identity differs from packaged product policy')

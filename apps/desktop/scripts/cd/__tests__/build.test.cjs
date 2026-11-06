@@ -606,12 +606,18 @@ test('macOS development protocol registration uses a stable checkout-specific bu
   const calls = []
   const run = (...args) => calls.push(args)
   const plist = '/tmp/checkout/Electron.app/Contents/Info.plist'
-  assert.equal(registerMacDevelopmentBundle(plist, 'linux', run), false)
+  for (const platform of ['linux', 'win32']) {
+    assert.equal(registerMacDevelopmentBundle(plist, platform, run), false)
+  }
   assert.equal(calls.length, 0)
   registerMacDevelopmentBundle(plist, 'darwin', run)
   const firstId = calls[0][1][3]
   assert.match(firstId, /^com\.scholarseed\.desktop\.dev\.[a-f0-9]{16}$/)
-  assert.deepEqual(JSON.parse(calls[1][1][3])[0].CFBundleURLSchemes, ['scholarseed'])
+  assert.deepEqual(JSON.parse(calls[1][1][3]), [{
+    CFBundleURLName: PACKAGE.build.productName,
+    CFBundleURLSchemes: ['scholarseed'],
+    CFBundleTypeRole: 'Editor',
+  }])
   assert.deepEqual(calls[2][1], ['-f', '/tmp/checkout/Electron.app'])
   registerMacDevelopmentBundle(plist, 'darwin', run)
   assert.equal(calls[3][1][3], firstId)
@@ -2395,21 +2401,95 @@ test('desktop development identity uses the branch name and detached HEAD fallba
 
   assert.equal(resolveGitIdentity(REPO_ROOT, branchGit), 'feature/branch-label')
   assert.equal(resolveGitIdentity(REPO_ROOT, detachedGit), '86aa803b1234')
-  assert.equal(developmentDisplayName('feature/branch-label'), '书深 · feature/branch-label')
+  assert.equal(
+    developmentDisplayName('feature/branch-label'),
+    `${PACKAGE.build.productName} · feature/branch-label`
+  )
+  assert.equal(
+    developmentDisplayName('86aa803b1234'),
+    `${PACKAGE.build.productName} · 86aa803b1234`
+  )
+  const windowsGit = (_command, args) =>
+    args.includes('--show-current') ? '\r\n' : '86aa803b1234\r\n'
+  assert.equal(resolveGitIdentity(REPO_ROOT, windowsGit), '86aa803b1234')
+})
+test('desktop development identity rejects unresolved Git identities and propagates failures', () => {
+  assert.throws(() => resolveGitIdentity(REPO_ROOT, () => '\r\n'), /cannot resolve Git/)
+  assert.throws(() => developmentDisplayName(''), /must not be empty/)
+  const failure = new Error('Git unavailable')
+  const fail = () => { throw failure }
+  assert.throws(() => resolveGitIdentity(REPO_ROOT, fail), error => error === failure)
+  assert.throws(
+    () => registerMacDevelopmentBundle('/tmp/Electron.app/Contents/Info.plist', 'darwin', fail),
+    error => error === failure
+  )
+})
+test('desktop development identity reads product metadata and skips macOS writes on Windows', () => {
+  const source = fs.readFileSync(path.join(sourceDirectory, '../pre/identity.cjs'), 'utf8')
+  for (const platform of ['darwin', 'win32', 'linux']) {
+    const calls = []
+    const output = []
+    const identityModule = { exports: {} }
+    const dependencies = {
+      'node:path': path,
+      'node:child_process': {
+        execFileSync: (command, args) => {
+          calls.push([command, args])
+          return command === 'git' ? 'feature/metadata\r\n' : ''
+        },
+      },
+      'node:crypto': crypto,
+      electron: '/tmp/checkout/Electron.app/Contents/MacOS/Electron',
+      '../../package.json': { build: { productName: 'Contract Product' } },
+    }
+    const loadDependency = name => {
+      assert.ok(Object.hasOwn(dependencies, name), name)
+      return dependencies[name]
+    }
+    loadDependency.main = identityModule
+    runInNewContext(source, {
+      module: identityModule,
+      require: loadDependency,
+      __dirname: path.join(sourceDirectory, '../pre'),
+      process: {
+        platform,
+        argv: ['node', 'identity.cjs', REPO_ROOT],
+        stdout: { write: text => output.push(text) },
+      },
+    })
+    if (platform === 'darwin') {
+      assert.equal(
+        output.join(''),
+        '[desktop-dev] macOS app name: Contract Product · feature/metadata\n'
+      )
+      assert.deepEqual(Array.from(calls[1][1]).slice(0, 4), [
+        '-replace', 'CFBundleName', '-string', 'Contract Product · feature/metadata',
+      ])
+      assert.deepEqual(Array.from(calls[2][1]).slice(0, 4), [
+        '-replace', 'CFBundleDisplayName', '-string', 'Contract Product · feature/metadata',
+      ])
+      assert.equal(JSON.parse(calls[4][1][3])[0].CFBundleURLName, 'Contract Product')
+    } else {
+      assert.deepEqual(calls, [])
+      assert.deepEqual(output, [])
+    }
+  }
 })
 test('desktop development identity updates only macOS bundle display keys', () => {
   const calls = []
   const run = (command, args) => calls.push([command, args])
 
-  assert.equal(
-    updateMacBundleName(
-      '/tmp/Electron.app/Contents/Info.plist',
-      '书深 · feature/one',
-      'linux',
-      run
-    ),
-    false
-  )
+  for (const platform of ['linux', 'win32']) {
+    assert.equal(
+      updateMacBundleName(
+        '/tmp/Electron.app/Contents/Info.plist',
+        '书深 · feature/one',
+        platform,
+        run
+      ),
+      false
+    )
+  }
   assert.deepEqual(calls, [])
   assert.equal(
     updateMacBundleName(

@@ -162,6 +162,7 @@ finally:
             },
         )
         for decision in (
+            {"answers": {"outline-request": "Start writing with the current plan"}},
             {"answers": {"outline-request": "修改第二章"}},
             {"answers": {"outline-request": ""}},
             {"cancelled": True, "answers": {"outline-request": REVIEW_CONFIRM_LABEL}},
@@ -212,17 +213,41 @@ finally:
         self.assertIn("Markdown", timed.question["question"])
         self.assertIn("IEEE", timed.question["question"])
         self.assertIn("修改意见", timed.question["question"])
+        self.assertEqual(
+            timed.question["presentation"],
+            {
+                "kind": "literature-outline-confirmation",
+                "format": "Markdown",
+                "citation_style": "IEEE",
+                "timeout_seconds": 300,
+            },
+        )
         self.assertEqual(timed, prepare_confirmation(self.root, "survey", "session", "turn"))
         packet["outline_review"] = "required"
         packet["confirmation"]["state"] = "required"
         self.write(REVIEW_PACKET, packet)
         required = prepare_confirmation(self.root, "survey", "session", "turn")
         self.assertIsNone(required.timeout_seconds)
+        self.assertIsNone(required.question["presentation"]["timeout_seconds"])
         self.assertNotIn("5 分钟", required.question["question"])
         for state in ("auto", "approved", "timeout_applied"):
             packet["confirmation"]["state"] = state
             self.write(REVIEW_PACKET, packet)
             self.assertIsNone(prepare_confirmation(self.root, "survey", "session", "turn").question)
+
+    def test_outline_presentation_does_not_duplicate_unbounded_publication_text(self) -> None:
+        packet = {
+            "packet_id": "bounded-presentation",
+            "snapshot": {},
+            "outline_review": "required",
+            "confirmation": {"state": "required"},
+            "publication_display": {"format": "PDF" * 1000, "citation_style": "IEEE"},
+        }
+        self.write(REVIEW_PACKET, packet)
+        confirmation = prepare_confirmation(self.root, "survey", "session", "turn")
+        self.assertNotIn("presentation", confirmation.question)
+        self.assertIn(packet["publication_display"]["format"], confirmation.question["question"])
+        self.assertEqual(confirmation.question["options"][0]["label"], REVIEW_CONFIRM_LABEL)
 
     def test_fulltext_limitation_reason_hides_internal_diagnostics(self) -> None:
         self.assertEqual(

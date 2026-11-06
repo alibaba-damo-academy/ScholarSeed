@@ -147,15 +147,14 @@ def creation_name_matches(requested: str, display: str, directory: str) -> bool:
         return False
     if display == normalized:
         return True
-    if display != directory:
-        return False
     stem = creation_stem(normalized)
     if directory == stem:
-        return True
+        return display == directory
     prefix = f"{stem}-"
     suffix = directory.removeprefix(prefix)
     return (
         directory.startswith(prefix)
+        and display in (directory, f"{normalized}-{suffix}")
         and re.fullmatch(r"[1-9][0-9]*", suffix) is not None
         and len(display) <= DISPLAY_NAME_MAX
         and int(suffix) >= PROJECT_DIRECTORY_FIRST_SUFFIX

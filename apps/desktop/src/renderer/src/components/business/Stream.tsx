@@ -3239,7 +3239,12 @@ function HilCard({
             resolved: cancelledLabel,
             resolvedMessage: undefined,
           }
-        : item
+        : item.resolved && questions.length === 1 && questionPolicy?.presentAnswer
+          ? {
+              ...item,
+              resolved: questionPolicy.presentAnswer(questions[0], item.resolved, localization),
+            }
+          : item
 
   useEffect(() => {
     if (done || item.blocking === false) return () => undefined
@@ -3856,7 +3861,9 @@ function HilCard({
             <span className="min-w-0 flex-1">
               {questionPolicy ? (
                 <span className="block min-w-0 font-[var(--vds-font-serif)] text-[length:var(--vds-font-subhead)] font-[var(--vds-fw-semibold)] leading-[var(--vds-lh-subhead)] text-[var(--text)] [overflow-wrap:anywhere]">
-                  {questionPolicy.title}
+                  {typeof questionPolicy.title === 'function'
+                    ? questionPolicy.title(localization)
+                    : questionPolicy.title}
                 </span>
               ) : null}
               {pill}
@@ -4170,6 +4177,7 @@ function HilCard({
                           data={{
                             ...q.componentData,
                             question: q.question,
+                            displayQuestion: presentedQuestions[qi]?.question ?? q.question,
                             options: q.options.map((option, index) => ({
                               ...option,
                               displayLabel:
@@ -5093,7 +5101,11 @@ function InteractionReply({
     question && answer ? questionPolicy?.replyText?.(question, answer, localization) : undefined
   const replyTitle =
     question && answer ? questionPolicy?.replyTitle?.(question, answer, localization) : undefined
-  const title = replyTitle ?? questionPolicy?.title ?? conversation('reply.title')
+  const policyTitle =
+    typeof questionPolicy?.title === 'function'
+      ? questionPolicy.title(localization)
+      : questionPolicy?.title
+  const title = replyTitle ?? policyTitle ?? conversation('reply.title')
   const rows = item.questions.map((question) => {
     const key = question.id || question.header || question.question
     const answer = item.answers[key]

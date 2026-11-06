@@ -351,6 +351,12 @@ class LiteratureResultContract(unittest.TestCase):
     def test_projection_reads_papers_and_counts_without_mutating_run(self) -> None:
         before = {str(p): p.read_bytes() for p in self.run.rglob("*") if p.is_file()}
         result = prepare_result(self.root, "run")
+        self.assertTrue(result.card.criteria_details)
+        self.assertEqual(result.card.criteria_details[0].kind, "intent")
+        self.assertEqual(result.card.criteria_details[0].values, [result.card.criteria[0]])
+        self.assertEqual(
+            [criterion.text for criterion in result.card.criteria_details], result.card.criteria
+        )
         self.assertEqual(
             (result.card.candidates, result.card.deduplicated, result.card.retained), (3, 2, 1)
         )
@@ -360,6 +366,77 @@ class LiteratureResultContract(unittest.TestCase):
         self.assertEqual(
             before, {str(p): p.read_bytes() for p in self.run.rglob("*") if p.is_file()}
         )
+
+    def test_condition_provenance_preserves_original_values_and_legacy_cards(self) -> None:
+        intent = {
+            "confirmed": True,
+            "precise_intent": "Find papers with 中文条件",
+            "language": "English",
+            "time_range": {"from_year": 2023},
+            "max_results": 10,
+            "paper_types": ["journal", "中文期刊"],
+            "include_criteria": ["open source"],
+            "exclude_criteria": ["surveys"],
+        }
+        self.write(self.run / "intent.json", intent)
+        original = (self.run / "intent.json").read_bytes()
+        card = prepare_result(self.root, "run").card
+        self.assertEqual(
+            card.criteria,
+            [
+                "Find papers with 中文条件",
+                "年份：2023–不限",
+                "本轮结果上限：10 篇",
+                "文献类型：journal；中文期刊",
+                "关键条件：open source",
+                "排除条件：surveys",
+            ],
+        )
+        self.assertEqual([row.text for row in card.criteria_details], card.criteria)
+        self.assertEqual(
+            [row.kind for row in card.criteria_details],
+            [
+                "intent",
+                "years",
+                "limit",
+                "paper_types",
+                "include_criteria",
+                "exclude_criteria",
+            ],
+        )
+        self.assertEqual(card.criteria_details[1].values, ["2023", ""])
+        self.assertEqual(card.criteria_details[3].values, ["journal", "中文期刊"])
+        serialized = card.model_dump(mode="json")
+        self.assertEqual(validate_search_card(serialized), serialized)
+        del serialized["criteria_details"]
+        legacy = validate_search_card(serialized)
+        self.assertEqual(legacy["criteria"], card.criteria)
+        self.assertEqual(legacy["criteria_details"], [])
+        self.assertEqual((self.run / "intent.json").read_bytes(), original)
+
+    def test_condition_provenance_handles_open_ranges_and_omitted_fields(self) -> None:
+        for constraint, expected in (
+            ({"time_range": {"to_year": 2026}}, [("years", ["", "2026"], "年份：不限–2026")]),
+            (
+                {"time_range": {"from_year": 2021, "to_year": 2026}},
+                [("years", ["2021", "2026"], "年份：2021–2026")],
+            ),
+            ({"max_results": 1}, [("limit", ["1"], "本轮结果上限：1 篇")]),
+            ({"max_results": 0}, []),
+            ({"max_results": True}, []),
+            (
+                {"paper_types": [None, "", "  journal  "]},
+                [("paper_types", ["journal"], "文献类型：journal")],
+            ),
+            ({}, []),
+        ):
+            with self.subTest(constraint=constraint):
+                self.write(self.run / "intent.json", {"confirmed": True, **constraint})
+                card = prepare_result(self.root, "run").card
+                self.assertEqual(
+                    [(row.kind, row.values, row.text) for row in card.criteria_details], expected
+                )
+                self.assertEqual(card.criteria, [row.text for row in card.criteria_details])
 
     def test_historical_review_origin_remains_readable_after_skill_rename(self) -> None:
         result = prepare_result(self.root, "run")
@@ -1270,6 +1347,8 @@ class LiteratureResultContract(unittest.TestCase):
         with TestClient(app) as client:
             response = client.get("/api/sessions/s1/literature/results/card")
             self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["criteria"], content["criteria"])
+            self.assertEqual(response.json()["criteria_details"], content["criteria_details"])
             self.assertEqual(len(response.json()["papers"]), 12)
             self.assertEqual([paper["id"] for paper in response.json()["papers"]], selected_ids)
             self.assertEqual(response.json()["papers"][0]["authors"], authors)

@@ -136,6 +136,7 @@ import {
 } from '../../features/resources/settings'
 import {
   formatInstallerSize,
+  releaseNotesOf,
   updateActionOf,
   updateFailureOf,
   updateFailureText,
@@ -706,7 +707,7 @@ export function DataStoragePage(): React.JSX.Element {
 
 function AboutPage(): React.JSX.Element {
   const { t: accountUpdateText } = useTranslation('account')
-  const { t } = useTranslation('components')
+  const { t, i18n } = useTranslation('components')
   const { state, act } = useApp()
   const update = useUpdateState()
   const [diagnosis, setDiagnosis] = React.useState<RendererUpdateDiagnosis | null>(null)
@@ -761,6 +762,7 @@ function AboutPage(): React.JSX.Element {
   const siteLabel = siteHostLabel(siteBase)
   const phase = update?.phase ?? 'idle'
   const candidate = update?.candidate
+  const notes = releaseNotesOf(candidate, i18n.resolvedLanguage || i18n.language)
   const candidateVersionLabel = updateCandidateKey(candidate) ?? ''
   const currentVersion = update?.currentVersion || window.scholarseed.version
   const currentBuildNumber = window.scholarseed.buildNumber
@@ -823,9 +825,9 @@ function AboutPage(): React.JSX.Element {
               size: formatInstallerSize(candidate?.file_size),
             })}
           </span>
-          {candidate?.release_notes && (
+          {notes && (
             <span className={ABOUT_VERSION_SUMMARY_CLASS_NAME} data-testid="version-summary">
-              {candidate.release_notes}
+              {notes}
             </span>
           )}
         </span>

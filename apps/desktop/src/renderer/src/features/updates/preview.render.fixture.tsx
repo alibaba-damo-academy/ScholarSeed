@@ -25,7 +25,9 @@ const candidate: LatestVersionMeta = {
   channel: 'preview',
   file_size: 100,
   sha512: 'a'.repeat(128),
-  release_notes: '版本线更新说明',
+  release_notes: query.has('no-notes') ? undefined : '版本线更新说明',
+  ...(query.has('bilingual') ? { release_notes_en: 'Release line notes' } : {}),
+  ...(query.has('blank-english') ? { release_notes_en: ' \n ' } : {}),
 }
 function record(call: string): void {
   calls.push(call)
@@ -63,6 +65,9 @@ Object.assign(window, {
 })
 const localization = createLocalization(query.get('language') === 'en' ? 'en' : 'zh', resources, {
   escapeValue: false,
+})
+Object.assign(window, {
+  previewFixture: { language: (language: 'zh' | 'en') => localization.changeLanguage(language) },
 })
 createRoot(document.getElementById('root')!).render(
   <I18nextProvider i18n={localization}>

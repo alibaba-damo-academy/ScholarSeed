@@ -158,6 +158,68 @@ class ContentOperationContracts(unittest.IsolatedAsyncioTestCase):
         creation = self.catalog.begin_project_creation(identity, plan)
         self.assertIn(creation, ContentCatalog(self.catalog.path).project_creations())
 
+    def test_default_creation_recovers_exact_named_command_and_legacy_empty_parameters(self):
+        for identity, parameters, display, directory_name in (
+            ("legacy-default", {}, naming.DEFAULT_PROJECT_NAME, naming.DEFAULT_PROJECT_NAME),
+            ("english-default", {"name": "Default Project"}, "Default Project", "Default-Project"),
+            (
+                "english-conflict",
+                {"name": "Default Project"},
+                "Default Project-2",
+                "Default-Project-2",
+            ),
+        ):
+            with self.subTest(identity=identity):
+                self.catalog.accept_operation(
+                    identity,
+                    "owner",
+                    json.dumps({"kind": "EnsureDefaultProject", "parameters": parameters}),
+                    limit=128,
+                    retention=3600,
+                )
+                self.catalog.start_operation(identity)
+                plan = ProjectRow(
+                    identity,
+                    display,
+                    str(self.catalog.path.parent / directory_name),
+                    "managed",
+                    1.0,
+                )
+                creation = self.catalog.begin_project_creation(identity, plan)
+                self.catalog.recover_operations()
+                self.assertIn(creation, ContentCatalog(self.catalog.path).project_creations())
+
+    def test_default_creation_rejects_invalid_command_parameters(self):
+        for index, parameters in enumerate(
+            (
+                {"name": None},
+                {"name": 1},
+                {"name": ""},
+                {"name": "Default Project", "extra": True},
+                {"other": "Default Project"},
+                {"name": "Another name"},
+            )
+        ):
+            with self.subTest(parameters=parameters):
+                identity = f"invalid-default-{index}"
+                self.catalog.accept_operation(
+                    identity,
+                    "owner",
+                    json.dumps({"kind": "EnsureDefaultProject", "parameters": parameters}),
+                    limit=128,
+                    retention=3600,
+                )
+                self.catalog.start_operation(identity)
+                plan = ProjectRow(
+                    identity,
+                    "Default Project",
+                    str(self.catalog.path.parent / "Default-Project"),
+                    "managed",
+                    1.0,
+                )
+                with self.assertRaises(CatalogFormatError):
+                    self.catalog.begin_project_creation(identity, plan)
+
     async def test_deferred_creation_waits_for_commit_and_close_joins_started_recovery(self):
         creation = self.pending_creation()
         self.assertTrue(requires_postcommit_recovery((creation,)))

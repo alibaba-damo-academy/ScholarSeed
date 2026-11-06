@@ -4,6 +4,8 @@ import {
   type PluginReference,
 } from '../../../../plugins.ts'
 import type { AnswerSource, ConvItem } from '../../model'
+import type { i18n } from 'i18next'
+import type { InteractionPolicyContribution } from '../../contracts/features'
 import { copyCitationLinks } from '../markdown/citations.ts'
 import { referenceRanges, visibleMarkdownText } from '../markdown/source.ts'
 import { artifactText, deliveryText } from './representation.ts'
@@ -72,7 +74,13 @@ export async function readCardCopy(
     data?: Record<string, unknown>
     state?: Record<string, unknown>
   }
-  return (await fallback?.({ ...data, ...result.data, ...result.state })) ?? result.content
+  const current = { ...data, ...result.data, ...result.state }
+  if (typeof data.displayQuestion === 'string') {
+    current.displayQuestion = data.displayQuestion
+    if (Array.isArray(data.options)) current.options = data.options
+    if (Array.isArray(data.answers)) current.answers = data.answers
+  }
+  return (await fallback?.(current)) ?? result.content
 }
 
 export async function replyCopyText(
@@ -85,7 +93,8 @@ export async function replyCopyText(
   ) => Promise<PluginCopyContent | null>,
   missing: string,
   answer: (item: Extract<ConvItem, { kind: 'agent' }>) => string | Promise<string> = (item) =>
-    answerCopyText(item.text, item.answerSources)
+    answerCopyText(item.text, item.answerSources),
+  presentation?: { policies: readonly InteractionPolicyContribution[]; localization: i18n }
 ): Promise<string> {
   const parts: string[] = []
   const seen = new Set<string>()
@@ -120,39 +129,75 @@ export async function replyCopyText(
     if (item.kind === 'hil' || item.kind === 'interaction_reply') {
       const interaction = interactions.get(item.requestId)
       if (interaction?.item !== item) continue
+      const policy = presentation?.policies.find((candidate) =>
+        candidate.matches(interaction.questions ?? [])
+      )
       for (const question of interaction.questions ?? []) {
         if (!question.component) continue
         const identity =
           question.component.binding ?? `${item.requestId}:${question.id ?? question.question}`
         if (seen.has(identity)) continue
         seen.add(identity)
-        const content = await card(question.component, {
+        const rawAnswer = interaction.answers?.[question.id || question.header || question.question]
+        const displayed =
+          presentation && policy?.presentQuestion?.(question, presentation.localization)
+        const questionText = displayed?.question ?? question.question
+        const answerText =
+          rawAnswer && presentation
+            ? (policy?.presentAnswer?.(question, rawAnswer, presentation.localization) ?? rawAnswer)
+            : rawAnswer
+        const data = {
           question: question.question,
           ...(question.papers
             ? { selected_paper_ids: question.papers.map((paper) => paper.id) }
             : {}),
           ...question.componentData,
           ...(question.papers ? { papers: question.papers } : {}),
-        })
-        const answer = interaction.answers?.[question.id || question.header || question.question]
+          ...(displayed
+            ? {
+                displayQuestion: questionText,
+                options: question.options.map((option, index) => ({
+                  ...option,
+                  displayLabel: displayed.options[index]?.label ?? option.label,
+                  displayDescription: displayed.options[index]?.description ?? option.description,
+                })),
+                ...(rawAnswer === undefined
+                  ? {}
+                  : {
+                      answers: question.options
+                        .filter((option) =>
+                          rawAnswer
+                            .split('\n')[0]
+                            .split(', ')
+                            .includes(policy?.optionLabel?.(option) ?? option.label)
+                        )
+                        .map((option) => option.label),
+                    }),
+              }
+            : {}),
+        }
+        const ownedContent = presentation
+          ? policy?.copyQuestion?.(question, data, presentation.localization)
+          : null
+        const content = ownedContent ?? (await card(question.component, data))
         const answered =
-          answer &&
+          answerText &&
           content?.text
             .split('\n')
             .some(
               (line) =>
-                line.trim() === answer ||
-                line.trim() === `[x] ${answer}` ||
-                line.trim().startsWith(`[x] ${answer} `)
+                line.trim() === answerText ||
+                line.trim() === `[x] ${answerText}` ||
+                line.trim().startsWith(`[x] ${answerText} `)
             )
         parts.push(
           [
-            content?.text.trimStart().startsWith(question.question.trim() + '\n') ||
-            content?.text.trim() === question.question.trim()
+            content?.text.trimStart().startsWith(questionText.trim() + '\n') ||
+            content?.text.trim() === questionText.trim()
               ? ''
-              : question.question,
+              : questionText,
             content?.text ?? missing,
-            answered ? '' : answer,
+            answered ? '' : answerText,
           ]
             .filter(Boolean)
             .join('\n')

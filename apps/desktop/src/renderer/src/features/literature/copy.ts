@@ -2,7 +2,7 @@ import type { PluginCopyContent } from '../../../../plugins'
 import type { TFunction } from 'i18next'
 import { parseReview, reviewNotice, reviewStatus, REVIEW_VERDICTS } from './projection.ts'
 import { downloadOutcome, parseDownloadCard } from './admission.ts'
-import { RESULT_LABELS, searchWarningKeys } from './result.ts'
+import { RESULT_LABELS, searchCriteria, searchWarningKeys } from './result.ts'
 import { DELIVERY_STATUS_KEYS } from './utils.ts'
 
 const CHOICE_SLOTS = new Set([
@@ -51,7 +51,7 @@ export function literatureCopy(
     const answers = new Set(strings(data.answers))
     const selected = new Set(strings(data.selected_paper_ids))
     lines = [
-      text(data.question),
+      text(data.displayQuestion ?? data.question),
       ...records(data.options).map((option) =>
         [
           answers.has(text(option.label)) ? '[x]' : '[ ]',
@@ -137,7 +137,7 @@ export function literatureCopy(
       headings.includes(text(data.title)) ? '' : text(data.title),
       text(data.status),
       text(data.state),
-      ...strings(data.criteria),
+      ...searchCriteria(data, translate),
       ...strings(data.warnings),
       ...searchWarningKeys(strings(data.warnings)).map((key) => translate(key)),
       ...papers.map((paper) =>

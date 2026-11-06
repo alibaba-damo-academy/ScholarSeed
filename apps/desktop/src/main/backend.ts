@@ -360,6 +360,7 @@ export interface BackendHandle {
 export type LogSink = (line: string) => void
 
 export interface BackendStartOptions {
+  defaultProjectName?: string
   toolPrincipal?: string
   accountBaseUrl?: string
   port?: number
@@ -424,6 +425,7 @@ const SCHOLARSEED_APP_VERSION_ENV = 'SCHOLARSEED_APP_VERSION'
 const SCHOLARSEED_LOG_LEVEL_ENV = 'SCHOLARSEED_LOG_LEVEL'
 const DESKTOP_DEFAULT_LOG_LEVEL = 'debug'
 const QUIET_DESKTOP_POLL_ACCESS_FLAG = '--quiet-desktop-poll-access'
+const DEFAULT_PROJECT_NAME_FLAG = '--default-project-name'
 // /api/healthz includes the Codex version and login preflight. Each vendor command has a
 // 10-second budget and the two commands run sequentially, so a desktop probe must outlive
 // that readiness contract. A shorter HTTP timeout repeatedly cancels a healthy cold start.
@@ -1043,6 +1045,9 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
       '--log-level',
       logLevel,
       QUIET_DESKTOP_POLL_ACCESS_FLAG,
+      ...(options.defaultProjectName
+        ? [DEFAULT_PROJECT_NAME_FLAG, options.defaultProjectName]
+        : []),
     ]
 
     enterPhase(BACKEND_STARTUP_PHASE.log)

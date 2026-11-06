@@ -33,12 +33,20 @@ test('authorization preview renders localized diagnostics and preserves the fort
           import { resources } from './src/localization/resources';
           import { StoreContext } from './src/renderer/src/storeContext';
           import { LiteratureResults } from './src/renderer/src/features/literature/Summary';
-          export function render(language, warnings) {
+          import { ResultReport } from './src/renderer/src/features/literature/Report';
+          export function renderReport(language, criteriaData) {
+            const result = { schema_version: '1.0', session_id: 'session', status: 'no_confident_match',
+              retained: 0, candidates: 0, deduplicated: 0, papers: [], sources: [], warnings: [], ...criteriaData };
+            const View = ({query, output}) => React.createElement('pre', null, query + '\\n' + output);
+            return renderToStaticMarkup(React.createElement(I18nextProvider,
+              { i18n: createLocalization(language, resources) }, React.createElement(ResultReport, {result, View})));
+          }
+          export function render(language, warnings, criteriaData = {}) {
             const content = { schema_version: '1.0', session_id: 'session', status: 'success',
               selection: { artifact_id: 'selection' }, retained: 40, candidates: 40,
               criteria: ['Review'], sources: [], warnings,
               papers: Array.from({ length: 3 }, (_, index) => ({ id: String(index), title: 'Paper ' + index,
-                authors: [], year: 2025, reasons: [], sources: [], access: 'unknown' })) };
+                authors: [], year: 2025, reasons: [], sources: [], access: 'unknown' })), ...criteriaData };
             return renderToStaticMarkup(React.createElement(I18nextProvider,
               { i18n: createLocalization(language, resources) },
               React.createElement(StoreContext.Provider, { value: { act: {} } },
@@ -72,7 +80,7 @@ test('authorization preview renders localized diagnostics and preserves the fort
         },
       ],
     })
-    const { render } = await import(pathToFileURL(output).href)
+    const { render, renderReport } = await import(pathToFileURL(output).href)
     const diagnostic = 'agentic-search used degraded retrieval (source_mode=web_only)'
     const chinese = render('zh', [diagnostic])
     assert.match(chinese, /待授权文献 · 40 篇/)
@@ -87,6 +95,25 @@ test('authorization preview renders localized diagnostics and preserves the fort
     const unknown = render('zh', ['private-tool raw_parameter=private-value'])
     assert.match(unknown, /本次检索存在限制/)
     assert.doesNotMatch(unknown, /private-tool|raw_parameter|private-value/)
+    const criteriaData = {
+      criteria: ['年份：2023–不限', '本轮结果上限：1 篇'],
+      criteria_details: [
+        { kind: 'years', text: '年份：2023–不限', values: ['2023', ''] },
+        { kind: 'limit', text: '本轮结果上限：1 篇', values: ['1'] },
+      ],
+    }
+    const frozen = JSON.stringify(criteriaData)
+    const englishReport = renderReport('en', criteriaData)
+    assert.match(englishReport, /Years: 2023–Any/)
+    assert.match(englishReport, /Result limit: 1 paper/)
+    assert.doesNotMatch(englishReport, /年份|不限|本轮结果上限/)
+    const englishCard = render('en', [], criteriaData)
+    assert.match(englishCard, /Years: 2023–Any/)
+    assert.doesNotMatch(englishCard, /年份|不限/)
+    assert.match(renderReport('zh', criteriaData), /年份：2023–不限/)
+    assert.match(render('zh', [], criteriaData), /年份：2023–不限/)
+    assert.match(renderReport('en', { criteria: criteriaData.criteria }), /年份：2023–不限/)
+    assert.equal(JSON.stringify(criteriaData), frozen)
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }

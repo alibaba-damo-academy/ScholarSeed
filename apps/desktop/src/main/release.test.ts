@@ -231,3 +231,40 @@ test('Windows x64 metadata uses platform identity without an Apple Team ID', () 
     /Windows publisher/
   )
 })
+
+test('English release notes are independently optional and trimmed in check and download metadata', () => {
+  for (const english of [
+    '  Search improvements\nLibrary fixes  ',
+    undefined,
+    '',
+    ' \n ',
+    null,
+    42,
+    {},
+    [],
+  ]) {
+    const latest = { ...LATEST, release_notes: '中文更新说明', release_notes_en: english }
+    const expected = typeof english === 'string' && english.trim() ? english.trim() : undefined
+    const checked = parseUpdateCheckResult(
+      { has_update: true, latest },
+      CONFIG,
+      'darwin-arm64'
+    ).latest!
+    const downloaded = parseDownloadInfo(
+      { ...latest, download_url: 'https://oss.example.test/package.dmg' },
+      CONFIG,
+      'darwin-arm64',
+      LATEST.id
+    )
+    for (const parsed of [checked, downloaded]) {
+      assert.equal(Reflect.get(parsed, 'release_notes_en'), expected)
+      assert.equal(parsed.release_notes, latest.release_notes)
+    }
+  }
+  const legacy = parseUpdateCheckResult(
+    { has_update: true, latest: LATEST },
+    CONFIG,
+    'darwin-arm64'
+  )
+  assert.deepEqual(legacy.latest, LATEST)
+})

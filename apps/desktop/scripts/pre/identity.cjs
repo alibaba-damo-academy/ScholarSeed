@@ -2,11 +2,12 @@ const path = require('node:path')
 const { execFileSync } = require('node:child_process')
 const { createHash } = require('node:crypto')
 const electronExecutable = require('electron')
+const { build: desktopBuild } = require('../../package.json')
 
 const MACOS_PLATFORM = 'darwin'
 const GIT_COMMAND = 'git'
 const PLUTIL_COMMAND = '/usr/bin/plutil'
-const PRODUCT_NAME = '书深'
+const PRODUCT_NAME = desktopBuild.productName
 const DISPLAY_NAME_SEPARATOR = ' · '
 const DETACHED_SHA_LENGTH = 12
 const INFO_PLIST_FILENAME = 'Info.plist'

@@ -44,6 +44,7 @@ RESPONSE_OUTPUT_KINDS = frozenset({"message", "reasoning"})
 RESPONSE_ITEM_EVENTS = frozenset({"response.output_item.added", "response.output_item.done"})
 LOGGER = logging.getLogger(__name__)
 LITERATURE_PURPOSE_PREFIX = "literature."
+JSON_OUTPUT_DIRECTIVE = "Return the result as a JSON object."
 
 
 async def log_http_failure(response: httpx.Response, request: ModelInvocationRequest) -> None:
@@ -116,6 +117,8 @@ def responses_body(
             if part.media_type == PDF_MEDIA_TYPE
             else {"type": "input_image", "image_url": data}
         )
+    if request.json_output:
+        content.append({"type": "input_text", "text": JSON_OUTPUT_DIRECTIVE})
     return {
         "model": str(connection["model"]),
         "instructions": request.instructions,

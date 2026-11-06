@@ -308,6 +308,7 @@ export function projectHilCard(
     title: data.title,
     body: data.body,
     questions: (data.questions ?? []).map((question) => ({
+      ...(question.presentation ? { presentation: question.presentation } : {}),
       id: question.id,
       header: question.name ?? question.header,
       question: question.question,

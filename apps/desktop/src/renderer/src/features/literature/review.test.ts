@@ -9,6 +9,8 @@ import {
   literatureRetrievalAuthorization,
   literatureReviewInteraction,
   preciseFulltextSubsetAuthorization,
+  literatureCurationInteraction,
+  literatureOutlineConfirmation,
 } from './interaction.ts'
 import {
   parseReview,
@@ -42,6 +44,134 @@ const resources = {
 await engine.init({ lng: 'zh', fallbackLng: false, resources })
 await englishEngine.init({ lng: 'en', fallbackLng: false, resources })
 await i18next.init({ lng: 'zh', fallbackLng: false, resources })
+
+test('outline confirmation localizes product copy without changing answers or publication text', () => {
+  const policy = literatureOutlineConfirmation
+  assert.ok(policy)
+  const question = {
+    id: 'outline-review:owned',
+    header: '大纲与输出设置确认',
+    question: '原始中文问题',
+    options: [{ label: '按当前方案开始撰写', description: '使用当前大纲和输出设置。' }],
+    presentation: {
+      kind: 'literature-outline-confirmation',
+      format: 'PDF: English typesetting',
+      citation_style: 'Numbered references',
+      timeout_seconds: 300,
+    },
+  }
+  assert.equal(policy.matches([question]), true)
+  const english = policy.presentQuestion!(question, englishEngine)
+  assert.match(english.question, /Output format: PDF: English typesetting/)
+  assert.match(english.question, /Citation style: Numbered references/)
+  assert.match(english.question, /5 minutes/)
+  assert.doesNotMatch(english.question, /[\p{Script=Han}]/u)
+  assert.equal(english.options[0].label, 'Start writing with the current plan')
+  assert.equal(english.options[0].description, 'Use the current outline and output settings.')
+  assert.equal(question.options[0].label, '按当前方案开始撰写')
+  assert.equal(
+    policy.presentAnswer!(question, '按当前方案开始撰写', englishEngine),
+    english.options[0].label
+  )
+  assert.equal(policy.presentAnswer!(question, '请调整第二章', englishEngine), '请调整第二章')
+  assert.equal(
+    policy.presentAnswer!(question, '按当前方案开始撰写\n请调整第二章', englishEngine),
+    '按当前方案开始撰写\n请调整第二章'
+  )
+  const required = {
+    ...question,
+    presentation: { ...question.presentation, timeout_seconds: null },
+  }
+  const requiredEnglish = policy.presentQuestion!(required, englishEngine)
+  assert.match(requiredEnglish.question, /Writing will start only after confirmation/)
+  assert.doesNotMatch(requiredEnglish.question, /minutes|no reply/)
+  const chinese = policy.presentQuestion!(question, engine)
+  assert.match(chinese.question, /请在 5 分钟内确认/)
+  assert.match(chinese.question, /PDF: English typesetting/)
+  assert.equal(chinese.options[0].label, question.options[0].label)
+  assert.equal(policy.matches([{ ...question, presentation: undefined }]), false)
+  assert.equal(policy.matches([{ ...question, id: 'user-question' }]), false)
+  assert.equal(policy.matches([{ ...question, options: [{ label: '用户选项' }] }]), false)
+  for (const presentation of [
+    { ...question.presentation, kind: 'unknown' },
+    { ...question.presentation, timeout_seconds: 1 },
+    { ...question.presentation, format: null },
+    { ...question.presentation, citation_style: '' },
+  ])
+    assert.equal(policy.matches([{ ...question, presentation: presentation as never }]), false)
+  assert.equal(
+    policy.presentQuestion!({ ...question, presentation: undefined }, englishEngine).question,
+    question.question
+  )
+})
+
+test('curation confirmation localizes presentation while retaining canonical answers', () => {
+  const policy = literatureCurationInteraction
+  const question = {
+    id: 'literature-curation-owned',
+    header: '文献库操作确认',
+    question: '中文原始问题',
+    options: [{ label: '确认执行' }, { label: '取消' }],
+    presentation: {
+      kind: 'literature-curation',
+      operation: 'delete',
+      count: 1,
+      titles: ['用户标题'],
+    },
+  }
+  assert.equal(policy.matches([question]), true)
+  const presented = policy.presentQuestion!(question, englishEngine)
+  assert.equal(presented.header, 'Literature library confirmation')
+  assert.match(presented.question, /delete/)
+  assert.match(presented.question, /用户标题/)
+  assert.equal(presented.options[0].label, 'Confirm execution')
+  assert.equal(question.options[0].label, '确认执行')
+  assert.equal(policy.presentAnswer!(question, '取消', englishEngine), 'Cancel')
+  assert.equal(policy.matches([{ ...question, presentation: undefined }]), false)
+  assert.equal(
+    policy.matches([{ ...question, presentation: { ...question.presentation, count: -1 } }]),
+    false
+  )
+  assert.equal(policy.presentAnswer!(question, '用户原文', englishEngine), '用户原文')
+  assert.equal(
+    typeof policy.title === 'function' ? policy.title(englishEngine) : policy.title,
+    'Literature library confirmation'
+  )
+  assert.equal(
+    typeof policy.title === 'function' ? policy.title(engine) : policy.title,
+    '文献库操作确认'
+  )
+  for (const presentation of [
+    null,
+    { ...question.presentation, kind: 'unknown' },
+    { ...question.presentation, operation: null },
+    { ...question.presentation, count: 1.5 },
+    { ...question.presentation, count: Infinity },
+    { ...question.presentation, titles: [null] },
+  ])
+    assert.equal(policy.matches([{ ...question, presentation: presentation as never }]), false)
+  assert.equal(policy.matches([{ ...question, id: 'unrelated' }]), false)
+  assert.equal(policy.matches([{ ...question, multiSelect: true }]), false)
+  assert.equal(
+    policy.matches([{ ...question, options: [{ label: '确认执行' }, { label: '确认执行' }] }]),
+    false
+  )
+  assert.equal(
+    policy.matches([
+      { ...question, options: [{ label: 'Confirm execution' }, { label: 'Cancel' }] },
+    ]),
+    false
+  )
+  assert.equal(policy.matches([question, question]), false)
+  assert.equal(
+    policy.presentQuestion!({ ...question, presentation: undefined }, englishEngine).question,
+    question.question
+  )
+  assert.equal(
+    policy.presentAnswer!(question, '确认执行\n用户补充', englishEngine),
+    '确认执行\n用户补充'
+  )
+})
 
 const snapshot = {
   schema_version: '1.1',
@@ -576,8 +706,14 @@ test('precise fulltext card with a paper subset uses the dedicated subset policy
     'respond'
   )
   assert.equal(preciseFulltextSubsetAuthorization.directPresentation, 'primary-secondary')
-  assert.equal(preciseFulltextSubsetAuthorization.directSelectionRequired?.(withSubset[0].options[0]), true)
-  assert.equal(preciseFulltextSubsetAuthorization.directSelectionRequired?.(withSubset[0].options[1]), false)
+  assert.equal(
+    preciseFulltextSubsetAuthorization.directSelectionRequired?.(withSubset[0].options[0]),
+    true
+  )
+  assert.equal(
+    preciseFulltextSubsetAuthorization.directSelectionRequired?.(withSubset[0].options[1]),
+    false
+  )
   const presented = preciseFulltextSubsetAuthorization.presentQuestion?.(
     withSubset[0] as never,
     engine

@@ -7,13 +7,15 @@ import nativeZh from '../localization/locales/zh/native.json'
 import nativeEn from '../localization/locales/en/native.json'
 import accountZh from '../localization/locales/zh/account.json'
 import accountEn from '../localization/locales/en/account.json'
+import projectZh from '../localization/locales/zh/project.json'
+import projectEn from '../localization/locales/en/project.json'
 import { DEFAULT_LANGUAGE, FOUNDATION_NAMESPACE } from '../localization/catalog'
 import type { PreferenceLanguage } from '../preferences'
 
 let instance: i18n | undefined
 const resources = {
-  zh: { [FOUNDATION_NAMESPACE]: zh, native: nativeZh, account: accountZh },
-  en: { [FOUNDATION_NAMESPACE]: en, native: nativeEn, account: accountEn },
+  zh: { [FOUNDATION_NAMESPACE]: zh, native: nativeZh, account: accountZh, project: projectZh },
+  en: { [FOUNDATION_NAMESPACE]: en, native: nativeEn, account: accountEn, project: projectEn },
 }
 
 export function mainLocalization(): i18n {

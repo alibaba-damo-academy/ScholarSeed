@@ -7,6 +7,7 @@ import { updateCandidateKey, type UpdateSnapshot } from '../../../../updates'
 import {
   hasMoreReleaseNotes,
   releaseNoteLines,
+  releaseNotesOf,
   updateActionOf,
   updateFailureOf,
   updateFailureText,
@@ -177,7 +178,7 @@ export function UpdatePanel({
   presentation = 'popover',
 }: UpdatePanelProps): React.JSX.Element {
   const { t: accountUpdateText } = useTranslation('account')
-  const { t } = useTranslation('components')
+  const { t, i18n } = useTranslation('components')
   const { t: uiText } = useTranslation('ui')
   const state = useUpdateState()
   // 展开只在本次打开内有效：换了候选包就回到设计稿默认的三条。浮窗收起即卸载，
@@ -209,7 +210,7 @@ export function UpdatePanel({
   // 版式必须由结果驱动，否则用户点完「重启客户端」看到的还是一切正常（bug 86968393）。
   const failure = updateFailureOf(state)
   const failed = failure !== null
-  const notes = releaseNoteLines(candidate?.release_notes)
+  const notes = releaseNoteLines(releaseNotesOf(candidate, i18n.resolvedLanguage || i18n.language))
   const showAllNotes = presentation === 'dialog' || expanded
   const showMore = hasMoreReleaseNotes(notes) && !showAllNotes
   // 失败态优先于展开态：失败信息不该被藏在更宽的说明版式后面。

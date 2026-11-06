@@ -2,7 +2,7 @@ import React from 'react'
 import { useTranslation } from 'react-i18next'
 
 import scholarseedLogoMark from '../../assets/logo.svg'
-import { releaseNoteLines, useUpdateState } from '../../features/updates/state'
+import { releaseNoteLines, releaseNotesOf, useUpdateState } from '../../features/updates/state'
 import {
   installationDuration,
   installationStepText,
@@ -30,9 +30,11 @@ const OVERLAY_PROGRESS_CLASS_NAME = 'w-full'
 const OVERLAY_CANCEL_CLASS_NAME = 'w-full'
 
 export function UpdateOverlay(): React.JSX.Element | null {
-  const { t } = useTranslation('components')
+  const { t, i18n } = useTranslation('components')
   const state = useUpdateState()
-  const notes = releaseNoteLines(state?.candidate?.release_notes)
+  const notes = releaseNoteLines(
+    releaseNotesOf(state?.candidate, i18n.resolvedLanguage || i18n.language)
+  )
   const phase = state?.phase
   const installation = state?.installation
   const now = useInstallationClock(phase === 'installing')

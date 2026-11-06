@@ -9,13 +9,14 @@ from pathlib import Path
 from typing import Any
 
 from service.literature.persistence.files import read_scoped_file, scoped_workspace_path
-from service.literature.service.review import REVIEW_FILE_BYTES
+from service.literature.service.review import REVIEW_FILE_BYTES, REVIEW_TEXT
 
 REVIEW_PACKET = "04_outline/review_packet.json"
 OUTLINE_CHECKPOINT = "outline"
 REVIEW_TIMEOUT_MODE = "timeout_auto"
 REVIEW_REQUIRED_MODE = "required"
 REVIEW_TIMEOUT_SECONDS = 300
+REVIEW_PRESENTATION_KIND = "literature-outline-confirmation"
 REVIEW_SKIP_STATES = frozenset(("auto", "approved", "timeout_applied"))
 REVIEW_WAIT_STATES = frozenset(("required", "awaiting_display", "waiting", "expired"))
 REVIEW_CONFIRM_LABEL = "按当前方案开始撰写"
@@ -126,4 +127,11 @@ def prepare_confirmation(
         ),
         "options": [{"label": REVIEW_CONFIRM_LABEL, "description": "使用当前大纲和输出设置。"}],
     }
+    if all(len(settings[key]) <= REVIEW_TEXT for key in ("format", "citation_style")):
+        question["presentation"] = {
+            "kind": REVIEW_PRESENTATION_KIND,
+            "format": settings["format"],
+            "citation_style": settings["citation_style"],
+            "timeout_seconds": timeout,
+        }
     return OutlineConfirmation(packet_id, digest, snapshot_id, question, timeout)

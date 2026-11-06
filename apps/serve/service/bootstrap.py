@@ -2457,6 +2457,7 @@ def create_app(
     ownership_axis: str | None = None,
     local_bridge_root: Path | None = None,
     runtime_discovery: RuntimeDiscovery | None = None,
+    default_project_name: str = DEFAULT_PROJECT_NAME,
 ) -> FastAPI:
     """Compose chat, capabilities, identity, and the renderer."""
 
@@ -2596,10 +2597,10 @@ def create_app(
             )
         )
         if admission.ready:
-            await operations.execute("local", EnsureDefaultProject())
+            await operations.execute("local", EnsureDefaultProject(default_project_name))
         else:
             default_project_task = asyncio.create_task(
-                operations.execute("local", EnsureDefaultProject()),
+                operations.execute("local", EnsureDefaultProject(default_project_name)),
                 name="default-project-after-admission",
             )
 
@@ -2711,9 +2712,13 @@ def create_app(
         )
         return {"id": record.project_id, "removed": True, "files_kept": True}
 
-    def create_project_concurrently(operation_id: str, command: CreateProject) -> ProjectRef:
+    def create_project_concurrently(
+        operation_id: str, command: CreateProject, *, preserve_display_name: bool = False
+    ) -> ProjectRef:
         with content_phase(operation_id, ContentPhase.PREPARE):
-            plan = app.state.content.plan_project_creation(command.name)
+            plan = app.state.content.plan_project_creation(
+                command.name, preserve_display_name=preserve_display_name
+            )
             candidate = Path(plan.dir_root)
             workspace_identity = owner.directory_identity(str(candidate.parent))
             provenance = app.state.content_catalog.begin_project_creation(operation_id, plan)
@@ -3020,7 +3025,8 @@ def create_app(
                         ActivityDomain.RESOURCE,
                         create_project_concurrently,
                         operation_id,
-                        CreateProject(DEFAULT_PROJECT_NAME),
+                        CreateProject(command.name),
+                        preserve_display_name=True,
                     ),
                 )
         if isinstance(command, CreateProject):
