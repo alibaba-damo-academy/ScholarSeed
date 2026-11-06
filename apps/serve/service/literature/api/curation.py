@@ -77,6 +77,7 @@ CONFIRM_APPROVE = "确认执行"
 CONFIRM_DENY = "取消"
 CONFIRM_HEADER = "文献库操作确认"
 CONFIRM_TITLES = 5
+CONFIRM_PRESENTATION = "literature-curation"
 USER_DENIED = "user_denied"
 PERMISSION_DENIED = "permission_mode_denied"
 REVISION_CONFLICT = "revision_conflict"
@@ -347,6 +348,12 @@ def register_curation_bridge(
         question = {
             "id": f"literature-curation-{uuid.uuid4().hex}",
             "header": CONFIRM_HEADER,
+            "presentation": {
+                "kind": CONFIRM_PRESENTATION,
+                "operation": name,
+                "count": count,
+                "titles": [_clip(title) for title in titles[:CONFIRM_TITLES]],
+            },
             "question": (f"AI 请求执行破坏性操作 {name}, 影响 {count} 条: {listed}。是否允许?"),
             "options": [
                 {"label": CONFIRM_APPROVE, "description": "立即执行, 不可撤销。"},

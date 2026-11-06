@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
+import sys
 import threading
 import time
 import unittest
@@ -43,6 +45,47 @@ from service.content.domain.naming import (  # noqa: E402
 from service.content.service.operations import ForgetProject, ReconcileProjectRemoval  # noqa: E402
 from service.platform.activity import ActivityDomain, ActivityPhase  # noqa: E402
 
+CREATION_PROBE = """
+import json
+import sys
+from pathlib import Path
+from fastapi.testclient import TestClient
+from service.bootstrap import create_app
+from service.paths import global_home
+
+requested = sys.argv[1]
+workspace = global_home() / "ScholarSeed"
+workspace.mkdir()
+marker = None
+if sys.argv[2] == "conflict":
+    existing = workspace / "Default-Project"
+    existing.mkdir()
+    marker = existing / "user.txt"
+    marker.write_text("preserved", encoding="utf-8")
+
+def snapshot(name):
+    options = {"default_project_name": name} if name else {}
+    app = create_app(auth=False, auth_mode="off", ownership_axis="machine", **options)
+    try:
+        with TestClient(app) as client:
+            response = client.get("/api/content/projects")
+            response.raise_for_status()
+            return [
+                {key: project[key] for key in ("id", "name", "root", "layout")}
+                for project in response.json()["projects"]
+            ]
+    finally:
+        app.state.storage_domains.close()
+
+first = snapshot(requested)
+second = snapshot("Changed default seed")
+print(json.dumps({
+    "first": first,
+    "second": second,
+    "marker": marker.read_text(encoding="utf-8") if marker else None,
+}))
+"""
+
 
 @contextmanager
 def product_client() -> Iterator[TestClient]:
@@ -75,6 +118,38 @@ def completed_operation(client: TestClient, response, *, error: str | None = Non
 
 
 class DefaultProjectContract(unittest.TestCase):
+    def test_initial_project_uses_supplied_name_without_renaming_existing_projects(self) -> None:
+        for requested, expected, directory_name, mode in (
+            ("Default Project", "Default Project", "Default-Project", "fresh"),
+            (DEFAULT_PROJECT_NAME, DEFAULT_PROJECT_NAME, DEFAULT_PROJECT_NAME, "fresh"),
+            ("", DEFAULT_PROJECT_NAME, DEFAULT_PROJECT_NAME, "fresh"),
+            ("Default Project", "Default Project-2", "Default-Project-2", "conflict"),
+        ):
+            with self.subTest(requested=requested, mode=mode), directory("default-name-") as home:
+                result = subprocess.run(
+                    [sys.executable, "-c", CREATION_PROBE, requested, mode],
+                    env={
+                        **os.environ,
+                        "SCHOLARSEED_HOME": str(home),
+                        "SCHOLARSEED_DEFAULT_WORKSPACE": str(home / "ScholarSeed"),
+                        "SCHOLARSEED_CODEX_HOME": str(home / "codex"),
+                        "DAMOATRACE_HOME": str(home),
+                        "DAMOATRACE_LEDGER_ROOT": str(home / "projects"),
+                    },
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                observed = json.loads(result.stdout.splitlines()[-1])
+                self.assertEqual(len(observed["first"]), 1)
+                project = observed["first"][0]
+                self.assertEqual(project["name"], expected)
+                self.assertEqual(project["root"], str(home / "ScholarSeed" / directory_name))
+                self.assertEqual(project["layout"], "managed")
+                self.assertEqual(observed["first"], observed["second"])
+                self.assertEqual(observed["marker"], "preserved" if mode == "conflict" else None)
+
     def test_failed_removal_reconciles_without_draining_other_work(self) -> None:
         with product_client() as client:
             created = completed_operation(

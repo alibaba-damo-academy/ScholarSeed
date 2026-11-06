@@ -56,6 +56,7 @@ from service.chat.constants import (  # noqa: E402
     PRODUCT_EVENT_TURN_INTERRUPTED,
 )
 from service.chat.runtime.selection import RuntimeDiscovery  # noqa: E402
+from service.content.domain.naming import DEFAULT_PROJECT_NAME  # noqa: E402
 from service.identity.service.account import ACCOUNT_BASE_URL_ENV, ACCOUNT_MODE  # noqa: E402
 from service.identity.service.policy import (  # noqa: E402
     AUTH_MODE_AUTO,
@@ -271,6 +272,11 @@ def serve_main(argv: Optional[List[str]] = None) -> int:
         help="omit access records for successful routine Desktop polling requests",
     )
     ap.add_argument(
+        "--default-project-name",
+        default=DEFAULT_PROJECT_NAME,
+        help="name used only when creating the first default project",
+    )
+    ap.add_argument(
         "--auth-mode",
         choices=AUTH_MODE_CHOICES,
         default=None,
@@ -353,6 +359,7 @@ def serve_main(argv: Optional[List[str]] = None) -> int:
         ownership_axis=ownership_axis,
         local_bridge_root=SERVICE_BRIDGE_DIR,
         runtime_discovery=runtime_discovery,
+        default_project_name=args.default_project_name,
     )
     if args.await_toolchain:
         app.state.runtime_service.toolchain.defer()

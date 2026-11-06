@@ -1,4 +1,5 @@
 {
+  "defaultName": "Default Project",
   "title": "Projects",
   "archive": {
     "title": "Archive “{{name}}”?",

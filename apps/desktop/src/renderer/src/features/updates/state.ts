@@ -17,8 +17,10 @@
 import type { TFunction } from 'i18next'
 import { useState, useSyncExternalStore } from 'react'
 
+import { primaryLanguageSubtag } from '../../../../locale.ts'
 import {
   updateCandidateKey,
+  type LatestVersionMeta,
   type UpdateErrorOrigin,
   type UpdateInstallFallback,
   type UpdateSnapshot,
@@ -195,6 +197,15 @@ export function releaseNoteLines(notes: string | undefined): string[] {
     .split('\n')
     .map((line) => line.trim())
     .filter((line) => line.length > 0)
+}
+
+/** Select only for display: language changes never rewrite the candidate or its identity. */
+export function releaseNotesOf(
+  candidate: LatestVersionMeta | undefined,
+  language: string
+): string | undefined {
+  const english = candidate?.release_notes_en?.trim()
+  return primaryLanguageSubtag(language) === 'en' && english ? english : candidate?.release_notes
 }
 
 /**

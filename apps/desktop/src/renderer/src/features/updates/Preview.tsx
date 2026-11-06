@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { releaseNotesOf } from './state'
 import {
   isPreviewUpdateChannel,
   updateCandidateKey,
@@ -33,7 +34,7 @@ export function PreviewUpdates({
 }
 
 function PreviewControls({ state }: { state: UpdateSnapshot | null }): React.JSX.Element {
-  const { t } = useTranslation('components')
+  const { t, i18n } = useTranslation('components')
   const [policy, setPolicy] = useState<PreviewUpdatePolicy | null>(null)
   const [open, setOpen] = useState(false)
   const [lines, setLines] = useState<PreviewUpdateLine[]>([])
@@ -266,7 +267,8 @@ function PreviewControls({ state }: { state: UpdateSnapshot | null }): React.JSX
             {candidate && (
               <div className="grid gap-[var(--vds-space-2)] text-[length:var(--vds-type-body-size)] leading-[var(--vds-type-body-line)] text-[var(--vds-text-secondary)]">
                 <p className="max-h-[var(--vds-dialog-list-max-height)] overflow-auto whitespace-pre-wrap break-words">
-                  {candidate.release_notes || t('update.preview.noNotes')}
+                  {releaseNotesOf(candidate, i18n.resolvedLanguage || i18n.language) ||
+                    t('update.preview.noNotes')}
                 </p>
                 <p>{t('update.preview.confirmHelp')}</p>
               </div>

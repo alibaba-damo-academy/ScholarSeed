@@ -13,6 +13,70 @@ const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const FIXTURE_URL = '/components/update.render.fixture.html'
 const SCREENSHOT_DIRECTORY = process.env.UPDATE_MESSAGE_SCREENSHOTS
 
+test('open update panel and installation overlay react to language and retain Chinese fallback and empty states', async () => {
+  await withFixture(async (page) => {
+    const chinese = '中文一\n中文二\n中文三\n中文四'
+    const english = 'English one\nEnglish two\nEnglish three\nEnglish four'
+    const publish = async (
+      notes: { release_notes?: string; release_notes_en?: string },
+      phase = 'available'
+    ) => {
+      await page.evaluate(
+        ({ notes, phase }) => {
+          Reflect.get(window, 'updateFixture').publish({
+            phase,
+            candidate: {
+              id: 'bilingual',
+              version: '0.3.0',
+              build_number: '202611050900',
+              product_id: 'scholarseed',
+              bundle_id: 'com.scholarseed.desktop',
+              arch_type: 'darwin-arm64',
+              channel: 'release',
+              file_size: 100,
+              sha512: 'a'.repeat(128),
+              ...notes,
+            },
+          })
+        },
+        { notes, phase }
+      )
+    }
+    const language = async (next: 'zh' | 'en') =>
+      page.evaluate(async (next) => {
+        await Reflect.get(window, 'updateFixture').language(next)
+      }, next)
+    await publish({ release_notes: chinese, release_notes_en: english })
+    await page.getByTestId('activity-update').click()
+    const panel = page.getByTestId('update-panel')
+    const list = panel.getByTestId('update-panel-list')
+    await expect(list).toContainText('中文一')
+    await language('en')
+    await expect(list).toContainText('English one')
+    await expect(list.locator(':scope > span')).toHaveCount(3)
+    await expect(list).not.toContainText('English four')
+    await panel.getByRole('button', { name: 'View more release notes', exact: true }).click()
+    await expect(list).toContainText('English four')
+    await language('zh')
+    await expect(list).toContainText('中文四')
+    await language('en')
+    await publish({ release_notes: chinese, release_notes_en: ' \n ' })
+    await expect(list).toContainText('中文一')
+    await publish({})
+    await expect(list).toHaveText('Improved user experience')
+    await publish({ release_notes: chinese, release_notes_en: english }, 'installing')
+    const overlay = page.getByTestId('update-overlay')
+    await expect(overlay.getByTestId('update-overlay-notes')).toContainText('English four')
+    await language('zh')
+    await expect(overlay.getByTestId('update-overlay-notes')).toContainText('中文四')
+    await language('en')
+    await publish({ release_notes: chinese }, 'installing')
+    await expect(overlay.getByTestId('update-overlay-notes')).toContainText('中文四')
+    await publish({}, 'installing')
+    await expect(overlay).toContainText('Improved user experience')
+  })
+})
+
 async function withFixture(run: (page: Page) => Promise<void>, query = ''): Promise<void> {
   const server = await servers.create({
     configFile: false,

@@ -17,7 +17,7 @@ import { LiteratureReviewCard } from './Review'
 import { LiteratureDownloads } from './Downloads'
 import { LiteratureDeliveryCard } from './Delivery'
 import { catalogue } from './catalog'
-import { searchPapersBibtex } from './result'
+import { searchCriteriaTitle, searchPapersBibtex } from './result'
 import {
   createLiteratureCollection,
   importBibliography,
@@ -145,7 +145,7 @@ export function LiteratureCard({
             act.openLiteratureResult({
               session_id: result.session_id,
               card_id: cardId,
-              title: result.criteria[0] || '',
+              title: searchCriteriaTitle(result),
             })
           },
           async openFulltext(paperId) {

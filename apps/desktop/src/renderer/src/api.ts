@@ -2234,6 +2234,7 @@ interface ProductEventBase<TType extends string, TData> {
 }
 
 export interface ProductHilQuestion {
+  presentation?: Record<string, unknown>
   plugin_installation?: PluginReport
   component?: PluginReference
   component_data?: Record<string, unknown>

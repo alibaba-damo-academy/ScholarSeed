@@ -3879,6 +3879,25 @@ declare module 'i18next' {
         "papers": "文献"
     },
     "literature": {
+        "outlineConfirmation": {
+            "title": "大纲与输出设置确认",
+            "question": "是否按上述大纲和以下输出设置开始撰写？也可直接填写大纲或输出设置的修改意见。",
+            "settings": "输出格式：{{format}}；引用样式：{{citationStyle}}。",
+            "required": "请确认或提出修改，收到确认后才会开始撰写。",
+            "timeout_other": "请在 {{count}} 分钟内确认或提出修改；若未回复，将按以上设置继续。",
+            "confirm": "按当前方案开始撰写",
+            "description": "使用当前大纲和输出设置。"
+        },
+        "curation": {
+            "separator": "、",
+            "header": "文献库操作确认",
+            "question_other": "AI 请求执行破坏性操作 {{operation}}, 影响 {{count}} 条: {{titles}}。是否允许?",
+            "unknown": "(未知条目)",
+            "confirm": "确认执行",
+            "confirmDescription": "立即执行, 不可撤销。",
+            "cancel": "取消",
+            "cancelDescription": "拒绝本次操作, 库保持不变。"
+        },
         "copyRegistrationFailed": "卡片复制文本保存失败，请重试或重新打开卡片。",
         "tagFilter": {
             "label": "筛选标签",
@@ -4410,6 +4429,15 @@ declare module 'i18next' {
             "missingDescription": "该任务可能已在另一个窗口中删除。"
         },
         "result": {
+            "criteria": {
+                "any": "不限",
+                "separator": "；",
+                "years": "年份：{{start}}–{{end}}",
+                "limit_other": "本轮结果上限：{{count}} 篇",
+                "paperTypes": "文献类型：{{values}}",
+                "include": "关键条件：{{values}}",
+                "exclude": "排除条件：{{values}}"
+            },
             "unreadable": "检索结果暂不可读取。",
             "retryDescription": "本次检索结果暂不可读取，请重试。",
             "opening": "正在打开本次检索结果…",
@@ -5496,6 +5524,7 @@ declare module 'i18next' {
         "markColor": "{{color}}标注"
     },
     "project": {
+        "defaultName": "书深默认项目",
         "title": "项目",
         "archive": {
             "title": "归档「{{name}}」？",

@@ -32,6 +32,97 @@ import {
 } from './hil.ts'
 import type { ConvItem } from './model.ts'
 
+test('curation display provenance survives live projection, history and settled replies', () => {
+  const data = {
+    request_id: 'literature-curation-test',
+    kind: 'question',
+    questions: [
+      {
+        id: 'literature-curation-test',
+        header: '文献库操作确认',
+        question: '原始问题',
+        options: [{ label: '确认执行' }, { label: '取消' }],
+        presentation: {
+          kind: 'literature-curation',
+          operation: 'delete',
+          count: 1,
+          titles: ['用户标题'],
+        },
+      },
+    ],
+  }
+  const live = projectHilCard(data, 1000, 'turn')
+  const envelope = { v: 2 as const, ts: 1, session_id: 'session', turn_id: 'turn', item_id: 'item' }
+  const history = projectActivityEvents([], [{ ...envelope, seq: 1, type: 'hil_requested', data }])
+  assert.deepEqual(history.find((item) => item.kind === 'hil')?.questions, live.questions)
+  const settled = projectActivityEvents(history, [
+    {
+      ...envelope,
+      seq: 2,
+      type: 'hil_resolved',
+      data: {
+        request_id: data.request_id,
+        kind: 'question',
+        state: 'resolved',
+        answer: '取消',
+        answers: { [data.request_id]: '取消' },
+      },
+    },
+  ])
+  const reply = transcriptPresentationItems(settled).find(
+    (item) => item.kind === 'interaction_reply'
+  )
+  assert.deepEqual(reply?.questions, live.questions)
+  assert.deepEqual(reply?.answers, { [data.request_id]: '取消' })
+  assert.deepEqual(
+    data.questions[0].options.map((option) => option.label),
+    ['确认执行', '取消']
+  )
+})
+
+test('outline confirmation presentation survives live, history and terminal projection unchanged', () => {
+  const question = {
+    id: 'outline-review:record',
+    question: '原始问题',
+    options: [{ label: '按当前方案开始撰写' }],
+    presentation: {
+      kind: 'literature-outline-confirmation',
+      format: 'PDF',
+      citation_style: 'IEEE',
+      timeout_seconds: null,
+    },
+  }
+  const data = { request_id: question.id, kind: 'question', questions: [question] }
+  const envelope = { v: 2 as const, ts: 1, session_id: 'session', turn_id: 'turn', item_id: 'item' }
+  const live = projectHilCard(data, 1000, 'turn')
+  const requested = projectActivityEvents(
+    [],
+    [{ ...envelope, seq: 1, type: 'hil_requested', data }]
+  )
+  const settled = projectActivityEvents(requested, [
+    {
+      ...envelope,
+      seq: 2,
+      type: 'hil_resolved',
+      data: {
+        request_id: question.id,
+        kind: 'question',
+        state: 'resolved',
+        answer: '按当前方案开始撰写',
+        answers: { [question.id]: '按当前方案开始撰写' },
+      },
+    },
+  ])
+  const reply = transcriptPresentationItems(settled).find(
+    (item) => item.kind === 'interaction_reply'
+  )
+  assert.deepEqual(live.questions?.[0].presentation, question.presentation)
+  assert.equal(live.questions?.[0].question, question.question)
+  assert.deepEqual(live.questions?.[0].options, question.options)
+  assert.deepEqual(reply?.questions, live.questions)
+  assert.deepEqual(reply?.answers, { [question.id]: '按当前方案开始撰写' })
+})
+
 test('component options are proposals restricted to the original question', () => {
   const question = { question: 'Outline', options: [{ label: 'Write' }, { label: 'Revise' }] }
   assert.deepEqual(componentOptionAnswers(question, { answers: ['Write'] }), ['Write'])

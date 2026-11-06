@@ -18,6 +18,7 @@ from service.content.domain.model import (
     ContentError,
     OperationState,
 )
+from service.content.domain.naming import DEFAULT_PROJECT_NAME
 from service.content.persistence.catalog import (
     AUTHORIZATION_SUPERSEDED,
     PROJECT_CREATION_PRESERVED,
@@ -95,7 +96,7 @@ class CreateProject:
 
 @dataclass(frozen=True)
 class EnsureDefaultProject:
-    pass
+    name: str = DEFAULT_PROJECT_NAME
 
 
 @dataclass(frozen=True)

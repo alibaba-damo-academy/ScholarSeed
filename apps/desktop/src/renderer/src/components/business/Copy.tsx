@@ -8,6 +8,7 @@ import { writeClipboard } from '../primitive/clipboard'
 import { hasCopyCard, readCardCopy, replyCopyText } from './copying'
 import { AnswerCopyContext, CopyItemsContext, CopySessionContext } from './clipboard'
 import { PublicComponentsContext } from './publicComponents'
+import { InteractionPoliciesContext } from './interactionPoliciesContext'
 
 export function ReplyCopy({
   items,
@@ -20,6 +21,7 @@ export function ReplyCopy({
 }): React.JSX.Element {
   const publicComponents = useContext(PublicComponentsContext)
   const copyAnswer = useContext(AnswerCopyContext)
+  const interactionPolicies = useContext(InteractionPoliciesContext)
   const { t, i18n } = useTranslation('skills')
   const { t: components } = useTranslation('components')
   return (
@@ -47,7 +49,8 @@ export function ReplyCopy({
               data
             ),
           t('plugin.copyMissing'),
-          (item) => copyAnswer(item, sessionId)
+          (item) => copyAnswer(item, sessionId),
+          { policies: interactionPolicies, localization: i18n }
         )
       }
       data-testid="reply-copy-with-cards"

@@ -1,4 +1,103 @@
-import type { ConversationSearchPaper, LiteratureSearchPaper } from '../../contracts/literature'
+import type {
+  ConversationSearchPaper,
+  LiteratureSearchPaper,
+  SearchCriterion,
+} from '../../contracts/literature'
+import type { TFunction } from 'i18next'
+
+const CRITERION_LABELS = {
+  paper_types: 'result.criteria.paperTypes',
+  include_criteria: 'result.criteria.include',
+  exclude_criteria: 'result.criteria.exclude',
+} as const
+const CRITERION_KINDS = new Set<string>([
+  'intent',
+  'years',
+  'limit',
+  ...Object.keys(CRITERION_LABELS),
+])
+
+function isSearchCriterion(value: unknown): value is SearchCriterion {
+  if (
+    value === null ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    !('kind' in value) ||
+    typeof value.kind !== 'string' ||
+    !CRITERION_KINDS.has(value.kind) ||
+    !('text' in value) ||
+    typeof value.text !== 'string' ||
+    !('values' in value) ||
+    !Array.isArray(value.values) ||
+    !value.values.every((item: unknown) => typeof item === 'string')
+  )
+    return false
+  const values: string[] = value.values
+  if (value.kind === 'intent') return values.length === 1 && values[0] === value.text
+  if (value.kind === 'years') return values.length === 2
+  if (value.kind === 'limit') {
+    const count = Number(values[0])
+    return (
+      values.length === 1 &&
+      Number.isSafeInteger(count) &&
+      count >= 0 &&
+      String(count) === values[0]
+    )
+  }
+  return values.length > 0 && values.every((item) => Boolean(item.trim()))
+}
+
+type SearchCriteriaData = { criteria?: unknown; criteria_details?: unknown }
+
+function criterionSources(data: SearchCriteriaData): {
+  original: string[]
+  details: SearchCriterion[] | null
+} {
+  const original = Array.isArray(data.criteria)
+    ? data.criteria.filter((item): item is string => typeof item === 'string')
+    : []
+  const details = data.criteria_details
+  if (
+    !Array.isArray(details) ||
+    !details.length ||
+    details.length !== original.length ||
+    !details.every(isSearchCriterion) ||
+    !details.every((item, index) => item.text === original[index])
+  )
+    return { original, details: null }
+  return { original, details }
+}
+
+export function searchCriteriaTitle(data: SearchCriteriaData): string {
+  const { original, details } = criterionSources(data)
+  return details && details[0].kind !== 'intent' ? '' : original[0] || ''
+}
+
+export function searchCriteria(data: SearchCriteriaData, t: TFunction<'literature'>): string[] {
+  const { original, details } = criterionSources(data)
+  if (!details) return original
+  const translated: string[] = []
+  for (const item of details) {
+    const values = item.values
+    if (item.kind === 'intent') translated.push(item.text)
+    else if (item.kind === 'years')
+      translated.push(
+        t('result.criteria.years', {
+          start: values[0] || t('result.criteria.any'),
+          end: values[1] || t('result.criteria.any'),
+        })
+      )
+    else if (item.kind === 'limit')
+      translated.push(t('result.criteria.limit', { count: Number(values[0]) }))
+    else
+      translated.push(
+        t(CRITERION_LABELS[item.kind], {
+          values: values.join(t('result.criteria.separator')),
+        })
+      )
+  }
+  return translated
+}
 
 export const RESULT_LABELS = {
   success: 'result.status.success',

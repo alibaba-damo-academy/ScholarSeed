@@ -5,6 +5,7 @@ import { createInstance } from 'i18next'
 import zh from '../../../../localization/locales/zh/literature.json' with { type: 'json' }
 import en from '../../../../localization/locales/en/literature.json' with { type: 'json' }
 import { literatureCopy } from './copy.ts'
+import { searchCriteria, searchCriteriaTitle } from './result.ts'
 
 const localization = createInstance()
 await localization.init({
@@ -13,6 +14,130 @@ await localization.init({
   interpolation: { escapeValue: false },
 })
 const translate = localization.getFixedT('zh', 'literature')
+
+test('question copy uses projected text but canonical answers still select the displayed option', () => {
+  const copied = literatureCopy(
+    'interaction.question',
+    {
+      question: '原始中文问题',
+      displayQuestion: 'Start writing with the outline?',
+      options: [
+        {
+          label: '按当前方案开始撰写',
+          displayLabel: 'Start writing with the current plan',
+          displayDescription: 'Use the current outline and output settings.',
+        },
+      ],
+      answers: ['按当前方案开始撰写'],
+    },
+    localization.getFixedT('en', 'literature')
+  )!.text
+  assert.match(copied, /Start writing with the outline\?/)
+  assert.match(copied, /\[x\] Start writing with the current plan/)
+  assert.doesNotMatch(copied, /[\p{Script=Han}]/u)
+  assert.equal(
+    literatureCopy('interaction.question', { question: '历史原文' }, translate)!.text,
+    '历史原文'
+  )
+})
+
+test('search copy localizes only explicitly generated criteria and preserves historical text', () => {
+  const english = localization.getFixedT('en', 'literature')
+  const data = {
+    criteria: ['用户原文', '年份：2023–不限', '本轮结果上限：10 篇'],
+    criteria_details: [
+      { kind: 'intent', text: '用户原文', values: ['用户原文'] },
+      { kind: 'years', text: '年份：2023–不限', values: ['2023', ''] },
+      { kind: 'limit', text: '本轮结果上限：10 篇', values: ['10'] },
+    ],
+    papers: [],
+  }
+  const copied = literatureCopy('display.literature-search', data, english)!.text
+  assert.match(copied, /用户原文/)
+  assert.match(copied, /Years: 2023–Any/)
+  assert.match(copied, /Result limit: 10 papers/)
+  assert.doesNotMatch(copied, /年份|本轮结果上限/)
+  assert.match(
+    literatureCopy('display.literature-search', { criteria: data.criteria }, english)!.text,
+    /年份/
+  )
+  assert.match(
+    literatureCopy('display.literature-search', data, translate)!.text,
+    /年份：2023–不限/
+  )
+})
+
+test('criteria with absent, unknown or mismatched provenance retain their frozen original text', () => {
+  const english = localization.getFixedT('en', 'literature')
+  const criteria = ['用户自己写的年份标题']
+  for (const details of [
+    undefined,
+    [],
+    [{ kind: 'years', text: '别的条件', values: ['2023', '2026'] }],
+    [{ kind: 'years', values: ['2023', '2026'] }],
+    [{ kind: 'intent', text: criteria[0], values: ['替换用户原文'] }],
+    [{ kind: 'future_kind', text: criteria[0], values: [] }],
+    [{ kind: ['paper_types'], text: criteria[0], values: ['journal'] }],
+    [{ kind: 'years', text: criteria[0], values: ['2023'] }],
+    [{ kind: 'limit', text: criteria[0], values: ['9007199254740993'] }],
+    [{ kind: 'paper_types', text: criteria[0], values: [] }],
+    [{ kind: 'paper_types', text: criteria[0], values: [null] }],
+  ]) {
+    assert.deepEqual(searchCriteria({ criteria, criteria_details: details }, english), criteria)
+  }
+})
+
+test('generated criteria preserve supplied values and follow the translator without mutating the card', () => {
+  const data = {
+    criteria: [
+      '年份：不限–2026',
+      '本轮结果上限：1 篇',
+      '文献类型：中文期刊；conference',
+      '关键条件：中文条件',
+      '排除条件：surveys',
+    ],
+    criteria_details: [
+      { kind: 'years', text: '年份：不限–2026', values: ['', '2026'] },
+      { kind: 'limit', text: '本轮结果上限：1 篇', values: ['1'] },
+      {
+        kind: 'paper_types',
+        text: '文献类型：中文期刊；conference',
+        values: ['中文期刊', 'conference'],
+      },
+      { kind: 'include_criteria', text: '关键条件：中文条件', values: ['中文条件'] },
+      { kind: 'exclude_criteria', text: '排除条件：surveys', values: ['surveys'] },
+    ],
+  }
+  const frozen = JSON.stringify(data)
+  const english = localization.getFixedT('en', 'literature')
+  assert.deepEqual(searchCriteria(data, english), [
+    'Years: Any–2026',
+    'Result limit: 1 paper',
+    'Paper types: 中文期刊; conference',
+    'Key criteria: 中文条件',
+    'Exclusions: surveys',
+  ])
+  assert.deepEqual(searchCriteria(data, translate), data.criteria)
+  assert.equal(JSON.stringify(data), frozen)
+  assert.equal(searchCriteriaTitle(data), '')
+  assert.equal(searchCriteriaTitle({ criteria: data.criteria }), data.criteria[0])
+})
+
+test('result tab titles retain user intent and never cache translated generated conditions', () => {
+  const intent = { kind: 'intent', text: '用户检索主题', values: ['用户检索主题'] }
+  assert.equal(
+    searchCriteriaTitle({ criteria: [intent.text], criteria_details: [intent] }),
+    intent.text
+  )
+  assert.equal(
+    searchCriteriaTitle({
+      criteria: [intent.text],
+      criteria_details: [{ ...intent, text: 'stale' }],
+    }),
+    intent.text
+  )
+  assert.equal(searchCriteriaTitle({ criteria: [] }), '')
+})
 
 test('paper copy does not repeat an identical decision reason and evidence reason', () => {
   const copied = literatureCopy(

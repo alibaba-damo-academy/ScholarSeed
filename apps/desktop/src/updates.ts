@@ -54,6 +54,8 @@ export interface LatestVersionMeta {
    * 服务端没填就没有这个键 —— 更新面必须按无摘要降级渲染，不能当错误。
    */
   release_notes?: string
+  /** Optional English summary; older services and historical rows may omit it. */
+  release_notes_en?: string
 }
 
 export interface UpdateCheckResult {

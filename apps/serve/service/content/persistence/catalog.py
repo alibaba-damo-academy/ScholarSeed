@@ -823,9 +823,13 @@ class ContentCatalog:
                         )
                         or (
                             command.get("kind") == DEFAULT_PROJECT_CREATION_COMMAND
-                            and command.get("parameters") == {}
+                            and isinstance(command.get("parameters"), dict)
+                            and set(command["parameters"]) <= {"name"}
+                            and isinstance(
+                                command["parameters"].get("name", naming.DEFAULT_PROJECT_NAME), str
+                            )
                             and naming.creation_name_matches(
-                                naming.DEFAULT_PROJECT_NAME,
+                                command["parameters"].get("name", naming.DEFAULT_PROJECT_NAME),
                                 plan.display_name,
                                 Path(plan.dir_root).name,
                             )

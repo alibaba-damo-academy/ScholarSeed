@@ -370,6 +370,14 @@ class InferenceContracts(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(body["tools"], [])
                 self.assertEqual(body["tool_choice"], "none")
 
+    def test_responses_plain_text_input_has_no_json_directive(self):
+        body = responses_body(REQUEST, connection(), {})
+        self.assertEqual(
+            body["input"],
+            [{"role": "user", "content": [{"type": "input_text", "text": "source"}]}],
+        )
+        self.assertNotIn("text", body)
+
 
 if __name__ == "__main__":
     unittest.main()

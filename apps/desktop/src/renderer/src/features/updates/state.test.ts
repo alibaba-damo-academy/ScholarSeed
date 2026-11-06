@@ -15,6 +15,7 @@ import {
   isAnnouncementAcknowledged,
   isUpdateEntryVisible,
   releaseNoteLines,
+  releaseNotesOf,
   runUpdateAction,
   runLatestUpdateAction,
   UPDATE_NOTES_COLLAPSED_COUNT,
@@ -26,6 +27,36 @@ import {
   updatePanelStageOf,
   visibleReleaseNotes,
 } from './state.ts'
+
+test('release notes select English at render time and fall back to original notes without changing identity', () => {
+  const bilingual = {
+    ...CANDIDATE,
+    release_notes: '中文说明\n第二条',
+    release_notes_en: '  English notes\nSecond item  ',
+  }
+  const frozen = structuredClone(bilingual)
+  for (const language of ['en', 'en-US', ' EN_gb ']) {
+    assert.equal(releaseNotesOf(bilingual, language), 'English notes\nSecond item')
+    for (const english of [undefined, '', ' \n ']) {
+      assert.equal(
+        releaseNotesOf({ ...bilingual, release_notes_en: english }, language),
+        bilingual.release_notes
+      )
+    }
+  }
+  for (const language of ['zh', 'zh-CN', 'fr', '']) {
+    assert.equal(releaseNotesOf(bilingual, language), bilingual.release_notes)
+    assert.equal(releaseNotesOf({ ...bilingual, release_notes: undefined }, language), undefined)
+  }
+  assert.equal(releaseNotesOf(undefined, 'en'), undefined)
+  assert.equal(releaseNotesOf({ ...CANDIDATE, release_notes: undefined }, 'en'), undefined)
+  assert.equal(
+    releaseNotesOf({ ...bilingual, release_notes: undefined }, 'en'),
+    'English notes\nSecond item'
+  )
+  assert.deepEqual(bilingual, frozen)
+  assert.equal(updateCandidateKey(bilingual), updateCandidateKey(frozen))
+})
 
 test('installation requires explicit confirmation for the same ready candidate', async () => {
   const calls: string[] = []

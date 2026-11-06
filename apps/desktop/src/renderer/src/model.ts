@@ -788,6 +788,7 @@ export interface HilOption {
   description?: string
 }
 export interface HilQuestion {
+  presentation?: Record<string, unknown>
   installation?: PluginReport
   component?: PluginReference
   componentData?: Record<string, unknown>

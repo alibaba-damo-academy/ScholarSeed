@@ -12,7 +12,12 @@ import {
   CardTitle,
   EllipsisText,
 } from '../../components/ui'
-import { conversationSearchPapers, searchWarningKeys, RESULT_LABELS } from './result'
+import {
+  conversationSearchPapers,
+  searchCriteria,
+  searchWarningKeys,
+  RESULT_LABELS,
+} from './result'
 import type { ConversationSearchResult } from '../../contracts/literature'
 import type { LiteratureCardPorts } from './ports'
 
@@ -66,7 +71,7 @@ export function LiteratureResults({
           })}
         </CardTitle>
         <CardDescription className="line-clamp-2 text-[var(--vds-text-tertiary)]">
-          {result.criteria[0] || t('result.search')}
+          {searchCriteria(result, t)[0] || t('result.search')}
         </CardDescription>
       </CardHeader>
       <CardContent>

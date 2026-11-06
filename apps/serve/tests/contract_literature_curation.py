@@ -386,6 +386,56 @@ class CurationRoutes(unittest.TestCase):
         self.assertEqual(result["deleted"], [self.item_id])
         self.assertIsNone(self.repository.get(self.item_id))
 
+    def test_confirmation_has_explicit_presentation_and_unchanged_protocol(self) -> None:
+        live = _live(decision={"answers": {"q": "取消"}})
+        client = _app(live, cleanup=self.addCleanup)
+        result = self._post(
+            client, "delete", {"literature_ids": [self.item_id], "client_op_id": "op-meta-0001"}
+        )
+        self.assertFalse(result["ok"])
+        call = live.interactions.request_product_input.call_args
+        question = call.args[0]
+        self.assertTrue(question["id"].startswith("literature-curation-"))
+        self.assertEqual(question["header"], "文献库操作确认")
+        self.assertEqual([option["label"] for option in question["options"]], ["确认执行", "取消"])
+        self.assertEqual(
+            question["presentation"],
+            {"kind": "literature-curation", "operation": "delete", "count": 1, "titles": ["Alpha"]},
+        )
+        self.assertEqual(call.kwargs, {"turn_id": TURN_ID, "timeout_seconds": 120.0})
+        self.assertIsNotNone(self.repository.get(self.item_id))
+
+    def test_cancel_timeout_and_translated_answers_never_approve(self) -> None:
+        decisions = (
+            {"cancelled": True, "answers": {"q": "确认执行"}},
+            {"timed_out": True, "answers": {"q": "确认执行"}},
+            {"answers": {"q": "Confirm execution"}},
+            {"answers": {"q": "Cancel"}},
+            {},
+        )
+        for index, decision in enumerate(decisions):
+            with self.subTest(decision=decision):
+                client = self._client(decision=decision)
+                result = self._post(
+                    client,
+                    "delete",
+                    {"literature_ids": [self.item_id], "client_op_id": f"op-cancel-{index:04}"},
+                )
+                self.assertEqual(result["error"], "user_denied")
+                self.assertIsNotNone(self.repository.get(self.item_id))
+
+    def test_read_only_destructive_operation_does_not_request_confirmation(self) -> None:
+        live = _live(mode="read_only")
+        client = _app(live, cleanup=self.addCleanup)
+        response = client.post(
+            LITERATURE_CURATION_ROUTES["delete"],
+            json={"literature_ids": [self.item_id], "client_op_id": "op-readonly-0001"},
+            headers=HEADERS,
+        )
+        self.assertEqual(response.status_code, 403)
+        live.interactions.request_product_input.assert_not_awaited()
+        self.assertIsNotNone(self.repository.get(self.item_id))
+
     def test_bypass_session_skips_the_confirmation_card(self) -> None:
         live = _live(decision={"answers": {"q": "取消"}}, mode="bypassPermissions")
         client = _app(live, cleanup=self.addCleanup)

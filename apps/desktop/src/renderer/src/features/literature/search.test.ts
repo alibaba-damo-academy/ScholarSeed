@@ -239,7 +239,8 @@ test('submitted searches and conversation results share the query summary header
   assert.match(header, /min-w-0 truncate/)
   assert.match(header, /picked\.length > 0 \? \(/)
   assert.doesNotMatch(header, /overflow-x-auto/)
-  assert.match(resultsSource, /query=\{result\.criteria/)
+  assert.match(resultsSource, /const criteria = searchCriteria\(result, t\)/)
+  assert.match(resultsSource, /query=\{criteria\[0\]/)
 })
 
 test('project search keeps its scope and imports only into the current project', () => {

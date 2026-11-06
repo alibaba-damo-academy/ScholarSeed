@@ -15,6 +15,8 @@ import { LITERATURE_RESULT_PREFIX } from '../workbench/tabs'
 import { LiteratureSearchTab } from './Search'
 import {
   literatureRetrievalAuthorization,
+  literatureCurationInteraction,
+  literatureOutlineConfirmation,
   literatureReviewInteraction,
   preciseFulltextSubsetAuthorization,
 } from './interaction'
@@ -132,6 +134,8 @@ export function literatureFeature(): FeatureModule {
       preciseFulltextSubsetAuthorization,
       literatureRetrievalAuthorization,
       literatureReviewInteraction,
+      literatureCurationInteraction,
+      literatureOutlineConfirmation,
     ],
   }
 }

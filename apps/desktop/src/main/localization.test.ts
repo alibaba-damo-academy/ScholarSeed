@@ -102,6 +102,13 @@ function mainInstance(): typeof Localization {
 }
 
 for (const language of ['zh', 'en'] as const) {
+  test(`main seeds the default project from the confirmed ${language} language`, async () => {
+    const main = mainInstance()
+    await main.applyMainLanguage(language)
+    const expected = language === 'en' ? 'Default Project' : '书深默认项目'
+    assert.equal(main.mainLocalization().getFixedT(null, 'project')('defaultName'), expected)
+  })
+
   test(`main reports update recovery in ${language} without a localization fallback`, async () => {
     const main = mainInstance()
     await main.applyMainLanguage(language)

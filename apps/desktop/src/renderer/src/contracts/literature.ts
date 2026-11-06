@@ -327,6 +327,11 @@ export interface ConversationSearchPaper {
   decision_reason?: string | null
   fulltext?: 'fulltext' | 'abstract' | 'unknown'
 }
+export interface SearchCriterion {
+  kind: 'intent' | 'years' | 'limit' | 'paper_types' | 'include_criteria' | 'exclude_criteria'
+  text: string
+  values: string[]
+}
 export interface ConversationSearchResult {
   schema_version: string
   session_id: string
@@ -334,6 +339,7 @@ export interface ConversationSearchResult {
   round: number
   status: string
   criteria: string[]
+  criteria_details?: SearchCriterion[]
   sources: { name: string; status: string; queries: number | null; candidates: number | null }[]
   candidates: number | null
   deduplicated: number | null

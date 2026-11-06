@@ -508,7 +508,7 @@ test('backend stop retries resource cleanup without treating an exited child as 
   assert.equal(attempts, 3)
 })
 
-test('backend independently decodes interleaved stdout and stderr UTF-8 fragments', async (context) => {
+test('backend preserves the default project seed and independently decodes UTF-8 fragments', async (context) => {
   const entry = new URL('./backend.ts?stream-contract', import.meta.url).href
   const replacements = new Map([
     ['./resources.ts', `export const applicationResources = () => ${JSON.stringify(directory)};`],
@@ -549,6 +549,7 @@ test('backend independently decodes interleaved stdout and stderr UTF-8 fragment
   })
   const originalEnvironment = { ...process.env }
   const output: string[] = []
+  let serveArgs: readonly string[] = []
   const stdout = new PassThrough()
   const stderr = new PassThrough()
   const child = new childProcess.ChildProcess()
@@ -570,7 +571,10 @@ test('backend independently decodes interleaved stdout and stderr UTF-8 fragment
     childProcess,
     'spawn',
     (_command: string, args?: readonly string[]) => {
-      if (args?.includes('--parent-stdin')) return child
+      if (args?.includes('--parent-stdin')) {
+        serveArgs = args
+        return child
+      }
       const probe = new childProcess.ChildProcess()
       Object.defineProperty(probe, 'stdin', { value: new PassThrough() })
       queueMicrotask(() => {
@@ -587,10 +591,16 @@ test('backend independently decodes interleaved stdout and stderr UTF-8 fragment
   let streaming: typeof backend | undefined
   try {
     streaming = (await import(entry)) as typeof backend
-    handle = streaming.startBackend((line) => output.push(line), { port: 0 })
+    handle = streaming.startBackend((line) => output.push(line), {
+      port: 0,
+      defaultProjectName: 'Default Project',
+    })
     while (!handle.proc && !handle.error)
       await new Promise<void>((resolve) => setImmediate(resolve))
     assert.equal(handle.proc, child, output.join(''))
+    const seedFlag = serveArgs.indexOf('--default-project-name')
+    assert.notEqual(seedFlag, -1)
+    assert.equal(serveArgs[seedFlag + 1], 'Default Project')
     const expectedOut = 'stdout: 中文目录 😀\n'
     const expectedErr = 'stderr: 编译失败 🚀\n'
     const outBytes = Buffer.from(expectedOut)

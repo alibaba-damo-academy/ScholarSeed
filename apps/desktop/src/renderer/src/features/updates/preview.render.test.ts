@@ -73,6 +73,29 @@ test(
       await expect(page.getByTestId('preview-update-lines')).toBeDisabled()
       await expect(page.getByTestId('preview-update-scope')).toBeDisabled()
       assert.equal(await page.locator('#calls').textContent(), 'get')
+
+      await visit('?bilingual')
+      await page.getByTestId('preview-update-lines').click()
+      await page.getByTestId('preview-update-target').selectOption('preview-three')
+      const dialog = page.getByTestId('preview-update-dialog')
+      await expect(dialog).toContainText('版本线更新说明')
+      await page.evaluate(async () => Reflect.get(window, 'previewFixture').language('en'))
+      await expect(dialog).toContainText('Release line notes')
+      await expect(dialog).not.toContainText('版本线更新说明')
+      await page.evaluate(async () => Reflect.get(window, 'previewFixture').language('zh'))
+      await expect(dialog).toContainText('版本线更新说明')
+      await expect(page.locator('#calls')).toHaveText('get,list')
+
+      for (const query of ['?language=en', '?language=en&blank-english', '?language=en&no-notes']) {
+        await visit(query)
+        await page.getByTestId('preview-update-lines').click()
+        await page.getByTestId('preview-update-target').selectOption('preview-three')
+        await expect(page.getByTestId('preview-update-dialog')).toContainText(
+          query.includes('no-notes')
+            ? 'No release notes are available for this version.'
+            : '版本线更新说明'
+        )
+      }
     } finally {
       await browser.close()
       await server.close()
