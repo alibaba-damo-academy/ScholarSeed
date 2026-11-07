@@ -62,6 +62,7 @@ from service.literature.service.identity import paper_identity  # noqa: E402
 from service.paths import SERVICE_LITERATURE_FILES_DIR  # noqa: E402
 from service.platform.activity import Activities  # noqa: E402
 from service.platform.bridge import LiteratureDelivery  # noqa: E402
+from service.platform.citations import CitationSourceChanged  # noqa: E402
 from service.platform.content import RootKind  # noqa: E402
 from service.platform.context import FulltextTaskContext, ProductTaskType  # noqa: E402
 from service.resources.service.writer import ResourceWriter, ResourceWriterError  # noqa: E402
@@ -373,6 +374,38 @@ class DeliveryContract(unittest.TestCase):
                         else paper["resource_path"]
                     )
                     self.assertEqual(Path(path).read_bytes(), self.payload)
+
+    def test_managed_citation_reopens_exact_acquisition_without_active_task(self) -> None:
+        self.acquire("citation-paper")
+        fulltexts = ManagedFulltexts()
+        revision = payload_revision(self.payload)
+        document = fulltexts.citation_document(
+            self.project.id, "citation-paper", session_id=self.session, revision=revision
+        )
+        self.assertEqual(document.payload, self.payload)
+        self.assertEqual(document.session_id, self.session)
+        self.assertEqual(document.reference_id, "paper:citation-paper")
+        for project_id, session_id, expected_revision in (
+            (self.project.id, "another-session", revision),
+            ("another-project", self.session, revision),
+            (self.project.id, self.session, "sha256:another-version"),
+        ):
+            with self.subTest(
+                project_id=project_id, session_id=session_id, revision=expected_revision
+            ):
+                self.assertIsNone(
+                    fulltexts.citation_document(
+                        project_id,
+                        "citation-paper",
+                        session_id=session_id,
+                        revision=expected_revision,
+                    )
+                )
+        Path(document.path).write_bytes(pdf_bytes("2201.05596"))
+        with self.assertRaises(CitationSourceChanged):
+            fulltexts.citation_document(
+                self.project.id, "citation-paper", session_id=self.session, revision=revision
+            )
 
     def test_project_save_and_library_have_independent_owned_pdfs(self) -> None:
         delivery_id = self.acquire("library")
