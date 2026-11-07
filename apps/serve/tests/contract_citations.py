@@ -28,6 +28,7 @@ from service.content.persistence.catalog import ContentCatalog
 from service.content.service.context import ContentContextProvider
 from service.content.service.port import ContentService, ProjectRegistry
 from service.content.service.utils import directory
+from service.literature.service.fulltexts import MANAGED_FULLTEXT_SOURCE_KIND
 from service.platform.activity import Activities
 from service.platform.bridge import PdfAnnotations, PdfQuery
 from service.platform.citations import (
@@ -47,6 +48,8 @@ from service.platform.context import (
     ContextRef,
     ContextRefKind,
     ContextResolutionState,
+    FulltextTaskContext,
+    ProductTaskType,
     ProjectContextPolicy,
     SearchScope,
 )
@@ -517,6 +520,67 @@ class CitationContracts(unittest.TestCase):
             1,
         )
         return self.answers.value.revision
+
+    def test_managed_fulltext_citation_resolves_original_receipt_and_raw_bytes(self):
+        self.ready()
+        managed = Mock()
+        document = CitationDocument(
+            "project",
+            "/managed/paper.pdf",
+            "Managed paper",
+            "sha256:" + hashlib.sha256(self.source.payload).hexdigest(),
+            self.source.payload,
+            session_id="session",
+            reference_id="paper:paper-id",
+            storage_scope="managed",
+        )
+        managed.managed_fulltext_document.return_value = document
+        managed.citation_document.return_value = document
+        self.service._fulltexts = managed
+        context = FulltextTaskContext(
+            owner_id="owner",
+            project_id="project",
+            session_id="session",
+            workdir=self.temp.name,
+            task_type=ProductTaskType.PRECISE_SEARCH,
+            workspace="runs/original",
+            run_id="runs/original",
+        )
+        deadline = time.monotonic() + 15
+        result = {}
+        while time.monotonic() < deadline:
+            prepared = self.service.query(
+                "session",
+                "snapshot",
+                "read",
+                PdfQuery(ref_id="paper:paper-id", limit=1),
+                task_context=context,
+            )
+            result = self.service.commit_read("session", "snapshot", prepared)
+            if result.get("fragments"):
+                break
+            self.assertNotEqual(result.get("state"), "failed", result)
+            time.sleep(0.05)
+        self.assertTrue(result.get("fragments"), result)
+        handle = result["fragments"][0]["citation_url"].split(":", 1)[1]
+        revision = self.answer_for(f"Finding [1](scholarseed-cite:{handle})")
+        resolved = self.service.resolve("session", "answer:1", revision, 0, 0, handle)
+        self.assertEqual(resolved["source_kind"], MANAGED_FULLTEXT_SOURCE_KIND)
+        self.assertEqual(resolved["state"], "exact")
+        self.assertTrue(resolved["can_open_pdf"])
+        self.assertEqual(
+            self.service.raw("session", "answer:1", revision, handle), document.payload
+        )
+        managed.citation_document.assert_called_with(
+            "project", "paper-id", session_id="session", revision=document.revision
+        )
+        receipt = self.store.get("session", "snapshot", handle)
+        self.assertEqual(self.service.resolve_saved(receipt, "project")["state"], "exact")
+        managed.citation_document.return_value = None
+        self.assertEqual(
+            self.service.resolve("session", "answer:1", revision, 0, 0, handle)["state"],
+            "unavailable",
+        )
 
     def test_project_pdf_annotations_are_user_feedback_without_citation_receipts(self):
         records = Mock()

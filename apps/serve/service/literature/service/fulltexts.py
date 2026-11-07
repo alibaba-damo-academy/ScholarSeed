@@ -12,7 +12,11 @@ from service.literature.persistence.files import (
     payload_revision,
     read_attachment,
 )
-from service.platform.citations import MANAGED_STORAGE_SCOPE, CitationDocument
+from service.platform.citations import (
+    MANAGED_STORAGE_SCOPE,
+    CitationDocument,
+    CitationSourceChanged,
+)
 from service.platform.context import FulltextBindingScope, FulltextTaskContext
 
 PAPER_REF_PREFIX = "paper:"
@@ -43,17 +47,39 @@ class ManagedFulltexts:
         )
         if obj is None:
             return None
+        return self._document(project_id, paper_id, task_context.session_id, obj)
+
+    def citation_document(
+        self, project_id: str, paper_id: str, *, session_id: str, revision: str
+    ) -> CitationDocument | None:
+        """Reopen the exact acquisition named by a retained citation receipt."""
+        obj = next(
+            (
+                source
+                for batch in DeliveryStore().for_session(session_id, project_id)
+                for paper in batch["papers"]
+                for source in DeliveryStore.sources(paper)
+                if source["paper_id"] == paper_id and source["revision"] == revision
+            ),
+            None,
+        )
+        if obj is None:
+            return None
+        return self._document(project_id, paper_id, session_id, obj)
+
+    @staticmethod
+    def _document(project_id: str, paper_id: str, session_id: str, obj: dict) -> CitationDocument:
         location = str(SERVICE_LITERATURE_FILES_DIR / obj["object_name"])
         payload = read_attachment(location)
         if payload_revision(payload) != obj["revision"]:
-            raise ValueError(f"{FULLTEXT_BINDING_INTEGRITY_FAILED}: {paper_id}")
+            raise CitationSourceChanged(f"{FULLTEXT_BINDING_INTEGRITY_FAILED}: {paper_id}")
         return CitationDocument(
             project_id=project_id,
             path=location,
             title=obj.get("title") or paper_id,
             revision=obj["revision"],
             payload=payload,
-            session_id=task_context.session_id,
+            session_id=session_id,
             reference_id=PAPER_REF_PREFIX + paper_id,
             storage_scope=MANAGED_STORAGE_SCOPE,
         )

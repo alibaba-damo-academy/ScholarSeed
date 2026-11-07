@@ -189,6 +189,10 @@ class ManagedFulltextPort(Protocol):
         task_context: FulltextTaskContext | FulltextBindingScope | None = None,
     ) -> CitationDocument | None: ...
 
+    def citation_document(
+        self, project_id: str, paper_id: str, *, session_id: str, revision: str
+    ) -> CitationDocument | None: ...
+
 
 class LiteratureEvidencePort(Protocol):
     def locate(self, document: CitationDocument, text: str) -> list[dict]: ...

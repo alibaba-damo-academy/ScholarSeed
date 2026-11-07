@@ -1,5 +1,7 @@
 import type { ArtifactCitationReference, RecordTarget, SavedCitationReference } from './workbench'
 
+export const MANAGED_FULLTEXT_SOURCE_KIND = 'managed_fulltext'
+
 export function artifactCitationUrl(
   reference: ArtifactCitationReference,
   operation?: 'raw' | 'preview',

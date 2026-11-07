@@ -10,6 +10,7 @@ import {
 } from '../../contracts/workbench.ts'
 import {
   CITATION_VIEW_STATE_KEY,
+  MANAGED_FULLTEXT_SOURCE_KIND,
   type CitationMatch,
   type CitationResolution,
 } from '../../contracts/citations.ts'
@@ -680,6 +681,7 @@ export class DocumentWorkspace {
     let document: DocumentSource =
       (source.artifact_citation ||
         source.source_kind === 'attachment' ||
+        source.source_kind === MANAGED_FULLTEXT_SOURCE_KIND ||
         source.source_kind === 'literature') &&
       (source.source_session_id || source.artifact_citation) &&
       (source.artifact_citation ||

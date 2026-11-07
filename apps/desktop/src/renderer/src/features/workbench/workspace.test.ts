@@ -3666,6 +3666,25 @@ test('attachment citations reuse the source tab across handles and distinguish s
   )
   assert.equal(library, first)
   assert.equal(workspace.getSnapshot().tabs[first].viewState?.page, 4)
+  const managedWorkspace = new DocumentWorkspace(dependencies)
+  const managed = await managedWorkspace.revealCitation({
+    ...citation,
+    source_kind: 'managed_fulltext',
+    source_id: 'paper:managed-paper',
+    path: '/managed/paper.pdf',
+  })
+  const managedState = managedWorkspace.getSnapshot()
+  const managedSource = managedState.sessions[managedState.tabs[managed].sessionId].source
+  assert.equal(managedSource.kind, 'session-file')
+  assert.ok(managedSource.kind === 'session-file')
+  assert.equal(managedSource.path, 'paper:managed-paper')
+  assert.equal(managedSource.sessionId, 'session')
+  assert.deepEqual(managedSource.citation, {
+    answerId: 'answer',
+    answerRevision: 'answer-revision',
+    handle: 'first',
+  })
+  assert.equal(managedState.tabs[managed].viewState?.page, 1)
   const other = await workspace.revealCitation(
     {
       ...citation,
@@ -3692,6 +3711,26 @@ test('attachment citations reuse the source tab across handles and distinguish s
     project_id: 'project',
     path: 'resources/report.md',
     handle: 'saved',
+  })
+  const managedSavedWorkspace = new DocumentWorkspace(dependencies)
+  const managedSaved = await managedSavedWorkspace.revealCitation({
+    ...citation,
+    source_kind: 'managed_fulltext',
+    source_id: 'paper:managed-saved',
+    path: '/managed/paper.pdf',
+    answer_id: undefined,
+    answer_revision: undefined,
+    saved_citation: { project_id: 'project', path: 'resources/report.md', handle: 'managed-saved' },
+  })
+  const managedSavedState = managedSavedWorkspace.getSnapshot()
+  const managedSavedSource =
+    managedSavedState.sessions[managedSavedState.tabs[managedSaved].sessionId].source
+  assert.equal(managedSavedSource.kind, 'session-file')
+  assert.ok(managedSavedSource.kind === 'session-file')
+  assert.deepEqual(managedSavedSource.savedCitation, {
+    project_id: 'project',
+    path: 'resources/report.md',
+    handle: 'managed-saved',
   })
 })
 

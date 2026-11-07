@@ -1255,6 +1255,19 @@ class CitationService:
             return self._attachments.pdf_document(
                 record["source_session_id"], record["source_turn_id"], record["source_id"]
             )
+        if record["source_kind"] == MANAGED_FULLTEXT_SOURCE_KIND:
+            if self._fulltexts is not None and record["source_id"].startswith(
+                AUTHORIZATION_PAPER_PREFIX
+            ):
+                document = self._fulltexts.citation_document(
+                    record["project_id"],
+                    record["source_id"][len(AUTHORIZATION_PAPER_PREFIX) :],
+                    session_id=record["source_session_id"],
+                    revision=record["revision"],
+                )
+                if document is not None:
+                    return document
+            raise ValueError("citation_source_unavailable")
         provider = self._providers[ContextRefKind(record["source_kind"])]
         ref = ContextRef(
             ref_id=record["handle"],
