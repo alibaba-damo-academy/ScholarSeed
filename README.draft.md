@@ -9,7 +9,7 @@
   </a>
 </p>
 
-<h3 align="center">Where your papers, ideas and AI stay connected.</h3>
+<h2 align="center">Where your ideas, documents, and AI stay connected.</h3>
 <p align="center">Read, ask, verify, and build on yesterday's work, with your own models, on your own machine.</p>
 
 <p align="center">
