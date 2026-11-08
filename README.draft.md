@@ -1,26 +1,3 @@
-<!--
-  README DRAFT — not the live README.
-  Numbers in this file were read from the code on 2026-11-07 (v0.3.1):
-    6 model providers, 66 model entries, 13 bundled skills, 7 MCP connectors,
-    macOS + Windows, Apache-2.0.
-  Re-check them before each release, or generate them with a script so they
-  never drift.
-
-  Assets pulled from https://scholarseed.damo.alibaba.com on 2026-11-07 into
-  assets/readme/brand/:
-    brand-mark.svg, brand-wordmark.svg          — logo + wordmark
-    hero-headline-handwriting.svg               — "让 AI 更懂你，陪每个想法生长。" handwriting
-    hero-growth-poster.svg, hero-wordmark-mask.webp, trace-paper.webp
-    core-01-local-space-small.gif (0.6 MB), core-02-context-smaller.gif (1.9 MB)
-    core-01/02-*-poster.webp                    — static frames of the two GIFs
-  The homepage hero animation (handwriting reveal, seed-growth, trace lines) is
-  CSS @keyframes, not a video or Lottie file, so it cannot be embedded in GitHub
-  Markdown. Options: (a) screen-record the hero at 1200px → assets/readme/hero.gif,
-  or (b) use the two product GIFs above, which are real animations.
-  Logos in assets/readme/logos/ are from Simple Icons (CC0); each mark remains
-  the trademark of its owner.
--->
-
 <p align="center">
   <a href="https://scholarseed.damo.alibaba.com/">
     <img src="assets/readme/brand/brand-mark.svg" alt="ScholarSeed" width="96">
@@ -32,15 +9,6 @@
   </a>
 </p>
 
-<!-- Tagline options — pick ONE for the h3, keep the others for the GitHub
-     "About" field, the website, and the launch post:
-     A. Your research, continuous.            (continuity / accumulation)
-     B. Read. Ask. Verify. Build on it.       (workflow verbs)
-     C. An AI research workbench you can audit. (trust / developers)
-     D. Where papers, notes and AI stay connected. (plain, user-facing)
-     E. Rooted in your research. Grown with you.   (homepage's official English line)
-     Current pick: D as title. E is already on the homepage; reuse it for the
-     GitHub About field so the two sites match. -->
 <h3 align="center">Where your papers, ideas and AI stay connected.</h3>
 <p align="center">Read, ask, verify, and build on yesterday's work, with your own models, on your own machine.</p>
 
@@ -48,8 +16,6 @@
   <b>PDF reader</b> · <b>Literature library</b> · <b>Evidence-linked answers</b> · <b>Research skills</b> · <b>Your models</b> · <b>Local-first</b>
 </p>
 
-<!-- Badges: keep to 4–5. Do not add download/star/streak badges until the
-     numbers are large enough to help. -->
 <p align="center">
   <a href="https://scholarseed.damo.alibaba.com/"><img src="https://img.shields.io/badge/homepage-scholarseed.damo.alibaba.com-2f5744" alt="Homepage"></a>
   <a href="https://scholarseed.damo.alibaba.com/download.html"><img src="https://img.shields.io/badge/download-macOS%20%7C%20Windows-2f5744" alt="Download"></a>
@@ -74,7 +40,6 @@
      the homepage work as a hero pair. Swap for assets/readme/hero.gif
      (select a sentence → ask → citation opens the passage) when recorded. -->
 <p align="center">
-  <img src="assets/readme/brand/core-01-local-space-small.gif" alt="A local research space: projects, papers, notes" width="400">
   <img src="assets/readme/brand/core-02-context-smaller.gif" alt="AI that builds on your project context" width="400">
 </p>
 
@@ -82,10 +47,7 @@
 
 ## Why ScholarSeed?
 
-<!-- Problem-first section. Keep to ~6 pains, first-person researcher voice.
-     Each pain → one concrete feature. Do not list features without a pain. -->
-
-Most "AI for research" tools are a chat box next to your real work. You paste in a PDF, get a answer, and lose track of where it came from. Next week you start over.
+Most "AI for research" tools are a chat box next to your real work. You paste in a PDF, get an answer, and lose track of where it came from. Next week you start over.
 
 | The pain | What ScholarSeed does instead |
 |---|---|
@@ -101,25 +63,13 @@ Most "AI for research" tools are a chat box next to your real work. You paste in
 
 ## Quick start
 
-<!-- Zero-friction "first 5 minutes" path. Must end with a verifiable result
-     (the citation link), not just "it opens". Re-test on a clean machine
-     before every release. -->
+**1. Install** — grab the installer from **[scholarseed.damo.alibaba.com/download.html](https://scholarseed.damo.alibaba.com/download.html)** (macOS Apple silicon, macOS Intel, Windows x64)
 
-**1. Install** — grab the installer from **[scholarseed.damo.alibaba.com/download.html](https://scholarseed.damo.alibaba.com/download.html)** (macOS Apple silicon, macOS Intel, Windows x64), or run:
+**2. Add a model** — Register to use Qwen or add a model from Settings → Models. <!-- TODO: screenshot of the Models settings page -->
 
-```bash
-npx @damodi/scholarseed
-```
-<!-- @damodi/scholarseed is on npm (0.2.4, "ScholarSeed desktop app installer"
-     as of 2026-11-07); it fetches the installer. Keep its version in step
-     with releases. Homebrew cask / winget: TODO once available.
-     Linux: not yet (see Roadmap). -->
+**3. Import one PDF or your Bib/Ris/Zotero library**.
 
-**2. Add a model** — Settings → Models → paste one API key, or point it at any OpenAI-compatible endpoint. <!-- TODO: screenshot of the Models settings page -->
-
-**3. Import one PDF** — drag it into the Library.
-
-**4. Select a sentence and ask** — right-click → *Explain* (or *Translate*).
+**4. Open the PDF and select a sentence and ask** — right-click → *Explain* (or *Translate*).
 
 **5. Check the answer** — click the citation. It should open the passage you selected. If it does, everything is wired up.
 
@@ -202,16 +152,6 @@ npx @damodi/scholarseed
 
 Switch models per conversation. Keys stay on your machine.
 
-<!-- OpenAI-compatible endpoints are supported today: settings/connections.py
-     validates a personal connection with base_url + api_key, and allows a
-     custom header in place of a key for OpenAI-compatible gateways
-     (connections.py:485-498). This is how to reach Ollama / vLLM / LM Studio
-     right now (point base_url at http://localhost:11434/v1 etc.), but there
-     is no first-class local-model preset, no model discovery, and no
-     "offline mode" — so the roadmap row below is about presets, not raw
-     reachability. Add a one-paragraph "Local models via OpenAI-compatible
-     endpoint" guide under Integrations once tested. -->
-
 **Coming:** first-class presets for **Google Gemini** and for local models via **Ollama, vLLM and LM Studio**; and **Claude Code** as a second agent runtime next to Codex. See [Roadmap](#roadmap).
 
 ---
@@ -235,21 +175,6 @@ Switch models per conversation. Keys stay on your machine.
 ---
 
 ## Integrations
-
-<!-- Logo wall. SVGs are monochrome Simple Icons (CC0) in assets/readme/logos/,
-     sized 40px, linked to each project's setup guide once written.
-     Missing from Simple Icons — add official marks (check each brand's
-     guidelines first) or leave as text:
-       OpenAI   https://openai.com/brand
-       OpenAlex https://openalex.org (logo in their GitHub org)
-       Elicit   https://elicit.com
-       Firecrawl https://www.firecrawl.dev
-       Zhipu    https://www.zhipuai.cn
-       Moonshot — Simple Icons has "kimi"; used that.
-     GitHub renders <img> inside <p align="center"> fine; no dark-mode
-     variant yet — Simple Icons are black, so add
-     `#gh-light-mode-only` / `#gh-dark-mode-only` pairs if the wall looks
-     wrong in dark theme. -->
 
 **Literature**
 
@@ -304,11 +229,9 @@ Switch models per conversation. Keys stay on your machine.
 
 ## For developers
 
-<!-- Developer proposition: "a foundation for AI research apps". It is only
-     credible with (a) a runnable example, (b) a stability statement,
-     (c) a contribution path. Fill all three before promoting this section. -->
+<!-- Developer proposition: "a foundation for AI research apps".  -->
 
-ScholarSeed is a working research application you can extend rather than a framework you must assemble. PDF handling, the library, projects, model routing, sandboxing, citations and the UI are already there.
+ScholarSeed is a working research application you can extend rather than a framework you must assemble. PDF handling, the library, projects, model routing, sandboxing, citations, and the UI are already there.
 
 ### Build from source
 
@@ -348,6 +271,9 @@ Runtime Gateway ──► Codex Adapter ──► Codex App Server (sandboxed)
       └────────────► DamoATrace evidence recording
 ```
 
+<!-- TODO: replace the ASCII diagram with assets/readme/architecture.svg; mark
+     Skills, Plugins and MCP as the three extension points. -->
+     
 | Path | Responsibility |
 | --- | --- |
 | `apps/desktop/` | Electron + React desktop application |
@@ -359,22 +285,18 @@ Runtime Gateway ──► Codex Adapter ──► Codex App Server (sandboxed)
 | `skills/community/` | Research skills compiled into the product |
 | `tests/` | Cross-package contracts, integration, acceptance, release gates |
 
-<!-- TODO: replace the ASCII diagram with assets/readme/architecture.svg; mark
-     Skills, Plugins and MCP as the three extension points. -->
 
 ### Extension points
 
 **Write a Skill** — a folder with `SKILL.md`. Encode your lab's method; the agent follows it inside the sandbox.
-<!-- TODO: 10-line example SKILL.md inline, plus link to skills/community/fast-search as the smallest real one -->
 
 **Write a UI plugin** — a React card that renders in the conversation. The `window.plugin` bridge gives you `submit`, `save`, `request`, `onState`. Pack and validate offline with `python -m service.cli.plugins`.
-<!-- TODO: link packages/ui/example and doc/plugins.md (Chinese; needs an
+<!-- TODO: link packages/ui/example and doc/plugins.md (currently Chinese; needs an
      English version); state SDK version + compatibility policy
      (packages/ui/contract.ts exposes `version` and `compatibility`). Say
      plainly: "SDK is pre-1.0; breaking changes are listed in CHANGELOG." -->
 
 **Add a runtime** — the agent engine sits behind a typed contract (`packages/runtime`): sessions, events, permissions, sandbox, MCP, secrets, incidents. Providers are discovered through the `scholarseed_runtime.providers` entry point and enabled in `product.json`. The Codex adapter (`packages/adapters/codex`) is the reference implementation; a **Claude Code** adapter is planned.
-<!-- Until a second adapter exists, keep this phrased as design intent. -->
 
 **Observe everything** — `damoatrace` is a standalone trace CLI + web UI (SQLite FTS5 search, per-session digests, token/cost rollups, secret redaction) with no dependency on the agent.
 <!-- TODO: finish the rename; the package still references damoagent and
@@ -418,11 +340,6 @@ Runtime Gateway ──► Codex Adapter ──► Codex App Server (sandboxed)
 - Built by Alibaba DAMO Academy, Decision Intelligence Lab.
 
 ### Built on
-
-<!-- Versions from scripts/vendor/*/manifest.json, apps/desktop/runtime/versions.json,
-     apps/serve/pyproject.toml and apps/desktop/resources/notices on 2026-11-07.
-     Each keeps its own license; see apps/desktop/resources/notices/ for the
-     shipped notices. This is a thank-you list, not an SBOM. -->
 
 ScholarSeed stands on a lot of other people's work. Thank you to:
 
