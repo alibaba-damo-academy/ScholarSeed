@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from service.chat.constants import (
     PRODUCT_EVENT_SESSION_TITLE_UPDATED,
@@ -70,7 +70,10 @@ class SessionTitleContract(unittest.IsolatedAsyncioTestCase):
         )
         self.model = TitleModel()
         self.activities = Activities()
-        self.service = SessionTitles(self.catalog, self.events, self.model, self.activities)
+        self.select_model = Mock(return_value="qwen3.8-flash")
+        self.service = SessionTitles(
+            self.catalog, self.events, self.model, self.activities, select_model=self.select_model
+        )
         self.published = []
 
         async def adopt(title, *, turn_id):
@@ -112,6 +115,7 @@ class SessionTitleContract(unittest.IsolatedAsyncioTestCase):
     async def test_first_message_runs_concurrently_and_freezes_model_and_input(self) -> None:
         request = self.admitted()
         self.assertIsNotNone(request)
+        self.assertIn("same language as the first user message", request.instructions)
         task = self.service.start(self.live, request)
         await self.model.started.wait()
         self.assertFalse(task.done())
@@ -120,7 +124,8 @@ class SessionTitleContract(unittest.IsolatedAsyncioTestCase):
         self.model.ready.set()
         await task
         self.assertEqual(len(self.model.requests), 1)
-        self.assertEqual(self.model.requests[0].model_key, "chosen-model")
+        self.assertEqual(self.model.requests[0].model_key, "qwen3.8-flash")
+        self.select_model.assert_called_once_with("chosen-model", "title-owner")
         self.assertEqual(self.model.requests[0].input_text, request.input_text)
         self.assertEqual(self.catalog.get("session").title, "设计科研文献检索方案")
         self.assertEqual(
@@ -135,13 +140,31 @@ class SessionTitleContract(unittest.IsolatedAsyncioTestCase):
         self.model.ready.set()
         await self.service.start(self.live, request)
         self.assertEqual(self.catalog.get("session").title, SESSION_TITLE_DEFAULT)
-        reopened = SessionTitles(self.catalog, self.events, self.model, self.activities)
+        reopened = SessionTitles(
+            self.catalog, self.events, self.model, self.activities, select_model=self.select_model
+        )
         try:
             self.assertIsNone(reopened.prepare(self.live, "another task", turn_id="later"))
         finally:
             await reopened.aclose()
         self.assertEqual(len(self.model.requests), 1)
         self.assertEqual(self.published, [])
+
+    async def test_personal_selection_is_used_without_changing_the_conversation_model(self) -> None:
+        self.select_model.return_value = "chosen-model"
+        request = self.admitted()
+        self.model.ready.set()
+        await self.service.start(self.live, request)
+        self.assertEqual(self.model.requests[0].model_key, "chosen-model")
+        self.assertEqual(self.live.model_id, "chosen-model")
+
+    async def test_unavailable_title_model_keeps_default_without_invoking_another_model(
+        self,
+    ) -> None:
+        self.select_model.side_effect = ValueError("model unavailable")
+        await self.service.start(self.live, self.admitted())
+        self.assertEqual(self.catalog.get("session").title, SESSION_TITLE_DEFAULT)
+        self.assertEqual(self.model.requests, [])
 
     async def test_manual_same_default_name_wins_while_generation_is_pending(self) -> None:
         request = self.admitted()

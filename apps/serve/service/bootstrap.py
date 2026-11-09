@@ -4211,7 +4211,13 @@ def _compose_app(
         format_policy,
     )
     app.state.turn_service.bind_titles(
-        SessionTitles(app.state.session_catalog, app.state.product_events, direct_model, activities)
+        SessionTitles(
+            app.state.session_catalog,
+            app.state.product_events,
+            direct_model,
+            activities,
+            select_model=app.state.model_service.title_model_key,
+        )
     )
     app.state.runtime_service.bind_citation_coverage(
         CitationCoverage(
