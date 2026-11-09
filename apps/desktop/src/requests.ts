@@ -1,5 +1,6 @@
 export const API_DIAGNOSTIC_PREFIX = '[api-request]'
 export const REQUEST_TIMEOUT_ERROR_NAME = 'TimeoutError'
+export const REQUEST_ABORT_ERROR_NAME = 'AbortError'
 export const MODEL_PROFILES_PATH = '/api/serve/model-profiles'
 export const MODEL_PROVIDERS_PATH = '/api/serve/model-providers'
 export const AUTH_ME_PATH = '/api/auth/me'

@@ -284,6 +284,7 @@ from service.platform.domains import (
 from service.platform.excerpts import ExcerptSourceKind
 from service.platform.guardian import from_environment as native_guardian
 from service.platform.local import local_listener
+from service.platform.notifications import ChangeHub
 from service.platform.reclamation import reclaim_coordination
 from service.platform.search import register_search_routes
 from service.platform.shutdown import ShutdownStage
@@ -3680,11 +3681,14 @@ def _compose_app(
             registry.block(project.project_id, project.reason)
     admission = admission if admission is not None else WorkbenchAdmission(native_guardian())
     activities = Activities(workbench_ready=lambda: admission.ready)
+    changes = ChangeHub(activities.instance_id)
+    catalog.changes = changes
     content = ContentService(registry, catalog, activities=activities)
+    content.bind_notifications(changes)
     writer = ResourceWriter(content)
     resource_retention = ResourceRetentionService(content, settings)
     format_policy = WorkbenchFormatPolicy()
-    literature_repository = LiteratureRepository()
+    literature_repository = LiteratureRepository(changes=changes)
     prune_download_results()
     literature_attachments = LiteratureAttachmentContent(literature_repository)
     attachment_records = AttachmentRecords(literature_attachments, literature_repository)
@@ -3692,6 +3696,7 @@ def _compose_app(
         content,
         PdfRecordCatalog(content),
         shared_records=attachment_records,
+        changes=changes,
     )
     resource_versions = ResourceVersionService(
         content, resource_retention, format_policy, annotation_store
@@ -3723,7 +3728,6 @@ def _compose_app(
     version_supervisor.bind_preparation(resource_activation)
     content.bind_resource_changes(version_supervisor)
     # 项目永久删除时文献域回收其全库面关联: 归档只隐藏关联, 删除才真清理。
-    literature_repository = LiteratureRepository()
 
     def drop_project_links(project_id: str) -> None:
         literature_repository.drop_project_links(project_id)
@@ -3745,6 +3749,7 @@ def _compose_app(
         formats=format_policy,
         activities=activities,
         runtime_discovery=runtime_discovery,
+        notifications=changes,
     )
     app.state.workbench_admission = admission
     app.state.browser_host_client = browser_host_client

@@ -3,6 +3,37 @@ import test from 'node:test'
 import { apiFetch, getJson, postJson, LIVE_CATALOG_REQUEST } from './client.ts'
 import { flushApiDiagnostics } from './diagnostics.ts'
 
+test('catalog reads have a deadline and retain caller cancellation', async (context) => {
+  const previousFetch = globalThis.fetch
+  const previousWindow = globalThis.window
+  context.after(() => {
+    globalThis.fetch = previousFetch
+    globalThis.window = previousWindow
+  })
+  globalThis.window = {} as Window & typeof globalThis
+  const deadline = new AbortController()
+  context.mock.method(AbortSignal, 'timeout', (milliseconds: number) => {
+    assert.ok(milliseconds > 0)
+    return deadline.signal
+  })
+  let received: AbortSignal | null | undefined
+  globalThis.fetch = async (_url, options) => {
+    received = options?.signal
+    return Response.json({ ok: true })
+  }
+  await apiFetch('/api/serve/sessions', LIVE_CATALOG_REQUEST)
+  assert.ok(received instanceof AbortSignal)
+  deadline.abort()
+  assert.equal(received.aborted, true)
+  const caller = new AbortController()
+  const timeout = new AbortController()
+  context.mock.method(AbortSignal, 'timeout', () => timeout.signal)
+  await apiFetch('/api/serve/sessions', { ...LIVE_CATALOG_REQUEST, signal: caller.signal })
+  assert.equal(received.aborted, false)
+  caller.abort()
+  assert.equal(received.aborted, true)
+})
+
 test('API failures preserve behavior and emit only safe diagnostic metadata', async (context) => {
   const originalFetch = globalThis.fetch
   const originalWindow = globalThis.window

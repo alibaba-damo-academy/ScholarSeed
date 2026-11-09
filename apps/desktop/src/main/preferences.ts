@@ -90,7 +90,18 @@ function writeRendererPreferences(
   )
   const writer = diagnostics.runSync('acquire', () => desktopDirectoryWriter(dirname(path)))
   try {
-    diagnostics.runSync('write', () => writeJson(path, record))
+    diagnostics.runSync('write', () =>
+      writeJson(path, record, (event) =>
+        diagnostics.recordWrite(event, {
+          platform: process.platform,
+          arch: process.arch,
+          pid: process.pid,
+          node: process.versions.node,
+          electron: process.versions.electron,
+          uv: process.versions.uv,
+        })
+      )
+    )
   } finally {
     diagnostics.runSync('release', () => writer.close())
   }

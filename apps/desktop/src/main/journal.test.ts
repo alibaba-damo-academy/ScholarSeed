@@ -3,7 +3,12 @@ import test from 'node:test'
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { readRecord, writeJson } from './journal.ts'
+import {
+  readRecord,
+  writeJson,
+  type RecordWriteEvent,
+  type RecordWriteObserver,
+} from './journal.ts'
 import * as fs from 'node:fs'
 import * as pathModule from 'node:path'
 import { runInNewContext } from 'node:vm'
@@ -39,8 +44,11 @@ test('a failed receipt write preserves the last complete record and removes its 
   assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), { generation: 2 })
 })
 
-function controlledWriter(overrides: Record<string, unknown>) {
-  const exports: Record<string, (path: string, value: unknown) => void> = {}
+function controlledWriter(overrides: Record<string, unknown>, platform = process.platform) {
+  const exports: Record<
+    string,
+    (path: string, value: unknown, observe?: RecordWriteObserver) => void
+  > = {}
   const source = readFileSync(new URL('./journal.ts', import.meta.url), 'utf8')
   runInNewContext(
     ts.transpileModule(source, {
@@ -48,7 +56,8 @@ function controlledWriter(overrides: Record<string, unknown>) {
     }).outputText,
     {
       exports,
-      process,
+      process: { ...process, platform },
+      performance,
       require: (name: string) => {
         if (name === 'node:fs') return { ...fs, ...overrides }
         if (name === 'node:path') return pathModule
@@ -59,6 +68,151 @@ function controlledWriter(overrides: Record<string, unknown>) {
   )
   return exports.writeJson
 }
+
+for (const platform of ['darwin', 'win32'] as const) {
+  test(`write diagnostics preserve rename failure and cleanup semantics on ${platform}`, (t) => {
+    const root = mkdtempSync(join(tmpdir(), 'journal-diagnostics-'))
+    t.after(() => rmSync(root, { recursive: true, force: true }))
+    const filename = join(root, 'record.json')
+    fs.writeFileSync(filename, 'old')
+    const events: RecordWriteEvent[] = []
+    const failure = Object.assign(new Error('private'), { code: 'EPERM', syscall: 'rename' })
+    let renames = 0
+    const write = controlledWriter(
+      {
+        renameSync: () => {
+          renames += 1
+          throw failure
+        },
+      },
+      platform
+    )
+    assert.throws(
+      () => write(filename, { secret: 'private' }, (event) => events.push(event)),
+      (error) => error === failure
+    )
+    assert.equal(renames, 1)
+    assert.equal(events.length, 1)
+    assert.equal(events[0].operation, 'rename')
+    assert.equal(events[0].result, 'failed')
+    assert.equal(events[0].published, false)
+    assert.equal(events[0].error, failure)
+    assert.ok(events[0].elapsedMs >= 0)
+    assert.equal(readFileSync(filename, 'utf8'), 'old')
+    assert.deepEqual(readdirSync(root), ['record.json'])
+    assert.throws(
+      () =>
+        write(filename, {}, () => {
+          throw new Error('logger unavailable')
+        }),
+      (error) => error === failure
+    )
+    assert.equal(renames, 2)
+    assert.equal(readFileSync(filename, 'utf8'), 'old')
+    assert.deepEqual(readdirSync(root), ['record.json'])
+  })
+
+  test(`successful write diagnostics do not add filesystem operations on ${platform}`, (t) => {
+    const root = mkdtempSync(join(tmpdir(), 'journal-diagnostics-'))
+    t.after(() => rmSync(root, { recursive: true, force: true }))
+    const filename = join(root, 'record.json')
+    const calls: string[] = []
+    const overrides = Object.fromEntries(
+      [
+        'mkdirSync',
+        'openSync',
+        'writeFileSync',
+        'fsyncSync',
+        'closeSync',
+        'renameSync',
+        'rmSync',
+      ].map((name) => [
+        name,
+        (...args: unknown[]) => {
+          calls.push(name)
+          return (fs[name as keyof typeof fs] as (...values: unknown[]) => unknown)(...args)
+        },
+      ])
+    )
+    const write = controlledWriter(overrides, platform)
+    write(filename, { value: 1 })
+    const originalCalls = [...calls]
+    assert.deepEqual(originalCalls, [
+      'mkdirSync',
+      'openSync',
+      'writeFileSync',
+      'fsyncSync',
+      'closeSync',
+      'renameSync',
+      ...(platform === 'win32' ? [] : ['openSync', 'fsyncSync', 'closeSync']),
+    ])
+    calls.length = 0
+    const events: RecordWriteEvent[] = []
+    write(filename, { value: 2 }, (event) => events.push(event))
+    assert.deepEqual(calls, originalCalls)
+    assert.equal(events.length, 1)
+    assert.equal(events[0].operation, 'complete')
+    assert.equal(events[0].result, 'completed')
+    assert.equal(events[0].published, true)
+    write(filename, { value: 3 }, () => {
+      throw new Error('logger failed')
+    })
+    assert.equal(JSON.parse(readFileSync(filename, 'utf8')).value, 3)
+  })
+}
+
+test('diagnostics retain the primary failure when cleanup masks it, without changing the thrown error', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'journal-diagnostics-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const filename = join(root, 'record.json')
+  const failure = new Error('rename')
+  const cleanup = new Error('cleanup')
+  const events: RecordWriteEvent[] = []
+  const write = controlledWriter({
+    renameSync: () => {
+      throw failure
+    },
+    rmSync: () => {
+      throw cleanup
+    },
+  })
+  assert.throws(
+    () => write(filename, {}, (event) => events.push(event)),
+    (error) => error === cleanup
+  )
+  assert.deepEqual(
+    events.map((event) => event.operation),
+    ['rename', 'cleanup-remove']
+  )
+  assert.equal(events[0].error, failure)
+  assert.equal(events[1].error, cleanup)
+  assert.ok(fs.existsSync(`${filename}.controlled.tmp`))
+})
+
+test('a directory flush failure is distinguished from a failure before publication', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'journal-diagnostics-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const filename = join(root, 'record.json')
+  const failure = new Error('flush')
+  const events: RecordWriteEvent[] = []
+  let flushes = 0
+  const write = controlledWriter(
+    {
+      fsyncSync: (descriptor: number) => {
+        if (++flushes === 2) throw failure
+        fs.fsyncSync(descriptor)
+      },
+    },
+    'darwin'
+  )
+  assert.throws(
+    () => write(filename, { value: 2 }, (event) => events.push(event)),
+    (error) => error === failure
+  )
+  assert.equal(events[0].operation, 'sync-directory')
+  assert.equal(events[0].published, true)
+  assert.equal(JSON.parse(readFileSync(filename, 'utf8')).value, 2)
+})
 
 test('exclusive temporary creation failure must preserve a pre-existing file', (t) => {
   const root = mkdtempSync(join(tmpdir(), 'journal-collision-'))

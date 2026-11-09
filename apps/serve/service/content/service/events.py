@@ -42,6 +42,8 @@ from service.platform.content import (
     ProjectRef,
     RootKind,
 )
+from service.platform.notifications import Change as ProductChange
+from service.platform.notifications import ChangeHub, ChangeTopic
 
 #: 监听后端是否可用。缺 watchfiles 时降级为定时轮询 + RESCAN, 不让产品少一条能力。
 _watchfiles: ModuleType | None
@@ -117,6 +119,7 @@ class FileEventHub:
         epoch: str = "",
     ) -> None:
         self._catalog = catalog
+        self.changes: ChangeHub | None = None
         self._activities = activities
         self._space_of = space_of
         # 世代随进程: 重启即换, 于是旧游标一定拿到 RESCAN 而不是错位续传。
@@ -473,6 +476,8 @@ class FileEventHub:
             )
 
     async def _emit(self, project_id: str, event: FileEvent) -> None:
+        if self.changes is not None:
+            self.changes.publish((ProductChange(ChangeTopic.RESOURCES, subject=project_id),))
         if event.kind is not FileEventKind.RESCAN:
             backlog = self._backlog.setdefault(project_id, [])
             backlog.append(event)

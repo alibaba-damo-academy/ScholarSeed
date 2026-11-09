@@ -123,3 +123,38 @@ test('untrusted errors and cyclic causes are bounded and never serialized verbat
   assert.doesNotMatch(lines[0], /private|PRIVATE_TOKEN/)
   assert.ok(lines[0].length < 2000)
 })
+
+test('write diagnostics retain publication and runtime context but not raw event properties', () => {
+  const lines: string[] = []
+  const diagnostics = new PreferenceDiagnostics('main', (line) => lines.push(line))
+  const event = {
+    operation: 'rename',
+    result: 'failed' as const,
+    elapsedMs: 12,
+    published: false,
+    error: Object.assign(new Error('private path'), {
+      code: 'EPERM',
+      errno: -4048,
+      syscall: 'rename',
+    }),
+    path: 'C:\\Users\\private',
+  }
+  diagnostics.recordWrite(event, {
+    platform: 'win32',
+    arch: 'x64',
+    pid: 123,
+    node: '22.0.0',
+    electron: '40.0.0',
+    uv: '1.50.0',
+  })
+  const record = JSON.parse(lines[0].slice(PREFERENCE_DIAGNOSTIC_PREFIX.length))
+  assert.equal(record.stage, 'write-detail')
+  assert.equal(record.operation, 'rename')
+  assert.equal(record.published, false)
+  assert.equal(record.elapsedMs, 12)
+  assert.equal(record.runtime.platform, 'win32')
+  assert.equal(record.runtime.pid, 123)
+  assert.equal(record.error.code, 'EPERM')
+  assert.equal(record.error.systemCode, undefined)
+  assert.doesNotMatch(lines[0], /private|Users|path/)
+})

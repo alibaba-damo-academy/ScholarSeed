@@ -28,6 +28,7 @@ import {
   reviewNotice,
   reviewIssueSummary,
   reviewStatus,
+  reviewEvidenceReason,
   REVIEW_VERDICTS,
 } from './projection'
 
@@ -304,7 +305,9 @@ export function LiteratureReviewCard({
               {review.abstract_evidence.map((evidence) => (
                 <div key={evidence.paper_id}>
                   <p className="m-0 text-sm font-medium">{evidence.title || evidence.paper_id}</p>
-                  <p className="m-0 text-xs text-[var(--vds-text-secondary)]">{evidence.reason}</p>
+                  <p className="m-0 text-xs text-[var(--vds-text-secondary)]">
+                    {reviewEvidenceReason(evidence, t)}
+                  </p>
                 </div>
               ))}
             </div>

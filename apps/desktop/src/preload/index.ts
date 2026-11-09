@@ -101,7 +101,17 @@ import type {
   PreviewUpdateLine,
 } from '../updates'
 import type { PreferenceLanguage, RendererPreferences } from '../preferences'
-import { ATTENTION_CLICK_CHANNEL, ATTENTION_READY_CHANNEL } from '../attention'
+import {
+  ATTENTION_CLICK_CHANNEL,
+  ATTENTION_READY_CHANNEL,
+  type AttentionSnapshot,
+} from '../attention'
+import {
+  ATTENTION_STATE_CHANNEL,
+  NOTIFICATION_CHANNEL,
+  NOTIFICATION_SYNC_CHANNEL,
+  type NotificationFrame,
+} from '../notifications'
 import type { SystemPermissionId, SystemPermissionsSnapshot } from '../permissions'
 import type { CommitDataHomeResult, StorageConfig } from '../storage'
 import { OFFICE_IMAGE_CHANNEL, type OfficeImageSource, type OfficeImageResult } from '../images'
@@ -408,6 +418,22 @@ const bridge = {
     ipcRenderer.on(ATTENTION_CLICK_CHANNEL, handler)
     void ipcRenderer.invoke(ATTENTION_READY_CHANNEL)
     return () => ipcRenderer.removeListener(ATTENTION_CLICK_CHANNEL, handler)
+  },
+  notifications: {
+    onChange(callback: (frame: NotificationFrame) => void): () => void {
+      const handler = (_event: unknown, frame: NotificationFrame): void => callback(frame)
+      ipcRenderer.on(NOTIFICATION_CHANNEL, handler)
+      return () => ipcRenderer.removeListener(NOTIFICATION_CHANNEL, handler)
+    },
+    onAttention(callback: (snapshot: AttentionSnapshot | null) => void): () => void {
+      const handler = (_event: unknown, snapshot: AttentionSnapshot | null): void =>
+        callback(snapshot)
+      ipcRenderer.on(ATTENTION_STATE_CHANNEL, handler)
+      return () => ipcRenderer.removeListener(ATTENTION_STATE_CHANNEL, handler)
+    },
+    sync(): Promise<void> {
+      return ipcRenderer.invoke(NOTIFICATION_SYNC_CHANNEL)
+    },
   },
   /** 打开系统废纸篓（恢复入口：用户在那里「放回原处」）。目标由主进程决定。 */
   openTrash(): Promise<{ ok: boolean; path?: string; error?: string }> {

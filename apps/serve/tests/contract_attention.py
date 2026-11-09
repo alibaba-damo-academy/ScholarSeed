@@ -26,9 +26,11 @@ from service.chat.persistence.artifacts import SessionArtifactStore
 from service.chat.persistence.attention import AttentionStore
 from service.chat.persistence.catalog import HilStatus, SessionCatalogStore, SessionPrincipal
 from service.chat.persistence.events import ProductEventStore
+from service.chat.persistence.notifications import observe_chat
 from service.chat.service.attention import AttentionService
 from service.chat.service.sessions import SessionService
 from service.platform.activity import Activities
+from service.platform.notifications import Change, ChangeTopic
 from tests.contract_product_events import (
     OWNER,
     RUNTIME_ID,
@@ -39,13 +41,86 @@ from tests.contract_product_events import (
 
 
 class AttentionContract(unittest.TestCase):
+    def test_rename_advances_snapshot_but_not_item_revision(self) -> None:
+        self.emit(PRODUCT_EVENT_TURN_COMPLETED, "done")
+        before = self.attention.snapshot(OWNER)
+        self.catalog.rename(SESSION_ID, OWNER, "New title")
+        after = self.attention.snapshot(OWNER)
+        self.assertGreater(after["revision"], before["revision"])
+        self.assertEqual(after["items"][0]["revision"], before["items"][0]["revision"])
+        self.assertEqual(after["items"][0]["title"], "New title")
+
+    def test_delete_advances_snapshot_revision(self) -> None:
+        self.emit(PRODUCT_EVENT_TURN_COMPLETED, "done")
+        before = self.attention.snapshot(OWNER)
+        self.catalog.release(SESSION_ID, OWNER)
+        after = self.attention.snapshot(OWNER)
+        self.assertGreater(after["revision"], before["revision"])
+        self.assertEqual(after["unread_count"], 0)
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.database = Path(self.temporary.name).resolve() / "catalog.sqlite3"
         self.catalog = register_session(self.database)
         self.events = ProductEventStore(self.database)
+        self.notifications: list[Change] = []
+        hub = Mock()
+        hub.publish.side_effect = self.notifications.extend
+        self.catalog.observe = lambda connection: observe_chat(connection, hub, shared=False)
+        self.events.observe = self.catalog.observe
         self.attention = AttentionStore(self.catalog)
+
+    def test_notifications_follow_final_commit_and_skip_text_deltas(self) -> None:
+        self.emit(PRODUCT_EVENT_MESSAGE_DELTA, "text", delta="message", role="assistant")
+        self.assertEqual(self.notifications, [])
+        with self.assertRaises(RuntimeError):
+            with self.events.transaction() as connection:
+                self.events.append(
+                    session_id=SESSION_ID,
+                    runtime_id=RUNTIME_ID,
+                    vendor_thread_id=VENDOR_THREAD_ID,
+                    vendor_turn_id="turn",
+                    vendor_item_id=None,
+                    kind=PRODUCT_EVENT_TURN_COMPLETED,
+                    payload={},
+                    idempotency_key="rolled-back",
+                    connection=connection,
+                )
+                self.assertEqual(self.notifications, [])
+                raise RuntimeError("rollback")
+        self.assertEqual(self.notifications, [])
+        self.emit(PRODUCT_EVENT_TURN_COMPLETED, "done")
+        self.assertTrue(any(change.topic is ChangeTopic.ATTENTION for change in self.notifications))
+        self.assertTrue(any(change.topic is ChangeTopic.SESSIONS for change in self.notifications))
+
+    def test_status_reads_pending_interactions_without_opening_runtime(self) -> None:
+        self.record_request("pending")
+        runtime = Mock()
+        service = SessionService(
+            self.database.parent,
+            {},
+            activities=Activities(),
+            access=self.catalog,
+            events=self.events,
+            runtime=runtime,
+            workspaces=Mock(),
+            artifacts=SessionArtifactStore(self.database),
+            settings=Mock(),
+            credentials=Mock(),
+            logger=Mock(),
+        )
+        service._list_row = Mock(
+            return_value={"session_id": SESSION_ID, "running": False, "last_seq": 99}
+        )
+        before = self.catalog.get(SESSION_ID).last_product_seq
+        status = service.status([SESSION_ID], OWNER, {})["sessions"][0]
+        self.assertEqual(status["summary_seq"], before)
+        self.assertEqual(status["pending_hil"][0]["request_id"], "pending")
+        self.assertNotIn("last_seq", status)
+        self.catalog.resolve_hil("pending", {"approved": True})
+        self.assertEqual(service.status([SESSION_ID], OWNER, {})["sessions"][0]["pending_hil"], [])
+        self.assertEqual(runtime.mock_calls, [])
 
     def emit(
         self, kind: str, key: str, turn: str = "turn-1", item: str | None = None, **payload: object

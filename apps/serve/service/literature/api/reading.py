@@ -152,7 +152,7 @@ def register_reading_routes(
     pdf: LiteraturePdf,
     formats: DocumentFormatPort,
 ) -> None:
-    catalog = AttachmentRecordCatalog(repository.database)
+    catalog = AttachmentRecordCatalog(repository.database, changes=repository.changes)
     register_attachment_import(app, attachments, catalog)
 
     @app.post(SELECTION_SNAPSHOT_ROUTE)

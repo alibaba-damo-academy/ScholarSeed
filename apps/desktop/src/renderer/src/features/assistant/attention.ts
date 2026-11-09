@@ -128,6 +128,23 @@ export function useAttentionLifecycle(): void {
   const reading = useRef(false)
 
   useEffect(() => {
+    const bridge = window.scholarseed?.notifications
+    if (bridge) {
+      publish(EMPTY_SNAPSHOT)
+      const unsubscribe = bridge.onAttention((next) =>
+        publish(next === null ? EMPTY_SNAPSHOT : attentionSnapshot(next))
+      )
+      const sync = (): void => {
+        void bridge.sync()
+      }
+      window.addEventListener('scholarseed:auth-restored', sync)
+      void bridge.sync()
+      return () => {
+        unsubscribe()
+        window.removeEventListener('scholarseed:auth-restored', sync)
+        publish(EMPTY_SNAPSHOT)
+      }
+    }
     let disposed = false
     let timer: ReturnType<typeof setTimeout> | undefined
     publish(EMPTY_SNAPSHOT)

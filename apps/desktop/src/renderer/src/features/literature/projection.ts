@@ -36,6 +36,55 @@ const OUTPUT_FORMATS = new Set(['latex_pdf', 'markdown', null])
 const CITATION_STYLES = new Set(['numeric', 'author_year', 'ieee', 'acm', 'gbt7714_2025', null])
 const DECISION_SOURCES = new Set(['user', 'default', null])
 
+const FULLTEXT_LIMITATIONS = [
+  {
+    code: 'not_in_paperhub',
+    reason: '全文来源暂未返回可下载文件，仅使用摘要证据',
+    messageKey: 'review.fulltextLimitations.notInPaperhub',
+  },
+  {
+    code: 'auth_failed',
+    reason: '全文服务认证失败',
+    messageKey: 'review.fulltextLimitations.authFailed',
+  },
+  {
+    code: 'fetch_failed',
+    reason: '全文服务暂时不可用',
+    messageKey: 'review.fulltextLimitations.fetchFailed',
+  },
+  {
+    code: 'extract_failed',
+    reason: '全文解析失败',
+    messageKey: 'review.fulltextLimitations.extractFailed',
+  },
+  {
+    code: 'too_large',
+    reason: '全文文件超过可处理大小限制',
+    messageKey: 'review.fulltextLimitations.tooLarge',
+  },
+  {
+    code: 'not_a_pdf',
+    reason: '全文格式无法解析',
+    messageKey: 'review.fulltextLimitations.notAPdf',
+  },
+  {
+    code: '',
+    reason: '未取得全文，只能支持题录或摘要层判断',
+    messageKey: 'review.fulltextLimitations.unavailable',
+  },
+] as const
+
+export function reviewEvidenceReason(
+  evidence: LiteratureReview['abstract_evidence'][number],
+  t: TFunction<'literature'>
+): string {
+  const limitation = evidence.reason_code
+    ? FULLTEXT_LIMITATIONS.find((item) => item.code === evidence.reason_code)
+    : FULLTEXT_LIMITATIONS.find((item) => item.reason === evidence.reason)
+  if (limitation) return t(limitation.messageKey)
+  return evidence.reason_code ? t('review.fulltextLimitations.unavailable') : evidence.reason
+}
+
 /** 时间列展示到秒(中文即 2026/9/15 15:46:32), 同一天内多次导入或更新才能区分先后。 */
 export const TIMESTAMP_FORMAT: Intl.DateTimeFormatOptions = {
   dateStyle: 'short',
@@ -190,7 +239,8 @@ export function parseReview(value: Record<string, unknown>): LiteratureReview | 
         isRecord(evidence) &&
         typeof evidence.paper_id === 'string' &&
         typeof evidence.title === 'string' &&
-        typeof evidence.reason === 'string'
+        typeof evidence.reason === 'string' &&
+        (evidence.reason_code === undefined || typeof evidence.reason_code === 'string')
     ) ||
     !Array.isArray(value.checks) ||
     !value.checks.every(

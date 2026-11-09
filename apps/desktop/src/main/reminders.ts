@@ -15,9 +15,15 @@ import { readRecord, writeJson } from './journal.ts'
 import { loadRendererPreferences } from './preferences'
 import { mainLocalization } from './localization'
 import { notificationAttentionId, type WindowsNotifications } from './notification.ts'
+import {
+  ATTENTION_STATE_CHANNEL,
+  NOTIFICATION_CHANNEL,
+  NOTIFICATION_PATH,
+  DirtyRefresh,
+  NotificationStream,
+  type NotificationFrame,
+} from '../notifications.ts'
 
-const ATTENTION_POLL_MS = 1000
-const ATTENTION_REQUEST_TIMEOUT_MS = 10000
 const ATTENTION_CURSOR_FILE = 'attention-cursor.json'
 const ATTENTION_CURSOR_MAX_BYTES = 4096
 const ATTENTION_GROUP = 'scholarseed-attention'
@@ -37,8 +43,10 @@ interface ReminderDependencies {
 export class DesktopReminders {
   private readonly delivery: AttentionDelivery
   private readonly notifications = new Map<string, Notification>()
-  private timer: ReturnType<typeof setTimeout> | null = null
-  private request: AbortController | null = null
+  private stream: NotificationStream | null = null
+  private refresh: DirtyRefresh<AttentionSnapshot> | null = null
+  private snapshot: AttentionSnapshot | null = null
+  private frame: NotificationFrame | null = null
   private stopped = true
   private lastError = ''
   private lastCount = -1
@@ -114,17 +122,105 @@ export class DesktopReminders {
         this.logError(error)
       }
     }
-    if (!this.stopped) void this.poll()
+    if (!this.stopped) this.synchronize()
   }
 
   stop(): void {
     this.stopped = true
     this.retireBadgeRestore?.()
     this.retireBadgeRestore = null
-    if (this.timer) clearTimeout(this.timer)
-    this.timer = null
-    this.request?.abort()
-    this.request = null
+    this.stream?.stop()
+    this.refresh?.stop()
+    this.stream = null
+    this.refresh = null
+  }
+
+  identityChanged(): void {
+    this.stream?.stop()
+    this.refresh?.stop()
+    this.stream = null
+    this.refresh = null
+    this.delivery.reset()
+    this.frame = null
+    this.snapshot = null
+    const empty: AttentionSnapshot = {
+      epoch: '',
+      revision: 0,
+      unread_count: 0,
+      by_session: {},
+      items: [],
+    }
+    this.reconcile(empty)
+    this.dependencies.window()?.webContents.send(ATTENTION_STATE_CHANNEL, null)
+  }
+
+  synchronize(): void {
+    if (this.stopped) return
+    if (!this.refresh) this.refresh = this.snapshotRefresh()
+    if (!this.stream) {
+      this.stream = new NotificationStream(
+        (signal) => {
+          const window = this.dependencies.window()
+          if (!window) return Promise.reject(new Error('Notification window unavailable'))
+          return window.webContents.session.fetch(
+            `${this.dependencies.base()}${NOTIFICATION_PATH}`,
+            { signal }
+          )
+        },
+        (frame) => {
+          if (this.frame && frame.instanceId !== this.frame.instanceId) {
+            this.refresh?.stop()
+            this.refresh = this.snapshotRefresh()
+          }
+          this.frame = frame
+          this.dependencies.window()?.webContents.send(NOTIFICATION_CHANNEL, frame)
+          if (frame.reset || frame.changes.some((change) => change.topic === 'attention'))
+            this.refresh?.invalidate()
+        },
+        () => this.identityChanged(),
+        (error) => this.logError(error)
+      )
+      this.stream.start()
+    }
+    if (this.snapshot)
+      this.dependencies.window()?.webContents.send(ATTENTION_STATE_CHANNEL, this.snapshot)
+    if (this.frame)
+      this.dependencies
+        .window()
+        ?.webContents.send(NOTIFICATION_CHANNEL, { ...this.frame, reset: true })
+  }
+
+  private snapshotRefresh(): DirtyRefresh<AttentionSnapshot> {
+    return new DirtyRefresh(
+      async (signal) => {
+        const window = this.dependencies.window()
+        if (!window) throw new Error('Notification window unavailable')
+        const response = await window.webContents.session.fetch(
+          `${this.dependencies.base()}${ATTENTION_PATH}`,
+          {
+            signal,
+            headers: { 'cache-control': 'no-cache' },
+          }
+        )
+        if (response.status === 401 || response.status === 403) {
+          await response.body?.cancel()
+          this.identityChanged()
+          throw new Error('Attention authentication changed')
+        }
+        if (!response.ok) {
+          await response.body?.cancel()
+          throw new Error(`Attention request HTTP ${response.status}`)
+        }
+        return attentionSnapshot(await response.json())
+      },
+      (snapshot) => {
+        this.delivery.accept(snapshot)
+        this.snapshot = snapshot
+        this.dependencies.window()?.webContents.send(ATTENTION_STATE_CHANNEL, snapshot)
+        this.lastError = ''
+      },
+      (error) => this.logError(error)
+    )
   }
 
   private path(): string {
@@ -138,43 +234,6 @@ export class DesktopReminders {
       writeJson(path, cursor)
     } finally {
       writer.close()
-    }
-  }
-
-  private async poll(): Promise<void> {
-    const window = this.dependencies.window()
-    if (!window || this.stopped) return
-    const request = new AbortController()
-    this.request = request
-    const timeout = setTimeout(() => request.abort(), ATTENTION_REQUEST_TIMEOUT_MS)
-    try {
-      const response = await window.webContents.session.fetch(
-        `${this.dependencies.base()}${ATTENTION_PATH}`,
-        {
-          signal: request.signal,
-          headers: { 'cache-control': 'no-cache' },
-        }
-      )
-      if (this.stopped) return
-      if (response.status === 401 || response.status === 403) {
-        this.delivery.reset()
-        this.reconcile({ epoch: '', revision: 0, unread_count: 0, by_session: {}, items: [] })
-        return
-      }
-      if (!response.ok) throw new Error(`Attention request HTTP ${response.status}`)
-      const snapshot = attentionSnapshot(await response.json())
-      if (this.stopped) return
-      this.delivery.accept(snapshot)
-      this.lastError = ''
-    } catch (error) {
-      if (!this.stopped) this.logError(error)
-    } finally {
-      clearTimeout(timeout)
-      this.request = null
-      if (!this.stopped) {
-        this.timer = setTimeout(() => void this.poll(), ATTENTION_POLL_MS)
-        this.timer.unref()
-      }
     }
   }
 

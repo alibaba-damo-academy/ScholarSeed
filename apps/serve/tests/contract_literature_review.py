@@ -263,6 +263,29 @@ finally:
             "全文解析失败",
         )
 
+    def test_abstract_evidence_preserves_outcome_for_localized_presentation(self) -> None:
+        for outcome in ("not_in_paperhub", "auth_failed", "extract_failed", "unknown"):
+            with self.subTest(outcome=outcome):
+                self.write(
+                    FULLTEXT,
+                    {
+                        "with_full_text": 1,
+                        "papers": [
+                            {
+                                "paper_id": "p1",
+                                "outcome": outcome,
+                                "detail": "private download diagnostic",
+                            }
+                        ],
+                    },
+                )
+                card = prepare_review(self.root, "survey", "outline").card
+                projected = validate_review_card(card.model_dump(mode="json"))
+                evidence = projected["abstract_evidence"][0]
+                self.assertEqual(evidence["reason_code"], outcome)
+                self.assertEqual(evidence["paper_id"], "p1")
+                self.assertNotIn("private", evidence["reason"])
+
     def test_literature_review_skill_owns_intake_and_output_decision_order(self) -> None:
         prompt = DEVELOPER_PROMPT_FILE.read_text(encoding="utf-8")
         skill = LITERATURE_SKILL_FILE.read_text(encoding="utf-8")

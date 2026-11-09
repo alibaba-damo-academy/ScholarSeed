@@ -20,6 +20,7 @@ import {
   sessionCatalogRetryDelay,
   sessionCatalogNeedsRefresh,
   sameSessionCatalog,
+  sessionSummaryNeedsCatalog,
   selectableCatalogModelKey,
   selectedSessionModelKey,
 } from './catalog.ts'
@@ -195,6 +196,40 @@ test('catalog polling invalidates consumers only when server contents change', (
 })
 
 const APPEARANCE_GRACE_SECONDS = 5
+
+test('status-only notifications do not invalidate catalog metadata but lifecycle and membership do', () => {
+  const previous = {
+    session_id: 'task',
+    title: 'Task',
+    running: true,
+    turns: 1,
+    mtime: 1,
+    last_seq: 2,
+  } as ServeSession
+  assert.equal(
+    sessionSummaryNeedsCatalog(previous, { ...previous, waiting: true, mtime: 2, last_seq: 3 }),
+    false
+  )
+  for (const change of [
+    { title: 'Renamed' },
+    { title_fallback: 'new_session' as const },
+    { running: false },
+    { turns: 2 },
+    { archived: true },
+    { pinned: true },
+    { project_path: '/project' },
+    { last_turn_status: 'completed' as const },
+  ])
+    assert.equal(sessionSummaryNeedsCatalog(previous, { ...previous, ...change }), true)
+  assert.equal(sessionSummaryNeedsCatalog(undefined, previous), true)
+  assert.equal(
+    sessionSummaryNeedsCatalog(
+      { ...previous, running: false, last_turn_status: 'completed' },
+      { ...previous, running: false, last_turn_status: 'completed', mtime: 2 }
+    ),
+    true
+  )
+})
 const NOW_SECONDS = 100
 
 test('composer skill entries share contextual navigation while upload stays separate', () => {

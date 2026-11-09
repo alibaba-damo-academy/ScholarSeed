@@ -11,7 +11,7 @@ from contextlib import closing, contextmanager
 from dataclasses import dataclass, replace
 from itertools import islice
 from pathlib import Path
-from typing import Any, Generator, Iterable, Iterator, Mapping, Sequence
+from typing import Any, Callable, Generator, Iterable, Iterator, Mapping, Sequence
 
 from scholarseed_runtime.contract.history import HistoryEntry, MessagePhase
 from service.chat.constants import (
@@ -43,6 +43,7 @@ from service.chat.persistence.catalog import (
 from service.chat.persistence.utils import begin_write, validate_transaction
 from service.chat.provenance import MODEL_RUN_FIELD, ModelRun
 from service.paths import SESSION_CATALOG_DB
+from service.persistence.notifications import NotificationConnection
 from service.persistence.project import (
     database_files,
     open_database,
@@ -195,6 +196,7 @@ class ProductEventStore:
     """Allocate monotonic per-session sequence numbers and retain replay history."""
 
     def __init__(self, database: Path | None = None) -> None:
+        self.observe: Callable[[NotificationConnection], None] | None = None
         self._database = Path(database or SESSION_CATALOG_DB)
         if not self.inspect_schema(self._database).needs_write:
             return
@@ -505,10 +507,13 @@ class ProductEventStore:
             check_same_thread=False,
             timeout=SQLITE_TIMEOUT_SECONDS,
             isolation_level=None,
+            factory=NotificationConnection,
         )
         try:
             connection.row_factory = sqlite3.Row
             connection.execute("PRAGMA foreign_keys = ON")
+            if self.observe is not None:
+                self.observe(connection)
             return connection
         except BaseException:
             connection.close()

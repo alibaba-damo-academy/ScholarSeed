@@ -21,6 +21,7 @@ from service.chat.api.connectors import mount_connector_routes
 from service.chat.api.diagnostics import mount_diagnostic_routes
 from service.chat.api.feedback import mount_feedback_routes
 from service.chat.api.mcp import mount_mcp_routes
+from service.chat.api.notifications import mount_notification_routes
 from service.chat.api.sessions import mount_session_routes
 from service.chat.api.settings import mount_setting_routes
 from service.chat.api.skills import mount_skill_routes
@@ -28,6 +29,7 @@ from service.chat.persistence.artifacts import SessionArtifactStore
 from service.chat.persistence.attention import AttentionStore
 from service.chat.persistence.catalog import SessionCatalogStore
 from service.chat.persistence.events import ProductEventStore
+from service.chat.persistence.notifications import observe_chat
 from service.chat.persistence.projects import ProjectRegistry
 from service.chat.runtime.composition import LiveSessionService
 from service.chat.runtime.live import LiveSession
@@ -75,6 +77,7 @@ from service.paths import (
 from service.platform.activity import Activities, ActivityDomain, ActivityLease
 from service.platform.http_activity import ServeApplication, execution_admission
 from service.platform.lifecycle import ServiceLifecycle
+from service.platform.notifications import ChangeHub
 from service.platform.shutdown import Shutdown, ShutdownStage
 from service.platform.startup import startup_phase
 from service.platform.toolchain import ToolchainState
@@ -112,6 +115,7 @@ def create_chat_app(
     ownership_axis: str | None = None,
     formats: DocumentFormatPort,
     activities: Activities | None = None,
+    notifications: ChangeHub | None = None,
     runtime_discovery: RuntimeDiscovery | None = None,
 ) -> FastAPI:
     """Create the Service-owned product shell around typed Codex sessions."""
@@ -251,7 +255,14 @@ def create_chat_app(
     shared_ownership = axis == OWNERSHIP_AXIS_MACHINE
     access_store = SessionCatalogStore(shared_ownership=shared_ownership)
     event_store = ProductEventStore(access_store.database)
+    changes = notifications if notifications is not None else ChangeHub(service_instance_id)
+    access_store.observe = lambda connection: observe_chat(
+        connection, changes, shared=shared_ownership
+    )
+    event_store.observe = access_store.observe
+    app.state.notifications = changes
     artifact_store = SessionArtifactStore(access_store.database)
+    artifact_store.observe = access_store.observe
     artifact_service = ArtifactService(access_store, artifact_store, event_store, formats)
     project_registry = ProjectRegistry()
     settings_service = settings
@@ -454,6 +465,7 @@ def create_chat_app(
         artifacts=artifact_service,
         credentials=skill_credentials,
     )
+    mount_notification_routes(app, session_service)
     mount_attention_routes(
         app,
         AttentionService(AttentionStore(access_store), access_store, event_store, session_service),

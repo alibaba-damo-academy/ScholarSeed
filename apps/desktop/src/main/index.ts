@@ -75,6 +75,7 @@ import {
 } from './notification.ts'
 import { DesktopReminders } from './reminders.ts'
 import { ATTENTION_CLICK_CHANNEL, ATTENTION_READY_CHANNEL } from '../attention.ts'
+import { NOTIFICATION_SYNC_CHANNEL } from '../notifications.ts'
 import { cleanupNotificationShortcut } from './shortcut.ts'
 import { migrateLegacyHome } from './legacy.ts'
 import { WorkbenchHealth } from './health.ts'
@@ -2537,7 +2538,9 @@ async function adoptAuthTokens(
     // 用户点「退出登录」要干等十几秒 (两段 HTTP 超时), 期间进程被杀则本地凭据根本
     // 没清掉 —— 而整族吊销只需要上面已经读出的那个 refresh 值, 与清理顺序无关。
     saveRefreshToken(token ? refreshToken : '', refreshNamespace, pushLog)
+    desktopReminders?.identityChanged()
     await setAuthCookie(win, token)
+    if (token) desktopReminders?.synchronize()
     if (stored) void revokeFamilyInBackground(stored)
     // 首页只在 renderer 验通本地会话并回执后关闭；写入凭据不等于登录成功。
     return { ok: true }
@@ -3279,6 +3282,11 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
     attentionRendererReady = true
     deliverAttentionActivation()
     return true
+  })
+  ipcMain.handle(NOTIFICATION_SYNC_CHANNEL, (event) => {
+    if (!isMainWindowSender(event.sender, event.senderFrame))
+      throw new Error('Invalid notification sender')
+    desktopReminders?.synchronize()
   })
   ipcMain.handle('scholarseed:authorized-roots-sync', (_event, scope: unknown, roots: unknown) => {
     // 档位校验走 authorization.ts 导出的集合：字面量在两处各写一遍时，新增

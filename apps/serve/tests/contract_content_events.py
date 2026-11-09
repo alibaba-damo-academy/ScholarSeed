@@ -25,6 +25,7 @@ from service.content.service.events import MAX_BATCH_EVENTS, WATCHFILES_AVAILABL
 from service.content.service.port import ContentService, ProjectRegistry
 from service.platform.activity import Activities
 from service.platform.content import EventSource, FileEventKind, RootKind
+from service.platform.notifications import Change, ChangeHub, ChangeTopic
 
 PASS = 0
 FAIL = 0
@@ -79,6 +80,10 @@ async def run() -> None:
     registry = ProjectRegistry(str(workspace), catalog)
     registry.seed_workspace()
     content = ContentService(registry, catalog, activities=Activities())
+    changes: list[Change] = []
+    hub = ChangeHub("content-test")
+    hub.publish = changes.extend
+    content.bind_notifications(hub)
     project = content.create_project("事件契约")
     library = Path(project.root) / MANAGED_RESOURCES_ROOT_RELATIVE
     linked_file = root / "关联单文件.md"
@@ -262,6 +267,10 @@ async def run() -> None:
         str(content._events.watched_roots(project.id)),  # noqa: SLF001
     )
 
+    check(
+        "真实文件事件同时失效共享资源快照",
+        any(change.topic is ChangeTopic.RESOURCES for change in changes),
+    )
     await content.close_events()
 
 

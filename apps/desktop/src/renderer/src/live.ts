@@ -1,4 +1,7 @@
 import { startupSnapshot } from './app/connection'
+import { ExclusiveSubscription } from './subscriptions'
+import { subscribeChanges } from './app/notifications'
+import { DirtyRefresh } from '../../notifications'
 import { STARTUP_PHASE } from '../../startup'
 import {
   RECONFIGURATION_POLL_MS,
@@ -23,6 +26,7 @@ import {
   getHistoryWithTodos,
   getModels,
   loadSessionCatalog,
+  loadSessionStatus,
   listQueuedMessages,
   listProjects,
   openSession,
@@ -36,6 +40,7 @@ import {
   sessionCatalogRetryDelay,
   sessionCatalogNeedsRefresh,
   sameSessionCatalog,
+  sessionSummaryNeedsCatalog,
 } from './catalog'
 import { markCreditsExhausted } from './account'
 import { DirectiveStreamHarness } from './directive'
@@ -109,9 +114,6 @@ import {
 // The renderer consumes only ScholarSeed product events. Codex JSON-RPC method names
 // and DamoAgent Harness event names stop at the Service projector boundary.
 const BACKGROUND_SESSION_REFRESH_INTERVAL_MS = 2_000
-// 后台轮询的去重看门狗：上一次目录刷新迟迟不返回（后端卡死/断网悬挂）时，
-// 放行下一轮轮询请求，避免去重把目录刷新永久饿死。正常请求远早于该上限返回。
-const METADATA_REFRESH_WATCHDOG_MS = 30_000
 const SESSION_CATALOG_APPEARANCE_GRACE_SECONDS = 5
 const SESSION_RESUME_INITIAL_DELAY_MS = 1_000
 const SESSION_RESUME_MAX_DELAY_MS = 30_000
@@ -997,6 +999,7 @@ function reconcileThreadRuntime(
     if (next === threads) next = { ...threads }
     next[id] = {
       ...thread,
+      ...openedSessionTitle(session),
       running,
       recoveryBlocked: stateCurrent ? session.recovery_blocked === true : thread.recoveryBlocked,
       recoveryIncidentId: stateCurrent
@@ -1026,6 +1029,7 @@ export function useLiveSession(): void {
   // detachers 是「该线程已有活流」的唯一真相; resumeInFlight 只做并发保护。
   // 两者都不能兼职当「不要再恢复」的闸: 那种闸一旦活过一次选中就会把恢复态钉死。
   const resumeInFlight = useRef<Map<string, object>>(new Map())
+  const subscriptions = useRef(new ExclusiveSubscription())
   const detachers = useRef<Record<string, () => void>>({})
   const liveIndex = useRef<Record<string, number | null>>({})
   const refreshMetaRef = useRef<() => void>(() => undefined)
@@ -1034,6 +1038,9 @@ export function useLiveSession(): void {
   const resumeStopped = useRef<Set<string>>(new Set())
   const serviceInstance = useRef<string | null>(null)
   const metadataRequest = useRef(0)
+  const metadataPollInFlight = useRef<{ dirty: boolean } | null>(null)
+  const summarySequences = useRef(new Map<string, number>())
+  const bodySequences = useRef(new Map<string, number>())
   const metadataSessions = useRef<ServeSession[] | null>(null)
   const metadataRetryAttempt = useRef(0)
   const metadataRetryTimer = useRef<number | null>(null)
@@ -1090,8 +1097,9 @@ export function useLiveSession(): void {
   }, [patchThread, set, t])
 
   const ensure = useCallback(
-    async (threadId: string, sessionId: string | undefined) => {
+    async (threadId: string, sessionId: string | undefined, refreshSnapshot = false) => {
       if (!stateRef.current.workbenchReady || stateRef.current.runtimeQuiescing) return
+      if (stateRef.current.activeSession !== threadId) return
       if (stateRef.current.threads[threadId]?.readOnly) return
       if (resumeInFlight.current.has(threadId)) return
       if (detachers.current[threadId] || resumeStopped.current.has(threadId)) return
@@ -1161,6 +1169,7 @@ export function useLiveSession(): void {
       }
 
       const attempt = {}
+      const lease = subscriptions.current.claim(threadId)
       resumeInFlight.current.set(threadId, attempt)
       const startedAt = Date.now()
       const generation = startupSnapshot().generation
@@ -1170,7 +1179,7 @@ export function useLiveSession(): void {
         const thread = snapshot.threads[threadId]
         return (
           !disposed.current &&
-          resumeInFlight.current.get(threadId) === attempt &&
+          lease.current() &&
           startupSnapshot().generation === generation &&
           startupSnapshot().phase === STARTUP_PHASE.ready &&
           snapshot.backendReady &&
@@ -1179,8 +1188,7 @@ export function useLiveSession(): void {
           snapshot.serviceInstanceId === instance &&
           thread?.sessionId === sessionId &&
           !thread.readOnly &&
-          (snapshot.activeSession === threadId ||
-            (thread.surface === 'workbench' && thread.running !== false))
+          snapshot.activeSession === threadId
         )
       }
       const diagnostic = (stage: string, detail: Record<string, unknown> = {}): void => {
@@ -1243,7 +1251,76 @@ export function useLiveSession(): void {
           return false
         }
       }
+      const attach = (fromSeq: number): void => {
+        lease.attach(() => {
+          detachers.current[threadId] = streamEvents(
+            sessionId,
+            fromSeq,
+            (event) => {
+              if (!current()) return
+              onEvent(
+                threadId,
+                event,
+                patchThread,
+                set,
+                liveIndex,
+                refreshMetaRef,
+                act.invalidateResources,
+                (scopes) => {
+                  // 数据域 → 失效动作。新增一个域只要这张表加一行, 界面组件不需要声明
+                  // 自己读的是哪个实体; 没登记的域直接忽略 (旧界面收到新版本才有的域名)。
+                  const invalidators: Record<string, () => void> = {
+                    [PRODUCT_DATA_SCOPE_LITERATURE]: act.invalidateLiterature,
+                    [PRODUCT_DATA_SCOPE_RESOURCES]: act.invalidateResources,
+                  }
+                  for (const scope of scopes) invalidators[scope]?.()
+                },
+                (activeSessionId) => {
+                  if (stateRef.current.activeSession === activeSessionId) {
+                    void act.loadAiContext(activeSessionId)
+                  }
+                },
+                (activeSessionId) => {
+                  if (stateRef.current.activeSession === activeSessionId) {
+                    void act.reloadArtifactLinks(activeSessionId)
+                  }
+                },
+                stateRef.current.workbenchReady
+              )
+              bodySequences.current.set(sessionId, event.seq)
+              patchThread(threadId, { lastSeq: event.seq })
+            },
+            (connectionState) => {
+              if (current())
+                patchThread(threadId, (thread) => reportTransportState(thread, connectionState))
+            },
+            (reason) => {
+              diagnostic('requested', { reason })
+              detachers.current[threadId]?.()
+              delete detachers.current[threadId]
+              delete liveIndex.current[threadId]
+              if (current())
+                queueMicrotask(() => {
+                  if (current())
+                    void ensure(threadId, sessionId, reason === 'gap' || reason === 'projection')
+                })
+            }
+          )
+          return detachers.current[threadId]
+        })
+      }
       try {
+        const cached = stateRef.current.threads[threadId]
+        if (
+          current() &&
+          !refreshSnapshot &&
+          cached.resumeServiceInstanceId === instance &&
+          cached.resumeState !== 'failed'
+        ) {
+          attach(Math.max(cached.lastSeq ?? 0, bodySequences.current.get(sessionId) ?? 0))
+          patchThread(threadId, { resumeState: 'ready', resumeMessage: undefined })
+          return
+        }
         if (await waitForReconfiguration()) return
         patchThread(threadId, {
           resumeState: 'pending',
@@ -1421,51 +1498,8 @@ export function useLiveSession(): void {
           }
         })
 
-        detachers.current[threadId] = streamEvents(
-          sessionId,
-          fromSeq,
-          (event) => {
-            onEvent(
-              threadId,
-              event,
-              patchThread,
-              set,
-              liveIndex,
-              refreshMetaRef,
-              act.invalidateResources,
-              (scopes) => {
-                // 数据域 → 失效动作。新增一个域只要这张表加一行, 界面组件不需要声明
-                // 自己读的是哪个实体; 没登记的域直接忽略 (旧界面收到新版本才有的域名)。
-                const invalidators: Record<string, () => void> = {
-                  [PRODUCT_DATA_SCOPE_LITERATURE]: act.invalidateLiterature,
-                  [PRODUCT_DATA_SCOPE_RESOURCES]: act.invalidateResources,
-                }
-                for (const scope of scopes) invalidators[scope]?.()
-              },
-              (activeSessionId) => {
-                if (stateRef.current.activeSession === activeSessionId) {
-                  void act.loadAiContext(activeSessionId)
-                }
-              },
-              (activeSessionId) => {
-                if (stateRef.current.activeSession === activeSessionId) {
-                  void act.reloadArtifactLinks(activeSessionId)
-                }
-              },
-              stateRef.current.workbenchReady
-            )
-            patchThread(threadId, { lastSeq: event.seq })
-          },
-          (connectionState) =>
-            patchThread(threadId, (thread) => reportTransportState(thread, connectionState)),
-          (reason) => {
-            diagnostic('requested', { reason })
-            detachers.current[threadId]?.()
-            delete detachers.current[threadId]
-            delete liveIndex.current[threadId]
-            if (current()) void ensure(threadId, sessionId)
-          }
-        )
+        bodySequences.current.set(sessionId, fromSeq)
+        attach(fromSeq)
         diagnostic('restored', {
           sequence: fromSeq,
           running: Boolean(opened.running),
@@ -1496,8 +1530,7 @@ export function useLiveSession(): void {
           !snapshot.runtimeQuiescing &&
           thread &&
           !thread.readOnly &&
-          (snapshot.activeSession === threadId ||
-            (thread.surface === 'workbench' && thread.running !== false)) &&
+          snapshot.activeSession === threadId &&
           !detachers.current[threadId]
         ) {
           patchThread(threadId, { resumeState: 'pending' })
@@ -1562,168 +1595,175 @@ export function useLiveSession(): void {
   const refreshMeta = useCallback(async () => {
     const startup = startupSnapshot()
     if (startup.phase !== STARTUP_PHASE.ready || stateRef.current.runtimeQuiescing) return
-    const request = ++metadataRequest.current
-    if (stateRef.current.workspaceLoadState !== 'ready') {
-      set({ workspaceLoadState: 'loading' })
-    }
-    const [projects, sessionCatalog] = await Promise.all([
-      listProjects(),
-      loadSessionCatalog({ limit: 60, scope: 'all' }),
-    ])
-    if (
-      request !== metadataRequest.current ||
-      stateRef.current.runtimeQuiescing ||
-      startupSnapshot().generation !== startup.generation ||
-      startupSnapshot().phase !== STARTUP_PHASE.ready
-    )
+    if (metadataPollInFlight.current) {
+      metadataPollInFlight.current.dirty = true
       return
-    if (!sessionCatalog.ok) {
-      const projection = projectCatalogFailure(
-        stateRef.current.workspaceLoadState,
-        sessionCatalog.failure.retryable
-      )
-      if (projection.retry) {
-        scheduleMetadataRetry()
-      } else {
-        cancelMetadataRetry()
-        metadataRetryAttempt.current = 0
+    }
+    const marker = { dirty: false }
+    metadataPollInFlight.current = marker
+    try {
+      const request = ++metadataRequest.current
+      if (stateRef.current.workspaceLoadState !== 'ready') {
+        set({ workspaceLoadState: 'loading' })
       }
-      set(() => ({
-        workspaceLoadState: projection.workspaceLoadState,
-        ...(projection.workspaceLoadState === 'ready'
-          ? {
-              foregroundError: sessionCatalog.failure.retryable
-                ? SESSION_CATALOG_RECOVERY_NOTICE
-                : SESSION_CATALOG_UNAVAILABLE_NOTICE,
-            }
-          : {}),
-      }))
-      return
-    }
-    cancelMetadataRetry()
-    metadataRetryAttempt.current = 0
-    const sessions = sessionCatalog.catalog.sessions
-    const catalogChanged = !sameSessionCatalog(metadataSessions.current, sessions)
-    metadataSessions.current = sessions
-    const catalogSessionIds = new Set(sessions.map((session) => session.session_id))
-    const currentSnapshot = stateRef.current
-    const nowSeconds = Date.now() / 1_000
-    Object.entries(detachers.current).forEach(([threadId, detach]) => {
-      const thread = currentSnapshot.threads[threadId]
-      const sessionId = thread?.sessionId
+      const [projects, sessionCatalog] = await Promise.all([
+        listProjects(),
+        loadSessionCatalog({ limit: 60, scope: 'all' }),
+      ])
       if (
-        !thread ||
-        !sessionId ||
-        retainCatalogThread(
-          threadId,
-          thread,
-          currentSnapshot.sessions,
-          catalogSessionIds,
-          currentSnapshot.activeSession,
-          nowSeconds,
-          SESSION_CATALOG_APPEARANCE_GRACE_SECONDS
-        )
+        request !== metadataRequest.current ||
+        stateRef.current.runtimeQuiescing ||
+        startupSnapshot().generation !== startup.generation ||
+        startupSnapshot().phase !== STARTUP_PHASE.ready
       )
         return
-      detach()
-      delete detachers.current[threadId]
-      resumeStopped.current.delete(threadId)
-      resumeAttempts.current.delete(sessionId)
-      if (resumeRetryTimers.current[threadId] !== undefined) {
-        window.clearTimeout(resumeRetryTimers.current[threadId])
-        delete resumeRetryTimers.current[threadId]
-      }
-      delete liveIndex.current[threadId]
-    })
-    set((current) => {
-      let sessionActivitySeen = current.sessionActivitySeen
-      const visibleSessions = sessions.filter(
-        (session) => current.threads[session.session_id]?.surface !== 'workbench'
-      )
-      const markSeen = (sessionId: string, activityAt: number): void => {
-        if (sessionActivitySeen[sessionId] === activityAt) return
-        if (sessionActivitySeen === current.sessionActivitySeen) {
-          sessionActivitySeen = { ...sessionActivitySeen }
-        }
-        sessionActivitySeen[sessionId] = activityAt
-      }
-      if (!current.sessionActivityInitialized) {
-        visibleSessions.forEach((session) =>
-          markSeen(session.session_id, session.mtime ?? session.created_at ?? 0)
+      if (!sessionCatalog.ok) {
+        const projection = projectCatalogFailure(
+          stateRef.current.workspaceLoadState,
+          sessionCatalog.failure.retryable
         )
+        if (projection.retry) {
+          scheduleMetadataRetry()
+        } else {
+          cancelMetadataRetry()
+          metadataRetryAttempt.current = 0
+        }
+        set(() => ({
+          workspaceLoadState: projection.workspaceLoadState,
+          ...(projection.workspaceLoadState === 'ready'
+            ? {
+                foregroundError: sessionCatalog.failure.retryable
+                  ? SESSION_CATALOG_RECOVERY_NOTICE
+                  : SESSION_CATALOG_UNAVAILABLE_NOTICE,
+              }
+            : {}),
+        }))
+        return
       }
-      visibleSessions.forEach((session) => {
-        if (session.session_id === current.activeSession && !session.running && !session.waiting) {
-          markSeen(session.session_id, session.mtime ?? session.created_at ?? 0)
+      cancelMetadataRetry()
+      metadataRetryAttempt.current = 0
+      if (!projects) scheduleMetadataRetry()
+      const sessions = sessionCatalog.catalog.sessions
+      const catalogChanged = !sameSessionCatalog(metadataSessions.current, sessions)
+      metadataSessions.current = sessions
+      const catalogSessionIds = new Set(sessions.map((session) => session.session_id))
+      const currentSnapshot = stateRef.current
+      const nowSeconds = Date.now() / 1_000
+      Object.entries(detachers.current).forEach(([threadId, detach]) => {
+        const thread = currentSnapshot.threads[threadId]
+        const sessionId = thread?.sessionId
+        if (
+          !thread ||
+          !sessionId ||
+          retainCatalogThread(
+            threadId,
+            thread,
+            currentSnapshot.sessions,
+            catalogSessionIds,
+            currentSnapshot.activeSession,
+            nowSeconds,
+            SESSION_CATALOG_APPEARANCE_GRACE_SECONDS
+          )
+        )
+          return
+        detach()
+        delete detachers.current[threadId]
+        resumeStopped.current.delete(threadId)
+        resumeAttempts.current.delete(sessionId)
+        if (resumeRetryTimers.current[threadId] !== undefined) {
+          window.clearTimeout(resumeRetryTimers.current[threadId])
+          delete resumeRetryTimers.current[threadId]
+        }
+        delete liveIndex.current[threadId]
+      })
+      set((current) => {
+        let sessionActivitySeen = current.sessionActivitySeen
+        const visibleSessions = sessions.filter(
+          (session) => current.threads[session.session_id]?.surface !== 'workbench'
+        )
+        const markSeen = (sessionId: string, activityAt: number): void => {
+          if (sessionActivitySeen[sessionId] === activityAt) return
+          if (sessionActivitySeen === current.sessionActivitySeen) {
+            sessionActivitySeen = { ...sessionActivitySeen }
+          }
+          sessionActivitySeen[sessionId] = activityAt
+        }
+        if (!current.sessionActivityInitialized) {
+          visibleSessions.forEach((session) =>
+            markSeen(session.session_id, session.mtime ?? session.created_at ?? 0)
+          )
+        }
+        visibleSessions.forEach((session) => {
+          if (
+            session.session_id === current.activeSession &&
+            !session.running &&
+            !session.waiting
+          ) {
+            markSeen(session.session_id, session.mtime ?? session.created_at ?? 0)
+          }
+        })
+        const threads = reconcileThreadRuntime(
+          pruneMissingCatalogThreads(
+            current.threads,
+            current.sessions,
+            catalogSessionIds,
+            current.activeSession,
+            nowSeconds,
+            SESSION_CATALOG_APPEARANCE_GRACE_SECONDS
+          ),
+          sessions
+        )
+        const activeSession =
+          current.activeSession &&
+          threads[current.activeSession]?.surface !== 'workbench' &&
+          (catalogSessionIds.has(current.activeSession) || Boolean(threads[current.activeSession]))
+            ? current.activeSession
+            : null
+        return {
+          ...(projects
+            ? {
+                projects: projects.projects,
+                projectsLoaded: true,
+                defaultWorkspacePath: projects.default || current.defaultWorkspacePath,
+              }
+            : {}),
+          sessionActivityInitialized: true,
+          sessionCatalogRevision: current.sessionCatalogRevision + Number(catalogChanged),
+          workspaceLoadState: projects || current.projectsLoaded ? 'ready' : 'error',
+          foregroundError:
+            current.foregroundError === SESSION_CATALOG_RECOVERY_NOTICE ||
+            current.foregroundError === SESSION_CATALOG_UNAVAILABLE_NOTICE
+              ? null
+              : current.foregroundError,
+          sessionActivitySeen,
+          activeSession,
+          threads,
+          sessions: mergeLocalThreads(
+            visibleSessions.map((session) =>
+              serveSessionNode(session, sessionActivitySeen, activeSession)
+            ),
+            threads,
+            activeSession
+          ),
         }
       })
-      const threads = reconcileThreadRuntime(
-        pruneMissingCatalogThreads(
-          current.threads,
-          current.sessions,
-          catalogSessionIds,
-          current.activeSession,
-          nowSeconds,
-          SESSION_CATALOG_APPEARANCE_GRACE_SECONDS
-        ),
-        sessions
-      )
-      const activeSession =
-        current.activeSession &&
-        threads[current.activeSession]?.surface !== 'workbench' &&
-        (catalogSessionIds.has(current.activeSession) || Boolean(threads[current.activeSession]))
-          ? current.activeSession
-          : null
-      return {
-        ...(projects
-          ? {
-              projects: projects.projects,
-              projectsLoaded: true,
-              defaultWorkspacePath: projects.default || current.defaultWorkspacePath,
-            }
-          : {}),
-        sessionActivityInitialized: true,
-        sessionCatalogRevision: current.sessionCatalogRevision + Number(catalogChanged),
-        workspaceLoadState: projects || current.projectsLoaded ? 'ready' : 'error',
-        foregroundError:
-          current.foregroundError === SESSION_CATALOG_RECOVERY_NOTICE ||
-          current.foregroundError === SESSION_CATALOG_UNAVAILABLE_NOTICE
-            ? null
-            : current.foregroundError,
-        sessionActivitySeen,
-        activeSession,
-        threads,
-        sessions: mergeLocalThreads(
-          visibleSessions.map((session) =>
-            serveSessionNode(session, sessionActivitySeen, activeSession)
-          ),
-          threads,
-          activeSession
-        ),
+    } finally {
+      if (metadataPollInFlight.current === marker) {
+        metadataPollInFlight.current = null
+        if (marker.dirty) refreshMetaRef.current()
       }
-    })
+    }
   }, [cancelMetadataRetry, scheduleMetadataRetry, set])
 
   refreshMetaRef.current = () => void refreshMeta()
 
-  // 会话/项目 2s 轮询的去重壳：上一次目录刷新仍在途时跳过本轮，避免慢后端下
-  // 轮询请求越积越多把排队放大；看门狗超时后放行，防止悬挂请求把轮询永久饿死。
-  // 手动刷新事件、重试与各产品事件仍直接调 refreshMeta，不受去重影响。
-  const metadataPollInFlight = useRef<{ startedAt: number } | null>(null)
-  const pollMetadata = useCallback(() => {
-    const inFlight = metadataPollInFlight.current
-    if (inFlight !== null && Date.now() - inFlight.startedAt < METADATA_REFRESH_WATCHDOG_MS) return
-    const marker = { startedAt: Date.now() }
-    metadataPollInFlight.current = marker
-    void refreshMeta().finally(() => {
-      if (metadataPollInFlight.current === marker) metadataPollInFlight.current = null
-    })
-  }, [refreshMeta])
+  const pollMetadata = useCallback(() => void refreshMeta(), [refreshMeta])
 
   useEffect(() => cancelMetadataRetry, [cancelMetadataRetry])
 
   useEffect(() => {
     if (!state.backendReady || state.runtimeQuiescing) {
+      subscriptions.current.clear()
       metadataRequest.current += 1
       cancelMetadataRetry()
       metadataRetryAttempt.current = 0
@@ -1744,6 +1784,9 @@ export function useLiveSession(): void {
     if (!next) return
     serviceInstance.current = next
     if (!previous || previous === next) return
+    subscriptions.current.clear()
+    bodySequences.current.clear()
+    resumeInFlight.current.clear()
     Object.values(detachers.current).forEach((detach) => detach())
     Object.keys(detachers.current).forEach((threadId) => delete detachers.current[threadId])
     resumeAttempts.current.clear()
@@ -1802,19 +1845,138 @@ export function useLiveSession(): void {
     sessionCatalogNeedsRefresh(state.sessions, state.activeSession, state.threads)
   useEffect(() => {
     if (!state.backendReady || state.runtimeQuiescing || !catalogRefreshNeeded) return
+    if (window.scholarseed?.notifications) return
     const timer = window.setInterval(() => pollMetadata(), BACKGROUND_SESSION_REFRESH_INTERVAL_MS)
     return () => window.clearInterval(timer)
   }, [pollMetadata, state.backendReady, state.runtimeQuiescing, catalogRefreshNeeded])
 
   useEffect(() => {
     if (!state.backendReady || !state.workbenchReady || state.runtimeQuiescing) return
+    summarySequences.current.clear()
+    const refresh = new DirtyRefresh(
+      async (signal) => {
+        const threads = Object.values(stateRef.current.threads).filter(
+          (thread) => thread.sessionId && !thread.readOnly
+        )
+        const sessionIds = threads.map((thread) => thread.sessionId!)
+        const snapshots = await loadSessionStatus(
+          sessionIds,
+          Object.fromEntries(
+            threads.map((thread) => [
+              thread.sessionId!,
+              (thread.queuedMessages ?? []).map((message) => message.queuedMessageId),
+            ])
+          ),
+          signal
+        )
+        return { sessionIds, snapshots }
+      },
+      ({ sessionIds, snapshots }) => {
+        let catalogInvalidated = sessionIds.some(
+          (sessionId) => !snapshots.some((snapshot) => snapshot.session_id === sessionId)
+        )
+        for (const snapshot of snapshots) {
+          if (snapshot.summary_seq < (summarySequences.current.get(snapshot.session_id) ?? 0))
+            continue
+          summarySequences.current.set(snapshot.session_id, snapshot.summary_seq)
+          catalogInvalidated ||= sessionSummaryNeedsCatalog(
+            metadataSessions.current?.find((session) => session.session_id === snapshot.session_id),
+            snapshot
+          )
+          for (const identity of snapshot.acknowledged_queue_ids)
+            releaseQueuedOutbox(snapshot.session_id, identity)
+          const entry = Object.entries(stateRef.current.threads).find(
+            ([, thread]) => thread.sessionId === snapshot.session_id
+          )
+          if (!entry || entry[0] === stateRef.current.activeSession) continue
+          const threadId = entry[0]
+          patchThread(threadId, (thread) => {
+            if (snapshot.summary_seq < (thread.lastSeq ?? 0)) return thread
+            const projected = reconcileThreadRuntime({ [threadId]: thread }, [
+              { ...snapshot, last_seq: snapshot.summary_seq },
+            ])[threadId]
+            return {
+              ...projected,
+              ...projectSessionRecovery(projected, {
+                sessionId: snapshot.session_id,
+                running: Boolean(snapshot.running),
+                activeTurnId: snapshot.active_turn_id,
+                unknownOutcome: snapshot.unknown_outcome,
+                pendingHil: snapshot.pending_hil ?? [],
+                uncertainOperations: snapshot.uncertain_operations,
+                timestamp: Date.now(),
+              }),
+              interrupting: Boolean(snapshot.interrupting),
+              queuedMessages: mergeQueuedOutbox(
+                snapshot.session_id,
+                snapshot.queued_messages.map(queuedMessageFromPayload),
+                stateRef.current.workbenchReady,
+                thread.queuedMessages ?? []
+              ),
+              turnOutcomes:
+                snapshot.last_turn_id && snapshot.last_turn_status
+                  ? {
+                      ...thread.turnOutcomes,
+                      [snapshot.last_turn_id]: recoveredTurnOutcome(snapshot.last_turn_status),
+                    }
+                  : thread.turnOutcomes,
+            }
+          })
+        }
+        if (catalogInvalidated) pollMetadata()
+      },
+      (error) => console.warn('[session-status] refresh unavailable', error)
+    )
+    const unsubscribe = subscribeChanges(['sessions', 'projects'], (reset, changes) => {
+      if (
+        reset ||
+        changes.some(
+          (change) =>
+            change.topic === 'projects' ||
+            (change.topic === 'sessions' &&
+              !Object.values(stateRef.current.threads).some(
+                (thread) => thread.sessionId === change.subject && !thread.readOnly
+              ))
+        )
+      )
+        pollMetadata()
+      refresh.invalidate(reset)
+    })
+    const resources = subscribeChanges(['resources'], act.invalidateResources)
+    const literature = subscribeChanges(['literature'], act.invalidateLiterature)
+    refresh.invalidate()
+    return () => {
+      refresh.stop()
+      unsubscribe()
+      resources()
+      literature()
+    }
+  }, [
+    state.backendReady,
+    state.workbenchReady,
+    state.runtimeQuiescing,
+    state.serviceInstanceId,
+    pollMetadata,
+    patchThread,
+    act.invalidateResources,
+    act.invalidateLiterature,
+  ])
+
+  useEffect(() => {
+    if (!state.backendReady || !state.workbenchReady || state.runtimeQuiescing) return
     const targets = new Set<string>()
     if (state.activeSession && !state.threads[state.activeSession]?.readOnly)
       targets.add(state.activeSession)
-    Object.entries(state.threads).forEach(([threadId, thread]) => {
-      if (!thread.readOnly && thread.surface === 'workbench' && thread.running !== false)
-        targets.add(threadId)
-    })
+    subscriptions.current.retain(state.activeSession)
+    for (const threadId of resumeInFlight.current.keys()) {
+      if (!targets.has(threadId)) resumeInFlight.current.delete(threadId)
+    }
+    for (const [threadId, timer] of Object.entries(resumeRetryTimers.current)) {
+      if (!targets.has(threadId)) {
+        window.clearTimeout(timer)
+        delete resumeRetryTimers.current[threadId]
+      }
+    }
 
     targets.forEach((threadId) => {
       const thread = state.threads[threadId]
@@ -1860,6 +2022,7 @@ export function useLiveSession(): void {
     disposed.current = false
     return () => {
       disposed.current = true
+      subscriptions.current.clear()
       Object.values(current).forEach((detach) => detach())
       Object.values(timers).forEach((timer) => window.clearTimeout(timer))
     }

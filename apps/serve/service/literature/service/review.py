@@ -230,6 +230,7 @@ class ReviewEvidenceLimitation(ReviewRecord):
     paper_id: str = Field(max_length=REVIEW_TITLE)
     title: str = Field(max_length=REVIEW_TEXT)
     reason: str = Field(max_length=REVIEW_TEXT)
+    reason_code: str = Field(default="", max_length=REVIEW_TITLE)
 
 
 class ReviewOutput(ReviewRecord):
@@ -791,6 +792,7 @@ def prepare_review(workdir: Path, workspace: str, checkpoint: str) -> PreparedRe
                 paper_id=paper_id,
                 title=_text(paper.get("title")) if isinstance(paper, dict) else "",
                 reason=_fulltext_limitation_reason(row),
+                reason_code=_text(row.get("outcome"), REVIEW_TITLE),
             )
         )
     generation = values.get(GENERATION, {})

@@ -405,7 +405,12 @@ export interface LiteratureReview {
   sections: ReviewSection[]
   checks: ReviewCheck[]
   citations: Array<{ title: string; authors: string; year: number | null; venue: string }>
-  abstract_evidence: Array<{ paper_id: string; title: string; reason: string }>
+  abstract_evidence: Array<{
+    paper_id: string
+    title: string
+    reason: string
+    reason_code?: string
+  }>
   issues: Array<{ title: string; detail: string; paper_ids: string[]; affected_content: string }>
   issue_count?: number | null
   warnings: string[]

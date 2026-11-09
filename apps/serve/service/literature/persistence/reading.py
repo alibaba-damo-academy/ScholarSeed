@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from service.literature.persistence.store import chunk_ids, connect
+from service.platform.notifications import Change, ChangeHub, ChangeTopic
 from service.platform.records import (
     EMPTY_RECORDS,
     PdfRecordSnapshot,
@@ -54,8 +55,9 @@ class AttachmentRecordRow:
 
 
 class AttachmentRecordCatalog:
-    def __init__(self, database: Path) -> None:
+    def __init__(self, database: Path, *, changes: ChangeHub | None = None) -> None:
         self.database = database
+        self._changes = changes
 
     @staticmethod
     def _schema(connection: sqlite3.Connection) -> None:
@@ -165,6 +167,8 @@ class AttachmentRecordCatalog:
             ).fetchone()
         if row is None:
             raise RuntimeError("attachment record update lost its row")
+        if self._changes is not None:
+            self._changes.publish((Change(ChangeTopic.RECORDS, subject=target.subject_id),))
         return self._snapshot(target, source_revision, self._row(row))
 
     def exists(self, attachment_id: str) -> bool:

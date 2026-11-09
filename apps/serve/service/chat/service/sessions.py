@@ -133,6 +133,7 @@ from service.chat.runtime.interaction import (
     USER_INPUT_METHOD,
     interaction_snapshot,
 )
+from service.chat.runtime.ledger import SessionLedger
 from service.chat.runtime.live import LiveSession
 from service.chat.runtime.projection import (
     artifact_snapshot_payload,
@@ -1326,6 +1327,64 @@ class SessionService:
             "last_turn_status": record.last_turn_status if record is not None else None,
             "artifacts": live.artifact_snapshot(),
         }
+
+    def status(
+        self,
+        session_ids: builtins.list[str],
+        principal: SessionPrincipal,
+        queued_ids: dict[str, builtins.list[str]],
+    ) -> dict[str, Any]:
+        snapshots = []
+        for session_id in session_ids:
+            record = self._access.get(session_id)
+            if record is None:
+                continue
+            self._access.require(session_id, principal)
+            live = self._sessions.get(session_id)
+            row = self._list_row(record)
+            row.pop("last_seq", None)
+            pending = self._access.pending_turn_settlement(session_id)
+            pending_running = pending is not None and not (
+                record.last_turn_id == pending.native_turn_id
+                and record.status
+                in {SessionStatus.COMPLETED, SessionStatus.INTERRUPTED, SessionStatus.ERROR}
+            )
+            snapshots.append(
+                {
+                    **row,
+                    "running": not row.get("recovery_blocked")
+                    and (
+                        record.status in {SessionStatus.RUNNING, SessionStatus.WAITING_HIL}
+                        or pending_running
+                    ),
+                    "summary_seq": record.last_product_seq,
+                    "active_turn_id": record.last_turn_id,
+                    "last_turn_id": record.last_turn_id,
+                    "pending_hil": [
+                        {
+                            **interaction_snapshot(item),
+                            "turn_id": item.vendor_turn_id,
+                            "item_id": item.vendor_item_id,
+                        }
+                        for item in self._access.pending_hil(session_id, blocking_only=False)
+                    ],
+                    "uncertain_operations": [
+                        SessionLedger.uncertainty_payload(item)
+                        for item in self._access.uncertainties(session_id, unresolved_only=True)
+                    ],
+                    "interrupting": bool(live and live.interrupting),
+                    "queued_messages": [
+                        queued_message_payload(item)
+                        for item in self._access.queued_messages(session_id)
+                    ],
+                    "acknowledged_queue_ids": [
+                        identity
+                        for identity in queued_ids.get(session_id, [])
+                        if self._access.queued_message(session_id, identity) is not None
+                    ],
+                }
+            )
+        return {"sessions": snapshots}
 
     async def list(
         self,

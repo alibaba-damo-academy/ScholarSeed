@@ -1,6 +1,12 @@
 import type { PluginCopyContent } from '../../../../plugins'
 import type { TFunction } from 'i18next'
-import { parseReview, reviewNotice, reviewStatus, REVIEW_VERDICTS } from './projection.ts'
+import {
+  parseReview,
+  reviewEvidenceReason,
+  reviewNotice,
+  reviewStatus,
+  REVIEW_VERDICTS,
+} from './projection.ts'
 import { downloadOutcome, parseDownloadCard } from './admission.ts'
 import { RESULT_LABELS, searchCriteria, searchWarningKeys } from './result.ts'
 import { DELIVERY_STATUS_KEYS } from './utils.ts'
@@ -247,7 +253,7 @@ export function reviewCopy(
     ...review.abstract_evidence.flatMap((evidence) => [
       translate('review.abstractEvidenceTitle'),
       evidence.title || evidence.paper_id,
-      evidence.reason,
+      reviewEvidenceReason(evidence, translate),
     ]),
     translate('review.verificationTitle'),
     ...review.checks.map((check) =>
