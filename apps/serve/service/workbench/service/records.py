@@ -8,6 +8,7 @@ from typing import Any
 
 from service.content.domain.model import ContentError
 from service.platform.content import AssetState, ContentPort
+from service.platform.notifications import Change, ChangeHub, ChangeTopic
 from service.platform.pdf import PdfAnnotationError, embedded_pdf_records
 from service.platform.records import (
     EMPTY_RECORDS,
@@ -37,8 +38,10 @@ class PdfRecordStore:
         catalog: PdfRecordCatalog | None = None,
         *,
         shared_records: PdfRecordTargetPort | None = None,
+        changes: ChangeHub | None = None,
     ) -> None:
         self._shared_records = shared_records
+        self._changes = changes
         self._content = content
         self._catalog = catalog or PdfRecordCatalog(content)
 
@@ -87,6 +90,8 @@ class PdfRecordStore:
             self._catalog.link(project_id, asset_id, target)
         except ValueError as error:
             raise ContentError(RECORD_LINK_CONFLICT) from error
+        if self._changes is not None:
+            self._changes.publish((Change(ChangeTopic.RECORDS, subject=asset_id),))
 
     def _linked_snapshot(self, project_id: str, asset_id: str) -> PdfRecordSnapshot | None:
         target = self._catalog.linked_target(project_id, asset_id)
@@ -206,6 +211,8 @@ class PdfRecordStore:
         )
         if stored is None:
             raise ContentError("revision_conflict")
+        if self._changes is not None:
+            self._changes.publish((Change(ChangeTopic.RECORDS, subject=asset_id),))
         return self._snapshot(
             project_id,
             asset_id,

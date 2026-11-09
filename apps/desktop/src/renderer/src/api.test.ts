@@ -229,6 +229,28 @@ test('live task and mapped project catalogs bypass browser cache locks without c
   }
 })
 
+test('catalog response-body timeouts remain retryable transport failures', async () => {
+  const previousFetch = globalThis.fetch
+  const previousWindow = globalThis.window
+  globalThis.window = {} as Window & typeof globalThis
+  try {
+    globalThis.fetch = async () => {
+      const response = Response.json({})
+      response.json = async () => {
+        throw new DOMException('deadline', 'TimeoutError')
+      }
+      return response
+    }
+    assert.deepEqual(await loadSessionCatalog(), {
+      ok: false,
+      failure: { kind: 'transport', retryable: true },
+    })
+  } finally {
+    globalThis.fetch = previousFetch
+    globalThis.window = previousWindow
+  }
+})
+
 test('read-only recent-session queries preserve the global authorized roots', async () => {
   const previousFetch = globalThis.fetch
   const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')

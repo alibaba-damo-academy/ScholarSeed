@@ -21,7 +21,7 @@ class AttachmentRecords:
         self, attachments: LiteratureAttachmentContent, repository: LiteratureRepository
     ) -> None:
         self._attachments = attachments
-        self._catalog = AttachmentRecordCatalog(repository.database)
+        self._catalog = AttachmentRecordCatalog(repository.database, changes=repository.changes)
 
     def snapshot_target(self, target: RecordTarget) -> PdfRecordSnapshot:
         try:

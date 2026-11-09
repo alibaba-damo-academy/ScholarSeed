@@ -45,7 +45,7 @@ from enum import Enum
 from errno import ENOSPC
 from os import PathLike
 from pathlib import Path, PureWindowsPath
-from typing import Callable, Iterable, Iterator, TypeVar
+from typing import Callable, Iterable, Iterator, TypeVar, overload
 from urllib.parse import quote
 
 from service.platform.storage import WINDOWS_PATH_PREFIX, WINDOWS_PLATFORM, WINDOWS_RESERVED_NAMES
@@ -63,6 +63,7 @@ LEGACY_SCHEMA_REBUILD_SUFFIX = "_foreign_key_migration"
 PRIVATE_DIRECTORY_MODE = 0o700
 PRIVATE_FILE_MODE = 0o600
 InspectionResult = TypeVar("InspectionResult")
+DatabaseConnection = TypeVar("DatabaseConnection", bound=sqlite3.Connection)
 _log = logging.getLogger(__name__)
 
 
@@ -72,6 +73,7 @@ class DatabaseMode(str, Enum):
     READ_ONLY = "ro"
 
 
+@overload
 def open_database(
     database: PathLike[str] | str,
     *,
@@ -79,6 +81,29 @@ def open_database(
     timeout: float = SQLITE_TIMEOUT_SECONDS,
     check_same_thread: bool = True,
     isolation_level: str | None = "",
+    factory: type[DatabaseConnection],
+) -> DatabaseConnection: ...
+
+
+@overload
+def open_database(
+    database: PathLike[str] | str,
+    *,
+    mode: DatabaseMode = DatabaseMode.CREATE,
+    timeout: float = SQLITE_TIMEOUT_SECONDS,
+    check_same_thread: bool = True,
+    isolation_level: str | None = "",
+) -> sqlite3.Connection: ...
+
+
+def open_database(
+    database: PathLike[str] | str,
+    *,
+    mode: DatabaseMode = DatabaseMode.CREATE,
+    timeout: float = SQLITE_TIMEOUT_SECONDS,
+    check_same_thread: bool = True,
+    isolation_level: str | None = "",
+    factory: type[sqlite3.Connection] = sqlite3.Connection,
 ) -> sqlite3.Connection:
     """Open a file with one SQLite spelling, without preparing directories or schema.
 
@@ -118,6 +143,7 @@ def open_database(
         timeout=timeout,
         check_same_thread=check_same_thread,
         isolation_level=isolation_level,
+        factory=factory,
     )
 
 

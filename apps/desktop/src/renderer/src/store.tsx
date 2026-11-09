@@ -2323,10 +2323,13 @@ export function StoreProvider({
       const thread = current.threads[id]
       if (!thread) return current
       const delta = typeof patch === 'function' ? patch(thread) : patch
+      if (delta === thread) return current
       const nextThread = { ...thread, ...delta }
+      const titleChanged =
+        nextThread.title !== thread.title || nextThread.title_fallback !== thread.title_fallback
       const node = findSessionNode(current.sessions, thread.sessionId ?? id)
       let sessions = current.sessions
-      if (node && ('status' in delta || 'running' in delta || 'title' in delta)) {
+      if (node && ('status' in delta || 'running' in delta || titleChanged)) {
         let status: SessionStatus = node.status
         if (nextThread.status === 'waiting') status = 'waiting'
         else if (nextThread.running === true || nextThread.status === 'running') status = 'running'
@@ -2336,7 +2339,7 @@ export function StoreProvider({
         sessions = upsertSessionNode(sessions, {
           ...node,
           status,
-          ...('title' in delta
+          ...(titleChanged
             ? {
                 title: nextThread.title,
                 title_fallback: nextThread.title_fallback,
@@ -2347,7 +2350,7 @@ export function StoreProvider({
       return {
         ...current,
         sessions,
-        sessionCatalogRevision: current.sessionCatalogRevision + Number('title' in delta),
+        sessionCatalogRevision: current.sessionCatalogRevision + Number(titleChanged),
         threads: { ...current.threads, [id]: nextThread },
       }
     })

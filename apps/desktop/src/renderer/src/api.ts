@@ -3,7 +3,13 @@ import { resolveContentResponse } from './app/api/content.ts'
 import { feedback, type FeedbackDescriptor } from './contracts/feedback.ts'
 import { apiBase, apiFetch, getJson, postJson, LIVE_CATALOG_REQUEST } from './app/api/client.ts'
 import { flushApiDiagnostics, reportApiFailure } from './app/api/diagnostics.ts'
-import { MODEL_PROFILES_PATH, MODEL_PROVIDERS_PATH, SESSION_CATALOG_PATH } from '../../requests.ts'
+import {
+  MODEL_PROFILES_PATH,
+  MODEL_PROVIDERS_PATH,
+  SESSION_CATALOG_PATH,
+  REQUEST_TIMEOUT_ERROR_NAME,
+  REQUEST_ABORT_ERROR_NAME,
+} from '../../requests.ts'
 import { sessionTitleFallback } from './session.ts'
 import { ATTENTION_PATH } from '../../attention.ts'
 import { FEEDBACK_LIMITS, type FeedbackSubmissionResult } from '../../feedback.ts'
@@ -870,6 +876,69 @@ export interface ServeSession {
   }
 }
 
+export type SessionStatusSnapshot = ServeSession &
+  Pick<
+    OpenResp,
+    | 'pending_hil'
+    | 'uncertain_operations'
+    | 'unknown_outcome'
+    | 'active_turn_id'
+    | 'last_turn_id'
+    | 'interrupting'
+  > & {
+    summary_seq: number
+    queued_messages: QueuedMessagePayload[]
+    acknowledged_queue_ids: string[]
+  }
+
+const STATUS_SESSION_LIMIT = 200
+const STATUS_QUEUE_LIMIT = 500
+
+export async function loadSessionStatus(
+  sessionIds: string[],
+  queuedIds: Record<string, string[]>,
+  signal: AbortSignal
+): Promise<SessionStatusSnapshot[]> {
+  const snapshots = new Map<string, SessionStatusSnapshot>()
+  const uniqueIds = [...new Set(sessionIds)]
+  for (let offset = 0; offset < uniqueIds.length; offset += STATUS_SESSION_LIMIT) {
+    const batch = uniqueIds.slice(offset, offset + STATUS_SESSION_LIMIT)
+    const queue = batch.flatMap((sessionId) =>
+      (queuedIds[sessionId] ?? []).map((identity) => ({ sessionId, identity }))
+    )
+    for (
+      let queueOffset = 0;
+      queueOffset < Math.max(1, queue.length);
+      queueOffset += STATUS_QUEUE_LIMIT
+    ) {
+      const requested: Record<string, string[]> = {}
+      for (const entry of queue.slice(queueOffset, queueOffset + STATUS_QUEUE_LIMIT))
+        (requested[entry.sessionId] ??= []).push(entry.identity)
+      const response = await apiFetch('/api/serve/status', {
+        method: 'POST',
+        signal,
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ session_ids: batch, queued_ids: requested }),
+      })
+      if (!response.ok) throw new Error(`Session status HTTP ${response.status}`)
+      const payload = (await response.json()) as { sessions: SessionStatusSnapshot[] }
+      for (const snapshot of payload.sessions) {
+        const previous = snapshots.get(snapshot.session_id)
+        snapshots.set(snapshot.session_id, {
+          ...snapshot,
+          acknowledged_queue_ids: [
+            ...new Set([
+              ...(previous?.acknowledged_queue_ids ?? []),
+              ...snapshot.acknowledged_queue_ids,
+            ]),
+          ],
+        })
+      }
+    }
+  }
+  return [...snapshots.values()]
+}
+
 export interface ServeSessionCatalog {
   sessions: ServeSession[]
   total: number
@@ -965,6 +1034,11 @@ async function requestSessionCatalog(
       payload = await response.json()
     } catch (error) {
       reportApiFailure(SESSION_CATALOG_PATH, 'GET', response.status, startedAt, 'decode', error)
+      if (
+        error instanceof DOMException &&
+        (error.name === REQUEST_TIMEOUT_ERROR_NAME || error.name === REQUEST_ABORT_ERROR_NAME)
+      )
+        return { ok: false, failure: { kind: 'transport', retryable: true } }
       return { ok: false, failure: { kind: 'schema', retryable: false } }
     }
     const catalog = parseSessionCatalogResult(payload)

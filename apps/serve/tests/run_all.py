@@ -159,6 +159,7 @@ SUITES = [
     "contract_activation",
     "contract_product_events",
     "contract_attention",
+    "contract_notifications",
     "contract_resource_terminal",
     "contract_resource_activation",
     "contract_service_lifecycle",

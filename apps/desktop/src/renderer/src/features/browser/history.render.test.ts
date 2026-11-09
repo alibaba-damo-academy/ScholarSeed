@@ -9,6 +9,15 @@ import { renderServers } from '../../../../test-helpers/render.ts'
 
 const servers = renderServers({ after })
 
+test('browser settings remain reachable without a settings sidebar entry', async () => {
+  await fixture(async (page) => {
+    await expect(page.getByTestId('account-settings-shell')).toBeVisible()
+    await expect(page.getByTestId('account-settings-nav-browser')).toHaveCount(0)
+    await expect(page.getByTestId('account-settings-nav-notifications')).toBeVisible()
+    await expect(page.getByTestId('account-settings-browser')).toBeVisible()
+  }, '?store')
+})
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const row = (title: string) => ({
   id: '12345678-1234-1234-1234-123456789abc',

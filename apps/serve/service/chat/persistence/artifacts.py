@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from enum import Enum
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 from service.chat.persistence.catalog import (
     SESSION_CATALOG_TABLE,
@@ -21,6 +21,7 @@ from service.chat.persistence.catalog import (
 from service.chat.persistence.events import PRODUCT_EVENT_TABLE, ProductEventStore
 from service.chat.persistence.utils import validate_transaction
 from service.paths import SESSION_CATALOG_DB
+from service.persistence.notifications import NotificationConnection
 from service.persistence.project import (
     database_files,
     open_database,
@@ -154,6 +155,7 @@ class SessionArtifactStore:
     """Index artifacts without observing or diffing a shared workspace."""
 
     def __init__(self, database: Path | None = None) -> None:
+        self.observe: Callable[[NotificationConnection], None] | None = None
         self._database = Path(database or SESSION_CATALOG_DB)
         if not self.inspect_schema(self._database).needs_write:
             return
@@ -438,10 +440,13 @@ class SessionArtifactStore:
             str(self._database),
             check_same_thread=False,
             timeout=SQLITE_TIMEOUT_SECONDS,
+            factory=NotificationConnection,
         )
         try:
             connection.row_factory = sqlite3.Row
             connection.execute("PRAGMA foreign_keys = ON")
+            if self.observe is not None:
+                self.observe(connection)
             return connection
         except BaseException:
             connection.close()

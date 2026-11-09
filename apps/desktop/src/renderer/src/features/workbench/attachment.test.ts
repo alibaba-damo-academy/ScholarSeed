@@ -15,6 +15,7 @@ import {
   type SessionArtifactSource,
 } from './api.ts'
 import type { LiteratureDocumentSource, SessionFileSource } from '../../contracts/workbench.ts'
+import type { NotificationFrame } from '../../../../notifications.ts'
 
 const SOURCE: LiteratureDocumentSource = {
   kind: 'literature',
@@ -28,6 +29,86 @@ const SOURCE: LiteratureDocumentSource = {
   path: 'figure.png',
   mediaType: 'application/pdf',
 }
+
+test('PDF notifications share one refresher, coalesce changes and perform no idle polling', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] })
+  const originalFetch = globalThis.fetch
+  const originalWindow = globalThis.window
+  let frame: ((value: NotificationFrame) => void) | undefined
+  let detached = 0
+  let requests = 0
+  let revision = 'first'
+  const received: string[][] = [[], []]
+  const disposers: Array<() => void> = []
+  const flush = async (): Promise<void> => {
+    context.mock.timers.tick(0)
+    for (let turn = 0; turn < 20; turn++) await Promise.resolve()
+  }
+  globalThis.window = {
+    scholarseed: {
+      getApiBase: () => 'http://test',
+      notifications: {
+        onChange: (callback: (value: NotificationFrame) => void) => {
+          frame = callback
+          return () => {
+            detached++
+          }
+        },
+        sync: async () => {},
+      },
+    },
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  } as unknown as Window & typeof globalThis
+  globalThis.fetch = async () => {
+    requests++
+    return Response.json({
+      record_target: SOURCE.recordTarget,
+      source_revision: 'source',
+      record_revision: revision,
+      source_state: 'available',
+      records: { schema_version: 1, marks: [], comments: [], notes: [] },
+    })
+  }
+  const changed = (): void =>
+    frame?.({
+      instanceId: 'serve',
+      reset: false,
+      changes: [{ topic: 'records', subject: 'figure' }],
+    })
+  try {
+    await loadPdfRecords(SOURCE)
+    requests = 0
+    for (const results of received)
+      disposers.push(
+        subscribePdfRecords(SOURCE, (snapshot) => results.push(snapshot.record_revision))
+      )
+    revision = 'second'
+    changed()
+    changed()
+    await flush()
+    assert.equal(requests, 1)
+    assert.deepEqual(received, [['second'], ['second']])
+    context.mock.timers.tick(60_000)
+    await flush()
+    assert.equal(requests, 1)
+    disposers.shift()?.()
+    revision = 'third'
+    changed()
+    await flush()
+    assert.equal(requests, 2)
+    assert.deepEqual(received, [['second'], ['second', 'third']])
+    disposers.shift()?.()
+    changed()
+    await flush()
+    assert.equal(requests, 2)
+    assert.equal(detached, 1)
+  } finally {
+    disposers.forEach((dispose) => dispose())
+    globalThis.fetch = originalFetch
+    globalThis.window = originalWindow
+  }
+})
 
 test('only located project and literature sources support location-bound PDF regions', () => {
   assert.equal(isLocatedDocumentSource(SOURCE), true)
@@ -632,8 +713,14 @@ test('citation-opened PDFs annotate through the cited literature attachment, or 
 test('linked project and literature subscribers receive the same canonical annotation save', async () => {
   const originalFetch = globalThis.fetch
   const originalWindow = globalThis.window
-  globalThis.window = { scholarseed: { getApiBase: () => 'http://test' } } as Window &
-    typeof globalThis
+  globalThis.window = {
+    scholarseed: {
+      getApiBase: () => 'http://test',
+      notifications: { onChange: () => () => {}, sync: async () => {} },
+    },
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  } as unknown as Window & typeof globalThis
   const project = {
     kind: 'project' as const,
     project: 'linked-project',
@@ -675,9 +762,12 @@ test('focus refresh delivers annotations saved by another window', async () => {
   const originalWindow = globalThis.window
   let focused: (() => void) | undefined
   globalThis.window = {
-    scholarseed: { getApiBase: () => 'http://test' },
-    addEventListener: (_event: string, callback: () => void) => {
-      focused = callback
+    scholarseed: {
+      getApiBase: () => 'http://test',
+      notifications: { onChange: () => () => {}, sync: async () => {} },
+    },
+    addEventListener: (event: string, callback: () => void) => {
+      if (event === 'focus') focused = callback
     },
     removeEventListener: () => {},
   } as unknown as Window & typeof globalThis

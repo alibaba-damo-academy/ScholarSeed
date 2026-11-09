@@ -31,6 +31,7 @@ from service.literature.service.attachment import LiteratureAttachmentContent
 from service.literature.service.pdf import LiteraturePdf
 from service.platform.activity import Activities
 from service.platform.content import RootKind
+from service.platform.notifications import Change, ChangeHub, ChangeTopic
 from service.platform.records import (
     EMPTY_RECORDS,
     RecordOwner,
@@ -171,7 +172,10 @@ def test_exact_attachment_routes_enforce_parent_media_and_two_revisions() -> Non
     files = root / "files"
     files.mkdir()
     database = root / "literature.sqlite3"
-    repository = LiteratureRepository(database)
+    changes: list[Change] = []
+    hub = ChangeHub("records-test")
+    hub.publish = changes.extend
+    repository = LiteratureRepository(database, changes=hub)
     repository.save(LiteratureItem(id="paper", title="Paper"))
     # 同一条文献的两行附件各有各的托管副本: "替换其中一份字节"只可能改变它自己那
     # 一行的修订号, 这正是 records 路由要守的口径。
@@ -222,6 +226,8 @@ def test_exact_attachment_routes_enforce_parent_media_and_two_revisions() -> Non
             },
         )
         assert saved.status_code == 200
+        assert Change(ChangeTopic.RECORDS, subject=pdf["id"]) in changes
+        changes.clear()
         assert len(saved.json()["records"]["marks"]) == 1
         stale_record_write = client.put(
             route,
@@ -232,6 +238,7 @@ def test_exact_attachment_routes_enforce_parent_media_and_two_revisions() -> Non
             },
         )
         assert stale_record_write.status_code == 412
+        assert changes == []
         Path(pdf["path"]).write_bytes(b"%PDF-1.4\nreplacement\n")
         stale = client.get(route)
         assert stale.status_code == 200
@@ -245,6 +252,7 @@ def test_exact_attachment_routes_enforce_parent_media_and_two_revisions() -> Non
             },
         )
         assert source_conflict.status_code == 409
+        assert changes == []
         assert (
             client.get(f"/api/v1/literatures/missing/attachments/{pdf['id']}/records").status_code
             == 404

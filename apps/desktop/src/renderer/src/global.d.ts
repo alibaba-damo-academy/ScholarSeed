@@ -64,6 +64,7 @@ interface DesktopAuthSnapshot {
 }
 
 import type { StartupSnapshot } from '../../startup'
+import type { NotificationBridge } from '../../notifications'
 
 declare global {
   interface ScholarSeedBridge {
@@ -119,6 +120,7 @@ declare global {
     systemPermissions: () => Promise<SystemPermissionsSnapshot>
     openSystemPermission: (id: SystemPermissionId) => Promise<boolean>
     onNotificationClick: (cb: (attentionId: string) => void) => () => void
+    notifications?: NotificationBridge
     openTrash: () => Promise<{ ok: boolean; path?: string; error?: string }>
     trashToken: (token: string) => Promise<{ ok: boolean; path?: string; error?: string }>
     syncAuthorizedRoots: (scope: AuthorizationScope, roots: string[]) => Promise<boolean>

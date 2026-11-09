@@ -307,6 +307,7 @@ const NAV_ITEMS: {
   labelKey: AccountPanelNavKey | null
   icon?: IconName
   lucideIcon?: LucideIcon
+  showInSidebar?: boolean
 }[] = [
   // TODO: 暂时隐藏「账号」「偏好设置」入口，后续恢复
   // { id: 'account', labelKey: 'account', lucideIcon: UserRound },
@@ -315,7 +316,7 @@ const NAV_ITEMS: {
   { id: 'prompts', labelKey: 'prompts', icon: 'sparkle' },
   { id: 'models', labelKey: 'models', lucideIcon: BrainCircuit },
   { id: 'developer', labelKey: 'developer', lucideIcon: UserShield },
-  { id: 'browser', labelKey: 'browser', lucideIcon: Globe },
+  { id: 'browser', labelKey: 'browser', lucideIcon: Globe, showInSidebar: false },
   { id: 'files', labelKey: 'files', lucideIcon: Files },
   { id: 'storage', labelKey: 'storage', lucideIcon: HardDrive },
   // TODO: 暂时隐藏「键盘快捷键」页面，恢复时一并恢复 Keyboard / Shortcuts。
@@ -5049,7 +5050,7 @@ export function AccountPanel({
           </Button>
         )}
         <nav className={SETTINGS_NAV_LIST_CLASS_NAME} aria-label={t('accountPanel.navLabel')}>
-          {VISIBLE_NAV_ITEMS.map((item) => (
+          {VISIBLE_NAV_ITEMS.filter((item) => item.showInSidebar !== false).map((item) => (
             <Button
               type="button"
               variant="ghost"

@@ -346,7 +346,7 @@ def admit_download(
     run: str = "",
 ) -> DownloadReceipt:
     revision = payload_revision(payload)
-    with closing(connect(repository.database)) as connection, connection:
+    with closing(connect(repository.database, repository.changes)) as connection, connection:
         connection.execute("BEGIN IMMEDIATE")
         _prepare_admissions(connection)
         _validate_collection(connection, collection_id, project_id)

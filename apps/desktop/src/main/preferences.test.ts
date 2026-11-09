@@ -6,6 +6,7 @@ import test from 'node:test'
 import { build } from 'esbuild'
 import { _electron } from '@playwright/test'
 import type { RendererPreferences } from '../preferences.ts'
+import { PREFERENCE_DIAGNOSTIC_PREFIX } from '../preference-diagnostics.ts'
 
 interface PreferenceFixture {
   ready: Promise<void>
@@ -16,13 +17,17 @@ interface PreferenceFixture {
   diagnostics: string[]
 }
 
-test('CDP preferences survive real file restarts and stale renderer saves cannot revive opt-out', { timeout: 30_000 }, async () => {
-  const temporary = await realpath(await mkdtemp(join(tmpdir(), 'browser-preferences-')))
-  await mkdir(join(temporary, 'profile'))
-  const entry = join(temporary, 'main.cjs')
-  await copyFile(resolve('out/main/lease.node'), join(temporary, 'lease.node'))
-  await build({
-    stdin: { contents: `
+test(
+  'CDP preferences survive real file restarts and stale renderer saves cannot revive opt-out',
+  { timeout: 30_000 },
+  async () => {
+    const temporary = await realpath(await mkdtemp(join(tmpdir(), 'browser-preferences-')))
+    await mkdir(join(temporary, 'profile'))
+    const entry = join(temporary, 'main.cjs')
+    await copyFile(resolve('out/main/lease.node'), join(temporary, 'lease.node'))
+    await build({
+      stdin: {
+        contents: `
       import { app, BrowserWindow } from 'electron'
       import { writeFileSync } from 'node:fs'
       import { join } from 'node:path'
@@ -40,59 +45,106 @@ test('CDP preferences survive real file restarts and stale renderer saves cannot
       globalThis.save = (value) => saveRendererPreferences(value, new PreferenceDiagnostics('main', (line) => globalThis.diagnostics.push(line)))
       globalThis.automation = saveBrowserAutomationPreference
       globalThis.corrupt = () => writeFileSync(join(app.getPath('userData'), 'renderer-preferences.json'), '{invalid')
-    `, resolveDir: resolve('.') },
-    outfile: entry, platform: 'node', format: 'cjs', bundle: true,
-    external: ['electron', './lease.node'],
-  })
-  const environment = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined))
-  delete environment.ELECTRON_RUN_AS_NODE
-  environment.SCHOLARSEED_HOME = join(temporary, 'home')
-  let application: Awaited<ReturnType<typeof _electron.launch>> | null = null
-  try {
-    application = await _electron.launch({ args: [entry], env: environment })
-    const first = await application.evaluate(async () => {
-      const fixture = globalThis as unknown as PreferenceFixture
-      await fixture.ready
-      const initial = fixture.load()
-      fixture.automation(false)
-      const saved = fixture.save({ ...initial, theme: 'dark' })
-      return { initial: initial.browserAutomationEnabled, enabled: saved.browserAutomationEnabled, theme: saved.theme }
+    `,
+        resolveDir: resolve('.'),
+      },
+      outfile: entry,
+      platform: 'node',
+      format: 'cjs',
+      bundle: true,
+      external: ['electron', './lease.node'],
     })
-    assert.deepEqual(first, { initial: true, enabled: false, theme: 'dark' })
-    await application.close()
-    application = await _electron.launch({ args: [entry], env: environment })
-    const restarted = await application.evaluate(async () => {
-      const fixture = globalThis as unknown as PreferenceFixture
-      await fixture.ready
-      const restored = fixture.load()
-      fixture.automation(true)
-      return { enabled: restored.browserAutomationEnabled, theme: restored.theme }
-    })
-    assert.deepEqual(restarted, { enabled: false, theme: 'dark' })
-    await application.close()
-    application = await _electron.launch({ args: [entry], env: environment })
-    assert.equal(await application.evaluate(async () => {
-      const fixture = globalThis as unknown as PreferenceFixture
-      await fixture.ready
-      return fixture.load().browserAutomationEnabled
-    }), true)
-    const corrupted = await application.evaluate(() => {
-      const fixture = globalThis as unknown as PreferenceFixture
-      fixture.corrupt()
-      const enabled = fixture.load().browserAutomationEnabled
-      let rejected = false
-      try { fixture.automation(true) } catch { rejected = true }
-      let saveRejected = false
-      try { fixture.save({ language: 'en' }) } catch { saveRejected = true }
-      return { enabled, rejected, saveRejected, diagnostics: fixture.diagnostics }
-    })
-    assert.equal(corrupted.enabled, false)
-    assert.equal(corrupted.rejected, true)
-    assert.equal(corrupted.saveRejected, true)
-    assert.ok(corrupted.diagnostics.some((line) => line.includes('"stage":"read"') && line.includes('"name":"SyntaxError"')))
-    assert.doesNotMatch(corrupted.diagnostics.join(''), /invalid|profile|renderer-preferences\.json/)
-  } finally {
-    await application?.close()
-    await rm(temporary, { recursive: true, force: true })
+    const environment = Object.fromEntries(
+      Object.entries(process.env).filter(
+        (entry): entry is [string, string] => entry[1] !== undefined
+      )
+    )
+    delete environment.ELECTRON_RUN_AS_NODE
+    environment.SCHOLARSEED_HOME = join(temporary, 'home')
+    let application: Awaited<ReturnType<typeof _electron.launch>> | null = null
+    try {
+      application = await _electron.launch({ args: [entry], env: environment })
+      const first = await application.evaluate(async () => {
+        const fixture = globalThis as unknown as PreferenceFixture
+        await fixture.ready
+        const initial = fixture.load()
+        fixture.automation(false)
+        const saved = fixture.save({ ...initial, theme: 'dark' })
+        return {
+          initial: initial.browserAutomationEnabled,
+          enabled: saved.browserAutomationEnabled,
+          theme: saved.theme,
+        }
+      })
+      assert.deepEqual(first, { initial: true, enabled: false, theme: 'dark' })
+      const writeDiagnostics = await application.evaluate(() => {
+        const fixture = globalThis as unknown as PreferenceFixture
+        return fixture.diagnostics
+      })
+      const completedWrite = writeDiagnostics
+        .map((line) => JSON.parse(line.slice(PREFERENCE_DIAGNOSTIC_PREFIX.length)))
+        .find((record) => record.stage === 'write-detail' && record.operation === 'complete')
+      assert.ok(completedWrite)
+      assert.equal(completedWrite.result, 'completed')
+      assert.equal(completedWrite.published, true)
+      assert.equal(completedWrite.runtime.platform, process.platform)
+      assert.ok(completedWrite.runtime.electron)
+      assert.ok(completedWrite.runtime.pid > 0)
+      assert.ok(completedWrite.elapsedMs >= 0)
+      assert.doesNotMatch(writeDiagnostics.join(''), /profile|renderer-preferences\.json/)
+      await application.close()
+      application = await _electron.launch({ args: [entry], env: environment })
+      const restarted = await application.evaluate(async () => {
+        const fixture = globalThis as unknown as PreferenceFixture
+        await fixture.ready
+        const restored = fixture.load()
+        fixture.automation(true)
+        return { enabled: restored.browserAutomationEnabled, theme: restored.theme }
+      })
+      assert.deepEqual(restarted, { enabled: false, theme: 'dark' })
+      await application.close()
+      application = await _electron.launch({ args: [entry], env: environment })
+      assert.equal(
+        await application.evaluate(async () => {
+          const fixture = globalThis as unknown as PreferenceFixture
+          await fixture.ready
+          return fixture.load().browserAutomationEnabled
+        }),
+        true
+      )
+      const corrupted = await application.evaluate(() => {
+        const fixture = globalThis as unknown as PreferenceFixture
+        fixture.corrupt()
+        const enabled = fixture.load().browserAutomationEnabled
+        let rejected = false
+        try {
+          fixture.automation(true)
+        } catch {
+          rejected = true
+        }
+        let saveRejected = false
+        try {
+          fixture.save({ language: 'en' })
+        } catch {
+          saveRejected = true
+        }
+        return { enabled, rejected, saveRejected, diagnostics: fixture.diagnostics }
+      })
+      assert.equal(corrupted.enabled, false)
+      assert.equal(corrupted.rejected, true)
+      assert.equal(corrupted.saveRejected, true)
+      assert.ok(
+        corrupted.diagnostics.some(
+          (line) => line.includes('"stage":"read"') && line.includes('"name":"SyntaxError"')
+        )
+      )
+      assert.doesNotMatch(
+        corrupted.diagnostics.join(''),
+        /invalid|profile|renderer-preferences\.json/
+      )
+    } finally {
+      await application?.close()
+      await rm(temporary, { recursive: true, force: true })
+    }
   }
-})
+)
