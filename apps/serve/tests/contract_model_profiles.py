@@ -311,6 +311,30 @@ def build_service(
     return service, selected
 
 
+def test_title_model_preserves_personal_providers_and_signed_out_selection() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        store = ModelProfileStore(Path(directory) / "profiles.json")
+        service, selected = build_service(store)
+        check(
+            "signed-in built-in titles use Flash",
+            service.title_model_key(GATEWAY_MODEL_KEY, "u-real") == "qwen3.8-flash",
+        )
+        for user_id in (LOCAL_USER, "", "u-real"):
+            for endpoint in ("http://127.0.0.1:11434/v1", "https://api.openai.com/v1"):
+                profile = store.upsert(profile_values(base_url=endpoint), owner_id=user_id)
+                key = personal_model_key(profile["id"], "personal-model")
+                check(
+                    f"personal title model stays selected for {user_id!r} at {endpoint}",
+                    service.title_model_key(key, user_id) == key,
+                )
+        for user_id in (LOCAL_USER, ""):
+            check(
+                f"signed-out title model stays selected for {user_id!r}",
+                service.title_model_key(GATEWAY_MODEL_KEY, user_id) == GATEWAY_MODEL_KEY,
+            )
+        check("title routing never changes the conversation model", selected["model"] == "")
+
+
 def test_catalog_and_selection_preserve_the_owning_service_instance() -> None:
     with tempfile.TemporaryDirectory() as directory:
         store = ModelProfileStore(Path(directory) / "profiles.json")
@@ -2095,6 +2119,7 @@ def test_save_rejection_names_the_model_and_upstream() -> None:
 
 
 def main() -> int:
+    test_title_model_preserves_personal_providers_and_signed_out_selection()
     print("file-backed personal API profiles contract")
     write_builtin_config()
     test_connection_validation_precedes_persistence()
