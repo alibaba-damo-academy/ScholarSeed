@@ -187,12 +187,12 @@ class SessionLedger:
 
     def uncertainty_snapshot(self) -> list[dict[str, Any]]:
         return [
-            self._uncertainty_payload(row)
+            self.uncertainty_payload(row)
             for row in self._catalog.uncertainties(self.id, unresolved_only=True)
         ]
 
     @staticmethod
-    def _uncertainty_payload(row: SessionUncertaintyRecord) -> dict[str, Any]:
+    def uncertainty_payload(row: SessionUncertaintyRecord) -> dict[str, Any]:
         card = row.payload.get("card")
         return {
             "kind": row.kind.value,

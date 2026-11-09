@@ -10,6 +10,33 @@ export interface CatalogFailureProjection {
 
 export const SESSION_CATALOG_RETRY_DELAYS_MS = [1_000, 2_000, 5_000, 10_000] as const
 
+const CATALOG_SUMMARY_FIELDS = [
+  'title',
+  'title_fallback',
+  'created_at',
+  'workdir',
+  'runtime_workdir',
+  'runtime_id',
+  'project_path',
+  'archived',
+  'pinned',
+  'kind',
+  'running',
+  'turns',
+  'last_turn_status',
+] as const satisfies readonly (keyof ServeSession)[]
+
+export function sessionSummaryNeedsCatalog(
+  previous: ServeSession | undefined,
+  current: ServeSession
+): boolean {
+  return (
+    !previous ||
+    (!current.running && previous.mtime !== current.mtime) ||
+    CATALOG_SUMMARY_FIELDS.some((field) => previous[field] !== current[field])
+  )
+}
+
 export function sameSessionCatalog(
   previous: readonly ServeSession[] | null,
   current: readonly ServeSession[]

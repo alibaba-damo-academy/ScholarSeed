@@ -120,6 +120,7 @@ LOGGER = logging.getLogger(__name__)
 # Historical session identity only; never offered or admitted as a model connection.
 RETIRED_NATIVE_MODEL_KEY = "codex-subscription-default"
 API_BILLING = "api"
+TITLE_MODEL_KEY = "qwen3.8-flash"
 MODEL_TEXT_MODALITY = "text"
 MODEL_INPUT_FLAGS = {IMAGE_INPUT_KEY: IMAGE_MODALITY, PDF_INPUT_KEY: PDF_MODALITY}
 PERSONAL_MODEL_SOURCE = "personal"
@@ -943,6 +944,12 @@ class ModelService:
         config = self._config()
         document = self._profiles.list(owner_id=self._owner_id(user_id))
         return self._available_key(model_key, config, document, user_id=user_id)
+
+    def title_model_key(self, model_key: str, user_id: str) -> str:
+        profile_id, _model_id = parse_personal_model_key(model_key)
+        if profile_id or user_id.strip() in ("", LOCAL_USER_ID):
+            return model_key
+        return TITLE_MODEL_KEY
 
     def _available_key(
         self,

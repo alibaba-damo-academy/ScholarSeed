@@ -17,9 +17,11 @@ import {
   reviewNotice,
   reviewIssueSummary,
   reviewStatus,
+  reviewEvidenceReason,
   reviewSupersessionKey,
   REVIEW_VERDICTS,
 } from './projection.ts'
+import { reviewCopy } from './copy.ts'
 
 const engine = createInstance()
 const englishEngine = createInstance()
@@ -228,6 +230,74 @@ test('review preserves unknown coverage and original artifact identities', () =>
   assert.equal(parseReview(snapshot)?.fulltext, null)
   assert.equal(parseReview(snapshot)?.artifacts[0].artifact_id, 'outline')
   assert.equal(parseReview({ ...snapshot, schema_version: '2.0' }), null)
+})
+
+test('abstract evidence localizes application reasons in cards and copied text', () => {
+  const reasons = [
+    [
+      'not_in_paperhub',
+      '全文来源暂未返回可下载文件，仅使用摘要证据',
+      'The full-text source has not returned a downloadable file; only abstract-level evidence is used.',
+    ],
+    ['auth_failed', '全文服务认证失败', 'Full-text service authentication failed.'],
+    ['fetch_failed', '全文服务暂时不可用', 'The full-text service is temporarily unavailable.'],
+    ['extract_failed', '全文解析失败', 'Full-text extraction failed.'],
+    [
+      'too_large',
+      '全文文件超过可处理大小限制',
+      'The full-text file exceeds the processing size limit.',
+    ],
+    ['not_a_pdf', '全文格式无法解析', 'The full-text format could not be parsed.'],
+    [
+      '',
+      '未取得全文，只能支持题录或摘要层判断',
+      'Full text is unavailable; only metadata or abstract-level judgments are supported.',
+    ],
+  ]
+  for (const [code, chinese, english] of reasons) {
+    for (const reason_code of [code, undefined]) {
+      const evidence = {
+        paper_id: 'p1',
+        title: 'Original paper title',
+        reason: chinese,
+        reason_code,
+      }
+      const review = { ...snapshot, abstract_evidence: [evidence] }
+      assert.ok(parseReview(review))
+      for (const [localization, expected] of [
+        [engine, chinese],
+        [englishEngine, english],
+      ] as const) {
+        const translate = localization.getFixedT(null, 'literature')
+        assert.equal(reviewEvidenceReason(evidence, translate), expected)
+        const copied = reviewCopy(review, translate).text
+        assert.ok(copied?.includes(expected))
+        assert.ok(copied?.includes(evidence.title))
+        if (localization === englishEngine) assert.ok(!copied?.includes(chinese))
+      }
+      assert.equal(evidence.reason, chinese)
+    }
+  }
+})
+
+test('abstract evidence preserves unrecognized source text and validates reason codes', () => {
+  const evidence = { paper_id: 'p1', title: 'Paper', reason: '用户原文，不应翻译' }
+  const translate = englishEngine.getFixedT(null, 'literature')
+  assert.equal(reviewEvidenceReason(evidence, translate), evidence.reason)
+  assert.equal(
+    reviewEvidenceReason({ ...evidence, reason_code: 'extract_failed' }, translate),
+    'Full-text extraction failed.'
+  )
+  for (const reason_code of ['unknown_outcome', 'constructor', '__proto__']) {
+    assert.equal(
+      reviewEvidenceReason({ ...evidence, reason_code }, translate),
+      'Full text is unavailable; only metadata or abstract-level judgments are supported.'
+    )
+  }
+  assert.equal(
+    parseReview({ ...snapshot, abstract_evidence: [{ ...evidence, reason_code: 1 }] }),
+    null
+  )
 })
 
 test('review accepts GB/T 7714 alongside existing styles at both checkpoints', () => {

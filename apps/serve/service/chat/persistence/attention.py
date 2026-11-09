@@ -22,16 +22,16 @@ from service.chat.constants import (
 )
 from service.chat.persistence.catalog import (
     SESSION_CATALOG_TABLE,
-    SQLITE_TIMEOUT_SECONDS,
     SessionCatalogStore,
     SessionPrincipal,
 )
 from service.chat.persistence.utils import begin_write
-from service.persistence.project import open_database, reader, sql_tokens, table_clauses
+from service.persistence.project import reader, sql_tokens, table_clauses
 
 ATTENTION_TABLE = "session_attention"
 ATTENTION_CLOCK_TABLE = "session_attention_clock"
 ATTENTION_CLOCK_ID = 1
+ATTENTION_PROJECTION_TRIGGERS = ("attention_title_changed", "attention_session_deleted")
 ATTENTION_BODY_LIMIT = 240
 ATTENTION_TITLE_LIMIT = 120
 ATTENTION_ID_LIMIT = 500
@@ -96,7 +96,7 @@ def needs_initialization(connection: sqlite3.Connection) -> bool:
         raise RuntimeError("incomplete attention schema")
     missing_columns: set[str] = set()
     with closing(sqlite3.connect(":memory:")) as reference:
-        initialize(reference)
+        _initialize_tables(reference)
         for table in (ATTENTION_TABLE, ATTENTION_CLOCK_TABLE):
             kind, definition = objects[table]
             required = reference.execute(
@@ -117,7 +117,18 @@ def needs_initialization(connection: sqlite3.Connection) -> bool:
     kind, definition = objects[ATTENTION_UNREAD_INDEX]
     if kind != "index" or sql_tokens(definition) != sql_tokens(ATTENTION_INDEX_SQL):
         raise RuntimeError("unsupported attention index")
-    return bool(missing_columns)
+    triggers = {
+        row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='trigger'")
+    }
+    catalog_exists = (
+        connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (SESSION_CATALOG_TABLE,)
+        ).fetchone()
+        is not None
+    )
+    return bool(missing_columns) or (
+        catalog_exists and not set(ATTENTION_PROJECTION_TRIGGERS).issubset(triggers)
+    )
 
 
 def inspect_clock(connection: sqlite3.Connection) -> None:
@@ -129,7 +140,7 @@ def inspect_clock(connection: sqlite3.Connection) -> None:
         raise RuntimeError("invalid attention clock")
 
 
-def initialize(connection: sqlite3.Connection) -> None:
+def _initialize_tables(connection: sqlite3.Connection) -> None:
     connection.execute(f"""CREATE TABLE IF NOT EXISTS {ATTENTION_CLOCK_TABLE} (
             singleton INTEGER PRIMARY KEY CHECK(singleton = {ATTENTION_CLOCK_ID}),
             epoch TEXT NOT NULL,
@@ -160,6 +171,32 @@ def initialize(connection: sqlite3.Connection) -> None:
         if name not in columns:
             connection.execute(f"ALTER TABLE {ATTENTION_TABLE} ADD COLUMN {name} {definition}")
     connection.execute(ATTENTION_INDEX_SQL.replace("CREATE INDEX", "CREATE INDEX IF NOT EXISTS", 1))
+
+
+def initialize(connection: sqlite3.Connection) -> None:
+    _initialize_tables(connection)
+    if (
+        connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (SESSION_CATALOG_TABLE,)
+        ).fetchone()
+        is None
+    ):
+        return
+    connection.execute(
+        f"CREATE TRIGGER IF NOT EXISTS {ATTENTION_PROJECTION_TRIGGERS[0]} "
+        f"AFTER UPDATE OF title,title_fallback ON {SESSION_CATALOG_TABLE} "
+        "WHEN (NEW.title IS NOT OLD.title OR NEW.title_fallback IS NOT OLD.title_fallback) "
+        f"AND EXISTS (SELECT 1 FROM {ATTENTION_TABLE} WHERE session_id=NEW.session_id AND read_at IS NULL) "
+        f"BEGIN UPDATE {ATTENTION_CLOCK_TABLE} SET revision=revision+1 "
+        f"WHERE singleton={ATTENTION_CLOCK_ID}; END"
+    )
+    connection.execute(
+        f"CREATE TRIGGER IF NOT EXISTS {ATTENTION_PROJECTION_TRIGGERS[1]} "
+        f"BEFORE DELETE ON {SESSION_CATALOG_TABLE} "
+        f"WHEN EXISTS (SELECT 1 FROM {ATTENTION_TABLE} WHERE session_id=OLD.session_id AND read_at IS NULL) "
+        f"BEGIN UPDATE {ATTENTION_CLOCK_TABLE} SET revision=revision+1 "
+        f"WHERE singleton={ATTENTION_CLOCK_ID}; END"
+    )
 
 
 def safe_text(value: object, limit: int = ATTENTION_BODY_LIMIT) -> str:
@@ -349,7 +386,7 @@ class AttentionStore:
         if through_revision < 0 or (ids is not None and len(ids) > ATTENTION_ID_LIMIT):
             raise ValueError("invalid attention acknowledgement")
         query, parameters = self._scope(principal)
-        with closing(open_database(self._database, timeout=SQLITE_TIMEOUT_SECONDS)) as connection:
+        with closing(self._catalog._connect()) as connection:
             connection.row_factory = sqlite3.Row
             begin_write(connection, self._database)
             if epoch is not None and epoch != self._epoch(connection, principal):

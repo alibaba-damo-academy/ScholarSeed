@@ -1156,7 +1156,7 @@ test('thread status and title changes project onto the session tree together', (
   assert.match(patchThread, /let sessions = current\.sessions/)
   assert.match(
     patchThread,
-    /if \(node && \('status' in delta \|\| 'running' in delta \|\| 'title' in delta\)\)/
+    /if \(node && \('status' in delta \|\| 'running' in delta \|\| titleChanged\)\)/
   )
   assert.match(patchThread, /if \(nextThread\.status === 'waiting'\) status = 'waiting'/)
   assert.match(
@@ -1166,7 +1166,7 @@ test('thread status and title changes project onto the session tree together', (
   // 收尾态要区分「用户正在看的会话」：当前会话回 dormant，其它会话才是 done。
   assert.match(patchThread, /status = current\.activeSession === id \? 'dormant' : 'done'/)
   assert.match(patchThread, /sessions = upsertSessionNode\(sessions, \{\s*\.\.\.node, status,/)
-  assert.ok(patchThread.includes("...('title' in delta ? {"))
+  assert.ok(patchThread.includes('...(titleChanged ? {'))
   assert.ok(
     patchThread.includes('title: nextThread.title, title_fallback: nextThread.title_fallback')
   )

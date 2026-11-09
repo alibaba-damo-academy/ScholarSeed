@@ -909,6 +909,15 @@
     "noCitations": "暂无实际引用记录。",
     "abstractEvidenceTitle": "摘要级证据",
     "abstractEvidenceDescription": "以下文献缺少全文，只能支持元信息或摘要层判断",
+    "fulltextLimitations": {
+      "notInPaperhub": "全文来源暂未返回可下载文件，仅使用摘要证据",
+      "authFailed": "全文服务认证失败",
+      "fetchFailed": "全文服务暂时不可用",
+      "extractFailed": "全文解析失败",
+      "tooLarge": "全文文件超过可处理大小限制",
+      "notAPdf": "全文格式无法解析",
+      "unavailable": "未取得全文，只能支持题录或摘要层判断"
+    },
     "verificationTitle": "引用核对与未解决问题",
     "verificationCount": "保存的核对报告 · {{count}} 项待关注",
     "noVerification": "暂无核对记录",

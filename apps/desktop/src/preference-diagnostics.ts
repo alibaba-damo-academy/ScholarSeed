@@ -88,6 +88,33 @@ export type PreferenceStage =
   | 'submit'
   | 'freeze'
   | 'flush'
+  | 'write-detail'
+  | 'failure-notification-request'
+  | 'retry-request'
+
+interface PreferenceRuntime {
+  platform: string
+  arch: string
+  pid: number
+  node: string
+  electron?: string
+  uv: string
+}
+
+interface PreferenceWriteEvent {
+  operation: string
+  result: 'failed' | 'completed'
+  elapsedMs: number
+  published: boolean
+  error?: unknown
+}
+
+interface PreferenceDiagnosticDetails {
+  operation?: string
+  elapsedMs?: number
+  published?: boolean
+  runtime?: PreferenceRuntime
+}
 
 export type PreferenceDiagnosticSink = (line: string) => void
 
@@ -207,7 +234,12 @@ export class PreferenceDiagnostics {
     this.acknowledgedRevision = revision
   }
 
-  private emit(stage: PreferenceStage, result: 'failed' | 'completed', error?: unknown): void {
+  private emit(
+    stage: PreferenceStage,
+    result: 'failed' | 'completed',
+    error?: unknown,
+    details?: PreferenceDiagnosticDetails
+  ): void {
     if (!this.sink) return
     try {
       this.sink(
@@ -219,6 +251,7 @@ export class PreferenceDiagnostics {
           result,
           ...this.submission,
           acknowledgedRevision: this.acknowledgedRevision,
+          ...details,
           ...(result === 'failed' ? { error: errorMetadata(error) } : {}),
         })}`
       )
@@ -229,6 +262,22 @@ export class PreferenceDiagnostics {
 
   completed(stage: PreferenceStage): void {
     this.emit(stage, 'completed')
+  }
+
+  recordWrite(event: PreferenceWriteEvent, runtime: PreferenceRuntime): void {
+    this.emit('write-detail', event.result, event.error, {
+      operation: event.operation,
+      elapsedMs: event.elapsedMs,
+      published: event.published,
+      runtime: {
+        platform: runtime.platform,
+        arch: runtime.arch,
+        pid: runtime.pid,
+        node: runtime.node,
+        electron: runtime.electron,
+        uv: runtime.uv,
+      },
+    })
   }
 
   runSync<Value>(stage: PreferenceStage, operation: () => Value): Value {

@@ -24,6 +24,46 @@ function deferred<T>() {
   return { promise, resolve }
 }
 
+test('failure notification and explicit retry are logged without automatic retries or UI changes', async () => {
+  const lines: string[] = []
+  const initial = sanitizeRendererPreferences({})
+  let saves = 0
+  let notifications = 0
+  const writer = new PreferenceWriter(initial, {
+    save: async (value) => {
+      if (++saves === 1) throw Object.assign(new Error('private'), { code: 'EPERM' })
+      return value
+    },
+    reconcile: async () => initial,
+    apply: async () => {},
+    failed: () => {
+      notifications += 1
+    },
+    diagnostic: (line) => lines.push(line),
+  })
+  await writer.submit({ theme: 'dark' }, PREFERENCE_SUBMISSION_SOURCE.navigation)
+  assert.equal(saves, 1)
+  assert.equal(notifications, 1)
+  const records = () =>
+    lines.map((line) => JSON.parse(line.slice(PREFERENCE_DIAGNOSTIC_PREFIX.length)))
+  const failed = records().find((record) => record.stage === 'save' && record.result === 'failed')
+  const notification = records().find((record) => record.stage === 'failure-notification-request')
+  assert.ok(notification)
+  assert.equal(notification.attempt, failed.attempt)
+  assert.equal(notification.writerId, failed.writerId)
+  assert.equal(notification.acknowledgedRevision, 0)
+  assert.equal(records().filter((record) => record.stage === 'retry-request').length, 0)
+  await writer.retry()
+  const retry = records().find((record) => record.stage === 'retry-request')
+  assert.ok(retry)
+  assert.equal(retry.writerId, failed.writerId)
+  assert.equal(retry.submittedRevision, failed.submittedRevision)
+  assert.equal(saves, 2)
+  assert.equal(notifications, 1)
+  assert.equal(writer.current().theme, 'dark')
+  assert.doesNotMatch(lines.join(''), /private/)
+})
+
 test('system refresh is read-only and stops after an explicit language choice', async () => {
   const initial = systemRendererPreferences('zh')
   const applied: string[] = []

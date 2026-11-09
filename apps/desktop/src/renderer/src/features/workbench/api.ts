@@ -1,4 +1,6 @@
 import { loadBuiltinDocument, type BuiltinDocumentSource } from './builtin.ts'
+import { subscribeChanges } from '../../app/notifications.ts'
+import { DirtyRefresh } from '../../../../notifications.ts'
 import { savedCitationError } from './links.ts'
 import { previewFormat } from './preview/routing.ts'
 import {
@@ -601,10 +603,10 @@ export async function createManagedCopy(
   }
 }
 
-const PDF_RECORD_REFRESH_MS = 2_000
 const PDF_RECORD_FOCUS_EVENT = 'focus'
 const pdfRecordSubscribers = new Map<string, Set<(records: PdfRecordSnapshot) => void>>()
 const pdfRecordSnapshots = new Map<string, PdfRecordSnapshot>()
+const pdfRecordRefreshers = new Map<string, () => void>()
 let pdfRecordSaveGeneration = 0
 
 function recordIdentity(target: RecordTarget): string {
@@ -629,40 +631,47 @@ export function subscribePdfRecords(
   const subscribers = pdfRecordSubscribers.get(key) ?? new Set()
   subscribers.add(listener)
   pdfRecordSubscribers.set(key, subscribers)
-  let active = true
-  let refreshing = false
-  const refresh = async (): Promise<void> => {
-    if (!active || refreshing) return
-    refreshing = true
-    const previous = pdfRecordSnapshots.get(key)
-    const generation = pdfRecordSaveGeneration
-    try {
-      const current = await loadPdfRecords(source)
-      if (
-        active &&
-        generation === pdfRecordSaveGeneration &&
-        current &&
-        (current.record_revision !== previous?.record_revision ||
-          current.source_revision !== previous?.source_revision)
-      )
-        publishPdfRecords(current)
-    } finally {
-      refreshing = false
-    }
+  if (!pdfRecordRefreshers.has(key)) {
+    const refresh = new DirtyRefresh(
+      async (signal) => {
+        const previous = pdfRecordSnapshots.get(key)
+        const generation = pdfRecordSaveGeneration
+        const current = await requestPdfRecords(source, signal)
+        return { previous, current, generation }
+      },
+      ({ previous, current, generation }) => {
+        if (generation !== pdfRecordSaveGeneration) {
+          refresh.invalidate()
+          return
+        }
+        if (
+          current &&
+          (current.record_revision !== previous?.record_revision ||
+            current.source_revision !== previous?.source_revision ||
+            current.source_state !== previous?.source_state)
+        ) {
+          pdfRecordSnapshots.set(key, current)
+          publishPdfRecords(current)
+        }
+      },
+      (error) => console.warn('[pdf-records] refresh unavailable', error)
+    )
+    const invalidate = (): void => refresh.invalidate()
+    const unsubscribe = subscribeChanges(['records', 'resources', 'literature'], (reset) =>
+      refresh.invalidate(reset)
+    )
+    window.addEventListener?.(PDF_RECORD_FOCUS_EVENT, invalidate)
+    pdfRecordRefreshers.set(key, () => {
+      refresh.stop()
+      unsubscribe()
+      window.removeEventListener?.(PDF_RECORD_FOCUS_EVENT, invalidate)
+    })
   }
-  const timer = setInterval(() => {
-    void refresh()
-  }, PDF_RECORD_REFRESH_MS)
-  const focused = (): void => {
-    void refresh()
-  }
-  window.addEventListener?.(PDF_RECORD_FOCUS_EVENT, focused)
   return () => {
-    active = false
-    clearInterval(timer)
-    window.removeEventListener?.(PDF_RECORD_FOCUS_EVENT, focused)
     subscribers.delete(listener)
     if (!subscribers.size) {
+      pdfRecordRefreshers.get(key)?.()
+      pdfRecordRefreshers.delete(key)
       pdfRecordSubscribers.delete(key)
       pdfRecordSnapshots.delete(key)
     }
@@ -670,21 +679,30 @@ export function subscribePdfRecords(
 }
 
 export async function loadPdfRecords(source: DocumentSource): Promise<PdfRecordSnapshot | null> {
-  const target = recordTargetFor(source)
-  if (!target) return null
   try {
-    const generation = pdfRecordSaveGeneration
-    const response = await fetch(`${base()}${recordEndpoint(target, source)}`, {
-      credentials: 'include',
-    })
-    if (!response.ok) return null
-    const snapshot = (await response.json()) as PdfRecordSnapshot
-    if (generation === pdfRecordSaveGeneration)
-      pdfRecordSnapshots.set(documentIdFor(source), snapshot)
-    return snapshot
+    return await requestPdfRecords(source)
   } catch {
     return null
   }
+}
+
+async function requestPdfRecords(
+  source: DocumentSource,
+  signal?: AbortSignal
+): Promise<PdfRecordSnapshot | null> {
+  const target = recordTargetFor(source)
+  if (!target) return null
+  const generation = pdfRecordSaveGeneration
+  const response = await fetch(`${base()}${recordEndpoint(target, source)}`, {
+    credentials: 'include',
+    signal,
+  })
+  if (response.status >= 500) throw new Error(`PDF records HTTP ${response.status}`)
+  if (!response.ok) return null
+  const snapshot = (await response.json()) as PdfRecordSnapshot
+  if (generation === pdfRecordSaveGeneration && !signal?.aborted)
+    pdfRecordSnapshots.set(documentIdFor(source), snapshot)
+  return snapshot
 }
 
 export async function commitPdfRecords(

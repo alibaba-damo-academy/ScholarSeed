@@ -14,7 +14,7 @@ from contextlib import ExitStack, closing, nullcontext
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Iterator, Mapping, Sequence
+from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from scholarseed_runtime.contract import (
     ActorKind,
@@ -50,6 +50,7 @@ from service.chat.persistence import journal
 from service.chat.persistence.utils import begin_write, validate_transaction
 from service.paths import SESSION_CATALOG_DB
 from service.persistence.limits import SQLITE_VALUE_BYTES
+from service.persistence.notifications import NotificationConnection
 from service.persistence.project import (
     database_files,
     open_database,
@@ -673,6 +674,7 @@ class SessionCatalogStore:
     """Single Service authority for session binding, projection, and HIL state."""
 
     def __init__(self, database: Path | None = None, *, shared_ownership: bool = False) -> None:
+        self.observe: Callable[[NotificationConnection], None] | None = None
         self._database = Path(database or SESSION_CATALOG_DB)
         self._browser_action_key = secrets.token_bytes(32)
         self._browser_action_epoch = secrets.token_hex(16)
@@ -879,10 +881,13 @@ class SessionCatalogStore:
             str(self._database),
             check_same_thread=False,
             timeout=SQLITE_TIMEOUT_SECONDS,
+            factory=NotificationConnection,
         )
         try:
             connection.row_factory = sqlite3.Row
             connection.execute("PRAGMA foreign_keys = ON")
+            if self.observe is not None:
+                self.observe(connection)
         except BaseException:
             connection.close()
             raise

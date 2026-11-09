@@ -121,6 +121,7 @@ from service.platform.content import (
     VerifiedArtifactContent,
 )
 from service.platform.files import guess_media_type
+from service.platform.notifications import ChangeHub
 from service.platform.resources import ProductMutationKind, ResourceChangeSink
 from service.platform.storage import (
     NOFOLLOW,
@@ -676,6 +677,9 @@ class ContentService:
         """Bind the product-owned mutation ledger at the composition root."""
 
         self._resource_changes = sink
+
+    def bind_notifications(self, changes: ChangeHub) -> None:
+        self._events.changes = changes
 
     def bind_project_forget_sink(self, sink: Callable[[str], None]) -> None:
         """绑定「项目被永久删除」的跨域清理回调 (组合根接线, 文献域借此回收关联)。"""

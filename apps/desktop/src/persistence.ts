@@ -104,6 +104,17 @@ export class PreferenceWriter {
   }
 
   retry(): Promise<void> {
+    new PreferenceDiagnostics(
+      'renderer',
+      this.port.diagnostic,
+      {
+        writerId: this.writerId,
+        submissionSources: [PREFERENCE_SUBMISSION_SOURCE.retry],
+        changedFields: Object.keys(this.retryPatch) as (keyof RendererPreferences)[],
+        submittedRevision: this.revision,
+      },
+      this.acknowledgedRevision
+    ).completed('retry-request')
     if (this.frozen) return Promise.resolve()
     if (this.retrySystemLanguageRefresh)
       this.systemLanguageRefresh = this.retrySystemLanguageRefresh
@@ -254,6 +265,7 @@ export class PreferenceWriter {
           this.retrySystemLanguageRefresh = canApply
         }
       }
+      diagnostics.completed('failure-notification-request')
       this.port.failed()
     }
   }
@@ -279,6 +291,7 @@ export class PreferenceWriter {
           this.pending = {}
           this.fieldIntents.clear()
           this.confirm(this.intentGeneration)
+          diagnostics.completed('failure-notification-request')
           this.port.failed()
           return
         }
@@ -347,6 +360,7 @@ export class PreferenceWriter {
         } catch {
           // Failed reconciliation is still a failed synchronization, not a successful read.
         }
+        diagnostics.completed('failure-notification-request')
         this.port.failed()
       }
     }

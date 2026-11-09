@@ -27,6 +27,7 @@ from uuid import uuid4
 
 from service.content.domain import naming
 from service.content.domain.model import OPERATION_INTERRUPTED, OperationState
+from service.persistence.notifications import NotificationConnection, NotificationRule
 from service.persistence.project import (
     DatabaseMode,
     database_files,
@@ -37,6 +38,7 @@ from service.persistence.project import (
     table_clauses,
 )
 from service.platform.content import AssetKind, ProjectLayout
+from service.platform.notifications import ChangeHub, ChangeTopic
 
 #: 表名。
 PROJECTS_TABLE = "projects"
@@ -548,6 +550,7 @@ class ContentCatalog:
         )
 
     def __init__(self, path: Path) -> None:
+        self.changes: ChangeHub | None = None
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with closing(self._connect()) as connection, schema_transaction(connection):
@@ -650,11 +653,19 @@ class ContentCatalog:
         connection.execute(f"CREATE TABLE {table} {_EXTERNAL_ROOT_SCHEMA}")
 
     def _connect(self) -> sqlite3.Connection:
-        connection = open_database(str(self.path), timeout=5.0)
+        connection = open_database(str(self.path), timeout=5.0, factory=NotificationConnection)
         connection.row_factory = sqlite3.Row
         # 桌面端可能同时有 serve 与 CLI 进程读同一个库, WAL 让读不被写阻塞。
         connection.execute("PRAGMA journal_mode=WAL")
         connection.execute("PRAGMA foreign_keys=ON")
+        if self.changes is not None:
+            connection.observe(
+                self.changes.publish,
+                (
+                    NotificationRule(PROJECTS_TABLE, operation, ChangeTopic.PROJECTS)
+                    for operation in ("INSERT", "UPDATE", "DELETE")
+                ),
+            )
         return connection
 
     @contextmanager

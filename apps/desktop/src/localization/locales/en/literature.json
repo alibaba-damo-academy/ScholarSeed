@@ -936,6 +936,15 @@
     "noCitations": "No cited papers recorded.",
     "abstractEvidenceTitle": "Abstract-level evidence",
     "abstractEvidenceDescription": "These papers lack full text and can support only metadata or abstract-level judgments",
+    "fulltextLimitations": {
+      "notInPaperhub": "The full-text source has not returned a downloadable file; only abstract-level evidence is used.",
+      "authFailed": "Full-text service authentication failed.",
+      "fetchFailed": "The full-text service is temporarily unavailable.",
+      "extractFailed": "Full-text extraction failed.",
+      "tooLarge": "The full-text file exceeds the processing size limit.",
+      "notAPdf": "The full-text format could not be parsed.",
+      "unavailable": "Full text is unavailable; only metadata or abstract-level judgments are supported."
+    },
     "verificationTitle": "Citation verification and unresolved issues",
     "verificationCount": "Saved verification report · {{count}} items need attention",
     "noVerification": "No verification record",

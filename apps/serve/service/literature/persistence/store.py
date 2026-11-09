@@ -49,6 +49,7 @@ from service.literature.schema import (
     PublicationType,
 )
 from service.paths import SERVICE_LITERATURE_DATABASE
+from service.persistence.notifications import NotificationConnection, NotificationRule
 from service.persistence.project import (
     DatabaseBindingError,
     database_files,
@@ -60,8 +61,10 @@ from service.persistence.project import (
     sql_tokens,
     table_clauses,
 )
+from service.platform.notifications import ChangeHub, ChangeTopic
 
 LITERATURE_DB = SERVICE_LITERATURE_DATABASE
+NOTIFICATION_TABLES = ("literature_items", "literature_attachments", "literature_notes")
 # 一行 = 一份文献独占的文件: path 恒为托管目录里的副本, revision 是这批字节的
 # 内容修订号 (全文索引缓存的键)。没有 asset_id / project_id —— 附件不指向项目
 # 里的文件, 因此文献删除就一定连文件一起删, 不存在"文件还挂在别处"的状态。
@@ -529,13 +532,15 @@ def _repair_tables(connection: sqlite3.Connection, tables: tuple[str, ...]) -> N
             )
 
 
-def connect(database: Path | str = LITERATURE_DB) -> sqlite3.Connection:
+def connect(
+    database: Path | str = LITERATURE_DB, changes: ChangeHub | None = None
+) -> sqlite3.Connection:
     target = Path(database)
     # Other admitted SQLite connections may retire and recreate WAL/SHM while
     # our read connection closes. Public startup/update inspection stays strict.
     _inspect_path(target, stable_sidecars=False)
     target.parent.mkdir(parents=True, exist_ok=True)
-    conn = open_database(target, timeout=5)
+    conn = open_database(target, timeout=5, factory=NotificationConnection)
     try:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
@@ -544,6 +549,15 @@ def connect(database: Path | str = LITERATURE_DB) -> sqlite3.Connection:
         if classify_schema(conn).needs_write:
             with schema_transaction(conn):
                 initialize_schema(conn)
+        if changes is not None:
+            conn.observe(
+                changes.publish,
+                (
+                    NotificationRule(table, operation, ChangeTopic.LITERATURE)
+                    for table in NOTIFICATION_TABLES
+                    for operation in ("INSERT", "UPDATE", "DELETE")
+                ),
+            )
     except BaseException:
         conn.close()
         raise
@@ -623,8 +637,9 @@ def _require_final_schema(conn: sqlite3.Connection) -> None:
 
 
 class LiteratureRepository:
-    def __init__(self, database: Path | str = LITERATURE_DB):
+    def __init__(self, database: Path | str = LITERATURE_DB, *, changes: ChangeHub | None = None):
         self.database = Path(database)
+        self.changes = changes
 
     def taxonomy_list(
         self, kind: str, project_id: str, limit: int, offset: int
@@ -632,7 +647,7 @@ class LiteratureRepository:
         table, memberships, foreign_key = TAXONOMY_TABLES[kind]
         condition = "WHERE t.project_id=?" if kind == TAXONOMY_COLLECTION else ""
         parameters = (project_id, limit, offset) if condition else (limit, offset)
-        with closing(connect(self.database)) as connection:
+        with closing(connect(self.database, self.changes)) as connection:
             return [
                 dict(row)
                 for row in connection.execute(
@@ -647,7 +662,7 @@ class LiteratureRepository:
         self, kind: str, project_id: str, name: str, parent_id: str | None = None
     ) -> tuple[dict[str, Any], bool]:
         table, _, _ = TAXONOMY_TABLES[kind]
-        with closing(connect(self.database)) as connection, connection:
+        with closing(connect(self.database, self.changes)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             if kind == TAXONOMY_COLLECTION:
                 if parent_id is not None:
@@ -693,7 +708,7 @@ class LiteratureRepository:
         self, kind: str, project_id: str, identifier: str, changes: dict[str, Any]
     ) -> dict[str, Any]:
         table, _, _ = TAXONOMY_TABLES[kind]
-        with closing(connect(self.database)) as connection, connection:
+        with closing(connect(self.database, self.changes)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             row = self._taxonomy_row(connection, kind, identifier, project_id)
             name = changes.get("name", row["name"])
@@ -722,7 +737,7 @@ class LiteratureRepository:
         self, kind: str, project_id: str, identifier: str, expected_revision: str | None
     ) -> dict[str, Any]:
         table, memberships, foreign_key = TAXONOMY_TABLES[kind]
-        with closing(connect(self.database)) as connection, connection:
+        with closing(connect(self.database, self.changes)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             row = self._taxonomy_row(connection, kind, identifier, project_id)
             if kind == TAXONOMY_COLLECTION:
@@ -789,7 +804,7 @@ class LiteratureRepository:
         tag_ids: tuple[str, ...],
         action: str,
     ) -> int:
-        with closing(connect(self.database)) as connection, connection:
+        with closing(connect(self.database, self.changes)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             for identifier in literature_ids:
                 if (
@@ -842,7 +857,7 @@ class LiteratureRepository:
             return (), ()
         wanted = tuple(dict.fromkeys(name for name in names if name.strip()))
         _, table, foreign_key = TAXONOMY_TABLES[TAXONOMY_TAG]
-        with closing(connect(self.database)) as connection, connection:
+        with closing(connect(self.database, self.changes)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             existing: set[str] = set()
             for chunk in chunk_ids(ordered):
@@ -912,7 +927,7 @@ class LiteratureRepository:
             sql = _recent_window(sql, args)
         sql = f"SELECT DISTINCT i.* {sql} ORDER BY {_order_by(sort, order)} LIMIT ? OFFSET ?"
         args.extend((limit, offset))
-        with closing(connect(self.database)) as c, c:
+        with closing(connect(self.database, self.changes)) as c, c:
             return tuple(self._item(c, r, project_id) for r in c.execute(sql, args))
 
     def filtered_total(
@@ -937,7 +952,7 @@ class LiteratureRepository:
         )
         if recent_only:
             sql = _recent_window(sql, args)
-        with closing(connect(self.database)) as c, c:
+        with closing(connect(self.database, self.changes)) as c, c:
             return int(c.execute(f"SELECT count(DISTINCT i.id) {sql}", args).fetchone()[0])
 
     @staticmethod
@@ -1020,7 +1035,7 @@ class LiteratureRepository:
         return sql, args
 
     def get(self, key: str) -> LiteratureItem | None:
-        with closing(connect(self.database)) as c, c:
+        with closing(connect(self.database, self.changes)) as c, c:
             row = c.execute("SELECT * FROM literature_items WHERE id=?", (key,)).fetchone()
             return self._item(c, row, "") if row else None
 
@@ -1036,7 +1051,7 @@ class LiteratureRepository:
         ordered = tuple(dict.fromkeys(identifiers))
         if not ordered:
             return ()
-        with closing(connect(self.database)) as c, c:
+        with closing(connect(self.database, self.changes)) as c, c:
             found: dict[str, LiteratureItem] = {}
             for chunk in chunk_ids(ordered):
                 placeholders = ",".join("?" for _ in chunk)
@@ -1067,7 +1082,7 @@ class LiteratureRepository:
         if ids:
             scope = _collection_scope(project_id)
             scoped_condition = "c.project_id=?" if project_id else "c.project_id IS NOT NULL"
-            connection = connect(self.database)
+            connection = connect(self.database, self.changes)
             try:
                 for chunk in chunk_ids(ids):
                     placeholders = ",".join("?" for _ in chunk)
@@ -1115,7 +1130,7 @@ class LiteratureRepository:
         )
 
     def notes(self, literature_id: str) -> tuple[LiteratureNote, ...] | None:
-        with closing(connect(self.database)) as connection, connection:
+        with closing(connect(self.database, self.changes)) as connection, connection:
             if (
                 connection.execute(
                     "SELECT 1 FROM literature_items WHERE id=?", (literature_id,)
@@ -1129,7 +1144,7 @@ class LiteratureRepository:
         body = text.strip()
         if not body:
             raise LiteratureError(NOTE_BODY_REQUIRED)
-        with closing(connect(self.database)) as connection, connection:
+        with closing(connect(self.database, self.changes)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             if (
                 connection.execute(
@@ -1202,7 +1217,7 @@ class LiteratureRepository:
             raise LiteratureError(NOTE_TITLE_REQUIRED)
         if not body:
             raise LiteratureError(NOTE_BODY_REQUIRED)
-        with closing(connect(self.database)) as connection, connection:
+        with closing(connect(self.database, self.changes)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 "SELECT * FROM literature_notes WHERE literature_id=? AND id=?",
@@ -1234,7 +1249,7 @@ class LiteratureRepository:
             )
 
     def delete_note(self, literature_id: str, note_id: str) -> bool:
-        with closing(connect(self.database)) as connection, connection:
+        with closing(connect(self.database, self.changes)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             removed = connection.execute(
                 "DELETE FROM literature_notes WHERE literature_id=? AND id=?",
@@ -1281,7 +1296,7 @@ class LiteratureRepository:
         }
         if set(fields) - columns:
             raise LiteratureError(LIBRARY_INVALID)
-        with closing(connect(self.database)) as connection, connection:
+        with closing(connect(self.database, self.changes)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             if (
                 connection.execute("SELECT 1 FROM literature_items WHERE id=?", (key,)).fetchone()
@@ -1357,11 +1372,11 @@ class LiteratureRepository:
         )
 
     def total(self) -> int:
-        with closing(connect(self.database)) as c, c:
+        with closing(connect(self.database, self.changes)) as c, c:
             return int(c.execute("SELECT count(*) FROM literature_items").fetchone()[0])
 
     def attachments(self, literature_id: str) -> builtins.list[dict[str, Any]]:
-        with closing(connect(self.database)) as connection, connection:
+        with closing(connect(self.database, self.changes)) as connection, connection:
             return [
                 dict(row)
                 for row in connection.execute(
@@ -1372,7 +1387,7 @@ class LiteratureRepository:
             ]
 
     def attachment(self, literature_id: str, attachment_id: str) -> LiteratureAttachment | None:
-        with closing(connect(self.database)) as connection, connection:
+        with closing(connect(self.database, self.changes)) as connection, connection:
             row = connection.execute(
                 "SELECT * FROM literature_attachments WHERE id=? AND literature_id=?",
                 (attachment_id, literature_id),
@@ -1411,7 +1426,7 @@ class LiteratureRepository:
         会让删除时忘掉的是别人那份索引。
         """
 
-        with closing(connect(self.database)) as connection, connection:
+        with closing(connect(self.database, self.changes)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             cursor = connection.execute(
                 "UPDATE literature_attachments SET path=?,revision=?,media_type=?,kind=? "
@@ -1421,7 +1436,7 @@ class LiteratureRepository:
             return cursor.rowcount == 1
 
     def primary_attachment(self, literature_id: str) -> LiteratureAttachment | None:
-        with closing(connect(self.database)) as connection, connection:
+        with closing(connect(self.database, self.changes)) as connection, connection:
             row = connection.execute(
                 "SELECT id FROM literature_attachments "
                 "WHERE literature_id=? AND role=? ORDER BY created_at DESC,id LIMIT 1",
@@ -1432,7 +1447,7 @@ class LiteratureRepository:
     def project_attachment_revision(
         self, project_id: str, revision: str
     ) -> LiteratureAttachment | None:
-        with closing(connect(self.database)) as connection:
+        with closing(connect(self.database, self.changes)) as connection:
             row = connection.execute(
                 "SELECT a.* FROM literature_attachments a "
                 "JOIN literature_projects p ON p.literature_id=a.literature_id "
@@ -1449,7 +1464,7 @@ class LiteratureRepository:
         的全文索引缓存 —— 行一删, 库里就再没有第二处记着这份字节的修订号。
         """
 
-        with closing(connect(self.database)) as connection, connection:
+        with closing(connect(self.database, self.changes)) as connection, connection:
             return tuple(
                 (str(row[0]), str(row[1]))
                 for row in connection.execute(
@@ -1460,7 +1475,7 @@ class LiteratureRepository:
             )
 
     def has_attachment_path(self, path: str) -> bool:
-        with closing(connect(self.database)) as connection, connection:
+        with closing(connect(self.database, self.changes)) as connection, connection:
             return (
                 connection.execute(
                     "SELECT 1 FROM literature_attachments WHERE path=? LIMIT 1",
@@ -1480,7 +1495,7 @@ class LiteratureRepository:
         of it. The physical file and any full-text index derived from it are owned
         outside this transaction and are reported back through the return value.
         """
-        with closing(connect(self.database)) as connection, connection:
+        with closing(connect(self.database, self.changes)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 "SELECT path,revision,role FROM literature_attachments "
@@ -1563,7 +1578,7 @@ class LiteratureRepository:
                 )
 
         if connection is None:
-            with closing(connect(self.database)) as current, current:
+            with closing(connect(self.database, self.changes)) as current, current:
                 current.execute("BEGIN IMMEDIATE")
                 insert(current)
         else:
@@ -1589,7 +1604,7 @@ class LiteratureRepository:
         if connection is not None:
             self._save(connection, item, project_id)
             return self._item_by_id(connection, item.id, project_id)
-        with closing(connect(self.database)) as current, current:
+        with closing(connect(self.database, self.changes)) as current, current:
             self._save(current, item, project_id)
             return self._item_by_id(current, item.id, project_id)
 
@@ -1606,7 +1621,7 @@ class LiteratureRepository:
         这里只负责追加，不存在"命中既存条目就跳过/合并"的分支。
         """
 
-        with closing(connect(self.database)) as connection, connection:
+        with closing(connect(self.database, self.changes)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             if (
                 collection_id
@@ -1660,7 +1675,7 @@ class LiteratureRepository:
 
         namespace = f"{project_id}:" if project_id else ""
         external_ids = {key: f"zotero:{namespace}{key}" for key, _name, _parent in collections}
-        with closing(connect(self.database)) as connection, connection:
+        with closing(connect(self.database, self.changes)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             if (
                 target_collection_id
@@ -1843,7 +1858,7 @@ class LiteratureRepository:
             )
 
     def delete(self, key: str, confirm: bool = False) -> tuple[bool, tuple[str, ...]]:
-        with closing(connect(self.database)) as c, c:
+        with closing(connect(self.database, self.changes)) as c, c:
             projects = tuple(
                 r[0]
                 for r in c.execute(
@@ -1856,7 +1871,7 @@ class LiteratureRepository:
             )
 
     def collections(self, project_id: str = "") -> builtins.list[dict[str, Any]]:
-        with closing(connect(self.database)) as c, c:
+        with closing(connect(self.database, self.changes)) as c, c:
             return [
                 dict(r)
                 for r in c.execute(
@@ -1875,7 +1890,7 @@ class LiteratureRepository:
         文献条目本身不删 —— 清的是项目关联, 不是用户的文献。
         """
 
-        with closing(connect(self.database)) as connection, connection:
+        with closing(connect(self.database, self.changes)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             return self.drop_project_link_rows(connection, project_id)
 
@@ -1908,7 +1923,7 @@ class LiteratureRepository:
         navigation: dict[str, dict[str, Any]] = {
             project_id: {"count": 0, "collections": []} for project_id in project_ids
         }
-        with closing(connect(self.database)) as c, c:
+        with closing(connect(self.database, self.changes)) as c, c:
             for row in c.execute(
                 "SELECT project_id,count(DISTINCT literature_id) count "
                 f"FROM literature_projects WHERE project_id IN ({placeholders}) "
@@ -1935,7 +1950,7 @@ class LiteratureRepository:
         }
         if collection_ids:
             collection_placeholders = ",".join("?" for _ in collection_ids)
-            with closing(connect(self.database)) as c, c:
+            with closing(connect(self.database, self.changes)) as c, c:
                 for relation in c.execute(
                     "SELECT collection_id,literature_id FROM literature_collection_items "
                     f"WHERE collection_id IN ({collection_placeholders})",
@@ -1985,7 +2000,7 @@ class LiteratureRepository:
             "LEFT JOIN literature_item_tags x ON x.tag_id=t.id"
         )
         group_by = " GROUP BY t.id ORDER BY t.created_at DESC"
-        with closing(connect(self.database)) as c, c:
+        with closing(connect(self.database, self.changes)) as c, c:
             library_rows = [dict(row) for row in c.execute(f"{select}{group_by}")]
             for row in library_rows:
                 row["total"] = row["count"]
@@ -2037,7 +2052,7 @@ class LiteratureRepository:
         )
         if recent_only:
             sql = _recent_window(sql, args)
-        with closing(connect(self.database)) as c, c:
+        with closing(connect(self.database, self.changes)) as c, c:
             scoped = {
                 str(row["tag_id"]): int(row["count"])
                 for row in c.execute(
@@ -2072,7 +2087,7 @@ class LiteratureRepository:
             without_collection=False,
         )
         counts: dict[str, tuple[tuple[Any, int], ...]] = {}
-        with closing(connect(self.database)) as c, c:
+        with closing(connect(self.database, self.changes)) as c, c:
             for dimension, (expression, tiebreak) in FACET_DIMENSIONS.items():
                 # 与 _recent_window 同一个套路: _selection 不一定带 WHERE。
                 scoped = sql + (" AND " if " WHERE " in sql else " WHERE ")
@@ -2090,7 +2105,7 @@ class LiteratureRepository:
     ) -> dict[str, Any]:
         key = str(uuid.uuid4())
         scope = _collection_scope(project_id)
-        with closing(connect(self.database)) as c, c:
+        with closing(connect(self.database, self.changes)) as c, c:
             if parent_id is not None:
                 parent = c.execute(
                     "SELECT id FROM literature_collections "
@@ -2119,7 +2134,7 @@ class LiteratureRepository:
     def update_collection(
         self, key: str, changes: dict[str, Any], project_id: str = ""
     ) -> dict[str, Any]:
-        with closing(connect(self.database)) as c, c:
+        with closing(connect(self.database, self.changes)) as c, c:
             c.execute("BEGIN IMMEDIATE")
             scope = _collection_scope(project_id)
             row = c.execute(
@@ -2166,7 +2181,7 @@ class LiteratureRepository:
 
     def create_tag(self, name: str, color: str = "") -> dict[str, Any]:
         key = str(uuid.uuid4())
-        with closing(connect(self.database)) as c, c:
+        with closing(connect(self.database, self.changes)) as c, c:
             c.execute(
                 "INSERT OR IGNORE INTO literature_tags VALUES(?,?,?,?)",
                 (key, name, color, time.time()),
@@ -2182,7 +2197,7 @@ class LiteratureRepository:
         return dict(row)
 
     def delete_collection(self, key: str, project_id: str = "") -> dict[str, int]:
-        with closing(connect(self.database)) as c, c:
+        with closing(connect(self.database, self.changes)) as c, c:
             scope = _collection_scope(project_id)
             row = c.execute(
                 "SELECT id FROM literature_collections WHERE (id=? OR name=?) AND project_id IS ?",
@@ -2216,7 +2231,7 @@ class LiteratureRepository:
             return {"collections": len(identifiers), "memberships": memberships}
 
     def delete_tag(self, key: str) -> dict[str, int]:
-        with closing(connect(self.database)) as c, c:
+        with closing(connect(self.database, self.changes)) as c, c:
             row = c.execute(
                 "SELECT id FROM literature_tags WHERE id=? OR name=?", (key, key)
             ).fetchone()
@@ -2232,7 +2247,7 @@ class LiteratureRepository:
             return {"tags": 1, "memberships": memberships}
 
     def projects(self, key: str) -> tuple[str, ...]:
-        with closing(connect(self.database)) as c, c:
+        with closing(connect(self.database, self.changes)) as c, c:
             return tuple(
                 row[0]
                 for row in c.execute(
@@ -2244,7 +2259,7 @@ class LiteratureRepository:
     def project_collections(
         self, literature_id: str, project_id: str = ""
     ) -> tuple[dict[str, Any], ...]:
-        with closing(connect(self.database)) as connection, connection:
+        with closing(connect(self.database, self.changes)) as connection, connection:
             scope = _collection_scope(project_id)
             return tuple(
                 dict(row)
@@ -2263,7 +2278,7 @@ class LiteratureRepository:
         self, literature_id: str, project_id: str, collection_ids: tuple[str, ...]
     ) -> None:
         unique_ids = tuple(dict.fromkeys(collection_ids))
-        with closing(connect(self.database)) as connection, connection:
+        with closing(connect(self.database, self.changes)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             valid_ids: set[str] = set()
             if unique_ids:
@@ -2294,7 +2309,7 @@ class LiteratureRepository:
         """Replace one item's project memberships without persisting project metadata."""
 
         unique_ids = tuple(dict.fromkeys(project_ids))
-        with closing(connect(self.database)) as connection, connection:
+        with closing(connect(self.database, self.changes)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             if (
                 connection.execute(
@@ -2323,7 +2338,7 @@ class LiteratureRepository:
     ) -> tuple[str, ...]:
         """Add existing relationships without replacing an item's other memberships."""
 
-        with closing(connect(self.database)) as connection, connection:
+        with closing(connect(self.database, self.changes)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             existing = (
                 {
@@ -2399,7 +2414,7 @@ class LiteratureRepository:
             return (), ()
         unique_collections = tuple(dict.fromkeys(collection_ids))
         placeholders = ",".join("?" for _ in ordered)
-        with closing(connect(self.database)) as connection, connection:
+        with closing(connect(self.database, self.changes)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             existing = {
                 str(row[0])
@@ -2445,7 +2460,7 @@ class LiteratureRepository:
         if not ordered:
             return ()
         placeholders = ",".join("?" for _ in ordered)
-        with closing(connect(self.database)) as connection, connection:
+        with closing(connect(self.database, self.changes)) as connection, connection:
             linked = tuple(
                 str(row[0])
                 for row in connection.execute(
@@ -2476,7 +2491,7 @@ class LiteratureRepository:
         self, project_id: str = "", connection: sqlite3.Connection | None = None
     ) -> LiteratureView:
         if connection is None:
-            with closing(connect(self.database)) as current, current:
+            with closing(connect(self.database, self.changes)) as current, current:
                 return self.view(project_id, current)
         sql, args = self._selection(
             project_id=project_id, q="", collection_ids=(), tag_ids=(), without_collection=False
@@ -2520,7 +2535,7 @@ class LiteratureRepository:
             self._save(connection, item, "")
 
     def replace(self, view: LiteratureView, project_id: str = "") -> None:
-        with closing(connect(self.database)) as connection, connection:
+        with closing(connect(self.database, self.changes)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             self.replace_view(view, project_id, connection)
 

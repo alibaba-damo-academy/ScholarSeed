@@ -4,19 +4,24 @@ import { REQUEST_TIMEOUT_ERROR_NAME } from '../../../../requests.ts'
 export const apiBase = (): string => window.scholarseed?.getApiBase() ?? ''
 
 const CREDENTIALS: RequestCredentials = 'include'
-export const LIVE_CATALOG_REQUEST = { cache: 'no-store' } as const satisfies Pick<
-  RequestInit,
-  'cache'
->
-
 type ApiFetchInit = RequestInit & { timeoutMs?: number }
+const CATALOG_REQUEST_TIMEOUT_MS = 10_000
+export const LIVE_CATALOG_REQUEST = {
+  cache: 'no-store',
+  timeoutMs: CATALOG_REQUEST_TIMEOUT_MS,
+} as const satisfies ApiFetchInit
 
 export async function apiFetch(path: string, init?: ApiFetchInit): Promise<Response> {
   const startedAt = performance.now()
   const method = init?.method ?? 'GET'
   try {
     const { timeoutMs, ...rest } = init ?? {}
-    const signal = timeoutMs === undefined ? rest.signal : AbortSignal.timeout(timeoutMs)
+    const deadline = timeoutMs === undefined ? undefined : AbortSignal.timeout(timeoutMs)
+    const signal = deadline
+      ? rest.signal
+        ? AbortSignal.any([rest.signal, deadline])
+        : deadline
+      : rest.signal
     const response = await fetch(apiBase() + path, { credentials: CREDENTIALS, ...rest, signal })
     if (!response.ok) reportApiFailure(path, method, response.status, startedAt, 'http')
     return response
