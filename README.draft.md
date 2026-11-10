@@ -256,6 +256,54 @@ Switch models per conversation. Keys stay on your machine.
 <!-- Developer proposition: "a foundation for AI research apps".  -->
 
 ScholarSeed is a working research application you can extend rather than a framework you must assemble. PDF handling, the library, projects, model routing, sandboxing, citations, and the UI are already there.
+| Extension | Example you could build |
+| --- | --- |
+| Research Skill | A paper-comparison workflow using your lab's inclusion criteria |
+| UI plugin | A conversation card for comparing methods and selecting papers |
+| MCP connector | Access to a specialized scientific database |
+| Agent runtime | An adapter for another research or coding agent |
+
+These are extension ideas, not a list of shipped add-ons. To create a plugin with AI assistance, ask ScholarSeed to use `plugin-create` and describe the workflow.
+
+### Start with a Skill
+
+Create a folder containing `SKILL.md`. This minimal example defines a reading method without requiring a custom interface:
+
+```markdown
+---
+name: lab-paper-comparison
+description: Compare selected project papers using the lab's reading criteria.
+---
+
+# Lab paper comparison
+
+1. Confirm the research question and the papers to compare.
+2. Read the authorized materials. For each paper, record its question,
+   method, study conditions, findings, and limitations.
+3. Cite supporting passages where available. Mark missing evidence and
+   distinguish reported findings from interpretations.
+4. Present a comparison table and ask which papers need closer study.
+5. Draft a summary for review; ask before changing library records.
+```
+
+This file supplies instructions. Installing a plugin or adding a dedicated card also requires the descriptor, packaging, validation, and installation steps in the [plugin creation guide](https://github.com/alibaba-damo-academy/ScholarSeed/blob/main/doc/plugins/create.md). A `SKILL.md` file alone does not create a custom UI.
+
+### Add cards and application actions
+
+The two frontend interfaces have different roles:
+
+- **`window.scholarseedUI`** mounts React components and provides ScholarSeed's UI and conversation components.
+- **`window.plugin`** handles card state and interactions through methods including `onState`, `save`, `submit`, and `request`.
+
+Skills use **`scholarseed-bridge`** to read authorized materials, manage literature, present cards, and organize results within the current project and permissions. A card's buttons do not inherit every backend operation.
+
+For example, a lab workflow could compare 30 papers, present a selection card, then produce a report and save reading notes or organize papers within the granted permissions. The method, card implementation, and application actions must each be connected and tested.
+
+See the [plugin overview](https://github.com/alibaba-damo-academy/ScholarSeed/blob/main/doc/plugins.md), [API guide](https://github.com/alibaba-damo-academy/ScholarSeed/blob/main/doc/plugins/api.md), [public cards](https://github.com/alibaba-damo-academy/ScholarSeed/blob/main/doc/plugins/cards.md), and [testing guide](https://github.com/alibaba-damo-academy/ScholarSeed/blob/main/doc/plugins/testing.md). Interfaces are in developer preview and may introduce breaking changes. Inspect the contract for your matching backend with:
+
+```bash
+python -m service.cli.plugins describe
+```
 
 ### Build from source
 
@@ -295,60 +343,31 @@ Runtime Gateway ──► Codex Adapter ──► Codex App Server (sandboxed)
       └────────────► DamoATrace evidence recording
 ```
 
-<!-- TODO: replace the ASCII diagram with assets/readme/architecture.svg; mark
-     Skills, Plugins and MCP as the three extension points. -->
-     
-| Path | Responsibility |
-| --- | --- |
-| `apps/desktop/` | Electron + React desktop application |
-| `apps/serve/` | FastAPI product backend and the `scholarseed` distribution |
-| `packages/runtime/` | Runtime-neutral contracts, provider discovery, event-driven gateway |
-| `packages/adapters/codex/` | Codex App Server process integration and protocol translation |
-| `packages/damoatrace/` | Independent trace contracts, recording, storage, query, CLI |
-| `packages/ui/` | React SDK for conversation cards (plugins) |
-| `skills/community/` | Research skills compiled into the product |
-| `tests/` | Cross-package contracts, integration, acceptance, release gates |
+The agent engine sits behind runtime contracts for sessions, events, permissions, MCP, and related execution concerns. Providers are discovered through `scholarseed_runtime.providers` and enabled in `product.json`; `packages/adapters/codex/` is the reference implementation. DamoATrace provides separate trace recording, storage, query, CLI, and diagnostic interfaces.
 
-
-### Extension points
-
-**Write a Skill** — a folder with `SKILL.md`. Encode your lab's method; the agent follows it inside the sandbox.
-
-**Write a UI plugin** — a React card that renders in the conversation. The `window.plugin` bridge gives you `submit`, `save`, `request`, `onState`. Pack and validate offline with `python -m service.cli.plugins`.
-<!-- TODO: link packages/ui/example and doc/plugins.md (currently Chinese; needs an
-     English version); state SDK version + compatibility policy
-     (packages/ui/contract.ts exposes `version` and `compatibility`). Say
-     plainly: "SDK is pre-1.0; breaking changes are listed in CHANGELOG." -->
-
-**Add a runtime** — the agent engine sits behind a typed contract (`packages/runtime`): sessions, events, permissions, sandbox, MCP, secrets, incidents. Providers are discovered through the `scholarseed_runtime.providers` entry point and enabled in `product.json`. The Codex adapter (`packages/adapters/codex`) is the reference implementation; a **Claude Code** adapter is planned.
-
-**Observe everything** — `damoatrace` is a standalone trace CLI + web UI (SQLite FTS5 search, per-session digests, token/cost rollups, secret redaction) with no dependency on the agent.
-<!-- TODO: finish the rename; the package still references damoagent and
-     ~/.veda paths. Consider publishing it on PyPI on its own. -->
-
-**What's under the hood**
-- Electron 44 + React + Vite desktop; FastAPI backend on an embedded relocatable CPython 3.12; native C modules for leases, authorization and signing checks.
-- ~3,000 test and contract files; bilingual eval scenarios with independent LLM judges and explicit `not_evaluated` / `inconclusive` verdicts.
-<!-- TODO: make `pnpm test` / `uv run pytest` instructions public and
-     accurate; link CONTRIBUTING.md; add 5–10 `good first issue` labels
-     (new skill, new connector preset, UI card) -->
-
----
+See the [project map](https://github.com/alibaba-damo-academy/ScholarSeed/blob/main/CONTRIBUTING.md#project-map), [runtime package](https://github.com/alibaba-damo-academy/ScholarSeed/tree/main/packages/runtime), [UI SDK](https://github.com/alibaba-damo-academy/ScholarSeed/tree/main/packages/ui), and [development and testing guide](https://github.com/alibaba-damo-academy/ScholarSeed/blob/main/CONTRIBUTING.md#development-and-testing) for implementation details.
 
 ## Roadmap
 
-<!-- Only promise what is scheduled. Mark each with a target quarter or
-     "exploring". Move items up into "What it does" as they ship, with a
-     🆕 tag and date for one release. -->
+Planned work is separate from the current capabilities above. Scope and availability may change.
 
 | Area | Status |
-|---|---|
-| **Skill Hub** — browse, audit, install community skills, scan verdict shown before install | **soon** |
-| **Claude Code** as a second agent runtime | planned |
-| **Google Gemini** provider preset | planned |
-| **Local models** — Ollama, vLLM, LM Studio presets with model discovery (reachable today via an OpenAI-compatible `base_url`) | planned |
-| LaTeX editor in the workbench with cite-from-library | planned |
-| Linux build | exploring |
+| --- | --- |
+| ScholarStack-based reusable research assets | Coming soon; not fully integrated into ScholarSeed |
+| Skill Hub for discovering and installing community Skills | Coming soon |
+| Claude Code as an additional agent runtime | Planned |
+| First-class Google Gemini provider preset | Planned |
+| Local model presets for Ollama, vLLM, and LM Studio | Planned |
+| In-workbench LaTeX editor with library citation support | Planned |
+| Linux build | Exploring |
+
+### ScholarStack — Reusable research knowledge · Coming soon
+
+Research often requires revisiting the same papers and reconstructing earlier comparisons. ScholarStack explores how to organize source-grounded facts, domain concepts, and cross-paper syntheses into reusable research assets, with provenance and scope preserved.
+
+The [ScholarStack paper](https://arxiv.org/abs/2609.23735v3), *Layered Research Asset Orchestration and Cross-Task Reuse for Scientific Agents*, presents the architecture and experimental evaluation.
+
+**ScholarStack has not yet been fully integrated into this repo.** Today's workbench keeps project materials and conversations available for later use; systematic reuse through ScholarStack's structured assets is coming-soon work.
 
 ---
 
