@@ -245,7 +245,16 @@ Codex 桌面端同样支持 Skills、插件和 MCP（连接外部工具的协议
 如果 ScholarSeed 对你的研究有帮助，欢迎点亮 Star，也欢迎分享你希望它解决的科研问题。
 
 <!-- 发布素材：确认公开 GitHub 仓库后，在此接入 Star History 图表。 -->
-<!-- 许可证：确认仓库许可范围并补齐 LICENSE 后，在此添加许可证章节与链接。 -->
+
+## 许可证
+
+书深的原创源代码采用 [Apache License 2.0](LICENSE) 许可证。
+
+第三方软件、资源和捆绑的运行环境仍适用各自的许可证，不因本项目采用 Apache-2.0 而改变。相关声明包括：
+
+- [桌面端依赖及对应源码声明](apps/desktop/resources/notices/README.md)
+- [Office 查看器第三方声明](apps/desktop/src/renderer/public/office/THIRD_PARTY_NOTICES.md)
+- [`paper-fulltext-dl` 第三方声明](skills/community/precise-literature-search/vendor/THIRD_PARTY_NOTICES.md)
 
 ---
 
