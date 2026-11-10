@@ -1,277 +1,381 @@
-<div align="center">
+<p align="center">
+  <a href="https://scholarseed.damo.alibaba.com/">
+    <img src="assets/readme/brand/brand-mark.svg" alt="ScholarSeed" width="96">
+  </a>
+</p>
+<p align="center">
+  <a href="https://scholarseed.damo.alibaba.com/">
+    <img src="assets/readme/brand/brand-wordmark.svg" alt="ScholarSeed 书深" width="260">
+  </a>
+</p>
 
-# ScholarSeed
+<h2 align="center">Where your ideas, documents, and AI stay connected.</h2>
+<p align="center">Search, read, ask, verify, and build, with your own models, using your own skills and plugins, on your own machine.</p>
+<p align="center">Keep your papers, notes, and conversations together as your research evolves.</p>
 
-**Turn every reading session and insight into your next research step.**
+<p align="center">
+  <b>PDF reader</b> · <b>Literature library</b> · <b>Evidence-linked answers</b> · <b>Research skills</b> · <b>Your models</b> · <b>Local-first</b>
+</p>
 
-**English** · [简体中文](README_zh.md)
+<p align="center">
+  <a href="https://scholarseed.damo.alibaba.com/"><img src="https://img.shields.io/badge/homepage-scholarseed.damo.alibaba.com-2f5744" alt="Homepage"></a>
+  <a href="https://scholarseed.damo.alibaba.com/download.html"><img src="https://img.shields.io/badge/download-macOS%20%7C%20Windows-2f5744" alt="Download"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License"></a>
+  <a href="https://github.com/alibaba-damo-academy/ScholarSeed/releases"><img src="https://img.shields.io/github/v/release/alibaba-damo-academy/ScholarSeed" alt="Release"></a>
+</p>
 
-[![License](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
-![macOS](https://img.shields.io/badge/macOS-arm64%20%7C%20x86__64-black)
-![Windows](https://img.shields.io/badge/Windows-x86__64-0078D4)
-![Electron](https://img.shields.io/badge/Electron-React%20%2B%20TypeScript-47848F)
-![Python](https://img.shields.io/badge/Python-FastAPI-3776AB)
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#why-scholarseed">Why</a> ·
+  <a href="#what-it-does">Features</a> ·
+  <a href="#recipes">Recipes</a> ·
+  <a href="#integrations">Integrations</a> ·
+  <a href="#for-developers">For developers</a> ·
+  <a href="README_zh.md">中文</a>
+</p>
 
-[Why ScholarSeed](#why-scholarseed) · [Research Papers](#research-papers) · [From Papers to Progress](#from-papers-to-progress) · [Get Started](#get-started) · [Installation](#run-from-source) · [Plugins](#plugins) · [Community](#community-and-support)
-
-</div>
-
-ScholarSeed is a local-first AI research workbench built around your projects. It brings literature search, reading and annotation, AI discussions, and research writing into one place. Start with a paper or a question, then turn your materials and ideas into research outputs you can check, refine, and build on.
-
-## Why ScholarSeed
-
-- **One workbench for a continuous research process.** Find papers, read, take notes, discuss ideas with AI, and revise drafts in the same workspace. Organize materials around your project to spend less time switching tools and rebuilding context.
-- **Traceable citations, evidence you can inspect.** View the sources and supporting passages behind AI responses, and return to the original text where a location is available. Keep reading, analysis, and writing connected to evidence you can check.
-- **An AI partner that builds on your research context.** Bring papers, notes, project files, and past conversations into each discussion. Every reading session, follow-up question, and revision can become a starting point for the next step.
-- **Local-first, with your research in your hands.** Store and manage research materials and outputs locally, and connect your own model service. When you use cloud models or online search, the configured services process the relevant requests.
-- **Research Skills for reusable workflows.** Use Skills for literature discovery, review writing, and research idea exploration, or extend the workbench with workflows that fit how you work.
+<p align="center">
+  <img src="assets/readme/brand/core-02-context-smaller.gif" alt="AI that builds on your project context" width="400">
+</p>
 
 ---
 
-## Research Papers
+## Why ScholarSeed?
 
-### ScholarSeed: An Integrated Agentic Workbench for Human–AI Collaborative Research
+Most "AI for research" tools are a chat box next to your real work. You paste in a PDF, get an answer, and lose track of where it came from. Next week you start over.
 
-**Manuscript preview · arXiv forthcoming**
+| The pain | What ScholarSeed does |
+|---|---|
+| "Research is scattered across applications." | Search, read, discuss, and write around the same research project. |
+| "Each new task requires rebuilding context." | Keep papers, notes, conversations, and outputs organized so you can bring relevant materials into later tasks. |
+| "Cannot always trust AI answers." | Follow source-linked citations and inspect supporting evidence. |
+| "AI agents are difficult to control." | Use research workflows with review checkpoints, decision cards, and permission controls to guide the next step. |
+| "I don't want my library and notes on someone else's server." | Store research materials and project data locally; external models, search, and connectors process the requests you send to them. |
+| "Every researcher and lab works differently." | Encode your methods in Skills and customize interactions with plugins and connected tools. |
 
-<details>
-<summary>Abstract</summary>
+---
 
-Recent advances in AI have brought powerful capabilities to scientific research, from literature search and analysis to writing and problem-solving. Yet leveraging these capabilities often requires programming-oriented tools or switching between disconnected applications, creating barriers to adoption and disrupting research workflows. More importantly, research is not a collection of isolated tasks but an evolving process of exploring questions, accumulating knowledge, evaluating evidence, and refining directions. Existing tools offer limited support for this continuity, making it difficult to carry research context and findings across tasks.
+## Quick start
 
-We present **ScholarSeed**, an open-source research workbench that brings frontier AI capabilities into researchers' familiar workflows. Rather than moving research materials into separate AI tools, ScholarSeed embeds AI assistance directly into activities such as reading and annotating papers, managing notes, and academic writing. It supports the accumulation and reuse of research materials, evidence, and findings across tasks. Researchers can interact with AI in context, trace results to their sources, revise content and methods, and guide subsequent work. Built on an open and extensible architecture, ScholarSeed also supports the integration of new AI models, agents, and diverse research tools.
+**1. Install** — grab the installer from **[scholarseed.damo.alibaba.com/download.html](https://scholarseed.damo.alibaba.com/download.html)** (macOS Apple silicon, macOS Intel, Windows x64)
 
-We plan to evaluate ScholarSeed through literature search, idea generation, literature review, and research tasks in mathematics and operations research, assessing its effectiveness in lowering adoption barriers, reducing context loss, and supporting research continuity and knowledge reuse.
+**2. Connect a model** — Configure a model service in Settings → Models, or sign in to use services available to your ScholarSeed account.
 
-ScholarSeed is available as an open-source desktop application at [github.com/alibaba-damo-academy/ScholarSeed](https://github.com/alibaba-damo-academy/ScholarSeed).
+**3. Add papers** — import local PDFs, BibTeX or RIS files, or connect Zotero.
 
-</details>
+**4. Read and ask** — Open the PDF, select a passage, and use **Explain** or **Translate**. Add relevant papers, notes, or project files to a conversation for broader questions.
 
-### [ScholarStack: Layered Research Asset Orchestration and Cross-Task Reuse for Scientific Agents](https://arxiv.org/abs/2609.23735v3)
+**5. Inspect and save** — Follow citations to check supporting sources and passages where available. Save your notes or draft in the project for later work.
 
-ScholarSeed AI Team
+---
 
-[arXiv:2609.23735v3](https://arxiv.org/abs/2609.23735v3)
+## What it does
 
-#### Let understanding from one task support the next
+### Read — Keep your thinking beside the paper
 
-Research accumulates across tasks. Methods and terminology identified during search help organize a review; disagreements and limitations found in that review motivate new ideas; comparisons made during novelty assessment inform experimental baselines. When this understanding remains inside a single conversation or report, later tasks must reread the same papers and reconstruct earlier judgments.
+Read PDFs, highlight passages, and record questions and observations without leaving your research workspace.
 
-**ScholarStack organizes source facts, domain structure, and cross-paper understanding into reusable research assets.** It preserves both what individual papers report and how studies relate, together with their sources, study conditions, scope, and versions. Scientific agents can draw on this shared foundation across retrieval, question answering, writing, and claim assessment.
+- Navigate paper outlines and revisit annotations.
+- Select passages for AI explanation or translation.
+- Use AI assistance to examine methods, equations, and figures, then compare the explanation with the original paper.
+- Keep notes and project materials available for follow-up discussions.
 
-![ScholarStack overview: offline construction of three asset layers and task-specific online reuse](assets/scholarstack-overview.png)
+<p align="center">
+  <img src="assets/readme/demos/ScholarSeed-Read.gif" alt="Read papers with AI assistance in the PDF reader" width="800">
+</p>
 
-*Figure 1 from the paper: compile a document collection into research assets, then assemble task-specific Knowledge Views. Tasks use the layers they need. Selected task outputs may be registered as candidate assets after checks; registration does not itself establish semantic verification.*
+### Find — Turn a research question into a reading list
 
-#### Three layers connecting source evidence and research understanding
+Describe what you want to investigate, discover relevant literature, and decide which papers belong in your project.
 
-| Layer | What it preserves | How it supports subsequent research |
+- Use `agentic-search` for literature discovery and `precise-literature-search` for targeted retrieval and full-text workflows.
+- Work with literature metadata from sources including OpenAlex and arXiv.
+- Import local papers or connect Zotero, then organize materials around a research question.
+- Review candidate papers and available evidence before moving into deeper analysis.
+
+<p align="center">
+  <img src="assets/readme/demos/ScholarSeed-Find.gif" alt="Find relevant papers with literature search" width="800">
+</p>
+
+### Verify — Know where AI answers come from
+
+Follow citations back to sources and supporting passages, returning to the original text where a location is available.
+
+- Compare an AI interpretation with what the source actually reports.
+- Keep reported findings, your own interpretations, and open questions distinct in your notes and drafts.
+- Use DamoATrace diagnostics to inspect recorded, product-visible events when debugging a task.
+
+Citations help you inspect an answer; they do not establish that its claims are correct or fully supported. Research conclusions still require judgment against the original evidence.
+
+<p align="center">
+  <img src="assets/readme/demos/ScholarSeed-Verify.gif" alt="Verify AI answers against cited source passages" width="800">
+</p>
+
+### Write — Develop materials into research outputs
+
+Turn selected literature and project context into a draft you can examine and revise.
+
+- Use `literature-review` to develop a structured review with evidence processing and review checkpoints.
+- Refine the scope, outline, supporting evidence, and wording.
+- Produce Markdown or LaTeX/PDF through the review workflow; LaTeX compilation uses the bundled toolchain.
+- Save outputs as project files and bring them into subsequent discussions.
+
+<p align="center">
+  <img src="assets/readme/demos/ScholarSeed-Write-Fast.gif" alt="Generate a literature review from selected papers" width="800">
+</p>
+
+### Extend — Turn your research methods into reusable AI workflows
+
+Turn your methods into reusable workflows and add tools or interactions for your field.
+
+- **Skills** describe research steps, required materials, decision points, and expected outputs.
+- **Plugins** combine Skills with conversation cards for reviewing results and collecting decisions. Plugins are in **developer preview**.
+- **MCP servers** connect external tools and services through the Model Context Protocol.
+- **Runtime interfaces** provide a development route for adding agent engines. Codex is the currently included executable agent provider.
+
+Bundled Skill sources include `agentic-search`, `precise-literature-search`, `literature-review`, `research-idea-partner`, `design-research-validation`, `pdf-evidence`, `project-literature`, `web-search`, `fast-search`, `find-skill`, and `plugin-create`. Browse the [Skill sources](https://github.com/alibaba-damo-academy/ScholarSeed/tree/main/skills/community) for their contracts and supporting tools.
+
+<p align="center">
+  <img src="assets/readme/demos/ScholarSeed-Extend.gif" alt="Extend research workflows with skills" width="800">
+</p>
+
+## Recipes
+
+Start with a concrete question and review the evidence as you go. These examples use Skills present in the repository; outputs depend on the materials, model, and services available.
+
+| Goal | Workflow | What to review |
 | --- | --- | --- |
-| **L1 · Source-grounded facts** | Reported findings, methods, hypotheses, and limitations, with study conditions, source locations, and checking states | Answer specific questions and verify values and claims while retaining the conditions under which findings apply |
-| **L2 · Domain organization** | Canonical entities, domain categories, assignments, and relations linked to their evidence | Align terminology across papers, organize research directions, and establish dimensions for method comparison |
-| **L3 · Scoped cross-paper syntheses** | Interpretations across studies, with explicit coverage, supporting, opposing, and limiting evidence | Trace methodological developments, disagreements, and open questions to inform reviews and research planning |
+| Build a literature review | `agentic-search` → review candidates → `literature-review` | Paper selection, evidence coverage, outline, citations, and final draft |
+| Understand a difficult paper | Import PDF → annotate → select-to-explain → `pdf-evidence` | Source passages, assumptions, methods, and limitations |
+| Explore a research idea | `research-idea-partner` → targeted literature discovery | Related work, unresolved questions, and assumptions worth testing |
+| Plan research validation | `design-research-validation` with your idea and project context | Validation criteria, alternative explanations, and evidence needed |
 
-Agents retrieve, select, expand, compare, and synthesize assets into a task-specific **Knowledge View**. Single-paper questions may primarily use L1; cross-paper comparisons can combine L2 with original study conditions; reviews may additionally use L3. When a source or asset changes, dependent judgments require rechecking, while earlier versions retain the basis of previous outputs.
+## Trust & local-first
 
-#### From literature understanding to research outputs
+- Local SQLite; projects are folders you own. Data lives in `~/.scholarseed` (override with `SCHOLARSEED_HOME`).
+- Agents run in isolated homes with plugins, hooks and marketplaces disabled, MCP config projected explicitly, secrets passed by environment, binaries pinned by SHA-256.
+- Native per-directory authorization (Windows job-object broker, macOS leases), notarized and Authenticode-signed builds.
+- Every skill result that touches full text requires your explicit grant.
 
-The same assets support multiple tasks: organizing references and positioning contributions in related work; synthesizing themes, developments, and disagreements in reviews; recovering settings, baselines, and limitations for experimental design; and identifying open questions for new research ideas.
+<p align="center">
+  <img src="assets/readme/demos/ScholarSeed-Trust-Local.gif" alt="Research in a local project workspace with control over agent actions" width="800">
+</p>
 
-![ScholarStack evidence-grounded generation for related work, reviews, experimental design, and research ideas](assets/scholarstack-generation.png)
+---
 
-*Figure 4 from the paper: tasks combine the required layers to organize, compare, and synthesize evidence, with claims linked back to sources. Reported findings, synthesized interpretations, and proposed hypotheses remain distinct.*
+## Bring your own model
 
-#### Selected experimental results
+| Provider | Models in catalog |
+|---|---|
+| Alibaba (Qwen) | 34 |
+| OpenAI | 9 |
+| Anthropic (Claude) | 6 |
+| DeepSeek | 6 |
+| Zhipu (GLM) | 6 |
+| Moonshot (Kimi) | 5 |
+| **Any OpenAI-compatible endpoint** | your `base_url` + API key (or a custom auth header) |
 
-The paper evaluates **ten settings across four task families: literature retrieval, scientific question answering, evidence-grounded generation, and claim and consistency assessment**. Selected results from the current manuscript are shown below.
+Switch models per conversation. Keys stay on your machine.
 
-| Task and evaluation scope | Comparator | ScholarStack |
-| --- | --- | --- |
-| **Multi-paper QA** · MDAQA, 797 questions (Table 9) | Full-text: total score **8.46 / 20**; mean **20.8k tokens / question** | Total score **18.41 / 20**; mean **5.5k tokens / question**, approximately **73% fewer** |
-| **Literature review generation** · ReportBench-ML, 25 tasks (Table 13) | Claude Code DeepResearch: RACE overall score **7.54 / 10** | RACE overall score **9.18 / 10**; comprehensiveness **9.23** and insight **9.30** |
-| **Experimental design** · 12 fields, 38 targets (Table 14) | Full-text: coverage F1 **0.398**; mean **20.7k tokens / task** | Comparable coverage F1 of **0.404**; mean **12.4k tokens / task**, approximately **40% fewer** |
+**Coming:** first-class presets for **Google Gemini** and for local models via **Ollama, vLLM and LM Studio**; and **Claude Code** as a second agent runtime next to Codex. See [Roadmap](#roadmap).
 
-The multi-paper QA total sums five dimensions (out of 20). Both QA and review quality use model-based judging; the review results compare complete workflows. Token figures cover query or generation time and exclude initial asset construction. The small experimental-design F1 difference is not interpreted as a quality improvement. See the paper for task-specific settings, metrics, and evaluation scope.
+---
 
-## From Papers to Progress
+## Integrations
 
-### Explore the Literature
+**Literature**
 
-Import local PDFs or papers from Zotero, or describe a research question and let AI help find and screen relevant work. Gather the papers worth reading into your research project.
+<p align="center">
+  <a href="https://www.zotero.org" title="Zotero"><img src="assets/readme/logos/zotero.svg" width="40" alt="Zotero"></a>&nbsp;&nbsp;&nbsp;
+  <a href="https://arxiv.org" title="arXiv"><img src="assets/readme/logos/arxiv.svg" width="40" alt="arXiv"></a>&nbsp;&nbsp;&nbsp;
+  <a href="https://openalex.org" title="OpenAlex"><b>OpenAlex</b></a>&nbsp;&nbsp;&nbsp;
+  <a href="https://elicit.com" title="Elicit"><b>Elicit</b></a>
+</p>
 
-![Literature search and screening in ScholarSeed](assets/literature-search-en.png)
+**Code & docs**
 
-### Capture Your Thinking
+<p align="center">
+  <a href="https://github.com" title="GitHub"><img src="assets/readme/logos/github.svg" width="40" alt="GitHub"></a>&nbsp;&nbsp;&nbsp;
+  <a href="https://gitlab.com" title="GitLab"><img src="assets/readme/logos/gitlab.svg" width="40" alt="GitLab"></a>&nbsp;&nbsp;&nbsp;
+  <a href="https://huggingface.co" title="Hugging Face"><img src="assets/readme/logos/huggingface.svg" width="40" alt="Hugging Face"></a>&nbsp;&nbsp;&nbsp;
+  <a href="https://www.notion.so" title="Notion"><img src="assets/readme/logos/notion.svg" width="40" alt="Notion"></a>
+</p>
 
-Highlight passages, annotate papers, and take notes as you read. Use AI to help understand methods, equations, and figures. Keep your questions and observations alongside the literature for later comparison and discussion.
+**Web**
 
-![PDF reading with annotation and AI explanation tools](assets/reading-notes-en.png)
+<p align="center">
+  <a href="https://www.firecrawl.dev" title="Firecrawl"><b>Firecrawl</b></a>&nbsp;&nbsp;&nbsp;
+  <a href="https://brave.com/search/api/" title="Brave Search"><img src="assets/readme/logos/brave.svg" width="40" alt="Brave Search"></a>
+</p>
 
-### Continue the Discussion
+**Models — today**
 
-Bring papers, notes, and project files into the conversation. Compare methods, examine disagreements, and explore research ideas that are worth testing with the resources you have.
+<p align="center">
+  <a href="https://www.alibabacloud.com/en/product/modelstudio" title="Alibaba Cloud Model Studio (Qwen)"><img src="assets/readme/logos/alibabacloud.svg" width="40" alt="Alibaba Cloud"></a>&nbsp;&nbsp;&nbsp;
+  <a href="https://platform.openai.com" title="OpenAI"><b>OpenAI</b></a>&nbsp;&nbsp;&nbsp;
+  <a href="https://www.anthropic.com" title="Anthropic"><img src="assets/readme/logos/anthropic.svg" width="40" alt="Anthropic"></a>&nbsp;&nbsp;&nbsp;
+  <a href="https://www.deepseek.com" title="DeepSeek"><img src="assets/readme/logos/deepseek.svg" width="40" alt="DeepSeek"></a>&nbsp;&nbsp;&nbsp;
+  <a href="https://www.zhipuai.cn" title="Zhipu"><b>Zhipu</b></a>&nbsp;&nbsp;&nbsp;
+  <a href="https://www.moonshot.cn" title="Moonshot (Kimi)"><img src="assets/readme/logos/kimi.svg" width="40" alt="Kimi"></a>
+</p>
 
-![Adding project files to an AI research discussion](assets/research-discussion-en.png)
+**Models & agents — coming**
 
-### Check the Evidence
+<p align="center">
+  <a href="https://claude.com/claude-code" title="Claude Code (agent runtime)"><img src="assets/readme/logos/claude.svg" width="40" alt="Claude Code"></a>&nbsp;&nbsp;&nbsp;
+  <a href="https://ai.google.dev" title="Google Gemini"><img src="assets/readme/logos/googlegemini.svg" width="40" alt="Google Gemini"></a>&nbsp;&nbsp;&nbsp;
+  <a href="https://ollama.com" title="Ollama"><img src="assets/readme/logos/ollama.svg" width="40" alt="Ollama"></a>&nbsp;&nbsp;&nbsp;
+  <a href="https://docs.vllm.ai" title="vLLM"><img src="assets/readme/logos/vllm.svg" width="40" alt="vLLM"></a>&nbsp;&nbsp;&nbsp;
+  <a href="https://lmstudio.ai" title="LM Studio"><img src="assets/readme/logos/lmstudio.svg" width="40" alt="LM Studio"></a>
+</p>
 
-Follow citations in an answer to inspect its sources and supporting passages. Return to the original text to compare the AI's analysis with what the paper actually concludes, and form your own judgment.
+---
 
-![Tracing a citation from an AI response to the original paper](assets/citation-source-en.png)
+## For developers
 
-### Turn Insights into Progress
+ScholarSeed is a working research application you can extend rather than a framework you must assemble. PDF handling, the library, projects, model routing, sandboxing, citations, and the UI are already there.
 
-Develop your research materials into a cited literature review, related-work section, or research report. Add evidence, refine the structure, and revise the wording. Save the result as a project file you can build on in your next round of research.
+| Extension | Example you could build |
+| --- | --- |
+| Research Skill | A paper-comparison workflow using your lab's inclusion criteria |
+| UI plugin | A conversation card for comparing methods and selecting papers |
+| MCP connector | Access to a specialized scientific database |
+| Agent runtime | An adapter for another research or coding agent |
 
-![A generated research review open alongside the AI task summary](assets/research-output-en.png)
+These are extension ideas, not a list of shipped add-ons. To create a plugin with AI assistance, ask ScholarSeed to use `plugin-create` and describe the workflow.
 
-## Get Started
+### Start with a Skill
 
-After installing and launching ScholarSeed, configure your own model service or sign in to use services enabled for your ScholarSeed account.
+Create a folder containing `SKILL.md`. This minimal example defines a reading method without requiring a custom interface:
 
-1. Create a project and import a paper or a collection of research materials.
-2. Choose a model and add the relevant materials to an AI conversation.
-3. Describe your research question, check the citations in the response, and save your notes or generated draft.
+```markdown
+---
+name: lab-paper-comparison
+description: Compare selected project papers using the lab's reading criteria.
+---
 
-## Architecture
+# Lab paper comparison
 
-ScholarSeed is a monorepo. The root `pyproject.toml` coordinates an uv workspace; each application and package owns its source, dependencies, and distribution boundary.
-
-```text
-Electron / React
-      │ HTTP + SSE
-      ▼
-ScholarSeed Serve
-      │ commands + events
-      ▼
-Runtime Gateway ──► Codex Adapter ──► Codex App Server
-      │
-      └────────────► DamoATrace evidence recording
+1. Confirm the research question and the papers to compare.
+2. Read the authorized materials. For each paper, record its question,
+   method, study conditions, findings, and limitations.
+3. Cite supporting passages where available. Mark missing evidence and
+   distinguish reported findings from interpretations.
+4. Present a comparison table and ask which papers need closer study.
+5. Draft a summary for review; ask before changing library records.
 ```
 
-| Path | Responsibility |
-| --- | --- |
-| `apps/desktop/` | Electron + React desktop application |
-| `apps/serve/` | FastAPI product backend and the `scholarseed` distribution |
-| `packages/runtime/` | Runtime-neutral contracts, provider discovery, and the event-driven gateway |
-| `packages/adapters/codex/` | Codex App Server process integration and native protocol translation |
-| `packages/damoatrace/` | Independent trace contracts, recording, storage, query, and CLI |
-| `skills/community/` | Research skills compiled into the product |
-| `tests/` | Cross-package contracts, integration tests, acceptance tests, and release gates |
+This file supplies instructions. Installing a plugin or adding a dedicated card also requires the descriptor, packaging, validation, and installation steps in the [plugin creation guide](https://github.com/alibaba-damo-academy/ScholarSeed/blob/main/doc/plugins/create.md). A `SKILL.md` file alone does not create a custom UI.
 
-The executable Agent provider currently included by ScholarSeed is Codex. Runtime discovers providers through the `scholarseed_runtime.providers` entry point; product enablement is controlled by `product.json`. The removed proprietary Harness and the historical `damoagent` namespace are not part of this repository.
+### Add cards and application actions
 
-## Requirements
+The two frontend interfaces have different roles:
 
-Git, **Node.js 24.16.0**, **pnpm 12.14.0**, **uv ≥ 0.12.11**, and native build tools for your platform (Xcode Command Line Tools on macOS). See the [development guide](CONTRIBUTING.md#environment-setup) for setup instructions.
+- **`window.scholarseedUI`** mounts React components and provides ScholarSeed's UI and conversation components.
+- **`window.plugin`** handles card state and interactions through methods including `onState`, `save`, `submit`, and `request`.
 
-On macOS, install the command-line tools before your first source run and complete the system dialog (skip this if a working Xcode toolchain is already installed):
+Skills use **`scholarseed-bridge`** to read authorized materials, manage literature, present cards, and organize results within the current project and permissions. A card's buttons do not inherit every backend operation.
+
+For example, a lab workflow could compare 30 papers, present a selection card, then produce a report and save reading notes or organize papers within the granted permissions. The method, card implementation, and application actions must each be connected and tested.
+
+See the [plugin overview](https://github.com/alibaba-damo-academy/ScholarSeed/blob/main/doc/plugins.md), [API guide](https://github.com/alibaba-damo-academy/ScholarSeed/blob/main/doc/plugins/api.md), [public cards](https://github.com/alibaba-damo-academy/ScholarSeed/blob/main/doc/plugins/cards.md), and [testing guide](https://github.com/alibaba-damo-academy/ScholarSeed/blob/main/doc/plugins/testing.md). Interfaces are in developer preview and may introduce breaking changes. Inspect the contract for your matching backend with:
+
+```bash
+python -m service.cli.plugins describe
+```
+
+### Build from source
+
+Requires Git, **Node.js 24.16.0**, **pnpm 12.14.0**, **uv ≥ 0.12.11**, and your platform's native build tools. On macOS:
 
 ```bash
 xcode-select --install
 ```
 
-On Windows x64, follow the [Windows setup commands](CONTRIBUTING.md#windows); the build scripts download the pinned native compiler automatically. These tools are needed for source development and packaging, not for using a prebuilt installer.
-
-## Run From Source
+On Windows x64, follow the [Windows setup](CONTRIBUTING.md#windows); the build scripts fetch the pinned native compiler themselves.
 
 ```bash
 git clone https://github.com/alibaba-damo-academy/ScholarSeed.git
 cd ScholarSeed
-pnpm ops pre
-pnpm ops dev
+pnpm ops pre   # pinned JS + Python deps, Office assets, bundled Skill pack
+pnpm ops dev   # starts Electron
 ```
 
-`pnpm ops pre` installs the pinned JavaScript/Python dependencies, prepares Office assets, and builds the bundled Skill pack; `pnpm ops dev` starts Electron. On a fresh clone, run both commands in order. For later starts, use `pnpm ops dev`; after updating dependencies or Skill sources, stop the app and rerun `pnpm ops pre` first. The first run needs internet access; no separate Python installation or Git LFS is needed. Keep the terminal running; press Ctrl+C to stop. After launch, configure your model in Settings or sign in to ScholarSeed. For daily development and troubleshooting, see the [development guide](CONTRIBUTING.md).
+Run both on a fresh clone; afterwards `pnpm ops dev` alone, and rerun `pnpm ops pre` after dependency or Skill changes. The first run needs internet. No separate Python install or Git LFS is needed.
 
-On Windows, see the specific recovery steps for [Electron download stalls](CONTRIBUTING.md#windows-download-diagnostics), [`stale ACL policy outputs`](CONTRIBUTING.md#windows-checkout-line-endings), and [private build directory rejection](CONTRIBUTING.md#windows-private-build-directory).
+- Package a macOS DMG or Windows EXE: [Packaging](CONTRIBUTING.md#packaging).
+- Rebuild the Skill pack: `pnpm ops cd build local --target skills`; check it against source: `pnpm ops ci check skills product --mode source`.
+- Windows gotchas: [Electron download stalls](CONTRIBUTING.md#windows-download-diagnostics), [stale ACL policy outputs](CONTRIBUTING.md#windows-checkout-line-endings), [private build directory rejection](CONTRIBUTING.md#windows-private-build-directory).
+- Optional env vars: [`.env.example`](.env.example). Never commit keys, tokens, session data or certificates.
 
-## Model and Service Configuration
+### Architecture
 
-ScholarSeed requires a model connection that you are authorized to use. Configure the provider endpoint, model name, and credential in the application settings. Local HTTP authentication and model authorization are separate concerns: a healthy local service does not imply that a model account is authorized.
+```text
+Electron / React
+      │ HTTP + SSE
+      ▼
+ScholarSeed Serve (FastAPI)
+      │ commands + events
+      ▼
+Runtime Gateway ──► Codex Adapter ──► Codex App Server (sandboxed)
+      │
+      └────────────► DamoATrace evidence recording
+```
 
-Optional development and service variables are documented in [`.env.example`](.env.example). Do not commit API keys, access tokens, user configuration, session data, certificates, or private keys.
+The agent engine sits behind runtime contracts for sessions, events, permissions, MCP, and related execution concerns. Providers are discovered through `scholarseed_runtime.providers` and enabled in `product.json`; `packages/adapters/codex/` is the reference implementation. DamoATrace provides separate trace recording, storage, query, CLI, and diagnostic interfaces.
 
-`UPLOAD_BASE_URL` enables the optional paper-card upload service. When it is not configured, ScholarSeed reports the missing configuration instead of connecting to an internal or historical endpoint.
+See the [project map](https://github.com/alibaba-damo-academy/ScholarSeed/blob/main/CONTRIBUTING.md#project-map), [runtime package](https://github.com/alibaba-damo-academy/ScholarSeed/tree/main/packages/runtime), [UI SDK](https://github.com/alibaba-damo-academy/ScholarSeed/tree/main/packages/ui), and [development and testing guide](https://github.com/alibaba-damo-academy/ScholarSeed/blob/main/CONTRIBUTING.md#development-and-testing) for implementation details.
 
-## Local Data and Privacy
+## Roadmap
 
-The default user data directory is `~/.scholarseed`. Set `SCHOLARSEED_HOME` to use a different location.
+Planned work is separate from the current capabilities above. Scope and availability may change.
 
-- User-level configuration, credentials, project registry, session catalog, and literature data are managed under `SCHOLARSEED_HOME`.
-- Project-owned data is stored under `<project>/.scholarseed/` and travels with the project directory.
-- Codex state is isolated under the ScholarSeed home unless an explicit source home is configured.
-- DamoATrace records product-visible diagnostic events for debugging; it does not imply access to undisclosed executor internals.
+| Area | Status |
+| --- | --- |
+| ScholarStack-based reusable research assets | Coming soon; not fully integrated into ScholarSeed |
+| Skill Hub for discovering and installing community Skills | Coming soon |
+| Claude Code as an additional agent runtime | Planned |
+| First-class Google Gemini provider preset | Planned |
+| Local model presets for Ollama, vLLM, and LM Studio | Planned |
+| In-workbench LaTeX editor with library citation support | Planned |
+| Linux build | Exploring |
 
-Keep user data and credentials outside the repository. Review diagnostic bundles before sharing them.
+### ScholarStack — Reusable research knowledge · Coming soon
 
-## Plugins
+Research often requires revisiting the same papers and reconstructing earlier comparisons. ScholarStack explores how to organize source-grounded facts, domain concepts, and cross-paper syntheses into reusable research assets, with provenance and scope preserved.
 
-**ScholarSeed plugins connect research steps, conversation cards, and material organization into a reusable workflow. Have the AI analyze materials using your research method, ask for decisions at key steps, then produce reports, save notes, and organize papers.**
+The [ScholarStack paper](https://arxiv.org/abs/2609.23735v3), *Layered Research Asset Orchestration and Cross-Task Reuse for Scientific Agents*, presents the architecture and experimental evaluation.
 
-Start with a Skill—a set of research workflow instructions. In `SKILL.md`, describe the research steps, required materials, and expected outputs. Add conversation cards where researchers need to make choices before continuing the analysis and organizing their papers.
+**ScholarStack has not yet been fully integrated into this repo.** Today's workbench keeps project materials and conversations available for later use; systematic reuse through ScholarStack's structured assets is coming-soon work.
 
-Plugins are currently in developer preview. See the [plugin guide (Chinese)](doc/plugins.md) for development and installation.
+---
 
-Research Skill sources are located in `skills/community/`. Build the Skill pack with `pnpm ops cd build local --target skills` and check its consistency with the source using `pnpm ops ci check skills product --mode source`.
+## Community & contributing
 
-### Take Actions in ScholarSeed, Not Just Generate Content
+Scan the QR code to join the ScholarSeed community and discuss your experience and research questions.
 
-A Skill can use `scholarseed-bridge`, ScholarSeed's application interface, to turn analysis into actions:
+<img src="assets/community-qr.png" alt="ScholarSeed community group QR code" width="280">
 
-- **Use materials:** Search project files, read authorized PDFs and annotations, and import generated files into the project.
-- **Organize papers:** Import papers, save or edit notes, apply tags in batches, and update collections and project associations.
-- **Advance tasks:** Read permitted conversation history, update task plans, and present cards that guide the next steps based on researchers' choices.
+- Report bugs and request features through [Issues](https://github.com/alibaba-damo-academy/ScholarSeed/issues). Include your operating system, application version, steps to reproduce, and expected behavior.
+- See [CONTRIBUTING.md](CONTRIBUTING.md) for development and contribution instructions.
+- Built by Alibaba DAMO Academy, Decision Intelligence Lab.
 
-The AI invokes these operations following the Skill; ScholarSeed checks the current project scope and permissions. Cards do not inherit all application permissions or automatically approve sensitive actions. See the [plugin API guide (Chinese)](doc/plugins/api.md) for available operations.
+### Built on
 
-### Comparison with Codex Desktop and Zotero AI Plugins
+ScholarSeed stands on a lot of other people's work. Thank you to:
 
-| Aspect | ScholarSeed | Codex desktop | Zotero + AI plugins |
-| --- | --- | --- | --- |
-| Custom workflows | Skills + optional scripts | Skills + optional scripts | Some plugins support Skills |
-| Research interactions | Research + custom cards | Tool- and plugin-provided | Plugin-provided |
-| Research materials | Project files + paper library | Files + connected services | Library access through plugins |
-| Organizing results | Built-in ScholarSeed operations | Connect a literature tool | Plugin library tools |
-
-Codex desktop also supports Skills, plugins, MCP (a protocol for connecting external tools), and application tools. **ScholarSeed's distinction is its ready-to-use research cards, project materials, and literature operations: analysis, selection, and organization stay in one application, without first connecting a separate literature-management service.**
-
-### Example: Read 30 Papers Using Your Lab's Method
-
-A researcher wants to compare 30 papers by research question, method, evidence, and limitations, select papers for closer study, and produce a report with saved reading notes.
-
-In ScholarSeed, a developer can bring these steps into one workflow:
-
-1. **Define the reading method.** Specify what to compare, how to cite sources, and how to flag insufficient evidence in `SKILL.md`.
-2. **Use project materials in the analysis.** Combine the project's research question, the lab's reading requirements, and paper content using existing material and literature features.
-3. **Select papers through a card.** Show papers and comparison results in a custom conversation card. The researcher selects papers and adds comments; the AI continues based on those choices.
-4. **Produce the report and organize the papers.** Generate a comparison report, save notes, add tags, and associate papers with the project, within the permissions granted.
-
-For the same task in Zotero, install and configure LLM-for-Zotero, enable Agent mode, and define the reading method in a custom Skill. The AI can then analyze papers and save notes. A dedicated paper-screening interface requires further development using the interfaces provided by the plugin.
-
-Codex desktop can also organize paper analysis with a Skill. Synchronizing paper tags, notes, and collections requires connecting the corresponding literature-management tools or services.
-
-**Reading rules guide the analysis, cards capture the researcher's decisions, and the results return to the project's materials and literature. Developers can focus on research steps rather than rebuilding AI connectivity and literature management for every workflow.**
-
-A `SKILL.md` file does not automatically create a custom interface. Dedicated cards still require interface code, an installation package, and testing. Reading or changing materials requires the appropriate permissions, and research conclusions still need checking against the original sources and evidence.
-
-References: [Codex Skills](https://developers.openai.com/codex/skills), [OpenAI plugins](https://developers.openai.com/plugins/build/plugins), [Zotero plugin development](https://www.zotero.org/support/dev/client_coding/plugin_development), [LLM-for-Zotero documentation](https://yilewang.github.io/llm-for-zotero/), and [zotero-gpt](https://github.com/MuiseDestiny/zotero-gpt). Available features depend on the version and configuration used.
-
-## Packaging
-
-To build a native macOS DMG or Windows EXE, follow [Packaging](CONTRIBUTING.md#packaging) in the development guide.
-
-## Community and Support
-
-Scan the QR code below to join the ScholarSeed community and discuss your experience and research questions.
-
-<img src="assets/community-qr.png" alt="ScholarSeed community group QR code" width="280" />
-
-Share bugs and feature requests through Issues, or contribute code, research Skills, documentation, and examples through pull requests.
-
-When reporting a problem, include your operating system, application version, steps to reproduce, and expected behavior. For contributions, describe the problem you are solving and how you verified the change; include screenshots for interface changes.
-
-If ScholarSeed helps your research, give it a star and share the research problems you would like it to help solve.
+| Area | Projects |
+|---|---|
+| Agent runtime | [OpenAI Codex](https://github.com/openai/codex) App Server 0.165.0 · [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk) |
+| Literature | [Zotero](https://www.zotero.org) · [zotero-mcp](https://github.com/54yyyu/zotero-mcp) · [OpenAlex](https://openalex.org) · [arXiv](https://arxiv.org) · [Brave Search](https://brave.com/search/api/) |
+| PDF & documents | [PDFium](https://pdfium.googlesource.com/pdfium/) via [pypdfium2](https://github.com/pypdfium2-team/pypdfium2) · [pypdf](https://github.com/py-pdf/pypdf) · [pdfplumber](https://github.com/jsvine/pdfplumber) · [python-docx](https://github.com/python-openxml/python-docx) · [python-pptx](https://github.com/scanny/python-pptx) · [openpyxl](https://foss.heptapod.net/openpyxl/openpyxl) |
+| Office preview | [docx-preview](https://github.com/VolodymyrBaydalka/docxjs) · [ExcelJS](https://github.com/exceljs/exceljs) · [pptx-renderer](https://github.com/aiden0z/pptx-renderer) · [emf-converter](https://github.com/ChristopherVR/emf-converter) · [ZetaOffice](apps/desktop/src/renderer/public/office/THIRD_PARTY_NOTICES.md) (wasm) with [Fontconfig](https://www.freedesktop.org/wiki/Software/fontconfig/) and [FreeType](https://freetype.org) |
+| Writing | [TeX Live](https://tug.org/texlive/) 2026 · [Milkdown](https://milkdown.dev) · [CodeMirror](https://codemirror.net) |
+| Desktop | [Electron](https://www.electronjs.org) 44 · [React](https://react.dev) · [Vite](https://vite.dev) / [electron-vite](https://electron-vite.org) · [electron-builder](https://www.electron.build) · [Velopack](https://velopack.io) (Windows updates) · [Tailwind CSS](https://tailwindcss.com) · [i18next](https://www.i18next.com) · [Playwright](https://playwright.dev) |
+| Backend | [FastAPI](https://fastapi.tiangolo.com) · [python-build-standalone](https://github.com/astral-sh/python-build-standalone) CPython 3.12 · [uv](https://github.com/astral-sh/uv) · [DuckDB](https://duckdb.org) · [httpx](https://www.python-httpx.org) · [Pydantic](https://pydantic.dev) · [truststore](https://github.com/sethmlarson/truststore) |
+| Tools shipped in the package | [ripgrep](https://github.com/BurntSushi/ripgrep) · [PowerShell](https://github.com/PowerShell/PowerShell) 7.6 (Windows) |
+| Fonts | [IBM Plex Mono](https://github.com/IBM/plex) · [Newsreader](https://github.com/productiontype/Newsreader) · [Noto Serif SC](https://fonts.google.com/noto) |
+| README logos | [Simple Icons](https://simpleicons.org) (CC0; marks remain their owners' trademarks) |
 
 ## License
 
