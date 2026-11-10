@@ -188,20 +188,20 @@ On Windows, see the specific recovery steps for [Electron download stalls](CONTR
 
 ## Model and Service Configuration
 
-ScholarSeed requires a model connection that you are authorized to use. Configure the provider endpoint, model name, and credential in the application settings. Local HTTP authentication and model authorization are separate concerns: a healthy local service does not imply that a model account is authorized.
+ScholarSeed requires a model connection that you are authorized to use. Configure the provider endpoint, model name, and credential in the application settings, or sign in to use the models available to your ScholarSeed account. Local HTTP authentication and model authorization are separate concerns: a healthy local service does not imply that a model account is authorized.
 
 Optional development and service variables are documented in [`.env.example`](.env.example). Do not commit API keys, access tokens, user configuration, session data, certificates, or private keys.
 
-`UPLOAD_BASE_URL` enables the optional paper-card upload service. When it is not configured, ScholarSeed reports the missing configuration instead of connecting to an internal or historical endpoint.
-
 ## Local Data and Privacy
 
-The default user data directory is `~/.scholarseed`. Set `SCHOLARSEED_HOME` to use a different location.
+The default user data directory is `~/.scholarseed`. Set `SCHOLARSEED_HOME` to use a different location; this selects a separate user state and does not migrate existing data.
 
 - User-level configuration, credentials, project registry, session catalog, and literature data are managed under `SCHOLARSEED_HOME`.
 - Project-owned data is stored under `<project>/.scholarseed/` and travels with the project directory.
-- Codex state is isolated under the ScholarSeed home unless an explicit source home is configured.
+- Codex state is isolated under `<SCHOLARSEED_HOME>/codex/` by default; use `SCHOLARSEED_CODEX_HOME` only when a separate location is needed. ScholarSeed does not automatically copy your personal Codex credentials or model configuration.
 - DamoATrace records product-visible diagnostic events for debugging; it does not imply access to undisclosed executor internals.
+- Model calls, literature searches, and network tools communicate with the configured external services. Local storage does not mean all processing stays offline.
+- Choose an appropriate permission mode for each task and confirm tool execution and file operations when requested.
 
 Keep user data and credentials outside the repository. Review diagnostic bundles before sharing them.
 
