@@ -90,20 +90,29 @@ Most "AI for research" tools are a chat box next to your real work. You paste in
 - Page-by-page translation and AI reading notes.
 - Figure and caption extraction; PDFs rendered in an isolated process.
 - Library previews for DOCX, XLSX, PPTX and Markdown alongside PDFs.
-<!-- TODO: screenshot — reader with a selection and an answer card -->
+
+<p align="center">
+  <img src="assets/readme/demos/ScholarSeed-Read.gif" alt="Read papers with AI assistance in the PDF reader" width="800">
+</p>
 
 ### Find
 - Multi-round literature discovery (`agentic-search`) that infers the entities behind a vague question and returns a precision-first candidate set.
 - OpenAlex and arXiv metadata, DOI / arXiv / PubMed identity matching, duplicate detection against your library.
 - Full-text acquisition with fallbacks for non-open sources, and a receipt of what was fetched and how.
 - Import from Zotero; export BibTeX.
-<!-- TODO: screenshot — candidate list card with select/confirm controls -->
+
+<p align="center">
+  <img src="assets/readme/demos/ScholarSeed-Find.gif" alt="Find relevant papers with literature search" width="800">
+</p>
 
 ### Verify
 - Every AI claim can carry a citation that opens the source passage.
 - Citation-coverage checks: answers that cite nothing are visible as such.
 - A trace viewer (`damoatrace`) that shows every turn, model call, token count and tool result — searchable, with secrets redacted.
-<!-- TODO: screenshot — evidence panel / trace digest -->
+
+<p align="center">
+  <img src="assets/readme/demos/ScholarSeed-Verify.gif" alt="Verify AI answers against cited source passages" width="800">
+</p>
 
 ### Write
 - `literature-review` produces a structured review from the papers you confirmed.
@@ -113,7 +122,10 @@ Most "AI for research" tools are a chat box next to your real work. You paste in
      review skill, not edited in-app. Move this line to the Roadmap table
      or expand it here once the editor ships. -->
 - Report and PPTX export.
-<!-- TODO: screenshot — generated review / slides -->
+
+<p align="center">
+  <img src="assets/readme/demos/ScholarSeed-Write-Fast.gif" alt="Generate a literature review from selected papers" width="800">
+</p>
 
 ### Extend
 - **Skills**: 13 bundled (`agentic-search`, `precise-literature-search`, `literature-review`, `research-idea-partner`, `design-research-validation`, `pdf-evidence`, `web-search`, `fast-search`, `project-literature`, `find-skill`, `plugin-create`, …). <!-- regenerate this list from skills/community/ -->
@@ -126,11 +138,19 @@ Most "AI for research" tools are a chat box next to your real work. You paste in
 - **Connectors**: Zotero, GitHub, GitLab, Hugging Face, Notion, Elicit, Firecrawl — API key or OAuth.
 - **Custom MCP servers**: bring your own.
 
+<p align="center">
+  <img src="assets/readme/demos/ScholarSeed-Extend.gif" alt="Extend research workflows with skills" width="800">
+</p>
+
 ### Trust & local-first
 - Local SQLite; projects are folders you own. Data lives in `~/.scholarseed` (override with `SCHOLARSEED_HOME`).
 - Agents run in isolated homes with plugins, hooks and marketplaces disabled, MCP config projected explicitly, secrets passed by environment, binaries pinned by SHA-256.
 - Native per-directory authorization (Windows job-object broker, macOS leases), notarized and Authenticode-signed builds.
 - Every skill result that touches full text requires your explicit grant.
+
+<p align="center">
+  <img src="assets/readme/demos/ScholarSeed-Trust-Local.gif" alt="Research in a local project workspace with control over agent actions" width="800">
+</p>
 
 ---
 
