@@ -10,7 +10,8 @@
 </p>
 
 <h2 align="center">Where your ideas, documents, and AI stay connected.</h3>
-<p align="center">Read, ask, verify, and build on yesterday's work, with your own models, on your own machine.</p>
+<p align="center">Search, read, ask, verify, and build,  with your own models, using your own skills and plugins, on your own machine.</p>
+<p align="center">Keep your papers, notes, and conversations together as your research evolves.</p>
 
 <p align="center">
   <b>PDF reader</b> · <b>Literature library</b> · <b>Evidence-linked answers</b> · <b>Research skills</b> · <b>Your models</b> · <b>Local-first</b>
@@ -49,15 +50,14 @@
 
 Most "AI for research" tools are a chat box next to your real work. You paste in a PDF, get an answer, and lose track of where it came from. Next week you start over.
 
-| The pain | What ScholarSeed does instead |
+| The pain | What ScholarSeed does |
 |---|---|
-| "I copy passages into a chatbot and lose where the claim came from." | Highlight a passage in the reader and ask. Answers carry `scholarseed-cite:` links that open the exact source passage. |
-| "Every session starts from zero." | Papers, notes, conversations and results live in a **project**. Yesterday's comparison is tomorrow's context. |
-| "The agent runs off and writes a report I can't steer." | Skills stop at **checkpoints** (candidate lists, selections, confirmations). You pick the papers; the agent does the reading. |
-| "I don't want my library and notes on someone else's server." | Local SQLite storage, your own model keys, your Zotero. Everything stays on your machine except model calls you select. |
-| "My lab reviews literature our own way." | Write a **Skill** that encodes your method. Share it on the Skill Hub (soon). |
-| "I don't trust an agent with my files." | Each agent runs in an isolated, sandboxed process with pinned binaries, projected MCP config, and per-directory authorization you can inspect. |
-| "I cannot get the features I want." | Tell us about them in Discord or WeChat group, or clone the source and use AI to create them. |
+| "Research is scattered across applications." | Search, read, discuss, and write around the same research project. |
+| "Each new task requires rebuilding context." | Keep papers, notes, conversations, and outputs organized so you can bring relevant materials into later tasks. |
+| "Cannot always trust AI answers." | Follow source-linked citations and inspect supporting evidence. |
+| "AI agents are difficult to control." | Use research workflows with review checkpoints, decision cards, and permission controls to guide the next step. |
+| "I don't want my library and notes on someone else's server." | Store research materials and project data locally; external models, search, and connectors process the requests you send to them. |
+| "Every researcher and lab works differently." | Encode your methods in Skills and customize interactions with plugins and connected tools. |
 
 ---
 
@@ -65,13 +65,13 @@ Most "AI for research" tools are a chat box next to your real work. You paste in
 
 **1. Install** — grab the installer from **[scholarseed.damo.alibaba.com/download.html](https://scholarseed.damo.alibaba.com/download.html)** (macOS Apple silicon, macOS Intel, Windows x64)
 
-**2. Add a model** — Register to use Qwen or add a model from Settings → Models. <!-- TODO: screenshot of the Models settings page -->
+**2. Connect a model** — Configure a model service in Settings → Models, or sign in to use services available to your ScholarSeed account.
 
-**3. Import one PDF or your Bib/Ris/Zotero library**.
+**3. Add a paper or bring them from Bib/Ris/Zotero**.
 
-**4. Open the PDF and select a sentence and ask** — right-click → *Explain* (or *Translate*).
+**4. Read and ask** — Open the PDF, select a passage, and use **Explain** or **Translate**. Add relevant papers, notes, or project files to a conversation for broader questions.
 
-**5. Check the answer** — click the citation. It should open the passage you selected. If it does, everything is wired up.
+**5. Inspect and save** — Follow citations to check supporting sources and passages where available. Save your notes or draft in the project for later work.
 
 <!-- TODO: `scholarseed doctor` / "Copy diagnostics" command for bug reports.
      The CLI already has inspection modules (service/cli/inspection.py,
@@ -84,63 +84,85 @@ Most "AI for research" tools are a chat box next to your real work. You paste in
 <!-- Grouped by what a researcher is trying to do, not by code module.
      Only list things that work today. Future items go in Roadmap. -->
 
-### Read
-- PDF reader with outline navigation, annotations, and look-back to earlier highlights.
-- Select-to-explain and select-to-translate, in the reader, no copy-paste.
-- Page-by-page translation and AI reading notes.
-- Figure and caption extraction; PDFs rendered in an isolated process.
-- Library previews for DOCX, XLSX, PPTX and Markdown alongside PDFs.
+### Read — Keep your thinking beside the paper
+
+Read PDFs, highlight passages, and record questions and observations without leaving your research workspace.
+
+- Navigate paper outlines and revisit annotations.
+- Select passages for AI explanation or translation.
+- Use AI assistance to examine methods, equations, and figures, then compare the explanation with the original paper.
+- Keep notes and project materials available for follow-up discussions.
 
 <p align="center">
   <img src="assets/readme/demos/ScholarSeed-Read.gif" alt="Read papers with AI assistance in the PDF reader" width="800">
 </p>
 
-### Find
-- Multi-round literature discovery (`agentic-search`) that infers the entities behind a vague question and returns a precision-first candidate set.
-- OpenAlex and arXiv metadata, DOI / arXiv / PubMed identity matching, duplicate detection against your library.
-- Full-text acquisition with fallbacks for non-open sources, and a receipt of what was fetched and how.
-- Import from Zotero; export BibTeX.
+### Find — Turn a research question into a reading list
+
+Describe what you want to investigate, discover relevant literature, and decide which papers belong in your project.
+
+- Use `agentic-search` for literature discovery and `precise-literature-search` for targeted retrieval and full-text workflows.
+- Work with literature metadata from sources including OpenAlex and arXiv.
+- Import local papers or connect Zotero, then organize materials around a research question.
+- Review candidate papers and available evidence before moving into deeper analysis.
 
 <p align="center">
   <img src="assets/readme/demos/ScholarSeed-Find.gif" alt="Find relevant papers with literature search" width="800">
 </p>
 
-### Verify
-- Every AI claim can carry a citation that opens the source passage.
-- Citation-coverage checks: answers that cite nothing are visible as such.
-- A trace viewer (`damoatrace`) that shows every turn, model call, token count and tool result — searchable, with secrets redacted.
+### Verify — Know where AI answers come from
 
+Follow citations back to sources and supporting passages, returning to the original text where a location is available.
+
+- Compare an AI interpretation with what the source actually reports.
+- Keep reported findings, your own interpretations, and open questions distinct in your notes and drafts.
+- Use DamoATrace diagnostics to inspect recorded, product-visible events when debugging a task.
+
+Citations help you inspect an answer; they do not establish that its claims are correct or fully supported. Research conclusions still require judgment against the original evidence.
 <p align="center">
   <img src="assets/readme/demos/ScholarSeed-Verify.gif" alt="Verify AI answers against cited source passages" width="800">
 </p>
 
-### Write
-- `literature-review` produces a structured review from the papers you confirmed.
-- Bundled, hash-verified TeX Live toolchain: LaTeX output works without installing TeX.
-<!-- TODO (future): LaTeX editing in the workbench — live preview, BibTeX
-     from the library, cite-as-you-write. Today LaTeX is produced by the
-     review skill, not edited in-app. Move this line to the Roadmap table
-     or expand it here once the editor ships. -->
-- Report and PPTX export.
+### Write — Develop materials into research outputs
+
+Turn selected literature and project context into a draft you can examine and revise.
+
+- Use `literature-review` to develop a structured review with evidence processing and review checkpoints.
+- Refine the scope, outline, supporting evidence, and wording.
+- Produce Markdown or LaTeX/PDF through the review workflow; LaTeX compilation uses the bundled toolchain.
+- Save outputs as project files and bring them into subsequent discussions.
 
 <p align="center">
   <img src="assets/readme/demos/ScholarSeed-Write-Fast.gif" alt="Generate a literature review from selected papers" width="800">
 </p>
 
-### Extend
-- **Skills**: 13 bundled (`agentic-search`, `precise-literature-search`, `literature-review`, `research-idea-partner`, `design-research-validation`, `pdf-evidence`, `web-search`, `fast-search`, `project-literature`, `find-skill`, `plugin-create`, …). <!-- regenerate this list from skills/community/ -->
-- **Skill Hub** — a browsable, installable catalogue of community skills with scan verdicts shown before install. **Soon.**
-  <!-- The audit pipeline (capabilities/service/audit.py, SAFE verdicts) and the
-       ClawHub client already exist; what's missing is the public catalogue + UI.
-       When it ships: add "Browse the Skill Hub →" here and a "Publish your
-       skill" section under For developers. -->
-- **Plugins**: React UI cards rendered in the conversation, via the `window.scholarseedUI` SDK.
-- **Connectors**: Zotero, GitHub, GitLab, Hugging Face, Notion, Elicit, Firecrawl — API key or OAuth.
-- **Custom MCP servers**: bring your own.
+### Extend — Turn your research methods into reusable AI workflows
+
+Turn your methods into reusable workflows and add tools or interactions for your field.
+
+- **Skills** describe research steps, required materials, decision points, and expected outputs.
+- **Plugins** combine Skills with conversation cards for reviewing results and collecting decisions. Plugins are in **developer preview**.
+- **MCP servers** connect external tools and services through the Model Context Protocol.
+- **Runtime interfaces** provide a development route for adding agent engines. Codex is the currently included executable agent provider.
+
+Bundled Skill sources include `agentic-search`, `precise-literature-search`, `literature-review`, `research-idea-partner`, `design-research-validation`, `pdf-evidence`, `project-literature`, `web-search`, `fast-search`, `find-skill`, and `plugin-create`. Browse the [Skill sources](https://github.com/alibaba-damo-academy/ScholarSeed/tree/main/skills/community) for their contracts and supporting tools.
 
 <p align="center">
   <img src="assets/readme/demos/ScholarSeed-Extend.gif" alt="Extend research workflows with skills" width="800">
 </p>
+
+## Recipes
+
+Start with a concrete question and review the evidence as you go. These examples use Skills present in the repository; outputs depend on the materials, model, and services available.
+
+| Goal | Workflow | What to review |
+| --- | --- | --- |
+| Build a literature review | `agentic-search` → review candidates → `literature-review` | Paper selection, evidence coverage, outline, citations, and final draft |
+| Understand a difficult paper | Import PDF → annotate → select-to-explain → `pdf-evidence` | Source passages, assumptions, methods, and limitations |
+| Explore a research idea | `research-idea-partner` → targeted literature discovery | Related work, unresolved questions, and assumptions worth testing |
+| Plan research validation | `design-research-validation` with your idea and project context | Validation criteria, alternative explanations, and evidence needed |
+
+## Models and integrations
 
 ### Trust & local-first
 - Local SQLite; projects are folders you own. Data lives in `~/.scholarseed` (override with `SCHOLARSEED_HOME`).
@@ -173,24 +195,6 @@ Most "AI for research" tools are a chat box next to your real work. You paste in
 Switch models per conversation. Keys stay on your machine.
 
 **Coming:** first-class presets for **Google Gemini** and for local models via **Ollama, vLLM and LM Studio**; and **Claude Code** as a second agent runtime next to Codex. See [Roadmap](#roadmap).
-
----
-
-## Recipes
-
-<!-- Named playbooks: a goal, the skill chain, the outcome, rough time.
-     These make abstract skills concrete. Each should be a real tested run;
-     link a short screen recording per recipe when you have one. -->
-
-| Recipe | Chain | You get | Time |
-|---|---|---|---|
-| **Literature review in an afternoon** | `agentic-search` → you confirm candidates → `literature-review` | A structured review with citations into the PDFs you approved, optional LaTeX | ~2–3 h |
-| **Is this idea new?** | `research-idea-partner` → `agentic-search` → `check-research-novelty` <!-- verify this skill ships; it's in the host skill list but not skills/community --> | Closest prior work, claim-by-claim differences | ~30 min |
-| **Before I run the experiment** | `design-research-validation` → `review-research-ideas` <!-- same check --> | A validation plan, alternative explanations, what evidence would change the conclusion | ~20 min |
-| **Read one hard paper** | Import → outline → select-to-explain → `pdf-evidence` | Annotated PDF plus an evidence-linked summary in the project | ~1 h |
-| **Keep a running search** | `incre-literature-search` <!-- verify this ships --> across sittings | Only what's new since last time, de-duplicated against your library | ongoing |
-
-<!-- TODO: screen recordings; one per recipe, ≤60 s. -->
 
 ---
 
