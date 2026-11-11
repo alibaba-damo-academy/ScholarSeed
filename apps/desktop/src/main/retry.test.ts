@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 import test from 'node:test'
+import { retryUpdate, transientUpdateFailure, UpdateTransportError } from './retry.ts'
 import ts from 'typescript'
 import { MACOS_PREPARATION_POLICY, UpdatePreparation } from './preparation.ts'
 import { nextUpdateCheckAt } from './checks.ts'
@@ -59,6 +60,8 @@ async function harness(platform: 'win32' | 'darwin' = 'win32') {
   preparation.offer(first)
   await preparation.settled()
   const context = {
+    MACOS_PLATFORM: 'darwin',
+    updateStartupVerification: undefined as UpdateSnapshot['startupVerification'],
     latest: first,
     process: { platform },
     previewPolicyChanging: false,
@@ -72,12 +75,12 @@ async function harness(platform: 'win32' | 'darwin' = 'win32') {
     sendToMainWindow: () => {},
     updateSnapshot: { phase: 'ready', currentVersion: '0.2.0', candidate: first } as UpdateSnapshot,
     currentUpdateSnapshot: (): UpdateSnapshot => context.updateSnapshot,
-    updateInstallAbort: null,
+    updateInstallAbort: null as AbortController | null,
     updateRestartRequested: false,
     updateInstallationInProgress: false,
     macMaintenanceUncertain: false,
     desktopWorkbenchReady: () => true,
-    app: { getVersion: () => '0.2.0' },
+    app: { getVersion: () => '0.2.0', isPackaged: false },
     backgroundUpdateTimer: null,
     backgroundUpdateTimerStarted: true,
     backgroundUpdateTimerStopped: false,
@@ -145,6 +148,21 @@ for (const platform of ['win32', 'darwin'] as const)
     assert.equal(h.counts().prepares, 2, 'safe failure must still allow a genuinely newer release')
   })
 
+test('native preparation never publishes a workbench-blocking restart, while quiescence does', async () => {
+  const current = await harness('darwin')
+  const controller = new AbortController()
+  const context = current.context
+  context.updateInstallAbort = controller
+  runInNewContext("publishUpdateSnapshot({...updateSnapshot, phase: 'preparing'})", context)
+  assert.equal(context.updateSnapshot.restartPending, false)
+  assert.equal(context.updateSnapshot.phase, 'preparing')
+  runInNewContext("publishUpdateSnapshot({...updateSnapshot, phase: 'installing'})", context)
+  assert.equal(context.updateSnapshot.restartPending, true)
+  controller.abort()
+  runInNewContext("publishUpdateSnapshot({...updateSnapshot, phase: 'ready'})", context)
+  assert.equal(context.updateSnapshot.restartPending, false)
+})
+
 test('expired preparation deadlines cannot spin the timer after install failure', async () => {
   const h = await harness('darwin')
   h.context.updateSnapshot = {
@@ -156,4 +174,61 @@ test('expired preparation deadlines cannot spin the timer after install failure'
   h.schedule()
   assert.equal(h.timers.length, 1)
   assert.ok(h.timers[0] > 50_000 && h.timers[0] <= 60_000)
+})
+
+test('only transport and sharing contention is transient, not trust, permissions or transactions', () => {
+  for (const code of ['EBUSY', 'ECONNRESET', 'ETIMEDOUT'])
+    assert.equal(transientUpdateFailure({ code }), true)
+  for (const code of ['EACCES', 'EPERM', 'ESTALE', 'ERR_TERMINAL_RELEASE'])
+    assert.equal(transientUpdateFailure({ code }), false)
+  for (const status of [408, 429, 503])
+    assert.equal(transientUpdateFailure(new UpdateTransportError(status)), true)
+  for (const status of [401, 403, 404, 409])
+    assert.equal(transientUpdateFailure(new UpdateTransportError(status)), false)
+  assert.equal(transientUpdateFailure(new Error('signature invalid')), false)
+  assert.equal(transientUpdateFailure(new DOMException('request timed out', 'TimeoutError')), true)
+  assert.equal(transientUpdateFailure(new DOMException('cancelled', 'AbortError')), false)
+})
+
+test('retry is bounded, preserves cancellation and never retries nontransient errors', async () => {
+  let calls = 0
+  assert.equal(
+    await retryUpdate(async () => {
+      if (++calls === 1) throw new UpdateTransportError(503)
+      return 'ok'
+    }),
+    'ok'
+  )
+  assert.equal(calls, 2)
+  calls = 0
+  await assert.rejects(
+    retryUpdate(async () => {
+      calls++
+      throw new Error('binding changed')
+    }),
+    /binding/
+  )
+  assert.equal(calls, 1)
+  const controller = new AbortController()
+  calls = 0
+  await assert.rejects(
+    retryUpdate(async () => {
+      calls++
+      controller.abort()
+      throw new UpdateTransportError(503)
+    }, controller.signal)
+  )
+  assert.equal(calls, 1)
+})
+
+test('transient exhaustion stops after three attempts rather than extending indefinitely', async () => {
+  let calls = 0
+  await assert.rejects(
+    retryUpdate(async () => {
+      calls++
+      throw new UpdateTransportError(503)
+    }),
+    /503/
+  )
+  assert.equal(calls, 3)
 })

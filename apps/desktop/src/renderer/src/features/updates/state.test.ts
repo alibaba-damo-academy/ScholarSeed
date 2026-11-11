@@ -655,6 +655,11 @@ test('unknown native handoff outcome offers no repeat download or install action
         errorOrigin: 'install',
       })
       assert.equal(updateActionOf(state), 'none')
+      assert.equal(updateActionOf({ ...state, repairAvailable: true }), 'repair')
+      assert.equal(
+        updateActionOf({ ...state, repairAvailable: true, restartPending: true }),
+        'none'
+      )
       assert.equal(updateFailureOf(state)?.fallback, 'activation_recovery_required')
     }
   }

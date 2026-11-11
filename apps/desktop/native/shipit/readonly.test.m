@@ -54,6 +54,55 @@ static void Write(NSString *path, NSDictionary *record) {
     assert(chmod(path.fileSystemRepresentation, 0600) == 0);
 }
 
+static void Maintenance(NSString *root, NSURL *source, NSURL *target) {
+    NSString *directory = Directory([root stringByAppendingPathComponent:@"maintenance"]);
+    NSString *lock = [directory stringByAppendingPathComponent:@"lock"];
+    NSError *error = nil;
+    Check(!SSCleanupOpenMaintenanceDirectory(directory, &error) && error.code == ENOENT, @"maintenance requires an existing cleanup lock");
+    Check(![Manager fileExistsAtPath:lock], @"maintenance never creates a missing cleanup lock");
+    error = nil;
+    Check(SSCleanupOpenDirectory(directory, &error) && !error, @"absent journal open succeeds without an NSError");
+    NSDictionary *first = SSCleanupMaintenanceSnapshot(&error);
+    Check(first && [first[@"journal"][@"state"] isEqual:@"absent"] && !error, @"writable cleanup snapshot represents absent journal without an NSError");
+    Check([first isEqual:SSCleanupMaintenanceSnapshot(&error)] && !error, @"consecutive absent cleanup snapshots match");
+    Check(!SSCleanupReadOnlySnapshot(&error) && error.code == EBADF, @"writable cleanup cannot use readonly snapshot API");
+    SSCleanupClose();
+    assert(chmod(lock.fileSystemRepresentation, 0644) == 0);
+    for (NSUInteger mode = 0; mode < 3; mode++) {
+        error = nil;
+        BOOL opened;
+        if (mode == 0) opened = SSCleanupOpenDirectory(directory, &error);
+        else if (mode == 1) opened = SSCleanupOpenExistingDirectory(directory, &error);
+        else opened = SSCleanupOpenMaintenanceDirectory(directory, &error);
+        Check(!opened && error.code == EPERM, @"all cleanup sessions refuse an existing nonprivate lock");
+    }
+    assert(chmod(lock.fileSystemRepresentation, 0600) == 0);
+    error = nil;
+    Check(SSCleanupOpenMaintenanceDirectory(directory, &error) && !error, @"maintenance opens an existing private lock");
+    first = SSCleanupMaintenanceSnapshot(&error);
+    Check(first && [first isEqual:SSCleanupMaintenanceSnapshot(&error)] && !error, @"maintenance freezes the absent cleanup baseline");
+    Check(!SSCleanupReadOnlySnapshot(&error) && error.code == EBADF, @"maintenance and ordinary readonly APIs remain distinct");
+    error = nil;
+    Check(!SSCleanupCommit(source, source, source, target, target, &error) && error.code == EROFS, @"maintenance cannot commit cleanup");
+    errno = 0;
+    Check(!SSCleanupDrain(target) && errno == EROFS, @"maintenance cannot delete bundles");
+    errno = 0;
+    Check(!SSCleanupMarkLaunched(source, target) && errno == EROFS, @"maintenance cannot record a launch");
+    NSUInteger before = PreferenceWrites;
+    errno = 0;
+    Check(!SSCleanupClearRollback(@"com.fixture.maintenance", @"rollback") && errno == EROFS && PreferenceWrites == before, @"maintenance cannot alter rollback preferences");
+    NSString *journal = [directory stringByAppendingPathComponent:@"journal.plist"];
+    Check(![Manager fileExistsAtPath:journal], @"refused maintenance mutations create no journal");
+    Write(journal, @{@"schema":@"1", @"records":@[]});
+    error = nil;
+    Check(!SSCleanupMaintenanceSnapshot(&error) && error.code == ESTALE, @"maintenance detects cleanup journal changes after opening");
+    SSCleanupClose();
+    assert(SSCleanupOpenExistingDirectory(directory, NULL));
+    error = nil;
+    Check(!SSCleanupMaintenanceSnapshot(&error) && error.code == EBADF, @"ordinary readonly session cannot use maintenance snapshot API");
+    SSCleanupClose();
+}
+
 static NSDictionary *Observe(NSString *cleanup, NSString *preparation, NSURL *source, NSURL *target, NSDictionary *binding, NSString *state) {
     SSPreparationClose();
     SSCleanupClose();
@@ -73,6 +122,7 @@ int main(int argc, const char **argv) {
         NSString *preparation = Directory([root stringByAppendingPathComponent:@"preparation"]);
         NSURL *source = Bundle([root stringByAppendingPathComponent:@"update/source.app"]);
         NSURL *target = Bundle([root stringByAppendingPathComponent:@"target.app"]);
+        Maintenance(root, source, target);
         NSDictionary *binding = @{@"schema":@1, @"requestId":[@"a" stringByPaddingToLength:64 withString:@"a" startingAtIndex:0], @"candidate":@"candidate", @"sha512":[@"b" stringByPaddingToLength:128 withString:@"b" startingAtIndex:0], @"size":@100};
         Check(!SSCleanupOpenExistingDirectory(cleanup, NULL), @"missing cleanup lock refuses");
         Check(![Manager fileExistsAtPath:[cleanup stringByAppendingPathComponent:@"lock"]], @"inspection never creates cleanup lock");

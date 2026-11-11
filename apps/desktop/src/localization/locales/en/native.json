@@ -1,4 +1,26 @@
 {
+  "repair": {
+    "helper": "Choose the new official ScholarSeed repair application",
+    "target": "Choose the installed ScholarSeed application to repair",
+    "home": "Choose your existing ScholarSeed data directory",
+    "userData": "Choose the existing ScholarSeed desktop profile directory",
+    "workspace": "Choose your existing research workspace",
+    "confirm": "Repair this installation’s update capability?",
+    "confirmDetail": "The signed repair application and existing transaction have been checked. ScholarSeed will save and close, then the independent application will recheck and repair the interrupted update. No update is installed by this action.",
+    "continue": "Continue",
+    "cancel": "Cancel",
+    "retry": "Check again",
+    "quitTarget": "Quit the installed application normally before continuing",
+    "selectionDetail": "These must be the original data, desktop profile and workspace directories, in that order. Existing data is preserved. Do not delete update records or force-stop processes.",
+    "complete": "Update recovery completed",
+    "completeDetail": "The interrupted transaction has been safely retired. The original application will reopen with the same data and workspace. Check for updates there to install the new version; recovery alone does not mean the update is installed.",
+    "failed": "Update repair could not continue safely",
+    "failedDetail": "No safety check has been bypassed. Use an official signed application that supports update repair and the original directories. Keep the application and update records intact, and contact support with the update diagnostics if this persists.",
+    "busy": "The installation is still in use",
+    "busyDetail": "Quit the installed application normally and wait for its background tasks to exit, then check again. Do not force-stop the installer or delete files.",
+    "startup": "The previous update needs independent repair",
+    "startupDetail": "This application has not opened your data. Continue to select the old installed application and its original data, profile and workspace directories. A supported official signed repair application is required."
+  },
   "plugin": { "preview": "Isolated preview", "installed": "Installed plugin" },
   "notifications": {
     "title": "New task",

@@ -64,6 +64,7 @@ function harness(preview = true) {
     return true
   })
   const context = {
+    updateRepairActive: false,
     PREVIEW_UPDATE_IPC,
     previewScope,
     updatePreparation: preparation,

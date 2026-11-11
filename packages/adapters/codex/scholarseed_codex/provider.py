@@ -7,7 +7,7 @@ import sys
 import uuid
 import weakref
 from collections.abc import AsyncIterator, Callable
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import AsyncExitStack, ExitStack, asynccontextmanager
 from dataclasses import replace
 from functools import partial
 from hashlib import sha256
@@ -480,19 +480,30 @@ class CodexRuntimeProvider:
                 preparation.callback(self._resource_lease().close)
             with timing.measure(CodexActivationStage.LAUNCH_CREDENTIALS):
                 launch_environment, tool_environment = await _resolve_launch_secrets(open_request)
-            session = CodexRuntimeSession(
-                open_request,
-                resume_binding=(
-                    request.session_request.binding
-                    if isinstance(request.session_request, ResumeSessionRequest)
+            with ExitStack() as partition:
+                isolated_home = (
+                    self._pool.prepare_home(isolated=True)
+                    if request.purpose is ResourcePurpose.INVOCATION
                     else None
-                ),
-                launch_environment=launch_environment,
-                tool_environment=tool_environment,
-                host_pool=self._pool,
-            )
-            reservation = await session.prepare_resource(request.request_id, request.deadline)
-            receipt = self._pool.receipt(reservation)
+                )
+                if isolated_home is not None:
+                    partition.callback(self._pool.release_home, isolated_home)
+                session = CodexRuntimeSession(
+                    open_request,
+                    resume_binding=(
+                        request.session_request.binding
+                        if isinstance(request.session_request, ResumeSessionRequest)
+                        else None
+                    ),
+                    launch_environment=launch_environment,
+                    tool_environment=tool_environment,
+                    host_pool=self._pool,
+                    isolated_home=isolated_home,
+                )
+                reservation = await session.prepare_resource(request.request_id, request.deadline)
+                receipt = self._pool.receipt(reservation)
+                if receipt.state in {ResourceState.GRANTED, ResourceState.WAITING}:
+                    partition.pop_all()
             self._request_fingerprints[receipt.reservation_id] = fingerprint
             if receipt.state in {ResourceState.GRANTED, ResourceState.WAITING}:
                 self._prepared[receipt.reservation_id] = (request, session, reservation)

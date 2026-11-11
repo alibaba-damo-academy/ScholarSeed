@@ -4,6 +4,7 @@
 BOOL SSPreparationOpen(NSString *label, NSError **error);
 BOOL SSPreparationOpenDirectory(NSString *directory, NSError **error);
 BOOL SSPreparationOpenExistingDirectory(NSString *directory, NSError **error);
+BOOL SSPreparationOpenMaintenanceDirectory(NSString *directory, NSError **error);
 int SSPreparationUncertaintyCode(void);
 typedef NS_ENUM(NSInteger, SSPreparationActivity) {
     SSPreparationActivityUnknown = -1,
@@ -27,6 +28,13 @@ typedef NS_ENUM(NSInteger, SSPreparationFailure) {
 };
 BOOL SSPreparationRecordFailure(NSURL *source, NSURL *actualTarget, NSDictionary *binding, NSInteger code, NSError **error);
 SSPreparationFailure SSPreparationRecoverFailure(NSURL *source, NSURL *target, NSDictionary *binding, NSInteger *code, NSError **error);
+BOOL SSPreparationReconcile(NSURL *source, NSURL *target, NSDictionary *binding,
+    BOOL (^verify)(NSError **error), NSError **error);
+NSDictionary *SSPreparationOrphanSnapshot(NSURL *source, NSURL *target, NSDictionary *binding,
+    NSURL *state, NSDictionary *expected, SSPreparationActivity (^activity)(void), NSError **error);
+NSDictionary *SSPreparationOrphanPlan(NSURL *source, NSURL *target, NSDictionary *binding, NSURL *state, NSError **error);
+BOOL SSPreparationRepair(NSURL *source, NSURL *target, NSDictionary *binding, NSURL *state,
+    NSDictionary *expected, SSPreparationActivity (^activity)(void), BOOL (^verify)(NSError **error), NSError **error);
 // Publish terminal evidence before invoking the existing native launch protocol.
 // A successful launch is durable; callbacks never grant installation authority.
 BOOL SSPreparationFinishFailure(NSURL *source, NSURL *target, NSDictionary *binding, BOOL authorized,

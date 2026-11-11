@@ -65,6 +65,35 @@ function notifyMacRefusal(status: SquirrelStartupStatus): Promise<void> {
   })
 }
 
+export async function reportMacRepair(
+  stage: 'begin' | 'completed' | 'failed',
+  hasSelection: boolean,
+  result?: { requestId: string; targetBuild: string },
+  failure?: unknown
+): Promise<void> {
+  if (process.platform !== MACOS_PLATFORM) return
+  const diagnostic = JSON.stringify({
+    component: SYSTEM_LOG_TAG,
+    event: 'update-repair',
+    stage,
+    timestamp: new Date().toISOString(),
+    pid: process.pid,
+    version: app.getVersion(),
+    hasSelection,
+    ...(result ? { requestId: result.requestId, targetBuild: result.targetBuild } : {}),
+    ...(failure === undefined ? {} : { error: redactDiagnosticError(failure) }),
+  })
+  try {
+    await run(SYSTEM_LOGGER, ['-p', 'user.notice', '-t', SYSTEM_LOG_TAG, diagnostic], {
+      timeout: REPORT_TIMEOUT_MS,
+      maxBuffer: REPORT_MAX_BYTES,
+      encoding: 'utf8',
+    })
+  } catch {
+    process.stderr.write('[startup] system repair diagnostic unavailable\n')
+  }
+}
+
 async function reportMacRefusal(
   error: MacStartupAdmissionError,
   headless: boolean,
@@ -115,13 +144,22 @@ export async function recoverStartupAdmission(
   error: unknown,
   headless: boolean,
   log: (message: string) => void,
-  updatePending = false
+  updatePending = false,
+  offerRepair?: () => Promise<boolean>
 ): Promise<void> {
   log(`[startup] admission refused; preserving storage and update records: ${String(error)}\n`)
   if (
     process.platform === MACOS_PLATFORM &&
     (error instanceof MacStartupAdmissionError || updatePending)
   ) {
+    const status = error instanceof MacStartupAdmissionError ? error.status : 'unconfirmed'
+    if (!headless && offerRepair && (status === 'failed' || status === 'unconfirmed')) {
+      try {
+        if (await offerRepair()) return
+      } catch (failure) {
+        log(`[startup] repair entry refused: ${String(failure)}\n`)
+      }
+    }
     return reportMacRefusal(
       error instanceof MacStartupAdmissionError
         ? error

@@ -1,4 +1,5 @@
 import { applicationExecutable } from './resources.ts'
+import { retryUpdate, transientUpdateFailure, UpdateTransportError } from './retry.ts'
 import { desktopDirectoryWriter } from './writer'
 // ScholarSeed desktop update client. The main process is the single state owner;
 // release identity comes from the immutable packaged product.json policy.
@@ -7,7 +8,12 @@ import { app, autoUpdater, shell } from 'electron'
 import { spawn } from 'child_process'
 import type { ChildProcess } from 'child_process'
 import { createHash, randomUUID } from 'crypto'
-import { ActivationCandidateChanged, requestActivationGrant } from './update-authorization.ts'
+import {
+  ActivationCandidateChanged,
+  ActivationExpired,
+  requestActivationGrant,
+  commitWithActivation,
+} from './update-authorization.ts'
 export { ActivationCandidateChanged } from './update-authorization.ts'
 import {
   createReadStream,
@@ -781,7 +787,10 @@ async function streamToFile(
     ...(resumeFrom > 0 ? { headers: { Range: `bytes=${resumeFrom}-` } } : {}),
   })
   if (response.status === HTTP_RANGE_NOT_SATISFIABLE) return response.status
-  if (!response.ok || !response.body) throw new Error(`download HTTP ${response.status}`)
+  if (!response.ok || !response.body) {
+    await response.body?.cancel()
+    throw new UpdateTransportError(response.status)
+  }
   const partial = response.status === HTTP_PARTIAL_CONTENT
   const start = partial ? resumeFrom : 0
   const contentLength = response.headers.get('content-length')
@@ -1125,6 +1134,7 @@ interface UpdateEventFields {
   nextAttemptAt?: number
   payloadBytes?: number
   archiveBytes?: number
+  attempt?: number
 }
 
 export function logUpdateEvent(log: LogSink, fields: UpdateEventFields): void {
@@ -1903,6 +1913,14 @@ export async function macStartupAdmission(
       },
     })
     if (squirrelAdmission(current, handoff, 'unconfirmed') === 'allow') {
+      if (
+        handoff &&
+        !expected &&
+        handoff.nativeRequest?.target.path !== resolve(dirname(process.execPath), '..', '..')
+      )
+        throw new Error(
+          'Pending Mac update belongs to another or unbound installation; independent repair is required'
+        )
       if (!expected || !squirrelLaunchSuperseded(config.buildNumber, expected))
         return admitted('allow')
       if (!(await inspectSquirrelIdle(systemCacheDir(), config.bundleId)))
@@ -1989,6 +2007,10 @@ export function macHandoffCommitted(): boolean {
   return process.platform === MACOS_PLATFORM && !!squirrel?.committed
 }
 
+export function macHandoffReady(): boolean {
+  return process.platform === MACOS_PLATFORM && !!squirrel?.ready
+}
+
 /** Only selects a startup notice. The consumed handoff still forbids backend startup. */
 export async function macStartupStatus(log: LogSink): Promise<SquirrelStartupStatus> {
   try {
@@ -2040,9 +2062,30 @@ export function startMacDeferredCleanup(log: LogSink): void {
   })
 }
 
-export function quitMacUpdate(): void {
-  if (!squirrel) throw new Error('Squirrel installation unavailable')
-  squirrel.quitAndInstall()
+export function macHandoffRetryable(error: unknown): boolean {
+  return macHandoffReady() && (error instanceof ActivationExpired || transientUpdateFailure(error))
+}
+
+export async function quitMacUpdate(log: LogSink, beforeCommit: () => void): Promise<void> {
+  const staged = readReadyState()
+  if (!squirrel?.ready || !staged?.archive) throw new Error('Squirrel installation unavailable')
+  const signal = new AbortController().signal
+  await commitWithActivation(
+    () => retryUpdate(() => authorizeActivation(staged.meta, log, signal), signal),
+    (guard) => {
+      beforeCommit()
+      guard()
+      if (
+        !squirrel?.matches(staged.archive!, {
+          candidate: staged.meta.id,
+          version: staged.meta.version,
+          buildNumber: staged.meta.build_number,
+        })
+      )
+        throw new Error('Squirrel candidate changed before installation authorization')
+      squirrel.quitAndInstall()
+    }
+  )
 }
 
 function preparedApplicationDirectory(meta: LatestVersionMeta): string {
@@ -2352,12 +2395,17 @@ export async function stageUpdate(
   onProgress({ phase: 'downloading', percent: 0, receivedBytes: 0 })
   try {
     const downloadStartedAt = Date.now()
-    await downloadWithProgress(
-      info.download_url,
-      destination,
-      info.file_size,
-      (percent, receivedBytes) => onProgress({ phase: 'downloading', percent, receivedBytes }),
-      signal
+    await retryUpdate(
+      () =>
+        downloadWithProgress(
+          info.download_url,
+          destination,
+          info.file_size,
+          (percent, receivedBytes) => onProgress({ phase: 'downloading', percent, receivedBytes }),
+          signal
+        ),
+      signal,
+      (attempt) => logUpdateEvent(log, { phase: 'download', event: 'transient-retry', attempt })
     )
     logTiming(log, `downloaded installer (${info.file_size} bytes)`, downloadStartedAt)
     onProgress({ phase: 'verifying' })
@@ -2461,7 +2509,7 @@ export async function installStagedUpdate(
   log: LogSink,
   signal?: AbortSignal,
   authorize?: (candidate: LatestVersionMeta) => Promise<() => void>,
-  prepareLaunch?: (candidate: LatestVersionMeta) => SquirrelLaunchCleanup
+  prepareLaunch?: (candidate: LatestVersionMeta) => Promise<SquirrelLaunchCleanup>
 ): Promise<StartUpdateResult> {
   if (!authorize) {
     log('[update] activation authorization is required\n')
@@ -2469,17 +2517,23 @@ export async function installStagedUpdate(
   }
   const staged = readReadyState()
   if (!staged) return { ok: false, error: NO_STAGED_UPDATE }
+  let nativeReady = false
+  let handoffReady = false
   const installation =
     process.platform === WINDOWS_PLATFORM
       ? undefined
-      : new InstallationProgress(onProgress, signal, (event) =>
-          logUpdateEvent(log, {
-            ...event,
-            fromVersion: app.getVersion(),
-            // 带上 build_number（与 Windows 路径对齐）：日志才看得出装的是哪个构建，同一 version
-            // 可有多个 build（bug 87435837 现场正因缺它无法从日志定位目标产物）。
-            toVersion: `${staged.meta.version}-${staged.meta.build_number}`,
-          })
+      : new InstallationProgress(
+          (progress) =>
+            onProgress({ ...progress, phase: nativeReady ? 'installing' : 'preparing' }),
+          signal,
+          (event) =>
+            logUpdateEvent(log, {
+              ...event,
+              fromVersion: app.getVersion(),
+              // 带上 build_number（与 Windows 路径对齐）：日志才看得出装的是哪个构建，同一 version
+              // 可有多个 build（bug 87435837 现场正因缺它无法从日志定位目标产物）。
+              toVersion: `${staged.meta.version}-${staged.meta.build_number}`,
+            })
         )
   let discardLaunch: SquirrelLaunchCleanup | undefined
   try {
@@ -2493,7 +2547,7 @@ export async function installStagedUpdate(
       !macPrepared?.receipt.matches(staged.meta, staged.archive)
     ) {
       const startedAt = Date.now()
-      const actual = await sha512OfFile(staged.path, signal)
+      const actual = await retryUpdate(() => sha512OfFile(staged.path, signal), signal)
       logTiming(
         log,
         `staged installer SHA-512 re-verify (${staged.meta.file_size} bytes)`,
@@ -2506,7 +2560,8 @@ export async function installStagedUpdate(
       }
     }
     if (installation) {
-      if (macHandoffCommitted()) throw new Error('Squirrel handoff already consumed')
+      if (macHandoffCommitted() && !macHandoffReady())
+        throw new Error('Squirrel handoff requires recovery')
       if (!staged.archive) throw new Error('Squirrel archive is not prepared')
       let prepared = macPrepared
       if (!prepared?.receipt.matches(staged.meta, staged.archive)) {
@@ -2518,10 +2573,14 @@ export async function installStagedUpdate(
         writeReadyState({ ...staged, archive: prepared.receipt.archive })
       }
       const startedAt = Date.now()
-      const frozen = await prepared.receipt.revalidate(
+      const frozen = await retryUpdate(
         () =>
-          withMountedDmg(staged.path, installation, log, (source) =>
-            verifyMountedNotarization(source, log, installation, 'source')
+          prepared!.receipt.revalidate(
+            () =>
+              withMountedDmg(staged.path, installation, log, (source) =>
+                verifyMountedNotarization(source, log, installation, 'source')
+              ),
+            signal
           ),
         signal
       )
@@ -2536,7 +2595,7 @@ export async function installStagedUpdate(
       // The pinned feed verifies the full final ZIP before and during every transfer.
       // A receipt grants no installation authorization.
       signal?.throwIfAborted()
-      squirrel = new SquirrelInstallation(
+      squirrel ??= new SquirrelInstallation(
         autoUpdater,
         squirrelHandoffPath(),
         (event) => {
@@ -2560,6 +2619,7 @@ export async function installStagedUpdate(
             identity
           )
       )
+      installation.step('helper')
       await squirrel.prepare(
         frozen,
         {
@@ -2569,25 +2629,32 @@ export async function installStagedUpdate(
           at: Date.now(),
           state: 'requested',
         },
-        async () => {
+        () => authorize(staged.meta)
+      )
+      signal?.throwIfAborted()
+      if (!squirrel.ready || !prepareLaunch)
+        throw new Error('Mac update native readiness is required')
+      nativeReady = true
+      installation.step('saving')
+      discardLaunch = await prepareLaunch(staged.meta)
+      await commitWithActivation(
+        () => authorize(staged.meta),
+        (guard) => {
           signal?.throwIfAborted()
-          const guard = await authorize(staged.meta)
-          return () => {
-            signal?.throwIfAborted()
-            guard()
-            if (!prepareLaunch) throw new Error('Mac update launch context is required')
-            discardLaunch = prepareLaunch(staged.meta)
-            installation.step('restarting')
-          }
+          guard()
+          if (!squirrel?.ready) throw new Error('Mac update native readiness was revoked')
         }
       )
+      handoffReady = true
       installation.finish('handoff')
       return { ok: true, mode: 'auto' }
     }
     onProgress({ phase: 'installing', install_stage: 'preparing' })
     return await installWindows(staged.path, staged.meta, log, authorize, signal)
   } catch (error) {
-    installation?.finish(signal?.aborted && !macHandoffCommitted() ? 'cancelled' : 'failed')
+    installation?.finish(
+      signal?.aborted && (!macHandoffCommitted() || macHandoffReady()) ? 'cancelled' : 'failed'
+    )
     persistUpdateLog(`[update] installation failed: ${String(error)}\n`)
     if (error instanceof ActivationCandidateChanged) {
       try {
@@ -2599,14 +2666,14 @@ export async function installStagedUpdate(
       }
     }
     if (error instanceof PreparedArtifactChangedError) macPrepared = null
-    if (installation && signal?.aborted && !macHandoffCommitted())
+    if (installation && signal?.aborted && (!macHandoffCommitted() || macHandoffReady()))
       return { ok: false, cancelled: true }
     if (error instanceof UpdateVerifyError)
       return { ok: false, errorFallback: updateInstallFallback(error) }
     return { ok: false, error: String(error) }
   } finally {
     installation?.dispose()
-    if (!macHandoffCommitted()) discardLaunch?.()
+    if (!handoffReady) discardLaunch?.()
     if (squirrel && !squirrel.committed) {
       squirrel.dispose()
       squirrel = null
