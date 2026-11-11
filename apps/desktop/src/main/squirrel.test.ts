@@ -268,6 +268,28 @@ test('durable identity precedes official check; download completion alone never 
   assert.equal(owner.committed, true)
 })
 
+test('a ready native request can resume the same candidate without repeating native preparation', async (t) => {
+  const { archive, record } = await fixture(t)
+  const updater = new Updater()
+  const owner = new InstallationFixture(updater, record, () => {})
+  updater.check = () => updater.emit('update-downloaded')
+  await owner.prepare(archive, identity, async () => () => {})
+  await owner.prepare(archive, identity, async () => () => {})
+  assert.equal(updater.checks, 1)
+  assert.equal(owner.ready, true)
+  await assert.rejects(
+    owner.prepare(archive, { ...identity, candidate: 'another' }, async () => () => {})
+  )
+  await assert.rejects(
+    owner.prepare({ ...archive, size: archive.size + 1 }, identity, async () => () => {})
+  )
+  await assert.rejects(
+    owner.prepare({ ...archive, sha512: '0'.repeat(128) }, identity, async () => () => {})
+  )
+  assert.equal(updater.checks, 1)
+  assert.equal(readSquirrelHandoff(record)?.state, 'downloaded')
+})
+
 test('native request binding precedes readiness and survives the installing record', async (t) => {
   const { archive, record } = await fixture(t)
   const updater = new Updater()

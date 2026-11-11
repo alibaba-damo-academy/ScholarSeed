@@ -8,6 +8,7 @@ import { runInNewContext } from 'node:vm'
 import test from 'node:test'
 import ts from 'typescript'
 import { ActivationCandidateChanged } from './update-authorization.ts'
+import { retryUpdate } from './retry.ts'
 import { UpdatePreparation } from './preparation.ts'
 import type { LatestVersionMeta, UpdateSnapshot } from '../updates.ts'
 import type * as Updater from './updater.ts'
@@ -55,6 +56,7 @@ for (const outcome of ['conflict', 'offline', 'cancelled'] as const)
     }
     let revoked = false
     const context = {
+      retryUpdate,
       exports: {},
       process: { platform: 'darwin' },
       MACOS_PLATFORM: 'darwin',

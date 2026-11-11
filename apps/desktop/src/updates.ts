@@ -6,6 +6,7 @@
 // list it.
 
 export const UPDATE_HEALTH_CHANNEL = 'scholarseed:update-workbench-ready'
+export const UPDATE_REPAIR_CHANNEL = 'scholarseed:update-repair'
 
 // 渠道集合放在共享契约：main 的产品配置校验与 renderer 的关于页展示消费同一份
 // 字面量，避免跨进程边界各写一遍 'preview'。
@@ -89,7 +90,7 @@ export type UpdatePhase =
   | 'rolled-back'
   | 'unsupported'
 
-export type UpdateInstallStage = 'preparing' | 'copying' | 'restarting'
+export type UpdateInstallStage = 'preparing' | 'copying' | 'handoff' | 'restarting'
 
 export type UpdateInstallStep =
   | 'package'
@@ -104,6 +105,8 @@ export type UpdateInstallStep =
   | 'staging-cleanup'
   | 'copying'
   | 'cleanup'
+  | 'helper'
+  | 'saving'
   | 'restarting'
 
 /** Main-owned timestamps survive renderer remounts; timeout is a limit, never an ETA. */
@@ -176,6 +179,8 @@ export interface UpdateProgress {
 }
 
 export interface UpdateSnapshot {
+  startupVerification?: 'starting' | 'verified'
+  repairAvailable?: boolean
   /** Explicit origin of an application-generated fallback; never inferred from error text. */
   errorFallback?: UpdateInstallFallback
   phase: UpdatePhase

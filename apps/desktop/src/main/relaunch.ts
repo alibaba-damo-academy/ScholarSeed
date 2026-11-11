@@ -14,6 +14,8 @@ const CONTEXT_DIRECTORY = '.scholarseed-update-launch'
 const CONTEXT_FILE = 'context.json'
 const LEGACY_SCHEMA = 1
 const SCHEMA = 2
+export const UPDATE_STORAGE_IDENTITY_SCHEMA = SCHEMA
+export const UPDATE_STORAGE_IDENTITY_SCHEMAS = Object.freeze([LEGACY_SCHEMA, SCHEMA])
 const LEGACY_IDENTITY = /^posix:[a-f0-9]{16}:[a-f0-9]{16}$/
 const PERSISTENT_IDENTITY = /^darwin:[a-f0-9]{32}:[a-f0-9]{16}:[a-f0-9]{16}:[a-f0-9]{8}$/
 const MAX_BYTES = 16 * 1024
@@ -99,6 +101,9 @@ function directoryIdentity(native: DomainNative, path: string, schema = SCHEMA):
   } finally {
     native.release(pin)
   }
+}
+export function updateStorageIdentities(native: DomainNative, roots: readonly string[]): string[] {
+  return roots.map((root) => directoryIdentity(native, root))
 }
 
 function removeUpdateLaunch(

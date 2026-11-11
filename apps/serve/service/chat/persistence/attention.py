@@ -14,6 +14,7 @@ from typing import Any, Mapping
 
 from service.chat.constants import (
     PRODUCT_EVENT_HIL_REQUESTED,
+    PRODUCT_EVENT_HIL_RESOLVED,
     PRODUCT_EVENT_SESSION_STATE,
     PRODUCT_EVENT_TURN_COMPLETED,
     PRODUCT_EVENT_TURN_FAILED,
@@ -22,6 +23,8 @@ from service.chat.constants import (
 )
 from service.chat.persistence.catalog import (
     SESSION_CATALOG_TABLE,
+    SESSION_HIL_TABLE,
+    HilStatus,
     SessionCatalogStore,
     SessionPrincipal,
 )
@@ -68,10 +71,12 @@ class AttentionKind(str, Enum):
 
 ATTENTION_EVENT_KINDS = {
     PRODUCT_EVENT_HIL_REQUESTED: AttentionKind.WAITING,
+    PRODUCT_EVENT_HIL_RESOLVED: AttentionKind.WAITING,
     PRODUCT_EVENT_TURN_COMPLETED: AttentionKind.COMPLETED,
     PRODUCT_EVENT_TURN_FAILED: AttentionKind.FAILED,
     PRODUCT_EVENT_SESSION_STATE: AttentionKind.FAILED,
 }
+ATTENTION_PENDING_STATES = frozenset((HilStatus.PENDING.value, HilStatus.UNKNOWN.value))
 
 
 def recovery_blocked(payload: Mapping[str, Any]) -> bool:
@@ -247,6 +252,26 @@ def project(
     request_id = str(payload.get("request_id") or "").strip() or None
     if reminder_kind is AttentionKind.WAITING:
         if request_id is None:
+            return
+        stored = connection.execute(
+            f"SELECT status FROM {SESSION_HIL_TABLE} WHERE session_id=? AND product_request_id=?",
+            (session_id, request_id),
+        ).fetchone()
+        state = payload.get("state") or HilStatus.PENDING.value
+        if (
+            kind == PRODUCT_EVENT_HIL_RESOLVED
+            or state not in ATTENTION_PENDING_STATES
+            or (stored is not None and stored[0] not in ATTENTION_PENDING_STATES)
+        ):
+            changed = connection.execute(
+                f"DELETE FROM {ATTENTION_TABLE} WHERE session_id=? AND request_id=? AND kind=?",
+                (session_id, request_id, AttentionKind.WAITING.value),
+            ).rowcount
+            if changed:
+                connection.execute(
+                    f"UPDATE {ATTENTION_CLOCK_TABLE} SET revision=revision+1 WHERE singleton=?",
+                    (ATTENTION_CLOCK_ID,),
+                )
             return
         identity = f"request:{request_id}"
         summary = request_summary(payload)

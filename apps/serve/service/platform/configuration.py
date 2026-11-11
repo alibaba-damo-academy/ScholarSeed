@@ -14,6 +14,7 @@ from pathlib import Path
 from time import monotonic
 
 from scholarseed_runtime.contract.resource import ResourceLease
+from scholarseed_runtime.contract.storage import RuntimeConfigurationPartition
 from service.platform.storage import (
     DirectoryHandle,
     canonical_root,
@@ -25,6 +26,7 @@ CONFIGURATION_MAX_BYTES = 1024 * 1024
 CONFIGURATION_LOCK_SUFFIX = ".lock"
 CONFIGURATION_STAGE_PREFIX = ".configuration-"
 CONFIGURATION_STAGE_TOKEN_BYTES = 16
+CONFIGURATION_PARTITION_PREFIX = "runtime-"
 CONFIGURATION_DIGEST_PREFIX = "sha256:"
 CONFIGURATION_ACCESS_DENIED = "configuration_access_denied"
 CONFIGURATION_CONFLICT = "configuration_conflict"
@@ -75,6 +77,22 @@ class ConfigurationStorage:
         if not path.is_absolute() or path.name in {"", ".", ".."}:
             raise ValueError(CONFIGURATION_ACCESS_DENIED)
         return Path(os.path.abspath(path))
+
+    def partition(self, path: Path) -> RuntimeConfigurationPartition:
+        selected = self._canonical(path)
+        if selected not in self._paths:
+            raise PermissionError(CONFIGURATION_ACCESS_DENIED)
+        with closing(self._resource_lease()):
+            with closing(open_private_directory(canonical_root(selected.parent), ())) as parent:
+                name = CONFIGURATION_PARTITION_PREFIX + secrets.token_hex(
+                    CONFIGURATION_STAGE_TOKEN_BYTES
+                )
+                parent.mkdir(name)
+                with closing(open_private_directory(parent.path, (name,))) as child:
+                    target = child.path / selected.name
+        return RuntimeConfigurationPartition(
+            target, ConfigurationStorage((target,), self._resource_lease)
+        )
 
     @staticmethod
     def _read(directory: DirectoryHandle, name: str) -> _Snapshot:

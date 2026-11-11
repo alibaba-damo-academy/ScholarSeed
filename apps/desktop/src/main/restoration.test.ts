@@ -13,13 +13,26 @@ import {
   existsSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { constants } from 'node:os'
 import { dirname, join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import test from 'node:test'
 import {
   applyTerminalRecovery,
   TerminalRestorationError,
   type TerminalRestorationRuntime,
+  pendingOrphanRecovery,
 } from './restoration.ts'
+import {
+  repairInstalledUpdate,
+  updateRepairTarget,
+  updateRepairSelection,
+  UPDATE_REPAIR_ARGUMENT,
+  UPDATE_REPAIR_SELECTION,
+  planInstalledUpdate,
+  verifyRepairApplication,
+  UPDATE_REPAIR_PROTOCOL,
+} from './repair.ts'
 import { updateLaunchContextPath } from './relaunch.ts'
 import { squirrelHandoffRecordPath } from './squirrel.ts'
 
@@ -121,6 +134,7 @@ function fixture(context: test.TestContext) {
   let observations = 0
   let afterConsume: (() => void) | undefined
   const native = {
+    persistentIdentity: () => selection.identities[0],
     pin: (filename: string) => {
       if (!statSync(filename).isDirectory()) throw new Error('not a directory')
       return filename
@@ -244,6 +258,465 @@ function fixture(context: test.TestContext) {
     },
   }
 }
+
+function orphanFixture(context: test.TestContext) {
+  const current = fixture(context)
+  const selection = JSON.parse(readFileSync(current.contextPath, 'utf8'))
+  const handoff = JSON.parse(readFileSync(current.handoff, 'utf8'))
+  handoff.state = 'failed'
+  delete handoff.nativeRequest
+  writeFileSync(current.handoff, JSON.stringify(handoff), { mode: 0o600 })
+  const policy = JSON.parse(
+    readFileSync(join(current.options.application, 'Contents', 'Resources', 'product.json'), 'utf8')
+  )
+  const source = current.proof.source.path
+  mkdirSync(join(source, 'Contents', 'Resources'), { recursive: true, mode: 0o700 })
+  writeFileSync(
+    join(source, 'Contents', 'Resources', 'product.json'),
+    JSON.stringify({ ...policy, build_number: selection.targetBuild }),
+    { mode: 0o600 }
+  )
+  const repairApplication = join(current.root, 'Repair.app')
+  writeFileSync(
+    join(current.options.application, 'Contents', 'Info.plist'),
+    '<?xml version="1.0"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleExecutable</key><string>ScholarSeed</string></dict></plist>'
+  )
+  const applicationSupport = join(current.root, 'support')
+  const cache = join(current.root, 'cache')
+  const owner = `${selection.bundleId}.ShipIt`
+  for (const path of [repairApplication, join(applicationSupport, owner), join(cache, owner)])
+    mkdirSync(path, { recursive: true, mode: 0o700 })
+  const nativeState = join(cache, owner, 'ShipItState.plist')
+  const state = Buffer.from(
+    JSON.stringify({
+      binding: handoff.binding,
+      bundleIdentifier: selection.bundleId,
+      updateBundleURL: pathToFileURL(source).href,
+      targetBundleURL: pathToFileURL(current.options.application).href,
+      installationAuthorized: false,
+      launchAfterInstallation: false,
+      useUpdateBundleName: true,
+    })
+  )
+  writeFileSync(nativeState, state, { mode: 0o600 })
+  const proof = {
+    ...current.proof,
+    kind: 'orphan-preparation-observation',
+    stateBytes: state.toString('base64'),
+    journalBytes: Buffer.from('legacy native journal').toString('base64'),
+  }
+  let interruptNative = false
+  const load = current.runtime.load
+  const runtime: TerminalRestorationRuntime = {
+    ...current.runtime,
+    load: (directory) => {
+      const tools = load(directory)
+      return {
+        ...tools,
+        open: (configuration) => {
+          const config = JSON.parse(configuration)
+          assert.equal(config.mode, 'orphan')
+          if (config.expected) assert.deepEqual(config.expected, proof)
+          const qualified = tools.open(configuration)
+          return {
+            ...qualified,
+            observe: () => JSON.stringify({ schema: 1, mode: 'inspect', proof }),
+            repair: () => {
+              current.events.push('native-repair')
+              if (existsSync(nativeState)) unlinkSync(nativeState)
+              if (interruptNative) throw new Error('interrupted after native retirement')
+            },
+          }
+        },
+      }
+    },
+  }
+  const scope = {
+    application: current.options.application,
+    repairApplication,
+    coordinator: current.options.coordinator,
+    applicationSupport,
+    cache,
+    bundleId: selection.bundleId,
+    expectedTeam: current.options.expectedTeam,
+  }
+  return {
+    ...current,
+    scope,
+    runtime,
+    nativeState,
+    selection,
+    interruptNative: () => {
+      interruptNative = true
+    },
+    resumeNative: () => {
+      interruptNative = false
+    },
+  }
+}
+
+macosTest(
+  'external repair entry preserves the original profile and reopens the old source for a normal update',
+  async (context) => {
+    const current = orphanFixture(context)
+    const preferences = join(current.selection.userData, 'preferences.json')
+    writeFileSync(preferences, '{"language":"zh-CN","preserved":true}')
+    const before = readFileSync(preferences)
+    const result = await repairInstalledUpdate(current.scope, current.runtime)
+    assert.equal(result.outcome, 'recovered')
+    assert.equal(result.installationPerformed, false)
+    assert.equal(result.startup.home, current.selection.home)
+    assert.equal(result.startup.workspace, current.selection.workspace)
+    assert.deepEqual(result.arguments, [`--user-data-dir=${current.selection.userData}`])
+    assert.deepEqual(readFileSync(preferences), before)
+    assert.equal(existsSync(current.contextPath), false)
+    assert.equal(existsSync(current.handoff), false)
+    assert.equal(existsSync(current.nativeState), false)
+    assert.ok(
+      current.events.indexOf('consume:context.json') < current.events.indexOf('native-repair')
+    )
+    assert.ok(
+      current.events.indexOf('native-repair') < current.events.indexOf('consume:squirrel.json')
+    )
+  }
+)
+
+macosTest(
+  'repair planning is read-only and its observation is not installation or retirement authority',
+  async (context) => {
+    const current = orphanFixture(context)
+    const before = readFileSync(current.handoff)
+    const binding = JSON.parse(before.toString()).binding
+    let closed = false
+    await planInstalledUpdate(
+      { ...current.scope, selection: current.selection },
+      {
+        ...current.runtime,
+        load: (directory) => ({
+          native: current.runtime.load(directory).native,
+          open: (configuration) => {
+            const config = JSON.parse(configuration)
+            assert.equal(config.mode, 'orphan-plan')
+            assert.equal(config.park, undefined)
+            assert.equal(config.expected, undefined)
+            return {
+              observe: () =>
+                JSON.stringify({ proof: { kind: 'orphan-preparation-plan', binding } }),
+              close: () => {
+                closed = true
+              },
+            }
+          },
+        }),
+      }
+    )
+    assert.equal(closed, true)
+    assert.deepEqual(readFileSync(current.handoff), before)
+    assert.equal(existsSync(current.contextPath), true)
+    assert.equal(existsSync(current.nativeState), true)
+    assert.equal(
+      current.events.some(
+        (event) => event.startsWith('consume:') || event === 'native-repair' || event === 'reserve'
+      ),
+      false
+    )
+  }
+)
+
+macosTest(
+  'an official signature alone cannot make an older application a repair helper',
+  async (context) => {
+    const current = orphanFixture(context)
+    const resources = join(current.scope.repairApplication, 'Contents', 'Resources')
+    mkdirSync(resources, { recursive: true, mode: 0o700 })
+    const policy = {
+      bundle_id: current.scope.bundleId,
+      expected_team_id: current.scope.expectedTeam,
+      release_lane: 'distribution',
+    }
+    const product = join(resources, 'product.json')
+    writeFileSync(product, JSON.stringify(policy), { mode: 0o600 })
+    await assert.rejects(
+      verifyRepairApplication(
+        current.scope.repairApplication,
+        current.scope.bundleId,
+        current.scope.expectedTeam,
+        current.runtime
+      ),
+      /CAPABILITY/
+    )
+    writeFileSync(
+      product,
+      JSON.stringify({ ...policy, update_repair_protocol: UPDATE_REPAIR_PROTOCOL }),
+      { mode: 0o600 }
+    )
+    await verifyRepairApplication(
+      current.scope.repairApplication,
+      current.scope.bundleId,
+      current.scope.expectedTeam,
+      current.runtime
+    )
+    writeFileSync(
+      product,
+      JSON.stringify({
+        ...policy,
+        update_repair_protocol: UPDATE_REPAIR_PROTOCOL,
+        release_lane: 'local',
+      }),
+      { mode: 0o600 }
+    )
+    await assert.rejects(
+      verifyRepairApplication(
+        current.scope.repairApplication,
+        current.scope.bundleId,
+        current.scope.expectedTeam,
+        current.runtime
+      ),
+      /CAPABILITY/
+    )
+  }
+)
+
+macosTest(
+  'external repair resumes from its own durable intent after context and native state have disappeared',
+  async (context) => {
+    const current = orphanFixture(context)
+    current.interruptNative()
+    await assert.rejects(
+      repairInstalledUpdate(current.scope, current.runtime),
+      TerminalRestorationError
+    )
+    assert.equal(existsSync(current.contextPath), false)
+    assert.equal(existsSync(current.nativeState), false)
+    assert.equal(existsSync(current.handoff), true)
+    assert.equal(current.reserved(), true)
+    const pending = pendingOrphanRecovery(
+      { ...current.scope, toolDirectory: current.scope.repairApplication },
+      current.runtime.uid
+    )
+    assert.equal(pending?.requestId, current.options.requestId)
+    current.resumeNative()
+    const result = await repairInstalledUpdate(current.scope, current.runtime)
+    assert.equal(result.outcome, 'recovered')
+    assert.equal(existsSync(current.handoff), false)
+    assert.equal(current.reserved(), false)
+  }
+)
+
+macosTest(
+  'external repair does not consume an in-flight authorized handoff or bypass signature refusal',
+  async (context) => {
+    const current = orphanFixture(context)
+    const before = readFileSync(current.contextPath)
+    const handoff = JSON.parse(readFileSync(current.handoff, 'utf8'))
+    writeFileSync(current.handoff, JSON.stringify({ ...handoff, state: 'installing' }), {
+      mode: 0o600,
+    })
+    await assert.rejects(repairInstalledUpdate(current.scope, current.runtime))
+    assert.deepEqual(readFileSync(current.contextPath), before)
+    writeFileSync(current.handoff, JSON.stringify(handoff), { mode: 0o600 })
+    await assert.rejects(
+      repairInstalledUpdate(current.scope, {
+        ...current.runtime,
+        verifyApplication: async () => {
+          throw new Error('signature refused')
+        },
+      })
+    )
+    assert.deepEqual(readFileSync(current.contextPath), before)
+    assert.equal(existsSync(current.nativeState), true)
+    assert.equal(current.events.includes('native-repair'), false)
+  }
+)
+
+macosTest(
+  'repair routing is explicit and refuses Windows, development, duplicate and self repair',
+  async (context) => {
+    const current = orphanFixture(context)
+    const argument = `${UPDATE_REPAIR_ARGUMENT}${current.scope.application}`
+    assert.equal(updateRepairTarget([], 'darwin', true), null)
+    assert.equal(updateRepairTarget([argument], 'darwin', true), current.scope.application)
+    assert.throws(() => updateRepairTarget([argument], 'win32', true))
+    assert.throws(() => updateRepairTarget([argument], 'darwin', false))
+    assert.throws(() => updateRepairTarget([argument, argument], 'darwin', true))
+    await assert.rejects(
+      repairInstalledUpdate(
+        { ...current.scope, repairApplication: current.scope.application },
+        current.runtime
+      )
+    )
+    assert.equal(current.events.includes('native-open'), false)
+  }
+)
+
+macosTest(
+  'handoff-only repair requires explicit directories and never reconstructs a deleted launch context',
+  async (context) => {
+    const current = orphanFixture(context)
+    unlinkSync(current.contextPath)
+    await assert.rejects(
+      repairInstalledUpdate(current.scope, current.runtime),
+      /ERR_UPDATE_REPAIR_SELECTION_REQUIRED/
+    )
+    const selection = {
+      home: current.selection.home,
+      userData: current.selection.userData,
+      workspace: current.selection.workspace,
+    }
+    const args = Object.entries(UPDATE_REPAIR_SELECTION).map(
+      ([key, prefix]) => `${prefix}${selection[key as keyof typeof selection]}`
+    )
+    assert.deepEqual(updateRepairSelection(args), selection)
+    assert.throws(() => updateRepairSelection(args.slice(0, 1)), /SELECTION_REQUIRED/)
+    const scope = { ...current.scope, selection }
+    current.interruptNative()
+    await assert.rejects(repairInstalledUpdate(scope, current.runtime), TerminalRestorationError)
+    assert.equal(existsSync(current.contextPath), false)
+    const intent = JSON.parse(
+      readFileSync(join(current.recoveryDirectory, `${current.options.requestId}.intent`), 'utf8')
+    )
+    assert.equal(intent.context, null)
+    assert.equal(intent.schema, 2)
+    assert.equal(intent.kind, 'mac-orphan-selection-recovery')
+    current.resumeNative()
+    const result = await repairInstalledUpdate(current.scope, current.runtime)
+    assert.equal(result.outcome, 'recovered')
+    assert.equal(result.startup.userData, selection.userData)
+    assert.equal(existsSync(current.contextPath), false)
+    assert.equal(existsSync(current.handoff), false)
+    assert.equal(
+      current.events.some((event) => event === 'consume:context.json'),
+      false
+    )
+  }
+)
+
+macosTest(
+  'handoff-only repair rejects nonnumeric target builds before native mutation',
+  async (context) => {
+    const current = orphanFixture(context)
+    unlinkSync(current.contextPath)
+    const handoff = JSON.parse(readFileSync(current.handoff, 'utf8'))
+    handoff.buildNumber = 'ZZZ'
+    writeFileSync(current.handoff, JSON.stringify(handoff), { mode: 0o600 })
+    const selection = {
+      home: current.selection.home,
+      userData: current.selection.userData,
+      workspace: current.selection.workspace,
+    }
+    await assert.rejects(
+      repairInstalledUpdate({ ...current.scope, selection }, current.runtime),
+      (error) => error instanceof TerminalRestorationError && error.code === 'invalid_scope'
+    )
+    assert.equal(current.events.includes('native-repair'), false)
+  }
+)
+
+macosTest(
+  'repair entry classifies missing handoff and missing scope directories',
+  async (context) => {
+    const current = orphanFixture(context)
+    unlinkSync(current.handoff)
+    await assert.rejects(
+      repairInstalledUpdate(current.scope, current.runtime),
+      /ERR_UPDATE_REPAIR_STATE/
+    )
+    rmSync(current.scope.cache, { recursive: true })
+    await assert.rejects(
+      repairInstalledUpdate(current.scope, current.runtime),
+      /ERR_UPDATE_REPAIR_SCOPE/
+    )
+    assert.equal(current.events.includes('native-repair'), false)
+  }
+)
+
+macosTest(
+  'handoff-only continuation refuses conflicting selection and a newly appeared context',
+  async (context) => {
+    const current = orphanFixture(context)
+    unlinkSync(current.contextPath)
+    const selection = {
+      home: current.selection.home,
+      userData: current.selection.userData,
+      workspace: current.selection.workspace,
+    }
+    current.interruptNative()
+    await assert.rejects(repairInstalledUpdate({ ...current.scope, selection }, current.runtime))
+    const other = join(current.root, 'other-profile')
+    mkdirSync(other, { mode: 0o700 })
+    await assert.rejects(
+      repairInstalledUpdate(
+        { ...current.scope, selection: { ...selection, userData: other } },
+        current.runtime
+      )
+    )
+    writeFileSync(current.contextPath, JSON.stringify(current.selection), { mode: 0o600 })
+    const replacement = readFileSync(current.contextPath)
+    current.resumeNative()
+    await assert.rejects(repairInstalledUpdate(current.scope, current.runtime))
+    assert.deepEqual(readFileSync(current.contextPath), replacement)
+    assert.equal(existsSync(current.handoff), true)
+  }
+)
+
+macosTest(
+  'a committed orphan transaction resumes startup after interruption without replaying a newer request',
+  async (context) => {
+    const current = orphanFixture(context)
+    const result = await repairInstalledUpdate(current.scope, current.runtime)
+    assert.equal(result.outcome, 'recovered')
+    const continued = await repairInstalledUpdate(current.scope, current.runtime)
+    assert.deepEqual(continued.startup, result.startup)
+    assert.equal(existsSync(current.contextPath), false)
+    assert.equal(existsSync(current.handoff), false)
+    writeFileSync(current.handoff, '{"new":"request"}', { mode: 0o600 })
+    assert.equal(
+      pendingOrphanRecovery(
+        {
+          ...current.options,
+          selection: {
+            home: current.selection.home,
+            userData: join(current.root, 'other-profile'),
+            workspace: current.selection.workspace,
+          },
+        },
+        current.runtime.uid
+      ),
+      null
+    )
+    await assert.rejects(repairInstalledUpdate(current.scope, current.runtime))
+    assert.equal(readFileSync(current.handoff, 'utf8'), '{"new":"request"}')
+  }
+)
+
+macosTest(
+  'orphan entry retries only a released busy native qualification before acquiring domains',
+  async (context) => {
+    const current = orphanFixture(context)
+    let opens = 0
+    const runtime = {
+      ...current.runtime,
+      load: (directory: string) => {
+        const tools = current.runtime.load(directory)
+        return {
+          ...tools,
+          open: (configuration: string) => {
+            if (++opens === 1)
+              throw Object.assign(new Error('busy'), {
+                code: 'ERR_TERMINAL_OPEN',
+                systemCode: constants.errno.EWOULDBLOCK,
+              })
+            return tools.open(configuration)
+          },
+        }
+      },
+    }
+    const result = await repairInstalledUpdate(current.scope, runtime)
+    assert.equal(result.outcome, 'recovered')
+    assert.equal(opens, 2)
+    assert.equal(current.events.filter((event) => event === 'occupy').length, 1)
+  }
+)
 
 test('terminal restoration refuses non-Darwin before loading tools or touching records', async () => {
   const runtime = {

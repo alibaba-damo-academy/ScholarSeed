@@ -10,6 +10,30 @@
 
 ## 提供什么
 
+### Invocation isolation / 独立调用隔离
+
+`ResourcePurpose.INVOCATION` allocates a dedicated official App Server process and
+a fresh private `CODEX_HOME` through the host's configuration-storage capability.
+Snapshots, native state, and model catalogs are not shared with other invocations
+or normal chats. Only explicitly authorized provider and MCP configuration is
+published to the new home; existing credentials, configuration files, and rollouts
+are not copied. Capacity limits, authority checks, and physical resource leases
+still apply. The last owner releases its process; native files remain for diagnostics,
+without automatic deletion. External `CODEX_SQLITE_HOME` overrides are rejected
+with `runtime_isolated_storage_conflict` rather than silently sharing storage.
+Invocation resume/fork from existing native state is unsupported. Normal chats
+retain their shared Host. Native subthreads inside one invocation still share its
+Host and home; this does not fix the official runtime's internal cleanup algorithm.
+
+`ResourcePurpose.INVOCATION` 通过宿主配置存储能力分配独立的官方 App Server
+进程及全新的私有 `CODEX_HOME`。快照、原生状态和模型目录不与其他调用或普通对话共享。
+只发布明确授权的 provider 与 MCP 配置，不复制已有凭据、配置文件或 rollout。
+容量、主体校验和物理资源租约继续生效。最后一个 owner 释放进程；原生文件保留用于
+诊断，不自动删除。外部 `CODEX_SQLITE_HOME` 覆盖以
+`runtime_isolated_storage_conflict` 明确拒绝，不静默共享存储。
+独立调用不支持恢复或 fork 已有原生状态。普通聊天继续共享 Host；同一调用内部的
+原生子线程仍共享该调用的 Host 和目录，本方案不修改官方运行时内部的清理算法。
+
 `ModelCapabilities.native_agent_messages=False` 将对应冻结目录行的
 `multi_agent_version` 约束为官方 V1，并在该模型的 Thread config 中禁用 V2 override。
 其它原生元数据（包括 Lite、tool mode、指令模板和未知扩展字段）不变；未知或支持的
@@ -37,7 +61,7 @@
 非敏感 `execution_environment` 逐 Thread 投影，缓存仍在各会话目录，不合并目录/权限。
 不同主体、未知共享域、不同凭据或不同启动环境不会被合并。
 
-执行 Host 的首个有效 grant 锁定进程配置；后续冲突返回
+普通共享执行 Host 的首个有效 grant 锁定进程配置；后续冲突返回
 `runtime_host_configuration_conflict`，不排队等自动替换、不创建第二个执行 Host，也不
 中断已有 owner。锁定状态跨零 Thread、显式资源排空、失败和同配置恢复保留；配置
 普通准入不擅自切换。显式 `reconfigure(HostWarmupRequest)` 在宿主按产品意图封锁新任务后，
@@ -72,11 +96,11 @@ Agent 后续读取遇到文件缺失时按实际结果向用户解释，不将�
 
 普通对话及 CONTROL 使用官方 Codex 与 `SkillPolicy.INHERIT`，共享已授权 Host。
 纯文本临时动作由 Serve 的纯模型传输处理，不创建原生 Thread，也不依赖定制 DENY 补丁。
-工具型任务保留原有技能/权限准入，不能安全共享时明确拒绝，不另启 Host 兜底。
+工具型任务保留原有技能/权限准入；普通共享请求不能安全共享时明确拒绝，不另启 Host 兜底。
 已记录的 `SkillPolicy.DENY` binding 不自动降级为 inherit；官方制品没有已证明的该能力时
 继续明确拒绝恢复；不保留定制候选准入或兼容版本覆盖。
 
-Host 寿命由应用拥有：可选 `prewarm(HostWarmupRequest)` 复用会话的模型连接、catalog、
+普通共享 Host 寿命由应用拥有：可选 `prewarm(HostWarmupRequest)` 复用会话的模型连接、catalog、
 指令、秘密端口和准入，不创建原生 Thread 或 Turn。健康 Host 的最后租约释放后继续驻留，
 不因零 Thread、全空闲或旧30秒 TTL 退出，也不按 Thread 数自动扩进程。
 容量配置 `idle_seconds` 现为原生 `thread_unload_delay_secs`，默认1800整秒，通过现有
@@ -102,7 +126,7 @@ CLI config 显式传递；Serve 附件自身不再叠加30分钟计时。原生 
 Provider 不再要求 Windows 每回合刷新附件；根 Thread 没有默认 128 个上限，
 也不在 Thread 数量超限时自动创建第二个 Host。显式调用方可配置拒绝式上限，
 物理 Host 预算与排队仍由既有容量策略管理；`agents.max_threads` 不是根对话上限。
-同一 Host 的崩溃会影响其全部 Thread，不能声称进程级故障隔离。
+同一 Host 的崩溃会影响其全部 Thread，不能声称其内部 Thread 具备进程级故障隔离。
 进程重启就绪不等于每个 Thread 恢复成功。只有当前代次 `thread/resume` 对准确
 Thread 返回官方 `-32600` / `no rollout found for thread id …` 时，才终止该代次的
 附件重试并将其排除出 MCP 配置成员；产品 binding 和未知提交保护仍保留，Adapter

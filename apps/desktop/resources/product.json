@@ -1,5 +1,6 @@
 {
   "product_id": "scholarseed",
+  "update_repair_protocol": 1,
   "product_name": "书深",
   "bundle_id": "com.scholarseed.desktop",
   "release_lane": "local",

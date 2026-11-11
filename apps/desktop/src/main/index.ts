@@ -1,4 +1,15 @@
 import { sourceBaseline } from './source.ts'
+import {
+  updateRepairTarget,
+  updateRepairSelection,
+  repairInstalledUpdate,
+  UPDATE_REPAIR_WIZARD_ARGUMENT,
+} from './repair.ts'
+import { prepareRepair, runRepairWizard } from './rescue.ts'
+import { verifyApplication } from './terminal.ts'
+import { beginDomains } from '../../native/domains.cjs'
+import type { RecoveryNative, TerminalRestorationRuntime } from './restoration.ts'
+import { systemCacheDir } from './cachedir.ts'
 import { TRAY_CHANNEL } from '../tray'
 import {
   DEVELOPMENT_CONTROL_ARGUMENT,
@@ -15,7 +26,11 @@ import {
 } from './resources.ts'
 import { prepareWindowsVelopack, type PreparedWindowsVelopack } from './velopack.ts'
 import { installationFailure } from './family.ts'
-import { restoreUpdateDebugPort, updateDebugArguments } from './debuglaunch.ts'
+import {
+  restoreUpdateDebugPort,
+  updateDebugArguments,
+  updateDebugPortArguments,
+} from './debuglaunch.ts'
 import { ComponentTimer, COMPONENT_TIMING } from './timing.ts'
 import { downloadRuntimeComponents, installedRuntimeManifest } from './components.ts'
 import {
@@ -269,7 +284,7 @@ import { findCallbackUrl, handoffFingerprint, parseCallbackUrl } from './handoff
 import { callbackTimingLine, findCallbackTiming } from './handoff-timing'
 import { processIntegrityLevel } from './integrity'
 import { showStartupScreen, type StartupScreen } from './startup'
-import { MacStartupAdmissionError, recoverStartupAdmission } from './admission'
+import { MacStartupAdmissionError, recoverStartupAdmission, reportMacRepair } from './admission'
 import * as updater from './updater'
 import { STARTUP_BUILD_NUMBER, clientVersion, isNewerRelease } from './version'
 import type {
@@ -279,7 +294,12 @@ import type {
   UpdateProgress,
   UpdateSnapshot,
 } from '../updates'
-import { LOCAL_LANE_UPDATE_REASON, UPDATE_HEALTH_CHANNEL, updateCandidateKey } from '../updates'
+import {
+  LOCAL_LANE_UPDATE_REASON,
+  UPDATE_HEALTH_CHANNEL,
+  UPDATE_REPAIR_CHANNEL,
+  updateCandidateKey,
+} from '../updates'
 import { PathAuthorizer, isAuthorizationScope } from './authorization'
 import { saveFileCopy } from './save'
 import { blocksRendererReload, prepareRendererLoad } from './reload'
@@ -325,6 +345,12 @@ const FAILURE_CODES = {
 configureNotificationIdentity(app, process.platform)
 
 const storageNative = require('./lease.node') as DomainNative
+const nativeRepair =
+  process.platform === 'darwin'
+    ? (require('./repair.node') as {
+        open(configuration: string): { observe(): string; repair(): void; close(): void }
+      })
+    : null
 const coordinationReclamation = new CoordinationReclamation(
   storageNative as ReclamationNative,
   coordinationRoot,
@@ -335,6 +361,9 @@ const coordinationReclamation = new CoordinationReclamation(
 const nativeFonts = require('./fonts.node') as { enumerateFonts: () => Promise<NativeFontFace[]> }
 
 let completeUpdateLaunch: (() => void) | undefined
+let updateRepairActive = false
+let macShutdownReady = false
+let updateStartupVerification: UpdateSnapshot['startupVerification']
 
 let backend: BackendHandle | null = null
 let lastBackendFailure: BackendFailure | null = null
@@ -682,6 +711,11 @@ let lastPreparationDeferral: string | null = null
 function publishUpdateSnapshot(next: UpdateSnapshot): UpdateSnapshot {
   const stamped = withAnnouncedKey({
     ...next,
+    startupVerification: updateStartupVerification,
+    repairAvailable:
+      process.platform === MACOS_PLATFORM &&
+      app.isPackaged &&
+      resolveProductConfig(pushLog).releaseLane === 'distribution',
     latestCandidate:
       preparationPolicy &&
       next.candidate &&
@@ -692,7 +726,10 @@ function publishUpdateSnapshot(next: UpdateSnapshot): UpdateSnapshot {
       ) === true
         ? latestUpdateCandidate
         : undefined,
-    restartPending: updateInstallAbort !== null && !updateInstallAbort.signal.aborted,
+    restartPending:
+      next.phase !== 'preparing' &&
+      updateInstallAbort !== null &&
+      !updateInstallAbort.signal.aborted,
   })
   updateSnapshot = stamped
   sendToMainWindow('scholarseed:update-state', stamped)
@@ -795,6 +832,7 @@ function requirePreviewPolicyChange(): void {
     throw new Error('Preview update controls are unavailable')
   if (
     previewPolicyChanging ||
+    updateRepairActive ||
     updateInstallAbort ||
     updateInstallationInProgress ||
     updateRestartRequested ||
@@ -1094,8 +1132,8 @@ async function installWindowsPreparedUpdate(): Promise<StartUpdateResult> {
     updateRestartRequested = true
     publishUpdateSnapshot({
       ...currentUpdateSnapshot(),
-      phase: 'restarting',
-      installStage: 'restarting',
+      phase: 'installing',
+      installStage: 'handoff',
     })
     appQuitting = true
     app.quit()
@@ -2672,6 +2710,41 @@ function requireDesktopWorkbench(): void {
   }
 }
 
+async function finishMacUpdateHandoff(): Promise<StartUpdateResult> {
+  updateRestartRequested = true
+  setUpdateInstallationInProgress(true)
+  publishUpdateSnapshot({
+    ...currentUpdateSnapshot(),
+    phase: 'installing',
+    installStage: 'handoff',
+    installation: undefined,
+    errorFallback: undefined,
+  })
+  try {
+    await updater.quitMacUpdate(pushLog, () => {
+      if (!macShutdownReady || backend !== null || desktopHandoff.isBusy())
+        throw new Error('Workbench changed before Mac installation authorization')
+    })
+    return { ok: true, mode: 'auto' }
+  } catch (error) {
+    updateRestartRequested = false
+    setUpdateInstallationInProgress(false)
+    preferenceQuiescence.allowInteraction()
+    const retryable = updater.macHandoffRetryable(error)
+    const errorFallback = retryable ? 'activation_unavailable' : 'activation_recovery_required'
+    pushLog(`[update] final installation authorization refused: ${String(error)}\n`)
+    publishUpdateSnapshot({
+      ...currentUpdateSnapshot(),
+      phase: retryable ? 'ready' : 'failed',
+      installStage: undefined,
+      installation: undefined,
+      errorOrigin: 'install',
+      errorFallback,
+    })
+    return { ok: false, errorFallback }
+  }
+}
+
 function deliverDesktopCallback(url: string): void {
   if (!aliveMainWindow() || !desktopWorkbenchReady()) {
     pendingProtocolUrl = url
@@ -2895,6 +2968,10 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
           if (updateId) updater.logUpdateLifecycleEvent('health-confirmed', updateId, pushLog)
           completeUpdateLaunch?.()
           completeUpdateLaunch = undefined
+          if (updateStartupVerification === 'starting') {
+            updateStartupVerification = 'verified'
+            publishUpdateSnapshot(currentUpdateSnapshot())
+          }
           pushLog('[update] workbench readiness confirmed by the main renderer\n')
         }
       )
@@ -3813,12 +3890,15 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
         return { ok: false, error: updater.NO_STAGED_UPDATE }
       }
       const candidate = currentUpdateSnapshot().candidate
-      if (!candidate || candidate.id !== expectedId || !updatePreparation.claim(candidate))
+      if (!candidate || candidate.id !== expectedId)
         return { ok: false, error: updater.NO_STAGED_UPDATE }
+      if (process.platform === MACOS_PLATFORM && macShutdownReady && updater.macHandoffReady())
+        return finishMacUpdateHandoff()
+      if (!updatePreparation.claim(candidate)) return { ok: false, error: updater.NO_STAGED_UPDATE }
       if (process.platform === WINDOWS_PLATFORM) return installWindowsPreparedUpdate()
       const controller = new AbortController()
       updateInstallAbort = controller
-      publishUpdateSnapshot(currentUpdateSnapshot())
+      publishUpdateSnapshot({ ...currentUpdateSnapshot(), phase: 'preparing' })
       let result: StartUpdateResult
       const maintenanceBackend = backend
       let maintenance: ReturnType<typeof backendUpdateControl> | null = null
@@ -3843,24 +3923,6 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
           controller.signal.throwIfAborted()
           if (desktopHandoff.isBusy()) controller.abort()
           controller.signal.throwIfAborted()
-          if (maintenance && !maintenanceGeneration) {
-            preferencesRequested = true
-            await preferenceQuiescence.prepare(undefined, 'maintenance')
-            controller.signal.throwIfAborted()
-            macMaintenanceUncertain = true
-            macUpdateMaintenanceActive = true
-            clearBackendRestart()
-            try {
-              maintenanceGeneration = await maintenance.prepareUpdate()
-              macMaintenanceUncertain = false
-            } catch (error) {
-              if (error instanceof BackendMaintenanceRejected) {
-                macMaintenanceUncertain = false
-                macUpdateMaintenanceActive = false
-              }
-              throw error
-            }
-          }
           controller.signal.throwIfAborted()
           const guard = await updater.authorizeActivation(candidate, pushLog, controller.signal)
           return () => {
@@ -3884,8 +3946,30 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
           pushLog,
           controller.signal,
           authorize,
-          (candidate) =>
-            persistUpdateLaunch(
+          async (candidate) => {
+            if (!updater.macHandoffReady()) throw new Error('Native update is not ready')
+            controller.signal.throwIfAborted()
+            if (backend !== maintenanceBackend || desktopHandoff.isBusy())
+              throw new Error('Workbench changed before quiescence')
+            if (maintenance && !maintenanceGeneration) {
+              preferencesRequested = true
+              await preferenceQuiescence.prepare(undefined, 'maintenance')
+              controller.signal.throwIfAborted()
+              macMaintenanceUncertain = true
+              macUpdateMaintenanceActive = true
+              clearBackendRestart()
+              try {
+                maintenanceGeneration = await maintenance.prepareUpdate()
+                macMaintenanceUncertain = false
+              } catch (error) {
+                if (error instanceof BackendMaintenanceRejected) {
+                  macMaintenanceUncertain = false
+                  macUpdateMaintenanceActive = false
+                }
+                throw error
+              }
+            }
+            return persistUpdateLaunch(
               storageNative,
               coordinationRoot(),
               {
@@ -3898,6 +3982,7 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
               candidate.build_number,
               candidate.id
             )
+          }
         )
       } catch (error) {
         result = controller.signal.aborted
@@ -3906,7 +3991,10 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
       } finally {
         updateInstallAbort = null
       }
-      if ((!result.ok || result.mode !== 'auto') && !updater.macHandoffCommitted()) {
+      if (
+        (!result.ok || result.mode !== 'auto') &&
+        (!updater.macHandoffCommitted() || updater.macHandoffReady())
+      ) {
         try {
           await resumeMaintenance()
         } catch (error) {
@@ -3917,7 +4005,10 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
           updatePreparation.release()
         }
       }
-      if ((updater.macHandoffCommitted() && !result.ok) || macMaintenanceUncertain) {
+      if (
+        (updater.macHandoffCommitted() && !updater.macHandoffReady() && !result.ok) ||
+        macMaintenanceUncertain
+      ) {
         setUpdateInstallationInProgress(false)
         publishUpdateSnapshot({
           ...currentUpdateSnapshot(),
@@ -3949,9 +4040,9 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
         // Keep the durable handoff until a subsequent process observes the installed build.
         publishUpdateSnapshot({
           ...currentUpdateSnapshot(),
-          phase: 'restarting',
-          percent: 100,
-          installStage: 'restarting',
+          phase: 'installing',
+          percent: undefined,
+          installStage: 'handoff',
         })
         if (process.platform === MACOS_PLATFORM) {
           try {
@@ -3959,9 +4050,12 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
             // Finish async product cleanup before handing it that synchronous action.
             await preferenceQuiescence.prepare()
             requireCleanBackendStop(await finishApplicationShutdown())
-            updater.quitMacUpdate()
+            macShutdownReady = true
+            return await finishMacUpdateHandoff()
           } catch (error) {
             // Keep the saved receipt fenced while exposing the failure/recovery UI.
+            updateRestartRequested = false
+            setUpdateInstallationInProgress(false)
             preferenceQuiescence.allowInteraction()
             updater.logUpdateEvent(pushLog, {
               phase: 'macos-install',
@@ -4022,6 +4116,50 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
 
   // 取消进行中的安装准备（bug 87253073）：只 abort 信号，收尾交给 install handler 的失败分支
   // （回 ready/failed 可重试态）。这里不直接改快照，避免和进行中的安装各写一套状态。
+  ipcMain.handle(UPDATE_REPAIR_CHANNEL, async (event): Promise<StartUpdateResult> => {
+    requirePreviewSender(event)
+    requireDesktopWorkbench()
+    if (
+      !currentUpdateSnapshot().repairAvailable ||
+      currentUpdateSnapshot().errorFallback !== 'activation_recovery_required' ||
+      updateRepairActive ||
+      updateInstallAbort ||
+      updateRestartRequested ||
+      desktopHandoff.isBusy()
+    )
+      return { ok: false, errorFallback: 'activation_recovery_required' }
+    updateRepairActive = true
+    let stopping = false
+    try {
+      const application = applicationBundle(app.getPath('exe'))
+      const launch = await prepareRepair(
+        { ...repairBaseScope(), application, selection: desktopStorage() },
+        repairRuntime()
+      )
+      if (!launch) return { ok: false, cancelled: true }
+      if (updateInstallAbort || updateRestartRequested || desktopHandoff.isBusy())
+        throw new Error('ERR_UPDATE_REPAIR_BUSY')
+      await preferenceQuiescence.prepare()
+      stopping = true
+      requireCleanBackendStop(await finishApplicationShutdown())
+      app.relaunch(launch)
+      app.exit(0)
+      return { ok: true, mode: 'auto' }
+    } catch (error) {
+      pushLog(`[update] repair launch refused: ${String(error)}\n`)
+      if (!stopping) preferenceQuiescence.resume()
+      const t = mainLocalization().getFixedT(null, 'native')
+      await dialog.showMessageBox({
+        type: 'error',
+        message: t('repair.failed'),
+        detail: t('repair.failedDetail'),
+        buttons: [t('repair.cancel')],
+      })
+      return { ok: false, errorFallback: 'activation_recovery_required' }
+    } finally {
+      updateRepairActive = false
+    }
+  })
   ipcMain.handle('scholarseed:update-cancel', async (): Promise<StartUpdateResult> => {
     const controller = updateInstallAbort
     if (
@@ -4856,6 +4994,14 @@ async function bootstrap(): Promise<void> {
   }
   if (macStartupDecision?.admission === 'failed' && pendingUpdateLaunch)
     completeUpdateLaunch = pendingUpdateLaunch.complete
+  if (
+    macStartupDecision?.admission === 'allow' &&
+    pendingUpdateLaunch &&
+    pendingUpdateLaunch.context.targetBuild === resolveProductConfig(pushLog).buildNumber
+  ) {
+    updateStartupVerification = 'starting'
+    publishUpdateSnapshot(currentUpdateSnapshot())
+  }
   if (updater.macHandoffCommitted()) {
     const status = await updater.macStartupStatus(pushLog)
     const t = mainLocalization().getFixedT(null, 'account')
@@ -4979,7 +5125,99 @@ async function bootstrap(): Promise<void> {
 
 const SCHOLARSEED_PROTOCOL = 'scholarseed'
 
+function repairRuntime(): TerminalRestorationRuntime {
+  if (!nativeRepair) throw new Error('ERR_UPDATE_REPAIR_PLATFORM')
+  return {
+    platform: process.platform,
+    uid: userInfo().uid,
+    load: () => ({
+      native: storageNative as RecoveryNative,
+      open: (configuration) => nativeRepair.open(configuration),
+    }),
+    begin: (native, coordinator, roots) => beginDomains(native, coordinator, roots, true),
+    verifyApplication,
+  }
+}
+
+function repairBaseScope() {
+  const config = resolveProductConfig(pushLog)
+  return {
+    repairApplication: applicationBundle(app.getPath('exe')),
+    coordinator: coordinationRoot(),
+    applicationSupport: app.getPath('appData'),
+    cache: systemCacheDir(),
+    bundleId: config.bundleId,
+    expectedTeam: config.expectedTeamId,
+  }
+}
+
+function relaunchRepairedUpdate(result: Awaited<ReturnType<typeof repairInstalledUpdate>>): void {
+  process.env[SCHOLARSEED_HOME_ENV] = result.startup.home
+  process.env[SCHOLARSEED_DEFAULT_WORKSPACE_ENV] = result.startup.workspace
+  app.relaunch({
+    execPath: result.executable,
+    args: [...result.arguments, ...updateDebugPortArguments(result.startup.debugPort)],
+  })
+  app.exit(0)
+}
+
+async function offerStartupRepair(): Promise<boolean> {
+  if (!app.isPackaged || process.platform !== MACOS_PLATFORM || headless) return false
+  await app.whenReady()
+  await applyMainLanguage(DEFAULT_LANGUAGE)
+  const t = mainLocalization().getFixedT(null, 'native')
+  const answer = await dialog.showMessageBox({
+    type: 'warning',
+    message: t('repair.startup'),
+    detail: t('repair.startupDetail'),
+    buttons: [t('repair.continue'), t('repair.cancel')],
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true,
+  })
+  return (
+    answer.response === 0 &&
+    runRepairWizard(repairBaseScope(), repairRuntime(), relaunchRepairedUpdate, pushLog)
+  )
+}
+
 async function startDesktop(): Promise<void> {
+  if (process.argv.includes(UPDATE_REPAIR_WIZARD_ARGUMENT)) {
+    if (
+      process.platform !== MACOS_PLATFORM ||
+      !app.isPackaged ||
+      process.argv.filter((value) => value === UPDATE_REPAIR_WIZARD_ARGUMENT).length !== 1 ||
+      updateRepairTarget(process.argv, process.platform, app.isPackaged)
+    )
+      throw new Error('ERR_UPDATE_REPAIR_ARGUMENT')
+    await applyMainLanguage(DEFAULT_LANGUAGE)
+    if (
+      !(await runRepairWizard(repairBaseScope(), repairRuntime(), relaunchRepairedUpdate, pushLog))
+    )
+      app.exit(0)
+    return
+  }
+  const repairTarget = updateRepairTarget(process.argv, process.platform, app.isPackaged)
+  if (repairTarget) {
+    const selection = updateRepairSelection(process.argv)
+    await reportMacRepair('begin', Boolean(selection))
+    try {
+      const result = await repairInstalledUpdate(
+        {
+          ...repairBaseScope(),
+          application: repairTarget,
+          selection,
+        },
+        repairRuntime()
+      )
+      await reportMacRepair('completed', Boolean(selection), result)
+      relaunchRepairedUpdate(result)
+      return
+    } catch (error) {
+      await reportMacRepair('failed', Boolean(selection), undefined, error)
+      throw error
+    }
+  }
   let updateLaunchContext: ReturnType<typeof observeUpdateLaunch> = null
   if (process.platform === 'darwin' && app.isPackaged) {
     // The old installer may rename the live candidate during rollback. Its
@@ -5256,7 +5494,13 @@ async function startDesktop(): Promise<void> {
       })
       .catch((e) => {
         if (!startupAdmissionResolved)
-          return recoverStartupAdmission(e, headless, pushLog, pendingUpdateLaunch !== null)
+          return recoverStartupAdmission(
+            e,
+            headless,
+            pushLog,
+            pendingUpdateLaunch !== null,
+            offerStartupRepair
+          )
         reportStartupFailure(startupFailureTitle(), String(e))
       })
   }
@@ -5404,7 +5648,13 @@ async function startDesktop(): Promise<void> {
 
 void startDesktop().catch((error) => {
   if (!startupAdmissionResolved) {
-    void recoverStartupAdmission(error, headless, pushLog, pendingUpdateLaunch !== null)
+    void recoverStartupAdmission(
+      error,
+      headless,
+      pushLog,
+      pendingUpdateLaunch !== null,
+      offerStartupRepair
+    )
     return
   }
   reportStartupFailure(

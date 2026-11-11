@@ -29,9 +29,12 @@ const declarations: string[] = []
 function visit(node: ts.Node): void {
   if (
     ts.isFunctionDeclaration(node) &&
-    ['publishUpdateCheckResult', 'installWindowsPreparedUpdate', 'recoverUpdateConflict'].includes(
-      node.name?.text ?? ''
-    )
+    [
+      'publishUpdateCheckResult',
+      'installWindowsPreparedUpdate',
+      'recoverUpdateConflict',
+      'finishMacUpdateHandoff',
+    ].includes(node.name?.text ?? '')
   )
     declarations.push(node.getText(source))
   if (
@@ -44,7 +47,7 @@ function visit(node: ts.Node): void {
   ts.forEachChild(node, visit)
 }
 visit(source)
-assert.equal(declarations.length, 4)
+assert.equal(declarations.length, 5)
 const code = ts.transpileModule(declarations.join('\n'), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText
@@ -158,6 +161,7 @@ for (const windows of [false, true]) {
       let checks = 0,
         exits = 0
       const context = {
+        macShutdownReady: false,
         previewPolicyChanging: false,
         updateChecks: { isCurrent: () => true },
         updateDebugArguments: () => [],
@@ -611,7 +615,8 @@ for (const failure of [
         /FROZEN/
       )
       assert.equal(context.updateRestartRequested, true)
-      assert.equal(snapshot.phase, 'restarting')
+      assert.equal(snapshot.phase, 'installing')
+      assert.equal(snapshot.installStage, 'handoff')
       assert.equal(events.includes('release'), false)
     } else if (
       [
@@ -682,6 +687,20 @@ for (const failure of [
       expectedId: string
     ) => Promise<{ ok: boolean; cancelled?: boolean; errorFallback?: string }>
     const context = {
+      macShutdownReady: false,
+      storageNative: {},
+      coordinationRoot: () => '/coordination',
+      userInfo: () => ({ uid: 501 }),
+      applicationBundle: () => '/Applications/ScholarSeed.app',
+      desktopStorage: () => ({ home: '/home', userData: '/profile', workspace: '/workspace' }),
+      resolveProductConfig: () => ({
+        bundleId: 'com.scholarseed.desktop',
+        buildNumber: '202610130001',
+      }),
+      persistUpdateLaunch: () => {
+        events.push('context')
+        return () => {}
+      },
       AbortController,
       process: { platform: 'darwin' },
       WINDOWS_PLATFORM: 'win32',
@@ -714,6 +733,7 @@ for (const failure of [
       finishApplicationShutdown: async () => {
         events.push('drain')
         if (failure === 'shutdown') throw new Error('cleanup failed')
+        context.backend = null
         return {}
       },
       requireCleanBackendStop: () => {},
@@ -724,7 +744,10 @@ for (const failure of [
       },
       updatePreparation: preparation,
       desktopHandoff: { isBusy: () => false },
-      backend: { stopping: false, proc: { exitCode: null, signalCode: null } },
+      backend: { stopping: false, proc: { exitCode: null, signalCode: null } } as {
+        stopping: boolean
+        proc: { exitCode: null; signalCode: null }
+      } | null,
       clearBackendRestart: () => {},
       BackendMaintenanceRejected,
       backendUpdateControl: () => ({
@@ -745,14 +768,20 @@ for (const failure of [
       }),
       setUpdateInstallationInProgress: () => {},
       pushLog: () => {},
-      app: { getVersion: () => '0.2.0' },
+      app: {
+        getVersion: () => '0.2.0',
+        getPath: () => '/Applications/ScholarSeed.app/Contents/MacOS/ScholarSeed',
+      },
       updateInstallFailure: () => ({ errorOrigin: 'install' }),
       updater: {
         logUpdateEvent: () => {},
         NO_STAGED_UPDATE: 'none',
         macHandoffCommitted: () => false,
+        macHandoffReady: () => true,
+        macHandoffRetryable: () => false,
         readReadyState: () => ({ meta: selected }),
-        quitMacUpdate: () => {
+        quitMacUpdate: async (_log: unknown, beforeCommit: () => void) => {
+          beforeCommit()
           events.push('quit')
         },
         authorizeActivation: async () => {
@@ -769,9 +798,12 @@ for (const failure of [
           _progress: unknown,
           _log: unknown,
           _signal: unknown,
-          authorize: (value: LatestVersionMeta) => Promise<() => void>
+          authorize: (value: LatestVersionMeta) => Promise<() => void>,
+          prepareLaunch: (value: LatestVersionMeta) => Promise<() => void>
         ) => {
           events.push('prepared')
+          events.push('native-ready')
+          await prepareLaunch(selected)
           await commitWithActivation(
             () => authorize(selected),
             (guard) => {
@@ -797,7 +829,9 @@ for (const failure of [
     }
     if (failure === 'none') {
       assert.equal(result.ok, true)
-      assert.equal(snapshot.phase, 'restarting')
+      assert.equal(snapshot.phase, 'installing')
+      assert.equal(snapshot.installStage, 'handoff')
+      assert.ok(events.indexOf('native-ready') < events.indexOf('preferences-saved'))
       assert.ok(events.indexOf('preferences-saved') < events.indexOf('prepare-update'))
       assert.ok(events.indexOf('commit') < events.indexOf('drain'))
       assert.ok(events.indexOf('drain') < events.indexOf('quit'))

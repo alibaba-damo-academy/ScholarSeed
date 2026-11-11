@@ -340,13 +340,36 @@ export class SquirrelInstallation {
     return this.downloaded && !this.nativeFailed
   }
 
+  matches(
+    archive: SquirrelArchive,
+    identity: Pick<SquirrelHandoff, 'candidate' | 'version' | 'buildNumber'>
+  ): boolean {
+    if (!this.ready || !this.binding) return false
+    const handoff = readSquirrelHandoff(this.recordPath)
+    return (
+      !!handoff &&
+      handoff.state === 'downloaded' &&
+      handoff.candidate === identity.candidate &&
+      handoff.version === identity.version &&
+      handoff.buildNumber === identity.buildNumber &&
+      archive.size === this.binding.size &&
+      archive.sha512.toLowerCase() === this.binding.sha512 &&
+      validSquirrelNativeRequest(handoff.nativeRequest) &&
+      sameSquirrelBinding(handoff.binding, this.binding) &&
+      sameSquirrelBinding(handoff.nativeRequest.binding, this.binding)
+    )
+  }
+
   prepare(
     archive: SquirrelArchive,
     identity: SquirrelHandoff,
     authorize: HandoffAuthorization
   ): Promise<void> {
     if (this.running) return this.running
-    if (this.handedOff) return Promise.reject(new Error('Squirrel handoff already consumed'))
+    if (this.handedOff)
+      return this.matches(archive, identity)
+        ? Promise.resolve()
+        : Promise.reject(new Error('Squirrel handoff already consumed'))
     this.running = this.start(archive, identity, authorize)
       .catch((error) => {
         if (this.handedOff) this.nativeFailed = true

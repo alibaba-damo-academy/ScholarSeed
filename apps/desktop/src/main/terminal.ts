@@ -11,16 +11,24 @@ import {
 } from 'node:fs'
 import { dirname, isAbsolute, join, normalize, relative } from 'node:path'
 import { promisify } from 'node:util'
-import recoveryBuild from '../../scripts/cd/recovery.cjs'
+import { fileURLToPath } from 'node:url'
 import { classifyMacosTrust, parseCodesignIdentity } from './codesign.ts'
 import { decodeUpdateLaunch, updateLaunchContextPath } from './relaunch.ts'
+import type { UpdateLaunchContext } from './relaunch.ts'
 import {
   decodeSquirrelHandoff,
   sameSquirrelBinding,
+  validSquirrelBinding,
+  squirrelHandoffRecordPath,
   type SquirrelNativeCapture,
 } from './squirrel.ts'
 
-const INSPECTION_SCHEMA = 1
+export const TERMINAL_PROTOCOL = Object.freeze({
+  schema: 1,
+  timeoutMs: 30_000,
+  outputBytes: 64 * 1024,
+})
+const INSPECTION_SCHEMA = TERMINAL_PROTOCOL.schema
 const CONTEXT_BYTES = 16 * 1024
 const HANDOFF_BYTES = 4096
 const PRODUCT_BYTES = 64 * 1024
@@ -29,14 +37,15 @@ export const TERMINAL_RECORD_LIMITS = Object.freeze({
   handoff: HANDOFF_BYTES,
   product: PRODUCT_BYTES,
 })
-const OUTPUT_BYTES = 64 * 1024
-const PROCESS_TIMEOUT_MS = 30_000
+const OUTPUT_BYTES = TERMINAL_PROTOCOL.outputBytes
+const PROCESS_TIMEOUT_MS = TERMINAL_PROTOCOL.timeoutMs
 const UNSAFE_WRITE_MODE = 0o022
 const HASH_PATTERN = /^[a-f0-9]{64}$/
 const TEAM_PATTERN = /^[A-Z0-9]{10}$/
 const PRODUCT_FILE = ['Contents', 'Resources', 'product.json']
-const DISTRIBUTION_LANE = 'distribution'
+export const DISTRIBUTION_LANE = 'distribution'
 const NATIVE_OBSERVATION_KIND = 'terminal-failure-observation'
+const ORPHAN_OBSERVATION_KIND = 'orphan-preparation-observation'
 const RECORD_FIELDS = [
   'sha256',
   'device',
@@ -64,6 +73,14 @@ export interface TerminalRecoveryOptions {
   cleanup: string
   toolDirectory: string
   expectedTeam: string
+  selection?: RepairRoots
+}
+export type RepairSelection = Omit<UpdateLaunchContext, 'at'>
+export type RepairRoots = Pick<RepairSelection, 'home' | 'userData' | 'workspace'>
+const REPAIR_ROOTS = ['home', 'userData', 'workspace'] as const
+
+export function sameRepairSelection(first: RepairRoots, second: RepairRoots): boolean {
+  return REPAIR_ROOTS.every((key) => first[key] === second[key])
 }
 
 export interface TerminalRecoveryDependencies {
@@ -71,6 +88,7 @@ export interface TerminalRecoveryDependencies {
   uid: number
   verifyApplication(application: string, bundle: string, team: string): Promise<void>
   probe(options: TerminalRecoveryOptions, request: Record<string, unknown>): Promise<unknown>
+  selection?: RepairSelection
 }
 
 type InspectionErrorCode =
@@ -263,72 +281,213 @@ export async function verifyApplication(
   assertTerminalSignatureIdentity(result.stdout + '\n' + result.stderr, bundle, team)
 }
 
-async function probe(
-  options: TerminalRecoveryOptions,
-  request: Record<string, unknown>
-): Promise<unknown> {
-  const { executable } = recoveryBuild.resolveRecoveryProbe(options.toolDirectory)
-  const { stdout } = await run(
-    executable,
-    [
-      '--cleanup',
-      options.cleanup,
-      '--preparation',
-      options.preparation,
-      '--source',
-      String(request.source),
-      '--target',
-      options.application,
-      '--state',
-      options.nativeState,
-      '--binding',
-      JSON.stringify(request.binding),
-      '--selection',
-      JSON.stringify(request.selection),
-    ],
-    { timeout: PROCESS_TIMEOUT_MS, maxBuffer: OUTPUT_BYTES }
+export function orphanSource(
+  options: Pick<TerminalRecoveryOptions, 'nativeState' | 'application'>,
+  expected: unknown,
+  uid: number
+): string {
+  const record = expected ? object(expected, 'native_evidence_differs') : null
+  let bytes: Buffer
+  if (record) {
+    if (record.kind !== ORPHAN_OBSERVATION_KIND || typeof record.stateBytes !== 'string')
+      reject('native_evidence_differs')
+    bytes = Buffer.from(record.stateBytes, 'base64')
+    if (
+      !bytes.length ||
+      bytes.length > PRODUCT_BYTES ||
+      bytes.toString('base64') !== record.stateBytes
+    )
+      reject('native_evidence_differs')
+  } else bytes = captureRecord(options.nativeState, PRODUCT_BYTES, [uid]).bytes
+  const state = object(JSON.parse(bytes.toString('utf8')))
+  if (
+    state.installationAuthorized !== false ||
+    state.launchAfterInstallation !== false ||
+    typeof state.updateBundleURL !== 'string' ||
+    typeof state.targetBundleURL !== 'string' ||
+    !validSquirrelBinding(state.binding) ||
+    realpathSync.native(fileURLToPath(String(state.targetBundleURL))) !== options.application
   )
-  const response = object(JSON.parse(stdout), 'native_evidence_differs')
-  if (response.schema !== INSPECTION_SCHEMA || response.mode !== 'inspect')
-    reject('native_evidence_differs')
-  return response.proof
+    reject('invalid_records')
+  return absolute(realpathSync.native(fileURLToPath(state.updateBundleURL)))
 }
 
-const dependencies: TerminalRecoveryDependencies = {
-  platform: process.platform,
-  uid: process.getuid?.() ?? -1,
-  verifyApplication,
-  probe,
+function validateRecoveryScope(
+  options: TerminalRecoveryOptions,
+  runtime: TerminalRecoveryDependencies
+): void {
+  if (runtime.platform !== 'darwin' || !Number.isSafeInteger(runtime.uid) || runtime.uid < 0)
+    reject('unsupported_platform')
+  for (const key of [
+    'application',
+    'coordinator',
+    'handoff',
+    'nativeState',
+    'preparation',
+    'cleanup',
+    'toolDirectory',
+  ] as const)
+    absolute(options[key])
+  if (!TEAM_PATTERN.test(options.expectedTeam)) reject('invalid_scope')
+  canonicalDirectory(options.application)
+  canonicalDirectory(options.coordinator)
+}
+
+function captureRecoveryRecords(
+  options: TerminalRecoveryOptions,
+  uid: number,
+  selection?: RepairSelection
+) {
+  const contextPath = updateLaunchContextPath(options.coordinator, options.application)
+  const contextRecord = selection ? null : captureRecord(contextPath, CONTEXT_BYTES, [uid])
+  const handoffRecord = captureRecord(options.handoff, HANDOFF_BYTES, [uid])
+  const productPath = join(options.application, ...PRODUCT_FILE)
+  const productRecord = captureRecord(productPath, PRODUCT_BYTES, [0, uid])
+  return { contextPath, contextRecord, handoffRecord, productPath, productRecord }
+}
+
+function assertRecoveryProduct(
+  policy: Record<string, unknown>,
+  context: RepairSelection,
+  team: string,
+  build: string
+): void {
+  if (
+    policy.bundle_id !== context.bundleId ||
+    policy.expected_team_id !== team ||
+    policy.build_number !== build ||
+    policy.release_lane !== DISTRIBUTION_LANE
+  )
+    reject('source_identity_differs')
+}
+
+function absentRecord(filename: string): boolean {
+  try {
+    lstatSync(filename)
+    return false
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true
+    throw error
+  }
+}
+
+function sameRecoveryRecords(
+  options: TerminalRecoveryOptions,
+  uid: number,
+  records: ReturnType<typeof captureRecoveryRecords>
+): boolean {
+  const contextMatches = records.contextRecord
+    ? sameRecord(records.contextPath, records.contextRecord, CONTEXT_BYTES, [uid])
+    : absentRecord(records.contextPath)
+  return (
+    contextMatches &&
+    sameRecord(options.handoff, records.handoffRecord, HANDOFF_BYTES, [uid]) &&
+    sameRecord(records.productPath, records.productRecord, PRODUCT_BYTES, [0, uid])
+  )
+}
+
+export async function inspectOrphanRecovery(
+  options: TerminalRecoveryOptions,
+  runtime: TerminalRecoveryDependencies
+) {
+  let phase: InspectionErrorCode = 'invalid_scope'
+  try {
+    validateRecoveryScope(options, runtime)
+    phase = 'unsafe_record'
+    const records = captureRecoveryRecords(options, runtime.uid, runtime.selection)
+    const { contextPath, contextRecord, handoffRecord, productRecord } = records
+    phase = 'invalid_records'
+    const context =
+      runtime.selection ??
+      (contextRecord ? decodeUpdateLaunch(contextRecord.bytes) : reject('invalid_records'))
+    if (
+      runtime.selection &&
+      (!options.selection ||
+        !absentRecord(contextPath) ||
+        !sameRepairSelection(options.selection, context))
+    )
+      reject('invalid_scope')
+    const handoff = decodeSquirrelHandoff(handoffRecord.bytes)
+    if (
+      context.uid !== runtime.uid ||
+      context.application !== options.application ||
+      context.candidate !== handoff.candidate ||
+      context.targetBuild !== handoff.buildNumber ||
+      !validSquirrelBinding(handoff.binding) ||
+      handoff.binding.candidate !== context.candidate ||
+      !['requested', 'failed'].includes(handoff.state) ||
+      squirrelHandoffRecordPath(context.home) !== options.handoff
+    )
+      reject('invalid_records')
+    const policy = object(JSON.parse(productRecord.bytes.toString('utf8')))
+    assertRecoveryProduct(policy, context, options.expectedTeam, context.sourceBuild)
+    phase = 'signature_refused'
+    await runtime.verifyApplication(options.application, context.bundleId, options.expectedTeam)
+    phase = 'native_preflight_refused'
+    const observed = object(
+      await runtime.probe(options, {
+        binding: handoff.binding,
+        selection: {
+          schema: context.schema,
+          paths: [context.home, context.userData, context.workspace],
+          identities: context.identities,
+        },
+      }),
+      'native_evidence_differs'
+    )
+    phase = 'native_evidence_differs'
+    const source = object(observed.source, 'native_evidence_differs')
+    const target = object(observed.target, 'native_evidence_differs')
+    if (
+      observed.kind !== ORPHAN_OBSERVATION_KIND ||
+      observed.bundleIdentifier !== context.bundleId ||
+      !sameSquirrelBinding(observed.binding, handoff.binding) ||
+      target.path !== options.application ||
+      typeof source.path !== 'string' ||
+      !HASH_PATTERN.test(String(object(observed.journal).sha256)) ||
+      !HASH_PATTERN.test(String(object(observed.state).sha256)) ||
+      object(observed.selection).schema !== context.schema ||
+      !HASH_PATTERN.test(String(object(observed.selection).sha256))
+    )
+      reject('native_evidence_differs')
+    canonicalDirectory(source.path)
+    phase = 'unsafe_record'
+    const candidate = captureRecord(join(source.path, ...PRODUCT_FILE), PRODUCT_BYTES, [
+      0,
+      runtime.uid,
+    ])
+    phase = 'invalid_records'
+    const candidatePolicy = object(JSON.parse(candidate.bytes.toString('utf8')))
+    assertRecoveryProduct(candidatePolicy, context, options.expectedTeam, context.targetBuild)
+    phase = 'signature_refused'
+    await runtime.verifyApplication(source.path, context.bundleId, options.expectedTeam)
+    phase = 'evidence_changed'
+    if (
+      !sameRecoveryRecords(options, runtime.uid, records) ||
+      !sameRecord(join(source.path, ...PRODUCT_FILE), candidate, PRODUCT_BYTES, [0, runtime.uid])
+    )
+      reject('evidence_changed')
+    return observed
+  } catch (error) {
+    if (error instanceof RecoveryInspectionError) throw error
+    reject(phase)
+  }
 }
 
 export async function inspectTerminalRecovery(
   options: TerminalRecoveryOptions,
-  runtime: TerminalRecoveryDependencies = dependencies
+  runtime: TerminalRecoveryDependencies
 ) {
   if (runtime.platform !== 'darwin' || !Number.isSafeInteger(runtime.uid) || runtime.uid < 0)
     reject('unsupported_platform')
   let phase: InspectionErrorCode = 'invalid_scope'
   try {
-    for (const key of [
-      'application',
-      'coordinator',
-      'handoff',
-      'nativeState',
-      'preparation',
-      'cleanup',
-      'toolDirectory',
-    ] as const)
-      absolute(options[key])
-    if (!TEAM_PATTERN.test(options.expectedTeam)) reject('invalid_scope')
-    canonicalDirectory(options.application)
-    canonicalDirectory(options.coordinator)
-    const contextPath = updateLaunchContextPath(options.coordinator, options.application)
+    validateRecoveryScope(options, runtime)
     phase = 'unsafe_record'
-    const contextRecord = captureRecord(contextPath, CONTEXT_BYTES, [runtime.uid])
-    const handoffRecord = captureRecord(options.handoff, HANDOFF_BYTES, [runtime.uid])
-    const productPath = join(options.application, ...PRODUCT_FILE)
-    const productRecord = captureRecord(productPath, PRODUCT_BYTES, [0, runtime.uid])
+    const records = captureRecoveryRecords(options, runtime.uid)
+    const { contextRecord, handoffRecord, productRecord } = records
     phase = 'invalid_records'
+    if (!contextRecord) reject('invalid_records')
     const context = decodeUpdateLaunch(contextRecord.bytes)
     const handoff = decodeSquirrelHandoff(handoffRecord.bytes)
     const policy = object(JSON.parse(productRecord.bytes.toString('utf8')))
@@ -348,13 +507,7 @@ export async function inspectTerminalRecovery(
     const handoffLocation = relative(context.home, options.handoff)
     if (!handoffLocation || isAbsolute(handoffLocation) || handoffLocation.startsWith('..'))
       reject('invalid_scope')
-    if (
-      policy.bundle_id !== context.bundleId ||
-      policy.expected_team_id !== options.expectedTeam ||
-      policy.build_number !== context.sourceBuild ||
-      policy.release_lane !== DISTRIBUTION_LANE
-    )
-      reject('source_identity_differs')
+    assertRecoveryProduct(policy, context, options.expectedTeam, context.sourceBuild)
     phase = 'signature_refused'
     await runtime.verifyApplication(options.application, context.bundleId, options.expectedTeam)
     phase = 'native_preflight_refused'
@@ -399,12 +552,7 @@ export async function inspectTerminalRecovery(
     )
       reject('native_evidence_differs')
     phase = 'evidence_changed'
-    if (
-      !sameRecord(contextPath, contextRecord, CONTEXT_BYTES, [runtime.uid]) ||
-      !sameRecord(options.handoff, handoffRecord, HANDOFF_BYTES, [runtime.uid]) ||
-      !sameRecord(productPath, productRecord, PRODUCT_BYTES, [0, runtime.uid])
-    )
-      reject('evidence_changed')
+    if (!sameRecoveryRecords(options, runtime.uid, records)) reject('evidence_changed')
     return {
       schema: INSPECTION_SCHEMA,
       mode: 'inspect' as const,

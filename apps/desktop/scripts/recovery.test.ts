@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { parseRecoveryArguments, runRecoveryCommand } from './recovery.ts'
+import { parseRecoveryArguments, runRecoveryCommand, recoveryProbeArguments } from './recovery.ts'
 import { TerminalRestorationError } from '../src/main/restoration.ts'
+import { RecoveryInspectionError } from '../src/main/terminal.ts'
 
 const INSPECTION_SCOPE = [
   '--application',
@@ -49,6 +50,43 @@ test('help is available without reading records, compiling or inspecting', async
   assert.equal(code, 0)
   assert.match(String(output[0]), /inspect/)
   assert.match(String(output[0]), /No state is consumed/)
+  assert.match(String(output[0]), /Orphan recovery.*signed App/)
+})
+
+test('CLI probe arguments require a complete typed terminal request before spawning', () => {
+  const scope = parseRecoveryArguments(['inspect', ...INSPECTION_SCOPE])
+  assert.equal(scope.mode, 'inspect')
+  if (scope.mode !== 'inspect') throw new Error('Missing inspection scope')
+  const request = {
+    source: '/candidate/Source.app',
+    binding: {
+      schema: 1,
+      requestId: 'a'.repeat(64),
+      sha512: 'b'.repeat(128),
+      size: 1,
+      candidate: 'candidate',
+    },
+    selection: {
+      schema: 2,
+      paths: ['/home', '/profile', '/workspace'],
+      identities: ['one', 'two', 'three'],
+    },
+  }
+  const arguments_ = recoveryProbeArguments(scope.options, request)
+  assert.equal(arguments_[arguments_.indexOf('--source') + 1], request.source)
+  assert.ok(arguments_.every((value) => typeof value === 'string'))
+  for (const changes of [
+    { source: undefined },
+    { binding: undefined },
+    { selection: undefined },
+    { source: '/candidate/../Source.app' },
+    { selection: { ...request.selection, schema: true } },
+  ]) {
+    assert.throws(
+      () => recoveryProbeArguments(scope.options, { ...request, ...changes }),
+      (error) => error instanceof RecoveryInspectionError && error.code === 'invalid_records'
+    )
+  }
 })
 
 test('explicit build is independent of product inspection', async () => {

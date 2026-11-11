@@ -7,6 +7,7 @@ const { sha256 } = require('../shared/digest.cjs')
 const { fingerprint } = require('../../native/shipit/fingerprint.cjs')
 const { ensureArtifact } = require('../../../../scripts/shared/artifacts.cjs')
 const { SHIPIT_OVERLAYS } = require('../../native/shipit/overlays.cjs')
+const { SUPPORT_UNITS } = require('../../native/shipit/compilation.cjs')
 
 const OWNER = path.resolve(__dirname, '../../native/shipit')
 const SOURCE_MANIFEST = path.join(OWNER, 'sources.json')
@@ -23,13 +24,49 @@ const COMPILE_UNITS = [
 const FRAMEWORKS = ['Mantle', 'ReactiveObjC', 'Foundation', 'AppKit', 'IOKit', 'Security']
 const RPATHS = ['@executable_path/../..', '@executable_path/../../../..']
 const TIMING_TEST_SPANS = 7
+const CONTRACT_RESULT_SCHEMA = 1
+const PREPARATION_CONTRACTS = {
+  preparation: { units: SUPPORT_UNITS },
+  readiness: { units: ['readiness.m'] },
+  terminal: { units: SUPPORT_UNITS },
+  publication: { units: ['cleanup.m', 'readiness.m'] },
+  readonly: { units: SUPPORT_UNITS, flags: ['-DCFPreferencesSetValue=SSReadOnlyPreferenceSet', '-DCFPreferencesSynchronize=SSReadOnlyPreferenceSync'] },
+  preflight: { units: SUPPORT_UNITS, external: true },
+  succession: { units: SUPPORT_UNITS, flags: ['-framework', 'Security'] },
+  parking: { units: SUPPORT_UNITS, external: true, flags: ['-Wno-deprecated-declarations', '-framework', 'Security', '-framework', 'ServiceManagement'], sources: ['../directory.c'] },
+}
+
+function describeResult(result) {
+  return `status=${JSON.stringify(result.status)} signal=${JSON.stringify(result.signal)} pid=${JSON.stringify(result.pid > 0 ? result.pid : null)} error=${result.error?.code || 'none'}: ${result.error?.message || ''} ${result.stderr || ''}`
+}
+
+function recordContract(directory, name, result) {
+  fs.writeFileSync(
+    path.join(directory, `${name}-test.log`),
+    (result.stdout || '') + (result.stderr || '')
+  )
+  fs.writeFileSync(
+    path.join(directory, `${name}-test.result.json`),
+    `${JSON.stringify(
+      {
+        schema: CONTRACT_RESULT_SCHEMA,
+        pid: result.pid > 0 ? result.pid : null,
+        status: result.status,
+        signal: result.signal,
+        error: result.error ? { code: result.error.code, message: result.error.message } : null,
+      },
+      null,
+      2
+    )}\n`
+  )
+}
 
 function command(executable, args, directory, cwd = directory) {
   const result = spawnSync(executable, args, {
     cwd, env: { ...process.env, TMPDIR: directory }, encoding: 'utf8',
   })
   if (result.error || result.status !== 0)
-    throw new Error(`ShipIt command failed: ${executable}: ${result.error || result.stderr}`)
+    throw new Error(`ShipIt command failed: ${executable}: ${describeResult(result)}`)
   return result.stdout.trim()
 }
 
@@ -65,8 +102,8 @@ function verifyNativeTiming(directory, frameworks, headers) {
     `-Wl,-rpath,${frameworks}`, '-o', executable, fixture,
   ], directory)
   const result = spawnSync(executable, [], { encoding: 'utf8', env: { ...process.env, TMPDIR: directory } })
-  fs.writeFileSync(path.join(directory, 'timing-test.log'), result.stderr || '')
-  if (result.error || result.status !== 0) throw new Error('ShipIt native timing contract failed')
+  recordContract(directory, 'timing', result)
+  if (result.error || result.status !== 0) throw new Error(`ShipIt native timing contract failed: ${describeResult(result)}`)
   const events = [...result.stderr.matchAll(/id=(\d+) stage=([\w-]+) event=(start|end)(?: result=(\w+))?/g)]
   const starts = events.filter(event => event[3] === 'start')
   const ends = events.filter(event => event[3] === 'end')
@@ -92,7 +129,11 @@ function verifyAdmission(directory, frameworks, headers) {
     '-framework', 'ReactiveObjC', `-Wl,-rpath,${frameworks}`,
     '-o', executable, path.join(OWNER, 'admission.test.m'),
   ], directory)
-  command(executable, [], directory)
+  const result = spawnSync(executable, [], {
+    cwd: directory, encoding: 'utf8', env: { ...process.env, TMPDIR: directory },
+  })
+  recordContract(directory, 'admission', result)
+  if (result.error || result.status !== 0) throw new Error(`ShipIt admission contract failed: ${describeResult(result)}`)
 }
 
 function verifyCleanup(directory) {
@@ -105,8 +146,8 @@ function verifyCleanup(directory) {
     const result = spawnSync(executable, [path.join(directory, `${name}-fixture`)], {
       encoding: 'utf8', env: { ...process.env, TMPDIR: directory },
     })
-    fs.writeFileSync(path.join(directory, `${name}-test.log`), (result.stdout || '') + (result.stderr || ''))
-    if (result.error || result.status !== 0) throw new Error(`ShipIt ${name} contract failed`)
+    recordContract(directory, name, result)
+    if (result.error || result.status !== 0) throw new Error(`ShipIt ${name} contract failed: ${describeResult(result)}`)
   }
 }
 
@@ -117,25 +158,27 @@ function verifyBinding(directory, frameworks, headers, source) {
     '-framework', 'Foundation', '-framework', 'Mantle', '-framework', 'ReactiveObjC',
     `-Wl,-rpath,${frameworks}`, path.join(source, 'Squirrel', 'SQRLShipItRequest.m'),
     path.join(OWNER, 'cleanup.m'), path.join(OWNER, 'preparation.m'), path.join(OWNER, 'readiness.m'), path.join(OWNER, 'binding.test.m'), '-o', executable], directory)
-  command(executable, [path.join(directory, 'binding-fixture')], directory)
+  const result = spawnSync(executable, [path.join(directory, 'binding-fixture')], {
+    cwd: directory, encoding: 'utf8', env: { ...process.env, TMPDIR: directory },
+  })
+  recordContract(directory, 'binding', result)
+  if (result.error || result.status !== 0) throw new Error(`ShipIt binding contract failed: ${describeResult(result)}`)
 }
 
 function verifyPreparation(directory) {
-  for (const name of ['preparation', 'readiness', 'terminal', 'publication', 'readonly', 'preflight']) {
-    const fixture = path.join(name === 'preflight' ? OWNER : directory, `${name}.test.m`)
-    if (name !== 'preflight') fs.copyFileSync(path.join(OWNER, `${name}.test.m`), fixture)
+  for (const [name, configuration] of Object.entries(PREPARATION_CONTRACTS)) {
+    const external = configuration.external === true
+    const fixture = path.join(external ? OWNER : directory, `${name}.test.m`)
+    if (!external) fs.copyFileSync(path.join(OWNER, `${name}.test.m`), fixture)
     const executable = path.join(directory, `${name}-test`)
-    let units = ['cleanup', 'preparation', 'readiness']
-    if (name === 'readiness') units = ['readiness']
-    if (name === 'publication') units = ['cleanup', 'readiness']
     command('/usr/bin/xcrun', ['clang', '-fobjc-arc', '-fblocks', '-Wall', '-Wextra', '-Werror',
-      ...(name === 'readonly' ? ['-DCFPreferencesSetValue=SSReadOnlyPreferenceSet', '-DCFPreferencesSynchronize=SSReadOnlyPreferenceSync'] : []),
-      '-framework', 'Foundation', ...units.map(unit => path.join(directory, `${unit}.m`)), fixture, '-o', executable], directory)
+      ...(configuration.flags || []), ...(configuration.sources || []).map(source => path.join(OWNER, source)),
+      '-framework', 'Foundation', ...configuration.units.map(unit => path.join(directory, unit)), fixture, '-o', executable], directory)
     const result = spawnSync(executable, [path.join(directory, `${name}-fixture`)], {
       encoding: 'utf8', env: { ...process.env, TMPDIR: directory }, timeout: 60_000,
     })
-    fs.writeFileSync(path.join(directory, `${name}-test.log`), (result.stdout || '') + (result.stderr || ''))
-    if (result.error || result.status !== 0) throw new Error(`ShipIt ${name} contract failed: ${result.error || result.stderr}`)
+    recordContract(directory, name, result)
+    if (result.error || result.status !== 0) throw new Error(`ShipIt ${name} contract failed: ${describeResult(result)}`)
   }
 }
 

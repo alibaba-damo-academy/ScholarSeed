@@ -37,7 +37,7 @@ test('Windows packs personal Setup and full/delta with SDK checks enabled', () =
   const exclude = new RegExp(args[args.indexOf('--exclude') + 1])
   for (const filename of ['python/python312.pdb', 'python/DLLs/libcrypto-3-x64.pdb', 'runtime.dll', 'createdump', 'data.nupkg'])
     assert.equal(exclude.test(filename), false, `frozen component member must be retained: ${filename}`)
-  assert.deepEqual(libraries('darwin'), ['lease.node','fonts.node','notarization.node'])
+  assert.deepEqual(libraries('darwin'), ['lease.node','fonts.node','notarization.node','repair.node'])
   assert.deepEqual(libraries('win32'), ['lease.node','fonts.node','notification.node','velopack.node'])
 })
 test('Velopack installation identity stays separate from service bundle identity', () => {

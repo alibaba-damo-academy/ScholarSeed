@@ -24,15 +24,28 @@ export function isValidDebugPort(port: unknown): port is number {
 }
 
 export function updateDebugArguments(argv: readonly string[]): string[] {
-  const port = explicitUpdateDebugPort(argv)
-  return port === undefined ? [] : [`${ADDRESS_SWITCH}=${LOOPBACK}`, `${PORT_SWITCH}=${port}`]
+  return updateDebugPortArguments(explicitUpdateDebugPort(argv))
+}
+
+export function updateDebugPortArguments(port: number | undefined): string[] {
+  if (port === undefined) return []
+  if (!isValidDebugPort(port)) throw new Error('Invalid update debug port')
+  return [`${ADDRESS_SWITCH}=${LOOPBACK}`, `${PORT_SWITCH}=${port}`]
 }
 
 export function restoreUpdateDebugPort(
-  commandLine: { hasSwitch: (name: string) => boolean; appendSwitch: (name: string, value: string) => void },
+  commandLine: {
+    hasSwitch: (name: string) => boolean
+    appendSwitch: (name: string, value: string) => void
+  },
   context: { debugPort?: number }
 ): void {
-  if (context.debugPort === undefined || commandLine.hasSwitch(PORT_SWITCH.slice(2)) || commandLine.hasSwitch('remote-debugging-pipe')) return
+  if (
+    context.debugPort === undefined ||
+    commandLine.hasSwitch(PORT_SWITCH.slice(2)) ||
+    commandLine.hasSwitch('remote-debugging-pipe')
+  )
+    return
   commandLine.appendSwitch(ADDRESS_SWITCH.slice(2), LOOPBACK)
   commandLine.appendSwitch(PORT_SWITCH.slice(2), String(context.debugPort))
 }

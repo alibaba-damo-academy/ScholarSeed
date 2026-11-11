@@ -103,6 +103,25 @@ class ConfigurationStorageTests(unittest.TestCase):
         self.assertEqual(self.leases, 0)
         self.assertFalse((self.root / "other.toml").exists())
 
+    def test_partition_allocates_distinct_exact_grants_without_copying_state(self) -> None:
+        self.write(self.path, b"private-parent-state")
+        first = self.store.partition(self.path)
+        second = self.store.partition(self.path)
+        self.assertNotEqual(first.path.parent, second.path.parent)
+        self.assertEqual(first.path.parent.parent, self.root)
+        self.assertFalse(first.path.exists())
+        first.storage.update(first.path, lambda previous: b"first" if previous is None else b"bad")
+        second.storage.update(second.path, lambda previous: b"second")
+        self.assertEqual(first.path.read_bytes(), b"first")
+        self.assertEqual(second.path.read_bytes(), b"second")
+        self.assertEqual(self.path.read_bytes(), b"private-parent-state")
+        for target in (self.path, second.path, first.path.with_name("other.toml")):
+            with self.assertRaises(PermissionError):
+                first.storage.update(target, lambda previous: b"forbidden")
+        with self.assertRaises(PermissionError):
+            self.store.partition(self.root / "ungranted.toml")
+        self.assertEqual(self.leases, 0)
+
     def test_grant_does_not_require_or_create_missing_parents(self) -> None:
         target = self.root / "missing" / "nested" / "config.toml"
         store = ConfigurationStorage((target,), self.lease)

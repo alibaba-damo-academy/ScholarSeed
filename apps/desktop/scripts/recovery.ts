@@ -1,20 +1,33 @@
-import { resolve } from 'node:path'
+import { resolve, isAbsolute, normalize } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { execFile } from 'node:child_process'
+import { createRequire } from 'node:module'
+import { promisify } from 'node:util'
+import { beginDomains } from '../native/domains.cjs'
 import recoveryBuild from './cd/recovery.cjs'
 import {
   inspectTerminalRecovery,
   RecoveryInspectionError,
   type TerminalRecoveryOptions,
+  TERMINAL_PROTOCOL,
+  verifyApplication,
 } from '../src/main/terminal.ts'
 import {
   applyTerminalRecovery,
   TerminalRestorationError,
   type TerminalRestorationOptions,
+  type TerminalRestorationRuntime,
+  type RecoveryNative,
+  type MaintenanceTools,
 } from '../src/main/restoration.ts'
+import { validSquirrelBinding } from '../src/main/squirrel.ts'
+import { UPDATE_STORAGE_IDENTITY_SCHEMAS } from '../src/main/relaunch.ts'
 
-const SCHEMA = 1
+const SCHEMA = TERMINAL_PROTOCOL.schema
 const INVALID_ARGUMENTS = 'invalid_arguments'
 const COMMAND_FAILED = 'command_failed'
+const require = createRequire(import.meta.url)
+const run = promisify(execFile)
 const HELP = [
   'Mac terminal recovery. Inspect is read-only: No state is consumed.',
   'node --experimental-transform-types apps/desktop/scripts/recovery.ts build --output ABSOLUTE_PRIVATE_TOOL_DIRECTORY',
@@ -25,6 +38,7 @@ const HELP = [
   'apply uses the same explicit scope plus --request-id SHA256; it only consumes two proved old records under held qualifications.',
   'build compiles a local probe only; it does not download, codesign, install or inspect product state.',
   'inspect never compiles, creates locks, resumes installation or grants recovery authority.',
+  'Orphan recovery and orphan intents require the signed App repair entry; this CLI does not accept orphan mode or storage selections.',
 ].join('\n')
 const FLAGS = {
   '--application': 'application',
@@ -101,13 +115,105 @@ interface CommandDependencies {
   apply?(options: TerminalRestorationOptions): Promise<unknown>
 }
 
+export function recoveryProbeArguments(
+  scope: TerminalRecoveryOptions,
+  request: Record<string, unknown>
+): string[] {
+  if (!request || typeof request !== 'object' || Array.isArray(request))
+    throw new RecoveryInspectionError('invalid_records')
+  const selection = request.selection as
+    { schema?: unknown; paths?: unknown; identities?: unknown } | undefined
+  const source = request.source
+  if (
+    typeof source !== 'string' ||
+    !isAbsolute(source) ||
+    normalize(source) !== source ||
+    source.includes('\0') ||
+    !validSquirrelBinding(request.binding) ||
+    !selection ||
+    typeof selection !== 'object' ||
+    Array.isArray(selection) ||
+    typeof selection.schema !== 'number' ||
+    !UPDATE_STORAGE_IDENTITY_SCHEMAS.includes(selection.schema) ||
+    !Array.isArray(selection.paths) ||
+    selection.paths.length !== 3 ||
+    !selection.paths.every(
+      (value) =>
+        typeof value === 'string' &&
+        isAbsolute(value) &&
+        normalize(value) === value &&
+        !value.includes('\0')
+    ) ||
+    !Array.isArray(selection.identities) ||
+    selection.identities.length !== 3 ||
+    !selection.identities.every((value) => typeof value === 'string' && value.length > 0)
+  )
+    throw new RecoveryInspectionError('invalid_records')
+  return [
+    '--cleanup',
+    scope.cleanup,
+    '--preparation',
+    scope.preparation,
+    '--source',
+    source,
+    '--target',
+    scope.application,
+    '--state',
+    scope.nativeState,
+    '--binding',
+    JSON.stringify(request.binding),
+    '--selection',
+    JSON.stringify(selection),
+  ]
+}
+
 const dependencies: CommandDependencies = {
   write: (value) =>
     process.stdout.write(typeof value === 'string' ? `${value}\n` : `${JSON.stringify(value)}\n`),
   build: recoveryBuild.buildRecoveryProbe,
   buildMaintenance: recoveryBuild.buildRecoveryMaintenance,
-  inspect: inspectTerminalRecovery,
-  apply: applyTerminalRecovery,
+  inspect: (options) =>
+    inspectTerminalRecovery(options, {
+      platform: process.platform,
+      uid: process.getuid?.() ?? -1,
+      verifyApplication,
+      probe: async (scope, request) => {
+        const { executable } = recoveryBuild.resolveRecoveryProbe(scope.toolDirectory)
+        const { stdout } = await run(executable, recoveryProbeArguments(scope, request), {
+          timeout: TERMINAL_PROTOCOL.timeoutMs,
+          maxBuffer: TERMINAL_PROTOCOL.outputBytes,
+        })
+        const response = JSON.parse(stdout)
+        if (
+          !response ||
+          typeof response !== 'object' ||
+          Array.isArray(response) ||
+          response.schema !== SCHEMA ||
+          response.mode !== 'inspect' ||
+          !response.proof ||
+          typeof response.proof !== 'object' ||
+          Array.isArray(response.proof)
+        )
+          throw new RecoveryInspectionError('native_evidence_differs')
+        return response.proof
+      },
+    }),
+  apply: (options) => applyTerminalRecovery(options, maintenance),
+}
+
+const maintenance: TerminalRestorationRuntime = {
+  platform: process.platform,
+  uid: process.getuid?.() ?? -1,
+  load(directory) {
+    const files = recoveryBuild.resolveRecoveryMaintenance(directory)
+    const native = require(files.lease) as RecoveryNative
+    const terminal = require(files.terminal) as Pick<MaintenanceTools, 'open'>
+    if (typeof native.consumeAt !== 'function' || typeof terminal.open !== 'function')
+      throw new Error('Missing maintenance capability')
+    return { native, open: terminal.open }
+  },
+  begin: (native, coordinator, roots) => beginDomains(native, coordinator, roots, true),
+  verifyApplication,
 }
 
 export async function runRecoveryCommand(

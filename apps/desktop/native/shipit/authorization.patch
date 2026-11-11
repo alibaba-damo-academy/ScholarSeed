@@ -60,11 +60,12 @@
  	// this installer. This pins the install to a location whose ancestors the
 --- a/Squirrel/ShipIt-main.m
 +++ b/Squirrel/ShipIt-main.m
-@@ -25,6 +25,7 @@
+@@ -25,6 +25,8 @@
  #import "preparation.h"
  #import "readiness.h"
  #import "admission.h"
 +#import "binding.h"
++#import "succession.h"
  #import "SQRLInstaller+Private.h"
  #import "SQRLTerminationListener.h"
  #import "SQRLShipItRequest.h"
@@ -76,13 +77,27 @@
              // An entered install may have moved the target already. Preserve
              // the original rollback-first path before asking preparation to read it.
              BOOL targetRunning = NO;
-@@ -131,28 +133,28 @@
+@@ -131,28 +133,41 @@
              BOOL openedPreparation = SSPreparationOpen(applicationIdentifier, &openError);
              if (openedPreparation) {
                  NSInteger code = 0;
 -                SSPreparationFailure failure = SSPreparationRecoverFailure(request.updateBundleURL, request.targetBundleURL, &code, &openError);
 +                SSPreparationFailure failure = SSPreparationRecoverFailure(request.updateBundleURL, request.targetBundleURL, request.binding, &code, &openError);
-                 if (failure == SSPreparationFailureInvalid) return [RACSignal error:openError];
+-                if (failure == SSPreparationFailureInvalid) return [RACSignal error:openError];
++                if (failure == SSPreparationFailureInvalid && !request.installationAuthorized) {
++                    NSURL *state = SSSuccessionStateURL();
++                    if (SSPreparationReconcile(request.updateBundleURL, request.targetBundleURL, request.binding, ^BOOL(NSError **error) {
++                        return SSVerifySuccession(request.dictionaryValue, state, applicationIdentifier, SQRLInstallerOwnedBundleKey, error);
++                    }, &openError)) {
++                        openError = nil;
++                        failure = SSPreparationRecoverFailure(request.updateBundleURL, request.targetBundleURL, request.binding, &code, &openError);
++                    }
++                }
++                if (failure == SSPreparationFailureInvalid) {
++                    preparationFailed = YES;
++                    SSReadinessPublishBound(request.updateBundleURL, request.targetBundleURL, request.binding, NO, openError.code ?: ECANCELED, NULL);
++                    return [RACSignal error:openError];
++                }
                  if (failure == SSPreparationFailureRestored) return [RACSignal error:[NSError errorWithDomain:SSAdmissionErrorDomain code:code userInfo:nil]];
              }
              if (installationAttempts(applicationIdentifier) == 0 || targetRunning) {

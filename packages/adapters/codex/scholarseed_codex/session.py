@@ -317,7 +317,12 @@ class CodexRuntimeSession:
         launch_environment: Mapping[str, str] | None = None,
         tool_environment: Mapping[str, str] | None = None,
         host_pool: CodexHostPool | None = None,
+        isolated_home: Path | None = None,
     ) -> None:
+        if isolated_home is not None and (
+            resume_binding is not None or request.fork_source is not None
+        ):
+            raise ValueError("isolated invocations cannot resume or fork shared native state")
         self._host_pool = host_pool or CodexHostPool()
         self._owns_pool = host_pool is None
         self._tool_environment = dict(tool_environment or {})
@@ -373,7 +378,9 @@ class CodexRuntimeSession:
         self._loop_guard = ToolLoopGuard()
         executable = configured_codex_executable()
         validate_model_connection(request.model)
-        runtime_home = self._host_pool.prepare_home()
+        runtime_home = (
+            isolated_home if isolated_home is not None else self._host_pool.prepare_home()
+        )
         permission_policy = CODEX_PERMISSION_POLICIES[request.permission.mode]
         permissions_profile, self._permission_config = thread_permission_config(
             permission_policy.sandbox,
@@ -396,6 +403,7 @@ class CodexRuntimeSession:
                 launch_cwd=runtime_home / CODEX_DISCOVERY_HOME_DIRNAME,
                 execution_scope=request.execution_scope or request.product_session_id,
                 process_sharing_scope=request.process_sharing_scope,
+                isolation_scope=str(runtime_home) if isolated_home is not None else "",
                 resume_session_id=(
                     resume_binding.opaque_session_ref if resume_binding is not None else ""
                 ),

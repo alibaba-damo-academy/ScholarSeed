@@ -18,11 +18,21 @@ import test from 'node:test'
 import {
   assertTerminalSignatureIdentity,
   inspectTerminalRecovery,
+  inspectOrphanRecovery,
   RecoveryInspectionError,
 } from './terminal.ts'
 import { updateLaunchDirectory } from './relaunch.ts'
 
 const macosTest = process.platform === 'darwin' ? test : test.skip
+
+macosTest('orphan inspection maps missing context to a typed record refusal', async (context) => {
+  const current = fixture(context)
+  rmSync(current.contextPath)
+  await assert.rejects(
+    inspectOrphanRecovery(current.options, current.dependencies),
+    (error) => error instanceof RecoveryInspectionError && error.code === 'unsafe_record'
+  )
+})
 
 function fixture(context: test.TestContext) {
   const root = mkdtempSync(join(realpathSync(tmpdir()), 'terminal-inspection-'))

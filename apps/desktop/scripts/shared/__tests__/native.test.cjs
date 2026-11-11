@@ -6,6 +6,8 @@ const { createRequire } = require('node:module')
 const vm = require('node:vm')
 const sealing = require('../../cd/seal.cjs')
 const leaseModule = import('../lease.mjs')
+const { libraries } = require('../../../native/libraries.cjs')
+const { SUPPORT_UNITS, REPAIR_FLAGS } = require('../../../native/shipit/compilation.cjs')
 const {
   compileNative,
   nativeBuildDirectory,
@@ -14,6 +16,17 @@ const {
   supportsNoDefaultConfig,
   invoke,
 } = require('../native.cjs')
+
+test('Darwin-only repair libraries are not declared for another platform', () => {
+  assert.deepEqual(libraries('darwin'), ['lease.node', 'fonts.node', 'notarization.node', 'repair.node'])
+  assert.deepEqual(libraries('win32'), ['lease.node', 'fonts.node', 'notification.node', 'velopack.node'])
+  assert.deepEqual(libraries('linux'), ['lease.node', 'fonts.node'])
+  assert.deepEqual(SUPPORT_UNITS, ['cleanup.m', 'preparation.m', 'readiness.m'])
+  for (const name of ['Foundation', 'AppKit', 'Security', 'ServiceManagement']) {
+    const index = REPAIR_FLAGS.indexOf(name)
+    assert.equal(REPAIR_FLAGS[index - 1], '-framework')
+  }
+})
 
 async function explicitContractEntry(failure) {
   const filename = path.resolve(__dirname, '../../ci/native-contract.cjs')

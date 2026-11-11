@@ -72,7 +72,7 @@ export function useUpdateState(): UpdateSnapshot | null {
 }
 
 /** 当前相位下用户能发起的那一个动作。 */
-export type UpdateAction = 'check' | 'download' | 'install' | 'none'
+export type UpdateAction = 'check' | 'download' | 'install' | 'repair' | 'none'
 
 /**
  * 两个表面共用同一份动作判定，才不会一个给「重试下载」另一个给「检查更新」。
@@ -83,7 +83,9 @@ export type UpdateAction = 'check' | 'download' | 'install' | 'none'
  */
 export function updateActionOf(state: UpdateSnapshot | null): UpdateAction {
   if (!state) return 'check'
-  if (state.restartPending || state.errorFallback === 'activation_recovery_required') return 'none'
+  if (state.restartPending) return 'none'
+  if (state.errorFallback === 'activation_recovery_required')
+    return state.repairAvailable ? 'repair' : 'none'
   switch (state.phase) {
     case 'ready':
       return 'install'
@@ -117,7 +119,10 @@ export async function runUpdateAction(
 ): Promise<void> {
   const action = updateActionOf(state)
   const id = state?.candidate?.id
-  if (action === 'download' && id) await window.scholarseed.startUpdate(id)
+  if (action === 'repair') {
+    const result = await window.scholarseed.repairUpdate()
+    if (!result.ok && !result.cancelled) throw new Error('Update repair could not start')
+  } else if (action === 'download' && id) await window.scholarseed.startUpdate(id)
   else if (action === 'install') {
     if (!confirmedCandidateKey || confirmedCandidateKey !== updateCandidateKey(state?.candidate))
       return
@@ -158,7 +163,10 @@ export const UPDATE_ENTRY_PHASES: ReadonlySet<UpdateSnapshot['phase']> = new Set
 ])
 
 export function isUpdateEntryVisible(state: UpdateSnapshot | null): boolean {
-  return state !== null && UPDATE_ENTRY_PHASES.has(state.phase)
+  return (
+    state !== null &&
+    (state.startupVerification === 'verified' || UPDATE_ENTRY_PHASES.has(state.phase))
+  )
 }
 
 export type UpdateEntryBadge = 'none' | 'unread' | 'warning' | 'ready'

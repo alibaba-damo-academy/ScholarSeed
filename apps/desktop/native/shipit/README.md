@@ -75,6 +75,34 @@ local contracts; final signed-product restart timing and privileged recovery
 require the CI update acceptance described below. Windows does not consume the
 new native journal, notification or gate.
 
+Preparation, cleanup, timing, admission and binding contracts preserve stdout/stderr in their test logs and write a
+schema-1 `*-test.result.json` receipt with child PID, exit status, termination signal and
+spawn error (PID is null when unavailable). Failures include those fields even when stderr is empty. A signal,
+spawn failure or nonzero status still fails the build; recording the result
+does not retry execution or extend its existing deadline. Process-observation
+uncertainty in the live repair bridge remains a refusal, not an archive failure
+or a successful recovery. Correlate the exact PID and executable with host diagnostics;
+an XProtect framework warning alone does not establish why a process was killed.
+
+### Local endpoint-security approval
+
+A host security agent can deny a freshly compiled test before its entry point,
+even when its ad-hoc signature verifies. A valid signature is not execution
+authorization. A per-program confirmation that expires with a deny decision
+can therefore produce SIGKILL with empty test output. Kernel exit-reason evidence
+and the security agent's exact executable/decision record distinguish this from
+a native assertion; missing kqueue code-signing or memory flags are not enough.
+
+Before an explicitly authorized human confirmation, freeze the reviewed sources,
+executable paths and SHA-256 inventory, and verify signatures. Run each approved
+artifact with new private fixtures; keep a denial as a failed attempt, without
+automatic replay. Then run the complete original helper build and all 13
+contracts, checking the newly compiled artifacts against that inventory. Human
+approval of exact test programs is not permission to change security policy,
+add broad exceptions, remove provenance, or switch launchers to evade a denial.
+Unattended runs need an appropriately authorized host. This development-host
+workflow does not satisfy signed-App update or Windows product acceptance.
+
 ## Launch reentry and startup failure
 
 The pre-termination listener observes only the applications present at subscription.
@@ -353,13 +381,216 @@ old installation. An independently authorized new source may advance preparation
 this is not a permanent replay ledger across all subsequent journal replacements.
 The original signature, online activation, binding and installation gates remain.
 
-**gap**: this source change does not replace an installed older helper, make a
-legacy orphan complete, prove notification delivery, or authorize Native record
-retirement. Controlled TS record recovery below still preserves Native evidence.
-An orphan whose legacy source/ack has disappeared requires a separately reviewed,
-explicitly authorized Native retirement protocol; clearing a journal or rebuilding
-an acknowledgement is not that protocol. Signed-source update acceptance remains
-independent of native contracts.
+**gap**: durable publication does not replace an installed older helper or make a
+legacy orphan complete. Controlled TS record recovery below still preserves Native
+evidence. The bounded supersession protocol below is separate from terminal failure
+recovery; neither clearing an arbitrary journal nor rebuilding an acknowledgement
+is permitted. Signed-source update acceptance remains independent of native contracts.
+
+## Automatic legacy orphan supersession
+
+**current (source)**: before installation authorization, ShipIt may supersede an
+exactly qualified legacy failed preparation while handling a fresh request. This
+does not claim the historical target was restored. It permits a currently valid,
+independently authenticated installation to prepare its explicitly selected next
+update even when the old target identity changed and temporary payloads disappeared.
+
+Preparation and Cleanup locks remain held. The legacy record must have the known
+bound ready/failure shape, no ownership intent or terminal protocol, and identical
+original/failure-target captures. Its source and complete private candidate directory
+must both be absent under no-follow ancestor traversal; live paths, symlinks, unknown
+fields, permissions errors and uncertain closure refuse. There is no age-based
+expiry, device-number normalization, historical directory deletion or ack fabrication.
+
+The successor must use a different request ID and source under the same update cache,
+and the same target path. Its live native request must exactly match the frozen
+request, remain unauthorized for installation, and have no pending rollback preference.
+Both current target and new source undergo offline strict, all-architecture and nested
+code validation against the running helper's Apple Developer ID Team and requested
+bundle identity. Ad-hoc helpers cannot grant this qualification. Native model URLs
+are serialized to their JSON wire representation before comparing the request.
+
+After verification, source/target captures, both qualifications, Cleanup state and
+the exact Preparation journal snapshot are checked again. Original journal bytes
+are retained in an immutable `superseded-<sha256>.plist` within the private Preparation
+directory before the active journal is atomically cleared and synchronized. An
+interrupted owned archive stage can be retried; an existing archive must match exactly.
+Archive publication uses exclusive rename, and uncertain synchronization/close poisons
+the qualification. Normal request binding, candidate copying, final signature checks,
+fresh online authorization and official Squirrel replacement still follow. No launch,
+user-data change or old installation replay is authorized by retirement.
+
+An unqualified historical failure is published only as a failure notification for
+the current request, ending the current helper demand rather than repeatedly exiting
+with an unobserved error. That notification is not proof of the old transaction's
+terminal outcome and does not relax Desktop startup admission.
+
+**required / gap**: `succession.test.m` covers the missing-payload/replaced-target
+shape, native request retirement, interrupted continuation and refusal boundaries.
+Native contracts do not replace the signed product lifecycle. Already installed old
+helpers cannot acquire this protocol from a target-only update; use the independent
+signed repair entry below rather than overwriting the installed helper. Windows does
+not compile or execute this protocol and retains Velopack.
+
+## Independent signed repair entry
+
+**current (source)**: normal macOS activation has two phases. Archive/source trust,
+native preparation and the bound downloaded receipt precede preference quiescence,
+Serve maintenance and launch-context persistence. Preparation does not block the
+workbench. A maintenance/authorization refusal resumes writers when their release
+is known, and reuses only the same ready native request, candidate and archive.
+Installation authorization is refreshed again after a clean backend shutdown and
+checked synchronously with the binding immediately before native quit-and-install.
+A transient authorization outage at that boundary exposes a retry of the retained
+ready request, not a new preparation or replayed grant. Signature, binding and
+transaction failures do not enter transport retry. HTTP/network/read contention
+retries are bounded to three attempts; cancellation interrupts backoff.
+
+The repair action uses the native App picker to select an independent official
+signed App. Its sealed product policy must advertise `update_repair_protocol: 1`,
+the expected Team/bundle and distribution lane. Before interrupting the running
+client it checks signature/capability and an `orphan-plan` observation under the
+existing native locks. This plan permits a live source family, has a different
+proof kind, exposes no mutation method, and is never execution authority. The
+independent worker reacquires full unexempted qualification after normal shutdown.
+
+An independently opened newer App cannot acknowledge an unbound transaction or
+one belonging to another installation. Before storage admission the refusal surface
+offers the native repair wizard; `--repair-update` explicitly selects the same
+wizard. It requires the installed target and all three original existing roots,
+then calls the same interrupted-transaction recovery core. No renderer, default
+profile or backend is opened by this route. Busy qualification permits at most
+three explicit checks; partial mutation, uncertain release, signature and binding
+failures stop. Success means update capability was recovered, not that an update
+was installed; the original App is reopened to use its normal update path.
+
+The source UI reports non-modal preparation, saving/exit and handoff, never a
+premature restart. Cancellation disappears once handoff begins. A context-bound
+new build reports startup until real backend/main-workbench health confirmation,
+and only then reports verified completion. Windows retains Velopack ownership and
+does not expose macOS repair; its source-side final phase is handoff, not restart.
+**gap**: signed macOS recovery/update/re-update and native Windows product acceptance
+remain required after the authorized MR merge. Fixtures and a source compile do
+not satisfy either product gate.
+
+**current (source)**: a newly signed Desktop App can run its bundled `repair.node`
+before normal startup admission, without replacing the old installation first:
+
+```sh
+open -n "/absolute/CI-signed/ScholarSeed.app" --args \
+  --repair-update-target=/Applications/ScholarSeed.app
+```
+
+The target must be one explicit canonical installation and must differ from the
+running repair App. Development and non-macOS invocations refuse. Normally quit the
+target App and its owned backend/runtime family first. The repair process
+does not kill processes, disable security policy, launch a backend or publish a
+storage profile. Its own App, the installed source and the retained candidate must
+pass the expected Developer ID Team/bundle checks; an ad-hoc repair App cannot mutate
+product state. The candidate must still match the original selected build. No scan
+of unrelated profiles or selection of a newer update occurs.
+
+`repair.ts` derives the exact native owner directories from the OS cache/Application
+Support resolvers and the selected bundle. It reads that installation's retained
+launch context, never the repair App's default profile. `restoration.ts` reuses the
+existing maintenance group, context-write lock, immutable intent, write-ahead markers
+and mutation reservation. `repair.node` holds existing Cleanup and Preparation locks
+in that same process; it does not create missing locks. The native observer validates
+real process absence, the original data-root identities, the legacy orphan, and the
+current bound request's explicit lack of installation/launch permission. A missing
+downloaded-event `nativeRequest` is allowed only in this separate orphan protocol;
+normal terminal inspection remains unchanged.
+
+Cleanup maintenance is observation-only: it opens the existing private lock without
+creation, freezes the journal baseline, and refuses every Cleanup mutation with
+`EROFS`. `SSCleanupMaintenanceSnapshot` observes Cleanup, not Preparation; ordinary
+read-only and writable sessions cannot use each other's snapshot entry. An absent
+journal is a successful, repeatable observation without a spurious `NSError`.
+Reread current/archived preparation plists must be dictionaries before field access;
+malformed roots or records refuse without native exceptions or evidence mutation.
+
+The independent CLI handles terminal recovery only; orphan recovery and orphan
+intents require the signed App entry. Probe limits and schema come from the terminal
+protocol owner, while storage-identity schema is independent of intent schema.
+Before storage admission, repair begin/completed/failed diagnostics use the OS log
+with selection presence and successful request/build identifiers, not private paths
+or a product log that would require opening a profile.
+
+`compilation.cjs` owns shared repair flags, frameworks and support units; both native
+modules and recovery tools fingerprint that recipe. Native contracts directly cover
+maintenance guards, malformed journals and succession/parking refusals. Parking
+refusal tests count a test-local `SMJobRemove` stub and require zero calls; they do
+not prove successful signed trust or actual launchd removal. Those positive product
+paths still require the merged, formally signed App and the original machine state.
+
+An old failed helper may remain in a two-second launchd respawn loop even after the
+App exits. Under both native locks, repair can park only the exact matching user-domain
+job: label, three original arguments, canonical signed installation helper and bound,
+unauthorized native state must match, with no rollback ownership. The signed repair
+host, target and candidate must pass the same Developer ID trust policy. Before removal,
+process evidence may exempt only that job's exact user-owned PID/start identity and
+verified executable; source/target processes, foreign helpers and uncertain evidence
+still refuse. `SMJobRemove` waits for that one job; the normal, unexempted process
+observation must then prove absence. No process-name kill, system-domain removal,
+launch-agent file deletion or privileged fallback occurs. The old updater can submit
+a fresh job normally. Only released lock/parking contention gets bounded pre-transaction
+requalification; signature, binding and uncertain-release failures do not retry.
+
+The context is consumed first. Native repair then retains the exact original
+Preparation journal and native request in separate private SHA-256 archives, retires
+the qualified legacy record and consumes only that unauthorized native request.
+Desktop consumes the handoff last and completes the existing mutation reservation.
+No rollback preference is cleared. Normal installation authorization is never replayed.
+Fresh snapshots and held qualifications fence every record consumption.
+The runtime receives its native capabilities explicitly; standalone tool discovery,
+compilation and probe execution remain in `scripts/recovery.ts`, not the product bundle.
+
+If interrupted, the same explicit repair target finds at most one unfinished,
+validated orphan intent in its own recovery directory. A committed intent can also
+resume the startup handoff if context, handoff and native request are all still
+absent, covering interruption after commit but before relaunch. It never picks the latest
+file by age. The retained native proof can continue across an empty Preparation
+journal or a missing native request only when the exact private archives, source and
+target captures, qualifications, selection and binding still match. A re-created
+same-byte request inode, new preparation, changed scope, malformed marker, ambiguous
+intent or uncertain release refuses. Unknown states cannot be converted to success.
+
+Some older clients remove the launch context on a pre-download timeout while leaving
+the failed handoff and unauthorized native request. That is a separate supported
+entry, not permission to fabricate an old context. With no unfinished repair intent,
+all three existing directories must be explicitly supplied; there are no defaults:
+
+```sh
+open -n "/absolute/CI-signed/ScholarSeed.app" --args \
+  --repair-update-target=/Applications/ScholarSeed.app \
+  --repair-update-home="/absolute/original-home" \
+  --repair-update-user-data="/absolute/original-userData" \
+  --repair-update-workspace="/absolute/original-workspace"
+```
+
+This creates a schema-2 `mac-orphan-selection-recovery` intent with `context: null`.
+Its newly authorized selection is bound to freshly observed native persistent root
+identities, the signed installed source build, failed handoff and selected candidate.
+It fences continued context absence instead of writing or consuming a synthetic
+launch context. A new context, conflicting explicit selection or unknown directory
+identity refuses. The same original intent can resume after native state retirement
+without requiring the caller to re-enter the directory arguments. These supplied
+paths must be verified as the user's existing selection; absence of a context does
+not prove what the old selection was.
+
+After recovery, Desktop reads the signed source's executable identity and reopens
+that original installation with its original Home, userData, workspace and explicit
+local debug port. It does not copy databases, credentials or preferences. The user
+can retry the already selected update through the original updater, now without the
+orphan fence. This is an out-of-band repair entry for an old binary, not a claim that
+old clients download or execute new code without a trusted delivery path.
+
+**required / gap**: the native/core and transaction tests are distinct from actual
+acceptance. CI must provide the signed repair App. Acceptance must use the affected
+installed source and original persisted state, run repair, reopen with the same
+profile, finish the selected update and exercise another update. A local untrusted
+framework execution refusal remains a failed gate; neither an unsigned App nor
+fixture success proves the signed installed lifecycle.
 
 ## Read-only terminal recovery preflight
 

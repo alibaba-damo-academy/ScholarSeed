@@ -1,15 +1,17 @@
 import { createHash } from 'node:crypto'
-import { createRequire } from 'node:module'
 import { basename, dirname, isAbsolute, join, normalize } from 'node:path'
-import { beginDomains, type DomainNative, type Domains } from '../../native/domains.cjs'
-import recoveryBuild from '../../scripts/cd/recovery.cjs'
+import { readdirSync } from 'node:fs'
+import { constants } from 'node:os'
+import { setTimeout as delay } from 'node:timers/promises'
+import type { DomainNative, Domains } from '../../native/domains.cjs'
 import type { QualifiedRecordConsumer } from './journal.ts'
 import {
   acquireUpdateLaunchRecordLock,
   consumeUpdateLaunchContext,
   decodeUpdateLaunch,
   updateLaunchContextPath,
-  type UpdateLaunchContext,
+  updateStorageIdentities,
+  UPDATE_STORAGE_IDENTITY_SCHEMA,
 } from './relaunch.ts'
 import {
   consumeSquirrelHandoff,
@@ -20,36 +22,63 @@ import {
 import {
   captureRecord,
   inspectTerminalRecovery,
+  inspectOrphanRecovery,
+  orphanSource,
   sameRecord,
   TERMINAL_RECORD_LIMITS,
-  verifyApplication,
+  DISTRIBUTION_LANE,
+  sameRepairSelection,
   type CapturedRecord,
   type RecordSnapshot,
   type TerminalRecoveryOptions,
+  type RepairSelection,
 } from './terminal.ts'
+import { BUILD_NUMBER_PATTERN } from './version.ts'
 
 const SCHEMA = 1
 const KIND = 'mac-terminal-recovery'
+const SELECTED_SCHEMA = 2
+const SELECTED_KIND = 'mac-orphan-selection-recovery'
 const DIRECTORY = 'terminal-recovery'
 const INTENT_BYTES = 128 * 1024
 const MARKER_BYTES = 4096
 const REQUEST_ID = /^[a-f0-9]{64}$/
+const PENDING_LIMIT = 128
 const TEAM_ID = /^[A-Z0-9]{10}$/
+const QUALIFICATION_ATTEMPTS = 3
+const QUALIFICATION_RETRY_MS = 100
 const retained: unknown[] = []
-const require = createRequire(import.meta.url)
 
-interface RecoveryNative extends DomainNative {
+export interface RecoveryNative extends DomainNative {
   consumeAt(pin: unknown, name: string, bytes: Buffer, device: string, inode: string): void
 }
 
-interface Qualification {
+export interface Qualification {
   observe(): string
   close(): void
+  repair?(): void
 }
 
-interface MaintenanceTools {
+export interface MaintenanceTools {
   native: RecoveryNative
   open(configuration: string): Qualification
+}
+
+async function qualify(tools: MaintenanceTools, configuration: string, orphan: boolean) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return tools.open(configuration)
+    } catch (error) {
+      const native = error as { code?: string; systemCode?: number }
+      const busy =
+        native.code === 'ERR_TERMINAL_OPEN' && native.systemCode === constants.errno.EWOULDBLOCK
+      const parking =
+        native.code === 'ERR_TERMINAL_PARK' &&
+        [constants.errno.EBUSY, constants.errno.ESTALE].includes(native.systemCode ?? -1)
+      if (!orphan || attempt >= QUALIFICATION_ATTEMPTS || (!busy && !parking)) throw error
+      await delay(QUALIFICATION_RETRY_MS)
+    }
+  }
 }
 
 export interface TerminalRestorationRuntime {
@@ -62,6 +91,7 @@ export interface TerminalRestorationRuntime {
 
 export interface TerminalRestorationOptions extends TerminalRecoveryOptions {
   requestId: string
+  recovery?: 'orphan'
 }
 
 type RestorationCode =
@@ -96,25 +126,11 @@ interface Intent {
   kind: string
   requestId: string
   options: Omit<TerminalRestorationOptions, 'toolDirectory'>
-  context: SavedRecord
+  context: SavedRecord | null
+  selection?: RepairSelection
   handoff: SavedRecord
   product: SavedRecord
   proof: unknown
-}
-
-const dependencies: TerminalRestorationRuntime = {
-  platform: process.platform,
-  uid: process.getuid?.() ?? -1,
-  load(directory) {
-    const files = recoveryBuild.resolveRecoveryMaintenance(directory)
-    const native = require(files.lease) as RecoveryNative
-    const terminal = require(files.terminal) as { open(configuration: string): Qualification }
-    if (typeof native.consumeAt !== 'function' || typeof terminal.open !== 'function')
-      throw new Error('Missing maintenance capability')
-    return { native, open: terminal.open }
-  },
-  begin: (native, coordinator, roots) => beginDomains(native, coordinator, roots, true),
-  verifyApplication,
 }
 
 function canonical(value: unknown): string {
@@ -163,6 +179,18 @@ function restored(record: SavedRecord, maximum: number, owners: readonly number[
   return { bytes, snapshot: record.snapshot }
 }
 
+function decodeProductPolicy(record: CapturedRecord): Record<string, unknown> {
+  try {
+    const policy: unknown = JSON.parse(record.bytes.toString('utf8'))
+    if (!policy || typeof policy !== 'object' || Array.isArray(policy))
+      throw new TerminalRestorationError('invalid_scope')
+    return policy as Record<string, unknown>
+  } catch (error) {
+    if (error instanceof TerminalRestorationError) throw error
+    throw new TerminalRestorationError('invalid_scope')
+  }
+}
+
 function optionsWithoutTool(
   options: TerminalRestorationOptions
 ): Omit<TerminalRestorationOptions, 'toolDirectory'> {
@@ -205,24 +233,120 @@ function decodeIntent(
   uid: number
 ): Intent {
   const intent = JSON.parse(record.bytes.toString('utf8')) as Intent
+  if (!intent || typeof intent !== 'object' || Array.isArray(intent))
+    throw new TerminalRestorationError('invalid_intent')
+  let validShape: boolean
+  if (intent.context === null) {
+    validShape =
+      Object.keys(intent).sort().join(',') ===
+        'context,handoff,kind,options,product,proof,requestId,schema,selection' &&
+      intent.schema === SELECTED_SCHEMA &&
+      intent.kind === SELECTED_KIND &&
+      Boolean(options.selection) &&
+      options.recovery === 'orphan' &&
+      Boolean(intent.selection)
+  } else {
+    validShape =
+      Object.keys(intent).sort().join(',') ===
+        'context,handoff,kind,options,product,proof,requestId,schema' &&
+      intent.schema === SCHEMA &&
+      intent.kind === KIND
+  }
   if (
-    !intent ||
-    Object.keys(intent).sort().join(',') !==
-      'context,handoff,kind,options,product,proof,requestId,schema' ||
-    intent.schema !== SCHEMA ||
-    intent.kind !== KIND ||
+    !validShape ||
     intent.requestId !== options.requestId ||
     canonical(intent.options) !== canonical(optionsWithoutTool(options))
   )
     throw new TerminalRestorationError('invalid_intent')
-  restored(intent.context, TERMINAL_RECORD_LIMITS.context, [uid])
+  if (intent.context) restored(intent.context, TERMINAL_RECORD_LIMITS.context, [uid])
   restored(intent.handoff, TERMINAL_RECORD_LIMITS.handoff, [uid])
   restored(intent.product, TERMINAL_RECORD_LIMITS.product, [0, uid])
   return intent
 }
 
+export function pendingOrphanRecovery(
+  scope: {
+    application: string
+    coordinator: string
+    expectedTeam: string
+    toolDirectory: string
+    selection?: TerminalRecoveryOptions['selection']
+  },
+  uid: number
+): TerminalRestorationOptions | null {
+  const directory = join(
+    dirname(updateLaunchContextPath(scope.coordinator, scope.application)),
+    DIRECTORY
+  )
+  let names: string[]
+  try {
+    names = readdirSync(directory)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
+  }
+  if (names.length > PENDING_LIMIT) throw new TerminalRestorationError('invalid_intent')
+  const pending: TerminalRestorationOptions[] = []
+  for (const name of names.filter((name) => name.endsWith('.intent'))) {
+    const requestId = name.slice(0, -'.intent'.length)
+    if (!REQUEST_ID.test(requestId)) throw new TerminalRestorationError('invalid_intent')
+    const record = captureRecord(join(directory, name), INTENT_BYTES, [uid])
+    const raw = JSON.parse(record.bytes.toString('utf8')) as Intent
+    const options = { ...raw.options, toolDirectory: scope.toolDirectory }
+    if (
+      options.application !== scope.application ||
+      options.coordinator !== scope.coordinator ||
+      options.expectedTeam !== scope.expectedTeam ||
+      options.requestId !== requestId ||
+      options.recovery !== 'orphan'
+    )
+      continue
+    decodeIntent(record, options, uid)
+    const committed = optionalRecord(join(directory, `${requestId}.committed`), MARKER_BYTES, [uid])
+    if (committed) {
+      const expected = Buffer.from(
+        canonical({
+          schema: raw.schema,
+          kind: raw.kind,
+          requestId,
+          intentSha256: digest(record.bytes),
+          stage: 'committed',
+        }) + '\n'
+      )
+      if (!committed.bytes.equals(expected)) throw new TerminalRestorationError('invalid_intent')
+      if (
+        [
+          [
+            updateLaunchContextPath(scope.coordinator, scope.application),
+            TERMINAL_RECORD_LIMITS.context,
+          ],
+          [options.handoff, TERMINAL_RECORD_LIMITS.handoff],
+          [options.nativeState, TERMINAL_RECORD_LIMITS.product],
+        ].every(([filename, maximum]) => !optionalRecord(String(filename), Number(maximum), [uid]))
+      )
+        pending.push(options)
+    } else pending.push(options)
+  }
+  if (pending.length > 1) throw new TerminalRestorationError('invalid_intent')
+  const options = pending[0]
+  if (!options) return null
+  if (scope.selection) {
+    const intent = decodeIntent(
+      captureRecord(join(directory, `${options.requestId}.intent`), INTENT_BYTES, [uid]),
+      options,
+      uid
+    )
+    const selected = intent.context
+      ? decodeUpdateLaunch(restored(intent.context, TERMINAL_RECORD_LIMITS.context, [uid]).bytes)
+      : intent.selection!
+    if (!sameRepairSelection(scope.selection, selected))
+      throw new TerminalRestorationError('invalid_scope')
+  }
+  return options
+}
+
 function validateSelection(
-  context: UpdateLaunchContext,
+  context: RepairSelection,
   handoff: SquirrelHandoff,
   options: TerminalRestorationOptions,
   uid: number
@@ -233,7 +357,8 @@ function validateSelection(
     context.candidate !== handoff.candidate ||
     context.targetBuild !== handoff.buildNumber ||
     handoff.binding?.requestId !== options.requestId ||
-    handoff.nativeRequest?.binding?.requestId !== options.requestId ||
+    (options.recovery !== 'orphan' &&
+      handoff.nativeRequest?.binding?.requestId !== options.requestId) ||
     squirrelHandoffRecordPath(context.home) !== options.handoff
   )
     throw new TerminalRestorationError('invalid_scope')
@@ -241,7 +366,7 @@ function validateSelection(
 
 export async function applyTerminalRecovery(
   options: TerminalRestorationOptions,
-  runtime: TerminalRestorationRuntime = dependencies
+  runtime: TerminalRestorationRuntime
 ) {
   if (runtime.platform !== 'darwin' || !Number.isSafeInteger(runtime.uid) || runtime.uid < 0)
     throw new TerminalRestorationError('unsupported_platform')
@@ -265,25 +390,100 @@ export async function applyTerminalRecovery(
   }
   if (!REQUEST_ID.test(options.requestId) || !TEAM_ID.test(options.expectedTeam))
     throw new TerminalRestorationError('invalid_scope')
+  if (options.recovery !== undefined && options.recovery !== 'orphan')
+    throw new TerminalRestorationError('invalid_scope')
+  if (
+    options.selection &&
+    (options.recovery !== 'orphan' ||
+      Object.keys(options.selection).sort().join(',') !== 'home,userData,workspace')
+  )
+    throw new TerminalRestorationError('invalid_scope')
   const contextPath = updateLaunchContextPath(options.coordinator, options.application)
   const recoveryDirectory = join(dirname(contextPath), DIRECTORY)
   const intentPath = join(recoveryDirectory, `${options.requestId}.intent`)
   const originalIntent = optionalRecord(intentPath, INTENT_BYTES, [runtime.uid])
   let intent = originalIntent ? decodeIntent(originalIntent, options, runtime.uid) : undefined
-  const contextRecord = intent
-    ? restored(intent.context, TERMINAL_RECORD_LIMITS.context, [runtime.uid])
-    : captureRecord(contextPath, TERMINAL_RECORD_LIMITS.context, [runtime.uid])
+  let contextRecord: CapturedRecord | null
+  if (intent) {
+    contextRecord = intent.context
+      ? restored(intent.context, TERMINAL_RECORD_LIMITS.context, [runtime.uid])
+      : null
+  } else if (options.selection && options.recovery === 'orphan') {
+    contextRecord = optionalRecord(contextPath, TERMINAL_RECORD_LIMITS.context, [runtime.uid])
+  } else {
+    contextRecord = captureRecord(contextPath, TERMINAL_RECORD_LIMITS.context, [runtime.uid])
+  }
   const handoffRecord = intent
     ? restored(intent.handoff, TERMINAL_RECORD_LIMITS.handoff, [runtime.uid])
     : captureRecord(options.handoff, TERMINAL_RECORD_LIMITS.handoff, [runtime.uid])
-  const context = decodeUpdateLaunch(contextRecord.bytes)
   const handoff = decodeSquirrelHandoff(handoffRecord.bytes)
-  validateSelection(context, handoff, options, runtime.uid)
   const productPath = join(options.application, 'Contents', 'Resources', 'product.json')
   const productRecord = intent
     ? restored(intent.product, TERMINAL_RECORD_LIMITS.product, [0, runtime.uid])
     : captureRecord(productPath, TERMINAL_RECORD_LIMITS.product, [0, runtime.uid])
+  const policy = decodeProductPolicy(productRecord)
   const tools = runtime.load(options.toolDirectory)
+  let context: RepairSelection
+  if (contextRecord) {
+    context = decodeUpdateLaunch(contextRecord.bytes)
+    if (options.selection && !sameRepairSelection(options.selection, context))
+      throw new TerminalRestorationError('invalid_scope')
+  } else if (intent?.selection) {
+    context = intent.selection
+  } else {
+    if (!options.selection || options.recovery !== 'orphan')
+      throw new TerminalRestorationError('invalid_scope')
+    for (const root of Object.values(options.selection))
+      if (
+        typeof root !== 'string' ||
+        !isAbsolute(root) ||
+        normalize(root) !== root ||
+        root.includes('\0')
+      )
+        throw new TerminalRestorationError('invalid_scope')
+    if (
+      typeof policy.bundle_id !== 'string' ||
+      typeof policy.build_number !== 'string' ||
+      !BUILD_NUMBER_PATTERN.test(policy.build_number) ||
+      !BUILD_NUMBER_PATTERN.test(handoff.buildNumber) ||
+      handoff.buildNumber <= policy.build_number
+    )
+      throw new TerminalRestorationError('invalid_scope')
+    context = {
+      schema: UPDATE_STORAGE_IDENTITY_SCHEMA,
+      uid: runtime.uid,
+      application: options.application,
+      bundleId: policy.bundle_id,
+      sourceBuild: policy.build_number,
+      targetBuild: handoff.buildNumber,
+      candidate: handoff.candidate,
+      ...options.selection,
+      identities: updateStorageIdentities(tools.native, [
+        options.selection.home,
+        options.selection.userData,
+        options.selection.workspace,
+      ]),
+    }
+  }
+  validateSelection(context, handoff, options, runtime.uid)
+  if (!contextRecord) {
+    if (
+      policy.bundle_id !== context.bundleId ||
+      policy.build_number !== context.sourceBuild ||
+      policy.expected_team_id !== options.expectedTeam ||
+      policy.release_lane !== DISTRIBUTION_LANE
+    )
+      throw new TerminalRestorationError('invalid_scope')
+  }
+  if (options.selection && !sameRepairSelection(options.selection, context))
+    throw new TerminalRestorationError('invalid_scope')
+  const checkContext = () => {
+    if (contextRecord) {
+      if (!sameRecord(contextPath, contextRecord, TERMINAL_RECORD_LIMITS.context, [runtime.uid]))
+        throw new TerminalRestorationError('evidence_changed')
+    } else if (optionalRecord(contextPath, TERMINAL_RECORD_LIMITS.context, [runtime.uid]))
+      throw new TerminalRestorationError('evidence_changed')
+  }
   let qualification: Qualification | undefined
   let domains: Domains | undefined
   const pins: unknown[] = []
@@ -315,12 +515,16 @@ export async function applyTerminalRecovery(
       }
     | undefined
   try {
-    qualification = tools.open(
+    qualification = await qualify(
+      tools,
       JSON.stringify({
         schema: SCHEMA,
         cleanup: options.cleanup,
         preparation: options.preparation,
-        source: handoff.nativeRequest!.source.path,
+        source:
+          options.recovery === 'orphan'
+            ? orphanSource(options, intent?.proof, runtime.uid)
+            : handoff.nativeRequest!.source.path,
         target: options.application,
         state: options.nativeState,
         binding: handoff.binding,
@@ -329,7 +533,11 @@ export async function applyTerminalRecovery(
           paths: [context.home, context.userData, context.workspace],
           identities: context.identities,
         },
-      })
+        ...(options.recovery === 'orphan'
+          ? { mode: 'orphan', park: true, ...(intent ? { expected: intent.proof } : {}) }
+          : {}),
+      }),
+      options.recovery === 'orphan'
     )
     domains = runtime.begin(tools.native, options.coordinator, [
       ...new Set([
@@ -381,13 +589,16 @@ export async function applyTerminalRecovery(
     }
     if (!intent) {
       domains.checkWritable()
-      byteCheck(contextPath, contextRecord, TERMINAL_RECORD_LIMITS.context, false)
+      checkContext()
       byteCheck(options.handoff, handoffRecord, TERMINAL_RECORD_LIMITS.handoff, false)
       let inspectionUncertainty: unknown
       try {
-        await inspectTerminalRecovery(options, {
+        const inspect =
+          options.recovery === 'orphan' ? inspectOrphanRecovery : inspectTerminalRecovery
+        await inspect(options, {
           platform: runtime.platform,
           uid: runtime.uid,
+          ...(!contextRecord ? { selection: context } : {}),
           verifyApplication: runtime.verifyApplication,
           probe: async () => {
             try {
@@ -403,11 +614,12 @@ export async function applyTerminalRecovery(
       }
       verifyNative()
       intent = {
-        schema: SCHEMA,
-        kind: KIND,
+        schema: contextRecord ? SCHEMA : SELECTED_SCHEMA,
+        kind: contextRecord ? KIND : SELECTED_KIND,
         requestId: options.requestId,
         options: optionsWithoutTool(options),
-        context: saved(contextRecord),
+        context: contextRecord ? saved(contextRecord) : null,
+        ...(!contextRecord ? { selection: context } : {}),
         handoff: saved(handoffRecord),
         product: saved(productRecord),
         proof: currentProof,
@@ -446,8 +658,8 @@ export async function applyTerminalRecovery(
       const name = `${options.requestId}.${stage}`
       const bytes = Buffer.from(
         canonical({
-          schema: SCHEMA,
-          kind: KIND,
+          schema: intent!.schema,
+          kind: intent!.kind,
           requestId: options.requestId,
           intentSha256,
           stage,
@@ -462,12 +674,14 @@ export async function applyTerminalRecovery(
       return create
     }
     const validateRecords = () => {
-      byteCheck(
-        contextPath,
-        contextRecord,
-        TERMINAL_RECORD_LIMITS.context,
-        marker('context', false)
-      )
+      if (contextRecord)
+        byteCheck(
+          contextPath,
+          contextRecord,
+          TERMINAL_RECORD_LIMITS.context,
+          marker('context', false)
+        )
+      else checkContext()
       byteCheck(
         options.handoff,
         handoffRecord,
@@ -492,14 +706,20 @@ export async function applyTerminalRecovery(
     validateRecords()
     await verifySignature()
     const reservation = domains.reserveMutation(
-      canonical({ schema: SCHEMA, kind: KIND, requestId: options.requestId, intentSha256 })
+      canonical({
+        schema: intent.schema,
+        kind: intent.kind,
+        requestId: options.requestId,
+        intentSha256,
+      })
     )
     writesStarted = true
     verifyNative()
     marker('context', true)
     if (
+      contextRecord &&
       tools.native.readAt(contextPin, basename(contextPath), TERMINAL_RECORD_LIMITS.context) !==
-      null
+        null
     )
       consumeUpdateLaunchContext(
         consumer,
@@ -511,6 +731,12 @@ export async function applyTerminalRecovery(
       )
     validateRecords()
     await verifySignature()
+    if (options.recovery === 'orphan') {
+      if (typeof qualification.repair !== 'function')
+        throw new TerminalRestorationError('qualification_refused')
+      qualification.repair()
+      verifyNative()
+    }
     marker('handoff', true)
     if (
       tools.native.readAt(handoffPin, basename(options.handoff), TERMINAL_RECORD_LIMITS.handoff) !==

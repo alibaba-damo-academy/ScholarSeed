@@ -146,6 +146,13 @@
     }
   },
   "update": {
+    "repair": "修复更新",
+    "helper": "正在准备原生安装助手",
+    "saving": "正在保存状态，准备退出",
+    "savingDetail": "原生助手已就绪。书深正在保存状态并停止自身后台任务，随后交接安装。",
+    "starting": "正在启动新版",
+    "startingDetail": "已核实安装版本，正在等待后端与主工作台确认就绪。",
+    "verified": "更新已完成并验证",
     "installFailed": "更新安装失败，请重试。",
     "launcherMaintenanceRequired": "已安装的启动器需要升级。请正常退出书深，从官方渠道下载最新安装器并安装到原目录，然后重新打开。应用内更新不能替换此启动器。",
     "preparationConnectionClosed": "更新准备连接已断开，请重试准备。",

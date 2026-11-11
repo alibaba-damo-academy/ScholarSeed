@@ -29,6 +29,23 @@ class RuntimeConfigurationStorage(Protocol):
     def update(self, path: Path, transform: Callable[[bytes | None], bytes]) -> str: ...
 
 
+@dataclass(frozen=True)
+class RuntimeConfigurationPartition:
+    path: Path
+    storage: RuntimeConfigurationStorage
+
+
+@runtime_checkable
+class RuntimeConfigurationPartitioning(Protocol):
+    """Allocate a fresh private child with an exact grant for the declared file.
+
+    Allocation never copies parent configuration or credentials. The host owns
+    directory creation and its lease; no caller-selected child path is accepted.
+    """
+
+    def partition(self, path: Path) -> RuntimeConfigurationPartition: ...
+
+
 @runtime_checkable
 class RuntimeConfigurationOwner(Protocol):
     """Optional read-only declarations; files must be children of owned roots."""
@@ -69,6 +86,8 @@ class StorageInventory:
 
 
 __all__ = [
+    "RuntimeConfigurationPartition",
+    "RuntimeConfigurationPartitioning",
     "RuntimeConfigurationOwner",
     "RuntimeConfigurationStorage",
     "StorageInspection",

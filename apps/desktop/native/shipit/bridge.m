@@ -1,5 +1,7 @@
 #define SS_PREFLIGHT_EMBED 1
 #import "preflight.m"
+#import "succession.h"
+#import "parking.h"
 #include <node_api.h>
 #include <pthread.h>
 #include <stdint.h>
@@ -22,6 +24,8 @@ typedef NS_ENUM(NSUInteger, SSBridgeState) {
 @property(nonatomic, assign) uint64_t generation;
 @property(nonatomic, assign) SSBridgeState state;
 @property(nonatomic, assign) int uncertaintyCode;
+@property(nonatomic, assign) BOOL orphan;
+@property(nonatomic, assign) BOOL planning;
 @end
 
 @implementation SSBridgeHolder
@@ -76,7 +80,13 @@ static NSDictionary *BridgeConfig(napi_env environment, napi_value argument) {
     NSData *bytes = valid ? [NSData dataWithBytes:buffer length:length] : nil;
     free(buffer);
     NSDictionary *config = bytes ? [NSJSONSerialization JSONObjectWithData:bytes options:0 error:NULL] : nil;
-    if (![config isKindOfClass:NSDictionary.class] || config.count != 8 || !SSObservationInteger(config[@"schema"]) || ![config[@"schema"] isEqual:@1] ||
+    if (![config isKindOfClass:NSDictionary.class]) return nil;
+    BOOL planning = [config[@"mode"] isEqual:@"orphan-plan"];
+    BOOL orphan = [config[@"mode"] isEqual:@"orphan"] || planning;
+    BOOL parking = [config[@"park"] isEqual:@YES] && SSObservationBoolean(config[@"park"]);
+    if ((orphan ? config.count != 9 + (config[@"expected"] ? 1u : 0u) + (parking ? 1u : 0u) : config.count != 8) ||
+        (planning && (parking || config[@"expected"])) || (config[@"park"] && (!parking || !orphan)) ||
+        (config[@"mode"] && !orphan) || (config[@"expected"] && (![config[@"expected"] isKindOfClass:NSDictionary.class] || !orphan)) || !SSObservationInteger(config[@"schema"]) || ![config[@"schema"] isEqual:@1] ||
         !SSBindingValid(config[@"binding"]) || ![config[@"selection"] isKindOfClass:NSDictionary.class]) return nil;
     for (NSString *key in @[@"cleanup", @"preparation", @"source", @"target", @"state"]) if (!BridgePath(config[key])) return nil;
     id roots = config[@"selection"][@"paths"];
@@ -120,8 +130,13 @@ static NSDictionary *BridgeObserve(SSBridgeHolder *holder, NSError **error) {
     NSDictionary *proof = nil;
     if ([before isEqual:holder.selection]) {
         NSURL *source = [NSURL fileURLWithPath:holder.config[@"source"]], *target = [NSURL fileURLWithPath:holder.config[@"target"]];
-        NSDictionary *observed = SSPreparationFailureSnapshot(source, target, holder.config[@"binding"], [NSURL fileURLWithPath:holder.config[@"state"]],
-            ^SSPreparationActivity { return InspectActivity(source, target); }, error);
+        NSDictionary *observed = holder.planning
+            ? SSPreparationOrphanPlan(source, target, holder.config[@"binding"], [NSURL fileURLWithPath:holder.config[@"state"]], error)
+            : holder.orphan
+            ? SSPreparationOrphanSnapshot(source, target, holder.config[@"binding"], [NSURL fileURLWithPath:holder.config[@"state"]], holder.baseline ?: holder.config[@"expected"],
+                ^SSPreparationActivity { return InspectActivity(source, target); }, error)
+            : SSPreparationFailureSnapshot(source, target, holder.config[@"binding"], [NSURL fileURLWithPath:holder.config[@"state"]],
+                ^SSPreparationActivity { return InspectActivity(source, target); }, error);
         int uncertainty = SSPreparationUncertaintyCode();
         if (uncertainty) {
             [holder.pins addObjectsFromArray:pins];
@@ -205,6 +220,37 @@ static napi_value BridgeCloseCall(napi_env environment, napi_callback_info info)
         } @finally { pthread_mutex_unlock(&SSBridgeMutex); }
     }
 }
+static napi_value BridgeRepairCall(napi_env environment, napi_callback_info info) {
+  @autoreleasepool {
+    pthread_mutex_lock(&SSBridgeMutex);
+    @try {
+      SSBridgeHolder *holder = BridgeLookup(environment, info);
+      if (!holder || !holder.orphan || holder.planning || holder.state != SSBridgeObserved || SSBridgeActive != holder || holder.generation != SSBridgeGeneration)
+        return BridgeFail(environment, "ERR_TERMINAL_HANDLE", ESTALE);
+      NSError *failure = nil;
+      if (!BridgeObserve(holder, &failure)) return BridgeFail(environment, holder.state == SSBridgeUncertain ? "ERR_TERMINAL_RELEASE" : "ERR_TERMINAL_OBSERVATION", (int)failure.code ?: EIO);
+      NSURL *source = [NSURL fileURLWithPath:holder.config[@"source"]], *target = [NSURL fileURLWithPath:holder.config[@"target"]];
+      NSData *stateBytes = [[NSData alloc] initWithBase64EncodedString:holder.baseline[@"stateBytes"] options:0];
+      NSMutableDictionary *request = [[NSJSONSerialization JSONObjectWithData:stateBytes options:NSJSONReadingMutableContainers error:NULL] mutableCopy];
+      for (NSString *key in @[@"updateBundleURL", @"targetBundleURL"]) {
+        id value = request[key];
+        if (![value isKindOfClass:NSString.class]) return BridgeFail(environment, "ERR_TERMINAL_ARGUMENT", EINVAL);
+        request[key] = [NSURL URLWithString:value];
+      }
+      BOOL repaired = SSPreparationRepair(source, target, holder.config[@"binding"], [NSURL fileURLWithPath:holder.config[@"state"]], holder.baseline,
+        ^SSPreparationActivity { return InspectActivity(source, target); },
+        ^BOOL(NSError **error) { return SSVerifySuccessionTrust(request, [request[@"bundleIdentifier"] stringByAppendingString:SSSuccessionHelperSuffix], SSSuccessionRollbackKey, error); }, &failure);
+      int uncertainty = SSPreparationUncertaintyCode();
+      if (uncertainty) return BridgeFail(environment, "ERR_TERMINAL_RELEASE", BridgeUncertain(holder, uncertainty));
+      if (!repaired || !BridgeObserve(holder, &failure)) return BridgeFail(environment, "ERR_TERMINAL_OBSERVATION", (int)failure.code ?: EIO);
+      napi_value result;
+      if (napi_get_undefined(environment, &result) != napi_ok) return BridgeFail(environment, "ERR_TERMINAL_NATIVE", EIO);
+      return result;
+    } @catch (__unused NSException *exception) {
+      return BridgeFail(environment, "ERR_TERMINAL_RELEASE", BridgeUncertain(SSBridgeActive, EIO));
+    } @finally { pthread_mutex_unlock(&SSBridgeMutex); }
+  }
+}
 
 static void BridgeFinalize(napi_env environment, void *data, void *hint) {
     (void)environment; (void)hint;
@@ -226,6 +272,9 @@ static napi_value BridgeOpen(napi_env environment, napi_callback_info info) {
             SSBridgeHolder *holder = [SSBridgeHolder new];
             holder.environment = environment; holder.thread = pthread_self(); holder.process = getpid();
             holder.generation = ++SSBridgeGeneration; holder.config = config; holder.pins = [NSMutableArray array];
+            holder.orphan = [config[@"mode"] isEqual:@"orphan"];
+            holder.planning = [config[@"mode"] isEqual:@"orphan-plan"];
+            holder.orphan = holder.orphan || holder.planning;
             SSBridgeActive = holder;
             NSError *failure = nil;
             const char *code = "ERR_TERMINAL_ARGUMENT";
@@ -233,7 +282,15 @@ static napi_value BridgeOpen(napi_env environment, napi_callback_info info) {
             BOOL ready = holder.selection != nil;
             if (ready) {
                 code = "ERR_TERMINAL_OPEN";
-                ready = SSCleanupOpenExistingDirectory(config[@"cleanup"], &failure) && SSPreparationOpenExistingDirectory(config[@"preparation"], &failure);
+                ready = holder.orphan
+                    ? SSCleanupOpenMaintenanceDirectory(config[@"cleanup"], &failure) && SSPreparationOpenMaintenanceDirectory(config[@"preparation"], &failure)
+                    : SSCleanupOpenExistingDirectory(config[@"cleanup"], &failure) && SSPreparationOpenExistingDirectory(config[@"preparation"], &failure);
+            }
+            if (ready) {
+                if ([config[@"park"] isEqual:@YES]) {
+                    code = "ERR_TERMINAL_PARK";
+                    ready = SSParkSuccession(config, &failure);
+                }
             }
             if (ready) {
                 code = "ERR_TERMINAL_OBSERVATION";
@@ -252,8 +309,9 @@ static napi_value BridgeOpen(napi_env environment, napi_callback_info info) {
                 napi_property_descriptor methods[] = {
                     {.utf8name = "observe", .method = BridgeObserveCall, .attributes = napi_default},
                     {.utf8name = "close", .method = BridgeCloseCall, .attributes = napi_default},
+                    {.utf8name = "repair", .method = BridgeRepairCall, .attributes = napi_default},
                 };
-                if (ready) ready = napi_define_properties(environment, result, 2, methods) == napi_ok;
+                if (ready) ready = napi_define_properties(environment, result, holder.orphan && !holder.planning ? 3 : 2, methods) == napi_ok;
             }
             if (ready) return result;
             int uncertainty = SSPreparationUncertaintyCode();

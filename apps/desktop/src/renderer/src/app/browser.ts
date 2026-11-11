@@ -227,6 +227,7 @@ export function createBrowserBridge(environment: BrowserEnvironment): BrowserBri
     }),
     startUpdate: async () => ({ ok: false, error: UNSUPPORTED_TEXT }),
     installUpdate: async () => ({ ok: false, error: UNSUPPORTED_TEXT }),
+    repairUpdate: async () => ({ ok: false, error: UNSUPPORTED_TEXT }),
     cancelUpdate: async () => ({ ok: false, error: UNSUPPORTED_TEXT }),
     // 浏览器形态恒 upToDate、从不带候选包，没有可确认的弹窗；false 是如实回答。
     acknowledgeUpdateAnnouncement: async () => false,

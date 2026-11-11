@@ -1,4 +1,4 @@
-import { UPDATE_HEALTH_CHANNEL, PREVIEW_UPDATE_IPC } from '../updates'
+import { UPDATE_HEALTH_CHANNEL, UPDATE_REPAIR_CHANNEL, PREVIEW_UPDATE_IPC } from '../updates'
 import { PLUGIN_NAVIGATION_CHANNEL, PLUGIN_REVOKED_CHANNEL } from '../plugins'
 import { PREFERENCES_SAVE_CHANNEL, PREFERENCES_RECONCILE_CHANNEL } from '../preferences'
 import type { PreferenceSubmission, PreferenceReceipt } from '../preference-diagnostics'
@@ -647,6 +647,9 @@ const bridge = {
   },
   installUpdate(expectedId: string): Promise<StartUpdateResult> {
     return ipcRenderer.invoke('scholarseed:update-install', expectedId)
+  },
+  repairUpdate(): Promise<StartUpdateResult> {
+    return ipcRenderer.invoke(UPDATE_REPAIR_CHANNEL)
   },
   cancelUpdate(): Promise<StartUpdateResult> {
     return ipcRenderer.invoke('scholarseed:update-cancel')

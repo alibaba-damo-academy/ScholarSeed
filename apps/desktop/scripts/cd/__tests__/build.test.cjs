@@ -2639,7 +2639,7 @@ test('electron-builder receives one frozen resource set instead of merging packa
     const config = JSON.parse(fs.readFileSync(filename, 'utf8'))
     assert.deepEqual(config.extraResources.find(entry => entry.to === 'desktop'), { from: path.join(directory, 'resources', 'desktop'), to: 'desktop' })
     const backend = config.extraResources.filter((entry) => entry.to === 'backend')
-    assert.deepEqual(config.asarUnpack, ['out/main/lease.node', 'out/main/fonts.node', 'out/main/notarization.node'])
+    assert.deepEqual(config.asarUnpack, ['out/main/lease.node', 'out/main/fonts.node', 'out/main/notarization.node', 'out/main/repair.node'])
     assert.equal(config.files.includes('out/**/*'), false)
     assert.equal(config.files.includes(`out/protected/${'a'.repeat(64)}/**/*`), true)
     assert.equal(

@@ -223,6 +223,7 @@ class CodexSessionOpenRequest:
     execution_scope: str = ""
     timing: RuntimeTimingPort = field(default=NOOP_RUNTIME_TIMING, compare=False, repr=False)
     process_sharing_scope: str = field(default="", repr=False)
+    isolation_scope: str = field(default="", repr=False)
     launch_cwd: Path | None = None
 
 
