@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 800 600" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="种子生根、发芽并连接研究资料的插画">
+  <defs>
+    <filter id="sg-pencil" x="-8%" y="-8%" width="116%" height="116%">
+      <feTurbulence type="fractalNoise" baseFrequency=".065" numOctaves="3" seed="13" result="noise"/>
+      <feDisplacementMap in="SourceGraphic" in2="noise" scale="1.5" xChannelSelector="R" yChannelSelector="G"/>
+    </filter>
+    <filter id="sg-pigment" x="-5%" y="-5%" width="110%" height="110%">
+      <feTurbulence type="fractalNoise" baseFrequency=".8" numOctaves="3" seed="17" result="grain"/>
+      <feColorMatrix in="grain" type="saturate" values="0"/>
+      <feComposite in2="SourceGraphic" operator="in" result="clipped"/>
+      <feBlend in="SourceGraphic" in2="clipped" mode="soft-light"/>
+    </filter>
+  </defs>
+  <g fill="none" stroke="#42463E" stroke-linecap="round" stroke-linejoin="round" filter="url(#sg-pencil)">
+    <path d="M99 410C133 409 143 396 174 402S220 419 254 409S302 398 338 404S371 410 391 402C420 398 443 393 473 405S516 420 550 411S592 398 625 406S671 414 696 411" stroke-width="2.7"/>
+    <g class="sg-root" stroke-width="2.6">
+      <path class="sg-line" pathLength="1" style="--delay:1.25s;--duration:1.55s" d="M389 408C377 426 388 437 377 453S368 479 381 495Q392 509 387 535"/>
+      <path class="sg-line" pathLength="1" style="--delay:1.4s;--duration:1.65s" d="M382 406C353 420 361 445 325 448S291 469 270 485L252 493"/>
+      <path class="sg-line" pathLength="1" style="--delay:1.5s;--duration:1.6s" d="M400 407C429 418 423 441 458 450S497 464 512 484L538 494"/>
+    </g>
+  </g>
+  <g class="sg-source" stroke="#494B43" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" filter="url(#sg-pencil)">
+    <g transform="rotate(-24 240 510)">
+      <path d="M211 480L266 482L265 545L211 543Z" fill="#F8F5EC"/>
+      <path d="M222 496H254M222 507H250M222 518H247" fill="none"/>
+    </g>
+    <g transform="rotate(9 561 514)">
+      <path d="M537 479L590 480L587 548L536 546Z" fill="#F8F5EC"/>
+      <path d="M548 494H579M548 505H576M548 517H570" fill="none"/>
+    </g>
+    <path d="M329 522Q358 508 387 528Q413 509 443 519L456 566Q420 556 393 570Q362 558 341 571Z" fill="#D99E87" stroke="none" filter="url(#sg-pigment)"/>
+    <path d="M329 513Q356 501 387 520Q411 502 439 510L450 556Q418 547 393 562Q365 550 341 561Z" fill="#F8F5EC"/>
+    <path d="M387 520L393 562" fill="none"/>
+  </g>
+  <g fill="none" stroke="#839D7C" stroke-linecap="round" filter="url(#sg-pencil)" class="sg-stem">
+    <path class="sg-line" pathLength="1" stroke-width="5" style="--delay:2.3s;--duration:2.1s" d="M390 386C390 346 422 321 405 271S374 197 398 116"/>
+    <path class="sg-line" pathLength="1" stroke-width="4.5" style="--delay:2.7s;--duration:1.7s" d="M393 382C383 329 335 326 302 306S277 256 241 230"/>
+    <path class="sg-line" pathLength="1" stroke-width="4.5" style="--delay:2.95s;--duration:1.7s" d="M397 376C428 337 473 334 499 300S539 245 567 211"/>
+  </g>
+  <g fill="#A0B396" filter="url(#sg-pigment)">
+    <g class="sg-leaf" style="--origin:388px 193px;--delay:3.15s">
+      <path d="M388 193C348 184 331 162 330 133C361 134 390 155 388 193Z"/>
+      <path d="M387 190Q359 157 341 144" stroke="#799372" stroke-width="1.3" fill="none"/>
+    </g>
+    <g class="sg-leaf" style="--origin:395px 236px;--delay:3.6s">
+      <path d="M395 236C392 195 421 173 454 166C455 203 435 228 395 236Z"/>
+      <path d="M399 230Q425 194 445 178" stroke="#799372" stroke-width="1.3" fill="none"/>
+    </g>
+    <g class="sg-leaf" style="--origin:300px 304px;--delay:3.5s">
+      <path d="M300 304C266 320 239 306 218 283C249 272 279 276 300 304Z"/>
+      <path d="M300 304C280 278 282 254 301 237C320 260 318 285 300 304Z"/>
+    </g>
+    <g class="sg-leaf" style="--origin:492px 308px;--delay:3.85s">
+      <path d="M492 308C469 287 466 260 482 236C506 258 510 281 492 308Z"/>
+      <path d="M492 308C518 289 546 292 567 313C541 329 515 326 492 308Z"/>
+    </g>
+  </g>
+  <g filter="url(#sg-pigment)">
+    <g class="sg-fruit" style="--origin:398px 116px;--delay:4.55s"><circle cx="400" cy="94" r="24" fill="#DEB76A"/></g>
+    <g class="sg-fruit" style="--origin:241px 230px;--delay:4.9s"><circle cx="231" cy="217" r="18" fill="#9AB8C7"/></g>
+    <g class="sg-fruit" style="--origin:567px 211px;--delay:5.2s"><circle cx="567" cy="211" r="16" fill="#D69B83"/></g>
+  </g>
+  <g class="sg-seed" stroke="#44483F" stroke-width="2.8" stroke-linecap="round" filter="url(#sg-pencil)">
+    <ellipse cx="391" cy="392" rx="17" ry="26" transform="rotate(23 391 392)" fill="#F6F3E9"/>
+    <path d="M399 371Q390 381 388 391" fill="none"/>
+  </g>
+  <g fill="#5C5C4E" class="sg-source">
+    <circle cx="306" cy="424" r="3"/><circle cx="339" cy="421" r="3.4"/><circle cx="360" cy="446" r="2.3"/><circle cx="422" cy="435" r="2.4"/><circle cx="458" cy="422" r="3.5"/><circle cx="489" cy="431" r="2.6"/>
+  </g>
+</svg>
