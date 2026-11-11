@@ -1,11 +1,11 @@
 <p align="center">
   <a href="https://scholarseed.damo.alibaba.com/">
-    <img src="assets/readme/brand/brand-mark.svg" alt="ScholarSeed" width="96">
+    <img src="./assets/readme/brand/brand-mark.svg" alt="ScholarSeed" width="96">
   </a>
 </p>
 <p align="center">
   <a href="https://scholarseed.damo.alibaba.com/">
-    <img src="assets/readme/brand/brand-wordmark.svg" alt="ScholarSeed 书深" width="260">
+    <img src="./assets/readme/brand/brand-wordmark.svg" alt="ScholarSeed 书深" width="260">
   </a>
 </p>
 
@@ -35,7 +35,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/readme/brand/core-02-context-smaller.gif" alt="AI that builds on your project context" width="400">
+  <img src="./assets/readme/brand/core-02-context-smaller.gif" alt="AI that builds on your project context" width="400">
 </p>
 
 ---
@@ -81,7 +81,7 @@ Read PDFs, highlight passages, and record questions and observations without lea
 - Keep notes and project materials available for follow-up discussions.
 
 <p align="center">
-  <img src="assets/readme/demos/ScholarSeed-Read.gif" alt="Read papers with AI assistance in the PDF reader" width="800">
+  <img src="./assets/readme/demos/ScholarSeed-Read.gif" alt="Read papers with AI assistance in the PDF reader" width="800">
 </p>
 
 ### Find — Turn a research question into a reading list
@@ -94,7 +94,7 @@ Describe what you want to investigate, discover relevant literature, and decide 
 - Review candidate papers and available evidence before moving into deeper analysis.
 
 <p align="center">
-  <img src="assets/readme/demos/ScholarSeed-Find.gif" alt="Find relevant papers with literature search" width="800">
+  <img src="./assets/readme/demos/ScholarSeed-Find.gif" alt="Find relevant papers with literature search" width="800">
 </p>
 
 ### Verify — Know where AI answers come from
@@ -108,7 +108,7 @@ Follow citations back to sources and supporting passages, returning to the origi
 Citations help you inspect an answer; they do not establish that its claims are correct or fully supported. Research conclusions still require judgment against the original evidence.
 
 <p align="center">
-  <img src="assets/readme/demos/ScholarSeed-Verify.gif" alt="Verify AI answers against cited source passages" width="800">
+  <img src="./assets/readme/demos/ScholarSeed-Verify.gif" alt="Verify AI answers against cited source passages" width="800">
 </p>
 
 ### Write — Develop materials into research outputs
@@ -121,7 +121,7 @@ Turn selected literature and project context into a draft you can examine and re
 - Save outputs as project files and bring them into subsequent discussions.
 
 <p align="center">
-  <img src="assets/readme/demos/ScholarSeed-Write-Fast.gif" alt="Generate a literature review from selected papers" width="800">
+  <img src="./assets/readme/demos/ScholarSeed-Write-Fast.gif" alt="Generate a literature review from selected papers" width="800">
 </p>
 
 ### Extend — Turn your research methods into reusable AI workflows
@@ -136,7 +136,7 @@ Turn your methods into reusable workflows and add tools or interactions for your
 Bundled Skill sources include `agentic-search`, `precise-literature-search`, `literature-review`, `research-idea-partner`, `design-research-validation`, `pdf-evidence`, `project-literature`, `web-search`, `fast-search`, `find-skill`, and `plugin-create`. Browse the [Skill sources](https://github.com/alibaba-damo-academy/ScholarSeed/tree/main/skills/community) for their contracts and supporting tools.
 
 <p align="center">
-  <img src="assets/readme/demos/ScholarSeed-Extend.gif" alt="Extend research workflows with skills" width="800">
+  <img src="./assets/readme/demos/ScholarSeed-Extend.gif" alt="Extend research workflows with skills" width="800">
 </p>
 
 ## Recipes
@@ -158,7 +158,7 @@ Start with a concrete question and review the evidence as you go. These examples
 - Every skill result that touches full text requires your explicit grant.
 
 <p align="center">
-  <img src="assets/readme/demos/ScholarSeed-Trust-Local.gif" alt="Research in a local project workspace with control over agent actions" width="800">
+  <img src="./assets/readme/demos/ScholarSeed-Trust-Local.gif" alt="Research in a local project workspace with control over agent actions" width="800">
 </p>
 
 ---
@@ -186,8 +186,8 @@ Switch models per conversation. Keys stay on your machine.
 **Literature**
 
 <p align="center">
-  <a href="https://www.zotero.org" title="Zotero"><img src="assets/readme/logos/zotero.svg" width="40" alt="Zotero"></a>&nbsp;&nbsp;&nbsp;
-  <a href="https://arxiv.org" title="arXiv"><img src="assets/readme/logos/arxiv.svg" width="40" alt="arXiv"></a>&nbsp;&nbsp;&nbsp;
+  <a href="https://www.zotero.org" title="Zotero"><img src="./assets/readme/logos/zotero.svg" width="40" alt="Zotero"></a>&nbsp;&nbsp;&nbsp;
+  <a href="https://arxiv.org" title="arXiv"><img src="./assets/readme/logos/arxiv.svg" width="40" alt="arXiv"></a>&nbsp;&nbsp;&nbsp;
   <a href="https://openalex.org" title="OpenAlex"><b>OpenAlex</b></a>&nbsp;&nbsp;&nbsp;
   <a href="https://elicit.com" title="Elicit"><b>Elicit</b></a>
 </p>
@@ -195,38 +195,38 @@ Switch models per conversation. Keys stay on your machine.
 **Code & docs**
 
 <p align="center">
-  <a href="https://github.com" title="GitHub"><img src="assets/readme/logos/github.svg" width="40" alt="GitHub"></a>&nbsp;&nbsp;&nbsp;
-  <a href="https://gitlab.com" title="GitLab"><img src="assets/readme/logos/gitlab.svg" width="40" alt="GitLab"></a>&nbsp;&nbsp;&nbsp;
-  <a href="https://huggingface.co" title="Hugging Face"><img src="assets/readme/logos/huggingface.svg" width="40" alt="Hugging Face"></a>&nbsp;&nbsp;&nbsp;
-  <a href="https://www.notion.so" title="Notion"><img src="assets/readme/logos/notion.svg" width="40" alt="Notion"></a>
+  <a href="https://github.com" title="GitHub"><img src="./assets/readme/logos/github.svg" width="40" alt="GitHub"></a>&nbsp;&nbsp;&nbsp;
+  <a href="https://gitlab.com" title="GitLab"><img src="./assets/readme/logos/gitlab.svg" width="40" alt="GitLab"></a>&nbsp;&nbsp;&nbsp;
+  <a href="https://huggingface.co" title="Hugging Face"><img src="./assets/readme/logos/huggingface.svg" width="40" alt="Hugging Face"></a>&nbsp;&nbsp;&nbsp;
+  <a href="https://www.notion.so" title="Notion"><img src="./assets/readme/logos/notion.svg" width="40" alt="Notion"></a>
 </p>
 
 **Web**
 
 <p align="center">
   <a href="https://www.firecrawl.dev" title="Firecrawl"><b>Firecrawl</b></a>&nbsp;&nbsp;&nbsp;
-  <a href="https://brave.com/search/api/" title="Brave Search"><img src="assets/readme/logos/brave.svg" width="40" alt="Brave Search"></a>
+  <a href="https://brave.com/search/api/" title="Brave Search"><img src="./assets/readme/logos/brave.svg" width="40" alt="Brave Search"></a>
 </p>
 
 **Models — today**
 
 <p align="center">
-  <a href="https://www.alibabacloud.com/en/product/modelstudio" title="Alibaba Cloud Model Studio (Qwen)"><img src="assets/readme/logos/alibabacloud.svg" width="40" alt="Alibaba Cloud"></a>&nbsp;&nbsp;&nbsp;
+  <a href="https://www.alibabacloud.com/en/product/modelstudio" title="Alibaba Cloud Model Studio (Qwen)"><img src="./assets/readme/logos/alibabacloud.svg" width="40" alt="Alibaba Cloud"></a>&nbsp;&nbsp;&nbsp;
   <a href="https://platform.openai.com" title="OpenAI"><b>OpenAI</b></a>&nbsp;&nbsp;&nbsp;
-  <a href="https://www.anthropic.com" title="Anthropic"><img src="assets/readme/logos/anthropic.svg" width="40" alt="Anthropic"></a>&nbsp;&nbsp;&nbsp;
-  <a href="https://www.deepseek.com" title="DeepSeek"><img src="assets/readme/logos/deepseek.svg" width="40" alt="DeepSeek"></a>&nbsp;&nbsp;&nbsp;
+  <a href="https://www.anthropic.com" title="Anthropic"><img src="./assets/readme/logos/anthropic.svg" width="40" alt="Anthropic"></a>&nbsp;&nbsp;&nbsp;
+  <a href="https://www.deepseek.com" title="DeepSeek"><img src="./assets/readme/logos/deepseek.svg" width="40" alt="DeepSeek"></a>&nbsp;&nbsp;&nbsp;
   <a href="https://www.zhipuai.cn" title="Zhipu"><b>Zhipu</b></a>&nbsp;&nbsp;&nbsp;
-  <a href="https://www.moonshot.cn" title="Moonshot (Kimi)"><img src="assets/readme/logos/kimi.svg" width="40" alt="Kimi"></a>
+  <a href="https://www.moonshot.cn" title="Moonshot (Kimi)"><img src="./assets/readme/logos/kimi.svg" width="40" alt="Kimi"></a>
 </p>
 
 **Models & agents — coming**
 
 <p align="center">
-  <a href="https://claude.com/claude-code" title="Claude Code (agent runtime)"><img src="assets/readme/logos/claude.svg" width="40" alt="Claude Code"></a>&nbsp;&nbsp;&nbsp;
-  <a href="https://ai.google.dev" title="Google Gemini"><img src="assets/readme/logos/googlegemini.svg" width="40" alt="Google Gemini"></a>&nbsp;&nbsp;&nbsp;
-  <a href="https://ollama.com" title="Ollama"><img src="assets/readme/logos/ollama.svg" width="40" alt="Ollama"></a>&nbsp;&nbsp;&nbsp;
-  <a href="https://docs.vllm.ai" title="vLLM"><img src="assets/readme/logos/vllm.svg" width="40" alt="vLLM"></a>&nbsp;&nbsp;&nbsp;
-  <a href="https://lmstudio.ai" title="LM Studio"><img src="assets/readme/logos/lmstudio.svg" width="40" alt="LM Studio"></a>
+  <a href="https://claude.com/claude-code" title="Claude Code (agent runtime)"><img src="./assets/readme/logos/claude.svg" width="40" alt="Claude Code"></a>&nbsp;&nbsp;&nbsp;
+  <a href="https://ai.google.dev" title="Google Gemini"><img src="./assets/readme/logos/googlegemini.svg" width="40" alt="Google Gemini"></a>&nbsp;&nbsp;&nbsp;
+  <a href="https://ollama.com" title="Ollama"><img src="./assets/readme/logos/ollama.svg" width="40" alt="Ollama"></a>&nbsp;&nbsp;&nbsp;
+  <a href="https://docs.vllm.ai" title="vLLM"><img src="./assets/readme/logos/vllm.svg" width="40" alt="vLLM"></a>&nbsp;&nbsp;&nbsp;
+  <a href="https://lmstudio.ai" title="LM Studio"><img src="./assets/readme/logos/lmstudio.svg" width="40" alt="LM Studio"></a>
 </p>
 
 ---
@@ -326,6 +326,25 @@ The agent engine sits behind runtime contracts for sessions, events, permissions
 
 See the [project map](https://github.com/alibaba-damo-academy/ScholarSeed/blob/main/CONTRIBUTING.md#project-map), [runtime package](https://github.com/alibaba-damo-academy/ScholarSeed/tree/main/packages/runtime), [UI SDK](https://github.com/alibaba-damo-academy/ScholarSeed/tree/main/packages/ui), and [development and testing guide](https://github.com/alibaba-damo-academy/ScholarSeed/blob/main/CONTRIBUTING.md#development-and-testing) for implementation details.
 
+## Model and Service Configuration
+
+ScholarSeed requires a model connection that you are authorized to use. Configure the provider endpoint, model name, and credential in the application settings, or sign in to use the models available to your ScholarSeed account. Local HTTP authentication and model authorization are separate concerns: a healthy local service does not imply that a model account is authorized.
+
+Optional development and service variables are documented in [`.env.example`](.env.example). Do not commit API keys, access tokens, user configuration, session data, certificates, or private keys.
+
+## Local Data and Privacy
+
+The default user data directory is `~/.scholarseed`. Set `SCHOLARSEED_HOME` to use a different location; this selects a separate user state and does not migrate existing data.
+
+- User-level configuration, credentials, project registry, session catalog, and literature data are managed under `SCHOLARSEED_HOME`.
+- Project-owned data is stored under `<project>/.scholarseed/` and travels with the project directory.
+- Codex state is isolated under `<SCHOLARSEED_HOME>/codex/` by default; use `SCHOLARSEED_CODEX_HOME` only when a separate location is needed. ScholarSeed does not automatically copy your personal Codex credentials or model configuration.
+- DamoATrace records product-visible diagnostic events for debugging; it does not imply access to undisclosed executor internals.
+- Model calls, literature searches, and network tools communicate with the configured external services. Local storage does not mean all processing stays offline.
+- Choose an appropriate permission mode for each task and confirm tool execution and file operations when requested.
+
+Keep user data and credentials outside the repository. Review diagnostic bundles before sharing them.
+
 ## Roadmap
 
 Planned work is separate from the current capabilities above. Scope and availability may change.
@@ -354,7 +373,7 @@ The [ScholarStack paper](https://arxiv.org/abs/2609.23735v3), *Layered Research 
 
 Scan the QR code to join the ScholarSeed community and discuss your experience and research questions.
 
-<img src="assets/community-qr.png" alt="ScholarSeed community group QR code" width="280">
+<img src="./assets/community-qr.png" alt="ScholarSeed community group QR code" width="280">
 
 - Report bugs and request features through [Issues](https://github.com/alibaba-damo-academy/ScholarSeed/issues). Include your operating system, application version, steps to reproduce, and expected behavior.
 - See [CONTRIBUTING.md](CONTRIBUTING.md) for development and contribution instructions.

@@ -214,12 +214,23 @@ Codex 桌面端同样支持 Skills、插件和 MCP（连接外部工具的协议
 
 在本机平台生成 macOS DMG 或 Windows EXE，见开发指南中的[打包说明](CONTRIBUTING_zh.md#打包)。
 
+## 模型与服务配置
+
+书深需要连接你有权使用的模型。在应用设置中配置模型服务地址、模型名称和凭据，或登录书深账号，使用该账号可用的模型。本地 HTTP 服务认证与模型授权是两回事：本地服务正常运行，不代表模型账号已获授权。
+
+可选的开发与服务环境变量见 [`.env.example`](.env.example)。不要将 API Key、访问令牌、个人配置、会话数据、证书或私钥提交到仓库。
+
 ## 安全与数据
 
-- 用户数据默认保存在 `~/.scholarseed`，可通过 `SCHOLARSEED_HOME` 指定目录。
-- 模型调用、文献检索及联网工具会与所配置的外部服务通信。
+- 用户数据默认保存在 `~/.scholarseed`，可通过 `SCHOLARSEED_HOME` 指定目录；更换该目录是选择另一套用户状态，不会自动迁移原数据。
+- 用户级配置、凭据、项目注册信息、会话目录及文献数据由 `SCHOLARSEED_HOME` 管理。
+- 项目专属数据保存在 `<项目>/.scholarseed/` 下，随项目目录一起保留；分享或备份项目时也要检查其中的内容。
+- Codex 状态默认隔离保存在 `<SCHOLARSEED_HOME>/codex/`，仅在需要独立目录时设置 `SCHOLARSEED_CODEX_HOME`。书深不会自动复制个人 Codex 凭据或模型配置。
+- DamoATrace 记录产品可见的诊断事件，用于排障；这不代表可以访问执行器未公开的内部信息。
+- 模型调用、文献检索及联网工具会与所配置的外部服务通信；数据保存在本地不等于所有处理都在离线环境完成。
 - 根据任务选择权限模式，并在需要时确认工具执行与文件操作。
-- 提交代码或反馈日志时，请移除 API Key、个人配置和私有研究材料。
+
+请将用户数据和凭据保存在仓库之外。提交代码或分享日志、诊断包及项目目录前，请检查并移除 API Key、个人配置和私有研究材料。
 
 ## 社区与支持
 
@@ -234,7 +245,16 @@ Codex 桌面端同样支持 Skills、插件和 MCP（连接外部工具的协议
 如果 ScholarSeed 对你的研究有帮助，欢迎点亮 Star，也欢迎分享你希望它解决的科研问题。
 
 <!-- 发布素材：确认公开 GitHub 仓库后，在此接入 Star History 图表。 -->
-<!-- 许可证：确认仓库许可范围并补齐 LICENSE 后，在此添加许可证章节与链接。 -->
+
+## 许可证
+
+书深的原创源代码采用 [Apache License 2.0](LICENSE) 许可证。
+
+第三方软件、资源和捆绑的运行环境仍适用各自的许可证，不因本项目采用 Apache-2.0 而改变。相关声明包括：
+
+- [桌面端依赖及对应源码声明](apps/desktop/resources/notices/README.md)
+- [Office 查看器第三方声明](apps/desktop/src/renderer/public/office/THIRD_PARTY_NOTICES.md)
+- [`paper-fulltext-dl` 第三方声明](skills/community/precise-literature-search/vendor/THIRD_PARTY_NOTICES.md)
 
 ---
 
