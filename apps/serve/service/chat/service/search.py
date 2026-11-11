@@ -18,7 +18,8 @@ from service.invocation.service.runtime import InvocationService
 from service.platform.bridge import SEARCH_RESULT_LIMIT, WebSearchRequest
 
 SEARCH_SKILL = "builtin:web-search"
-SEARCH_ARTIFACT = "web-search-result.json"
+SEARCH_ARTIFACT = "web-search-official-result.json"
+SEARCH_BROWSER_ARTIFACT = "web-search-browser-result.json"
 SEARCH_BEGIN = "<scholarseed_web_search_results>"
 SEARCH_END = "</scholarseed_web_search_results>"
 SEARCH_MAX_BYTES = 128_000
@@ -80,7 +81,7 @@ class SearchExecution:
 SEARCH_PROFILES = {
     "official": SearchProfile("official-api", SEARCH_ARTIFACT),
     "native": SearchProfile("codex-native", native=True),
-    "browser": SearchProfile("visible-browser", SEARCH_ARTIFACT),
+    "browser": SearchProfile("visible-browser", SEARCH_BROWSER_ARTIFACT),
 }
 
 
