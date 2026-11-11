@@ -72,6 +72,10 @@ def terminal() -> dict:
 
 
 class SearchContract(unittest.IsolatedAsyncioTestCase):
+    def test_profile_artifacts_match_the_loaded_skill_entrypoints(self):
+        self.assertEqual(SEARCH_PROFILES["official"].artifact, "web-search-official-result.json")
+        self.assertEqual(SEARCH_PROFILES["browser"].artifact, "web-search-browser-result.json")
+
     def service(self, events: list[dict]) -> tuple[SearchService, SimpleNamespace]:
         async def stream(prepared):
             for event in events:
@@ -121,6 +125,16 @@ class SearchContract(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, "search_artifact_invalid"):
             await self.run_search(service)
         invocations.artifact.assert_not_awaited()
+
+    async def test_wrong_profile_artifact_remains_rejected(self):
+        for name in ("web-search-result.json", SEARCH_PROFILES["browser"].artifact):
+            with self.subTest(artifact=name):
+                event = terminal()
+                event["data"]["artifacts"][0]["relative_path"] = name
+                service, invocations = self.service([event])
+                with self.assertRaisesRegex(ValueError, "search_artifact_invalid"):
+                    await self.run_search(service)
+                invocations.artifact.assert_not_awaited()
 
     async def test_wrong_query_never_registers_another_search(self):
         service, invocations = self.service([terminal()])

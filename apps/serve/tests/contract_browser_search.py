@@ -34,7 +34,7 @@ from service.chat.api.browsersearch import register_browser_search_routes, searc
 from service.chat.api.search import register_conversation_search_routes
 from service.chat.runtime.composition import OneShotRuntimeResult
 from service.chat.service.receipts import SEARCH_RECEIPT_PREFIX
-from service.chat.service.search import SEARCH_ARTIFACT, SearchService
+from service.chat.service.search import SEARCH_BROWSER_ARTIFACT, SearchService
 from service.invocation.service.results import RESULT_READY_EVENT
 from service.invocation.service.runtime import (
     INVOCATION_PERMISSION_EXCEEDS_PARENT,
@@ -397,7 +397,7 @@ class BrowserSearchFlowContract(unittest.IsolatedAsyncioTestCase):
         result = response.json()
         if result["ok"]:
             resource = parameters["skill_identity"].get("profile") == FALLBACK_PROFILE
-            artifact_name = FALLBACK_BROWSER_ARTIFACT if resource else SEARCH_ARTIFACT
+            artifact_name = FALLBACK_BROWSER_ARTIFACT if resource else SEARCH_BROWSER_ARTIFACT
             payload = {
                 "schema": "scholarseed.web_search.v1",
                 "provider": "visible-browser",
