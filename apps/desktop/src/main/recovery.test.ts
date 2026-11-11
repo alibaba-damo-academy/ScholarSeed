@@ -103,7 +103,12 @@ function fixture(
   const exports: Record<string, unknown> = {}
   const context = createContext({
     exports,
-    process: { platform, arch: 'arm64', pid: 123 },
+    process: {
+      platform,
+      arch: 'arm64',
+      pid: 123,
+      stderr: { write: (value: string) => logs.push(value) },
+    },
     setTimeout,
     clearTimeout: (timer: ReturnType<typeof setTimeout>) => {
       timerCancellations.push(timer)
@@ -138,6 +143,12 @@ function fixture(
     )
   }
   return {
+    repairDiagnostic: exports.reportMacRepair as (
+      stage: string,
+      hasSelection: boolean,
+      result?: object,
+      failure?: unknown
+    ) => Promise<void>,
     run,
     refuse,
     ready,
@@ -160,6 +171,29 @@ function fixture(
     },
   }
 }
+
+test('repair entry diagnostics use only the OS logger and allowlisted fields before admission', async () => {
+  const current = fixture([])
+  await current.repairDiagnostic('begin', true)
+  await current.repairDiagnostic('completed', true, {
+    requestId: 'a'.repeat(64),
+    targetBuild: '202611101000',
+    home: '/private/home',
+  })
+  await current.repairDiagnostic('failed', false, undefined, new Error('/private/home/secret'))
+  const records = current.systemLogs.map((args) => JSON.parse(args.at(-1)!))
+  assert.deepEqual(
+    records.map((record) => record.stage),
+    ['begin', 'completed', 'failed']
+  )
+  assert.equal(records[0].hasSelection, true)
+  assert.equal(records[1].requestId, 'a'.repeat(64))
+  assert.equal(records[1].targetBuild, '202611101000')
+  assert.equal(records[2].error.message, 'redacted failure')
+  assert.equal(JSON.stringify(records).includes('/private/home'), false)
+  assert.deepEqual(current.actions, [])
+  assert.equal(current.dialogs.length, 0)
+})
 
 test('admission recovery waits for app readiness and quit is the Escape/close action', async () => {
   const f = fixture([2])

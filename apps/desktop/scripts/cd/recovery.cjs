@@ -4,13 +4,12 @@ const { createHash } = require('node:crypto')
 const { spawnSync } = require('node:child_process')
 const { compileNative, nativeSourceFiles } = require('../shared/native.cjs')
 const { libraries } = require('../../native/libraries.cjs')
+const { SUPPORT_UNITS, REPAIR_FLAGS } = require('../../native/shipit/compilation.cjs')
 
 const SOURCE_ROOT = path.resolve(__dirname, '../../native')
 const COMPILE_UNITS = [
   'shipit/preflight.m',
-  'shipit/preparation.m',
-  'shipit/cleanup.m',
-  'shipit/readiness.m',
+  ...SUPPORT_UNITS.map(name => `shipit/${name}`),
   'directory.c',
 ]
 const ARCHITECTURES = { arm64: 'arm64', x64: 'x86_64' }
@@ -20,14 +19,9 @@ const COMPILER_FLAGS = [
   'macosx',
   'clang',
   '--no-default-config',
-  '-fobjc-arc',
-  '-fblocks',
-  '-Wno-deprecated-declarations',
+  '-std=c11',
+  ...REPAIR_FLAGS,
   '-mmacosx-version-min=13.0',
-  '-framework',
-  'Foundation',
-  '-framework',
-  'AppKit',
 ]
 const EXECUTABLE = 'scholarseed-recovery-probe'
 const MANIFEST = 'manifest.json'
@@ -202,7 +196,7 @@ function nativeFilesSnapshot(units) {
 }
 
 function sourceSnapshot() {
-  const files = nativeFilesSnapshot(COMPILE_UNITS)
+  const files = nativeFilesSnapshot([...COMPILE_UNITS, 'shipit/compilation.cjs'])
   const sources = files.map((entry) => ({
     path: entry.path,
     bytes: entry.bytes.length,

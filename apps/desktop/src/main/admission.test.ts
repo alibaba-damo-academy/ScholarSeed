@@ -75,6 +75,9 @@ async function launch(
     },
     recoveryErrors: [] as { status?: string }[],
     headless: false,
+    UPDATE_REPAIR_WIZARD_ARGUMENT: '--repair-update',
+    offerStartupRepair: async () => false,
+    updateRepairTarget: () => null,
     recoverStartupAdmission: async (error: { status?: string }) => {
       scope.recoveryErrors.push(error)
       actions.push('recovery-surface')

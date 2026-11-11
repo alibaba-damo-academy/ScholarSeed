@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 import tempfile
 import unittest
@@ -13,7 +14,9 @@ from fastapi.testclient import TestClient
 from scholarseed_runtime.contract import DeliveryClass, RuntimeEvent, RuntimeEventKind
 from service.chat.api.attention import mount_attention_routes
 from service.chat.constants import (
+    HIL_STATE_CANCELLED,
     PRODUCT_EVENT_HIL_REQUESTED,
+    PRODUCT_EVENT_HIL_RESOLVED,
     PRODUCT_EVENT_MESSAGE_DELTA,
     PRODUCT_EVENT_SESSION_STATE,
     PRODUCT_EVENT_TURN_COMPLETED,
@@ -27,6 +30,7 @@ from service.chat.persistence.attention import AttentionStore
 from service.chat.persistence.catalog import HilStatus, SessionCatalogStore, SessionPrincipal
 from service.chat.persistence.events import ProductEventStore
 from service.chat.persistence.notifications import observe_chat
+from service.chat.runtime.interaction import SessionInteractions
 from service.chat.service.attention import AttentionService
 from service.chat.service.sessions import SessionService
 from service.platform.activity import Activities
@@ -38,6 +42,8 @@ from tests.contract_product_events import (
     VENDOR_THREAD_ID,
     register_session,
 )
+
+INTERACTION_WAIT_TIMEOUT_SECONDS = 5
 
 
 class AttentionContract(unittest.TestCase):
@@ -151,6 +157,184 @@ class AttentionContract(unittest.TestCase):
         self.assertEqual(self.attention.snapshot(OWNER)["unread_count"], 0)
         self.emit(PRODUCT_EVENT_TURN_COMPLETED, "done-1")
         self.assertEqual(self.attention.snapshot(OWNER)["unread_count"], 1)
+
+    def test_settled_request_snapshots_do_not_create_waiting_attention(self) -> None:
+        before = self.attention.snapshot(OWNER)
+        for state in (
+            HilStatus.RESOLVED.value,
+            HilStatus.EXPIRED.value,
+            HilStatus.STALE.value,
+            HIL_STATE_CANCELLED,
+        ):
+            with self.subTest(state=state):
+                self.emit(
+                    PRODUCT_EVENT_HIL_REQUESTED,
+                    f"settled:{state}",
+                    request_id=f"request:{state}",
+                    state=state,
+                    blocking=True,
+                )
+                self.assertEqual(self.attention.snapshot(OWNER), before)
+        self.assertFalse(
+            any(change.topic is ChangeTopic.ATTENTION for change in self.notifications)
+        )
+
+    def test_resolution_withdraws_only_matching_waiting_attention(self) -> None:
+        self.record_request("one")
+        self.record_request("two")
+        self.emit(PRODUCT_EVENT_TURN_COMPLETED, "done")
+        self.emit(PRODUCT_EVENT_TURN_FAILED, "failed", turn="failed-turn")
+        before = self.attention.snapshot(OWNER)
+        reminder = next(item for item in before["items"] if item["request_id"] == "one")
+        self.catalog.resolve_hil("one", {"approved": True})
+        self.notifications.clear()
+        self.emit(PRODUCT_EVENT_HIL_RESOLVED, "resolved", request_id="one")
+        after = self.attention.snapshot(OWNER)
+        self.assertEqual(after["unread_count"], 3)
+        self.assertGreater(after["revision"], before["revision"])
+        self.assertIsNone(self.attention.get(OWNER, reminder["id"]))
+        self.assertEqual(self.catalog.hil("one").status, HilStatus.RESOLVED)
+        self.assertEqual(self.catalog.hil("one").decision, {"approved": True})
+        self.assertIsNotNone(self.events.latest_kind(SESSION_ID, PRODUCT_EVENT_HIL_REQUESTED))
+        self.assertIsNotNone(self.events.latest_kind(SESSION_ID, PRODUCT_EVENT_HIL_RESOLVED))
+        self.assertTrue(any(change.topic is ChangeTopic.ATTENTION for change in self.notifications))
+        self.notifications.clear()
+        self.emit(PRODUCT_EVENT_HIL_RESOLVED, "resolved", request_id="one")
+        self.emit(PRODUCT_EVENT_HIL_RESOLVED, "resolved-again", request_id="one")
+        self.emit(
+            PRODUCT_EVENT_HIL_REQUESTED,
+            "one",
+            request_id="one",
+            questions=[{"question": "Confirm scope"}],
+        )
+        self.emit(PRODUCT_EVENT_HIL_REQUESTED, "late-request", request_id="one")
+        self.assertEqual(self.attention.snapshot(OWNER), after)
+        self.assertFalse(
+            any(change.topic is ChangeTopic.ATTENTION for change in self.notifications)
+        )
+
+    def test_catalog_settlement_prevents_a_late_pending_reminder(self) -> None:
+        self.catalog.record_hil(
+            product_request_id="automatic",
+            session_id=SESSION_ID,
+            vendor_request_id="automatic",
+            vendor_turn_id="turn-1",
+            vendor_item_id="question",
+            method="request_user_input",
+            payload={},
+        )
+        self.catalog.resolve_hil("automatic", {"approved": True})
+        self.emit(
+            PRODUCT_EVENT_HIL_REQUESTED,
+            "automatic-request",
+            request_id="automatic",
+            state=HilStatus.PENDING.value,
+        )
+        self.assertEqual(self.attention.snapshot(OWNER)["unread_count"], 0)
+
+    def test_withdrawal_is_session_scoped_and_keeps_unknown_requests(self) -> None:
+        other_session = "other-session"
+        register_session(self.database, other_session)
+        self.record_request("one")
+        self.emit(
+            PRODUCT_EVENT_HIL_REQUESTED,
+            "unknown-request",
+            request_id="unknown",
+            state=HilStatus.UNKNOWN.value,
+        )
+        before = self.attention.snapshot(OWNER)
+        self.events.append(
+            session_id=other_session,
+            runtime_id=RUNTIME_ID,
+            vendor_thread_id=f"thread:{other_session}",
+            vendor_turn_id="turn-1",
+            vendor_item_id=None,
+            kind=PRODUCT_EVENT_HIL_RESOLVED,
+            payload={"request_id": "one"},
+            idempotency_key="other-resolution",
+        )
+        self.emit(PRODUCT_EVENT_HIL_RESOLVED, "missing-request")
+        self.assertEqual(self.attention.snapshot(OWNER), before)
+
+    def test_withdrawal_rolls_back_with_event_and_notification(self) -> None:
+        self.record_request("one")
+        before = self.attention.snapshot(OWNER)
+        self.notifications.clear()
+        with self.assertRaisesRegex(RuntimeError, "rollback"):
+            with self.events.transaction() as connection:
+                self.events.append(
+                    session_id=SESSION_ID,
+                    runtime_id=RUNTIME_ID,
+                    vendor_thread_id=VENDOR_THREAD_ID,
+                    vendor_turn_id="turn-1",
+                    vendor_item_id=None,
+                    kind=PRODUCT_EVENT_HIL_RESOLVED,
+                    payload={"request_id": "one"},
+                    idempotency_key="withdraw-rollback",
+                    connection=connection,
+                )
+                count = connection.execute(
+                    "SELECT COUNT(*) FROM session_attention WHERE session_id=?", (SESSION_ID,)
+                ).fetchone()[0]
+                self.assertEqual(count, 0)
+                self.assertEqual(self.notifications, [])
+                raise RuntimeError("rollback")
+        self.assertEqual(self.attention.snapshot(OWNER), before)
+        self.assertEqual(self.notifications, [])
+
+    def test_reopening_does_not_repair_historical_unread_reminders(self) -> None:
+        self.record_request("historic")
+        self.catalog.resolve_hil("historic", {"approved": True})
+        before = self.attention.snapshot(OWNER)
+        ProductEventStore(self.database)
+        reopened = AttentionStore(self.catalog)
+        self.assertEqual(before["unread_count"], 1)
+        self.assertEqual(reopened.snapshot(OWNER), before)
+
+    def test_resolved_product_interactions_withdraw_waiting_attention(self) -> None:
+        async def scenario() -> None:
+            counts = []
+            request_id = "resolved-product-request"
+            decision = {"answers": {request_id: "approved"}}
+            requested = asyncio.Event()
+
+            async def publish(kind, data, *, turn_id="", item_id="", idempotency_key=""):
+                event = self.events.append(
+                    session_id=SESSION_ID,
+                    runtime_id=RUNTIME_ID,
+                    vendor_thread_id=VENDOR_THREAD_ID,
+                    vendor_turn_id=turn_id,
+                    vendor_item_id=item_id or None,
+                    kind=kind,
+                    payload=data,
+                    idempotency_key=idempotency_key,
+                )
+                counts.append(self.attention.snapshot(OWNER)["unread_count"])
+                if kind == PRODUCT_EVENT_HIL_REQUESTED:
+                    requested.set()
+                return event
+
+            interactions = SessionInteractions(SESSION_ID, self.catalog, publish)
+            request = asyncio.create_task(
+                interactions.request_product_input(
+                    {"id": request_id, "question": "Approve?", "options": []},
+                    turn_id="turn-1",
+                )
+            )
+            try:
+                async with asyncio.timeout(INTERACTION_WAIT_TIMEOUT_SECONDS):
+                    await requested.wait()
+                    await interactions.resolve(None, request_id, decision, active_turn_id="turn-1")
+                    result = await request
+            finally:
+                if not request.done():
+                    request.cancel()
+                await asyncio.gather(request, return_exceptions=True)
+            self.assertEqual(result, decision)
+            self.assertEqual(counts, [1, 0])
+            self.assertEqual(self.catalog.hil(request_id).status, HilStatus.RESOLVED)
+
+        asyncio.run(scenario())
 
     def test_read_all_preserves_concurrent_new_reminders_and_survives_reopen(self) -> None:
         self.emit(PRODUCT_EVENT_HIL_REQUESTED, "request-1", request_id="one")

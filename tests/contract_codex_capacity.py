@@ -260,6 +260,66 @@ class ModelConfigurationContracts(unittest.IsolatedAsyncioTestCase):
 
 
 class CapacityContracts(unittest.IsolatedAsyncioTestCase):
+    async def test_isolated_home_rejects_shared_sqlite_override(self) -> None:
+        pool = self.pool()
+        with patch.object(pool_module, "runtime_sqlite_home", return_value=Path.cwd()):
+            with self.assertRaises(AppServerError) as denied:
+                pool.prepare_home(isolated=True)
+        self.assertEqual(denied.exception.safe_error, pool_module.ISOLATED_STORAGE_CONFLICT)
+        self.assertFalse(self.hosts)
+
+    async def test_isolated_host_does_not_bypass_capacity_or_cancel_existing_owner(self) -> None:
+        pool = self.pool(execution_hosts=1)
+        shared = await pool.acquire(self.request("shared"))
+        home = str(Path(tempfile.gettempdir()) / "isolated-runtime")
+        request = replace(
+            self.request("isolated"),
+            isolation_scope=home,
+            process_environment={CODEX_HOME_ENV: home},
+        )
+        waiting = await pool.reserve(
+            request,
+            role=HostRole.EXECUTION,
+            request_id=request.request_id,
+            deadline=time() + TEST_WAIT_SECONDS,
+        )
+        self.assertEqual(waiting.state, ResourceState.WAITING)
+        self.assertEqual(len(self.hosts), 1)
+        with patch.object(pool, "release_home") as released:
+            await pool.cancel(waiting)
+        released.assert_called_once_with(Path(home))
+        self.assertFalse(self.hosts[0].closed)
+        self.assertEqual(self.capacity(pool).used, 1)
+        await shared.close()
+
+    async def test_isolated_hosts_keep_shared_host_and_close_independently(self) -> None:
+        pool = self.pool(execution_hosts=3)
+        shared = await pool.acquire(self.request("shared"))
+        first_home = str(Path(tempfile.gettempdir()) / "first-runtime")
+        second_home = str(Path(tempfile.gettempdir()) / "second-runtime")
+        first_request = replace(
+            self.request("first", "first"),
+            isolation_scope=first_home,
+            process_environment={CODEX_HOME_ENV: first_home},
+        )
+        second_request = replace(
+            self.request("second", "second"),
+            isolation_scope=second_home,
+            process_environment={CODEX_HOME_ENV: second_home},
+        )
+        first = await pool.acquire(first_request)
+        second = await pool.acquire(second_request)
+        self.assertEqual(len({shared.host_id, first.host_id, second.host_id}), 3)
+        self.assertEqual(self.capacity(pool).used, 3)
+        with self.assertRaises(AppServerError):
+            await pool.acquire(replace(first_request, request_id="conflict", cwd=Path.cwd()))
+        await first.close()
+        self.assertTrue(self.hosts[1].closed)
+        self.assertFalse(self.hosts[0].closed)
+        self.assertFalse(self.hosts[2].closed)
+        await second.close()
+        await shared.close()
+
     @contextmanager
     def warmup_provider(self):
         runtime = CodexRuntimeProvider()

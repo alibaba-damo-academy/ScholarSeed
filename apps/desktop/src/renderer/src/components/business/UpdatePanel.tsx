@@ -218,6 +218,8 @@ export function UpdatePanel({
 
   let title: string = t('update.titleAvailable')
   if (view === 'notes') title = t('update.notesTitle')
+  else if (state?.startupVerification === 'verified' && !failure && !state.candidate)
+    title = accountUpdateText('update.verified')
   else if (failure) title = updateFailureTitle(failure, t)
   else if (phase === 'preparing') title = t('update.preparingApp')
   else if (downloading) title = t('update.titleDownloading')
@@ -232,6 +234,7 @@ export function UpdatePanel({
   // 「重试下载」、点了却去做检查更新的按钮。文案与行为共用 action 这一个真源，才不会分叉。
   let primaryLabel: string = t('update.check')
   if (downloading) primaryLabel = t('update.updating')
+  else if (action === 'repair') primaryLabel = accountUpdateText('update.repair')
   else if (action === 'install') primaryLabel = t('update.restartClient')
   else if (action === 'download')
     primaryLabel = failed
@@ -246,7 +249,11 @@ export function UpdatePanel({
 
   // 设计稿没画的相位仍要如实说明处境：校验中、manual 的操作指引。
   let status: string | null = null
-  if (phase === 'preparing') status = t('update.backgroundPreparing')
+  if (phase === 'preparing')
+    status =
+      state?.installation?.step === 'helper'
+        ? accountUpdateText('update.helper')
+        : t('update.backgroundPreparing')
   else if (phase === 'verifying') status = t('update.verifying')
   else if (phase === 'manual') status = t('update.manualHint')
   else if (presentation === 'dialog' && stage === 'ready' && !failed)

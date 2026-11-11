@@ -27,6 +27,7 @@ typedef struct {
 
 typedef BOOL (^SSProcessIdentityRead)(pid_t process, SSProcessIdentity *identity, BOOL *present);
 typedef NSString *(^SSProcessImageRead)(pid_t process);
+typedef BOOL (^SSProcessExemption)(SSProcessIdentity identity, NSString *image);
 
 #define SS_PREFLIGHT_DIFFERENCE_LIMIT 8
 typedef NS_ENUM(NSUInteger, SSProcessDifferenceKind) {
@@ -147,7 +148,7 @@ static BOOL ObserveImage(SSProcessIdentity expected, SSProcessIdentityRead readI
 }
 
 static SSPreparationActivity ClassifyProcess(SSProcessIdentity identity, NSArray *prefixes,
-    BOOL (^readImage)(SSProcessIdentity, NSString **, BOOL *), NSString *(^canonicalize)(NSString *), BOOL *live) {
+    BOOL (^readImage)(SSProcessIdentity, NSString **, BOOL *), NSString *(^canonicalize)(NSString *), BOOL *live, SSProcessExemption exemption) {
     *live = NO;
     if (identity.status == SIDL) return SSPreparationActivityUnknown;
     NSString *path = nil;
@@ -155,6 +156,7 @@ static SSPreparationActivity ClassifyProcess(SSProcessIdentity identity, NSArray
     if (!readImage(identity, &path, &exited)) return SSPreparationActivityUnknown;
     if (exited) return SSPreparationActivityAbsent;
     if (![path hasPrefix:@"/"] || [path rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location != NSNotFound) return SSPreparationActivityUnknown;
+    if (exemption && exemption(identity, path)) { *live = YES; return SSPreparationActivityAbsent; }
     BOOL known = [path.lastPathComponent isEqual:@"ShipIt"];
     for (NSString *prefix in prefixes) known = known || [path hasPrefix:prefix];
     if (!known) {
@@ -167,8 +169,8 @@ static SSPreparationActivity ClassifyProcess(SSProcessIdentity identity, NSArray
     return known ? SSPreparationActivityActive : SSPreparationActivityAbsent;
 }
 
-static SSPreparationActivity ClassifyActivity(NSArray *processes, uid_t current, pid_t observer, NSURL *source, NSURL *target,
-    BOOL (^readImage)(SSProcessIdentity, NSString **, BOOL *), NSString *(^canonicalize)(NSString *), NSMutableDictionary *coverage) {
+static SSPreparationActivity ClassifyActivityPolicy(NSArray *processes, uid_t current, pid_t observer, NSURL *source, NSURL *target,
+    BOOL (^readImage)(SSProcessIdentity, NSString **, BOOL *), NSString *(^canonicalize)(NSString *), NSMutableDictionary *coverage, SSProcessExemption exemption) {
     if (!ProcessInventory(processes, current, observer) || !readImage || !canonicalize) return SSPreparationActivityUnknown;
     NSArray *prefixes = @[[source.path stringByAppendingPathComponent:@"Contents/"], [target.path stringByAppendingPathComponent:@"Contents/"]];
     BOOL active = NO;
@@ -177,12 +179,16 @@ static SSPreparationActivity ClassifyActivity(NSArray *processes, uid_t current,
         [value getValue:&identity size:sizeof(identity)];
         if (!ScopedProcess(identity, current)) continue;
         BOOL live = NO;
-        SSPreparationActivity activity = ClassifyProcess(identity, prefixes, readImage, canonicalize, &live);
+        SSPreparationActivity activity = ClassifyProcess(identity, prefixes, readImage, canonicalize, &live, exemption);
         if (activity == SSPreparationActivityUnknown) return activity;
         if (live && coverage) coverage[@(identity.process)] = value;
         active = active || activity == SSPreparationActivityActive;
     }
     return active ? SSPreparationActivityActive : SSPreparationActivityAbsent;
+}
+static SSPreparationActivity ClassifyActivity(NSArray *processes, uid_t current, pid_t observer, NSURL *source, NSURL *target,
+    BOOL (^readImage)(SSProcessIdentity, NSString **, BOOL *), NSString *(^canonicalize)(NSString *), NSMutableDictionary *coverage) {
+    return ClassifyActivityPolicy(processes, current, observer, source, target, readImage, canonicalize, coverage, nil);
 }
 
 static SSProcessDifferenceKind InventoryDifference(NSValue *original, SSProcessIdentity identity, SSProcessIdentity *previous) {
@@ -236,9 +242,9 @@ static BOOL CoveredProcess(NSDictionary *coverage, SSProcessIdentity identity) {
 
 static const double SSPreflightProcessSeconds = 2;
 
-static SSPreparationActivity ObserveActivity(uid_t current, pid_t observer, NSURL *source, NSURL *target,
+static SSPreparationActivity ObserveActivityPolicy(uid_t current, pid_t observer, NSURL *source, NSURL *target,
     NSArray *(^readInventory)(void), BOOL (^readImage)(SSProcessIdentity, NSString **, BOOL *), NSString *(^canonicalize)(NSString *),
-    double (^clock)(void), void (^unavailable)(NSString *, int, const SSInventoryDiagnostic *, double)) {
+    double (^clock)(void), void (^unavailable)(NSString *, int, const SSInventoryDiagnostic *, double), SSProcessExemption exemption) {
     if (!readInventory || !readImage || !canonicalize || !clock) return SSPreparationActivityUnknown;
     double started = clock();
     SSPreparationActivity (^unknown)(NSString *, int, const SSInventoryDiagnostic *) = ^SSPreparationActivity(NSString *operation, int code, const SSInventoryDiagnostic *diagnostic) {
@@ -257,7 +263,9 @@ static SSPreparationActivity ObserveActivity(uid_t current, pid_t observer, NSUR
     NSDictionary *original = ProcessInventory(initial, current, observer);
     if (!original) return unknown(@"kernel-inventory", errno ?: EAGAIN, NULL);
     NSMutableDictionary *coverage = [NSMutableDictionary dictionary];
-    SSPreparationActivity activity = ClassifyActivity(initial, current, observer, source, target, checkedImage, canonicalize, coverage);
+    SSPreparationActivity activity = exemption
+      ? ClassifyActivityPolicy(initial, current, observer, source, target, checkedImage, canonicalize, coverage, exemption)
+      : ClassifyActivity(initial, current, observer, source, target, checkedImage, canonicalize, coverage);
     if (activity == SSPreparationActivityUnknown) return unknown(@"kernel-identity-or-image", errno ?: EAGAIN, NULL);
     if (activity == SSPreparationActivityActive) return activity;
     if (!withinDeadline()) return unknown(@"kernel-observation-time", ETIMEDOUT, NULL);
@@ -285,7 +293,7 @@ static SSPreparationActivity ObserveActivity(uid_t current, pid_t observer, NSUR
         SSProcessIdentity identity;
         [value getValue:&identity size:sizeof(identity)];
         BOOL live = NO;
-        activity = ClassifyProcess(identity, prefixes, checkedImage, canonicalize, &live);
+        activity = ClassifyProcess(identity, prefixes, checkedImage, canonicalize, &live, exemption);
         if (activity == SSPreparationActivityUnknown) return unknown(@"kernel-identity-or-image", errno ?: EAGAIN, NULL);
         if (activity == SSPreparationActivityActive) return activity;
         if (live) coverage[@(identity.process)] = value;
@@ -303,6 +311,11 @@ static SSPreparationActivity ObserveActivity(uid_t current, pid_t observer, NSUR
     }
     if (!withinDeadline()) return unknown(@"kernel-observation-time", ETIMEDOUT, NULL);
     return SSPreparationActivityAbsent;
+}
+static inline SSPreparationActivity ObserveActivity(uid_t current, pid_t observer, NSURL *source, NSURL *target,
+    NSArray *(^readInventory)(void), BOOL (^readImage)(SSProcessIdentity, NSString **, BOOL *), NSString *(^canonicalize)(NSString *),
+    double (^clock)(void), void (^unavailable)(NSString *, int, const SSInventoryDiagnostic *, double)) {
+    return ObserveActivityPolicy(current, observer, source, target, readInventory, readImage, canonicalize, clock, unavailable, nil);
 }
 
 #ifndef SS_PREFLIGHT_CONTRACT
@@ -383,8 +396,8 @@ static NSString *ObserveExecutable(pid_t process) {
     return image;
 }
 
-static SSPreparationActivity InspectActivity(NSURL *source, NSURL *target) {
-    return ObserveActivity(getuid(), getpid(), source, target, ^NSArray * { return ObserveProcesses(); },
+static SSPreparationActivity InspectActivityPolicy(NSURL *source, NSURL *target, SSProcessExemption exemption) {
+    return ObserveActivityPolicy(getuid(), getpid(), source, target, ^NSArray * { return ObserveProcesses(); },
         ^BOOL(SSProcessIdentity expected, NSString **path, BOOL *exited) {
             return ObserveImage(expected, ^BOOL(pid_t process, SSProcessIdentity *identity, BOOL *present) { return ObserveIdentity(process, identity, present); },
                 ^NSString *(pid_t process) { return ObserveExecutable(process); }, path, exited);
@@ -394,7 +407,10 @@ static SSPreparationActivity InspectActivity(NSURL *source, NSURL *target) {
     }, ^double { return ProcessTime(); }, ^void(NSString *operation, int code, const SSInventoryDiagnostic *diagnostic, double started) {
         if (diagnostic) LogInventoryDifference(diagnostic, started);
         UnavailableActivity(operation, code);
-    });
+    }, exemption);
+}
+static SSPreparationActivity InspectActivity(NSURL *source, NSURL *target) {
+    return InspectActivityPolicy(source, target, nil);
 }
 
 static NSDictionary *InspectSelection(NSDictionary *selection, NSMutableArray *pins, NSError **error) {

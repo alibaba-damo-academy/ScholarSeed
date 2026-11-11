@@ -137,7 +137,7 @@ async function records(context: test.TestContext) {
       }
       return {
         source: capture,
-        target: { ...capture, path: '/fixture/target.app' },
+        target: { ...capture, path: join(home, 'target.app') },
         binding: handoff.binding,
       }
     }
@@ -211,6 +211,8 @@ function harness(home: string, recordPath: string, channel: string, platform = '
   }
   runInNewContext(updaterCode, updaterScope)
   const scope = {
+    offerStartupRepair: async () => false,
+    updateStartupVerification: undefined as UpdateSnapshot['startupVerification'],
     exports: {} as { bootstrap: () => Promise<void>; health: (event: unknown) => Promise<boolean> },
     app,
     process: { platform, env: {} },
@@ -226,6 +228,11 @@ function harness(home: string, recordPath: string, channel: string, platform = '
       startMacDeferredCleanup: () => undefined,
     },
     updateSnapshot: null as UpdateSnapshot | null,
+    resolveProductConfig: () => config,
+    publishUpdateSnapshot: (next: UpdateSnapshot) => {
+      scope.updateSnapshot = next
+      return next
+    },
     updateAnnouncedKey: null,
     macStartupDecision: undefined as
       Awaited<ReturnType<typeof Updater.macStartupAdmission>> | undefined,
@@ -486,6 +493,7 @@ test(
       /already pending/
     )
     assert.equal(await startup.health(), true)
+    assert.equal(startup.scope.updateStartupVerification, undefined)
     assert.equal(observeUpdateLaunch(native, coordinator, identity), null)
     persistUpdateLaunch(native, coordinator, identity, selection, '202611030003', 'replacement')
     assert.equal(
@@ -566,6 +574,47 @@ for (const channel of ['release', 'preview']) {
     }
   )
 }
+
+test(
+  'only the context-bound installed build reports startup, then verified completion after workbench health',
+  {
+    skip: MACOS_CONTEXT_FIXTURE_SKIP,
+  },
+  async (context) => {
+    const current = await sourceRecovery(context)
+    current.startup.config.buildNumber = current.observed.context.targetBuild
+    current.startup.updaterScope.app.getVersion = () => '0.3.2'
+    const targetIdentity = { ...current.identity, build: current.observed.context.targetBuild }
+    const observed = observeUpdateLaunch(current.native, current.coordinator, targetIdentity)!
+    const restored = restoreUpdateLaunch(
+      current.native,
+      current.coordinator,
+      targetIdentity,
+      {},
+      observed
+    )!
+    current.startup.scope.pendingUpdateLaunch = observed
+    current.startup.scope.completeUpdateLaunch = restored.complete
+    await current.startup.admit(observed.context)
+    await current.startup.bootstrap()
+    assert.equal(current.startup.scope.updateStartupVerification, 'starting')
+    assert.ok(
+      observeUpdateLaunch(current.native, current.coordinator, {
+        ...current.identity,
+        build: current.observed.context.targetBuild,
+      })
+    )
+    assert.equal(await current.startup.health(), true)
+    assert.equal(current.startup.scope.updateStartupVerification, 'verified')
+    assert.equal(
+      observeUpdateLaunch(current.native, current.coordinator, {
+        ...current.identity,
+        build: current.observed.context.targetBuild,
+      }),
+      null
+    )
+  }
+)
 
 test(
   'native restoration evidence revoked after admission cannot be reused by cached UI',

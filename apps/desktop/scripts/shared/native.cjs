@@ -10,6 +10,7 @@ const policy = require('../../native/toolchain.json')
 const cache = require('../cd/cache.cjs')
 const { ensurePrivateDirectory } = require('./build-state.cjs')
 const { LIBRARIES } = require('../../native/libraries.cjs')
+const { SUPPORT_UNITS, REPAIR_FLAGS } = require('../../native/shipit/compilation.cjs')
 
 const NATIVE = path.resolve(__dirname, '../../native')
 const LIBRARY = 'lease.node'
@@ -112,6 +113,14 @@ function nativeSourceFiles(platform) {
     ...(platform === 'darwin'
       ? ['darwin-permissions.h', 'notarization.c', 'notarization.test.cjs', 'notarization.fixture.json']
       : []),
+    ...(platform === 'darwin' ? [
+      'shipit/bridge.m', 'shipit/preflight.m', 'shipit/preparation.m', 'shipit/preparation.h',
+      'shipit/cleanup.m', 'shipit/cleanup.h', 'shipit/readiness.m', 'shipit/readiness.h',
+      'shipit/binding.h', 'shipit/observation.h', 'shipit/succession.h',
+      'shipit/parking.h',
+      'shipit/compilation.cjs',
+      'shipit/repair.test.cjs',
+    ] : []),
     'startup.h',
     'family.h',
     ...(platform === 'win32' ? ['installation.h', 'installation.test.c'] : []),
@@ -345,11 +354,22 @@ async function compileNative({
         )
       ticketArguments.push('-framework', 'Security', '-framework', 'CoreFoundation')
       invoke(compiler, ticketArguments, selected)
-      if (runContract)
+      const repairArguments = arguments_
+        .map(argument => argument === path.join(NATIVE, 'lease.c')
+          ? path.join(NATIVE, 'shipit/bridge.m') : argument === output ? path.join(directory, 'repair.node') : argument)
+      repairArguments.push(...REPAIR_FLAGS,
+        ...SUPPORT_UNITS.map(name => path.join(NATIVE, 'shipit', name)))
+      invoke(compiler, repairArguments, selected)
+      if (runContract) {
+        invoke(process.execPath, ['--test', path.join(NATIVE, 'shipit/repair.test.cjs')], {
+          ...selected,
+          SCHOLARSEED_REPAIR_LIBRARY: path.join(directory, 'repair.node'),
+        })
         invoke(process.execPath, ['--test', path.join(NATIVE, 'notarization.test.cjs')], {
           ...selected,
           SCHOLARSEED_NOTARIZATION_LIBRARY: ticketLibrary,
         })
+      }
     }
     if (platform === 'win32') {
       licenses['VELOPACK-LICENSE.txt'] = path.join(NATIVE, 'VELOPACK-LICENSE.txt')

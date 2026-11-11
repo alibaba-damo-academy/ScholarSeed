@@ -146,6 +146,13 @@
     }
   },
   "update": {
+    "repair": "Repair update",
+    "helper": "Preparing the native installation helper",
+    "saving": "Saving work and preparing to exit",
+    "savingDetail": "The native helper is ready. ScholarSeed is saving state and stopping its own background tasks before handing over installation.",
+    "starting": "Starting the new version",
+    "startingDetail": "The installed build has been verified. Waiting for the backend and main workbench to confirm readiness.",
+    "verified": "Update completed and verified",
     "installFailed": "Update installation failed. Try again.",
     "launcherMaintenanceRequired": "The installed launcher needs an upgrade. Quit ScholarSeed normally, download the latest installer from the official channel, and install it in the existing location. Then reopen the app. In-app updates cannot replace this launcher.",
     "preparationConnectionClosed": "The update preparation connection closed. Retry preparation.",

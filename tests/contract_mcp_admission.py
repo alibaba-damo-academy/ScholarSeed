@@ -12,6 +12,7 @@ from scholarseed_codex.admission import NativeAdmission, NativeQuiescence
 from scholarseed_codex.configuration import NativeMcpConfiguration
 from scholarseed_codex.coordination import (
     MCP_APPLICATION_FAILED,
+    MCP_CONFIGURATION_HOME_MISMATCH,
     MCP_COORDINATOR_CLOSED,
     MCP_HOST_ALREADY_REGISTERED,
     MCP_UNAPPLIED_REVISION,
@@ -63,6 +64,44 @@ class McpProjectionArgumentTests(unittest.TestCase):
 
 
 class McpCoordinatorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_isolated_home_requires_grant_and_receives_its_own_configuration(self):
+        root = Path.cwd()
+        editor = Mock(runtime_home=root)
+        child = Mock(runtime_home=root / "isolated")
+        editor.partition.return_value = child
+        coordinator = McpCoordinator(editor)
+        self.addAsyncCleanup(coordinator.aclose)
+        configuration = NativeMcpConfiguration(0, b"{}", ())
+        coordinator.submit(configuration)
+        assert coordinator._worker is not None
+        await coordinator._worker
+        host = Mock(
+            process_environment={CODEX_HOME_ENV: str(child.runtime_home)},
+            process_generation=1,
+            provider_configuration={"example": {"name": "Explicit provider"}},
+            admission=NativeAdmission(),
+            pid=1,
+            thread_count=0,
+            readiness=SimpleNamespace(ready=False),
+        )
+        with self.assertRaises(AppServerError) as denied:
+            coordinator.register("child", host, isolation_scope=str(child.runtime_home))
+        self.assertEqual(denied.exception.safe_error, MCP_CONFIGURATION_HOME_MISMATCH)
+        self.assertEqual(coordinator.allocate_home(), child.runtime_home)
+        coordinator.register("child", host, isolation_scope=str(child.runtime_home))
+        coordinator.release_home(child.runtime_home)
+        self.assertIs(coordinator._configuration_editor(child.runtime_home), child)
+        async with coordinator.startup("child"):
+            child.publish_provider.assert_called_with(host.provider_configuration)
+            child.publish.assert_called_with({})
+        editor.publish_provider.assert_not_called()
+        coordinator.remove("child")
+        with self.assertRaises(AppServerError):
+            coordinator.register("stale", host, isolation_scope=str(child.runtime_home))
+        coordinator.allocate_home()
+        coordinator.release_home(child.runtime_home)
+        self.assertIsNone(coordinator._configuration_editor(child.runtime_home))
+
     async def test_configuration_reload_runs_during_active_execution(self):
         coordinator = McpCoordinator(Mock(runtime_home=Path.cwd()))
         self.addAsyncCleanup(coordinator.aclose)

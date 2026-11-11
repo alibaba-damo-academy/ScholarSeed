@@ -1,6 +1,7 @@
 import { createPublicKey, verify, randomBytes } from 'node:crypto'
 import type { LatestVersionMeta } from '../updates.ts'
 import type { PreviewContext } from './preview.ts'
+import { UpdateTransportError } from './retry.ts'
 
 export type ActivationKeys = Readonly<Record<string, string>>
 export type HandoffAuthorization = () => Promise<() => void>
@@ -178,7 +179,7 @@ export async function requestActivationGrant(
     await response.body?.cancel()
     if (response.status === 409)
       throw new ActivationCandidateChanged('update release changed before handoff')
-    throw new Error(`activation authorization HTTP ${response.status}`)
+    throw new UpdateTransportError(response.status)
   }
   // Enforce a bound before JSON parsing, also for chunked responses.
   const reader = response.body?.getReader()

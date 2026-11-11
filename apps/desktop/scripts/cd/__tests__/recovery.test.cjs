@@ -21,10 +21,12 @@ const NATIVE_FILES = [
   'darwin-permissions.h',
   'toolchain.json',
   'libraries.cjs',
+  'shipit/compilation.cjs',
 ]
 const NATIVE_LIBRARIES = ['lease.node', 'fonts.node', 'notarization.node']
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex')
 const SOURCES = {
+  'shipit/compilation.cjs': fs.readFileSync(path.resolve(__dirname, '../../../native/shipit/compilation.cjs'), 'utf8'),
   'shipit/preflight.m':
     '#import "preparation.h"\n#import "cleanup.h"\n#import "readiness.h"\n#include "../directory.h"\n',
   'shipit/preparation.m': '#import "preparation.h"\n#import "binding.h"\n',
@@ -178,6 +180,7 @@ function fixture(context, options = {}) {
             return value
           },
         }
+      if (name === '../../native/shipit/compilation.cjs') return require(path.join(native, 'shipit/compilation.cjs'))
       return require(name)
     },
     module,

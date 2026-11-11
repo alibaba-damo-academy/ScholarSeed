@@ -257,6 +257,23 @@ int main(void) {
             return ObserveImage(expected, stable, unrelated, path, exited);
         };
         NSUInteger checks = 0;
+        SSProcessIdentity ownedHelper = Identity(21, 502), replacementHelper = ownedHelper;
+        replacementHelper.started.tv_usec++;
+        NSString *ownedImage = @"/Applications/Target App.app/Contents/Frameworks/Squirrel.framework/Resources/ShipIt";
+        BOOL (^parkingImage)(SSProcessIdentity, NSString **, BOOL *) = ^BOOL(SSProcessIdentity identity, NSString **path, BOOL *exited) {
+            *exited = NO; *path = identity.process == observer.process ? @"/usr/bin/true" : ownedImage; return YES;
+        };
+        SSProcessExemption parking = ^BOOL(SSProcessIdentity identity, NSString *path) {
+            return EqualProcess(identity, ownedHelper) && [path isEqual:ownedImage];
+        };
+        NSArray *parkingInventory = @[Record(observer), Record(ownedHelper)];
+        assert(ClassifyActivity(parkingInventory, 502, 10, source, target, parkingImage, canonical, nil) == SSPreparationActivityActive); checks++;
+        assert(ClassifyActivityPolicy(parkingInventory, 502, 10, source, target, parkingImage, canonical, nil, parking) == SSPreparationActivityAbsent); checks++;
+        assert(ClassifyActivityPolicy(@[Record(observer), Record(replacementHelper)], 502, 10, source, target, parkingImage, canonical, nil, parking) == SSPreparationActivityActive); checks++;
+        assert(ClassifyActivityPolicy(@[Record(observer), Record(ownedHelper), Record(root)], 502, 10, source, target, parkingImage, canonical, nil, parking) == SSPreparationActivityActive); checks++;
+        assert(ClassifyActivityPolicy(parkingInventory, 502, 10, source, target, ^BOOL(SSProcessIdentity identity, NSString **path, BOOL *exited) {
+            *exited = NO; *path = identity.process == observer.process ? @"/usr/bin/true" : @"/Applications/Target App.app/Contents/MacOS/App"; return YES;
+        }, canonical, nil, parking) == SSPreparationActivityActive); checks++;
         assert(ClassifyActivity(inventory, 502, 10, source, target, image, canonical, nil) == SSPreparationActivityAbsent); checks++;
         assert(ClassifyActivity(@[], 502, 10, source, target, image, canonical, nil) == SSPreparationActivityUnknown); checks++;
         assert(ClassifyActivity(@[Record(root)], 502, 10, source, target, image, canonical, nil) == SSPreparationActivityUnknown); checks++;

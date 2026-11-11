@@ -42,6 +42,7 @@ from scholarseed_codex.environment import (
     prepare_codex_runtime_home,
     process_environment_snapshot,
     runtime_home,
+    runtime_sqlite_home,
     store_model_catalog,
 )
 from scholarseed_codex.executable import (
@@ -108,6 +109,7 @@ POOL_READINESS_LOG = "codex_pooled_readiness_fallback"
 POOL_LEASE_RELEASED = "released"
 POOL_HOST_EXITED = "exited"
 POOL_CLOSE_FAILED = "close_failed"
+ISOLATED_STORAGE_CONFLICT = "runtime_isolated_storage_conflict"
 
 ReadinessKey = tuple[str, str]
 
@@ -145,6 +147,8 @@ class _HostSlot:
     host: CodexProcessHost = field(repr=False)
     host_id: str
     role: HostRole
+    isolation_scope: str = ""
+    model_catalog: catalog.ModelCatalogSnapshot | None = field(default=None, repr=False)
     state: HostState = HostState.STARTING
     owners: set[str] = field(default_factory=set)
     startup: asyncio.Task[None] | None = field(default=None, repr=False)
@@ -171,6 +175,7 @@ class PoolReservation:
     arguments: dict[str, Any] = field(repr=False)
     future: asyncio.Future[None] = field(repr=False)
     settled: asyncio.Future[ResourceState] = field(repr=False)
+    isolation_scope: str = ""
     state: ResourceState = ResourceState.WAITING
     slot: _HostSlot | None = field(default=None, repr=False)
     safe_error: str = ""
@@ -306,7 +311,7 @@ class CodexHostPool:
 
     @property
     def execution_configured(self) -> bool:
-        return self._execution_key is not None
+        return self._execution_key is not None or bool(self._hosts)
 
     async def mcp_configuration(self) -> McpConfigurationReceipt:
         if self._mcp is None:
@@ -379,7 +384,10 @@ class CodexHostPool:
                 raise AppServerError(
                     RESOURCE_HOST_CONTEXT_REQUIRED, safe_error=RESOURCE_HOST_CONTEXT_REQUIRED
                 )
-            async with self._mcp.catalog_configuration(request.provider_configuration):
+            async with self._mcp.catalog_configuration(
+                request.provider_configuration,
+                Path(request.process_environment[CODEX_HOME_ENV]),
+            ):
                 return await self._native_catalog(request)
         return await self._native_catalog(request)
 
@@ -388,18 +396,18 @@ class CodexHostPool:
     ) -> CodexRuntimeLaunchArgument:
         async with self._lock:
             self.authorize_scope(request.process_sharing_scope)
+            current = self._catalog_for(request)
             if (
-                self._execution_catalog is not None
-                and self._execution_catalog.path.parent.parent
-                == Path(request.process_environment[CODEX_HOME_ENV])
-                and self._execution_catalog.declares(intent)
+                current is not None
+                and current.path.parent.parent == Path(request.process_environment[CODEX_HOME_ENV])
+                and current.declares(intent)
             ):
-                return self._catalog_argument(self._execution_catalog, request)
+                return self._catalog_argument(current, request)
 
         async def select(candidate: catalog.ModelCatalogSnapshot) -> CodexRuntimeLaunchArgument:
             async with self._lock:
                 self.authorize_scope(request.process_sharing_scope)
-                snapshot = self._execution_catalog
+                snapshot = self._catalog_for(request)
                 if (
                     snapshot is None
                     or snapshot.path.parent != candidate.path.parent
@@ -410,6 +418,18 @@ class CodexHostPool:
 
         return await catalog.model_catalog_argument(
             intent, request, native=self.native_catalog, select=select
+        )
+
+    def _catalog_for(self, request: CodexSessionOpenRequest) -> catalog.ModelCatalogSnapshot | None:
+        if not request.isolation_scope:
+            return self._execution_catalog
+        return next(
+            (
+                slot.model_catalog
+                for slot in self._hosts.values()
+                if slot.isolation_scope == request.isolation_scope
+            ),
+            None,
         )
 
     def _catalog_argument(
@@ -609,6 +629,10 @@ class CodexHostPool:
             )
         self.authorize_scope(request.process_sharing_scope)
         await self.require_skill_policy(request.skill_policy, request.executable)
+        if request.isolation_scope and request.isolation_scope != request.process_environment.get(
+            CODEX_HOME_ENV
+        ):
+            raise AppServerError(ISOLATED_STORAGE_CONFLICT, safe_error=ISOLATED_STORAGE_CONFLICT)
         if request.provider_configuration and self._mcp is None:
             raise AppServerError(
                 RESOURCE_HOST_CONTEXT_REQUIRED, safe_error=RESOURCE_HOST_CONTEXT_REQUIRED
@@ -675,6 +699,7 @@ class CodexHostPool:
             compatibility.update(
                 execution_scope="" if sharing else request.execution_scope,
                 process_sharing_scope=request.process_sharing_scope,
+                isolation_scope=request.isolation_scope,
             )
         digest = self._digest(compatibility)
         fingerprint = self._digest(
@@ -726,7 +751,7 @@ class CodexHostPool:
                     fingerprint,
                     RESOURCE_CANCELLED if self._closed else RESOURCE_WAIT_TIMEOUT,
                 )
-            if self._execution_conflict(candidate_key):
+            if self._execution_conflict(candidate_key, request.isolation_scope):
                 return self._rejected(
                     request_id,
                     role,
@@ -766,7 +791,7 @@ class CodexHostPool:
                     fingerprint,
                     RESOURCE_CANCELLED if self._closed else RESOURCE_WAIT_TIMEOUT,
                 )
-            if self._execution_conflict(key):
+            if self._execution_conflict(key, request.isolation_scope):
                 return self._rejected(
                     request_id,
                     role,
@@ -795,6 +820,7 @@ class CodexHostPool:
                     request_id, role, actual_deadline, key, fingerprint, RESOURCE_QUEUE_FULL
                 )
             reservation = self._new(request_id, role, actual_deadline, key, fingerprint)
+            reservation.isolation_scope = request.isolation_scope
             reservation.authority = self._digest(request.process_sharing_scope)
             reservation.timing = request.timing
             reservation.arguments = {
@@ -826,7 +852,14 @@ class CodexHostPool:
             json.dumps(value, sort_keys=True).encode(CODEX_DIAGNOSTIC_ENCODING)
         ).hexdigest()
 
-    def _execution_conflict(self, key: tuple[str, CodexRuntimeIdentity, str, HostRole]) -> bool:
+    def _execution_conflict(
+        self, key: tuple[str, CodexRuntimeIdentity, str, HostRole], isolation_scope: str = ""
+    ) -> bool:
+        if isolation_scope:
+            return any(
+                slot.isolation_scope == isolation_scope and slot.key != key
+                for slot in self._hosts.values()
+            )
         return (
             key[3] is HostRole.EXECUTION
             and self._execution_key is not None
@@ -876,6 +909,9 @@ class CodexHostPool:
     ) -> None:
         reservation.state = state
         reservation.safe_error = safe_error
+        if state in {ResourceState.REJECTED, ResourceState.CANCELLED, ResourceState.EXPIRED}:
+            if reservation.isolation_scope:
+                self.release_home(Path(reservation.isolation_scope))
         reservation.arguments.clear()
         if reservation.expiry is not None:
             reservation.expiry.cancel()
@@ -899,7 +935,7 @@ class CodexHostPool:
             self._finish(reservation, ResourceState.REJECTED, self._control_error)
             self._remember(reservation)
             return
-        if self._execution_conflict(reservation.key):
+        if self._execution_conflict(reservation.key, reservation.isolation_scope):
             self._finish(reservation, ResourceState.REJECTED, RESOURCE_HOST_CONFIGURATION_CONFLICT)
             self._remember(reservation)
             return
@@ -924,7 +960,7 @@ class CodexHostPool:
                     self._resource_lease() if self._resource_lease is not None else None
                 )
                 if self._mcp is not None:
-                    self._mcp.register(host_id, host)
+                    self._mcp.register(host_id, host, isolation_scope=reservation.isolation_scope)
             except Exception as error:
                 if resource_lease is not None:
                     resource_lease.close()
@@ -944,6 +980,7 @@ class CodexHostPool:
                 host=host,
                 host_id=host_id,
                 role=reservation.role,
+                isolation_scope=reservation.isolation_scope,
                 resource_lease=resource_lease,
                 startup_wait_seconds=(
                     SANDBOX_SETUP_TIMEOUT_SECONDS
@@ -954,17 +991,19 @@ class CodexHostPool:
             )
             self._hosts[slot.key] = slot
             if reservation.role is HostRole.EXECUTION:
-                self._execution_key = reservation.key
                 self._execution_authority = reservation.authority
-                self._execution_catalog = next(
+                slot.model_catalog = next(
                     (
                         self._catalog_candidates[id(argument)][1]
                         for argument in reservation.arguments["launch_arguments"]
                         if id(argument) in self._catalog_candidates
                         and self._catalog_candidates[id(argument)][0]() is argument
                     ),
-                    self._execution_catalog,
+                    None if slot.isolation_scope else self._execution_catalog,
                 )
+                if not slot.isolation_scope:
+                    self._execution_key = reservation.key
+                    self._execution_catalog = slot.model_catalog
             slot.startup = self._background(self._start(slot, reservation.timing))
         if slot.idle_timer is not None:
             slot.idle_timer.cancel()
@@ -1030,7 +1069,7 @@ class CodexHostPool:
                 self._remember(reservation)
                 continue
             slot = self._hosts.get(reservation.key)
-            if self._execution_conflict(reservation.key):
+            if self._execution_conflict(reservation.key, reservation.isolation_scope):
                 waiting.popleft()
                 self._finish(
                     reservation, ResourceState.REJECTED, RESOURCE_HOST_CONFIGURATION_CONFLICT
@@ -1208,13 +1247,20 @@ class CodexHostPool:
             and reservation.state is ResourceState.CONSUMED
             and safe
             and retain
+            and not slot.isolation_scope
             and not self._closed
         ):
             self._detach(reservation, HOST_LEASE_RELEASED)
             slot.idle_timer = asyncio.get_running_loop().call_later(
                 self.policy.idle_seconds, self._expire_idle_host, slot
             )
-        elif slot.host.reusable and slot.state is HostState.READY and not safe and not self._closed:
+        elif (
+            slot.host.reusable
+            and slot.state is HostState.READY
+            and not safe
+            and not self._closed
+            and not slot.isolation_scope
+        ):
             # Reusable hosts retain their physical lease until explicit drain or safe closure.
             self._detach(reservation, HOST_LEASE_RELEASED)
             self._wake(slot.role)
@@ -1485,8 +1531,22 @@ class CodexHostPool:
             self._execution_authority = self._digest(scope)
             self._readiness_cache.clear()
 
-    def prepare_home(self) -> Path:
+    def prepare_home(self, *, isolated: bool = False) -> Path:
+        if isolated:
+            if runtime_sqlite_home() is not None:
+                raise AppServerError(
+                    ISOLATED_STORAGE_CONFLICT, safe_error=ISOLATED_STORAGE_CONFLICT
+                )
+            if self._mcp is None:
+                raise AppServerError(
+                    RESOURCE_HOST_CONTEXT_REQUIRED, safe_error=RESOURCE_HOST_CONTEXT_REQUIRED
+                )
+            return self._mcp.allocate_home()
         return prepare_codex_runtime_home()
+
+    def release_home(self, home: Path) -> None:
+        if self._mcp is not None:
+            self._mcp.release_home(home)
 
     async def reset_execution_configuration(self, scope: str) -> None:
         async with self._lock:

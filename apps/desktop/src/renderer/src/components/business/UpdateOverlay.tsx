@@ -31,6 +31,7 @@ const OVERLAY_CANCEL_CLASS_NAME = 'w-full'
 
 export function UpdateOverlay(): React.JSX.Element | null {
   const { t, i18n } = useTranslation('components')
+  const { t: accountText } = useTranslation('account')
   const state = useUpdateState()
   const notes = releaseNoteLines(
     releaseNotesOf(state?.candidate, i18n.resolvedLanguage || i18n.language)
@@ -38,30 +39,50 @@ export function UpdateOverlay(): React.JSX.Element | null {
   const phase = state?.phase
   const installation = state?.installation
   const now = useInstallationClock(phase === 'installing')
-  if (phase !== 'installing' && phase !== 'restarting' && !state?.restartPending) return null
+  const starting = state?.startupVerification === 'starting'
+  if (
+    !starting &&
+    (phase === 'preparing' ||
+      (phase !== 'installing' && phase !== 'restarting' && !state?.restartPending))
+  )
+    return null
 
   const restarting = phase === 'restarting' || state?.installStage === 'restarting'
+  const saving = installation?.step === 'saving' || state?.installStage === 'handoff'
   const cancelling = installation?.cancelling === true
   const cleaning = installation?.step === 'cleanup'
-  const label = cancelling
-    ? t('update.cancelling')
-    : restarting
-      ? t('update.restarting')
-      : state?.installStage === 'copying'
-        ? t('update.preparingApp')
-        : t('update.installing')
+  const label = starting
+    ? accountText('update.starting')
+    : saving
+      ? accountText('update.saving')
+      : cancelling
+        ? t('update.cancelling')
+        : restarting
+          ? t('update.restarting')
+          : state?.installStage === 'copying'
+            ? t('update.preparingApp')
+            : t('update.installing')
   // 准备/拷贝阶段安装还在本进程里跑，取消能真的 abort；restarting 之后安装器已脱离本进程，
   // 给取消按钮只会制造「点了却没反应」的假控件（bug 87253073：用户必须有可见的恢复路径）。
-  const cancellable = (phase === 'installing' || state?.restartPending) && !restarting && !cleaning
-  const description = cancelling
-    ? t('update.cancellingDescription')
-    : restarting
-      ? t('update.installDescription')
-      : cleaning
-        ? t('update.cleanupDescription')
-        : state?.restartPending && phase !== 'installing'
-          ? t('update.waitingForLatest')
-          : t('update.preparingDescription')
+  const cancellable =
+    !starting &&
+    state?.installStage !== 'handoff' &&
+    (phase === 'installing' || state?.restartPending) &&
+    !restarting &&
+    !cleaning
+  const description = starting
+    ? accountText('update.startingDetail')
+    : saving
+      ? accountText('update.savingDetail')
+      : cancelling
+        ? t('update.cancellingDescription')
+        : restarting
+          ? t('update.installDescription')
+          : cleaning
+            ? t('update.cleanupDescription')
+            : state?.restartPending && phase !== 'installing'
+              ? t('update.waitingForLatest')
+              : t('update.preparingDescription')
 
   return (
     <div
@@ -82,7 +103,7 @@ export function UpdateOverlay(): React.JSX.Element | null {
         {installation && (
           <div className="grid w-full gap-[var(--vds-space-2)]">
             <span className={OVERLAY_TEXT_CLASS_NAME} data-testid="update-overlay-step">
-              {installationStepText(installation, t)}
+              {installationStepText(installation, t, accountText)}
             </span>
             <span
               className={OVERLAY_TEXT_CLASS_NAME}

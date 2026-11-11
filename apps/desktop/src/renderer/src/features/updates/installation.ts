@@ -20,14 +20,22 @@ const STEP_LABELS = {
   'staging-cleanup': 'update.stepStagingCleanup',
   copying: 'update.stepCopying',
   cleanup: 'update.stepCleanup',
+  helper: 'update.preparingApp',
+  saving: 'update.installing',
   restarting: 'update.restarting',
 } as const satisfies Record<UpdateInstallStep, string>
 
 export function installationStepText(
   installation: UpdateInstallation,
-  t: TFunction<'components'>
+  t: TFunction<'components'>,
+  accountText: TFunction<'account'>
 ): string {
-  const step = t(STEP_LABELS[installation.step])
+  const step =
+    installation.step === 'helper'
+      ? accountText('update.helper')
+      : installation.step === 'saving'
+        ? accountText('update.saving')
+        : t(STEP_LABELS[installation.step])
   return installation.application === 'staged' ? t('update.stagedStep', { step }) : step
 }
 
