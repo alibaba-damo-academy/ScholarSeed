@@ -1,46 +1,44 @@
-name: Feature request / 功能建议
-description: Suggest a research-workbench improvement / 提出科研工作台的功能或体验建议
+name: Feature request
+description: Suggest a research-workbench improvement
 title: "[Feature]: "
 labels: [enhancement]
 body:
   - type: markdown
     attributes:
       value: |
-        English and Chinese suggestions are welcome. A technical implementation is not required.
-        欢迎使用中文或英文提出建议，不要求先提供技术实现方案。
+        A technical implementation is not required.
 
         For a reproducible malfunction, use Bug report. For a research plugin proposal, use Research plugin.
-        可复现的功能异常请选择“问题反馈”；科研插件提案请选择“科研插件提案”。
   - type: textarea
     id: scenario
     attributes:
-      label: Research scenario and current difficulty / 科研场景与当前困难
-      description: What are you trying to accomplish, and what gets in the way? / 你希望完成什么任务，目前遇到了什么困难？
+      label: Research scenario and current difficulty
+      description: What are you trying to accomplish, and what gets in the way?
     validations:
       required: true
   - type: textarea
     id: outcome
     attributes:
-      label: Desired improvement / 期望的改善
-      description: Describe the user-visible result, not necessarily an implementation. / 描述希望看到的使用效果，无需设计实现方式。
+      label: Desired improvement
+      description: Describe the user-visible result, not necessarily an implementation.
     validations:
       required: true
   - type: textarea
     id: alternatives
     attributes:
-      label: Current workaround or alternatives / 现有方法或替代方案
-      description: Optional. Explain how you handle this today. / 选填，说明目前如何处理。
+      label: Current workaround or alternatives
+      description: Optional. Explain how you handle this today.
   - type: textarea
     id: references
     attributes:
-      label: Examples and references / 示例与参考资料
-      description: Optional. Add shareable examples, screenshots, links, or expected usage frequency. / 选填，可补充可分享的示例、截图、链接或使用频率。
+      label: Examples and references
+      description: Optional. Add shareable examples, screenshots, links, or expected usage frequency.
   - type: checkboxes
     id: preflight
     attributes:
-      label: Before submitting / 提交前确认
+      label: Before submitting
       options:
-        - label: I searched existing issues for a similar suggestion. / 我已搜索是否存在类似建议。
+        - label: I searched existing issues for a similar suggestion.
           required: true
-        - label: This report and its attachments contain no credentials, private research data, or personal information. / 正文及附件不包含凭据、私有科研数据或个人信息。
+        - label: This report and its attachments contain no credentials, private research data, or personal information.
           required: true

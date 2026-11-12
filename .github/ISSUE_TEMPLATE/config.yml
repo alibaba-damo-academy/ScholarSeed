@@ -1,5 +1,5 @@
 blank_issues_enabled: false
 contact_links:
-  - name: Plugin development guide / 插件开发指南
+  - name: Plugin development guide
     url: https://github.com/alibaba-damo-academy/ScholarSeed/blob/main/CONTRIBUTING.md#develop-and-test-research-plugins
-    about: Read the bilingual plugin development and testing guide / 阅读中英文插件开发与测试指南
+    about: Read the plugin development and testing guide

@@ -1,97 +1,95 @@
-name: Bug report / 问题反馈
-description: Report a reproducible ScholarSeed problem / 反馈可复现的书深问题
+name: Bug report
+description: Report a reproducible ScholarSeed problem
 title: "[Bug]: "
 labels: [bug]
 body:
   - type: markdown
     attributes:
       value: |
-        English and Chinese reports are welcome. Describe one problem per report.
-        欢迎使用中文或英文反馈，每条 Issue 聚焦一个问题。
+        Describe one problem per report.
 
         This is a public issue. Do not post security exploit details, credentials, login links, private research data, or unredacted logs.
-        此处为公开 Issue。请勿发布安全漏洞利用细节、凭据、登录链接、私有科研数据或未脱敏日志。
   - type: dropdown
     id: area
     attributes:
-      label: Affected area / 问题类别
+      label: Affected area
       options:
-        - Installation or startup / 安装与启动
-        - Conversation or model connection / 会话与模型连接
-        - Literature, reading, or citations / 文献、阅读与引用
-        - Plugin or Skill / 插件与技能
-        - Interface or language / 界面与语言
-        - Other / 其他
+        - Installation or startup
+        - Conversation or model connection
+        - Literature, reading, or citations
+        - Plugin or Skill
+        - Interface or language
+        - Other
     validations:
       required: true
   - type: textarea
     id: behavior
     attributes:
-      label: Expected and actual behavior / 预期与实际表现
-      description: What did you expect, and what happened instead? / 你期望发生什么，实际发生了什么？
+      label: Expected and actual behavior
+      description: What did you expect, and what happened instead?
     validations:
       required: true
   - type: textarea
     id: reproduce
     attributes:
-      label: Steps to reproduce / 复现步骤
-      description: Include a minimal, shareable prompt or input when relevant. / 如适用，请提供最小且可分享的提示词或输入。
+      label: Steps to reproduce
+      description: Include a minimal, shareable prompt or input when relevant.
       placeholder: |
-        1. Open ... / 打开……
-        2. Enter or click ... / 输入或点击……
-        3. Observe ... / 观察到……
+        1. Open ...
+        2. Enter or click ...
+        3. Observe ...
     validations:
       required: true
   - type: input
     id: version
     attributes:
-      label: ScholarSeed version / 书深版本
-      description: Copy the full version from About; source users may provide the commit SHA. Enter Unknown if unavailable. / 复制关于页完整版本；源码用户也可提供提交 SHA，无法获取时填写“未知”。
+      label: ScholarSeed version
+      description: Copy the full version from About; source users may provide the commit SHA. Enter Unknown if unavailable.
     validations:
       required: true
   - type: dropdown
     id: platform
     attributes:
-      label: Operating system and architecture / 系统与架构
+      label: Operating system and architecture
       options:
         - macOS Apple Silicon
         - macOS Intel
         - Windows x64
-        - Other or unknown / 其他或未知
+        - Other or unknown
     validations:
       required: true
   - type: dropdown
     id: installation
     attributes:
-      label: How do you run ScholarSeed? / 启动方式
+      label: How do you run ScholarSeed?
       options:
-        - Official installer / 官方安装包
-        - Source checkout / 源码启动
-        - Other or unknown / 其他或未知
+        - Official installer
+        - Source checkout
+        - Other or unknown
     validations:
       required: true
   - type: textarea
     id: context
     attributes:
-      label: Relevant configuration / 相关配置
-      description: Fill only what applies; never include secrets. / 仅填写相关信息，不要包含密钥。
+      label: Relevant configuration
+      description: Fill only what applies; never include secrets.
       placeholder: |
-        OS version and UI language / 系统版本与界面语言:
-        Model provider and model name / 模型厂商与型号:
-        ScholarSeed account, own API key, or third-party authorization / 书深账号、自备 Key 或第三方授权方式（仅填写类型）:
-        Plugin ID/version and failure stage (install, enable, or execute) / 插件 ID、版本与失败阶段（安装、启用或执行）:
-        Source users: commit, command, Node/pnpm/uv versions / 源码用户：提交、命令及工具版本:
+        OS version and UI language:
+        Model provider and model name:
+        ScholarSeed account, own API key, or third-party authorization:
+        Plugin ID/version and failure stage (install, enable, or execute):
+        Source users: commit, command, Node/pnpm/uv versions:
   - type: textarea
     id: evidence
     attributes:
-      label: Redacted error, logs, or screenshots / 脱敏报错、日志或截图
-      description: Optional. Share only relevant excerpts; do not upload your entire user-data directory. / 选填，仅提供相关片段，不要上传整个用户数据目录。
+      label: Redacted error, logs, or screenshots
+      description: Optional. Share only relevant excerpts; do not upload your entire user-data directory.
   - type: checkboxes
     id: preflight
     attributes:
-      label: Before submitting / 提交前确认
+      label: Before submitting
       options:
-        - label: I searched existing issues for the same problem. / 我已搜索是否存在相同问题。
+        - label: I searched existing issues for the same problem.
           required: true
-        - label: I removed credentials, private data, and personal information from this report and its attachments. / 我已移除正文及附件中的凭据、私有数据和个人信息。
+        - label: I removed credentials, private data, and personal information from this report and its attachments.
           required: true
