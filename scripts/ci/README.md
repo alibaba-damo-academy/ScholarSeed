@@ -189,9 +189,9 @@ libutil build && libutil upload -f libinfo_lock.ini -y
 分发仓的验证放在单独的 E2E Job，在分发仓目录执行：
 
 ```sh
-npm run ci && npm run test-e2e
+pnpm run ci && pnpm run test-e2e
 ```
 
-E2E Job 仅依赖出包上传 Job 成功后启动，独立报告验证结果。验证失败不改变出包上传 Job 的成功状态，也不能被当作验证通过。`npm run ci` 准备升级基线与测试依赖并运行控制器测试，本身不负责出包或上传。
+E2E Job 仅依赖出包上传 Job 成功后启动，独立报告验证结果。验证失败不改变出包上传 Job 的成功状态，也不能被当作验证通过。`pnpm run ci` 准备升级基线与测试依赖并运行控制器测试，本身不负责出包或上传。
 
 外部 Chimp 任务配置不在本仓库；需要在任务配置中拆分 Job 并设置成功依赖。本仓库文档不代表线上配置已经修改，也不需要新增发布入口。

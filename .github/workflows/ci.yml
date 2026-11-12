@@ -59,13 +59,10 @@ jobs:
         uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
         with:
           node-version-file: .node-version
-          cache: npm
-          cache-dependency-path: |
-            package-lock.json
-            apps/desktop/package-lock.json
+          package-manager-cache: false
 
-      - name: Setup npm
-        run: npm install -g npm@11.13.0
+      - name: Setup pnpm
+        run: npm install -g pnpm@12.14.0
 
       - name: Setup uv
         uses: astral-sh/setup-uv@ed21f2f24f8dd64503750218de024bcf64c7250a # v7.1.5
@@ -74,13 +71,13 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: npm ci --no-audit --no-fund
+        run: pnpm install --frozen-lockfile
 
       - name: Build application and prepare Python
         env:
           # The renderer exceeds V8's default ~2 GiB heap on the 7 GiB macOS runner.
           NODE_OPTIONS: --max-old-space-size=4096
-        run: npm run ops -- --package-manager npm cd build local --stage app
+        run: pnpm run ops --package-manager pnpm cd build local --stage app
 
       - name: Run distribution contracts
         env:

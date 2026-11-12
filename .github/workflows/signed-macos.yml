@@ -71,8 +71,8 @@ jobs:
           node-version-file: .node-version
           package-manager-cache: false
 
-      - name: Setup npm
-        run: npm install -g npm@11.13.0
+      - name: Setup pnpm
+        run: npm install -g pnpm@12.14.0
 
       - name: Setup uv
         uses: astral-sh/setup-uv@ed21f2f24f8dd64503750218de024bcf64c7250a # v7.1.5
@@ -102,7 +102,7 @@ jobs:
           NODE
 
       - name: Install dependencies
-        run: npm ci --no-audit --no-fund
+        run: pnpm install --frozen-lockfile
 
       - name: Verify native lease permissions and artifact handling
         run: node --test scripts/shared/__tests__/permissions.test.cjs scripts/shared/__tests__/lease.test.cjs apps/desktop/scripts/cd/__tests__/osx-sign.test.cjs .github/scripts/package.test.cjs
@@ -143,7 +143,7 @@ jobs:
           export SCHOLARSEED_UPDATE_BASE_URL
           SCHOLARSEED_UPDATE_BASE_URL=$(node -p "require('./apps/desktop/resources/product.json').update_base_url")
           export SCHOLARSEED_UPDATE_ACTIVATION_PUBLIC_KEYS="$GITHUB_WORKSPACE/.github/signing/activation-public-keys.json"
-          npm run ops -- --package-manager npm cd build release \
+          pnpm run ops --package-manager pnpm cd build release \
             --channel "$PACKAGE_CHANNEL" --stage installer \
             --result "$RUNNER_TEMP/signed-result.json"
 
