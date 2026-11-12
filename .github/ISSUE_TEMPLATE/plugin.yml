@@ -1,0 +1,64 @@
+name: Research plugin / 科研插件提案
+description: Propose or introduce a research plugin / 提出或介绍一个科研插件
+title: "[Plugin]: "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form to discuss a plugin idea or introduce an existing implementation, in English or Chinese.
+        使用本表单讨论插件想法或介绍已有实现，支持中英文。
+
+        Read the [contribution guide](https://github.com/alibaba-damo-academy/ScholarSeed/blob/main/CONTRIBUTING.md) and [plugin documentation](https://github.com/alibaba-damo-academy/ScholarSeed/blob/main/doc/plugins.md).
+        请参考[中文贡献指南](https://github.com/alibaba-damo-academy/ScholarSeed/blob/main/CONTRIBUTING_zh.md)与[中文插件文档](https://github.com/alibaba-damo-academy/ScholarSeed/blob/main/doc/plugins.zh.md)。
+
+        An issue does not submit code, install a plugin, or publish it to a marketplace. Do not attach credentials or private research data.
+        创建 Issue 不等于提交代码、安装插件或发布到插件市场。请勿附带凭据或私有科研数据。
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Proposal stage / 当前阶段
+      options:
+        - Idea / 只有想法
+        - In development / 开发中
+        - Implementation available / 已有可分享的实现
+    validations:
+      required: true
+  - type: textarea
+    id: scenario
+    attributes:
+      label: Research scenario and intended users / 科研场景与目标用户
+      description: Explain the research problem and who would use this plugin. / 说明要解决的科研问题，以及哪些人会使用它。
+    validations:
+      required: true
+  - type: textarea
+    id: workflow
+    attributes:
+      label: Inputs, workflow, and expected outputs / 输入、流程与预期产出
+      description: Give a small, shareable example and describe what successful use looks like. / 提供一个可分享的小型示例，说明怎样才算完成任务。
+    validations:
+      required: true
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility and requirements / 兼容性与使用要求
+      description: If known, list ScholarSeed versions, OS/architecture, dependencies, model/service requirements, and configuration without secrets. / 如已明确，请列出书深版本、系统及架构、依赖、模型／服务要求与不含密钥的配置方式。
+  - type: textarea
+    id: implementation
+    attributes:
+      label: Existing implementation / 已有实现
+      description: Optional for ideas. Include the plugin ID/version, author, source revision/link, license, versioned ZIP if available, and maintenance location. / 想法阶段可留空；已有实现请提供插件 ID、版本、作者、源码版本与链接、许可证、安装包（如有）及维护地址。
+  - type: textarea
+    id: validation
+    attributes:
+      label: Actual validation and known limits / 实际验证与已知限制
+      description: If implemented, describe package checks and real-task results, including missing-input/failure cases, tested platforms, and unverified items. / 已有实现请说明安装包检查与真实任务结果，包括缺少输入或失败场景、已验证平台及未验证项。
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before submitting / 提交前确认
+      options:
+        - label: I searched existing issues and plugins for similar work. / 我已搜索现有 Issue 和插件中是否有类似工作。
+          required: true
+        - label: I have permission to share all included materials and removed credentials, private data, and personal information. / 我有权分享所附材料，并已移除凭据、私有数据和个人信息。
+          required: true
