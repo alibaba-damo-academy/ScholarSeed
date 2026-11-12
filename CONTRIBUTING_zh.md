@@ -1,8 +1,71 @@
-# 书深开发指南
+# 参与书深贡献
 
 [English](CONTRIBUTING.md) · **中文** · [返回 README](README_zh.md)
 
-本指南介绍源码环境准备、本地开发、排错、测试和原生打包。产品功能及模型配置请先阅读 [README](README_zh.md)。
+本指南介绍科研插件的开发与测试贡献路径，以及源码环境准备、本地开发、排错、测试和原生打包。产品功能及模型配置请先阅读 [README](README_zh.md)。
+
+## 开发与测试科研插件
+
+你可以将科研工作流制作成插件参与贡献，无需修改书深应用本身的代码。插件接口目前处于**开发者预览阶段**，请先核对目标书深版本的兼容性。
+
+### 1. 选择开发路径
+
+- **通过书深创建：**在已安装书深、且已启用 `plugin-create` 的应用中，通过会话说明科研场景、输入、预期产出和所需工具。安装前先审阅生成的源码与安装包。这条路径不要求克隆或构建整个应用。
+- **手动开发：**按[创建教程](doc/plugins/create.zh.md)完成论文阅读笔记插件示例。如需从源码开发书深应用本身，再按[环境准备](#环境准备)和[安装与启动](#安装与启动)操作。
+
+插件源码放在独立目录中，通常包含 `SKILL.md`、`.scholarseed-plugin.json` 及所需脚本与资源。会话卡片及其预览场景是可选项；一个 Skill 不会自动拥有自定义卡片。
+
+### 2. 按支持的接口实现
+
+以现有指南作为技术参考，不复制应用内部接口：
+
+| 指南 | 用途 |
+| --- | --- |
+| [插件总览](doc/plugins.zh.md) | 插件概念、支持范围与安装方式 |
+| [创建插件](doc/plugins/create.zh.md) | 源码结构、完整示例与打包 |
+| [会话卡片](doc/plugins/cards.zh.md) | 可选自定义卡片、状态与交互 |
+| [运行机制](doc/plugins/runtime.zh.md) | 执行、权限与生命周期 |
+| [API 参考](doc/plugins/api.zh.md) | 宿主契约与支持的能力 |
+| [测试指南](doc/plugins/testing.zh.md) | 校验、预览、安装与真实任务验证 |
+
+按指南声明插件标识、版本、兼容性和依赖，使用支持的宿主 API；声明某项能力不等于已经实现对应处理逻辑。卡片的 iframe 隔离不等于 Skill 脚本拥有通用安全沙箱。
+
+### 3. 校验与打包
+
+手动开发时，在包含**与目标书深版本匹配的后端**的 Python 环境中运行以下命令；仅安装系统 Python 并不足够。[创建教程](doc/plugins/create.zh.md)说明了这里使用的插件描述文件和 `request.json`。
+
+```bash
+python -m service.cli.plugins describe
+python -m service.cli.plugins validate ./paper-reading-notes/.scholarseed-plugin.json ./request.json
+python -m service.cli.plugins pack ./paper-reading-notes --name paper-reading-notes --version 0.1.0 --output ./paper-reading-notes-0.1.0.zip
+python -m service.cli.plugins check ./paper-reading-notes-0.1.0.zip
+```
+
+将示例路径、名称和版本替换为自己的插件信息，输出 ZIP 应放在源码目录之外。打包工具会生成包含文件大小和哈希的完整性清单；不要手写 `.scholarseed-package.json`，也不要在修改源码后沿用旧哈希。修改后重新打包，更新已分发的插件时递增版本。
+
+校验或安装包检查成功，**不代表**安装成功或科研任务已完成。`capabilities_unchecked` 仍需在真实应用中验证。
+
+### 4. 在真实应用中测试
+
+1. 打开技能中心，添加 ZIP，核对标识、版本和校验报告，确认安装并启用。
+2. 使用有权限的模型创建新会话，请它使用该插件完成一个小型、可分享的科研任务。
+3. 核对真实结果：所需工具实际执行、预期产出实际生成，涉及的文件或引用能指向正确内容。
+4. 验证缺少输入、取消及一种预期失败场景，不能编造结果或隐藏未成功的操作。
+5. 包含卡片时，验证卡片操作、状态保存和历史记录；按适用范围检查中英文、明暗主题、窄窗口与键盘操作。
+6. 验证对已安装版本的更新。记录书深版本、系统及架构、模型、已执行检查和未验证项；分别验证受影响的 macOS 与 Windows 行为，一个平台通过不代表另一个也通过。
+
+模型和服务调用使用自己获授权的凭据，并可能产生费用。示例和证据中不得包含凭据或私有科研数据。
+
+### 5. 准备贡献材料
+
+提供一组精简、可复现的材料：
+
+- 插件 ID、版本、科研场景、作者、许可证和源码版本。
+- 支持的书深版本、依赖、模型／服务要求，以及不含密钥的配置说明。
+- 可分享的示例输入、预期输出，以及实际校验和真实任务结果，注明已知限制与未验证平台。
+- 源码、带版本的安装 ZIP（如提供），以及维护地址和更新说明。
+
+分享前审阅生成代码，排除 API Key、密码、签名凭据、`.env`、登录缓存和私有科研数据，保留 [Apache-2.0 许可证](LICENSE)及适用的第三方声明。分享插件本身不等于替其他用户安装，也不等于自动发布到市场。
 
 ## 环境准备
 
@@ -56,15 +119,14 @@ Node 必须显示 `v24.16.0`。如果显示其他版本，请先通过版本管�
 
 使用 Windows x64 电脑和 PowerShell。先通过 [Node.js 官方 Windows x64 安装包](https://nodejs.org/download/release/v24.16.0/node-v24.16.0-x64.msi) 安装 **24.16.0**，保留 npm 和加入 PATH 的安装选项，不要改用最新版 Node。
 
-尚未安装 Git、uv 和 Visual C++ 2015-2022 x64 运行库时，按 [Git for Windows](https://git-scm.com/install/windows)、[uv 官方说明](https://docs.astral.sh/uv/getting-started/installation/#winget) 和 [微软下载页](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist)执行：
+尚未安装 Git 和 uv 时，按 [Git for Windows](https://git-scm.com/install/windows) 和 [uv 官方说明](https://docs.astral.sh/uv/getting-started/installation/#winget)执行：
 
 ```powershell
-winget install --id Microsoft.VCRedist.2015+.x64 -e --source winget
 winget install --id Git.Git -e --source winget
 winget install --id astral-sh.uv -e --source winget
 ```
 
-如果没有 WinGet，改用上述链接中的 Git 安装包、uv 安装方式和运行库安装包。工具安装完成后重新打开 PowerShell，再检查：
+如果没有 WinGet，改用上述链接中的 Git 安装包和 uv 安装方式。工具安装完成后重新打开 PowerShell，再检查：
 
 ```powershell
 git --version
@@ -113,7 +175,6 @@ npm run ops -- dev
 | `pnpm ... expected 12.14.0` | 安装／切换到 pnpm 12.14.0，确认 `pnpm --version` 后重试。 |
 | 找不到 Node 或 Node 版本错误 | 完成 Node 24.16.0 安装，重新打开终端，检查 PATH 或版本管理器。 |
 | `uv: command not found` | 将 uv 安装目录加入 PATH，在启动应用的终端确认 `uv --version`。 |
-| `Cannot find native binding` | 缺少 Visual C++ 运行库；按上面的命令安装后重跑。 |
 | 未找到内置技能 | 先停止 Electron，再依次执行 `pnpm ops pre` 和 `pnpm ops dev`。全新克隆不能跳过准备步骤，也不要将用户技能手工复制进内置技能包。 |
 | 下载失败 | 根据日志中的失败 URL 检查网络／代理，恢复访问后重跑原命令，不绕过摘要校验。 |
 | 安装停在 `scripts/pre/electron.cjs` / `Running...` | 见 [Windows 下载排查](#windows-下载排查)。此阶段会单独下载 Electron 二进制，不是 npm 包下载已完成就能启动。 |
@@ -202,7 +263,7 @@ pnpm --dir apps/desktop run typecheck
 
 按修改范围选择测试，并在真实应用中操作受影响流程。构建或类型检查成功，不代表模型调用、登录或工具执行已通过。真实模型测试需自行配置有权限的凭据，并可能产生费用。
 
-科研技能源码位于 `skills/community/`，通过 `pnpm ops cd build local --target skills` 构建。开发者预览版插件接口见[插件指南](doc/plugins.md)。
+科研技能源码位于 `skills/community/`，通过 `pnpm ops cd build local --target skills` 构建。开发者预览版插件接口见[插件指南](doc/plugins.zh.md)。
 
 ## 打包
 
@@ -241,7 +302,3 @@ pnpm ops cd build release --stage dir --candidate
 | `scripts/` | 工具链、配置和构建脚本 |
 | `tests/` | 跨包集成与验收测试 |
 | `product.json` | 产品与运行时配置 |
-
-## 参与贡献
-
-每个 PR 聚焦一个问题，说明背景、方案、执行过的检查和真实用户流程，并注明未验证项。反馈问题时请提供源码提交、系统及架构、工具版本、复现步骤和脱敏日志。不要提交 API Key、密码、签名凭据或私有科研数据。修改依赖和内置制品时，保留 [Apache-2.0 许可证](LICENSE)和第三方声明。

@@ -1,8 +1,71 @@
-# ScholarSeed Development Guide
+# Contributing to ScholarSeed
 
 **English** · [中文](CONTRIBUTING_zh.md) · [Back to README](README.md)
 
-This guide covers source setup, local development, troubleshooting, testing, and native packaging. For product features and model configuration, start with the [README](README.md).
+This guide explains how to develop and test research plugins, and covers source setup, local development, troubleshooting, testing, and native packaging. For product features and model configuration, start with the [README](README.md).
+
+## Develop and Test Research Plugins
+
+You can contribute a research workflow as a plugin without changing ScholarSeed's application code. Plugin interfaces are currently in **developer preview**; check compatibility with the version you will use.
+
+### 1. Choose a development path
+
+- **Create with ScholarSeed:** in an installed ScholarSeed application with `plugin-create` enabled, describe the research scenario, inputs, expected outputs, and required tools in a conversation. Review the generated sources and package before installing it. This path does not require cloning or building the whole application.
+- **Develop manually:** follow the [creation tutorial](doc/plugins/create.md), which builds a paper-reading-notes plugin. For source development of ScholarSeed itself, use [Environment Setup](#environment-setup) and [Install and Run](#install-and-run).
+
+Keep plugin sources in their own directory. A plugin normally contains `SKILL.md`, `.scholarseed-plugin.json`, and the scripts/resources it needs. Conversation cards and their preview scenarios are optional; a Skill does not automatically provide a custom card.
+
+### 2. Implement against the supported interfaces
+
+Use the existing guides as the technical reference rather than copying internal application interfaces:
+
+| Guide | What to use it for |
+| --- | --- |
+| [Overview](doc/plugins.md) | Plugin concepts, supported scope, and installation |
+| [Create a plugin](doc/plugins/create.md) | Source layout, a working example, and packaging |
+| [Conversation cards](doc/plugins/cards.md) | Optional custom cards, state, and interaction |
+| [Runtime](doc/plugins/runtime.md) | Execution, permissions, and lifecycle |
+| [API reference](doc/plugins/api.md) | Host contracts and supported capabilities |
+| [Testing](doc/plugins/testing.md) | Validation, previews, installation, and real-task checks |
+
+Declare the plugin's identity, version, compatibility, and dependencies as required by these guides. Use supported host APIs; a capability declaration alone does not implement a handler. Card iframe isolation is not a general-purpose sandbox for Skill scripts.
+
+### 3. Validate and package
+
+For manual development, run these commands in a Python environment containing the backend that matches your target ScholarSeed version. A system Python installation alone is not sufficient. The [creation tutorial](doc/plugins/create.md) explains the descriptor and `request.json` used here.
+
+```bash
+python -m service.cli.plugins describe
+python -m service.cli.plugins validate ./paper-reading-notes/.scholarseed-plugin.json ./request.json
+python -m service.cli.plugins pack ./paper-reading-notes --name paper-reading-notes --version 0.1.0 --output ./paper-reading-notes-0.1.0.zip
+python -m service.cli.plugins check ./paper-reading-notes-0.1.0.zip
+```
+
+Replace the example paths, name, and version with your plugin's values. Keep the output ZIP outside its source directory. Packaging generates the integrity manifest, including file sizes and hashes; do not handwrite `.scholarseed-package.json` or copy stale hashes after changing sources. Repackage after changes and increment the version for an update.
+
+A successful validation or package check does **not** prove installation or research-task success. A `capabilities_unchecked` result still requires validation in the real application.
+
+### 4. Test in the real application
+
+1. Open the Skills center, add the ZIP, review its identity/version and validation report, confirm installation, and enable it.
+2. Start a new conversation with an authorized model and ask it to use the plugin for a small, shareable research task.
+3. Check the actual result: required tools execute, expected outputs are produced, and any files or citations point to the correct content.
+4. Exercise missing inputs, cancellation, and an expected failure. The plugin must not invent results or hide an unsuccessful operation.
+5. If the plugin includes cards, test their actions, saved state, and history; also check English/Chinese, light/dark themes, narrow windows, and keyboard operation where applicable.
+6. Test an update to an already installed version. Record the ScholarSeed version, OS/architecture, model, checks performed, and unverified cases. Test affected macOS and Windows behavior separately; one platform does not prove the other.
+
+Use your own authorized credentials for model and service calls; they may incur charges. Do not include credentials or private research data in test examples or evidence.
+
+### 5. Prepare the contribution
+
+Provide a small, reproducible package of information:
+
+- Plugin ID, version, research scenario, author, license, and source revision.
+- Supported ScholarSeed versions, dependencies, model/service requirements, and configuration instructions without secrets.
+- Shareable example inputs, expected outputs, and actual validation/real-task results, including known limits and untested platforms.
+- Source files, a versioned installation ZIP if provided, and a maintenance location with update notes.
+
+Review generated code before sharing it. Exclude API keys, passwords, signing credentials, `.env` files, login caches, and private research data. Preserve the [Apache-2.0 license](LICENSE) and applicable third-party notices. Sharing a plugin does not by itself install it for other users or publish it to a marketplace.
 
 ## Environment Setup
 
@@ -56,15 +119,14 @@ Node must report `v24.16.0`. If another version appears, select 24.16.0 in your 
 
 Use a Windows x64 machine and PowerShell. First install **Node.js 24.16.0** from the [official Windows x64 installer](https://nodejs.org/download/release/v24.16.0/node-v24.16.0-x64.msi), including npm and adding Node to PATH. Do not substitute the latest Node version.
 
-Install Git, uv and the Microsoft Visual C++ 2015-2022 x64 runtime if they are not already available, using the commands documented by [Git for Windows](https://git-scm.com/install/windows), [uv](https://docs.astral.sh/uv/getting-started/installation/#winget) and [Microsoft](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist):
+Install Git and uv if they are not already available, using the commands documented by [Git for Windows](https://git-scm.com/install/windows) and [uv](https://docs.astral.sh/uv/getting-started/installation/#winget):
 
 ```powershell
-winget install --id Microsoft.VCRedist.2015+.x64 -e --source winget
 winget install --id Git.Git -e --source winget
 winget install --id astral-sh.uv -e --source winget
 ```
 
-If WinGet is unavailable, use the Git installer, uv installation instructions and runtime installer linked above instead. Open a new PowerShell window after installing the tools, then check:
+If WinGet is unavailable, use the Git installer and uv installation instructions linked above instead. Open a new PowerShell window after installing the tools, then check:
 
 ```powershell
 git --version
@@ -113,7 +175,6 @@ npm run ops -- dev
 | `pnpm ... expected 12.14.0` | Install/select pnpm 12.14.0, then check `pnpm --version` before retrying. |
 | `node: command not found` / wrong Node version | Finish installing Node 24.16.0, reopen the terminal, and check PATH or your version manager. |
 | `uv: command not found` | Add uv's installation directory to PATH and verify `uv --version` in the launch terminal. |
-| `Cannot find native binding` | The Visual C++ runtime is missing; install it with the `winget install --id Microsoft.VCRedist.2015+.x64` command above, then rerun. |
 | Built-in Skill not found | Stop Electron, then run `pnpm ops pre` and `pnpm ops dev`. Do not skip preparation on a fresh clone or manually copy user Skills into the bundled pack. |
 | Download failure | Check the failing URL in the log and your network/proxy access. Rerun the same command after restoring access; do not bypass checksum verification. |
 | Install stays at `scripts/pre/electron.cjs` / `Running...` | See [Windows download diagnostics](#windows-download-diagnostics). This stage downloads the Electron binary separately from npm packages. |
@@ -241,7 +302,3 @@ The production distribution entry is `pnpm ops cd build release --workflow distr
 | `scripts/` | Toolchain, configuration, and build scripts |
 | `tests/` | Cross-package integration and acceptance tests |
 | `product.json` | Product and runtime configuration |
-
-## Contributing
-
-Keep pull requests focused, explain the problem and approach, and state which checks and real user flows you exercised, including anything not verified. For bug reports, include the source commit, OS/architecture, tool versions, reproduction steps, and redacted error logs. Never include API keys, passwords, signing credentials, or private research data. Preserve the [Apache-2.0 license](LICENSE) and third-party notices when changing dependencies or bundled assets.
