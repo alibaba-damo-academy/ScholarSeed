@@ -119,7 +119,7 @@ function nativeSourceFiles(platform) {
       'shipit/binding.h', 'shipit/observation.h', 'shipit/succession.h',
       'shipit/parking.h',
       'shipit/compilation.cjs',
-      'shipit/repair.test.cjs',
+      'shipit/repair.test.cjs', 'shipit/preflight.test.m',
     ] : []),
     'startup.h',
     'family.h',

@@ -1,5 +1,5 @@
-import privacyPolicy from './privacy-policy.md?raw'
-import serviceAgreement from './service-agreement.md?raw'
+import privacyPolicy from './privacy-policy_zh.md?raw'
+import serviceAgreement from './service-agreement_zh.md?raw'
 
 // legal/index.ts — 用户协议与隐私政策正文。
 //
@@ -19,7 +19,7 @@ export type LegalDoc = {
 /** 登录/注册页协议行上的入口文案。 */
 export const LEGAL_LABELS: Record<LegalDocKey, string> = {
   agreement: '用户协议',
-  privacy: '隐私政策'
+  privacy: '隐私政策',
 }
 
 // 法务原件出自语雀，带 `++…++`（下划线）这种非标准标记 —— 仓内 Markdown 渲染器不认，
@@ -36,5 +36,5 @@ function parse(source: string, fallbackTitle: string): LegalDoc {
 
 export const LEGAL_DOCS: Record<LegalDocKey, LegalDoc> = {
   agreement: parse(serviceAgreement, LEGAL_LABELS.agreement),
-  privacy: parse(privacyPolicy, LEGAL_LABELS.privacy)
+  privacy: parse(privacyPolicy, LEGAL_LABELS.privacy),
 }

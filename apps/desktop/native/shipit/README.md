@@ -638,6 +638,36 @@ Its signature operations verify/display the existing application; they do not si
 
 **required**: before terminal failure can be observed, normally quit every source
 and target application instance, their owned backend/runtime processes, and ShipIt.
+Native process inspection scopes executable paths to the source
+and target application trees, including canonical aliases. If `proc_pidpath` returns
+`ENOENT` after an executable's old directory was removed, the observer uses the
+kernel's file-backed native image mappings to establish ownership. It walks the
+public region iterator to its end (at most 4096 regions), requires a native
+executable mapping, and compares two mapping snapshots between three unchanged
+PID/birth/UID observations. Every mapped vnode path is checked against the owned
+source/target trees.
+An owned image still blocks even when its directory entry has been removed.
+The kernel's vnode path and device/inode identify the mapped image; a process
+name, argv path, current replacement file or vendor allowlist cannot substitute.
+On native Intel macOS, the anonymous 4 KiB RX commpage submap is excluded only
+when its boot-selected address and attributes match the observer's own commpage,
+within XNU's reserved range beyond the ordinary user VM limit. Both current and
+maximum permissions must be exactly RX, inheritance shared, and the kernel must
+report a submap with no vnode. Submap object IDs are zero and are not identity
+evidence. This exception is disabled on arm64 and under Rosetta.
+`repair.test.cjs` compiles the production kernel reader and checks real unlinked
+child images: third-party is absent, owned is active, and additional ordinary
+anonymous executable memory remains unknown. Native Intel additionally requires
+the actual kernel commpage; synthetic contracts or arm64 runs do not prove Intel
+acceptance. The layout follows Apple's
+[comm region mapping](https://github.com/apple-oss-distributions/xnu/blob/xnu-8792.61.2/osfmk/vm/vm_shared_region.c)
+and [region reporting](https://github.com/apple-oss-distributions/xnu/blob/xnu-8792.61.2/osfmk/vm/bsd_vm.c).
+Missing/partial vnode evidence, other anonymous executable mappings, permission errors,
+mapping drift, limit/deadline exhaustion and other path errors still refuse.
+This fallback never grants the exact-helper parking exemption. It does not scan
+another application's data, stop its processes or require its update to finish.
+The kernel semantics are documented in Apple's
+[process observation implementation](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/proc_info.c).
 Closing a window is not proof of exit. The tool does not stop product processes;
 active owners, busy/missing locks, unavailable process evidence or mismatched
 records must refuse inspection. Native observation opens existing safe records

@@ -238,10 +238,74 @@ static NSUInteger CoverageContracts(void) {
     return checks;
 }
 
-int main(void) {
+static NSUInteger CommpageContracts(void) {
+    struct proc_regionwithpathinfo page = {0};
+    page.prp_prinfo = (struct proc_regioninfo){.pri_address = 0x7ffffff5f000ULL, .pri_size = 4096,
+        .pri_protection = VM_PROT_READ | VM_PROT_EXECUTE, .pri_max_protection = VM_PROT_READ | VM_PROT_EXECUTE,
+        .pri_flags = PROC_REGION_SUBMAP, .pri_share_mode = SM_EMPTY, .pri_inheritance = VM_INHERIT_SHARE};
+    NSUInteger checks = 0;
+    assert(SameKernelCommpage(page, page)); checks++;
+    for (NSUInteger mutation = 0; mutation < 14; mutation++) {
+        struct proc_regionwithpathinfo changed = page;
+        switch (mutation) {
+            case 0: changed.prp_prinfo.pri_address = 0x7fffffe00000ULL; break;
+            case 1: changed.prp_prinfo.pri_address = 0x7ffffffff000ULL; break;
+            case 2: changed.prp_prinfo.pri_address++; break;
+            case 3: changed.prp_prinfo.pri_size *= 2; break;
+            case 4: changed.prp_prinfo.pri_protection |= VM_PROT_WRITE; break;
+            case 5: changed.prp_prinfo.pri_max_protection |= VM_PROT_WRITE; break;
+            case 6: changed.prp_prinfo.pri_flags = 0; break;
+            case 7: changed.prp_prinfo.pri_obj_id = 123; break;
+            case 8: changed.prp_prinfo.pri_offset = 4096; break;
+            case 9: changed.prp_prinfo.pri_share_mode = SM_PRIVATE; break;
+            case 10: changed.prp_prinfo.pri_inheritance = VM_INHERIT_COPY; break;
+            case 11: changed.prp_vip.vip_vi.vi_stat.vst_ino = 123; break;
+            case 12: strcpy(changed.prp_vip.vip_path, "/deleted/owned"); break;
+            case 13: changed.prp_prinfo.pri_address -= 4096; break;
+        }
+        assert(!SameKernelCommpage(changed, page)); checks++;
+        assert(!SameKernelCommpage(page, changed)); checks++;
+    }
+    return checks;
+}
+
+// Called by repair.test.cjs against a real, live child after unlink. This uses
+// production kernel readers without depending on unrelated host process churn.
+static int KernelMappingsContract(pid_t pid, NSString *prefix) {
+    SSProcessIdentity identity;
+    BOOL present = NO, live = NO;
+    assert(ObserveIdentity(pid, &identity, &present) && present);
+    assert(!ObserveExecutable(pid) && errno == ENOENT);
+    NSArray *mappings = ObserveMappings(pid);
+    BOOL commpage = NO;
+#if defined(__x86_64__)
+    int translated = 0;
+    size_t size = sizeof(translated);
+    if (sysctlbyname("sysctl.proc_translated", &translated, &size, NULL, 0) != 0) assert(errno == ENOENT);
+    if (!translated) {
+        struct proc_regionwithpathinfo region = {0};
+        assert(proc_pidinfo(pid, PROC_PIDREGIONPATHINFO, 0x7fffffe01000ULL, &region, sizeof(region)) == sizeof(region));
+        assert(ObserveKernelCommpage(region));
+        commpage = YES;
+    }
+#endif
+    SSPreparationActivity activity = ObserveMappedActivity(identity, @[prefix],
+        ^BOOL(pid_t process, SSProcessIdentity *value, BOOL *exists) { return ObserveIdentity(process, value, exists); },
+        ^NSArray *(pid_t process) { return ObserveMappings(process); }, &live);
+    assert(activity == SSPreparationActivityUnknown ? !live : live);
+    printf("{\"activity\":\"%s\",\"commpage\":%s,\"mappings\":%lu}\n",
+        activity == SSPreparationActivityUnknown ? "unknown" : activity == SSPreparationActivityActive ? "active" : "absent",
+        commpage ? "true" : "false", (unsigned long)mappings.count);
+    return 0;
+}
+
+int main(int argc, const char **argv) {
     fprintf(stderr, "preflight-contract stage=main-enter\n");
     fflush(stderr);
     @autoreleasepool {
+        if (argc == 4 && !strcmp(argv[1], "--mappings")) return KernelMappingsContract((pid_t)atoi(argv[2]), @(argv[3]));
+        // The ShipIt build runner passes its isolated verification directory.
+        assert(argc == 1 || argc == 2);
         NSURL *source = [NSURL fileURLWithPath:@"/Applications/Source App.app"];
         NSURL *target = [NSURL fileURLWithPath:@"/Applications/Target App.app"];
         SSProcessIdentity observer = Identity(10, 502), root = Identity(20, 0), other = Identity(30, 503);
@@ -256,7 +320,7 @@ int main(void) {
         BOOL (^image)(SSProcessIdentity, NSString **, BOOL *) = ^BOOL(SSProcessIdentity expected, NSString **path, BOOL *exited) {
             return ObserveImage(expected, stable, unrelated, path, exited);
         };
-        NSUInteger checks = 0;
+        NSUInteger checks = CommpageContracts();
         SSProcessIdentity ownedHelper = Identity(21, 502), replacementHelper = ownedHelper;
         replacementHelper.started.tv_usec++;
         NSString *ownedImage = @"/Applications/Target App.app/Contents/Frameworks/Squirrel.framework/Resources/ShipIt";
@@ -459,6 +523,44 @@ int main(void) {
         SSProcessImageRead startingImage = ^NSString *(pid_t process) { (void)process; startingImageReads++; return @"/usr/bin/true"; };
         assert(!ObserveImage(starting, becameLive, startingImage, &path, &exited)); checks++;
         assert(startingIdentityReads == 0 && startingImageReads == 0 && !exited); checks++;
+        NSArray *prefixes = @[@"/Applications/Target App.app/Contents/", @"/cache/Source.app/Contents/"];
+        NSDictionary *foreignMapping = @{@"path":@"/deleted/Third Party.app/Contents/MacOS/App", @"inode":@123, @"protection":@(VM_PROT_READ | VM_PROT_EXECUTE)};
+        NSDictionary *ownedMapping = @{@"path":@"/Applications/Target App.app/Contents/MacOS/Deleted", @"inode":@456, @"protection":@(VM_PROT_READ | VM_PROT_EXECUTE)};
+        __block NSArray *mappedRecords = @[foreignMapping];
+        NSArray *(^readMappings)(pid_t) = ^NSArray *(pid_t pid) { assert(pid == observer.process); return mappedRecords; };
+        SSProcessIdentityRead mappedIdentity = ^BOOL(pid_t pid, SSProcessIdentity *value, BOOL *present) { assert(pid == observer.process); *value = observer; *present = YES; return YES; };
+        BOOL mappedLive = NO;
+        assert(ObserveMappedActivity(observer, prefixes, mappedIdentity, readMappings, &mappedLive) == SSPreparationActivityAbsent && mappedLive); checks++;
+        mappedRecords = @[foreignMapping, ownedMapping];
+        assert(ObserveMappedActivity(observer, prefixes, mappedIdentity, readMappings, &mappedLive) == SSPreparationActivityActive && mappedLive); checks++;
+        for (NSArray *invalid in @[@[], @[@{@"path":@"/deleted/../App", @"inode":@1, @"protection":@5}], @[@{@"path":@"/deleted/App", @"inode":@0, @"protection":@5}], @[@{@"path":@"/deleted/App", @"inode":@1, @"protection":@1}]]) {
+            mappedRecords = invalid;
+            assert(ObserveMappedActivity(observer, prefixes, mappedIdentity, readMappings, &mappedLive) == SSPreparationActivityUnknown && !mappedLive); checks++;
+        }
+        mappedRecords = @[foreignMapping];
+        __block NSUInteger mappingReads = 0;
+        assert(ObserveMappedActivity(observer, prefixes, mappedIdentity, ^NSArray *(pid_t pid) {
+            (void)pid; return mappingReads++ ? @[ownedMapping] : @[foreignMapping];
+        }, &mappedLive) == SSPreparationActivityUnknown && !mappedLive); checks++;
+        assert(ObserveMappedActivity(observer, prefixes, ^BOOL(pid_t pid, SSProcessIdentity *value, BOOL *present) {
+            mappedIdentity(pid, value, present); value->started.tv_usec++; return YES;
+        }, readMappings, &mappedLive) == SSPreparationActivityUnknown && !mappedLive); checks++;
+        assert(ObserveMappedActivity(observer, prefixes, mappedIdentity, ^NSArray *(pid_t pid) {
+            (void)pid; errno = EACCES; return nil;
+        }, &mappedLive) == SSPreparationActivityUnknown && !mappedLive); checks++;
+        __block NSUInteger fallbackReads = 0;
+        SSMappedActivityRead mappedFallback = ^SSPreparationActivity(SSProcessIdentity value, NSArray *roots, BOOL *live) {
+            fallbackReads++; return ObserveMappedActivity(value, roots, mappedIdentity, readMappings, live);
+        };
+        for (NSNumber *failure in @[@EACCES, @EPERM, @EIO, @ENOENT]) {
+            fallbackReads = 0;
+            SSPreparationActivity observed = ClassifyActivityMappings(@[Record(observer)], 502, 10, source, target,
+                ^BOOL(SSProcessIdentity value, NSString **image, BOOL *ended) {
+                    (void)value; (void)image; *ended = NO; errno = failure.intValue; return NO;
+                }, canonical, nil, nil, mappedFallback);
+            assert(observed == (failure.intValue == ENOENT ? SSPreparationActivityAbsent : SSPreparationActivityUnknown)); checks++;
+            assert(fallbackReads == (failure.intValue == ENOENT ? 1u : 0u)); checks++;
+        }
         NSLog(@"preflight kernel observation checks passed=%lu", (unsigned long)checks);
     }
     return 0;

@@ -162,7 +162,7 @@ Names in this table follow `scholarseed-bridge`.
 
 Use a source revision matching the target ScholarSeed version. These repository-relative links work in a public checkout without access to a private code host:
 
-- [Descriptor and schema](../../apps/serve/service/capabilities/service/descriptor.py), [offline tools](../../apps/serve/service/capabilities/README.md).
+- [Descriptor and schema](../../apps/serve/service/capabilities/service/descriptor.py), [offline tools](../../apps/serve/service/cli/plugins.py).
 - [Official UI exports](../../packages/ui/manifest.json), [component catalog](../../packages/ui/catalog.ts).
 - [SDK types](../../packages/ui/contract.ts), [Conversation exports](../../packages/ui/conversation.ts).
 - [Action handlers](../../apps/serve/service/capabilities/api/routes.py), [research-card ports](../../apps/desktop/src/renderer/src/features/literature/ports.ts).
