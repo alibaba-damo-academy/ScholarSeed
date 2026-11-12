@@ -610,6 +610,177 @@ class InterruptedBody(httpx.AsyncByteStream):
         raise self.error
 
 
+class CompletionDisconnectContracts(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+        self.closed = asyncio.Event()
+        self.headers = asyncio.Event()
+        self.messages = asyncio.Queue()
+        self.sent = []
+        self.receivers = 0
+        self.maximum_receivers = 0
+        self.semantic = False
+        self.cancel_on_headers = False
+        self.upstream_status = 200
+        self.bridge = CompletionBridge("http://127.0.0.1", on_diagnostic=self.diagnostic)
+        owner = self
+
+        class Body(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                yield (
+                    b'data: {"type":"response.output_text.delta","delta":"first"}\n\n'
+                    if owner.semantic
+                    else b'data: {"type":"response.created"}\n\n'
+                )
+                owner.entered.set()
+                await owner.release.wait()
+                yield b'data: {"type":"response.completed"}\n\n'
+
+            async def aclose(self):
+                owner.closed.set()
+
+        self.body = Body()
+        client_type = httpx.AsyncClient
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(
+                self.upstream_status,
+                headers={"content-type": "text/event-stream"},
+                stream=self.body,
+            )
+        )
+        self.patcher = patch(
+            "service.chat.service.completions.httpx.AsyncClient",
+            side_effect=lambda **kwargs: client_type(transport=transport, **kwargs),
+        )
+        self.patcher.start()
+        self.addCleanup(self.patcher.stop)
+        registration = self.bridge.register(
+            endpoint="https://provider.example/v1/responses",
+            responses_endpoint="https://provider.example/v1/responses",
+            api_key="",
+            wire_protocol=ModelWireProtocol.RESPONSES,
+            session_id="disconnect-contract",
+        )
+        self.app = FastAPI()
+        mount_completion_bridge(self.app, self.bridge)
+        self.scope = {
+            "type": "http",
+            "asgi": {"version": "3.0", "spec_version": "2.3"},
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "http",
+            "path": f"/api/internal/model-bridge/{registration.bridge_id}/v1/responses",
+            "query_string": b"",
+            "headers": [(b"content-type", b"application/json")],
+            "client": ("127.0.0.1", 1234),
+            "server": ("127.0.0.1", 80),
+        }
+        self.messages.put_nowait(
+            {
+                "type": "http.request",
+                "body": b'{"model":"probe","input":"probe","stream":true}',
+                "more_body": False,
+            }
+        )
+        self.request = None
+
+    async def asyncTearDown(self):
+        if self.request is not None:
+            self.request.cancel()
+            await asyncio.gather(self.request, return_exceptions=True)
+        await self.bridge.close()
+        self.assertEqual(len(self.bridge._calls), 0)
+        self.assertEqual(self.receivers, 0)
+        self.assertLessEqual(self.maximum_receivers, 1)
+
+    async def receive(self):
+        self.receivers += 1
+        self.maximum_receivers = max(self.maximum_receivers, self.receivers)
+        try:
+            return await self.messages.get()
+        finally:
+            self.receivers -= 1
+
+    async def send(self, message):
+        self.sent.append(message)
+        if message["type"] == "http.response.start":
+            self.headers.set()
+
+    def diagnostic(self, session_id, fields):
+        if self.cancel_on_headers and fields["phase"] == "headers" and self.request is not None:
+            asyncio.get_running_loop().call_soon(self.request.cancel)
+
+    def start(self):
+        self.request = asyncio.create_task(self.app(self.scope, self.receive, self.send))
+        return self.request
+
+    async def test_disconnect_before_response_closes_forward_and_upstream(self):
+        request = self.start()
+        await asyncio.wait_for(self.entered.wait(), 1)
+        self.assertEqual(len(self.bridge._calls), 1)
+        self.messages.put_nowait({"type": "http.disconnect"})
+        with self.assertRaises(asyncio.CancelledError):
+            await asyncio.wait_for(asyncio.shield(request), 1)
+        self.assertTrue(self.closed.is_set())
+        self.assertEqual(len(self.bridge._calls), 0)
+        self.assertFalse(self.headers.is_set())
+        self.assertEqual(self.receivers, 0)
+
+    async def test_normal_stream_hands_receive_to_response_without_cancelling_body(self):
+        self.semantic = True
+        request = self.start()
+        await asyncio.wait_for(self.headers.wait(), 1)
+        await asyncio.wait_for(self.entered.wait(), 1)
+        self.assertFalse(request.done())
+        self.assertFalse(self.closed.is_set())
+        self.release.set()
+        await asyncio.wait_for(request, 1)
+        self.assertTrue(self.closed.is_set())
+        self.assertEqual(len(self.bridge._calls), 0)
+        self.assertIn(b"first", b"".join(item.get("body", b"") for item in self.sent))
+
+    async def test_external_cancellation_preserves_cancel_and_drains_forward(self):
+        request = self.start()
+        await asyncio.wait_for(self.entered.wait(), 1)
+        request.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await request
+        self.assertTrue(self.closed.is_set())
+        self.assertEqual(len(self.bridge._calls), 0)
+        self.assertEqual(self.receivers, 0)
+
+    async def test_upstream_http_error_before_response_is_preserved(self):
+        self.upstream_status = 400
+        self.release.set()
+        request = self.start()
+        await asyncio.wait_for(request, 1)
+        self.assertEqual(self.sent[0]["status"], 400)
+        self.assertTrue(self.closed.is_set())
+        self.assertEqual(len(self.bridge._calls), 0)
+
+    async def test_external_cancel_after_forward_returns_closes_unclaimed_response(self):
+        self.semantic = True
+        self.cancel_on_headers = True
+        request = self.start()
+        with self.assertRaises(asyncio.CancelledError):
+            await asyncio.wait_for(request, 1)
+        self.assertTrue(self.closed.is_set())
+        self.assertEqual(len(self.bridge._calls), 0)
+        self.assertEqual(self.receivers, 0)
+
+    async def test_disconnect_at_response_handoff_closes_every_call(self):
+        request = self.start()
+        await asyncio.wait_for(self.entered.wait(), 1)
+        self.release.set()
+        self.messages.put_nowait({"type": "http.disconnect"})
+        results = await asyncio.wait_for(asyncio.gather(request, return_exceptions=True), 1)
+        self.assertTrue(results[0] is None or isinstance(results[0], asyncio.CancelledError))
+        self.assertTrue(self.closed.is_set())
+        self.assertEqual(len(self.bridge._calls), 0)
+        self.assertEqual(self.receivers, 0)
+
+
 class CompletionBridgeContract(unittest.TestCase):
     def invoke(self, response: httpx.Response):
         requests = []

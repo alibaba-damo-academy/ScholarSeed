@@ -322,6 +322,7 @@ class ModelService:
         *,
         activities: Activities,
         ownership_axis: str = OWNERSHIP_AXIS_DEFAULT,
+        held_registration: Callable[[str], str | None] | None = None,
     ) -> None:
         self._activities = activities
         self._directory_tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
@@ -340,6 +341,7 @@ class ModelService:
         # 内置模型凭据门禁，归属身份驱动个人连接的可见性与本地凭据定位。轴由组合根注入，
         # 归属身份一律经 ``_owner_id`` 投影，不散落在各调用点手写比较。
         self._ownership_axis = str(ownership_axis or OWNERSHIP_AXIS_DEFAULT)
+        self._held_registration = held_registration
 
     def _owner_id(self, user_id: str) -> str:
         """把真实账号身份投影成本地数据归属身份（只喂个人连接腿，绝不喂计量腿）。"""
@@ -1199,6 +1201,19 @@ class ModelService:
 
     async def suspend_session(self, session_id: str) -> None:
         await self._completions.suspend(session_id)
+
+    def bridge_id_of(self, base_url: str) -> str | None:
+        return self._completions.bridge_id_of(base_url)
+
+    def held_binding_state(self, session_id: str) -> dict[str, object]:
+        """Sync read-only view of the binding the attached native runtime holds."""
+
+        held = self._held_registration(session_id) if self._held_registration is not None else None
+        return {
+            "bridge_backed": bool(held),
+            "bridge_id": held or "",
+            "alive": self._completions.is_live_registration(held) if held else False,
+        }
 
     def release_session(self, session_id: str) -> int:
         """Drop the bridge registrations a closed session owned.

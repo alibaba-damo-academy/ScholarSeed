@@ -196,6 +196,9 @@ class _Runtime:
         self.catalog: SessionCatalogStore | None = None
         self._fail = fail
 
+    def held_binding_state(self, session_id: str) -> dict[str, object]:
+        return {"bridge_backed": False, "bridge_id": "", "alive": False}
+
     async def skill_configurations(
         self, *, cwd: Path, user_id: str, model_id: str = "", process_environment=None
     ) -> tuple:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import errno as errno_module
+import hashlib
 import json
 import logging
 import os
@@ -40,6 +41,7 @@ from service.chat.service.completions import (
     _redacted_endpoint,
     _responses_usage,
     _upstream_retry_delay,
+    bridge_fingerprint,
     chat_stream_to_responses,
     mount_completion_bridge,
     responses_to_chat_request,
@@ -3015,6 +3017,154 @@ def test_registrations_are_bounded() -> None:
     check("已摘除的 bridge_id 不再可调用", asyncio.run(_gone()) == 404)
 
 
+def test_attached_registration_outlives_idle_sweep() -> None:
+    print("附着持有的注册不被闲置清理删除；分离后恢复可回收")
+    held: dict[str, str] = {}
+    bridge = CompletionBridge("http://127.0.0.1:8123", held_registration=lambda sid: held.get(sid))
+    endpoint = "https://gateway.example/v1/chat/completions"
+    live = bridge.register(endpoint=endpoint, api_key="k", session_id="sess-live")
+    other = bridge.register(endpoint=endpoint, api_key="k", session_id="sess-other")
+    held["sess-live"] = live.bridge_id
+
+    def age() -> None:
+        for upstream in bridge._upstreams.values():
+            upstream.last_used_at -= BRIDGE_REGISTRATION_TTL_SECONDS + 1
+
+    age()
+    bridge.register(endpoint=endpoint, api_key="k", session_id="sess-fresh")
+    check("register 触发清理仍保护附着注册", live.bridge_id in bridge._upstreams)
+    check("非附着注册被清", other.bridge_id not in bridge._upstreams)
+    age()
+    asyncio.run(bridge.catalog(live.bridge_id))
+    check("catalog 触发清理仍保护附着注册", live.bridge_id in bridge._upstreams)
+    held.pop("sess-live")
+    age()
+    bridge.register(endpoint=endpoint, api_key="k", session_id="sess-fresh-2")
+    check("分离后注册可被回收", live.bridge_id not in bridge._upstreams)
+    asyncio.run(bridge.close())
+
+
+def test_one_shot_ids_are_not_attachment_protected() -> None:
+    print("one-shot/host 临时注册不在附着视图内，仍由 TTL 兜底回收")
+    bridge = CompletionBridge("http://127.0.0.1:8123", held_registration=lambda sid: None)
+    endpoint = "https://gateway.example/v1/chat/completions"
+    invocation = bridge.register(endpoint=endpoint, api_key="k", session_id="invocation-1")
+    for upstream in bridge._upstreams.values():
+        upstream.last_used_at -= BRIDGE_REGISTRATION_TTL_SECONDS + 1
+    bridge.register(endpoint=endpoint, api_key="k", session_id="sess-fresh")
+    check("invocation 注册被回收", invocation.bridge_id not in bridge._upstreams)
+    asyncio.run(bridge.close())
+
+
+def test_unrevoked_calls_protect_and_revoked_calls_do_not() -> None:
+    print("未 revoke 的 in-flight call 保护注册；已 revoke 的 call 不得永久钉住")
+
+    class StubCall:
+        revoked = False
+
+        def revoke(self) -> None:
+            self.revoked = True
+
+    bridge = CompletionBridge("http://127.0.0.1:8123")
+    endpoint = "https://gateway.example/v1/chat/completions"
+    registration = bridge.register(endpoint=endpoint, api_key="k", session_id="sess-call")
+    call = StubCall()
+    bridge._upstreams[registration.bridge_id].calls.add(call)
+    for upstream in bridge._upstreams.values():
+        upstream.last_used_at -= BRIDGE_REGISTRATION_TTL_SECONDS + 1
+    bridge.register(endpoint=endpoint, api_key="k", session_id="sess-fresh")
+    check("开放 call 保护注册", registration.bridge_id in bridge._upstreams)
+    call.revoked = True
+    bridge.register(endpoint=endpoint, api_key="k", session_id="sess-fresh-2")
+    check("已 revoke call 不再钉住注册", registration.bridge_id not in bridge._upstreams)
+    asyncio.run(bridge.close())
+
+
+def test_attachment_probe_failure_fails_safe() -> None:
+    print("探针异常时保守不删，并留下 error 观测")
+
+    def boom(session_id: str) -> str | None:
+        raise RuntimeError("probe down")
+
+    bridge = CompletionBridge("http://127.0.0.1:8123", held_registration=boom)
+    endpoint = "https://gateway.example/v1/chat/completions"
+    registration = bridge.register(endpoint=endpoint, api_key="k", session_id="sess-live")
+    for upstream in bridge._upstreams.values():
+        upstream.last_used_at -= BRIDGE_REGISTRATION_TTL_SECONDS + 1
+    with patch("service.chat.service.completions.logger") as log:
+        bridge.register(endpoint=endpoint, api_key="k", session_id="sess-fresh")
+    check("探针异常不删活注册", registration.bridge_id in bridge._upstreams)
+    check("探针异常有 error 观测", log.error.called)
+    asyncio.run(bridge.close())
+
+
+def test_bridge_id_of_parses_only_minted_loopback_urls() -> None:
+    print("bridge_id_of 无状态解析铸造 URL；外部/畸形地址返回 None")
+    bridge = CompletionBridge("http://127.0.0.1:8123")
+    registration = bridge.register(
+        endpoint="https://gateway.example/v1/chat/completions", api_key="k", session_id="sess-parse"
+    )
+    prefix = f"http://127.0.0.1:8123{MODEL_BRIDGE_ROUTE_PREFIX}"
+    check("解析注册 base_url", bridge.bridge_id_of(registration.base_url) == registration.bridge_id)
+    check(
+        "解析 responses 后缀",
+        bridge.bridge_id_of(f"{registration.base_url}/responses") == registration.bridge_id,
+    )
+    check("外部地址不解析", bridge.bridge_id_of("https://external.example/v1") is None)
+    check("畸形字符不解析", bridge.bridge_id_of(f"{prefix}bad id!/v1") is None)
+    check("超长 id 不解析", bridge.bridge_id_of(f"{prefix}{'x' * 65}/v1") is None)
+    check("存活查询为真", bridge.is_live_registration(registration.bridge_id))
+    bridge.release("sess-parse")
+    check("释放后存活查询为假", not bridge.is_live_registration(registration.bridge_id))
+    asyncio.run(bridge.close())
+
+
+def test_eviction_and_missing_logs_carry_fingerprint_not_raw_id() -> None:
+    print("清理/跳过/forward miss 日志只带指纹，raw bridge_id 不入日志")
+    bridge = CompletionBridge("http://127.0.0.1:8123")
+    endpoint = "https://gateway.example/v1/chat/completions"
+    registration = bridge.register(endpoint=endpoint, api_key="k", session_id="sess-log")
+    raw = registration.bridge_id
+    fingerprint = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+    check("指纹 helper 一致", bridge_fingerprint(raw) == fingerprint)
+
+    class StubCall:
+        revoked = False
+
+        def revoke(self) -> None:
+            self.revoked = True
+
+    for upstream in bridge._upstreams.values():
+        upstream.last_used_at -= BRIDGE_REGISTRATION_TTL_SECONDS + 1
+    with patch("service.chat.service.completions.logger") as log:
+        bridge.register(endpoint=endpoint, api_key="k", session_id="sess-fresh")
+    lines = [str(call.args) for call in log.info.call_args_list]
+    check("清理日志带指纹", any(fingerprint in line for line in lines))
+    check("清理日志不含 raw id", all(raw not in line for line in lines))
+    guarded = bridge.register(endpoint=endpoint, api_key="k", session_id="sess-guarded")
+    guarded_fingerprint = bridge_fingerprint(guarded.bridge_id)
+    bridge._upstreams[guarded.bridge_id].calls.add(StubCall())
+    for upstream in bridge._upstreams.values():
+        upstream.last_used_at -= BRIDGE_REGISTRATION_TTL_SECONDS + 1
+    with patch("service.chat.service.completions.logger") as log:
+        bridge.register(endpoint=endpoint, api_key="k", session_id="sess-fresh-2")
+    skipped = [str(call.args) for call in log.info.call_args_list]
+    check(
+        "calls 跳过有观测行",
+        any("in_flight_calls" in line and guarded_fingerprint in line for line in skipped),
+    )
+    check("被保护注册仍在表内", guarded.bridge_id in bridge._upstreams)
+    with patch("service.chat.service.completions.logger") as log:
+        response = asyncio.run(bridge.forward(raw, {"input": []}))
+    check("forward miss 仍 404", response.status_code == 404)
+    warnings = [str(call.args) for call in log.warning.call_args_list]
+    check(
+        "forward miss 日志带指纹不含 raw id",
+        any(fingerprint in line and raw not in line for line in warnings),
+    )
+    asyncio.run(bridge.close())
+
+
 def test_reasoning_tokens_are_not_erased() -> None:
     print("reasoning token 不再被抹成 None")
     # 实测：向 qwen3.7-max 发一句「Reply with the single word OK」，prompt 只有 17，
@@ -3265,6 +3415,12 @@ def main() -> int:
     test_anonymous_session_falls_back_to_caller_key()
     test_local_credentials_are_not_stored_as_account_tokens()
     test_registrations_are_bounded()
+    test_attached_registration_outlives_idle_sweep()
+    test_one_shot_ids_are_not_attachment_protected()
+    test_unrevoked_calls_protect_and_revoked_calls_do_not()
+    test_attachment_probe_failure_fails_safe()
+    test_bridge_id_of_parses_only_minted_loopback_urls()
+    test_eviction_and_missing_logs_carry_fingerprint_not_raw_id()
     test_reasoning_tokens_are_not_erased()
     print(f"passed={PASS} failed={FAIL}")
     return 1 if FAIL else 0

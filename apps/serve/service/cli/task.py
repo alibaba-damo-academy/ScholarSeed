@@ -14,6 +14,7 @@ from service.platform.python import (
     TASK_CWD_ENV,
     WINDOWS_OS,
     prepare_environment,
+    prepare_pip,
     task_environment,
     task_interpreter,
 )
@@ -42,6 +43,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if tuple(arguments[: len(PIP_MODULE_ARGUMENTS)]) == PIP_MODULE_ARGUMENTS:
             with closing(open_directory(Path(cwd), TASK_PYTHON_PARTS[:-1])) as parent:
                 with parent.arbitration(TASK_INSTALL_LOCK):
+                    prepare_pip(Path(cwd))
                     return subprocess.run(
                         command, executable=executable, env=environment, check=False
                     ).returncode
