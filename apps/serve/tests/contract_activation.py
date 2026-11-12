@@ -743,7 +743,9 @@ class ActivationContract(unittest.IsolatedAsyncioTestCase):
         service._uncertain_attachments = {}
         service._logger = logging.getLogger(__name__)
         service._catalog = catalog
-        service._models = SimpleNamespace(release_session=lambda _session_id: None)
+        service._models = SimpleNamespace(
+            release_session=lambda _session_id: None, bridge_id_of=lambda base_url: None
+        )
         return service, catalog
 
     async def test_proven_not_applied_open_can_retry_without_replacing_product_session(
@@ -899,7 +901,9 @@ class ActivationContract(unittest.IsolatedAsyncioTestCase):
             service._uncertain_attachments = {}
             service._logger = logging.getLogger(__name__)
             service._catalog = catalog
-            service._models = SimpleNamespace(release_session=lambda _session_id: None)
+            service._models = SimpleNamespace(
+                release_session=lambda _session_id: None, bridge_id_of=lambda base_url: None
+            )
 
             async def failed_open(_request: OpenSessionRequest) -> None:
                 self.assertEqual(catalog.activation(self.live.id).open_state, OpenState.OPENING)
@@ -971,7 +975,9 @@ class ActivationContract(unittest.IsolatedAsyncioTestCase):
             service._activities = self.activities
             service._uncertain_attachments = {}
             service._catalog = catalog
-            service._models = SimpleNamespace(release_session=lambda _session_id: None)
+            service._models = SimpleNamespace(
+                release_session=lambda _session_id: None, bridge_id_of=lambda base_url: None
+            )
 
             async def opened(request: OpenSessionRequest) -> object:
                 self.assertEqual(request.reservation_id, "reservation")

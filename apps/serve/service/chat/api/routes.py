@@ -296,6 +296,10 @@ def create_chat_app(
         live = sessions.get(session_id)
         return live.content_source(client_turn_id) if live is not None else None
 
+    def held_registration(session_id: str) -> str | None:
+        live = sessions.get(session_id)
+        return live.attachment_model_bridge_id() if live is not None else None
+
     completion_bridge = CompletionBridge(
         os.environ.get(INTERNAL_BASE_URL_ENV, ""),
         on_model=observe_model,
@@ -309,6 +313,7 @@ def create_chat_app(
             CHATGPT_PROVIDER.responses_endpoint: frozenset({READ_ONLY_WEB_SEARCH}),
         },
         shared_ownership=shared_ownership,
+        held_registration=held_registration,
     )
     # 当前登录用户的 access token 持有者（纯内存）。由鉴权 middleware 写入、bridge 出站时
     # 读取 —— 让网关能把用量归属到人。挂上 app.state 供 bootstrap 将它传给 register_auth。
@@ -333,6 +338,7 @@ def create_chat_app(
         subscriptions,
         turn_ids=session_turn_id,
         ownership_axis=axis,
+        held_registration=held_registration,
         activities=activities,
     )
     app.state.model_service = model_service
@@ -419,6 +425,7 @@ def create_chat_app(
         deliveries=resource_deliveries,
         catalog=access_store,
         events=event_store,
+        binding_alive=lambda _session_id, held: completion_bridge.is_live_registration(held),
     )
     if turn_service.recovery is not None:
         turn_service.recovery.bind_confirmation(session_service.authorize_crash_retry)

@@ -151,7 +151,9 @@ from service.chat.persistence.events import (
 )
 from service.chat.provenance import MODEL_RUN_FIELD, ModelRun
 from service.chat.runtime.activation import (
+    RESOURCE_WAIT_BLOCKED,
     RESOURCE_WAIT_PENDING_HIL,
+    RESOURCE_WAIT_TIMEOUT,
     SessionActivation,
     SessionActivationError,
 )
@@ -1883,6 +1885,70 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
                 release.set()
                 await asyncio.gather(submission, closing, return_exceptions=True)
 
+    async def test_binding_revoked_during_blockers_wait_never_submits(self) -> None:
+        revoked = {"now": False}
+        turns = TurnService(
+            {PRODUCT_SESSION_ID: self.live},
+            self.logger,
+            activities=Activities(),
+            binding_alive=lambda _session_id, held: not revoked["now"],
+        )
+        self.live.held_model_bridge_id = "held-binding-id"
+        self.catalog.enqueue_message(self.live.id, "revoked-submission", {"input": []})
+
+        async def blockers() -> tuple[str, ...]:
+            revoked["now"] = True
+            return ()
+
+        admit = AsyncMock(return_value=({}, 202, None))
+        with (
+            patch.object(turns, "_admit_turn_locked", new=admit),
+            patch.object(self.live, "previous_turn_blockers", new=AsyncMock(side_effect=blockers)),
+        ):
+            submission = turns._schedule_locked(self.live)
+            self.assertIsNotNone(submission)
+            result = await asyncio.wait_for(submission, 1)
+        self.assertEqual(result.error, RESOURCE_WAIT_BLOCKED)
+        admit.assert_not_called()
+
+    async def test_recovery_binding_revoked_during_activity_check_never_submits(self) -> None:
+        binding_alive = Mock(return_value=True)
+        turns = TurnService(
+            {PRODUCT_SESSION_ID: self.live},
+            self.logger,
+            activities=Activities(),
+            binding_alive=binding_alive,
+        )
+        self.live.held_model_bridge_id = "held-binding-id"
+        request_id = "revoked-recovery"
+        self.catalog.enqueue_message(
+            self.live.id,
+            request_id,
+            {"input": []},
+            purpose=turn_module.QUEUE_PURPOSE_RECOVERY,
+        )
+
+        async def recovery_current(_live: LiveSession, _source: object) -> bool:
+            binding_alive.return_value = False
+            return True
+
+        with (
+            patch.object(
+                turns, "_recovery_current", side_effect=recovery_current
+            ) as check_recovery,
+            patch.object(
+                self.catalog, "begin_queued_submission", wraps=self.catalog.begin_queued_submission
+            ) as begin_submission,
+        ):
+            submission = turns._schedule_locked(self.live)
+            self.assertIsNotNone(submission)
+            result = await asyncio.wait_for(submission, 1)
+
+        check_recovery.assert_awaited_once()
+        self.assertEqual(result.error, turn_module.RECOVERY_STALE)
+        self.assertEqual(result.status, turn_module.TurnStatus.INTERRUPTED)
+        begin_submission.assert_not_called()
+
     async def test_close_preserves_current_turn_cleanup_failure(self) -> None:
         started = asyncio.Event()
         failure = OSError("turn settlement write failed")
@@ -2380,6 +2446,12 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
             ),
             release_session=Mock(),
             suspend_session=AsyncMock(),
+            bridge_id_of=lambda base_url: None,
+            held_binding_state=lambda session_id: {
+                "bridge_backed": False,
+                "bridge_id": "",
+                "alive": False,
+            },
         )
         runtime = LiveSessionService(
             activities=Activities(),
@@ -2763,6 +2835,163 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
                 await runtime.wait_until_suspended(self.live, deadline=0.0)
         self.assertEqual(caught.exception.safe_error, RESOURCE_WAIT_PENDING_HIL)
         self.assertEqual(self.live.suspend_blockers, ("pending_hil",))
+
+    async def test_warm_session_with_dead_bridge_binding_rebuilds(self) -> None:
+        runtime, provider = self.runtime_service()
+        service = self.session_service(runtime)
+        states = [
+            {"bridge_backed": True, "bridge_id": "dead-binding-id", "alive": False},
+            {"bridge_backed": True, "bridge_id": "fresh-binding-id", "alive": True},
+        ]
+
+        revived = states[-1]
+
+        def state(_session_id: str) -> dict[str, object]:
+            return states.pop(0) if states else revived
+
+        runtime._models.held_binding_state = state
+        previous = self.live.runtime_session
+        await service.prepare_turn(self.live, request_id="rebuild-client-turn")
+        self.assertIsNot(self.live.runtime_session, previous)
+        self.assertEqual(len(provider.resumed), 1)
+
+    async def test_binding_revoked_between_check_and_commit_fails_named(self) -> None:
+        runtime, _provider = self.runtime_service()
+        service = self.session_service(runtime)
+        states = [
+            {"bridge_backed": True, "bridge_id": "revoked-binding-id", "alive": True},
+            {"bridge_backed": True, "bridge_id": "revoked-binding-id", "alive": True},
+            {"bridge_backed": True, "bridge_id": "revoked-binding-id", "alive": False},
+        ]
+        revoked = states[-1]
+
+        def state(_session_id: str) -> dict[str, object]:
+            return states.pop(0) if states else revoked
+
+        runtime._models.held_binding_state = state
+        previous = self.live.runtime_session
+        with self.assertRaises(SessionActivationError) as caught:
+            await service.prepare_turn(self.live, request_id="revoked-mid-turn")
+        self.assertEqual(caught.exception.safe_error, RESOURCE_WAIT_BLOCKED)
+        self.assertIs(self.live.runtime_session, previous)
+
+    async def test_closing_session_keeps_attachment_bridge_protection(self) -> None:
+        self.live.held_model_bridge_id = "held-binding-id"
+        self.live._close_task = asyncio.current_task()
+        try:
+            self.assertEqual(self.live.attachment_model_bridge_id(), "held-binding-id")
+        finally:
+            self.live._close_task = None
+        self.live.runtime_session = None
+        self.assertIsNone(self.live.attachment_model_bridge_id())
+
+    async def test_held_binding_stays_protected_until_native_close_completes(self) -> None:
+        live = LiveSession(
+            publications=PublicationService(self.content),
+            session_id="closing-guard-session",
+            user_id=OWNER.user_id,
+            runtime_id=RUNTIME_ID,
+            runtime_workdir=self.workdir,
+            project_path=None,
+            output_root=self.output_root,
+            model_id="gpt-5-codex",
+            catalog=self.catalog,
+            events=self.events,
+            artifacts=self.artifacts,
+            skills=SkillCatalog(
+                bundled_root=self.skill_file.parent.parent,
+                user_root=self.root / "user-skills",
+            ),
+            logger=self.logger,
+            trace=SessionTrace(
+                "closing-guard-session",
+                self.workdir,
+                runtime_id=RUNTIME_ID,
+                trace_dir=self.root / "trace",
+            ),
+            answer_filter=lambda _session_id, _snapshot_id, text: text,
+            answer_guard=protect_answer,
+        )
+        live.runtime_session = SimpleNamespace()
+        live.held_model_bridge_id = "held-binding-id"
+        observed: list[str | None] = []
+
+        async def fake_close() -> bool:
+            observed.append(live.attachment_model_bridge_id())
+            return True
+
+        live.runtime_driver = SimpleNamespace(close=fake_close, suspending=False)
+        await live.aclose()
+        self.assertEqual(observed, ["held-binding-id"])
+        self.assertEqual(live.held_model_bridge_id, "")
+
+    async def test_warm_session_with_live_bridge_binding_does_not_rebuild(self) -> None:
+        runtime, provider = self.runtime_service()
+        service = self.session_service(runtime)
+        runtime._models.held_binding_state = lambda session_id: {
+            "bridge_backed": True,
+            "bridge_id": "live-binding-id",
+            "alive": True,
+        }
+        previous = self.live.runtime_session
+        await service.prepare_turn(self.live, request_id="steady-client-turn")
+        self.assertIs(self.live.runtime_session, previous)
+        self.assertEqual(provider.requests, [])
+
+    async def test_direct_connection_warm_session_never_rebuilds(self) -> None:
+        runtime, provider = self.runtime_service()
+        service = self.session_service(runtime)
+        previous = self.live.runtime_session
+        await service.prepare_turn(self.live, request_id="direct-client-turn")
+        self.assertIs(self.live.runtime_session, previous)
+        self.assertEqual(provider.requests, [])
+
+    async def test_session_purpose_with_dead_bridge_binding_preserves_dormant(self) -> None:
+        runtime, provider = self.runtime_service()
+        service = self.session_service(runtime)
+        runtime._models.held_binding_state = lambda session_id: {
+            "bridge_backed": True,
+            "bridge_id": "dead-binding-id",
+            "alive": False,
+        }
+        previous = self.live.runtime_session
+        await service.prepare_turn(self.live, purpose=ResourcePurpose.SESSION)
+        self.assertIs(self.live.runtime_session, previous)
+        self.assertEqual(provider.requests, [])
+
+    async def test_dead_bridge_binding_with_pending_hil_reports_blocked(self) -> None:
+        runtime, provider = self.runtime_service()
+        service = self.session_service(runtime)
+        runtime._models.held_binding_state = lambda session_id: {
+            "bridge_backed": True,
+            "bridge_id": "dead-binding-id",
+            "alive": False,
+        }
+        previous = self.live.runtime_session
+        with patch.object(
+            self.live, "pending_hil_snapshot", return_value=[{"request_id": "hil-dead"}]
+        ):
+            with self.assertRaises(SessionActivationError) as caught:
+                await service.prepare_turn(self.live, request_id="blocked-dead-turn")
+        self.assertEqual(caught.exception.safe_error, RESOURCE_WAIT_PENDING_HIL)
+        self.assertIs(self.live.runtime_session, previous)
+        self.assertEqual(provider.requests, [])
+
+    async def test_closing_session_wait_fails_immediately_with_blocked(self) -> None:
+        runtime, _provider = self.runtime_service()
+        self.live._close_task = asyncio.current_task()
+        with self.assertRaises(SessionActivationError) as caught:
+            await asyncio.wait_for(
+                runtime.wait_until_suspended(self.live, deadline=None), timeout=5
+            )
+        self.assertEqual(caught.exception.safe_error, RESOURCE_WAIT_BLOCKED)
+
+    async def test_transient_interrupting_wait_keeps_polling_to_timeout(self) -> None:
+        runtime, _provider = self.runtime_service()
+        self.live.interrupting = True
+        with self.assertRaises(SessionActivationError) as caught:
+            await runtime.wait_until_suspended(self.live, deadline=0.0)
+        self.assertEqual(caught.exception.safe_error, RESOURCE_WAIT_TIMEOUT)
 
     async def test_catalog_list_stops_running_after_terminal_with_pending_cleanup(self) -> None:
         runtime, _provider = self.runtime_service()

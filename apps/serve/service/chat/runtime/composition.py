@@ -757,6 +757,12 @@ class LiveSessionService:
             session_id=session_id,
         )
 
+    def bridge_id_of(self, base_url: str) -> str | None:
+        return self._models.bridge_id_of(base_url)
+
+    def held_binding_state(self, session_id: str) -> dict[str, object]:
+        return self._models.held_binding_state(session_id)
+
     async def validate_effort(self, model_id: str, effort: str, *, user_id: str = "") -> None:
         await self._models.validate_effort(model_id, effort, user_id=user_id)
 
@@ -1282,6 +1288,7 @@ class LiveSessionService:
     def _discard_attachment(self, live: LiveSession) -> None:
         self._models.release_session(live.id)
         live.bridge_token = ""
+        live.held_model_bridge_id = ""
 
     @asynccontextmanager
     async def operation(
@@ -1434,6 +1441,7 @@ class LiveSessionService:
                 await live.runtime_driver.close()
                 live.runtime_session = None
                 live.runtime_driver = None
+                live.held_model_bridge_id = ""
                 live.release_attachment_activity()
                 if (
                     self._activation_revision(live) != revision
@@ -1583,6 +1591,7 @@ class LiveSessionService:
                 live.replacement_revision = revision
                 live.runtime_driver = None
                 live.runtime_session = None
+                live.held_model_bridge_id = ""
                 live.release_attachment_activity()
                 if live.active_product_turn_id == target.command_id:
                     if not await live.release_product_turn(target.command_id):
@@ -1656,6 +1665,7 @@ class LiveSessionService:
                 if detached and live.runtime_driver is driver and live.runtime_session is session:
                     live.runtime_driver = None
                     live.runtime_session = None
+                    live.held_model_bridge_id = ""
                     live.release_attachment_activity()
                 live.thread_replacement_proof = None
                 live.replacement_proof = None
@@ -1897,6 +1907,11 @@ class LiveSessionService:
             live.reasoning_effort = request.model.reasoning_effort if request.model else ""
             live.thinking = request.model.thinking if request.model else None
             live.applied_permission_mode = str(plan.revision[1] or RuntimePermissionMode.ASK.value)
+            live.held_model_bridge_id = (
+                self._models.bridge_id_of(request.model.transport.endpoint)
+                if request.model is not None
+                else ""
+            ) or ""
             driver = live.attach_gateway(
                 runtime_session,
                 resumed=isinstance(request, ResumeSessionRequest),
@@ -1956,6 +1971,7 @@ class LiveSessionService:
                         await runtime_session.detach()
                     live.runtime_session = None
                     live.runtime_driver = None
+                    live.held_model_bridge_id = ""
                     live.release_attachment_activity()
                     release_opening = True
             finally:

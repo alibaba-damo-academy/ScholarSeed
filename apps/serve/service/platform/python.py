@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shlex
+import stat
 import subprocess
 import sys
 import sysconfig
@@ -21,7 +22,7 @@ from service.paths import (
     task_python_root,
 )
 from service.platform.executables import SKILL_PYTHON_COMMAND, command_directories, resolve_command
-from service.platform.storage import filesystem_path, open_directory
+from service.platform.storage import DirectoryHandle, filesystem_path, open_directory
 
 ENVIRONMENT_LOCK = "prepare.lock"
 ENVIRONMENT_RECEIPT = "environment.json"
@@ -32,6 +33,13 @@ ENVIRONMENT_INCOMPLETE = "task_python_environment_incomplete"
 ENVIRONMENT_CHANGED = "task_python_environment_changed"
 ENVIRONMENT_INVALID = "task_python_environment_invalid"
 BASE_EXECUTABLE_ATTRIBUTE = "_base_executable"
+PIP_MISSING_EXIT = 3
+PIP_PROBE_ARGUMENTS = (
+    "-I",
+    "-c",
+    "import importlib.util; "
+    f"raise SystemExit(0 if importlib.util.find_spec('pip') is not None else {PIP_MISSING_EXIT})",
+)
 ENSUREPIP_ARGUMENTS = ("-I", "-m", "ensurepip", "--upgrade", "--default-pip")
 WINDOWS_ENSUREPIP_BOOTSTRAP = """import ensurepip, subprocess
 original_run = subprocess.run
@@ -47,6 +55,7 @@ TASK_OPTION = "--task"
 VIRTUAL_ENV = "VIRTUAL_ENV"
 PATH_ENV = "PATH"
 WINDOWS_OS = "nt"
+MACOS_PLATFORM = "darwin"
 PYTHON_EXECUTABLE = "python.exe" if os.name == WINDOWS_OS else "python"
 COMMAND_SUFFIX = ".cmd" if os.name == WINDOWS_OS else ""
 COMMAND_MODE = 0o755
@@ -86,6 +95,51 @@ def _base_interpreter() -> Path:
 def task_interpreter(cwd: Path) -> Path:
     """Return the actual venv interpreter, distinct from its lazy command entry."""
     return _scripts(task_python_root(cwd)) / PYTHON_EXECUTABLE
+
+
+def _validate_interpreter_link(scripts: DirectoryHandle) -> None:
+    base = _base_interpreter()
+    targets = {str(base), str(Path(vars(sys)[BASE_EXECUTABLE_ATTRIBUTE]).absolute())}
+    aliases = {
+        PYTHON_EXECUTABLE,
+        f"python{sys.version_info.major}",
+        f"python{sys.version_info.major}.{sys.version_info.minor}",
+    }
+    with closing(open_directory(base.parent, ())) as parent:
+        with os.fdopen(parent.open_regular(base.name), "rb") as stream:
+            base_identity = os.fstat(stream.fileno())
+            name = PYTHON_EXECUTABLE
+            observed = {}
+            for _ in range(len(aliases)):
+                before = scripts.stat(name)
+                if not stat.S_ISLNK(before.st_mode):
+                    raise ValueError(ENVIRONMENT_INVALID)
+                target = scripts.readlink(name)
+                after = scripts.stat(name)
+                if (before.st_dev, before.st_ino, before.st_ctime_ns) != (
+                    after.st_dev,
+                    after.st_ino,
+                    after.st_ctime_ns,
+                ):
+                    raise ValueError(ENVIRONMENT_CHANGED)
+                observed[name] = (after.st_dev, after.st_ino, after.st_ctime_ns)
+                if target in targets:
+                    for alias, identity in observed.items():
+                        current = scripts.stat(alias)
+                        if identity != (current.st_dev, current.st_ino, current.st_ctime_ns):
+                            raise ValueError(ENVIRONMENT_CHANGED)
+                    current = parent.stat(base.name)
+                    if (base_identity.st_dev, base_identity.st_ino, base_identity.st_ctime_ns) != (
+                        current.st_dev,
+                        current.st_ino,
+                        current.st_ctime_ns,
+                    ) or _base_interpreter() != base:
+                        raise ValueError(ENVIRONMENT_CHANGED)
+                    return
+                if target not in aliases:
+                    raise ValueError(ENVIRONMENT_INVALID)
+                name = target
+    raise ValueError(ENVIRONMENT_INVALID)
 
 
 def task_environment(cwd: Path, inherited: Mapping[str, str] | None = None) -> dict[str, str]:
@@ -233,35 +287,65 @@ def prepare_environment(cwd: Path) -> None:
                 or Path(configuration.get("home", "")).resolve() != _base_interpreter().parent
             ):
                 raise ValueError(ENVIRONMENT_INVALID)
-            scripts = resources.enter_context(
-                closing(open_directory(root, _scripts(root).relative_to(root).parts))
-            )
-            os.close(scripts.open_regular(PYTHON_EXECUTABLE))
+            scripts = existing
+            for part in _scripts(root).relative_to(root).parts:
+                scripts = resources.enter_context(closing(scripts.directory(part)))
+            if sys.platform == MACOS_PLATFORM and stat.S_ISLNK(
+                scripts.stat(PYTHON_EXECUTABLE).st_mode
+            ):
+                _validate_interpreter_link(scripts)
+            else:
+                os.close(scripts.open_regular(PYTHON_EXECUTABLE))
             return
         parent.mkdir(root.name)
         pinned = resources.enter_context(closing(parent.directory(root.name)))
-        venv.EnvBuilder(with_pip=False, symlinks=False, system_site_packages=False).create(root)
-        subprocess.run(
-            [
-                str(filesystem_path(task_interpreter(canonical))),
-                *(
-                    ("-I", "-c", WINDOWS_ENSUREPIP_BOOTSTRAP)
-                    if os.name == WINDOWS_OS
-                    else ENSUREPIP_ARGUMENTS
-                ),
-            ],
-            executable=str(filesystem_path(task_interpreter(canonical))),
-            env=task_environment(canonical),
-            cwd=_base_interpreter().parent,
-            capture_output=True,
-            check=True,
-        )
+        venv.EnvBuilder(
+            with_pip=False,
+            symlinks=sys.platform == MACOS_PLATFORM,
+            system_site_packages=False,
+        ).create(root)
         with closing(parent.directory(root.name)) as actual:
             if actual.identity() != pinned.identity():
                 raise ValueError(ENVIRONMENT_CHANGED)
+            if sys.platform == MACOS_PLATFORM:
+                scripts = actual
+                for part in _scripts(root).relative_to(root).parts:
+                    scripts = resources.enter_context(closing(scripts.directory(part)))
+                _validate_interpreter_link(scripts)
         descriptor = parent.open_private(ENVIRONMENT_RECEIPT, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
         with os.fdopen(descriptor, "w", encoding=ENVIRONMENT_ENCODING) as stream:
             json.dump(receipt, stream)
             stream.flush()
             os.fsync(stream.fileno())
         parent.sync()
+
+
+def prepare_pip(cwd: Path) -> None:
+    """Bootstrap a missing task installer while the caller holds its installation lock."""
+    executable = str(filesystem_path(task_interpreter(cwd)))
+    probe = subprocess.run(
+        [executable, *PIP_PROBE_ARGUMENTS],
+        executable=executable,
+        env=task_environment(cwd),
+        cwd=_base_interpreter().parent,
+        capture_output=True,
+        check=False,
+    )
+    if probe.returncode != PIP_MISSING_EXIT:
+        probe.check_returncode()
+        return
+    subprocess.run(
+        [
+            executable,
+            *(
+                ("-I", "-c", WINDOWS_ENSUREPIP_BOOTSTRAP)
+                if os.name == WINDOWS_OS
+                else ENSUREPIP_ARGUMENTS
+            ),
+        ],
+        executable=executable,
+        env=task_environment(cwd),
+        cwd=_base_interpreter().parent,
+        capture_output=True,
+        check=True,
+    )

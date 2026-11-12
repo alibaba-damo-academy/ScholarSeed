@@ -774,6 +774,10 @@ class DirectoryHandle:
             return os.stat(name, dir_fd=self.descriptor, follow_symlinks=False)
         return filesystem_path(target).stat(follow_symlinks=False)
 
+    def readlink(self, name: str) -> str:
+        self.child(name)
+        return os.readlink(name, dir_fd=self.fileno())
+
     def open(self, name: str, flags: int, mode: int = 0o777) -> int:
         target = self.child(name)
         if self.descriptor is not None:

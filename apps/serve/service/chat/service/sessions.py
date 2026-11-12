@@ -124,7 +124,11 @@ from service.chat.persistence.events import (
     ProductEventRecord,
     ProductEventStore,
 )
-from service.chat.runtime.activation import ResourceWaitObserver
+from service.chat.runtime.activation import (
+    RESOURCE_WAIT_BLOCKED,
+    ResourceWaitObserver,
+    SessionActivationError,
+)
 from service.chat.runtime.composition import LiveSessionService
 from service.chat.runtime.interaction import (
     BROWSER_APPROVAL_METHOD,
@@ -149,6 +153,7 @@ from service.chat.runtime.reconfiguration import (
     PreparationError,
 )
 from service.chat.schema import thinking_from_payload
+from service.chat.service.completions import BRIDGE_BINDING_REBUILD_LIMIT, bridge_fingerprint
 from service.chat.service.handoff import (
     CONTINUATION_BUSY,
     CONTINUATION_MAX_SOURCE_BYTES,
@@ -3489,6 +3494,8 @@ class SessionService:
         roots = self._writable_roots(live.project_path or live.runtime_workdir)
         restart = False
         retained_product_turn = False
+        bridge_missing = False
+        bridge_missing_fingerprint = ""
         skill_configurations = await self._runtime.skill_configurations(
             cwd=live.runtime_workdir,
             user_id=live.user_id,
@@ -3515,11 +3522,27 @@ class SessionService:
             )
             environment_changed = dict(desired) != dict(live.process_environment)
             if live.runtime_session is not None:
+                binding = self._runtime.held_binding_state(live.id)
+                bridge_missing = (
+                    purpose is ResourcePurpose.TURN
+                    and bool(binding["bridge_backed"])
+                    and not bool(binding["alive"])
+                )
+                if bridge_missing:
+                    bridge_missing_fingerprint = bridge_fingerprint(str(binding["bridge_id"]))
+                    self._logger.info(
+                        "model_bridge_binding_missing session_id=%s purpose=%s action=rebuild "
+                        "fingerprint=%s",
+                        live.id,
+                        purpose.value,
+                        bridge_missing_fingerprint,
+                    )
                 restart = (
                     environment_changed
                     or roots != live.writable_roots
                     or skill_configurations != live.skill_configurations
                     or bool(live.runtime_driver and live.runtime_driver.suspending)
+                    or bridge_missing
                 )
                 if not restart and (
                     live.applied_permission_mode != selected_mode or live.writable_roots != roots
@@ -3552,22 +3575,65 @@ class SessionService:
                             thinking=model_state.selected_thinking,
                             preserve_selection=True,
                         )
-        if restart or retained_product_turn:
-            if request_id:
-                await self._runtime.wait_until_suspended(live, deadline=deadline)
-            elif not await live.suspend_runtime():
-                raise RuntimeError("runtime admission requires a quiescent session")
-        async with live.lifecycle_lock:
-            if live.runtime_session is None:
-                live.retarget_environment(desired)
-                live.writable_roots = roots
-                state = self._model_state(live.id)
-                live.model_id = state.selected_model_id
-                live.reasoning_effort = state.selected_reasoning_effort
-                live.thinking = state.selected_thinking
-        await self._runtime.ensure_active(
-            live, purpose=purpose, request_id=request_id, deadline=deadline, on_wait=on_wait
-        )
+        bridge_rebuild_attempts = 0
+        while True:
+            if restart or retained_product_turn:
+                try:
+                    if request_id:
+                        await self._runtime.wait_until_suspended(live, deadline=deadline)
+                    elif not await live.suspend_runtime():
+                        raise RuntimeError("runtime admission requires a quiescent session")
+                except SessionActivationError:
+                    if bridge_missing:
+                        self._logger.info(
+                            "model_bridge_binding_missing session_id=%s purpose=%s action=blocked "
+                            "fingerprint=%s",
+                            live.id,
+                            purpose.value,
+                            bridge_missing_fingerprint,
+                        )
+                    raise
+            async with live.lifecycle_lock:
+                if live.runtime_session is None:
+                    live.retarget_environment(desired)
+                    live.writable_roots = roots
+                    state = self._model_state(live.id)
+                    live.model_id = state.selected_model_id
+                    live.reasoning_effort = state.selected_reasoning_effort
+                    live.thinking = state.selected_thinking
+            await self._runtime.ensure_active(
+                live, purpose=purpose, request_id=request_id, deadline=deadline, on_wait=on_wait
+            )
+            binding = (
+                self._runtime.held_binding_state(live.id)
+                if purpose is ResourcePurpose.TURN
+                else {"bridge_backed": False, "bridge_id": "", "alive": True}
+            )
+            if not (
+                purpose is ResourcePurpose.TURN
+                and bool(binding["bridge_backed"])
+                and not bool(binding["alive"])
+            ):
+                break
+            bridge_missing_fingerprint = bridge_fingerprint(str(binding["bridge_id"]))
+            bridge_rebuild_attempts += 1
+            if bridge_rebuild_attempts > BRIDGE_BINDING_REBUILD_LIMIT:
+                self._logger.info(
+                    "model_bridge_binding_missing session_id=%s purpose=%s action=blocked "
+                    "fingerprint=%s",
+                    live.id,
+                    purpose.value,
+                    bridge_missing_fingerprint,
+                )
+                raise SessionActivationError(RESOURCE_WAIT_BLOCKED)
+            self._logger.info(
+                "model_bridge_binding_missing session_id=%s purpose=%s action=rebuild "
+                "fingerprint=%s",
+                live.id,
+                purpose.value,
+                bridge_missing_fingerprint,
+            )
+            restart, retained_product_turn = True, False
         try:
             self._require_registered_project(live.project_path)
             if roots != live.writable_roots or roots != self._writable_roots(
@@ -3595,6 +3661,17 @@ class SessionService:
             if live.runtime_session is not None:
                 await live.suspend_runtime()
             raise
+        if purpose is ResourcePurpose.TURN:
+            binding = self._runtime.held_binding_state(live.id)
+            if bool(binding["bridge_backed"]) and not bool(binding["alive"]):
+                self._logger.info(
+                    "model_bridge_binding_missing session_id=%s purpose=%s action=blocked "
+                    "fingerprint=%s",
+                    live.id,
+                    purpose.value,
+                    bridge_fingerprint(str(binding["bridge_id"])),
+                )
+                raise SessionActivationError(RESOURCE_WAIT_BLOCKED)
         if dict(desired) != self._credentials.cached_environment(live.user_id):
             # Admission was revoked while awaiting resources. Never submit against it.
             if live.runtime_session is not None:
@@ -3661,6 +3738,7 @@ class SessionService:
         live.model_id = model.key
         live.reasoning_effort = reasoning_effort
         live.thinking = thinking
+        live.held_model_bridge_id = self._runtime.bridge_id_of(intent.transport.endpoint) or ""
         return applied.state
 
     def _mode_payload(self, selected: str, active: str) -> dict[str, Any]:

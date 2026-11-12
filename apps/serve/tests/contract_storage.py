@@ -55,6 +55,23 @@ def _identity(
 
 
 class StorageContract(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "POSIX descriptor readlink")
+    def test_readlink_is_pinned_read_only_and_does_not_relax_regular_open(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            (root / "target").write_bytes(PAYLOAD)
+            (root / "alias").symlink_to("target")
+            with closing(open_directory(root, ())) as handle:
+                self.assertEqual(handle.readlink("alias"), "target")
+                with self.assertRaises(OSError):
+                    handle.open_regular("alias")
+                for name in ("../alias", "directory/alias", "/alias"):
+                    with self.subTest(name=name), self.assertRaises((ValueError, OSError)):
+                        handle.readlink(name)
+                self.assertEqual((root / "target").read_bytes(), PAYLOAD)
+            with self.assertRaises(OSError):
+                handle.readlink("alias")
+
     def test_directory_rename_is_exclusive_and_preserves_contents(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

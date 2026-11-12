@@ -97,6 +97,7 @@ from service.chat.runtime.live import (
 )
 from service.chat.runtime.projection import queued_message_payload
 from service.chat.runtime.reconfiguration import RECONFIGURATION_STALE
+from service.chat.service.completions import bridge_fingerprint
 from service.chat.service.recovery import (
     RECOVERY_CLAIMED,
     RECOVERY_CONTEXT,
@@ -268,6 +269,7 @@ class TurnService:
         deliveries: ResourceDeliveryService | None = None,
         catalog: SessionCatalogStore | None = None,
         events: ProductEventStore | None = None,
+        binding_alive: Callable[[str, str], bool] | None = None,
     ) -> None:
         self._sessions = sessions
         self._activities = activities
@@ -279,6 +281,7 @@ class TurnService:
         self._deliveries = deliveries
         self._catalog = catalog
         self._events = events
+        self._binding_alive = binding_alive
         self.recovery = (
             RecoveryService(sessions, events, activities, logger, self._enqueue_recovery)
             if events is not None and catalog is not None
@@ -769,6 +772,25 @@ class TurnService:
                         )
                     )
                     raise SessionActivationError(safe_error)
+                attachment = getattr(live, "attachment_model_bridge_id", None)
+                held = attachment() if callable(attachment) else None
+                if (
+                    held
+                    and self._binding_alive is not None
+                    and not self._binding_alive(live.id, held)
+                ):
+                    self._logger.info(
+                        "model_bridge_binding_missing session_id=%s purpose=%s action=blocked "
+                        "fingerprint=%s",
+                        live.id,
+                        queued.purpose,
+                        bridge_fingerprint(held),
+                    )
+                    if queued.purpose == QUEUE_PURPOSE_RECOVERY:
+                        recovery_cancelled = True
+                        await self._fail_queued(live, request_id, RECOVERY_STALE, unknown=False)
+                        return TurnResult(request_id, TurnStatus.INTERRUPTED, error=RECOVERY_STALE)
+                    raise SessionActivationError(RESOURCE_WAIT_BLOCKED)
                 submitting = live.catalog.begin_queued_submission(live.id, request_id)
                 if submitting is None:
                     raise asyncio.CancelledError

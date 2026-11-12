@@ -253,6 +253,7 @@ from service.platform.storage import filesystem_path
 
 READ_ONLY_TOOL_NAME = "read"
 PENDING_HIL_BLOCKER = "pending_hil"
+SUSPEND_CLOSING_BLOCKER = "closing"
 RUNTIME_ACTIVITY_UNAVAILABLE_BLOCKER = "runtime_activity_unavailable"
 STRUCTURED_PLAN_TURN_CONTEXT = (
     "ScholarSeed has an existing structured conversation plan. Before substantive work in "
@@ -325,6 +326,7 @@ class LiveSession:
             Callable[[SubmissionRetryProof], Awaitable[Callable[[], bool]]] | None
         ) = None
         self.bridge_token = secrets.token_urlsafe(BRIDGE_TOKEN_BYTES)
+        self.held_model_bridge_id = ""
         self.browser_scope_instance = secrets.token_hex(16)
         self._browser_scope: (
             tuple[dict[str, object], dict[str, Callable[[], Awaitable[dict[str, object]]]]] | None
@@ -804,6 +806,31 @@ class LiveSession:
             watermark = await driver.recover_projection()
             self.trace_resource("projection_recovered", watermark=watermark)
 
+    def attachment_model_bridge_id(self) -> str | None:
+        """The bridge id the attached native runtime holds; None only when detached.
+
+        Protection deliberately extends through closing/archive waits: the native
+        process keeps the bridge URL until an actual detach, and aclose releases the
+        registration explicitly (on_release) even when the driver close fails.
+        """
+
+        if self.runtime_session is None:
+            return None
+        return self.held_model_bridge_id or None
+
+    def durable_suspend_refusal(self) -> str | None:
+        """Sync refusal subset that cannot clear by waiting; shared with suspend_runtime.
+
+        Transient refusals (running/interrupting/steer/unknown outcome/resource task) are
+        deliberately absent: callers keep polling for those, as they always have.
+        """
+
+        if self.closing or self.terminating:
+            return SUSPEND_CLOSING_BLOCKER
+        if self.pending_hil_snapshot():
+            return PENDING_HIL_BLOCKER
+        return None
+
     async def suspend_runtime(self, *, require_unsubscribed: bool = False) -> bool:
         async with self.lifecycle_lock:
             self.suspend_blockers = ()
@@ -831,7 +858,7 @@ class LiveSession:
                 )
             ):
                 return False
-            if self.pending_hil_snapshot():
+            if self.durable_suspend_refusal() == PENDING_HIL_BLOCKER:
                 self.suspend_blockers = (PENDING_HIL_BLOCKER,)
                 self.trace_resource("suspend_blocked", blockers=list(self.suspend_blockers))
                 return False
@@ -862,6 +889,7 @@ class LiveSession:
             self.suspend_blockers = ()
             self._skill_inventory = None
             self.bridge_token = ""
+            self.held_model_bridge_id = ""
             await self.end_browser_scope()
             self.active_product_turn_id = ""
             if self._on_suspend is not None:
@@ -3810,12 +3838,14 @@ class LiveSession:
         if self.runtime_driver is not None and await close(self.runtime_driver.close):
             self.runtime_driver = None
             self.runtime_session = None
+            self.held_model_bridge_id = ""
         # The observation pump could enqueue callbacks while earlier owners drained.
         await cancel(tuple(self._service_callbacks))
         await close(lambda: self._catalog.expire_pending_hil(self.id))
         release = self._on_release
         if release is not None:
             await close(lambda: release(self.id))
+        self.held_model_bridge_id = ""
         if self._publication_task is not None:
             await close(lambda: self._publication_task)
         # An uncertain worker shutdown cannot authorize closing its Trace dependency.
