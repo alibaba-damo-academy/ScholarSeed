@@ -2,22 +2,34 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
+import venv
 import zipfile
-from contextlib import closing
+from contextlib import closing, redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
 
 from scholarseed_runtime.contract import LaunchSecretScope
 from service.chat.runtime.secrets import _launch_secret_contract
+from service.cli import task as task_cli
 from service.platform.executables import BRIDGE_DIR_ENV, command_directories
-from service.platform.python import prepare_commands, prepare_environment, task_environment
-from service.platform.storage import filesystem_path, open_directory
+from service.platform.python import (
+    BASE_EXECUTABLE_ATTRIBUTE,
+    ENVIRONMENT_RECEIPT,
+    PIP_MISSING_EXIT,
+    prepare_commands,
+    prepare_environment,
+    prepare_pip,
+    task_environment,
+    task_interpreter,
+)
+from service.platform.storage import DirectoryHandle, filesystem_path, open_directory
 
 PROBE = (
     "import json,sys,site; print(json.dumps([sys.prefix,sys.base_prefix,site.ENABLE_USER_SITE]))"
@@ -32,6 +44,280 @@ def command(environment: dict[str, str], *arguments: str) -> list[str] | str:
 
 
 class TaskPythonContracts(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "darwin", "macOS execution identity")
+    def test_macos_aliases_reject_untrusted_targets_and_cycles(self) -> None:
+        for target in ("../python", "/usr/bin/python3", "python", "python3", "directory/python"):
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as directory:
+                cwd = Path(directory)
+                prepare_environment(cwd)
+                interpreter = task_interpreter(cwd)
+                interpreter.unlink()
+                interpreter.symlink_to(target)
+                if target == "python3":
+                    alias = interpreter.with_name(target)
+                    alias.unlink()
+                    alias.symlink_to("python")
+                with self.assertRaises((ValueError, OSError)):
+                    prepare_environment(cwd)
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS execution identity")
+    def test_macos_alias_replacement_during_chain_validation_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cwd = Path(directory)
+            prepare_environment(cwd)
+            interpreter = task_interpreter(cwd)
+            readlink = DirectoryHandle.readlink
+
+            def replace(handle: DirectoryHandle, name: str) -> str:
+                target = readlink(handle, name)
+                if name != interpreter.name:
+                    interpreter.unlink()
+                    interpreter.symlink_to("/usr/bin/python3")
+                return target
+
+            with patch.object(DirectoryHandle, "readlink", replace):
+                with self.assertRaisesRegex(ValueError, "changed"):
+                    prepare_environment(cwd)
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS execution identity")
+    def test_macos_rejects_linked_scripts_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cwd = Path(directory)
+            prepare_environment(cwd)
+            scripts = task_interpreter(cwd).parent
+            moved = scripts.with_name("retained")
+            scripts.rename(moved)
+            scripts.symlink_to(moved, target_is_directory=True)
+            with self.assertRaises(OSError):
+                prepare_environment(cwd)
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS execution identity")
+    def test_macos_rejects_changed_base_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cwd = Path(directory)
+            prepare_environment(cwd)
+            base = Path(vars(sys)[BASE_EXECUTABLE_ATTRIBUTE]).resolve()
+            original = DirectoryHandle.stat
+
+            def changed(handle: DirectoryHandle, name: str) -> os.stat_result:
+                if handle.path == base.parent and name == base.name:
+                    return task_interpreter(cwd).lstat()
+                return original(handle, name)
+
+            with patch.object(DirectoryHandle, "stat", changed):
+                with self.assertRaisesRegex(ValueError, "changed"):
+                    prepare_environment(cwd)
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS execution identity")
+    def test_macos_copy_fallback_does_not_publish_a_complete_receipt(self) -> None:
+        builder = venv.EnvBuilder
+        with tempfile.TemporaryDirectory() as directory:
+            cwd = Path(directory)
+            with patch(
+                "service.platform.python.venv.EnvBuilder",
+                side_effect=lambda **options: builder(**{**options, "symlinks": False}),
+            ):
+                with self.assertRaisesRegex(ValueError, "invalid"):
+                    prepare_environment(cwd)
+            self.assertFalse(
+                (task_interpreter(cwd).parent.parent.parent / ENVIRONMENT_RECEIPT).exists()
+            )
+            with self.assertRaisesRegex(ValueError, "incomplete"):
+                prepare_environment(cwd)
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS execution identity")
+    def test_complete_copied_environment_is_reused_without_conversion(self) -> None:
+        builder = venv.EnvBuilder
+        with tempfile.TemporaryDirectory() as directory:
+            cwd = Path(directory)
+            with (
+                patch(
+                    "service.platform.python.venv.EnvBuilder",
+                    side_effect=lambda **options: builder(**{**options, "symlinks": False}),
+                ),
+                patch("service.platform.python._validate_interpreter_link"),
+            ):
+                prepare_environment(cwd)
+            interpreter = task_interpreter(cwd)
+            self.assertFalse(interpreter.is_symlink())
+            identity = interpreter.stat()
+            receipt = interpreter.parent.parent.parent / ENVIRONMENT_RECEIPT
+            original = receipt.read_bytes()
+            prepare_environment(cwd)
+            self.assertFalse(interpreter.is_symlink())
+            self.assertEqual(interpreter.stat(), identity)
+            self.assertEqual(receipt.read_bytes(), original)
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS execution identity")
+    def test_new_macos_environment_reuses_base_execution_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cwd = Path(directory)
+            prepare_commands(cwd)
+            prepare_environment(cwd)
+            interpreter = task_interpreter(cwd)
+            self.assertTrue(interpreter.is_symlink())
+            self.assertEqual(
+                interpreter.resolve(), Path(vars(sys)[BASE_EXECUTABLE_ATTRIBUTE]).resolve()
+            )
+            environment = task_environment(cwd)
+            result = subprocess.run(
+                command(
+                    environment,
+                    "-c",
+                    "import importlib.util,json,pathlib,subprocess,sys; "
+                    "child=json.loads(subprocess.check_output([sys.executable,'-I','-c',"
+                    "'import json,sys; print(json.dumps([sys.prefix,sys.base_prefix]))'],text=True)); "
+                    "print(json.dumps([sys.prefix,str(pathlib.Path(sys.executable).resolve()),"
+                    "child,importlib.util.find_spec('httpx') is None]))",
+                ),
+                env=environment,
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=30,
+            )
+            prefix, executable, child, product_hidden = json.loads(result.stdout)
+            self.assertEqual(filesystem_path(prefix), filesystem_path(environment["VIRTUAL_ENV"]))
+            self.assertEqual(Path(executable), Path(vars(sys)[BASE_EXECUTABLE_ATTRIBUTE]).resolve())
+            self.assertEqual(filesystem_path(child[0]), filesystem_path(prefix))
+            self.assertNotEqual(child[0], child[1])
+            self.assertTrue(product_hidden)
+
+    def test_first_stdlib_command_does_not_require_ensurepip(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cwd = Path(directory)
+            prepare_commands(cwd)
+            failure = subprocess.CalledProcessError(-9, ["ensurepip"])
+            with patch("service.platform.python.subprocess.run", side_effect=failure) as launch:
+                prepare_environment(cwd)
+                launch.assert_not_called()
+            environment = task_environment(cwd)
+            result = subprocess.run(
+                command(
+                    environment,
+                    "-c",
+                    "import importlib.util,json,sys; "
+                    "assert importlib.util.find_spec('pip') is None; "
+                    "print(json.dumps({'value': 42, 'prefix': sys.prefix}))",
+                ),
+                env=environment,
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=30,
+            )
+            self.assertEqual(json.loads(result.stdout)["value"], 42)
+            self.assertEqual(
+                filesystem_path(json.loads(result.stdout)["prefix"]),
+                filesystem_path(environment["VIRTUAL_ENV"]),
+            )
+
+    def test_pip_aliases_preserve_complete_environment_receipts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cwd = Path(directory)
+            prepare_commands(cwd)
+            prepare_environment(cwd)
+            environment = task_environment(cwd)
+            receipt = Path(environment["VIRTUAL_ENV"]).parent / ENVIRONMENT_RECEIPT
+            original = receipt.read_bytes()
+            for name in ("pip", "pip3"):
+                with self.subTest(alias=name):
+                    suffix = ".cmd" if os.name == "nt" else ""
+                    alias = Path(environment["SCHOLARSEED_TASK_PYTHON"]).with_name(name + suffix)
+                    invocation = {**environment, "SCHOLARSEED_TASK_PYTHON": str(alias)}
+                    result = subprocess.run(
+                        command(invocation, "--version"),
+                        env=environment,
+                        cwd=cwd,
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                        timeout=30,
+                    )
+                    self.assertIn("pip ", result.stdout)
+            result = subprocess.run(
+                command(environment, "-m", "pip", "--version"),
+                env=environment,
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=30,
+            )
+            self.assertIn("pip ", result.stdout)
+            prepare_environment(cwd)
+            self.assertEqual(receipt.read_bytes(), original)
+            with patch(
+                "service.platform.python.subprocess.run",
+                return_value=subprocess.CompletedProcess([], 0),
+            ) as launch:
+                prepare_pip(cwd)
+                launch.assert_called_once()
+                self.assertNotIn("ensurepip", launch.call_args.args[0])
+
+    def test_failed_pip_bootstrap_preserves_stdlib_and_releases_install_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cwd = Path(directory)
+            prepare_commands(cwd)
+            prepare_environment(cwd)
+            environment = task_environment(cwd)
+            parent = Path(environment["VIRTUAL_ENV"]).parent
+            receipt = parent / ENVIRONMENT_RECEIPT
+            original = receipt.read_bytes()
+            for failure in (subprocess.CalledProcessError(-9, ["ensurepip"]), KeyboardInterrupt()):
+                with self.subTest(failure=type(failure).__name__):
+                    with (
+                        patch.dict(os.environ, environment),
+                        patch(
+                            "service.platform.python.subprocess.run",
+                            side_effect=[
+                                subprocess.CompletedProcess([], PIP_MISSING_EXIT),
+                                failure,
+                            ],
+                        ) as launch,
+                        redirect_stderr(io.StringIO()) as errors,
+                    ):
+                        if isinstance(failure, KeyboardInterrupt):
+                            with self.assertRaises(KeyboardInterrupt):
+                                task_cli.main(["-m", "pip", "--version"])
+                        else:
+                            self.assertEqual(task_cli.main(["-m", "pip", "--version"]), 1)
+                            self.assertIn("SIGKILL", errors.getvalue())
+                        self.assertEqual(launch.call_count, 2)
+                    with closing(open_directory(parent, ())) as handle:
+                        with handle.arbitration("install.lock"):
+                            self.assertEqual(receipt.read_bytes(), original)
+                    result = subprocess.run(
+                        command(environment, "-c", "import json; print(json.dumps(42))"),
+                        env=environment,
+                        cwd=cwd,
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                        timeout=30,
+                    )
+                    self.assertEqual(json.loads(result.stdout), 42)
+
+    def test_pip_probe_errors_are_not_treated_as_missing_pip(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cwd = Path(directory)
+            prepare_environment(cwd)
+            for status in (-9, 1):
+                with self.subTest(status=status):
+                    with patch(
+                        "service.platform.python.subprocess.run",
+                        return_value=subprocess.CompletedProcess(
+                            [], status, stderr=b"probe failed"
+                        ),
+                    ) as launch:
+                        with self.assertRaises(subprocess.CalledProcessError) as caught:
+                            prepare_pip(cwd)
+                        self.assertEqual(caught.exception.returncode, status)
+                        self.assertEqual(caught.exception.stderr, b"probe failed")
+                        launch.assert_called_once()
+
     def test_deep_unicode_directory_executes_real_task_python(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             cwd = Path(directory).joinpath(*(["long-path-" * 5] * 5), "中文 directory")
@@ -81,6 +367,16 @@ class TaskPythonContracts(unittest.TestCase):
                     )
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIn("Task Python unavailable", result.stderr)
+                    ordinary = subprocess.run(
+                        command(environment, "-c", "import json; print(json.dumps(42))"),
+                        env=environment,
+                        cwd=cwd,
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                        timeout=30,
+                    )
+                    self.assertEqual(json.loads(ordinary.stdout), 42)
 
     def test_first_command_lazily_creates_bound_environment_after_shell_cd(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

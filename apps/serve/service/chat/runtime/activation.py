@@ -32,7 +32,7 @@ from scholarseed_runtime.contract.resource import (
 )
 from scholarseed_runtime.contract.sandbox import SANDBOX_STARTUP_ERRORS
 from service.chat.provenance import ModelRun
-from service.chat.runtime.live import PENDING_HIL_BLOCKER, LiveSession
+from service.chat.runtime.live import PENDING_HIL_BLOCKER, SUSPEND_CLOSING_BLOCKER, LiveSession
 from service.chat.runtime.timing import ActivationStage
 from service.platform.activity import (
     Activities,
@@ -290,6 +290,12 @@ class SessionActivation:
                 raise SessionActivationError(SESSION_ACTIVATION_CLOSED)
             if await live.suspend_runtime():
                 return
+            refusal = getattr(live, "durable_suspend_refusal", None)
+            kind = refusal() if callable(refusal) else None
+            if kind == PENDING_HIL_BLOCKER:
+                raise SessionActivationError(RESOURCE_WAIT_PENDING_HIL)
+            if kind == SUSPEND_CLOSING_BLOCKER:
+                raise SessionActivationError(RESOURCE_WAIT_BLOCKED)
             if getattr(live, "suspend_blockers", ()):
                 error = (
                     RESOURCE_WAIT_PENDING_HIL

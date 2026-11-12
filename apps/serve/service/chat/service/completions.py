@@ -162,6 +162,18 @@ PRODUCT_UPSTREAM_ERROR_CODES = frozenset({"credit_balance_exhausted"})
 # bridge_id 一直可用（loopback 可达即可调用）。每条记录现在还多了 per-session 计量头，
 # 不淘汰会把这个问题放大。
 BRIDGE_REGISTRATION_TTL_SECONDS = 12 * 3600
+BRIDGE_ID_ALPHABET = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
+BRIDGE_ID_MAX_LENGTH = 64
+BRIDGE_FINGERPRINT_LENGTH = 12
+BRIDGE_BINDING_REBUILD_LIMIT = 1
+
+
+def bridge_fingerprint(bridge_id: str) -> str:
+    """Irreversible log correlator: the raw id is the loopback credential, never log it."""
+
+    return hashlib.sha256(bridge_id.encode(JSON_ENCODING)).hexdigest()[:BRIDGE_FINGERPRINT_LENGTH]
+
+
 BRIDGE_REFERENCE_LIMIT = 4096
 MODEL_BRIDGE_REFERENCE_LIMIT = "model_bridge_reference_limit"
 
@@ -631,6 +643,7 @@ class CompletionBridge:
         source_endpoints: Sequence[str] = (),
         retryable_tool_endpoints: Mapping[str, frozenset[str]] | None = None,
         shared_ownership: bool = False,
+        held_registration: Callable[[str], str | None] | None = None,
     ) -> None:
         self._on_model = on_model
         self._on_diagnostic = on_diagnostic
@@ -645,6 +658,8 @@ class CompletionBridge:
         self._internal_base_url = internal_base_url.rstrip("/")
         # machine 轴下订阅桥归这台机器所有, 切账号不该把它拆掉(见 rebind_owner)。
         self._shared_ownership = bool(shared_ownership)
+        self._held_registration = held_registration
+        self._probe_failures = 0
         self._upstreams: dict[str, CompletionUpstream] = {}
         self._references: dict[str, CompletionReference] = {}
         self._calls: set[CompletionCall] = set()
@@ -1195,20 +1210,71 @@ class CompletionBridge:
 
         return len(self._upstreams)
 
+    def bridge_id_of(self, base_url: str) -> str | None:
+        """Stateless parse of a minted loopback bridge URL; external endpoints yield None."""
+
+        prefix = f"{self._internal_base_url}{MODEL_BRIDGE_ROUTE_PREFIX}"
+        if not base_url.startswith(prefix):
+            return None
+        bridge_id = base_url[len(prefix) :].split("/", 1)[0]
+        if (
+            not bridge_id
+            or len(bridge_id) > BRIDGE_ID_MAX_LENGTH
+            or not set(bridge_id) <= BRIDGE_ID_ALPHABET
+        ):
+            return None
+        return bridge_id
+
+    def is_live_registration(self, bridge_id: str) -> bool:
+        upstream = self._upstreams.get(bridge_id)
+        return upstream is not None and upstream.active
+
+    def _attachment_protected(self, key: str, session_id: str) -> bool:
+        if self._held_registration is None or not session_id:
+            return False
+        try:
+            held = self._held_registration(session_id)
+        except Exception as error:
+            self._probe_failures += 1
+            logger.error(
+                "model_bridge_attachment_probe_failed session_id=%s failure_type=%s",
+                session_id,
+                type(error).__name__,
+            )
+            return True
+        return held == key
+
     def _evict_expired(self, *, now: float | None = None) -> int:
         """Drop registrations unused for longer than the TTL.
 
         Done lazily on register rather than from a background task: one more lifecycle to
         own is worse than a scan whose cost is bounded by the live registration count.
+        A registration still held by an attached native runtime, or still serving an
+        unrevoked call, outlives the idle window: the holder's lifetime, not model
+        traffic, is what bounds it (release/suspend/close remain the deleters).
         """
 
         moment = time.monotonic() if now is None else now
-        stale = [
-            key
-            for key, up in self._upstreams.items()
-            if moment - up.last_used_at > BRIDGE_REGISTRATION_TTL_SECONDS
-        ]
+        stale: list[str] = []
+        for key, up in self._upstreams.items():
+            if moment - up.last_used_at <= BRIDGE_REGISTRATION_TTL_SECONDS:
+                continue
+            if any(not call.revoked for call in up.calls):
+                logger.info(
+                    "model_bridge_eviction_skipped reason=in_flight_calls fingerprint=%s",
+                    bridge_fingerprint(key),
+                )
+                continue
+            if self._attachment_protected(key, up.session_id):
+                continue
+            stale.append(key)
         for key in stale:
+            upstream = self._upstreams.get(key)
+            logger.info(
+                "model_bridge_registration_evicted session_id=%s reason=idle_ttl fingerprint=%s",
+                upstream.session_id if upstream is not None else "",
+                bridge_fingerprint(key),
+            )
             self._invalidate(key)
         if stale:
             logger.info("model_bridge_registrations_evicted count=%d", len(stale))
@@ -1250,6 +1316,9 @@ class CompletionBridge:
             return JSONResponse({"error": {"code": MODEL_BRIDGE_CLOSED}}, status_code=503)
         upstream = self._upstreams.get(bridge_id)
         if upstream is None:
+            logger.warning(
+                "model_bridge_forward_missing fingerprint=%s", bridge_fingerprint(bridge_id)
+            )
             return JSONResponse({"error": {"message": "model bridge not found"}}, status_code=404)
 
         def deregister(call: CompletionCall) -> None:
@@ -2079,7 +2148,34 @@ def mount_completion_bridge(app: FastAPI, bridge: CompletionBridge) -> None:
             return JSONResponse(
                 {"error": {"message": "invalid Responses request"}}, status_code=400
             )
-        return await bridge.forward(bridge_id, payload)
+        forwarding = asyncio.create_task(bridge.forward(bridge_id, payload))
+
+        async def watch_disconnect() -> None:
+            try:
+                while True:
+                    message = await request.receive()
+                    if message["type"] == "http.disconnect":
+                        return
+            finally:
+                forwarding.cancel()
+
+        watcher = asyncio.create_task(watch_disconnect())
+        try:
+            try:
+                return await forwarding
+            finally:
+                watcher.cancel()
+                results = await asyncio.gather(watcher, return_exceptions=True)
+                if isinstance(results[0], BaseException) and not isinstance(
+                    results[0], asyncio.CancelledError
+                ):
+                    raise results[0]
+        except BaseException:
+            if forwarding.done() and not forwarding.cancelled() and forwarding.exception() is None:
+                response = forwarding.result()
+                if isinstance(response, CompletionStream):
+                    await bridge._close_calls((response.call,))
+            raise
 
 
 def responses_to_chat_request(payload: Mapping[str, Any]) -> dict[str, Any]:
