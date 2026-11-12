@@ -1,137 +1,229 @@
-# 书深用户服务协议
+# ScholarSeed Terms of Service
 
-**更新日期：2026年9月22日**
+**English** · [简体中文](service-agreement_zh.md)
 
-**生效日期：2026年9月22日**
+**Last updated: September 22, 2026**
+
+**Effective date: September 22, 2026**
 
 ---
 
-欢迎您使用"书深"（以下简称"本产品"）。本协议由阿里巴巴达摩院（杭州）科技有限公司（以下简称"我们"）与您订立，涉及您使用本产品的相关事宜。**未成年用户请在监护人的陪同下阅读本协议，并在取得监护人同意的前提下使用本产品。**
+Welcome to ScholarSeed (the "Product"). This agreement is between Alibaba DAMO
+Academy (Hangzhou) Technology Co., Ltd. ("we" or "us") and you and governs your
+use of the Product. **Minors should read this agreement with a guardian and
+obtain the guardian's consent before using the Product.**
 
-您通过页面确认接受或实际使用本产品，即表示您同意接受本协议及后续修订版本。如您不同意，请停止使用。
+By confirming acceptance on the page or using the Product, you agree to this
+agreement and its subsequent revisions. If you disagree, stop using the Product.
 
-## 一、服务说明
+## 1. Service description
 
-1.1 书深是面向科研场景的桌面端AI Agent，核心功能包括本地文件处理（增删改查、内容分析、文献综述）和学术检索。本产品以两种形式提供：（1）GitHub开源版本（Apache 2.0协议）；（2）桌面端应用软件（macOS/Windows）。
+1.1 ScholarSeed is a desktop AI agent for research. Core functions include local
+file operations, content analysis, literature reviews, and academic search.
+The Product is available as (1) an open-source GitHub version under the Apache
+License 2.0 and (2) a desktop application for macOS and Windows.
 
-1.2 本产品提供两种使用模式：
+1.2 The Product offers two modes:
 
-*   **登录模式：** 您使用平台账号登录桌面端应用软件后，可使用我们预配置的AI模型（如千问）进行内容生成。您的对话指令经我们的服务端中转至模型提供方；本地文件内容则直接传输至模型API，不经过我们的服务端（详见第四条）。
+- **Signed-in mode:** After signing in to the desktop application with a
+  platform account, you can generate content using a preconfigured AI model
+  such as Qwen. Our servers relay your conversation instructions to the model
+  provider. Local file contents go directly to the model API without passing
+  through our servers (see Section 4).
+- **Signed-out mode:** You can use the desktop application without signing in,
+  but must configure a third-party model API key. Your local client sends these
+  requests directly to the third-party model service without using our servers.
 
-*   **非登录模式：** 您无需登录即可使用本产品的桌面端应用软件功能，但需自行配置第三方模型API密钥，相关请求由您的本地客户端直连第三方模型服务，不经过我们的服务端。
+1.3 We may adjust the service as our business develops, including adding or
+retiring features and changing model providers.
 
-1.3 我们有权根据业务发展调整服务内容，包括但不限于新增或下线功能、调整模型提供方等。
+## 2. Account registration and management
 
-## 二、账号注册与管理
+2.1 You may register with a mobile phone number or email address. Ensure that
+the information you provide is true, accurate, and complete, and cooperate with
+real-name verification if applicable.
 
-2.1 您可通过手机号或邮箱注册账号。您应确保提供的信息真实、准确、完整，并配合完成实名认证（如适用）。
+2.2 Keep your account and password secure. You bear losses caused by failing
+to safeguard them.
 
-2.2 您应妥善保管账号及密码，因保管不善导致的损失由您自行承担。
+2.3 Do not transfer, lend, or otherwise provide your account for another
+person's use.
 
-2.3 您不得将账号转让、出借或以任何方式提供给他人使用。
+2.4 We may refuse registration or terminate service if registration information
+is false.
 
-2.4 如提供的注册信息不实，我们有权拒绝注册或终止服务。
+## 3. User conduct
+
+3.1 Comply with applicable laws, regulations, public order, and accepted morals.
+Do not use the Product to:
 
-## 三、用户行为规范
+- Generate or disseminate unlawful or harmful information, including content
+  that endangers national security, undermines ethnic unity, spreads rumors,
+  or contains obscenity or violence;
+- Conduct cyberattacks, maliciously inflate traffic, inject prompts, or otherwise
+  disrupt normal operation;
+- Reverse engineer, decompile, disassemble, or attempt to obtain source code;
+- Use the Product's AI capabilities to train a competing model;
+- Bypass built-in security or content filters;
+- Otherwise harm our or third parties' lawful rights and interests.
 
-3.1 您在使用本产品时应遵守法律法规及社会公序良俗，不得利用本产品从事以下行为：
+3.2 Review your inputs and generated content for compliance. Ensure they do
+not infringe lawful rights or involve state secrets.
+
+## 4. Data and privacy
 
-*   生成、传播违法不良信息（含危害国家安全、破坏民族团结、散布谣言、淫秽暴力等）；
+4.1 **Local-first architecture.** When you use AI features, our servers relay
+conversation instructions to a third-party model API such as Qwen for inference.
+We do not collect or store your local file contents or use them for model training.
 
-*   实施网络攻击、恶意刷量、提示词注入等破坏系统正常运行的行为；
+4.2 **Information we store.** We store only account information (phone number
+or email address) and search service metadata fields.
 
-*   对本产品进行逆向工程、反编译、反汇编或试图获取源代码；
+4.3 **Inference relay data.** In signed-in mode, when you use AI models, our
+servers relay your inputs, such as conversation instructions, to a third-party
+model such as Qwen for inference. We may store relayed conversation queries for
+product experience improvement analysis, but not for model training.
 
-*   利用本产品的AI能力训练与本产品构成竞争的模型；
+4.4 **Cloud deployment.** Our cloud services are deployed in China.
 
-*   规避本产品内置的安全机制或内容过滤措施；
+4.5 **Data ownership.** You own the data you process through the Product and
+are responsible for its source and legality.
 
-*   其他损害我们或第三方合法权益的行为。
+4.6 We do not use or disclose your information without authorization except to
+carry out your instructions, meet legal or regulatory requirements, or as the
+parties otherwise agree.
 
-3.2 您应对通过本产品输入的内容及生成的内容进行合规审查，确保不侵犯他人合法权益、不涉及国家秘密。
+4.7 For more details, see the [ScholarSeed Privacy Policy](privacy-policy.md)
+and its [Chinese source](privacy-policy_zh.md).
 
-## 四、数据与隐私
+## 5. AI-generated content
+
+5.1 The Product can generate content using AI. **AI-generated content has
+inherent limitations and may be inaccurate, incomplete, or hallucinated. It is
+for reference only and does not constitute professional advice.**
 
-4.1 **本地优先架构：** 使用AI功能时，您的对话指令经由我们的服务端中转至第三方模型API（如千问）进行推理。我们不收集、不存储您的本地文件内容，不将其用于模型训练。
+5.2 In signed-in mode, AI-generated content is provided by third-party models
+such as Qwen and **does not represent our position or views**. Review it manually
+and label it as AI-generated when necessary.
 
-4.2 **我们存储的信息：** 我们仅存储您的账号信息（手机号/邮箱）和检索服务的元信息字段。
+5.3 In signed-out mode, content is generated by third-party models you configure.
+We are not responsible for its accuracy, legality, or suitability.
 
-4.3 **推理中转数据：** 登录模式下，您使用AI模型时，您的输入内容（如对话指令）会经由我们的服务端中转至第三方模型（如千问）进行推理。该过程中转的对话指令（Query）数据，我们可能存储用于产品体验迭代分析，但不用于模型训练。
+5.4 You are responsible for the consequences of using AI-generated content.
+We are not liable for decisions, actions, or losses arising from reliance on it.
+
+5.5 **Rights and duties concerning inputs.** You retain existing rights in
+inputs to which you lawfully hold rights. Ensure that you have lawful rights
+or necessary, valid authorization for them. To provide the service, you grant
+us permission to process, transmit, and display inputs to the extent necessary
+for the service. We will not use inputs beyond that purpose.
+
+## 6. Intellectual property
 
-4.4 **云端服务部署：** 我们的云端服务部署于中国境内。
+6.1 **Product intellectual property.** The software code, interface designs,
+documentation, functional architecture, technical implementation, trademarks,
+logos, and other intellectual property of the Product, including its open-source
+version, belong to us or the relevant rights holders. This agreement does not
+transfer or license the Product's intellectual property beyond a limited,
+revocable, non-exclusive, non-transferable license to use the Product.
 
-4.5 **业务数据归属：** 您通过本产品处理的数据归您所有，您应对数据来源及合法性负责。
+6.2 **Open-source license.** The GitHub open-source version is licensed under
+the Apache License 2.0. You may use, copy, modify, and distribute its open-source
+code within that license's scope. See the GitHub repository LICENSE for the
+full text. Publication of the open-source code does not grant a license to
+use non-open-source parts of the Product.
 
-4.6 除执行您的指令、配合法律法规要求或双方另有约定外，我们不擅自使用或披露您的信息。
+6.3 **Marks.** The Product's names, trademarks, logos, and service marks
+(collectively, "Marks") belong to us. Do not use, copy, imitate, or modify them
+without prior written consent. Do not remove, obscure, or alter copyright,
+trademark, patent, disclaimer, or other rights notices in the Product or its
+generated outputs.
 
-4.7 更多数据与隐私保护细节请参见《书深隐私权政策》。
+6.4 **User inputs.** You retain the rights you lawfully hold in your inputs.
+Ensure that inputs do not infringe others' intellectual property or lawful
+rights. You are responsible for intellectual property disputes arising from them.
 
-## 五、AI生成内容
+6.5 **AI-generated outputs.** We do not claim to acquire automatically any
+rights you may have in output simply because you use the Product. To the extent
+permitted by applicable law, output rights are determined by law. Our rights
+in protected Product material contained in an output, such as Marks, remain ours.
 
-5.1 本产品具备AI内容生成能力。**AI生成的内容存在固有局限性，可能出现不准确、不完整或"幻觉"等情况，仅供参考，不构成专业建议。**
+6.6 **Infringement complaints.** If you believe Product content infringes your
+rights, send written notice using Section 11. Include (1) identification and
+contact details, (2) a specific description and location of the content, and
+(3) proof of ownership and preliminary evidence of infringement. After
+verification, we will take reasonable measures under law, such as stopping
+generation or transmission or removing offending content.
 
-5.2 登录模式下，AI生成内容由第三方模型（如千问）提供，**不代表我们的立场或观点**。您应对AI生成内容进行人工复核，并在必要时添加AI生成标识。
+6.7 **Prohibited acts.** Do not reverse engineer, decompile, disassemble, or
+otherwise attempt to obtain source code from the Product, including the
+open-source packaged version in signed-out mode. Do not remove, obscure, or
+alter intellectual property notices.
 
-5.3 非登录模式下，AI生成内容由您自行配置的第三方模型提供，我们不对生成内容的准确性、合法性或适当性承担责任。
+## 7. Third-party models, plugins, and services
 
-5.4 您应对AI生成内容的使用后果自行负责。因依赖AI生成内容导致的决策、行为或损失，我们不承担责任。
+7.1 The Product may integrate or support third-party models such as Qwen,
+plugins, Skills, and other external services ("Third-Party Services").
+Their providers operate them independently and bear full responsibility.
 
-5.5 **用户输入内容的权利与义务：** 您对您依法享有权利的输入内容保留原有权利。您应确保对输入内容拥有合法权利，或已取得必要、有效的授权。为向您提供本服务，您授予我们在服务所需范围内处理、传输和展示输入内容的许可。我们不会超出提供服务的必要目的使用您的输入内容。
+7.2 Review and comply with each Third-Party Service's terms, privacy policy,
+and other applicable conditions. Resolve related disputes, losses, or security
+issues with its provider. We are not responsible for them.
 
-## 六、知识产权
+7.3 In signed-out mode, you manage your third-party model API keys and services.
+Your local client connects directly to those providers; we do not relay, store,
+or control those requests.
 
-6.1 **平台知识产权归属：** 本产品（含开源版本）的软件代码、界面设计、文档、功能架构、技术实现、商标、标识及其他知识产权，归我们或相关权利人所有。本协议不构成对本产品知识产权的转让或许可，仅授予您一项有限的、可撤销的、非独占的、不可转让的使用许可。
+7.4 We make no express or implied warranties about Third-Party Services'
+availability, accuracy, legality, or security. Their content, functionality,
+or operations may change at any time without advance notice from us.
 
-6.2 **开源许可：** 本产品的GitHub开源版本遵循Apache 2.0协议。您可以在该协议授权范围内使用、复制、修改和分发本产品的开源代码。Apache 2.0协议的完整文本请参见GitHub仓库中的LICENSE文件。开源代码的发布不构成我们对您使用本产品非开源部分的任何许可。
+## 8. Disclaimers and limits of liability
 
-6.3 **商标保护：** 本产品相关的名称、商标、标识及服务标志（统称"标识"）归我们所有。未经我们事先书面同意，您不得使用、复制、模仿或以任何方式修改上述标识。您不得删除、掩盖或更改本产品（含利用本产品生成的输出内容）中的版权、商标、专利、免责声明或其他权利声明。
+8.1 The Product is provided "as is" and "as available." We make no express or
+implied warranties and do not guarantee uninterrupted or error-free service
+or that it will fully meet your needs. Defects within industry norms due to
+technical limitations do not constitute breach.
 
-6.4 **用户输入内容：** 您对您依法享有权利的输入内容保留原有权利。您应确保输入内容不侵犯他人知识产权或其他合法权益。因输入内容引发的知识产权纠纷，由您自行负责。
+8.2 We are not liable for interruptions or data loss caused by force majeure,
+including natural disasters, network failures, cyberattacks, telecom outages,
+and government actions.
 
-6.5 **AI生成内容：** 我们不主张因您使用本产品而自动取得您对输出内容可能享有的权利。在适用法律允许的范围内，输出内容的权益归属依法律规定界定。如输出内容中包含本产品的受保护材料（如商标、标识等），该部分权利仍由我们享有。
+8.3 To the maximum extent permitted by law, our liability does not exceed the
+total fees you actually paid for the Product in the preceding 12 months.
+We are not liable for indirect losses, including lost profits, lost data,
+or damage to goodwill.
 
-6.6 **侵权投诉：** 若您认为本产品中的任何内容侵犯您的知识产权或其他合法权益，请通过本协议第十一条公布的联系方式向我们发送书面通知。通知应包含：（1）您的身份证明及联系方式；（2）被投诉内容的具体描述及所在位置；（3）权属证明及侵权事实的初步证据。我们将在核实后依法采取停止生成、停止传输、消除违规内容等合理处置措施。
+8.4 **Indemnity.** You agree to indemnify us in full for third-party claims or
+regulatory penalties arising from your use, inputs, or breach, including
+reasonable attorneys' fees and litigation costs.
 
-6.7 **禁止行为：** 您不得对本产品（含非登录模式下的开源打包版本）进行逆向工程、反编译、反汇编或以其他方式试图获取源代码，不得删除、掩盖或更改本产品中的任何知识产权声明。
+## 9. Changes and termination
 
-## 七、第三方模型、插件与服务
+9.1 We may modify this agreement as needed and provide advance notice through
+the official website or in the Product. Continued use constitutes acceptance
+of the revised agreement.
 
-7.1 本产品可能接入或兼容第三方模型（如千问）、第三方插件、技能（Skills）及其他外部服务（统称"第三方服务"）。第三方服务由各自的提供方独立运营并承担全部责任。
+9.2 If you disagree with a revision, you may stop using the Product and close
+your account.
 
-7.2 使用第三方服务前，您应自行查阅并遵守其服务协议、隐私政策等相关条款。因第三方服务引发的任何争议、损失或安全问题，由您与第三方服务提供方自行解决，我们不承担责任。
+9.3 If you breach the agreement, we may suspend or terminate service and reserve
+the right to pursue legal liability.
 
-7.3 非登录模式下，您自行配置的第三方模型API密钥及对应服务完全由您自行管理，相关请求由您的本地客户端直连第三方，我们不参与中转、存储或控制。
+9.4 **After termination.** Following termination or account closure, we may
+delete or anonymize data under the privacy policy. We are not required to
+recover, export, or retain data for you unless laws or regulations require it.
 
-7.4 我们不对第三方服务的可用性、准确性、合法性或安全性作出任何明示或暗示的保证。第三方服务的内容、功能或运营策略可能随时变更，我们不作事先通知。
+## 10. Governing law and disputes
 
-## 八、免责声明与责任限制
+10.1 The law of the People's Republic of China governs formation, validity,
+interpretation, and dispute resolution under this agreement.
 
-8.1 本产品按"现状"及"可用"基础提供。我们不对本产品作任何明示或暗示的保证，不保证服务无中断、无错误或完全满足您的需求。因技术限制导致的行业水平内的缺陷不视为违约。
+10.2 The parties should first seek to resolve disputes through amicable
+negotiation. If negotiation fails, either party may bring suit in the People's
+Court of Yuhang District, Hangzhou.
 
-8.2 因不可抗力（自然灾害、网络故障、黑客攻击、电信中断、政府行为等）导致服务中断或数据损失的，我们不承担责任。
+## 11. Contact
 
-8.3 在法律允许的最大范围内，我们的赔偿责任不超过您在过去12个月内就本产品实际支付的费用总额，且不对间接损失（包括利润损失、数据丢失、商誉损害等）承担责任。
-
-8.4 **赔偿：** 因您的使用行为、输入内容或违反本协议约定而引发的任何第三方索赔或监管处罚，您同意对我们进行全额赔偿（包括但不限于合理的律师费及诉讼费用）。
-
-## 九、协议变更与终止
-
-9.1 我们有权根据需要修改本协议，修改后将通过官网公告或产品内通知提前告知。您继续使用本产品即视为接受修改后的协议。
-
-9.2 如您不同意修改后的协议，有权停止使用并注销账号。
-
-9.3 如您违反本协议约定，我们有权暂停或终止服务，并保留追究法律责任的权利。
-
-9.4 **终止后的处理：** 服务终止或账号注销后，我们可依据隐私政策对您的数据进行删除或匿名化处理，无义务为您恢复、导出或保留任何数据，法律法规另有要求的除外。
-
-## 十、法律适用与争议解决
-
-10.1 本协议的订立、效力、解释及争议解决均适用中华人民共和国法律。
-
-10.2 因本协议产生的争议，双方应友好协商；协商不成的，任何一方有权向杭州市余杭区人民法院提起诉讼。
-
-## 十一、联系我们
-
-如您对本协议有任何疑问、意见或投诉，请通过以下方式联系：
-
-*   邮箱：info.scholarseed@list.alibaba-inc.com
+For questions, feedback, or complaints about this agreement, email
+info.scholarseed@list.alibaba-inc.com.

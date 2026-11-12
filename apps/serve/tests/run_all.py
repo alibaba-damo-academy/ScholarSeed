@@ -185,6 +185,7 @@ SUITES = [
     "contract_session_fork",
     "contract_product_boundaries",
     "contract_runtime_root",
+    "contract_proxy",
     "contract_runtime_incidents",
     "contract_codex_submission",
     "contract_trace_evidence",

@@ -10,6 +10,9 @@
 #include <sys/sysctl.h>
 #include <unistd.h>
 #include <time.h>
+#include <mach/vm_prot.h>
+#include <mach/vm_region.h>
+#include <mach/vm_inherit.h>
 
 #define SS_PREFLIGHT_REPORTED_NAME_BYTES (sizeof(((struct kinfo_proc *)0)->kp_proc.p_comm))
 #define SS_PREFLIGHT_REPORTED_NAME_ESCAPE_BYTES 4
@@ -28,6 +31,41 @@ typedef struct {
 typedef BOOL (^SSProcessIdentityRead)(pid_t process, SSProcessIdentity *identity, BOOL *present);
 typedef NSString *(^SSProcessImageRead)(pid_t process);
 typedef BOOL (^SSProcessExemption)(SSProcessIdentity identity, NSString *image);
+typedef SSPreparationActivity (^SSMappedActivityRead)(SSProcessIdentity identity, NSArray *prefixes, BOOL *live);
+static BOOL ValidProcess(SSProcessIdentity identity);
+static BOOL EqualProcess(SSProcessIdentity left, SSProcessIdentity right);
+
+// A missing pathname is not a missing process. Recover ownership from a complete,
+// stable kernel vnode mapping inventory, never from argv or a reported name.
+static SSPreparationActivity ObserveMappedActivity(SSProcessIdentity expected, NSArray *prefixes,
+    SSProcessIdentityRead readIdentity, NSArray *(^readMappings)(pid_t), BOOL *live) {
+    *live = NO;
+    NSArray *first = nil;
+    for (NSUInteger index = 0; index < 3; index++) {
+        SSProcessIdentity current; BOOL present = NO;
+        if (!readIdentity(expected.process, &current, &present)) return SSPreparationActivityUnknown;
+        if (!present) return SSPreparationActivityAbsent;
+        if (!EqualProcess(expected, current) || !ValidProcess(current) || current.status == SIDL) return SSPreparationActivityUnknown;
+        if (current.status == SZOMB) return SSPreparationActivityAbsent;
+        if (index == 2) break;
+        NSArray *mappings = readMappings(expected.process);
+        if (!mappings.count || (first && ![first isEqual:mappings])) return SSPreparationActivityUnknown;
+        first = mappings;
+    }
+    BOOL executable = NO, owned = NO;
+    for (NSDictionary *mapping in first) {
+        NSString *path = mapping[@"path"];
+        if (![path isKindOfClass:NSString.class] || ![path hasPrefix:@"/"] ||
+            [path containsString:@"//"] || [path.pathComponents containsObject:@".."] || [path.pathComponents containsObject:@"."] ||
+            [path rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location != NSNotFound ||
+            ![mapping[@"inode"] unsignedLongLongValue]) return SSPreparationActivityUnknown;
+        executable = executable || ([mapping[@"protection"] unsignedIntegerValue] & VM_PROT_EXECUTE);
+        for (NSString *prefix in prefixes) owned = owned || [path hasPrefix:prefix];
+    }
+    if (!executable) return SSPreparationActivityUnknown;
+    *live = YES;
+    return owned ? SSPreparationActivityActive : SSPreparationActivityAbsent;
+}
 
 #define SS_PREFLIGHT_DIFFERENCE_LIMIT 8
 typedef NS_ENUM(NSUInteger, SSProcessDifferenceKind) {
@@ -148,12 +186,13 @@ static BOOL ObserveImage(SSProcessIdentity expected, SSProcessIdentityRead readI
 }
 
 static SSPreparationActivity ClassifyProcess(SSProcessIdentity identity, NSArray *prefixes,
-    BOOL (^readImage)(SSProcessIdentity, NSString **, BOOL *), NSString *(^canonicalize)(NSString *), BOOL *live, SSProcessExemption exemption) {
+    BOOL (^readImage)(SSProcessIdentity, NSString **, BOOL *), NSString *(^canonicalize)(NSString *), BOOL *live, SSProcessExemption exemption, SSMappedActivityRead mapped) {
     *live = NO;
     if (identity.status == SIDL) return SSPreparationActivityUnknown;
     NSString *path = nil;
     BOOL exited = NO;
-    if (!readImage(identity, &path, &exited)) return SSPreparationActivityUnknown;
+    errno = 0;
+    if (!readImage(identity, &path, &exited)) return errno == ENOENT && mapped ? mapped(identity, prefixes, live) : SSPreparationActivityUnknown;
     if (exited) return SSPreparationActivityAbsent;
     if (![path hasPrefix:@"/"] || [path rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location != NSNotFound) return SSPreparationActivityUnknown;
     if (exemption && exemption(identity, path)) { *live = YES; return SSPreparationActivityAbsent; }
@@ -169,8 +208,8 @@ static SSPreparationActivity ClassifyProcess(SSProcessIdentity identity, NSArray
     return known ? SSPreparationActivityActive : SSPreparationActivityAbsent;
 }
 
-static SSPreparationActivity ClassifyActivityPolicy(NSArray *processes, uid_t current, pid_t observer, NSURL *source, NSURL *target,
-    BOOL (^readImage)(SSProcessIdentity, NSString **, BOOL *), NSString *(^canonicalize)(NSString *), NSMutableDictionary *coverage, SSProcessExemption exemption) {
+static SSPreparationActivity ClassifyActivityMappings(NSArray *processes, uid_t current, pid_t observer, NSURL *source, NSURL *target,
+    BOOL (^readImage)(SSProcessIdentity, NSString **, BOOL *), NSString *(^canonicalize)(NSString *), NSMutableDictionary *coverage, SSProcessExemption exemption, SSMappedActivityRead mapped) {
     if (!ProcessInventory(processes, current, observer) || !readImage || !canonicalize) return SSPreparationActivityUnknown;
     NSArray *prefixes = @[[source.path stringByAppendingPathComponent:@"Contents/"], [target.path stringByAppendingPathComponent:@"Contents/"]];
     BOOL active = NO;
@@ -179,12 +218,16 @@ static SSPreparationActivity ClassifyActivityPolicy(NSArray *processes, uid_t cu
         [value getValue:&identity size:sizeof(identity)];
         if (!ScopedProcess(identity, current)) continue;
         BOOL live = NO;
-        SSPreparationActivity activity = ClassifyProcess(identity, prefixes, readImage, canonicalize, &live, exemption);
+        SSPreparationActivity activity = ClassifyProcess(identity, prefixes, readImage, canonicalize, &live, exemption, mapped);
         if (activity == SSPreparationActivityUnknown) return activity;
         if (live && coverage) coverage[@(identity.process)] = value;
         active = active || activity == SSPreparationActivityActive;
     }
     return active ? SSPreparationActivityActive : SSPreparationActivityAbsent;
+}
+static SSPreparationActivity ClassifyActivityPolicy(NSArray *processes, uid_t current, pid_t observer, NSURL *source, NSURL *target,
+    BOOL (^readImage)(SSProcessIdentity, NSString **, BOOL *), NSString *(^canonicalize)(NSString *), NSMutableDictionary *coverage, SSProcessExemption exemption) {
+    return ClassifyActivityMappings(processes, current, observer, source, target, readImage, canonicalize, coverage, exemption, nil);
 }
 static SSPreparationActivity ClassifyActivity(NSArray *processes, uid_t current, pid_t observer, NSURL *source, NSURL *target,
     BOOL (^readImage)(SSProcessIdentity, NSString **, BOOL *), NSString *(^canonicalize)(NSString *), NSMutableDictionary *coverage) {
@@ -244,7 +287,7 @@ static const double SSPreflightProcessSeconds = 2;
 
 static SSPreparationActivity ObserveActivityPolicy(uid_t current, pid_t observer, NSURL *source, NSURL *target,
     NSArray *(^readInventory)(void), BOOL (^readImage)(SSProcessIdentity, NSString **, BOOL *), NSString *(^canonicalize)(NSString *),
-    double (^clock)(void), void (^unavailable)(NSString *, int, const SSInventoryDiagnostic *, double), SSProcessExemption exemption) {
+    double (^clock)(void), void (^unavailable)(NSString *, int, const SSInventoryDiagnostic *, double), SSProcessExemption exemption, SSMappedActivityRead mapped) {
     if (!readInventory || !readImage || !canonicalize || !clock) return SSPreparationActivityUnknown;
     double started = clock();
     SSPreparationActivity (^unknown)(NSString *, int, const SSInventoryDiagnostic *) = ^SSPreparationActivity(NSString *operation, int code, const SSInventoryDiagnostic *diagnostic) {
@@ -263,9 +306,14 @@ static SSPreparationActivity ObserveActivityPolicy(uid_t current, pid_t observer
     NSDictionary *original = ProcessInventory(initial, current, observer);
     if (!original) return unknown(@"kernel-inventory", errno ?: EAGAIN, NULL);
     NSMutableDictionary *coverage = [NSMutableDictionary dictionary];
-    SSPreparationActivity activity = exemption
-      ? ClassifyActivityPolicy(initial, current, observer, source, target, checkedImage, canonicalize, coverage, exemption)
-      : ClassifyActivity(initial, current, observer, source, target, checkedImage, canonicalize, coverage);
+    SSMappedActivityRead checkedMappings = mapped ? ^SSPreparationActivity(SSProcessIdentity identity, NSArray *prefixes, BOOL *live) {
+        if (!withinDeadline()) return SSPreparationActivityUnknown;
+        SSPreparationActivity result = mapped(identity, prefixes, live);
+        return withinDeadline() ? result : SSPreparationActivityUnknown;
+    } : (SSMappedActivityRead)nil;
+    SSPreparationActivity activity = !exemption && !checkedMappings
+      ? ClassifyActivity(initial, current, observer, source, target, checkedImage, canonicalize, coverage)
+      : ClassifyActivityMappings(initial, current, observer, source, target, checkedImage, canonicalize, coverage, exemption, checkedMappings);
     if (activity == SSPreparationActivityUnknown) return unknown(@"kernel-identity-or-image", errno ?: EAGAIN, NULL);
     if (activity == SSPreparationActivityActive) return activity;
     if (!withinDeadline()) return unknown(@"kernel-observation-time", ETIMEDOUT, NULL);
@@ -293,7 +341,7 @@ static SSPreparationActivity ObserveActivityPolicy(uid_t current, pid_t observer
         SSProcessIdentity identity;
         [value getValue:&identity size:sizeof(identity)];
         BOOL live = NO;
-        activity = ClassifyProcess(identity, prefixes, checkedImage, canonicalize, &live, exemption);
+        activity = ClassifyProcess(identity, prefixes, checkedImage, canonicalize, &live, exemption, checkedMappings);
         if (activity == SSPreparationActivityUnknown) return unknown(@"kernel-identity-or-image", errno ?: EAGAIN, NULL);
         if (activity == SSPreparationActivityActive) return activity;
         if (live) coverage[@(identity.process)] = value;
@@ -315,7 +363,36 @@ static SSPreparationActivity ObserveActivityPolicy(uid_t current, pid_t observer
 static inline SSPreparationActivity ObserveActivity(uid_t current, pid_t observer, NSURL *source, NSURL *target,
     NSArray *(^readInventory)(void), BOOL (^readImage)(SSProcessIdentity, NSString **, BOOL *), NSString *(^canonicalize)(NSString *),
     double (^clock)(void), void (^unavailable)(NSString *, int, const SSInventoryDiagnostic *, double)) {
-    return ObserveActivityPolicy(current, observer, source, target, readInventory, readImage, canonicalize, clock, unavailable, nil);
+    return ObserveActivityPolicy(current, observer, source, target, readInventory, readImage, canonicalize, clock, unavailable, nil, nil);
+}
+
+// XNU maps the Intel commpage text once at boot into every 64-bit process.
+// Its page slides within the reserved comm area, beyond the ordinary VM limit:
+// xnu-8792.61.2/osfmk/{i386/cpu_capabilities.h,vm/vm_shared_region.c}.
+// An address alone is not evidence: require the kernel submap shape and our own
+// commpage's boot-selected address. proc region object IDs are zero for submaps
+// (osfmk/vm/{bsd_vm.c,vm_map.c}); they cannot establish shared object identity.
+// Unknown anonymous executable pages still fail.
+static inline BOOL SameKernelCommpage(struct proc_regionwithpathinfo candidate, struct proc_regionwithpathinfo reference) {
+    struct proc_regioninfo info = candidate.prp_prinfo, own = reference.prp_prinfo;
+    const uint64_t first = 0x00007fffffe01000ULL, end = 0x00007ffffffff000ULL;
+    return !candidate.prp_vip.vip_vi.vi_stat.vst_ino && !candidate.prp_vip.vip_path[0] &&
+        !reference.prp_vip.vip_vi.vi_stat.vst_ino && !reference.prp_vip.vip_path[0] &&
+        info.pri_address >= first && info.pri_address < end && !(info.pri_address & 4095) &&
+        info.pri_size == 4096 && info.pri_offset == 0 &&
+        info.pri_protection == (VM_PROT_READ | VM_PROT_EXECUTE) && info.pri_max_protection == info.pri_protection &&
+        info.pri_flags == PROC_REGION_SUBMAP && info.pri_share_mode == SM_EMPTY &&
+        info.pri_inheritance == VM_INHERIT_SHARE && !info.pri_obj_id && !own.pri_obj_id &&
+        info.pri_address == own.pri_address && info.pri_size == own.pri_size && info.pri_offset == own.pri_offset &&
+        info.pri_protection == own.pri_protection && info.pri_max_protection == own.pri_max_protection &&
+        info.pri_flags == own.pri_flags && info.pri_share_mode == own.pri_share_mode &&
+        info.pri_inheritance == own.pri_inheritance && info.pri_user_tag == own.pri_user_tag && info.pri_depth == own.pri_depth;
+}
+
+static double ProcessTime(void) {
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return -1;
+    return (double)now.tv_sec + (double)now.tv_nsec / 1000000000.0;
 }
 
 #ifndef SS_PREFLIGHT_CONTRACT
@@ -328,12 +405,6 @@ static SSPreparationActivity UnavailableActivity(NSString *operation, int code) 
     NSLog(@"[shipit-preflight] event=process-evidence-unavailable operation=%@ errno=%d", operation, code);
     errno = saved;
     return SSPreparationActivityUnknown;
-}
-
-static double ProcessTime(void) {
-    struct timespec now;
-    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return -1;
-    return (double)now.tv_sec + (double)now.tv_nsec / 1000000000.0;
 }
 
 static void LogInventoryDifference(const SSInventoryDiagnostic *diagnostic, double started) {
@@ -373,6 +444,8 @@ static NSArray *ObserveProcesses(void) {
     return observed;
 }
 
+#endif
+
 static BOOL ObserveIdentity(pid_t process, SSProcessIdentity *identity, BOOL *present) {
     int query[] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, process};
     struct kinfo_proc current = {0};
@@ -396,6 +469,60 @@ static NSString *ObserveExecutable(pid_t process) {
     return image;
 }
 
+// Read the public region iterator through its end, not the private vnode-only
+// iterator: the latter also returns EINVAL for an inaccessible vnode mid-scan.
+// Kernel vnode paths survive unlink; argv and current filesystem aliases do not
+// establish which native images are still mapped in a process.
+static BOOL ObserveKernelCommpage(struct proc_regionwithpathinfo region) {
+#if defined(__x86_64__)
+    struct proc_regionwithpathinfo reference = {0};
+    if (!SameKernelCommpage(region, region)) return NO;
+    int translated = 0;
+    size_t size = sizeof(translated);
+    int result = sysctlbyname("sysctl.proc_translated", &translated, &size, NULL, 0);
+    if ((result != 0 && errno != ENOENT) || (result == 0 && (size != sizeof(translated) || translated))) return NO;
+    return proc_pidinfo(getpid(), PROC_PIDREGIONPATHINFO, region.prp_prinfo.pri_address, &reference, sizeof(reference)) == sizeof(reference) &&
+        SameKernelCommpage(region, reference);
+#else
+    (void)region;
+    return NO;
+#endif
+}
+
+static const NSUInteger SSPreflightMappingLimit = 4096;
+static NSArray *ObserveMappings(pid_t process) {
+    NSMutableArray *mappings = [NSMutableArray array];
+    uint64_t address = 0;
+    double started = ProcessTime();
+    for (NSUInteger index = 0; index < SSPreflightMappingLimit; index++) {
+        double now = ProcessTime();
+        if (started < 0 || now < started || now - started >= SSPreflightProcessSeconds) { errno = ETIMEDOUT; return nil; }
+        struct proc_regionwithpathinfo region = {0};
+        errno = 0;
+        int bytes = proc_pidinfo(process, PROC_PIDREGIONPATHINFO, address, &region, sizeof(region));
+        if (!bytes && errno == EINVAL && mappings.count) return mappings;
+        if (bytes != sizeof(region)) return nil;
+        struct proc_regioninfo info = region.prp_prinfo;
+        struct vinfo_stat identity = region.prp_vip.vip_vi.vi_stat;
+        size_t length = strnlen(region.prp_vip.vip_path, sizeof(region.prp_vip.vip_path));
+        if (!info.pri_size || info.pri_address < address || info.pri_size > UINT64_MAX - info.pri_address) { errno = EINVAL; return nil; }
+        address = info.pri_address + info.pri_size;
+        if (!identity.vst_ino && !length) {
+            // Anonymous executable memory cannot prove native image ownership.
+            if ((info.pri_protection & VM_PROT_EXECUTE) && !ObserveKernelCommpage(region)) { errno = EINVAL; return nil; }
+            continue;
+        }
+        if (!identity.vst_ino || !S_ISREG(identity.vst_mode) || !length || length >= sizeof(region.prp_vip.vip_path) - 1) { errno = EINVAL; return nil; }
+        NSString *path = [NSString stringWithUTF8String:region.prp_vip.vip_path];
+        if (!path) { errno = EILSEQ; return nil; }
+        [mappings addObject:@{@"path":path, @"device":@(identity.vst_dev), @"inode":@(identity.vst_ino),
+            @"address":@(info.pri_address), @"size":@(info.pri_size), @"offset":@(info.pri_offset), @"protection":@(info.pri_protection)}];
+    }
+    errno = EOVERFLOW;
+    return nil;
+}
+
+#ifndef SS_PREFLIGHT_CONTRACT
 static SSPreparationActivity InspectActivityPolicy(NSURL *source, NSURL *target, SSProcessExemption exemption) {
     return ObserveActivityPolicy(getuid(), getpid(), source, target, ^NSArray * { return ObserveProcesses(); },
         ^BOOL(SSProcessIdentity expected, NSString **path, BOOL *exited) {
@@ -407,7 +534,14 @@ static SSPreparationActivity InspectActivityPolicy(NSURL *source, NSURL *target,
     }, ^double { return ProcessTime(); }, ^void(NSString *operation, int code, const SSInventoryDiagnostic *diagnostic, double started) {
         if (diagnostic) LogInventoryDifference(diagnostic, started);
         UnavailableActivity(operation, code);
-    }, exemption);
+    }, exemption, ^SSPreparationActivity(SSProcessIdentity expected, NSArray *prefixes, BOOL *live) {
+        SSPreparationActivity result = ObserveMappedActivity(expected, prefixes,
+            ^BOOL(pid_t process, SSProcessIdentity *identity, BOOL *present) { return ObserveIdentity(process, identity, present); },
+            ^NSArray *(pid_t process) { return ObserveMappings(process); }, live);
+        if (result == SSPreparationActivityUnknown)
+            NSLog(@"[shipit-preflight] event=mapped-evidence-unavailable pid=%d errno=%d", expected.process, errno);
+        return result;
+    });
 }
 static SSPreparationActivity InspectActivity(NSURL *source, NSURL *target) {
     return InspectActivityPolicy(source, target, nil);

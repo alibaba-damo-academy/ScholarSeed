@@ -12,7 +12,6 @@ build-backend = "setuptools.build_meta"
 name = "scholarseed"
 version = "0.2.0"
 description = "ScholarSeed product backend, composition root, and desktop launcher"
-readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"

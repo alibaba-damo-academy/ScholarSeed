@@ -3,7 +3,8 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
-const { execFileSync } = require('node:child_process')
+const { execFileSync, spawn } = require('node:child_process')
+const { once } = require('node:events')
 const test = require('node:test')
 
 const library = process.env.SCHOLARSEED_REPAIR_LIBRARY
@@ -246,4 +247,65 @@ test('native handoff-only selection uses real persistent directory identities wi
   } finally {
     holder.close()
   }
+})
+
+async function withDeletedImage(directory, inspect, anonymousExecutable = false) {
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 })
+  const executable = path.join(directory, 'mapped-sleep')
+  execFileSync('/usr/bin/xcrun', ['clang', '-arch', process.arch === 'x64' ? 'x86_64' : 'arm64', '-x', 'c', '-', '-o', executable], {
+    input: '#include <stdio.h>\n#include <unistd.h>\n#include <sys/mman.h>\n' +
+      `int main(void) { ${anonymousExecutable ? 'if (mmap(0, getpagesize(), PROT_READ | PROT_EXEC, MAP_PRIVATE | MAP_ANON, -1, 0) == MAP_FAILED) return 2;' : ''} puts("ready"); fflush(stdout); for (;;) pause(); }\n`,
+  })
+  // Local fixture only, following the native contract executable recipe.
+  execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', executable])
+  execFileSync('/usr/bin/codesign', ['--verify', '--strict', executable])
+  const child = spawn(executable, [], { stdio: ['ignore', 'pipe', 'pipe'] })
+  const finished = once(child, 'exit')
+  const ready = once(child.stdout, 'data')
+  try {
+    assert.equal((await Promise.race([ready.then(([data]) => data.toString()), finished.then(([code, signal]) => `exited:${code}:${signal}`)])).trim(), 'ready')
+    fs.unlinkSync(executable)
+    await inspect(child)
+    assert.equal(child.exitCode, null)
+    assert.equal(child.signalCode, null)
+  } finally {
+    child.kill('SIGTERM')
+    await finished
+  }
+}
+
+test('real kernel mappings allow deleted third-party images, refuse owned images and unknown anonymous executable memory', async (context) => {
+  const current = fixture(context)
+  const probe = path.join(path.dirname(current.config.state), 'mappings-probe')
+  execFileSync('/usr/bin/xcrun', ['clang', '-arch', process.arch === 'x64' ? 'x86_64' : 'arm64',
+    '-fobjc-arc', '-fblocks', '-Wall', '-Wextra', '-Werror', '-Wno-unused-function', '-Wno-deprecated-declarations',
+    '-framework', 'Foundation', path.join(__dirname, 'preflight.test.m'), '-o', probe])
+  execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', probe])
+  execFileSync('/usr/bin/codesign', ['--verify', '--strict', probe])
+  // Includes boundary/permission/submap rejection contracts on both architectures.
+  execFileSync(probe, [path.join(path.dirname(probe), 'preflight-fixture')])
+  for (const [owned, anonymousExecutable, expected] of [[false, false, 'absent'], [true, false, 'active'], [false, true, 'unknown']]) {
+    const directory = owned ? path.join(current.config.target, 'Contents', 'MacOS') : path.join(path.dirname(current.config.source), 'third-party')
+    await withDeletedImage(directory, (child) => {
+      const observed = JSON.parse(execFileSync(probe, ['--mappings', String(child.pid), `${current.config.target}/Contents/`], { encoding: 'utf8' }))
+      context.diagnostic(JSON.stringify({ arch: process.arch, expected, ...observed }))
+      assert.equal(observed.activity, expected)
+      assert.equal(observed.mappings > 0, expected !== 'unknown')
+    }, anonymousExecutable)
+  }
+})
+
+test('deleted third-party image does not hide a running owned image or block unrelated recovery', async (context) => {
+  const current = fixture(context)
+  const run = (directory, owned) => withDeletedImage(directory, () => {
+    if (owned) {
+      assert.throws(() => qualify(current.config), (error) => error.code === 'ERR_TERMINAL_OBSERVATION')
+    } else {
+      const holder = qualify(current.config)
+      try { assert.equal(JSON.parse(holder.observe()).proof.kind, 'orphan-preparation-observation') }
+      finally { holder.close() }
+    }
+  })
+  await run(path.join(current.config.target, 'Contents', 'MacOS'), true)
+  await run(path.join(path.dirname(current.config.source), 'third-party'), false)
 })

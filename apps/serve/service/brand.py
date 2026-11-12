@@ -12,6 +12,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from service.platform import proxy
+
 PRODUCT_NAME = "书深"
 #: 产品的 ASCII 标识（用于文件名、trace 事件命名空间等不便使用中文的场合）。
 PRODUCT_SLUG = "scholarseed"
@@ -51,3 +53,4 @@ def apply_runtime_defaults() -> None:
     os.environ.setdefault(TRACE_HOME_ENV, os.environ[HOME_ENV])
     os.environ.setdefault(TRACE_LEDGER_ROOT_ENV, str(Path(os.environ[HOME_ENV]) / PROJECTS_DIRNAME))
     os.environ.setdefault(CODEX_HOME_ENV, str(Path(os.environ[HOME_ENV]) / CODEX_DIRNAME))
+    proxy.apply()

@@ -162,7 +162,7 @@ mount(state => React.createElement(Notes, { state }));
 
 在与目标书深版本匹配的源码版本查阅：
 
-- [描述符与 schema](../../apps/serve/service/capabilities/service/descriptor.py)、[离线工具](../../apps/serve/service/capabilities/README.md)
+- [描述符与 schema](../../apps/serve/service/capabilities/service/descriptor.py)、[离线工具](../../apps/serve/service/cli/plugins.py)
 - [官方 UI 导出](../../packages/ui/manifest.json)、[组件目录](../../packages/ui/catalog.ts)
 - [SDK 类型](../../packages/ui/contract.ts)、[Conversation 导出](../../packages/ui/conversation.ts)
 - [书深动作处理](../../apps/serve/service/capabilities/api/routes.py)、[科研卡片端口](../../apps/desktop/src/renderer/src/features/literature/ports.ts)
