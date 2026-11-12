@@ -8,13 +8,15 @@ const { once } = require('node:events')
 const test = require('node:test')
 
 const library = process.env.SCHOLARSEED_REPAIR_LIBRARY
-if (process.platform !== 'darwin' || !library)
-  throw new Error('Native repair tests require the built Darwin repair.node')
-const repair = require(library)
+const fixtureLibrary = process.env.SCHOLARSEED_REPAIR_FIXTURE_LIBRARY
+if (process.platform !== 'darwin' || !library || !fixtureLibrary)
+  throw new Error('Native repair tests require both the shipped Darwin repair.node and isolated fixture')
+const production = require(library)
+const repair = require(fixtureLibrary)
 
-function qualify(config) {
+function qualify(config, implementation = repair) {
   try {
-    return repair.open(JSON.stringify(config))
+    return implementation.open(JSON.stringify(config))
   } catch (error) {
     error.message = `${error.code} systemCode=${error.systemCode}`
     throw error
@@ -22,6 +24,7 @@ function qualify(config) {
 }
 
 function fixture(context) {
+  repair.processScope([], 0)
   const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'native-repair-'))
   context.after(() => fs.rmSync(root, { recursive: true, force: true }))
   const directory = (value) => {
@@ -122,11 +125,35 @@ function fixture(context) {
   return { config, journalPath, state, preparation, journal }
 }
 
+test('shipped repair library exposes no process-scope or fault-injection controls', (context) => {
+  assert.deepEqual(Object.getOwnPropertyNames(production), ['open'])
+  assert.notEqual(fs.realpathSync(library), fs.realpathSync(fixtureLibrary))
+  assert.notEqual(path.dirname(fs.realpathSync(library)), path.dirname(fs.realpathSync(fixtureLibrary)))
+  const current = fixture(context)
+  for (const extra of [{ processScope: [] }, { mappingDenials: 0 }]) {
+    assert.throws(() => qualify({ ...current.config, ...extra }, production),
+      (error) => error.code === 'ERR_TERMINAL_ARGUMENT')
+  }
+})
+
+test('test process scope accepts only live direct children and cannot change while locked', (context) => {
+  const current = fixture(context)
+  for (const scope of [[process.pid], [process.ppid], [-1]]) {
+    assert.throws(() => repair.processScope(scope, 0), (error) => error.code === 'ERR_FIXTURE_SCOPE')
+  }
+  assert.throws(() => repair.processScope([], process.pid), (error) => error.code === 'ERR_FIXTURE_SCOPE')
+  const holder = qualify(current.config)
+  try {
+    assert.throws(() => repair.processScope([], 0), (error) => error.code === 'ERR_FIXTURE_SCOPE')
+  } finally { holder.close() }
+  assert.doesNotThrow(() => repair.processScope([], 0))
+})
+
 test('background repair planning never claims process absence or exposes mutation authority', (context) => {
   const current = fixture(context)
   const before = fs.readFileSync(current.journalPath)
   assert.throws(
-    () => qualify({ ...current.config, mode: 'orphan-plan', park: true }),
+    () => qualify({ ...current.config, mode: 'orphan-plan', park: true }, production),
     (error) => error.code === 'ERR_TERMINAL_ARGUMENT'
   )
   assert.throws(
@@ -135,10 +162,10 @@ test('background repair planning never claims process absence or exposes mutatio
         ...current.config,
         mode: 'orphan-plan',
         expected: { kind: 'orphan-preparation-plan' },
-      }),
+      }, production),
     (error) => error.code === 'ERR_TERMINAL_ARGUMENT'
   )
-  const holder = qualify({ ...current.config, mode: 'orphan-plan' })
+  const holder = qualify({ ...current.config, mode: 'orphan-plan' }, production)
   try {
     assert.equal(JSON.parse(holder.observe()).proof.kind, 'orphan-preparation-plan')
     assert.equal(holder.repair, undefined)
@@ -151,16 +178,16 @@ test('background repair planning never claims process absence or exposes mutatio
 test('native repair rejects malformed envelopes and non-explicit parking before opening records', (context) => {
   for (const value of ['[]', 'null', '1', '{}', 'invalid'])
     assert.throws(
-      () => repair.open(value),
+      () => production.open(value),
       (error) => error.code === 'ERR_TERMINAL_ARGUMENT'
     )
   const current = fixture(context)
   assert.throws(
-    () => repair.open(JSON.stringify({ ...current.config, park: false })),
+    () => production.open(JSON.stringify({ ...current.config, park: false })),
     (error) => error.code === 'ERR_TERMINAL_ARGUMENT'
   )
   assert.throws(
-    () => repair.open(JSON.stringify({ ...current.config, park: 1 })),
+    () => production.open(JSON.stringify({ ...current.config, park: 1 })),
     (error) => error.code === 'ERR_TERMINAL_ARGUMENT'
   )
 })
@@ -297,15 +324,47 @@ test('real kernel mappings allow deleted third-party images, refuse owned images
 
 test('deleted third-party image does not hide a running owned image or block unrelated recovery', async (context) => {
   const current = fixture(context)
-  const run = (directory, owned) => withDeletedImage(directory, () => {
-    if (owned) {
-      assert.throws(() => qualify(current.config), (error) => error.code === 'ERR_TERMINAL_OBSERVATION')
-    } else {
-      const holder = qualify(current.config)
-      try { assert.equal(JSON.parse(holder.observe()).proof.kind, 'orphan-preparation-observation') }
-      finally { holder.close() }
-    }
+  const foreign = path.join(path.dirname(current.config.source), 'third-party')
+  const owned = path.join(current.config.target, 'Contents', 'MacOS')
+  await withDeletedImage(foreign, async (thirdParty) => {
+    repair.processScope([thirdParty.pid], 0)
+    const holder = qualify(current.config)
+    try { assert.equal(JSON.parse(holder.observe()).proof.kind, 'orphan-preparation-observation') }
+    finally { holder.close() }
+    await withDeletedImage(owned, (application) => {
+      // Both inventory orders must retain the owned process rejection.
+      for (const scope of [[thirdParty.pid, application.pid], [application.pid, thirdParty.pid]]) {
+        repair.processScope(scope, 0)
+        assert.throws(() => qualify(current.config), (error) => error.code === 'ERR_TERMINAL_OBSERVATION')
+      }
+    })
   })
-  await run(path.join(current.config.target, 'Contents', 'MacOS'), true)
-  await run(path.join(path.dirname(current.config.source), 'third-party'), false)
+})
+
+test('denied mapped evidence fails closed without mutating native records', async (context) => {
+  const current = fixture(context)
+  const before = fs.readFileSync(current.journalPath)
+  const state = fs.readFileSync(current.state)
+  const entries = fs.readdirSync(current.preparation).sort()
+  await withDeletedImage(path.join(path.dirname(current.config.source), 'permission-denied'), (child) => {
+    repair.processScope([child.pid], child.pid)
+    assert.throws(() => qualify(current.config), (error) =>
+      error.code === 'ERR_TERMINAL_OBSERVATION' && error.systemCode === os.constants.errno.EBUSY)
+    assert.ok(repair.mappingDenials() > 0, 'the ENOENT fallback must reach the injected EPERM')
+    assert.deepEqual(fs.readFileSync(current.journalPath), before)
+    assert.deepEqual(fs.readFileSync(current.state), state)
+    assert.deepEqual(fs.readdirSync(current.preparation).sort(), entries)
+    repair.processScope([child.pid], 0)
+    const holder = qualify(current.config)
+    try { assert.equal(JSON.parse(holder.observe()).proof.kind, 'orphan-preparation-observation') }
+    finally { holder.close() }
+  })
+})
+
+test('unknown anonymous executable memory rejects recovery through the real bridge', async (context) => {
+  const current = fixture(context)
+  await withDeletedImage(path.join(path.dirname(current.config.source), 'anonymous-executable'), (child) => {
+    repair.processScope([child.pid], 0)
+    assert.throws(() => qualify(current.config), (error) => error.code === 'ERR_TERMINAL_OBSERVATION')
+  }, true)
 })

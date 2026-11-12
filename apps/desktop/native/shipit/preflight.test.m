@@ -545,9 +545,11 @@ int main(int argc, const char **argv) {
         assert(ObserveMappedActivity(observer, prefixes, ^BOOL(pid_t pid, SSProcessIdentity *value, BOOL *present) {
             mappedIdentity(pid, value, present); value->started.tv_usec++; return YES;
         }, readMappings, &mappedLive) == SSPreparationActivityUnknown && !mappedLive); checks++;
-        assert(ObserveMappedActivity(observer, prefixes, mappedIdentity, ^NSArray *(pid_t pid) {
-            (void)pid; errno = EACCES; return nil;
-        }, &mappedLive) == SSPreparationActivityUnknown && !mappedLive); checks++;
+        for (NSNumber *failure in @[@EACCES, @EPERM]) {
+            assert(ObserveMappedActivity(observer, prefixes, mappedIdentity, ^NSArray *(pid_t pid) {
+                (void)pid; errno = failure.intValue; return nil;
+            }, &mappedLive) == SSPreparationActivityUnknown && !mappedLive && errno == failure.intValue); checks++;
+        }
         __block NSUInteger fallbackReads = 0;
         SSMappedActivityRead mappedFallback = ^SSPreparationActivity(SSProcessIdentity value, NSArray *roots, BOOL *live) {
             fallbackReads++; return ObserveMappedActivity(value, roots, mappedIdentity, readMappings, live);
