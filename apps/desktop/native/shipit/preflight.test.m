@@ -269,14 +269,73 @@ static NSUInteger CommpageContracts(void) {
     return checks;
 }
 
+// Report only the mapping evidence consumed by the production classifier.
+static NSDictionary *MappedObservationContract(SSProcessIdentity identity, NSArray *prefixes,
+    SSProcessIdentityRead readIdentity, NSArray *(^readMappings)(pid_t)) {
+    __block NSArray *observed = nil;
+    __block NSUInteger reads = 0;
+    __block int mappingError = 0;
+    BOOL live = NO;
+    SSPreparationActivity activity = ObserveMappedActivity(identity, prefixes, readIdentity, ^NSArray *(pid_t process) {
+        reads++;
+        observed = readMappings(process);
+        mappingError = observed.count ? 0 : errno;
+        return observed;
+    }, &live);
+    assert(activity == SSPreparationActivityUnknown ? !live : live);
+    return @{@"activity":activity == SSPreparationActivityUnknown ? @"unknown" : activity == SSPreparationActivityActive ? @"active" : @"absent",
+        @"live":@(live), @"mappings":@(live ? observed.count : 0), @"mappingReads":@(reads), @"mappingError":@(mappingError)};
+}
+
+static NSUInteger MappingEvidenceContracts(void) {
+    SSProcessIdentity identity = Identity(10, 502);
+    SSProcessIdentityRead held = ^BOOL(pid_t pid, SSProcessIdentity *value, BOOL *present) {
+        assert(pid == identity.process); *value = identity; *present = YES; return YES;
+    };
+    NSArray *prefixes = @[@"/Applications/Target.app/Contents/"];
+    NSDictionary *foreign = @{@"path":@"/deleted/ThirdParty", @"inode":@1, @"protection":@(VM_PROT_READ | VM_PROT_EXECUTE)};
+    NSDictionary *owned = @{@"path":@"/Applications/Target.app/Contents/MacOS/App", @"inode":@2, @"protection":@(VM_PROT_READ | VM_PROT_EXECUTE)};
+    NSUInteger checks = 0;
+    for (NSArray *mappings in @[@[foreign], @[foreign, owned]]) {
+        __block NSUInteger reads = 0;
+        NSDictionary *result = MappedObservationContract(identity, prefixes, held, ^NSArray *(pid_t pid) {
+            assert(pid == identity.process && ++reads <= 2);
+            return mappings;
+        });
+        assert(reads == 2 && [result[@"mappingReads"] unsignedIntegerValue] == reads); checks++;
+        assert([result[@"activity"] isEqual:mappings.count == 1 ? @"absent" : @"active"]); checks++;
+        assert([result[@"live"] boolValue] && [result[@"mappings"] unsignedIntegerValue] == mappings.count); checks++;
+        assert([result[@"mappingError"] intValue] == 0); checks++;
+    }
+    for (NSNumber *failure in @[@EPERM, @EINVAL, @ETIMEDOUT]) {
+        for (NSUInteger failedRead = 1; failedRead <= 2; failedRead++) {
+            __block NSUInteger reads = 0;
+            NSDictionary *result = MappedObservationContract(identity, prefixes, held, ^NSArray *(pid_t pid) {
+                (void)pid;
+                if (++reads == failedRead) { errno = failure.intValue; return nil; }
+                return @[foreign];
+            });
+            assert([result[@"activity"] isEqual:@"unknown"] && ![result[@"live"] boolValue]); checks++;
+            assert(reads == failedRead && [result[@"mappingReads"] unsignedIntegerValue] == reads); checks++;
+            assert([result[@"mappings"] unsignedIntegerValue] == 0 && [result[@"mappingError"] intValue] == failure.intValue); checks++;
+        }
+    }
+    __block NSUInteger reads = 0;
+    NSDictionary *changed = MappedObservationContract(identity, prefixes, held, ^NSArray *(pid_t pid) {
+        (void)pid; return reads++ ? @[owned] : @[foreign];
+    });
+    assert(reads == 2 && [changed[@"activity"] isEqual:@"unknown"] && ![changed[@"live"] boolValue]); checks++;
+    assert([changed[@"mappings"] unsignedIntegerValue] == 0); checks++;
+    return checks;
+}
+
 // Called by repair.test.cjs against a real, live child after unlink. This uses
 // production kernel readers without depending on unrelated host process churn.
 static int KernelMappingsContract(pid_t pid, NSString *prefix) {
     SSProcessIdentity identity;
-    BOOL present = NO, live = NO;
+    BOOL present = NO;
     assert(ObserveIdentity(pid, &identity, &present) && present);
     assert(!ObserveExecutable(pid) && errno == ENOENT);
-    NSArray *mappings = ObserveMappings(pid);
     BOOL commpage = NO;
 #if defined(__x86_64__)
     int translated = 0;
@@ -289,13 +348,13 @@ static int KernelMappingsContract(pid_t pid, NSString *prefix) {
         commpage = YES;
     }
 #endif
-    SSPreparationActivity activity = ObserveMappedActivity(identity, @[prefix],
+    NSMutableDictionary *result = [MappedObservationContract(identity, @[prefix],
         ^BOOL(pid_t process, SSProcessIdentity *value, BOOL *exists) { return ObserveIdentity(process, value, exists); },
-        ^NSArray *(pid_t process) { return ObserveMappings(process); }, &live);
-    assert(activity == SSPreparationActivityUnknown ? !live : live);
-    printf("{\"activity\":\"%s\",\"commpage\":%s,\"mappings\":%lu}\n",
-        activity == SSPreparationActivityUnknown ? "unknown" : activity == SSPreparationActivityActive ? "active" : "absent",
-        commpage ? "true" : "false", (unsigned long)mappings.count);
+        ^NSArray *(pid_t process) { return ObserveMappings(process); }) mutableCopy];
+    result[@"commpage"] = @(commpage);
+    NSData *json = [NSJSONSerialization dataWithJSONObject:result options:0 error:NULL];
+    assert(json);
+    printf("%s\n", [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding].UTF8String);
     return 0;
 }
 
@@ -563,6 +622,7 @@ int main(int argc, const char **argv) {
             assert(observed == (failure.intValue == ENOENT ? SSPreparationActivityAbsent : SSPreparationActivityUnknown)); checks++;
             assert(fallbackReads == (failure.intValue == ENOENT ? 1u : 0u)); checks++;
         }
+        checks += MappingEvidenceContracts();
         NSLog(@"preflight kernel observation checks passed=%lu", (unsigned long)checks);
     }
     return 0;
