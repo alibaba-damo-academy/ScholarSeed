@@ -317,7 +317,13 @@ test('real kernel mappings allow deleted third-party images, refuse owned images
       const observed = JSON.parse(execFileSync(probe, ['--mappings', String(child.pid), `${current.config.target}/Contents/`], { encoding: 'utf8' }))
       context.diagnostic(JSON.stringify({ arch: process.arch, expected, ...observed }))
       assert.equal(observed.activity, expected)
+      assert.equal(observed.live, expected !== 'unknown')
       assert.equal(observed.mappings > 0, expected !== 'unknown')
+      assert.ok(observed.mappingReads >= 1 && observed.mappingReads <= 2)
+      if (expected !== 'unknown') {
+        assert.equal(observed.mappingReads, 2)
+        assert.equal(observed.mappingError, 0)
+      }
     }, anonymousExecutable)
   }
 })
