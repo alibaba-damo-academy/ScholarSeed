@@ -131,6 +131,7 @@ export function composerSubmissionOutcome(
 }
 
 type TurnAdmissionFailure = {
+  preparation_error?: TurnResponse['preparation_error']
   applicationFailure?: TurnResponse['applicationFailure']
   error?: TurnResponse['error']
   code?: BackendFailureDetail['code']
@@ -183,6 +184,9 @@ export function describeTurnAdmissionFailure(
 }
 
 export function turnAdmissionFeedback(failure: TurnAdmissionFailure): TurnAdmissionFeedback {
+  if (failure.preparation_error) {
+    return feedback('components', 'runtimePreparation.failed')
+  }
   return failure.applicationFailure
     ? requestFailureFeedback(failure.applicationFailure)
     : contextAdmissionFeedback(failure)

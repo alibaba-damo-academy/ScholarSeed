@@ -30,6 +30,7 @@ from service.chat.service.streams import (
     CONTENT_SAFETY_BLOCKED,
     CONTENT_SAFETY_MESSAGE,
     RESPONSE_FAILED,
+    StreamEnd,
 )
 
 
@@ -315,10 +316,11 @@ def terminal_provider_failure(fields: Mapping[str, Any]) -> dict[str, Any]:
             "automatic_retry_attempts": attempt,
         }
     downstream = fields.get("downstream")
-    if (
-        fields.get("phase") != "finished"
-        or not isinstance(downstream, Mapping)
-        or downstream.get("terminal_event") != RESPONSE_FAILED
+    if fields.get("phase") != "finished" or not isinstance(downstream, Mapping):
+        return {}
+    if downstream.get("terminal_event") != RESPONSE_FAILED and not (
+        fields.get("upstream_end") == StreamEnd.PROVIDER_ERROR.value
+        and downstream.get("error_code")
     ):
         return {}
     code = str(downstream.get("error_code") or "")

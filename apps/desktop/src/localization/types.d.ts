@@ -2892,6 +2892,10 @@ declare module 'i18next' {
                 "message": "ChatGPT 订阅连接不支持此请求使用的能力。",
                 "action": "请切换到支持该能力的模型来源，或新建不使用该能力的任务；保持当前请求不变并点击继续仍会失败。任务历史已保留。"
             },
+            "subscriptionLimit": {
+                "message": "ChatGPT 订阅额度已用完，本次生成已停止。",
+                "action": "已生成的内容、本轮问题和上下文已保留。等待订阅额度重置，或切换到其他模型来源后重新发起生成。"
+            },
             "contentPolicy": {
                 "message": "本次内容未通过安全审核，请修改后重试。"
             },
