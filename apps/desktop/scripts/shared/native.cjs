@@ -119,7 +119,7 @@ function nativeSourceFiles(platform) {
       'shipit/binding.h', 'shipit/observation.h', 'shipit/succession.h',
       'shipit/parking.h',
       'shipit/compilation.cjs',
-      'shipit/repair.test.cjs', 'shipit/preflight.test.m',
+      'shipit/repair.test.cjs', 'shipit/repair.fixture.m', 'shipit/preflight.test.m',
     ] : []),
     'startup.h',
     'family.h',
@@ -361,9 +361,14 @@ async function compileNative({
         ...SUPPORT_UNITS.map(name => path.join(NATIVE, 'shipit', name)))
       invoke(compiler, repairArguments, selected)
       if (runContract) {
+        const repairFixture = path.join(temporary, 'repair-fixture.node')
+        invoke(compiler, repairArguments.map(argument =>
+          argument === path.join(NATIVE, 'shipit/bridge.m') ? path.join(NATIVE, 'shipit/repair.fixture.m')
+            : argument === path.join(directory, 'repair.node') ? repairFixture : argument), selected)
         invoke(process.execPath, ['--test', path.join(NATIVE, 'shipit/repair.test.cjs')], {
           ...selected,
           SCHOLARSEED_REPAIR_LIBRARY: path.join(directory, 'repair.node'),
+          SCHOLARSEED_REPAIR_FIXTURE_LIBRARY: repairFixture,
         })
         invoke(process.execPath, ['--test', path.join(NATIVE, 'notarization.test.cjs')], {
           ...selected,
