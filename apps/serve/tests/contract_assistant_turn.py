@@ -84,7 +84,10 @@ from service.chat.service.sessions import (  # noqa: E402
     TURN_UNKNOWN_CONFIRM_DECISION,
 )
 from service.chat.runtime.activation import SessionActivationError  # noqa: E402
-from service.chat.runtime.reconfiguration import RECONFIGURATION_STALE  # noqa: E402
+from service.chat.runtime.reconfiguration import (  # noqa: E402
+    PREPARATION_DEFAULT_FAILED,
+    RECONFIGURATION_STALE,
+)
 from service.content.domain.model import ContentError, ContentReadPermissionError  # noqa: E402
 from scholarseed_runtime.contract.resource import (  # noqa: E402
     RESOURCE_WAIT_TIMEOUT,
@@ -635,6 +638,59 @@ class AssistantTurnContract(unittest.TestCase):
                 QueuedMessageState.FAILED,
             )
             self.assertFalse(self.live.ledger.has_unknown_outcome)
+
+        asyncio.run(scenario())
+
+    def test_continuation_preparation_failure_preserves_pending_work_and_safe_diagnostics(
+        self,
+    ) -> None:
+        async def scenario() -> None:
+            await self.live.ledger.record_unknown_submission(
+                "interrupted-turn", safe_error="process_exit"
+            )
+            self.live.runtime_session = None
+            cases = (
+                (ValueError("private-token /private/project"), PREPARATION_DEFAULT_FAILED),
+                (RuntimeError("private-token /private/project"), PREPARATION_DEFAULT_FAILED),
+                (SessionActivationError(RESOURCE_WAIT_TIMEOUT), RESOURCE_WAIT_TIMEOUT),
+            )
+            for failure, expected in cases:
+                with self.subTest(failure=type(failure).__name__):
+                    logger = Mock()
+                    self.turns._logger = logger
+                    self.turns._prepare = AsyncMock(side_effect=failure)
+                    payload, status = await self.turns.post(
+                        SESSION_ID,
+                        {**self.body(0), "continue_turn_id": "interrupted-turn"},
+                        side=False,
+                    )
+                    self.assertEqual(status, 409)
+                    self.assertEqual(
+                        payload,
+                        {"ok": False, "error": expected, "preparation_error": True},
+                    )
+                    self.assertIsNone(self.catalog.queued_message(SESSION_ID, CLIENT_TURN))
+                    self.assertTrue(self.live.ledger.has_unknown_outcome)
+                    self.assertFalse(self.live.lifecycle_lock.locked())
+                    self.assertEqual(self.adapter.inputs, [])
+                    logger.error.assert_called_once()
+                    self.assertNotIn("private-token", repr(logger.mock_calls))
+                    self.assertNotIn("/private/project", repr(logger.mock_calls))
+
+        asyncio.run(scenario())
+
+    def test_cancelled_continuation_preparation_does_not_become_a_retryable_refusal(self) -> None:
+        async def scenario() -> None:
+            self.live.runtime_session = None
+            self.turns._prepare = AsyncMock(side_effect=asyncio.CancelledError())
+            with self.assertRaises(asyncio.CancelledError):
+                await self.turns.post(
+                    SESSION_ID,
+                    {**self.body(0), "continue_turn_id": "interrupted-turn"},
+                    side=False,
+                )
+            self.assertIsNone(self.catalog.queued_message(SESSION_ID, CLIENT_TURN))
+            self.assertEqual(self.adapter.inputs, [])
 
         asyncio.run(scenario())
 

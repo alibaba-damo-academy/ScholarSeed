@@ -611,6 +611,7 @@ export type ConvItem = TurnOwned &
         failure?: {
           kind:
             | 'capability'
+            | 'subscription_limit'
             | 'quota'
             | 'credits'
             | 'rate_limit'
