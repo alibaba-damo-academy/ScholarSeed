@@ -373,6 +373,20 @@ test('maps structured Assistant context failures to actionable localized message
   })
 })
 
+test('continuation preparation refusals use preparation feedback instead of activity feedback', () => {
+  for (const error of [
+    'runtime_preparation_default_failed',
+    'runtime_resource_wait_timeout',
+    'runtime_host_busy',
+  ]) {
+    assert.deepEqual(turnAdmissionFeedback({ error, preparation_error: true }), {
+      ns: 'components',
+      key: 'runtimePreparation.failed',
+      values: undefined,
+    })
+  }
+})
+
 test('localizes pending settlement reasons and never exposes raw admission errors', async () => {
   const locale = createInstance()
   await locale.init({

@@ -197,6 +197,10 @@
       "message": "The ChatGPT subscription connection does not support this request capability.",
       "action": "Use a compatible model source or start a task without that capability; retrying unchanged will fail. Your task history has been retained."
     },
+    "subscriptionLimit": {
+      "message": "Your ChatGPT subscription usage limit was reached, so generation has stopped.",
+      "action": "Generated content, your question and context have been retained. Wait for the subscription limit to reset, or switch to another model source before starting generation again."
+    },
     "contentPolicy": {
       "message": "This content did not pass safety review. Please edit it and try again."
     },

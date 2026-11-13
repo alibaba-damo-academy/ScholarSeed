@@ -96,7 +96,7 @@ from service.chat.runtime.live import (
     LiveSession,
 )
 from service.chat.runtime.projection import queued_message_payload
-from service.chat.runtime.reconfiguration import RECONFIGURATION_STALE
+from service.chat.runtime.reconfiguration import PREPARATION_DEFAULT_FAILED, RECONFIGURATION_STALE
 from service.chat.service.completions import bridge_fingerprint
 from service.chat.service.recovery import (
     RECOVERY_CLAIMED,
@@ -451,8 +451,24 @@ class TurnService:
                         deadline=None,
                         on_wait=on_recovery_wait,
                     )
-                except Exception:
-                    return {"ok": False, "error": PREVIOUS_TURN_ACTIVITY_UNAVAILABLE}, HTTP_CONFLICT
+                except Exception as preparation_failure:
+                    safe_error = (
+                        preparation_failure.safe_error
+                        if isinstance(preparation_failure, SessionActivationError)
+                        else PREPARATION_DEFAULT_FAILED
+                    )
+                    self._logger.error(
+                        "continuation_prepare_failed session_id=%s request_id=%s error=%s failure_type=%s",
+                        live.id,
+                        str(body.get("client_user_message_id") or ""),
+                        safe_error,
+                        type(preparation_failure).__name__,
+                    )
+                    return {
+                        "ok": False,
+                        "error": safe_error,
+                        "preparation_error": True,
+                    }, HTTP_CONFLICT
             task: asyncio.Task[TurnResult] | None = None
             async with live.lifecycle_lock:
                 record = live.catalog.get(live.id)

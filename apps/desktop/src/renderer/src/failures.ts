@@ -4,6 +4,7 @@ import type { ConvItem } from './model'
 
 export type ProviderFailureKind =
   | 'capability'
+  | 'subscription_limit'
   | 'quota'
   | 'credits'
   | 'rate_limit'
@@ -34,6 +35,7 @@ const RECOVERABLE_FAILURE_KINDS: ReadonlySet<string> = new Set([
 ])
 const FAILURE_KIND_BY_CODE: Readonly<Partial<Record<string, ProviderFailureKind>>> = {
   [SUBSCRIPTION_UNSUPPORTED_CAPABILITY_CODE]: 'capability',
+  subscription_sharing_usage_limit_exceeded: 'subscription_limit',
   content_safety_blocked: 'content_policy',
   content_policy_violation: 'content_policy',
   content_filter: 'content_policy',
@@ -91,6 +93,10 @@ function fallbackKind(message: string): ProviderFailureKind | undefined {
 
 const FAILURE_TEXT = {
   capability: { messageKey: 'failure.capability.message', actionKey: 'failure.capability.action' },
+  subscription_limit: {
+    messageKey: 'failure.subscriptionLimit.message',
+    actionKey: 'failure.subscriptionLimit.action',
+  },
   content_policy: {
     messageKey: 'failure.contentPolicy.message',
     actionKey: 'failure.contentPolicy.message',
@@ -222,6 +228,7 @@ export function formatTurnFailure(
 // These strings are never used to generate new UI messages.
 const LEGACY_FAILURE_MESSAGES = {
   capability: SUBSCRIPTION_UNSUPPORTED_CAPABILITY_CODE,
+  subscription_limit: '',
   content_policy: '',
   model_config: '',
   quota: '模型分配额度已用完。',

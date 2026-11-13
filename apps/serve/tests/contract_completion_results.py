@@ -1508,6 +1508,58 @@ class CompletionBridgeContract(unittest.TestCase):
             },
         )
 
+    def test_observed_subscription_limit_survives_an_invalid_terminal_frame(self):
+        fields = {
+            "phase": "finished",
+            "status_code": 200,
+            "http_error_code": "",
+            "upstream_end": "provider_error",
+            "attempt": 1,
+            "max_attempts": 3,
+            "downstream": {
+                "last_event": "response.failed",
+                "terminal_event": "",
+                "event_count": 5,
+                "error_code": "subscription_sharing_usage_limit_exceeded",
+                "error_type": "invalid_request_error",
+                "error_message": "The ChatGPT user has reached their Subscription Sharing usage limit.",
+                "error_seen": True,
+                "invalid_events": 1,
+            },
+        }
+        self.assertEqual(
+            terminal_provider_failure(fields),
+            {
+                "error": "The model provider quota or credit balance was exhausted.",
+                "error_code": "subscription_sharing_usage_limit_exceeded",
+                "safe_error": "The model provider quota or credit balance was exhausted.",
+                "retryability": "terminal",
+                "provider_http_status": 429,
+            },
+        )
+
+    def test_incomplete_or_unregistered_provider_failures_remain_private(self):
+        for upstream_end, code in (
+            ("eof", "subscription_sharing_usage_limit_exceeded"),
+            ("provider_error", "unregistered-private-error"),
+        ):
+            with self.subTest(upstream_end=upstream_end, code=code):
+                self.assertEqual(
+                    terminal_provider_failure(
+                        {
+                            "phase": "finished",
+                            "status_code": 200,
+                            "upstream_end": upstream_end,
+                            "downstream": {
+                                "terminal_event": "",
+                                "error_code": code,
+                                "error_message": "private-token /private/project",
+                            },
+                        }
+                    ),
+                    {},
+                )
+
     def test_native_response_failed_instream_5xx_recovers_transient_semantics(self):
         # bug 87190842 的形态：HTTP 200 + 首事件 response.failed(server_error, <500> …)。
         # 流内瞬时 5xx 没有头部状态可恢复，靠 TRANSIENT_PROVIDER_CODES 恢复「暂时不可用」，
