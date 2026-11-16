@@ -1,77 +1,112 @@
-# 关于书深：快速评审基线
+<a id="关于书深快速评审基线"></a>
+# About ScholarSeed: Quick-Review Baseline
 
-目标版本关于书深参考
+## Target-Version About-Page Reference
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-12；展示版本及当时更新提示，不证明下载、更新或安装。来源与摘要见[构建依据](./build.md#202611121823-目标版本参考图)。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-12. Shows version and the update notice at that time; does not prove download, update, or installation. See the [Build Basis](./build.md#202611121823-目标版本参考图) for source and digest.
 
-识别当前客户端、查看更新与偏好信息，并找到官方支持入口。
+Identify the current client, inspect update and preference information, and locate official support.
 
-**入口**：主界面 → 账户菜单（头像）→ 设置 → 关于书深。
+**Entry point:** Main interface → Account menu (avatar) → Settings → About ScholarSeed (`关于书深`).
 
-**验证归属**：自动快评001–005、007–014；人工专项006，需不支持更新的真实安装环境。
+**Verification ownership:** Automated quick review 001–005, 007–014; manual focused scenario 006, requiring a real installation that does not support updates.
 
-## 页面参考
+<a id="页面参考"></a>
+## Page Reference
 
-![关于页主要区域参考](./reference.png)
+![Main About-page areas](./reference.png)
 
-来源：macOS arm64 安装版 `0.3.0`，构建 `202610271421`，截图日期 `2026-10-28`。仅辅助对应页面与要求；图中版本、更新提示、偏好和年份是当时取值，以文字中的动态关系为准，不作为本轮结果证据或像素标准。
+Source: macOS arm64 installed build `0.3.0`, build `202610271421`, screenshot date `2026-10-28`. This helps identify the page and requirements only. Version, update notice, preferences, and year shown are values from that time; follow the dynamic relationships described in the text. They are not evidence for this run or pixel-level standards.
 
-## 页面与版本信息
+<a id="页面与版本信息"></a>
+## Page and Version Information
 
-### 页面与导航（ABOUT-OBS-014 · v`0.3`）
-固定：关于页标题、说明和选中导航清楚，内容可滚到底部，关闭设置回到原工作界面。动态：页面底部版权文字为“© 年份 书深”，其中年份与评测时客户端系统的本地当前年份一致。
+<a id="页面与导航about-obs-014--v03"></a>
+### Page and Navigation (ABOUT-OBS-014 · v`0.3`)
 
-### 当前版本（ABOUT-OBS-001 · v`0.3`）
-动态：版本信息区“当前版本”行的版本主体清楚可见，与本轮目标安装包的版本元数据一致，不以另列的“新版本”提示替代。
+Fixed: About-page title, description, and selected navigation are clear; content can scroll to the bottom; closing Settings returns to the original work surface. Dynamic: The footer copyright reads “© year 书深” (“© year ScholarSeed”), with year matching the client's local current year at evaluation time.
 
-### 复制版本（ABOUT-OBS-002 · v`0.3`）
-动态：当前版本旁的复制入口得到同一版本文字及客户端系统名称、版本、架构，与页面版本和本轮真实系统元数据一致，并反馈成功；系统信息不可用时入口禁用。
+<a id="当前版本about-obs-001--v03"></a>
+### Current Version (ABOUT-OBS-001 · v`0.3`)
 
-### 构建与渠道（ABOUT-OBS-003 · v`0.3`）
-动态/条件：当前版本行的构建号与本轮目标包构建元数据一致，无构建号时不要求显示；目标包渠道为 Preview 时显示“预览版”，其他渠道不误标。
+Dynamic: The version body in the “当前版本” (“Current Version”) row is clearly visible and matches version metadata of the target installed package for this run. Do not substitute the separate “new version” notice.
 
-## 更新与偏好
+<a id="复制版本about-obs-002--v03"></a>
+### Copy Version (ABOUT-OBS-002 · v`0.3`)
 
-### 更新信息与状态（ABOUT-OBS-004 · v`0.3`）
-动态：版本行下方及右侧对照同一时段的更新状态：未检查、检查中、无需更新、下载中及进度、校验中、下载完成待安装、安装中、重启中或需手动处理，语义与阶段一致；失败、回滚或安装失败须反映问题，不误报成功。发现更新时，“新版本”、包大小及可用说明与候选发行元数据一致；各阶段只要求适用字段。参照来源见[构建记录](build.md#执行所需独立参照)。
+Dynamic: The copy entry beside the current version returns the same version text and the client's OS name/version/architecture, matching the page version and real system metadata for this run, and provides success feedback. Disable the entry if system information is unavailable.
 
-### 更新动作（ABOUT-OBS-005 · v`0.3`）
-条件：当前版本行右侧，未检查/无需更新/已回滚为检查；发现更新或下载失败且有候选为下载/重试下载，无候选为检查；下载完成为重启安装。检查中禁用，下载中显示进度，校验/安装/重启中仅忙碌提示；需手动处理或待恢复时无可执行更新入口。不支持更新另按006判断。
+<a id="构建与渠道about-obs-003--v03"></a>
+### Build and Channel (ABOUT-OBS-003 · v`0.3`)
 
-### 不支持更新与诊断（ABOUT-OBS-006 · v`0.3`）
-人工专项：在不支持更新的真实安装环境，版本信息区显示不可用说明及诊断入口，交人工确认；正常可更新安装不要求出现。
+Dynamic/conditional: Build number in the current-version row matches the target package's build metadata; if there is no build number, it need not be displayed. For Preview channel, show “预览版” (“Preview”); do not mislabel other channels.
 
-### 自动下载（ABOUT-OBS-007 · v`0.3`）
-动态：版本信息下方“自动下载更新”开关及说明可见，开关当前值与本轮已知用户偏好一致；说明包含后台准备、由用户决定重启的含义。
+<a id="更新与偏好"></a>
+## Updates and Preferences
 
-### Preview 更新范围（ABOUT-OBS-008 · v`0.3`）
-条件/动态：目标包渠道为 Preview 时显示“Preview 更新范围”区域及两种范围说明，下拉框所示选择与本轮已知更新策略一致；已有指定目标或状态受限时呈现对应限制。其他渠道不显示该区域。
+<a id="更新信息与状态about-obs-004--v03"></a>
+### Update Information and State (ABOUT-OBS-004 · v`0.3`)
 
-### 切换版本线（ABOUT-OBS-009 · v`0.3`）
-条件/动态：Preview 范围区按本轮更新策略显示“切换版本线”或已指定的版本/构建。无目标且入口可用时，弹层目标列表、空态或失败提示与本轮加载结果相符，未选有效目标不能确认；未就绪、忙碌或更新受限时入口禁用。
+Dynamic: Below the version row and on its right, show update state corresponding to the same time: not checked, checking, no update needed, downloading/progress, verifying, download complete/awaiting installation, installing, restarting, or manual action required. Semantics must match the phase. Failure, rollback, or installation failure must show the problem rather than false success. When an update is found, “new version,” package size, and availability description match candidate release metadata; require only fields applicable to each phase. See the [Build Record](build.md#执行所需独立参照) for reference sources.
 
-## 官方支持入口
+<a id="更新动作about-obs-005--v03"></a>
+### Update Actions (ABOUT-OBS-005 · v`0.3`)
 
-### 官方网站（ABOUT-OBS-010 · v`0.3`）
-固定/动态：官方支持区“官方网站”行清楚可见，所示域名与本轮有效站点配置中的域名标识一致。
+Conditional: On the right of the current-version row, show Check for not checked/no update/rolled back; Download or Retry Download when an update is found or download fails and a candidate exists; Check when no candidate exists; Restart to Install when download completes. Disable during checking, show progress while downloading, and show only a busy notice during verify/install/restart. When manual action or recovery is required, no executable update entry point is shown. Judge unsupported-update environments separately under 006.
 
-### 联系邮箱（ABOUT-OBS-011 · v`0.3`）
-固定：显示 `the configured support email`，点击复制同一地址并出现“已复制”反馈，不发送邮件。
+<a id="不支持更新与诊断about-obs-006--v03"></a>
+### Unsupported Updates and Diagnostics (ABOUT-OBS-006 · v`0.3`)
 
-### 官方社群（ABOUT-OBS-012 · v`0.3`）
-固定：显示“官方社群”和“官网导航·社群”含义的入口，不误呈现为已经加入社群。
+Manual focused scenario: In a real installed environment that does not support updates, the version area shows an unavailable explanation and diagnostic entry point for human confirmation. It is not required in a normal update-capable installation.
 
-### 用户手册（ABOUT-OBS-013 · v`0.3`）
-固定：用户手册入口及“官网·快速开始”含义的说明清楚可见。
+<a id="自动下载about-obs-007--v03"></a>
+### Automatic Download (ABOUT-OBS-007 · v`0.3`)
 
-## 发布快评层
+Dynamic: Below version information, the “自动下载更新” (“Automatically download updates”) switch and explanation are visible; switch value matches the known user preference for this run. Explanation conveys background preparation and that the user decides whether to restart.
 
-采用v`0.3`的正常子要点：ABOUT-OBS-001、003、010–014；仅代表下述范围，不代表这些ID全部细则通过。
+<a id="preview-更新范围about-obs-008--v03"></a>
+### Preview Update Scope (ABOUT-OBS-008 · v`0.3`)
 
-关于页应显示版本、构建/渠道和网站、邮箱、社群、手册等主要支持入口；版本信息以安装包元数据为参照，入口标签/目标按原来源核对，仅观察不打开外部页面。
+Conditional/dynamic: If target channel is Preview, show “Preview 更新范围” (“Preview update scope”) area with two scope explanations; selected value in dropdown matches the known update strategy for this run. Show corresponding restriction if a specific target is already set or state is restricted. Do not show the area for other channels.
 
-必要参照：本轮目标安装包版本/构建/渠道元数据、客户端年份及按目标实例实际核实的读取契约；[旧包读取记录](build.md#当前制品复核)仅作线索，不将历史安装号或参考图值作为本轮预期。
+<a id="切换版本线about-obs-009--v03"></a>
+### Switch Version Line (ABOUT-OBS-009 · v`0.3`)
 
-## 专项层
+Conditional/dynamic: In Preview scope area, show “切换版本线” (“Switch version line”) or the specified version/build according to the update strategy for this run. If no target is set and entry is available, target list, empty state, or failure message matches load result. An effective target must be selected before confirmation. Disable entry when not ready, busy, or update-restricted.
 
-本层未选：复制版本、更新检查/下载/安装、自动下载与版本线切换。原完整判据、稳定ID、版本和历史结果保留；未确认分支不因分层获批。
+<a id="官方支持入口"></a>
+## Official Support Entry Points
+
+<a id="官方网站about-obs-010--v03"></a>
+### Official Website (ABOUT-OBS-010 · v`0.3`)
+
+Fixed/dynamic: The “官方网站” (“Official Website”) row in the official support section is clear, and its domain identifier matches the domain in the effective site configuration for this run.
+
+<a id="联系邮箱about-obs-011--v03"></a>
+### Contact Email (ABOUT-OBS-011 · v`0.3`)
+
+Fixed: Display `the configured support email`. Clicking copies the same address and shows “已复制” (“Copied”) feedback; it does not send email.
+
+<a id="官方社群about-obs-012--v03"></a>
+### Official Community (ABOUT-OBS-012 · v`0.3`)
+
+Fixed: Show “官方社群” (“Official Community”) and an entry point meaning “官网导航·社群” (“Official site navigation · community”), without implying the user has joined.
+
+<a id="用户手册about-obs-013--v03"></a>
+### User Manual (ABOUT-OBS-013 · v`0.3`)
+
+Fixed: User Manual entry point and explanation meaning “官网·快速开始” (“Official site · quick start”) are clear.
+
+<a id="发布快评层"></a>
+## Release Quick-Review Layer
+
+Adopted normal v`0.3` subcriteria: ABOUT-OBS-001, 003, 010–014. This covers only the scope below, not every detail under these IDs.
+
+About page should show version/build/channel and main support entries such as website, email, community, and manual. Use installed-package metadata for version information; verify entry labels/targets against their original source and observe without opening external pages.
+
+Required reference: target package version/build/channel metadata for this run, client year, and read contract verified for the target instance. The [old-package read record](build.md#当前制品复核) is a clue only; do not use historical installed version or reference-image values as current expectations.
+
+<a id="专项层"></a>
+## Focused Scenarios
+
+Not selected in this layer: copy version, update check/download/install, automatic download, and switching version lines. Preserve original full criteria, stable IDs, versions, and historical results; layering does not authorize unconfirmed branches.

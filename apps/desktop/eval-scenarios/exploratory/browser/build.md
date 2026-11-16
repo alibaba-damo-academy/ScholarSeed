@@ -1,49 +1,58 @@
-# 内置浏览器使用候选构建依据
+<a id="内置浏览器使用候选构建依据"></a>
+# Candidate Build Basis for the Built-in Browser
 
-## 建设状态
+<a id="建设状态"></a>
+## Construction Status
 
-资产修订 `browser/6`。网页打开、查找及 Agent 授权为有界候选，历史 `BROWSER-HISTORY-01@1` 保留原稳定 ID；本修订补充网页缩放、截图及开发工具候选，不改变需求版本或采用状态。所有新增候选均未纳入已采用冒烟或任何冻结分母。产品需求版本、目标 `0.3.2 / 202611121823 / preview` 的适用与真实入口仍待确认；不得把 `@1` 历史资产修订解释为产品需求版本，也不能用当前源码直接批准目标包需求。
+Asset revision `browser/6`. Webpage navigation, find, and Agent authorization are bounded candidates; historical stable ID `BROWSER-HISTORY-01@1` is retained. This revision adds webpage-zoom, screenshot, and developer-tools candidates without changing requirement version or adoption state. None of the new candidates is included in the adopted smoke set or any frozen denominator. Product requirement version, applicability to target `0.3.2 / 202611121823 / preview`, and a real entry point remain unconfirmed. Do not interpret `@1` as a product requirement version or use current source alone to approve requirements for the target build.
 
-## 网页菜单候选依据
+<a id="网页菜单候选依据"></a>
+## Basis for Webpage-Menu Candidates
 
-历史菜单计划记录用户确认的网页缩放、截图、开发者工具及设备工具栏；计划另区分同源标签缩放和两个开发工具的验收。历史计划不证明本安装包已支持或通过；设备工具栏方案、宿主及目标版本适用均待核。截图保存涉及原生输出和写入授权，不与评测证据截图混同。
+The historical menu plan records user confirmation for webpage zoom, screenshots, Developer Tools, and the device toolbar; the plan separately distinguishes acceptance for same-origin tab zoom and the two developer tools. It does not prove that this installed build supports or passed them. Device-toolbar design, host behavior, and target-version applicability remain to be verified. Screenshot saving involves native output and write authorization and must not be conflated with evaluation evidence screenshots.
 
-## 网页打印依据
+<a id="网页打印依据"></a>
+## Basis for Webpage Printing
 
-历史菜单计划记录用户再次确认的完整菜单包含打印，并明确取消打印不是失败；历史计划不证明目标安装包实际支持或已验收。当前 `features/browser/Browser.tsx` 提供活动网页的打印入口线索，但未与目标包建立同源关系；真实网页、原生对话框、目标平台和输出/取消终态须分别核实，打印与写入不由本候选自动授权。
+The historical menu plan records the user's repeated confirmation that the full menu includes Print and that canceling print is not a failure. It does not prove that the target installed build supports or passed the feature. Current `features/browser/Browser.tsx` provides a clue for a print entry point on an active webpage but is not established as the same source as the target build. Verify the real webpage, native dialog, target platform, and output/cancel end states separately. This candidate does not automatically authorize printing or writes.
 
-## 合成网页输入：browser/4
+<a id="合成网页输入browser4"></a>
+## Synthetic Webpage Inputs: browser/4
 
-[共享输入清单](../../../../../examples/projects/browser-navigation/project.json)登记两张原始静态网页：`index.html` 的标题及一级标题为 `SYNTHETIC-BROWSER-ALPHA`，正文中 `ORCHARD-NAV-NEEDLE` 出现两次；`second.html` 的标题及一级标题为 `SYNTHETIC-BROWSER-BETA`，两页互有相对链接。文件大小和 SHA-256 以清单为准。它们不含外部资源、脚本或预置产品结果；文件存在不提供网页服务，也不证明产品可访问、导航或历史生成。服务部署、地址、访问策略及副作用须另核授权，不能关闭安全策略凑测试。
+The [shared input manifest](../../../../../examples/projects/browser-navigation/project.json) registers two original static webpages: `index.html` has title and H1 `SYNTHETIC-BROWSER-ALPHA`, with `ORCHARD-NAV-NEEDLE` appearing twice in the body; `second.html` has title and H1 `SYNTHETIC-BROWSER-BETA`; the two pages link to each other with relative URLs. Use the manifest for file sizes and SHA-256 values. The files contain no external resources, scripts, or prepopulated product results. File presence does not provide a webpage server or prove product access, navigation, or history generation. Separately authorize and verify service deployment, address, access policy, and side effects; do not disable security policy to make the test pass.
 
-## 浏览历史空态辅助参考：browser/3
+<a id="浏览历史空态辅助参考browser3"></a>
+## Auxiliary Reference for Empty Browsing History: browser/3
 
-`history-empty-20261113.png` 为原始运行 `tmp/test_snapshot/desktop/baseline-1823-browser-clear-20261113/supplement/evidence/before.png` 的未裁切、未缩放原字节副本，1280×840，SHA-256 `0bd9d1ec555b87e5a2d1191a41a637037c94fab570160e93b18e439fd719fb5d`；采集于 2026-11-13 11:50:59 +0800，运行 `supplement/index.md` 第 5 项为截图命令。同轮 `freeze.md` 与准备记录绑定 macOS arm64 `0.3.2 / 202611121823 / preview` 和 `app.asar` SHA-256 `0111fd20bd58bf72517a1255d2d1bbf7ef2a3d4281898baed50d250f13c9d91a`。已打开核对：完整窗口展示隔离实例的浏览历史空态、搜索及清理入口，无可见凭据或历史条目。此图仅作历史页空态辅助参考，不证明非空历史检索、网页浏览、清理或候选采用；同轮清理展示补证与不符合裁决保留在浏览器设置构建依据，不由本图覆盖。需求版本、采用状态和历史冻结不变。
+`history-empty-20261113.png` is an uncropped, unscaled, byte-for-byte copy of the original run's `tmp/test_snapshot/desktop/baseline-1823-browser-clear-20261113/supplement/evidence/before.png`; 1280×840; SHA-256 `0bd9d1ec555b87e5a2d1191a41a637037c94fab570160e93b18e439fd719fb5d`. Captured on 2026-11-13 11:50:59 +0800; item 5 in `supplement/index.md` for that run is the screenshot command. The same run's `freeze.md` and preparation record bind it to macOS arm64 `0.3.2 / 202611121823 / preview` and `app.asar` SHA-256 `0111fd20bd58bf72517a1255d2d1bbf7ef2a3d4281898baed50d250f13c9d91a`. The image has been opened and inspected: it shows the isolated instance's complete window with empty browser history, search, and clear entry points, and no visible credentials or history items. It is an auxiliary reference for the historical empty state only; it does not prove searching non-empty history, webpage browsing, clearing, or candidate adoption. Supplemental evidence for the same run's clear action and its nonconformance finding remains in the Browser Settings Build Basis; this image does not override it. Requirement version, adoption state, and historical freeze are unchanged.
 
-## 历史证据与边界
+<a id="历史证据与边界"></a>
+## Historical Evidence and Boundaries
 
-- [历史 P2 冻结](../../frozen/p2-20261025-539af0794/freeze.json)记录 sourceCommit `539af079455cc821b976760728fc13dfedbb8b66`。从该提交的 `apps/desktop/docs/scenarios/catalog.json` 回查 `BROWSER-HISTORY-01@1`：历史入口为设置→浏览器→浏览历史，目标为按时间或站点检索和管理历史，需使用本轮公开合成页面历史并对清理另核授权；该点 `reviewState=pending`、`coverageEligibility=exploratory`。目录 SHA-256 为 `e4a029cce1e58db658acb2643ea05621f48c288d12209eb0df41f5a4329ec45f`，与冻结清单一致。
-- 同提交的 `apps/desktop/eval-scenarios/exploratory/desktop-business/cases/settings.json` 中 `D6-SET-011` 对应该点，`expectedStatus=candidate_unapproved`；只观察过历史空态和入口、未建立历史或执行清理，结果证据缺失；P2 冻结明确将此点列在选定 74 点范围之外。该文件 SHA-256 `372aee4969f44a7e9caafc93bdf4d3ee57990a7ada48b7d0db867bf7405e2ff2`，与冻结清单一致。可通过 `git show 539af079455cc821b976760728fc13dfedbb8b66:<路径>` 回查原文，不恢复或改写历史文件。
-- 浏览器访问确认设计映射记录用户确认的待处理访问卡片及后续授权状态要求，也记载历史 macOS 开发客户端观察；目标包适用、真实请求及完整截图仍须独立核实。该历史确认不自动授予模型请求、网站访问或操作授权。
-- 普通设置原生层级的历史记录记载过真实网页上的查找切换、加载失败和设置层叠观察；这是历史观察线索，不是本目标包产品判据或跨平台验收。
+- [Historical P2 freeze](../../frozen/p2-20261025-539af0794/freeze.json) records `sourceCommit` `539af079455cc821b976760728fc13dfedbb8b66`. In `apps/desktop/docs/scenarios/catalog.json` from that commit, `BROWSER-HISTORY-01@1` has the historical entry point Settings → Browser → Browsing History. Its goal is to search and manage history by time or site, using history from public synthetic pages in the current run; clearing requires separate authorization. This item has `reviewState=pending` and `coverageEligibility=exploratory`. The catalog SHA-256 is `e4a029cce1e58db658acb2643ea05621f48c288d12209eb0df41f5a4329ec45f`, matching the freeze manifest.
+- In `apps/desktop/eval-scenarios/exploratory/desktop-business/cases/settings.json` from the same commit, `D6-SET-011` corresponds to this item and has `expectedStatus=candidate_unapproved`. Only the historical empty state and entry point were observed; no history was created or clearing performed, so outcome evidence is missing. The P2 freeze explicitly places this item outside the selected 74-point scope. Its SHA-256 `372aee4969f44a7e9caafc93bdf4d3ee57990a7ada48b7d0db867bf7405e2ff2` matches the freeze manifest. Check original text with `git show 539af079455cc821b976760728fc13dfedbb8b66:<路径>`; do not restore or rewrite historical files.
+- The browser-access confirmation design mapping records user-confirmed requirements for a pending-access card and subsequent authorization states, along with historical observations on the macOS development client. Target-build applicability, real requests, and complete screenshots still require independent verification. Historical confirmation does not automatically authorize model requests, website access, or actions.
+- Historical records for the native layer of ordinary Settings include find-result navigation on a real webpage, load failure, and settings-overlay observations. These are historical observation clues, not product criteria for this target build or cross-platform acceptance.
 
-## 当前源码定位
+<a id="当前源码定位"></a>
+## Current Source Locations
 
-源码基点 `acce09fa42ddf234d84b02dde34b2ab4be570215`；以下被分析文件相对该提交无未提交差异。当前源码未与目标安装包建立可信同源绑定，组件或注册存在不证明目标版入口可达、采用或正确。
+Source baseline `acce09fa42ddf234d84b02dde34b2ab4be570215`; the analyzed files below had no uncommitted differences from that commit. Current source is not bound to the target installed package. Component or registry presence does not prove target-build entry-point reachability, adoption, or correctness.
 
-- **入口与条件**：[新标签](../../../src/renderer/src/features/project/NewTab.tsx) 在 `availabilityPolicy.browserEnabled` 时提供浏览器选项；[可用策略](../../../src/renderer/src/app/policy.ts)依公开 `window.scholarseed.browserEnabled` 投影，[组合注册](../../../src/renderer/src/app/composition.tsx)按能力注册 browser feature。真实入口和开关必须以待测实例观察为准，不能为凑基线主动启用。
-- **页面、导航与状态**：[浏览器 feature](../../../src/renderer/src/features/browser/feature.tsx) 将浏览器作为工作台 viewer 管理页签与页面归属；[Browser](../../../src/renderer/src/features/browser/Browser.tsx) 从 bridge snapshot 与订阅取得 tab、地址和状态，用户导航经 `dispatch`；成功结果须对应实际显示的目标网页。地址建议可调用 history，不能假定输入地址零读写。
-- **历史与权限**：[History](../../../src/renderer/src/features/browser/History.tsx) 按搜索和分页查询浏览历史，单项打开或删除分别走 bridge 操作；历史页自然挂载即可读取条目，先确认隔离归属。`apps/desktop/src/browser.ts` 定义 history、下载、站点策略、页面及命令的公开 bridge 形状；不能以 API 响应、标签名或 fixture 代替真实 UI。
-- **历史检索的歧义**：上述历史要求写“按时间或站点检索”，但当前 [History](../../../src/renderer/src/features/browser/History.tsx) 按 `visitedAt` 的本地日期分组，向 bridge 传搜索文本及分页；[history.ts](../../../src/main/history.ts) 的现有 SQLite 查询对 URL 与标题做文本匹配，并按访问时间倒序。日期分组不是日期筛选，不能由源码推断历史需求已被满足或删除该要求；目标包与需求 Owner 均须核实。常规 Electron 路径的 [browser.ts](../../../src/main/browser.ts) 对符合条件的 HTTP(S) 成功导航记录历史并可随后更新标题，实际数据和策略随执行路径而变，不能对其他引擎或全部失败导航外推。
-- **样本可达性与意外联网**：[navigation.ts](../../../src/main/navigation.ts) 对私网和本机资源实施访问条件；本地服务并非必然可由产品加载，不能以关闭策略补齐测试。当前 [Browser](../../../src/renderer/src/features/browser/Browser.tsx) 由地址文本查询历史并可能展示外部搜索项；选中外部项会导航到外部搜索服务，因此准备合成样本不自动授予对外发送查询的权限。
-- **隔离与安全**：当前目标运行记录中的本机远程调试及临时下载探针授权只针对先前任务和对应实例，不能扩为任意网页、Agent、数据清理、安装、配置或历史内容权限。不得更改产品或安全策略来使基线可执行。
+- **Entry point and conditions:** [NewTab](../../../src/renderer/src/features/project/NewTab.tsx) offers the browser option when `availabilityPolicy.browserEnabled` is true. [Availability policy](../../../src/renderer/src/app/policy.ts) projects the public `window.scholarseed.browserEnabled` value; [composition registration](../../../src/renderer/src/app/composition.tsx) registers the browser feature based on capability. Verify the real entry point and switch in the tested instance; do not enable it just to match the baseline.
+- **Page, navigation, and state:** The [browser feature](../../../src/renderer/src/features/browser/feature.tsx) manages the browser as a workbench viewer with tabs and page ownership. [Browser](../../../src/renderer/src/features/browser/Browser.tsx) gets tab, address, and state from bridge snapshots/subscriptions; user navigation goes through `dispatch`. A successful result must correspond to the actual target webpage displayed. Address suggestions may query history; do not assume that entering an address is free of reads or writes.
+- **History and permissions:** [History](../../../src/renderer/src/features/browser/History.tsx) searches and paginates browsing history; opening or deleting an item invokes separate bridge operations. Mounting the history page naturally may read entries; first confirm isolated ownership. `apps/desktop/src/browser.ts` defines public bridge shapes for history, downloads, site policy, pages, and commands. An API response, tab name, or fixture is not a substitute for real UI.
+- **Ambiguity in history search:** The historical requirement says “search by time or site,” but current [History](../../../src/renderer/src/features/browser/History.tsx) groups by local date from `visitedAt` and passes search text and pagination to the bridge. Existing SQLite query in [history.ts](../../../src/main/history.ts) performs text matching against URL and title and sorts by visit time descending. Date grouping is not date filtering. Do not infer from source that the history requirement is satisfied or removed; verify with the target package and requirement Owner. In the ordinary Electron path, [browser.ts](../../../src/main/browser.ts) records qualifying HTTP(S) successful navigations and may later update the title. Actual data and policy vary by execution path; do not generalize to other engines or all failed navigations.
+- **Sample reachability and unintended network access:** [navigation.ts](../../../src/main/navigation.ts) applies access conditions to private-network and local resources; a local server is not necessarily reachable from the product. Do not disable the policy to complete a test. Current [Browser](../../../src/renderer/src/features/browser/Browser.tsx) queries history using address text and may show external search items. Selecting an external item navigates to an external search service, so preparing synthetic samples does not automatically authorize sending queries externally.
+- **Isolation and security:** Authorization for local remote debugging and a temporary download probe in a current target-run record was limited to the earlier task and corresponding instance. It does not grant permission for arbitrary webpages, Agent operations, data clearing, installation, configuration, or history contents. Do not change product or security policy to make the baseline executable.
 
-源码 SHA-256：`NewTab.tsx` `096bc5f88cab2107941fd51dee2c462f36c4cc7c4469a60fe3baa425b4566830`；`policy.ts` `25615324e3b08dcba47fe05585a5a3eb170fa78a59d53927166a38ea4c2a7dbe`；`feature.tsx` `d81dd8143c0457d01e4dbac5a1a9d168047e63bcf5958c83b9b46781d16ae7a2`；`Browser.tsx` `b8031f9f2007bf0320b686fcc8c1c621b159f6fb91a88c65a2db907889b8552b`；`History.tsx` `98dcbe058f80d0f0f3440b8b4b8fb8db136a033b98241f13d01fe54e57ef22a9`。
+Source SHA-256: `NewTab.tsx` `096bc5f88cab2107941fd51dee2c462f36c4cc7c4469a60fe3baa425b4566830`; `policy.ts` `25615324e3b08dcba47fe05585a5a3eb170fa78a59d53927166a38ea4c2a7dbe`; `feature.tsx` `d81dd8143c0457d01e4dbac5a1a9d168047e63bcf5958c83b9b46781d16ae7a2`; `Browser.tsx` `b8031f9f2007bf0320b686fcc8c1c621b159f6fb91a88c65a2db907889b8552b`; `History.tsx` `98dcbe058f80d0f0f3440b8b4b8fb8db136a033b98241f13d01fe54e57ef22a9`.
 
-补核源码 `history.ts` SHA-256 `b245abb6437cce2403c973d62e6ea320a5109de3fc20745629bdda455e8a6cc3`、`browser.ts` `4671c6c12136e8488085525f3673d17df48836b43144884f09b62bf6e98d93fc`、`navigation.ts` `5e73f9050c99efe3d4eafba054d98c12c2534c7a71e6c98f67f838f59a876756`；三者相对上述源码基点无未提交差异。
+Additional source checks: `history.ts` SHA-256 `b245abb6437cce2403c973d62e6ea320a5109de3fc20745629bdda455e8a6cc3`; `browser.ts` `4671c6c12136e8488085525f3673d17df48836b43144884f09b62bf6e98d93fc`; `navigation.ts` `5e73f9050c99efe3d4eafba054d98c12c2534c7a71e6c98f67f838f59a876756`. These three had no uncommitted differences from the source baseline above.
 
-## 制品、输入与截图缺口
+<a id="制品输入与截图缺口"></a>
+## Artifact, Inputs, and Screenshot Gaps
 
-待核目标为 macOS arm64 `0.3.2 / 202611121823 / preview`；既有运行曾记录 ASAR SHA-256 `0111fd20bd58bf72517a1255d2d1bbf7ef2a3d4281898baed50d250f13c9d91a`，不凭该历史记录声称当前实例或源码同源。`examples` 中的合成网页尚未确认为可直接访问的浏览器测试站点，不能冒充网页服务或历史结果；需额外确认测试站点来源、网页内容、导航/联网及历史副作用权限。
+Target to verify: macOS arm64 `0.3.2 / 202611121823 / preview`. A previous run recorded ASAR SHA-256 `0111fd20bd58bf72517a1255d2d1bbf7ef2a3d4281898baed50d250f13c9d91a`; do not use this historical record to claim the current instance or source has the same origin. The synthetic webpages in `examples` have not been confirmed as directly accessible browser test sites; do not present them as a webpage service or a historical result. Separately verify authorization for test-site source, page contents, navigation/network access, and history side effects.
 
-历史设计记录提到 `tmp/test_snapshot/browser-settings-overlay/find-user-opened.png` 和 `navigation-failure.png`，本工作区未找到这些文件；不得凭历史路径宣称可复用或用测试 fixture 冒充真实完整窗口。现有[浏览器设置图](./../browser-settings/requirements.md)只证明其所展示的设置窗口，不是网页浏览或授权结果。本页缺目标版本真实网页、查找及授权完整窗口参考图；条件未满足时明确保留缺口，不重启、登录、授权、下载或调用模型凑图。
+Historical design records mention `tmp/test_snapshot/browser-settings-overlay/find-user-opened.png` and `navigation-failure.png`, but these files were not found in this workspace. Do not claim they can be reused based on old paths or substitute test fixtures for real complete-window screenshots. The existing [browser settings image](./../browser-settings/requirements.md) proves only the settings window it shows, not webpage browsing or authorization. This page lacks complete-window references for real webpage browsing, find, and authorization in the target version. If prerequisites are missing, retain the gap; do not restart, sign in, authorize, download, or call a model just to obtain images.

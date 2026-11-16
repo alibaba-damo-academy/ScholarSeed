@@ -1,41 +1,51 @@
-# 文档保存与未保存保护
+<a id="文档保存与未保存保护"></a>
+# Document Saving and Unsaved-Change Protection
 
-文档保存入口上下文
+Editor context for document saving
 
-参考：macOS arm64，0.3.2 / 202611121104，2026-11-12；仅展示代码编辑器和保存控件，不代表保存、失败或冲突终态。
+Reference: macOS arm64, 0.3.2 / 202611121104, 2026-11-12; shows the code editor and save controls only, not a saved, failed, or conflicted terminal state.
 
-已核实的正常保存资格、手动/自动保存及项目副本操作已采用为v`0.3`需求，属写入专项，须核当轮授权。004失败恢复、005异常终态/未绑定来源及006无路径未命名文档入口仍待确认，不因正常行为采用而批准异常预期。
+The verified normal save eligibility, manual/automatic saving, and project-copy operations have been adopted as v`0.3` requirements. They are write-operation scenarios and require authorization for the current run. Failure recovery in 004, abnormal terminal states/unbound sources in 005, and the no-path unnamed-document entry in 006 remain unconfirmed; adopting normal behavior does not approve expectations for abnormal cases.
 
-在项目工作台编辑获准文档，将改动可靠保存，并在失败或冲突时保留选择权。语义入口为资料正常打开后的文档编辑视图及保存操作；自动保存取当前文件设置，冲突时出现处理入口。真实页面可达性待授权观察。
+Edit an authorized document in the project workbench, save the changes reliably, and preserve the user's options when saving fails or a conflict occurs. The semantic entry is the document-editing view after normally opening a resource and its save action; automatic saving follows the current file settings, and conflict handling exposes resolution actions. Whether the real page is reachable remains to be observed under authorization.
 
-当前已恢复依据覆盖项目资料的Markdown/Monaco编辑链；其他来源和Viewer仍待补依据，不据通用能力字段宣布已覆盖。
+The evidence recovered so far covers the project-resource Markdown/Monaco editing path. Other sources and viewers still need supporting evidence; do not claim coverage based on a generic capability field.
 
-## 将编辑写入文档
+<a id="将编辑写入文档"></a>
+## Write Edits to a Document
 
-### 编辑与保存资格（SAVE-OBS-001 · v`0.3`）
-条件：文档实际公开能力和当前视图支持编辑、保存时，编辑与保存入口才可用；只读、预览或运行期受限文档不因扩展名相同而取得写入能力。以本轮获准文档的公开能力和真实视图核对，不把不可编辑误判成保存失败。
+<a id="编辑与保存资格save-obs-001--v03"></a>
+### Editing and save eligibility (SAVE-OBS-001 · v`0.3`)
+Conditional: Editing and save entry points are available only when the document's actual public capabilities and current view support editing and saving. A read-only, preview, or runtime-restricted document does not gain write access merely because it has the same file extension. Check the public capabilities and real view of documents authorized for this run; do not misclassify non-editability as a save failure.
 
-### 手动保存与内容终态（SAVE-OBS-002 · v`0.3`）
-动态：通过文档保存入口或适用编辑器快捷操作保存后，重新读取同一项目、同一路径的公开文档内容，应含本轮已知修改；保存期间发生的新编辑不能被旧保存结果冒充已全部保存。开启保存时格式化时，以事前明确的格式化预期核内容，不把普通切标签、无脏点或按钮禁用当成写盘成功。
+<a id="手动保存与内容终态save-obs-002--v03"></a>
+### Manual save and content outcome (SAVE-OBS-002 · v`0.3`)
+Dynamic: After saving through the document save entry or an applicable editor shortcut, reread the public document content at the same project and path; it must include the known changes made in this run. Edits made during saving must not be represented as though an older save result included them. If format-on-save is enabled, check content against the formatting expectation specified beforehand. Ordinary tab switching, absence of a dirty marker, or a disabled button is not proof that data was written to disk.
 
-### 自动保存条件与结果（SAVE-OBS-003 · v`0.3`）
-动态与条件：自动保存开关与本轮隔离偏好的实际值一致；开启后，编辑器焦点离开文档工作区等适用触发条件能保存当前获准可写文档，关闭时不应仅因这些触发条件自动提交。开关位于文件设置或实际可达的偏好入口；结果仍对照同一文档重新取得的公开内容，普通文档标签切换不单独承诺自动保存。
+<a id="自动保存条件与结果save-obs-003--v03"></a>
+### Automatic-save conditions and outcome (SAVE-OBS-003 · v`0.3`)
+Dynamic and conditional: The automatic-save switch matches its actual value in this run's isolated preferences. When enabled, applicable triggers, such as the editor losing focus outside the document work area, can save the currently authorized writable document; when disabled, these triggers alone must not commit it. The switch is in File Settings or an actually reachable preferences entry. Verify the result against the public content reread from the same document; ordinary document-tab switching alone does not promise automatic saving.
 
-## 保留失败与冲突中的改动
+<a id="保留失败与冲突中的改动"></a>
+## Preserve Edits on Failure or Conflict
 
-### 保存失败反馈与恢复（SAVE-OBS-004 · v`0.3`）
-条件专项：在已获准的真实失败前提下，失败不能显示为已保存或静默丢掉当前编辑；恢复前提后，可再次保存并独立核对内容。请求失败可能发生在写入之后，须重新读取目标内容判断实际终态，不能凭错误提示断言磁盘一定未变。
+<a id="保存失败反馈与恢复save-obs-004--v03"></a>
+### Save-failure feedback and recovery (SAVE-OBS-004 · v`0.3`)
+Conditional specialized scenario: Under an authorized real failure precondition, a failure must not appear as saved or silently discard current edits. Once the recovery prerequisite is restored, saving can be retried and the content independently verified. A request may fail after the write occurred, so reread the target to determine its actual state; an error message alone cannot establish that the disk was unchanged.
 
-### 冲突选择与另存副本（SAVE-OBS-005 · v`0.3`）
-条件专项：已知磁盘内容与未保存编辑发生版本冲突时，应保留双方内容的处理机会，不能静默覆盖；获准覆盖后目标为当前编辑，获准放弃后恢复磁盘内容。对支持此入口的项目文档，“另存”保留当前编辑为新的托管资源，原目标保持独立；用预先记录的两份内容及实际新路径核对，不把它当成任意文档的通用系统另存对话框。
+<a id="冲突选择与另存副本save-obs-005--v03"></a>
+### Conflict choices and saving a copy (SAVE-OBS-005 · v`0.3`)
+Conditional specialized scenario: When known disk content conflicts by version with unsaved edits, preserve an opportunity to handle both versions; do not silently overwrite. After authorized overwrite, the target contains the current edits; after authorized discard, restore the disk content. For project documents that support the entry, Save a Copy retains the current edits as a new managed resource while keeping the original target separate. Verify against the two contents recorded beforehand and the actual new path; this is not a generic system Save As dialog for arbitrary documents.
 
-### 空白文档与新标签边界（SAVE-OBS-006 · v`0.3`）
-条件：获准新建或导入的真实空内容文档，正常打开、编辑后仍满足保存及重新读取判据；工作台“新标签”本身不等于新建了可保存文件。无路径的未命名文档保存入口尚未证实，保持待确认，不以新标签显示成功代替空白文档保存专项。
+<a id="空白文档与新标签边界save-obs-006--v03"></a>
+### Empty documents and the new-tab boundary (SAVE-OBS-006 · v`0.3`)
+Conditional: A real empty-content document that was created or imported with authorization must, after normal opening and editing, satisfy the saving and reread criteria. A workbench “new tab” does not itself create a saveable file. The save entry for an unnamed document with no path has not been verified and remains unconfirmed; a successful-looking blank new tab does not replace the empty-document saving scenario.
 
-## 关闭保护与验证归属
+<a id="关闭保护与验证归属"></a>
+## Close Protection and Verification Ownership
 
-未保存关闭保护直接复用[多标签与分屏 TABS-OBS-008](../tabs/requirements.md)，不在本页另立或复制关闭判据。
+Unsaved-close protection reuses [Tabs and Split View TABS-OBS-008](../tabs/requirements.md); this page does not create or duplicate a close criterion.
 
-本页整体为预先保留的写入授权专项，不加入默认只读快速套餐；001的只读能力观察不能代替002–006的行为。执行前明确合成副本、读写与偏好变更范围、失败/外部修改条件、覆盖/放弃及新建权限；条件不足保持未完成，不退役分支。多文档保存若选入，须先列出全部获准目标及逐份终态，不授权顺带保存其它已有编辑。
+This page is a write-authorization specialty reserved in advance and is not part of the default read-only quick package. The read-only capability observation in 001 cannot replace the behaviors in 002–006. Before execution, specify the synthetic copy, read/write and preference-change scope, failure/external-modification conditions, overwrite/discard, and creation permissions. If prerequisites are missing, leave the scenario incomplete; do not retire branches. If multi-document saving is selected, list every authorized target and its individual terminal state first; this does not authorize saving other existing edits as a side effect.
 
-复用共享示例项目的[资料样本](../../../../../examples/projects/evaluation/files/overview.md)、[纯文本样本](../../../../../examples/projects/evaluation/files/notes/detail.txt)及[零字节文档](../../../../../examples/projects/empty-document/project.json)的获准可丢弃隔离副本；以本轮准备收据核项目身份、实际路径和输入摘要，原件不代表产品状态或导入完成。导入测试由人工确认；本专项编辑、保存及相关偏好、覆盖或放弃等写入须分别获准。专项还需有路径的真实隔离空文档、已知编辑前后内容、真实失败前提和独立外部修改来源；未就绪不预置保存结果。截图/文字反馈与公开内容终态互补，不能互相替代。
+Reuse authorized disposable isolated copies of the shared example project's [resource sample](../../../../../examples/projects/evaluation/files/overview.md), [plain-text sample](../../../../../examples/projects/evaluation/files/notes/detail.txt), and [zero-byte document](../../../../../examples/projects/empty-document/project.json). Use this run's preparation receipt to verify project identity, actual path, and input digest; the originals do not represent product state or prove import completion. A human must confirm import tests. Editing, saving, and related writes such as preference changes, overwrite, or discard each require authorization for this specialty. It also requires a real isolated empty document with a path, known before/after edit content, a real failure precondition, and an independent source for external modification. Do not prearrange a save result when prerequisites are not ready. Screenshots/text feedback and the public content outcome complement each other; neither replaces the other.

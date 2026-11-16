@@ -1,0 +1,662 @@
+{
+  "ImageStrip": {
+    "intents": [
+      "image list",
+      "horizontal image scrolling",
+      "image pagination",
+      "sent images"
+    ],
+    "use": "Single-row list of equally sized 120px images, with 8px rounded corners and a border-default stroke. Show sourceLabel as a source Badge at the upper left when provided; otherwise hide it. Hide the scrollbar. On hover or keyboard focus, show 24px buttons (6px radius) for available directions and scroll smoothly by the number of fully visible cards. Opening an image and handling load failures are delegated to callbacks.",
+    "avoid": "Does not read conversations or load files. Large-image preview is composed by the caller. Use ImageAttachments for thumbnails that can be removed from the input.",
+    "sourceHash": "3b6ccb889f4d2c444deea9fb102a1281242227adaf175fc91cd23ff8cf1e5cdb"
+  },
+  "Link": {
+    "intents": [
+      "link",
+      "hyperlink",
+      "inline link",
+      "external link"
+    ],
+    "use": "General semantic link with icon, disabled state, ref, and native anchor attributes. Long URLs can wrap; links opening a new window automatically receive a secure rel value.",
+    "avoid": "Does not read business stores, call the Desktop bridge, or recognize/rewrite URLs. The caller supplies the system-browser opening policy through onClick. Use Button for commands rather than navigation.",
+    "sourceHash": "bde20ff0ea7fbea48c5d390919c09b4302b0b20d913a06486e93b981282d2518"
+  },
+  "Page": {
+    "intents": [
+      "page scaffold",
+      "page layout",
+      "grouped form",
+      "reading width"
+    ],
+    "use": "Business-agnostic composition of title, description, actions, and sections. Page provides default page padding and section spacing; width=reading constrains reading width. Use padding=none when the host already has padding. PageBody scrolls with the host by default.",
+    "avoid": "Not a workbench route or business template; does not automatically load or save. scroll=content requires a constrained parent and must not be nested inside an existing scroll container. Compose Card for card surfaces.",
+    "sourceHash": "230852ec11dd6bee3400c61ee0c48a475c3ccf2053727fdbf9e45cf51fb67e5a"
+  },
+  "Accordion": {
+    "intents": [
+      "accordion panel",
+      "accordion",
+      "multiple expandable sections",
+      "FAQ"
+    ],
+    "use": "A group of expandable sections supporting single-open (single) and multiple-open (multiple) modes; use when each section needs a heading row and body.",
+    "avoid": "Use Collapsible for a single section. Do not use this for a sidebar navigation tree; use NavigationMenu or a custom tree composed with Collapsible.",
+    "sourceHash": "10cfff475e88de36f323377a4401d5ee06da4fd068b06293602f7827a728c46a"
+  },
+  "Alert": {
+    "intents": [
+      "alert bar",
+      "alert icon",
+      "warning",
+      "banner"
+    ],
+    "use": "Persistent in-page status message (neutral/info/success/warning/error). Use layout=stacked for persistent in-session notices, with a centered linear icon, colored title, complete description, and a right-side action that may wrap. warning indicates a recoverable issue; error indicates a blocking failure.",
+    "avoid": "Use Toast for one-time action feedback. Use AlertDialog when the user must confirm before continuing.",
+    "sourceHash": "d75d85a640e40e1deadd2fcc32df6bc8d21f547fd6b1fea18ae0318f8018bf1a"
+  },
+  "AlertDialog": {
+    "intents": [
+      "confirmation",
+      "destructive-action confirmation",
+      "delete confirmation",
+      "confirm"
+    ],
+    "use": "Mandatory confirmation before a destructive or irreversible action, with only Confirm and Cancel exits. AlertDialogContent can show the default close button, which acts like Cancel, with showCloseButton. When nested in Dialog, it can consume the overlay/content layer classes owned by design.",
+    "avoid": "Use Dialog for forms or multi-step flows. Do not use it for ordinary information display.",
+    "sourceHash": "ed0a6b3820cbb515f058e944c14a1415ebf3023128ccb8ee20afce32d7cf0034"
+  },
+  "AspectRatio": {
+    "intents": [
+      "aspect ratio",
+      "fixed-ratio container",
+      "video placeholder",
+      "aspect ratio"
+    ],
+    "use": "Constrain a child to a fixed aspect ratio (image, preview, or video).",
+    "avoid": "Do not use for general layout spacing.",
+    "sourceHash": "0fc5022467f88423320da07fb4fa530278eba4b4024cabce6a6e2caa4397b68d"
+  },
+  "Avatar": {
+    "intents": [
+      "avatar",
+      "user icon",
+      "initials fallback",
+      "avatar"
+    ],
+    "use": "User or entity avatar; when the image fails, AvatarFallback shows initials.",
+    "avoid": "Do not use for a plain icon; use an icon element or IconButton.",
+    "sourceHash": "811f58988757e24ee3a9478a513899fd3ae777665b6aebb79665e26b53a554f4"
+  },
+  "Badge": {
+    "intents": [
+      "label",
+      "badge",
+      "status",
+      "count"
+    ],
+    "use": "Short status, category, or count marker with tone and size variants. Use BadgeDot for an unsaved tab dot or an icon badge.",
+    "avoid": "Use Tag for a dismissible label. Use Toggle or Button for a clickable filter chip.",
+    "sourceHash": "c6a5a3bd67dd047aa2ae06bb2bc99efb4fe801af346c327296c70b7e5d459ff2"
+  },
+  "Breadcrumb": {
+    "intents": [
+      "breadcrumb",
+      "path navigation",
+      "hierarchical location",
+      "breadcrumb"
+    ],
+    "use": "Show the hierarchy path to the current location; supports collapsing intermediate items (BreadcrumbEllipsis).",
+    "avoid": "Use Tabs for switching between peers; do not use breadcrumbs for that.",
+    "sourceHash": "e3fc177417d65bd54a50bf7ff94b1a7568176aadfbc2c1babec3b46af177ae1e"
+  },
+  "Button": {
+    "intents": [
+      "button",
+      "submit",
+      "action",
+      "primary button"
+    ],
+    "use": "**All** clickable text and image/text actions. Variants include primary/secondary/ghost/danger/dropzone. md/sm/xs correspond to design sizes M 32px/S 28px/XS 24px, with text and icons scaled consistently. size=standard matches the 36px form control in the design; content uses natural height for thumbnails and multiline actions.",
+    "avoid": "Use IconButton when there is no text; use Toggle/Switch for switch semantics. Do not write `<button className>` yourself just to obtain a particular style.",
+    "sourceHash": "1d18af217ad7a4689ed2cd102b16a3c6b37f50849220f05e8a94adcbe11670de"
+  },
+  "NavigationButton": {
+    "intents": [
+      "project selector",
+      "navigation trigger",
+      "dropdown trigger",
+      "navigation button"
+    ],
+    "use": "154×32 navigation control with a 14px icon, 6px padding and gap, and a left-aligned title truncated at 102px. Use with PopoverTrigger. onBack and backLabel enable a separate back action; the two buttons highlight independently on hover. Keep ref and popover events bound to the project trigger. Show the full title in a title tooltip; business state stays with the caller.",
+    "avoid": "Use Select for form values. Do not add an external back button or change internal spacing; inject the back behavior through onBack.",
+    "sourceHash": "d380556e6b6bb1d0e4ea5ddd32ce18165a4237f6dd81c7084a1f70b0044cc341"
+  },
+  "Calendar": {
+    "intents": [
+      "calendar",
+      "choose a date",
+      "month view",
+      "calendar"
+    ],
+    "use": "Month-view date selection or display.",
+    "avoid": "When only a single date text field is needed, prefer Input(type=date).",
+    "sourceHash": "b153a0c085316db769459784a6339df66c277205aba9cdb086029cc15dea83ae"
+  },
+  "Card": {
+    "intents": [
+      "card",
+      "content block",
+      "section container",
+      "card"
+    ],
+    "use": "Content section with border/padding and a header/content/footer structure; includes variant and padding sizes.",
+    "avoid": "Do not use as a full-page layout scaffold; use a layout component under shell/.",
+    "sourceHash": "0c65ee65880186afe646b301949d539643e97a999db1cda4599be0b6caeee9f5"
+  },
+  "Carousel": {
+    "intents": [
+      "carousel",
+      "carousel",
+      "horizontal pagination",
+      "progress carousel"
+    ],
+    "use": "Paginated horizontal browsing of a set of items. `autoPlay` can switch automatically using `autoPlayIntervalMs`; `CarouselIndicators` renders a clickable progress indicator.",
+    "avoid": "Use ScrollArea when only horizontal scrolling is needed without pagination controls.",
+    "sourceHash": "e632ac1b3ec92fc6fe81e5093dd078894ca94f5e29580524d4f3cb70a14d40c8"
+  },
+  "Chart": {
+    "intents": [
+      "chart",
+      "bar chart",
+      "data visualization",
+      "chart"
+    ],
+    "use": "Prefer the official OpenUI bar/line/pie charts. Preserve constrained extensions for missing values, specialized statistical charts, and data that cannot be mapped directly. Supports existing label/value or ChartModel, legends, and keyboard row selection. ChartContainer is a standalone themed container, not an alias for Chart.",
+    "avoid": "ChartTooltip/ChartLegend are composition entry points; Chart provides actual chart interaction. Accept only declared data; do not expose arbitrary ECharts options, HTML formatters, functions, or external links. Row selection does not execute business actions.",
+    "sourceHash": "34f7d2db516a103a50145518183c2ce53945a0c003515388594cf113a36645ab"
+  },
+  "Checkbox": {
+    "intents": [
+      "checkbox",
+      "check mark",
+      "multi-select",
+      "checkbox"
+    ],
+    "use": "Boolean check and multi-select list items. Use align=\"first-line\" to align multiline text to its first line. For tree/group selection, use checked=\"mixed\" to represent a partially selected state.",
+    "avoid": "Use Radio for mutually exclusive single selection; use Switch for an immediately effective toggle.",
+    "sourceHash": "f7ccf38d8b9fd3de8fa14f89c0d34aebf3df879ff68b470df76d7dbdb964323b"
+  },
+  "Collapsible": {
+    "intents": [
+      "expand/collapse",
+      "collapse",
+      "show more",
+      "collapsible"
+    ],
+    "use": "Expand or collapse a single section. animated optionally transitions height and respects reduced-motion settings.",
+    "avoid": "Use Accordion for multiple mutually exclusive sections.",
+    "sourceHash": "b97f6145a62e268737f763dcae2c993f85be015073216f0e6fc6b5a68d25f413"
+  },
+  "Command": {
+    "intents": [
+      "command palette",
+      "search and select",
+      "fuzzy filtering",
+      "quick entry"
+    ],
+    "use": "Searchable candidate list for a command palette, global search, or searchable selector. `CommandDialog` is its popover variant.",
+    "avoid": "Use Select for a short fixed list. Do not assemble an input and hand-written candidate divs yourself.",
+    "sourceHash": "4277ee2b6e97857f3cfa17481190ef9d49c0ef3b04e674a6a0475c32c5563a9a"
+  },
+  "ContextMenu": {
+    "intents": [
+      "context menu",
+      "context menu",
+      "long-press menu",
+      "context menu"
+    ],
+    "use": "Action menu opened by right-click; supports submenus, checkable items, radio groups, and shortcut hints.",
+    "avoid": "Use DropdownMenu for a menu opened by a button click.",
+    "sourceHash": "7ab7a1edab4ec89531300dc65145f89a3cad01ff0dd764324fc3d344611407da"
+  },
+  "CopyButton": {
+    "intents": [
+      "copy",
+      "copy to clipboard",
+      "copy",
+      "clipboard"
+    ],
+    "use": "Copy text in one click and show copied feedback. Use iconOnly with icon to reuse the square IconButton. Uses `navigator.clipboard` by default; in Desktop unfocused scenarios, inject main-process clipboard capability through `writeText`.",
+    "avoid": "Do not reimplement the button, clipboard, and timer-reset pattern.",
+    "sourceHash": "068e971559af64a0482ebd5830dd73c1710c6bcbc0247557f6456334d0639f51"
+  },
+  "portal": {
+    "intents": [
+      "cross-document overlay",
+      "native host",
+      "portal document",
+      "portal scope"
+    ],
+    "use": "Provide the owning Document for a reusable overlay; stays in the current document by default and does not include business or native capabilities.",
+    "avoid": "Not for cross-origin documents or exposing product content to external webpages.",
+    "sourceHash": "e85d4b254d65161d4aa5cd2df9a9c689d01d90a7e503bb2b787b1c9002f868b9"
+  },
+  "Dialog": {
+    "intents": [
+      "dialog",
+      "modal",
+      "dialog",
+      "form dialog"
+    ],
+    "use": "Modal overlay for forms, details, import wizards, and similar flows. tone supports default/info/danger/warning. headerLayout=\"aligned\" aligns title and close button. portalClassName assigns a semantic z-layer to the shared overlay container for a nested surface; menus, selectors, and subsequent dialogs retain the same ownership.",
+    "avoid": "Use AlertDialog for destructive-action confirmation; Sheet/Drawer for a side panel; Popover for lightweight floating content.",
+    "sourceHash": "aea571801a365f35ad8c8668682f0dc607714f0ef0515db5210a2316210c9c8f"
+  },
+  "Divider": {
+    "intents": [
+      "divider",
+      "separator",
+      "horizontal line",
+      "divider"
+    ],
+    "use": "Horizontal or vertical content divider. `Separator` is an alias for `Divider` (shadcn compatibility name).",
+    "avoid": "Do not use it to create plain spacing; use spacing tokens.",
+    "sourceHash": "07f1b2ac475a1716cbe61a2904f6c4fdb1ce8db75140ad1ba4564558070f4d7e"
+  },
+  "Drawer": {
+    "intents": [
+      "drawer",
+      "bottom sheet",
+      "side panel",
+      "drawer"
+    ],
+    "use": "Panel that slides in from an edge, with a feel suited to mobile and touch.",
+    "avoid": "Prefer Sheet for a desktop side panel; use Dialog for a centered modal.",
+    "sourceHash": "21f915b949255405e4a761d517afc01a2a8f58da48d3d3c678af57191475f5e3"
+  },
+  "DropdownMenu": {
+    "intents": [
+      "dropdown menu",
+      "more actions",
+      "kebab menu",
+      "model switcher"
+    ],
+    "use": "Action menu opened by a button, supporting submenus, checkable items, and radio groups. CheckboxItem with indicatorAlign=\"end\" keeps text left-aligned. Content is non-modal by default; trapFocus can explicitly constrain keyboard focus. coordinateNavigation can coordinate actual pointer movement with single-item keyboard highlighting.",
+    "avoid": "Use Select for form values (a menu is not a form control); use ContextMenu for right-click.",
+    "sourceHash": "0094a90535e1f49e861441b3bfba721d1af5344e2604d9ce0b1da409c007cdfb"
+  },
+  "EmptyState": {
+    "intents": [
+      "empty state",
+      "no data yet",
+      "no results",
+      "empty"
+    ],
+    "use": "Placeholder for an empty list or panel: title, description, and optional action. Use variant=\"compact\" for a small popup area; variant=\"panel\" for a rounded-square icon and primary-color title; iconTone=\"subtle\" for a low-emphasis themed background; retain the default style at page level.",
+    "avoid": "Use Spinner/Skeleton/LoadingOverlay while loading; use Alert for errors.",
+    "sourceHash": "bf6e9e46cd1794cf2c2fa6c09a798f5f9a216649cc6c721b9de0d79ac7ba6e8b"
+  },
+  "EllipsisText": {
+    "intents": [
+      "truncated text",
+      "long text",
+      "clipped text",
+      "ellipsis text"
+    ],
+    "use": "Truncate a long single-line string and show the full content in a Tooltip only when actual overflow occurs.",
+    "avoid": "Do not use for expanding multiline body text. Use Tooltip directly for fixed help that does not depend on overflow.",
+    "sourceHash": "e035c7ead86d7d8ba3a0e51804654ee14aaa2214f4be643292fc10705708bd69"
+  },
+  "FloatingToolbar": {
+    "intents": [
+      "floating toolbar",
+      "selection action bar",
+      "contextual actions",
+      "floating toolbar"
+    ],
+    "use": "Group of contextual actions floating above body text or a canvas. Provides an opaque raised surface, toolbar semantics, optional drag/resize delta callbacks, and arrow-key operation.",
+    "avoid": "Use Popover for a content panel opened on click. Keep business positioning, selection state, and request logic in the consuming Feature.",
+    "sourceHash": "29b79317f8c2e76927edaf778f93c4e19a1de7c2b9beac599e3bd541341a449e"
+  },
+  "Form": {
+    "intents": [
+      "form",
+      "field",
+      "label and error",
+      "validation hint"
+    ],
+    "use": "Form structure and field layout with consistent placement of labels, descriptions, and errors. `Field` is an alias for `FormField`.",
+    "avoid": "Provides **structure and presentation only**; it has no validation engine or form state. Validation logic remains in the feature; do not assume it validates automatically.",
+    "sourceHash": "c19fd61675c27fb433b47092b77b7f73072839db707dc4e02a11817932b03180"
+  },
+  "HoverCard": {
+    "intents": [
+      "hover card",
+      "preview card",
+      "hover details",
+      "hover card"
+    ],
+    "use": "Rich-content preview shown on hover. sideBoundaryRef can avoid the sides of the full parent panel and narrow the card in a narrow window.",
+    "avoid": "Use Tooltip for plain text; use Popover for click interaction.",
+    "sourceHash": "a996d51391cb084fc7522dad45aed37b67b3bafbf1dd4e9cada9d4e6f5996159"
+  },
+  "IconButton": {
+    "intents": [
+      "icon button",
+      "icon-only action",
+      "close button",
+      "icon button"
+    ],
+    "use": "Action button with only an icon (close, more, refresh), providing a square hit area and an accessibility label slot. md/sm/xs correspond to 32/28/24px buttons and 16/14/12px icons; mini corresponds to 26px and a 12px icon.",
+    "avoid": "Use Button when there is text. Do not use it to represent a toggle state; use Toggle.",
+    "sourceHash": "3ab6cdff6563cacf9c4d45cc2063f079ce89681d1fc3609c98cdc5203e400961"
+  },
+  "Input": {
+    "intents": [
+      "input",
+      "text field",
+      "search field",
+      "password field"
+    ],
+    "use": "**All** single-line inputs, including text/search/number/date types. Prefer PasswordInput for password entry; it includes a visibility toggle. size=standard matches the 36px form control in the design.",
+    "avoid": "Use Textarea for multiline input; InputOTP for segmented verification codes; Command for a candidate list.",
+    "sourceHash": "5fa3ed5ef6e811fbf5e805f7a670d2cc192a2d1a94f1e878e60913211b0be6ea"
+  },
+  "SearchBox": {
+    "intents": [
+      "search field",
+      "input with search icon",
+      "search input",
+      "search box"
+    ],
+    "use": "Single-line search input with an embedded Lucide search icon. The trailing slot supports in-field actions such as clearing and reserves space for the input text.",
+    "avoid": "Use Input for ordinary text entry; use Command when there is a candidate list.",
+    "sourceHash": "1e2e3f68e9a7eaddf2094528f3ad1aef0da1c8d432f76e8298507cca86e5e152"
+  },
+  "InputOTP": {
+    "intents": [
+      "verification code",
+      "one-time password",
+      "segmented input",
+      "OTP"
+    ],
+    "use": "Segmented verification-code input with a fixed number of digits.",
+    "avoid": "Use Input for ordinary text entry.",
+    "sourceHash": "6b7215266e53969ed5bc2816f501f5e14b60d80a22ba37b38b147f38e0f5185f"
+  },
+  "Label": {
+    "intents": [
+      "label text",
+      "field name",
+      "form heading",
+      "label"
+    ],
+    "use": "Associated label for a form control. variant=form (default) uses 14px/400/text-primary; variant=display uses 12px/400/text-tertiary. Spacing to the field is 8px.",
+    "avoid": "Use Badge for a status marker; in a Form structure, prefer FormLabel.",
+    "sourceHash": "77e13d0417fc26260fad7b2749371f6761c3fe2035d56c4fd1f8a2756d8ea9e9"
+  },
+  "LoadingOverlay": {
+    "intents": [
+      "loading overlay",
+      "full-area loading",
+      "blocking load",
+      "loading overlay"
+    ],
+    "use": "Loading overlay covering an area and preventing interaction while shown.",
+    "avoid": "Use Spinner for small inline loading; use Skeleton for placeholder content.",
+    "sourceHash": "552508cec00fc3f374b04a03b109a36e2bb323ce1a23c2cffb7e799f42e15b6a"
+  },
+  "Menubar": {
+    "intents": [
+      "menu bar",
+      "top menu",
+      "application menu",
+      "menubar"
+    ],
+    "use": "Multiple dropdown menus arranged horizontally (application-level menu bar).",
+    "avoid": "Use DropdownMenu for a single menu; NavigationMenu for page-level navigation.",
+    "sourceHash": "c8aeddf1f02f89b89c06facba8cfd401fdf39281cb8f53b67edb4e54bc649e10"
+  },
+  "NavigationMenu": {
+    "intents": [
+      "navigation menu",
+      "primary navigation",
+      "section switcher",
+      "navigation"
+    ],
+    "use": "Page-level navigation supporting items with content panels.",
+    "avoid": "Use Tabs to switch views within the same page; use DropdownMenu for action menus.",
+    "sourceHash": "05d7091fc062e44bc8fc599299c13cbeb4768bd098af02c4a24e954a03759ad7"
+  },
+  "NavigationTabs": {
+    "intents": [
+      "tab navigation",
+      "file tabs",
+      "closable tabs",
+      "tab reordering"
+    ],
+    "use": "Horizontal tab navigation with a fixed overview tab. By default, widths adapt to tab names and the close button remains visible on the right; long titles have a maximum width and are truncated. In compact layouts, only the active tab shows its close button and keeps its icon at minimum width. NavigationTabsMenu lists all tabs. onOverflowChange can let the host show an overflow entry point in the toolbar. Supports an unsaved dot (`dirty`), truncated text, and mouse wheel. onReorder returns the order; the overview tab stays fixed. Set getTabProps.draggable=false or aria-disabled to prevent dragging. Use trailing for an action at the end.",
+    "avoid": "Use Tabs for ordinary content-section switching; use NavigationMenu for page-level dropdown navigation.",
+    "sourceHash": "c15e4a4e3463e0660eb9e8321edede72e94067831da41af4aed0e624a1559bee"
+  },
+  "Pagination": {
+    "intents": [
+      "pagination",
+      "page navigation",
+      "page number",
+      "pagination"
+    ],
+    "use": "Page-number navigation; see `getPaginationItems` for page-number calculation.",
+    "avoid": "Do not use pagination for infinite scrolling. Do not calculate ellipses yourself; use `getPaginationItems`.",
+    "sourceHash": "a9d5ddcf499025869952a4016e8c124460d1b484261f7e124d0a172242f9a452"
+  },
+  "Popover": {
+    "intents": [
+      "popover",
+      "bubble panel",
+      "lightweight popup",
+      "filter popover"
+    ],
+    "use": "Non-modal overlay opened by clicking; can contain small forms and filters. position can bind to a cross-document anchor. autoFocus/trapFocus reuse the shared focus scope. dismissOnEscape/dismissOnOutsidePointerDown are enabled by default and can be explicitly disabled for persistent display.",
+    "avoid": "Use Dialog for a modal with a backdrop; Tooltip for plain text; DropdownMenu for a list of menu items.",
+    "sourceHash": "81e115d3e6bb90ce02eb0d8b7a7ccee1c3f609fbcd324844a75431d0809e0d01"
+  },
+  "ProgressBar": {
+    "intents": [
+      "progress bar",
+      "circular progress",
+      "percentage",
+      "upload progress"
+    ],
+    "use": "Deterministic progress display. `ProgressBar` supports color; `Progress` is the compatibility name without color.",
+    "avoid": "Use Spinner for indeterminate duration. Do not use it as a purely decorative long bar.",
+    "sourceHash": "dd9278f3f913a8b5982a52f52a92acde6c6e806e9a82309fc32157604da61cec"
+  },
+  "Radio": {
+    "intents": [
+      "radio",
+      "mutually exclusive options",
+      "radio group",
+      "radio"
+    ],
+    "use": "Single selection among a fully visible group of mutually exclusive options. Use align=\"first-line\" to align multiline text to its first line.",
+    "avoid": "Use Select for many options that need collapsing; use SegmentedControl/ToggleGroup for paragraph-style switching.",
+    "sourceHash": "cdc1287e1a819b7766282d79c9b383fa6a49bdd16ec10848ccae262af2f4f14d"
+  },
+  "Resizable": {
+    "intents": [
+      "draggable split panes",
+      "split panel",
+      "resize width",
+      "independent edge drag"
+    ],
+    "use": "Multi-column layout with draggable proportions. animated optionally transitions the collapsed width and respects reduced-motion settings; dragging tracks immediately. renderHandle can delegate presentation of the original drag control to the host without changing pane geometry or drag calculation.",
+    "avoid": "Do not introduce it for a fixed-ratio layout.",
+    "sourceHash": "2732206aa4cf61b8272352fe2406119ad2b05aa9462b8810306876f136fd27cf"
+  },
+  "ScrollArea": {
+    "intents": [
+      "scroll container",
+      "custom scrollbar",
+      "long-list scrolling",
+      "scroll area"
+    ],
+    "use": "Scroll container with a consistent scrollbar style. overlay provides an overlay scrollbar that does not consume layout width and supports dragging and keyboard input. shadow=\"auto\" shows a gradient mask according to remaining content above/below; shadow=true keeps masks at both edges. horizontalControls shows buttons and gradients according to horizontal overflow direction; variant=image reuses image-strip arrows; scrollBy=items pages by complete children; hoverOnly retains visibility on keyboard focus.",
+    "avoid": "Do not use for page-level scrolling; it does not implement a virtual list.",
+    "sourceHash": "3efbe0244985fb08d7662b729dfe0fd1903b3915625e264892cf8303201ac16f"
+  },
+  "Select": {
+    "intents": [
+      "dropdown selection",
+      "selector",
+      "enum value",
+      "select"
+    ],
+    "use": "Single-value selection in a form. Native select uses option/optgroup children; the SelectTrigger/SelectContent/SelectItem composition uses the owned list overlay. size=standard matches the 36px form control in the design; both compositions support it.",
+    "avoid": "Use Command for searchable or large candidate sets; DropdownMenu for action menus. Do not write `<select>` directly in a feature. Read SelectProps and the implementation separately for each composition's event contract.",
+    "sourceHash": "c5e7363b5bb11a2db45f025c59a77b23e668b77f3c464076dc6d70251f8be44d"
+  },
+  "Sheet": {
+    "intents": [
+      "side panel",
+      "slide-out dialog",
+      "details drawer",
+      "sheet"
+    ],
+    "use": "Modal panel sliding from a configurable side; preferred on desktop.",
+    "avoid": "Use Dialog for a centered modal; Drawer for a mobile gesture-driven drawer.",
+    "sourceHash": "8d8df4df86746d4121f211e3c5815be29fe6f5e138c2a227cc32fbdaaa5d4d5b"
+  },
+  "Slider": {
+    "intents": [
+      "slider",
+      "drag to set value",
+      "range adjustment",
+      "slider"
+    ],
+    "use": "Drag to set a continuous or stepped numeric value.",
+    "avoid": "Use Input(type=number) for precise entry.",
+    "sourceHash": "680d071d99a90cb872a9c1f3487c784052c00688cb6df3294a0073535be7240f"
+  },
+  "Spinner": {
+    "intents": [
+      "loading fallback",
+      "loading",
+      "spinner",
+      "skeleton screen"
+    ],
+    "use": "`LoadingFallback` is the default loading fallback for pages and content areas, centered with a spinner and localized text. Use `Spinner` for inline loading; imageSrc can specify an animated image. Use `Skeleton` for placeholder content.",
+    "avoid": "Use LoadingOverlay to cover an area and block interaction; use ProgressBar when the percentage is known.",
+    "sourceHash": "6240530c8032933921d6747f42aa85019383149a4669ec48545123bd98d563a4"
+  },
+  "Switch": {
+    "intents": [
+      "switch",
+      "toggle",
+      "takes effect immediately",
+      "switch"
+    ],
+    "use": "Immediately effective toggle for a setting.",
+    "avoid": "Use Checkbox for a boolean option that takes effect only after submission; use Toggle for a pressed state in a toolbar.",
+    "sourceHash": "1191228299aa2a3bcc2a9e6e033e175de1faaf9d9913a801456e1bbcf028019f"
+  },
+  "classes": {
+    "intents": [
+      "semantic label colors",
+      "label color palette",
+      "pagination algorithm",
+      "sidebar navigation button"
+    ],
+    "use": "Shared DOM-free presentation utilities for the design system: navigation button styles, label variants, stable semantic colors, and pagination-item calculation.",
+    "avoid": "Do not duplicate color mappings or pagination algorithms in a feature. Use Tag/Badge for ordinary status display and Pagination for pagination UI.",
+    "sourceHash": "062a91af5d931e3a4ebc586872d371b2f68471280ea45620acecb314e5a25690"
+  },
+  "Tag": {
+    "intents": [
+      "tag",
+      "dismissible tag",
+      "close tag",
+      "colored tag"
+    ],
+    "use": "Lightweight label/chip, 24px high by default per the design with a pale green background and green border. Supports small size and tone/variant semantic colors, and can show a close button via onClose. For filter chips that retain per-item colors and can be removed in place, use selected to represent selection; the caller declares role/aria-pressed.",
+    "avoid": "Use Badge for status/count display that does not need dismissal. For mutually exclusive/multi-select filters that do not need per-item colors and in-place removal, use ToggleGroup or Toggle.",
+    "sourceHash": "d613a33a12be357d92dcb4c9357c6f738bc5f807cd5430a8269e376bd381b474"
+  },
+  "Table": {
+    "intents": [
+      "table",
+      "data list",
+      "row and column display",
+      "table"
+    ],
+    "use": "Complete structure for displaying two-dimensional data.",
+    "avoid": "Does not include sorting, pagination, or virtual scrolling. Pair with Pagination for paging, but do not reimplement a `<table>` in a feature.",
+    "sourceHash": "90305b92272d4d0a6132bef5bac3d35f62affb52236b80870bfd331e93caf51f"
+  },
+  "Tabs": {
+    "intents": [
+      "tabs",
+      "tab switching",
+      "paged views",
+      "tabs"
+    ],
+    "use": "Switch between multiple views in the same region.",
+    "avoid": "Use SegmentedControl/ToggleGroup for a small number of mutually exclusive filters; use NavigationMenu for cross-page navigation.",
+    "sourceHash": "28c989b9d13493c8417efbce9473ac85499641fae988c589c1c140df6bb509b2"
+  },
+  "Textarea": {
+    "intents": [
+      "multiline input",
+      "text area",
+      "notes",
+      "long text"
+    ],
+    "use": "Multiline text input.",
+    "avoid": "Use Input for single-line text. Rich text/editors are outside the design system's scope.",
+    "sourceHash": "c56c823fc3f9a8aee0e05b610da59e5f02d37a5357f343ef861db9197d7ff085"
+  },
+  "Toast": {
+    "intents": [
+      "toast",
+      "message notification",
+      "action feedback",
+      "toast"
+    ],
+    "use": "One-time action feedback. Closes after 6 seconds by default and can be closed manually; pauses on hover or keyboard focus. Identical plain-text errors are deduplicated automatically. For rich text, pass dedupeKey; the same id updates and resets the timer. Mount context with ToastProvider, trigger with useToast(), and use Toaster as the container (SonnerToaster is an alias).",
+    "avoid": "Use Alert for persistent status messages. Pass duration: false only for a Notification that explicitly waits for user action. Do not make notifications persistent by default based on error type, and do not create another notification queue in a feature.",
+    "sourceHash": "ccd84f346f10f6bde79db777527a2eb033461328bf9f68190ad2c00123b9cf4e"
+  },
+  "Toggle": {
+    "intents": [
+      "pressed-state button",
+      "toggle button",
+      "toolbar button",
+      "toggle"
+    ],
+    "use": "Single button with a pressed/active state (for example, bold or show sidebar).",
+    "avoid": "Use Switch for settings; use ToggleGroup for a group of mutually exclusive options.",
+    "sourceHash": "acfe943e77caa2d58c594e8a199eca76f66bce3a6ccb3332feae397f96163f28"
+  },
+  "ToggleGroup": {
+    "intents": [
+      "segmented control",
+      "mutually exclusive toggle group",
+      "multi-select button group",
+      "view mode"
+    ],
+    "use": "Button-style option group with single or multiple selection modes. `SegmentedControl` is the segmented control exported from the same module.",
+    "avoid": "Use Tabs to switch content areas; use Select/Command when there are many candidates.",
+    "sourceHash": "7ccc6c5cf483d92ddf1b4ea1a2f53496401f5824aa4a72aab64ff8e7c6f01003"
+  },
+  "Tooltip": {
+    "intents": [
+      "tooltip",
+      "hover help",
+      "icon meaning",
+      "tooltip"
+    ],
+    "use": "Short text explanation shown on hover or focus. consumeEscape=false leaves Escape available to the host for cancellation when the tooltip closes.",
+    "avoid": "Use HoverCard for rich content; Popover for click interaction. Do not substitute the `title` attribute.",
+    "sourceHash": "182866184c76c0e9c1120fed1937870610edabc32b8b957de818dca032db8ebb"
+  }
+}

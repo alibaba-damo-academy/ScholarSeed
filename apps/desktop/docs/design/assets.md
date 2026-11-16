@@ -1,47 +1,51 @@
-# 组件资产与复用指南
+<a id="组件资产与复用指南"></a>
+
+# Component Catalog and Reuse Guide
 
 ## Scope / Non-goals
 
-面向参与 Desktop 页面开发的后端同学：按需求找组件、查看效果、核对接口，再接业务数据。覆盖现有 UI、primitive、business 资产，不把所有导出都当作独立组件，也不承诺所有预览已完成真实产品验收。
+For backend engineers contributing to Desktop pages: find components by intent, inspect their behavior, check their interfaces, and then connect business data. This guide covers existing UI, primitive, and business assets. It does not treat every export as a standalone component or claim that every preview has passed real product acceptance.
 
 ## Source of truth
 
-- **[完整组件资产列表](../_generated/components.md)**：从 UI 注册表和 business/primitive 实际导出自动生成，含用途、限制、源码与直接依赖。
-- [统一导入出口](../../src/renderer/src/components/ui/index.ts)：UI 可用导出及对应实现文件。
-- [运行示例源码](../../src/renderer/src/components/examples/ComponentsPage.tsx)：组件组合、props 和状态示例。
-- [Token 列表](../_generated/tokens.md)：主题、字号、间距与层级变量。
+- **[Full component catalog](../_generated/components.md)**: generated from the UI registry and actual business/primitive exports; includes purpose, constraints, source, and direct dependencies.
+- [Unified import barrel](../../src/renderer/src/components/ui/index.ts): available UI exports and their implementation files.
+- [Runnable example source](../../src/renderer/src/components/examples/ComponentsPage.tsx): component compositions, props, and state examples.
+- [Token list](../_generated/tokens.md): theme, typography, spacing, and layer variables.
 
 ## Current / Required / Gap / Advisory
 
-- **current**：资产列表由 `pnpm ops ci check docs desktop --write` 生成；`pnpm ops ci check docs desktop` 检查与源码同步。
-- **required**：先找资产，再读真实 props；UI 从 `components/ui` 统一出口导入，页面布局使用 Tailwind CSS，详细要求见[样式规范](foundations.md)。
-- **gap**：业务模块可能依赖 StoreProvider、账号、项目、会话和后端 API；列表中的依赖只表示直接源码边，不证明整个运行环境已就绪。部分复杂 UI 仍为 preview-grade，见[交互规范](interaction.md)。
-- **advisory**：优先组合已有能力，缺失时向所属组件补充通用变体，避免复制页面私有版本。
+- **current**: `pnpm ops ci check docs desktop --write` generates the catalog; `pnpm ops ci check docs desktop` checks it against source.
+- **required**: Find the asset first, then inspect its actual props. Import UI through the `components/ui` barrel and use Tailwind CSS for page layout; see [styling rules](foundations.md) for details.
+- **gap**: Business modules may depend on StoreProvider, accounts, projects, sessions, and backend APIs. Listed dependencies represent direct source edges only and do not prove that the full runtime is ready. Some complex UI is still preview-grade; see [interaction rules](interaction.md).
+- **advisory**: Prefer composing existing capabilities. When something is missing, add a general variant to its owning component instead of copying a page-specific version.
 
 ## Ownership / Dependency
 
-| 层 | 应如何复用 |
+| Layer | How to reuse it |
 | --- | --- |
-| `components/ui` | 按用途选按钮、输入、表格、菜单和反馈；由 props 驱动，不接业务 API。 |
-| `components/primitive` | Markdown、附件、浮窗等机制；阅读源码确认环境与输入约定。 |
-| `components/business` | 账号、会话、项目、技能等完整业务区域；沿现有调用者组合，不当作脱离上下文的纯 UI。 |
-| `features` / `shell` | 接 API 和状态并编排页面；业务数据与操作留在对应 owner。 |
+| `components/ui` | Choose buttons, inputs, tables, menus, and feedback by intent; drive them with props and do not connect business APIs. |
+| `components/primitive` | Mechanisms such as Markdown, attachments, and floating surfaces; read the source to confirm runtime and input assumptions. |
+| `components/business` | Complete business areas such as accounts, sessions, projects, and skills; compose them through existing consumers instead of treating them as context-free UI. |
+| `features` / `shell` | Connect APIs and state and compose pages; keep business data and actions with their respective owners. |
 
-这些是 React renderer 资产，Python 后端通过 API 提供数据；需要开发界面时在 renderer 内复用。
+These are React renderer assets. The Python backend provides data through APIs; reuse these assets in the renderer when building interfaces.
 
-## 从需求到可运行页面
+<a id="从需求到可运行页面"></a>
+## From Requirements to a Running Page
 
-1. 在资产列表搜索中文意图，例如“表单”“搜索选择”“详情抽屉”；命令行也可以在仓库根目录运行 `npm run ui-find Q="表单"`。
-2. 启动预览：`pnpm ops dev browser`，打开 [组件示例](http://localhost:5173/?dev=components)。通过左侧组件菜单找示例，顶部切换明暗主题；右侧“查看代码”给出组合方式。
-3. 从统一出口跳到实现，确认必填 props、事件参数、受控状态和 Provider。业务示例需要真实 Serve 时启动 `.venv/bin/scholarseed-serve`；出现未配置或登录提示不代表组件 API 不存在。
-4. 在自己页面所在目录计算相对导入路径，连接真实数据与 pending/error 状态。用 `rg` 搜索同组件的现有调用方式。
-5. 实际打开页面验证明暗主题、长文本、空数据、失败、键盘和窄窗。组件展示不替代业务流程验收。
+1. Search the catalog by intent, such as “form,” “search selection,” or “details drawer.” You can also run `npm run ui-find Q="表单"` from the repository root.
+2. Start the preview with `pnpm ops dev browser` and open [component examples](http://localhost:5173/?dev=components). Find examples in the left component menu, switch light/dark themes at the top, and use “View code” on the right to see how components are composed.
+3. Follow the unified barrel to the implementation and check required props, event parameters, controlled state, and Providers. For business examples that require a real Serve, start `.venv/bin/scholarseed-serve`; a configuration or login prompt does not mean the component API is missing.
+4. Calculate the relative import path from your page directory and connect real data plus pending/error states. Use `rg` to find existing uses of the same component.
+5. Open the actual page and verify light/dark themes, long text, empty data, failures, keyboard use, and narrow windows. A component showcase does not replace business-flow acceptance.
 
-选型提示：表单选值用 Select，执行操作用 DropdownMenu；短说明用 Tooltip，可交互浮层用 Popover；常驻提示用 Alert，一次性反馈用 Toast；详情侧面板用 Sheet，危险操作确认用 AlertDialog。完整选择和限制以资产表为准。
+Selection tips: use Select for choosing form values and DropdownMenu for actions; Tooltip for short explanations and Popover for interactive floating surfaces; Alert for persistent notices and Toast for transient feedback; Sheet for a details side panel and AlertDialog to confirm dangerous actions. Refer to the catalog for the full set of choices and constraints.
 
-## 正反例
+<a id="正反例"></a>
+## Examples and anti-patterns
 
-下面路径适用于 `features/<domain>/` 下的页面；其他目录按实际层级调整。示例 props 由业务 owner 提供，不写假 API：
+The paths below apply to pages under `features/<domain>/`; adjust them for other directory depths. Business owners provide the example props; do not invent APIs:
 
 ```tsx
 import { Button, Card, Input } from '../../components/ui'
@@ -69,23 +73,25 @@ export function NameEditor({ name, saving, onNameChange, onSave }: NameEditorPro
 }
 ```
 
-反例：复制原生 button/input 并自写 CSS；从 UI 内部文件深导入；把 AccountPanel 脱离其环境直接放进新页面；根据资产名称猜测 props。
+Counterexamples: copying native button/input elements and writing custom CSS; deep-importing an internal UI file; placing AccountPanel in a new page without its required context; or guessing props from an asset name.
 
 ## Enforced by
 
-`pnpm ops ci check docs desktop` 与 `scripts/ci/__tests__/standards.test.mjs` 检查资产生成一致性；`scripts/ci/__tests__/reuse.test.mjs` 检查 UI 出口/意图/预览覆盖。`pnpm ops ci check types desktop` 检查消费者 API，真实页面按[测试规范](../quality/testing.md)验证。
+`pnpm ops ci check docs desktop` and `scripts/ci/__tests__/standards.test.mjs` check catalog generation consistency. `scripts/ci/__tests__/reuse.test.mjs` checks the UI barrel, intents, and preview coverage. `pnpm ops ci check types desktop` checks consumer APIs; verify real pages according to the [testing rules](../quality/testing.md).
 
 ## Update triggers
 
-增加或删除导出、修改 UI 意图/使用限制后运行 `pnpm ops ci check docs desktop --write`，提交生成的资产变化。业务用途和环境变化同时更新本指南相关示例，不手改生成表。
+After adding or removing exports or changing UI intents/usage constraints, run `pnpm ops ci check docs desktop --write` and include the generated catalog changes. When business purpose or runtime requirements change, update the relevant examples in this guide too. Do not edit generated tables by hand.
+
+The generated catalog's English descriptions are maintained in `scripts/ci/ui-registry-en.json`; Chinese search keywords remain in `registry.ts`. After changing the first four `intents`, `use`, or `avoid` entries in the registry, review and update the corresponding English translation. Set `sourceHash` to the SHA-256 digest, in UTF-8, of `JSON.stringify([entry.intents.slice(0, 4), entry.use, entry.avoid])`.
 
 ## Stop condition
 
-找到合适组件、确认 props/依赖、在示例中看过状态后进入页面开发。未找到能力时按 owner 补组件；不以写一份新清单代替源码注册。
+Start page development once you have found a suitable component, confirmed its props and dependencies, and inspected its states in the examples. If a capability is missing, extend the owning component; do not replace source registration with a new list.
 
-## AI 开发入口
+<a id="ai-开发入口"></a>
+## AI Development Entry Point
 
-组件复用契约由 [components](components.md) 和实际 registry 持有；公开检索工具为
-`apps/desktop/scripts/ci/find.mjs`，不依赖内部开发 Skill。
-开发 Skill、MasterGo 接线和宿主发现由文档内源仓维护，不随源码分发。
-Desktop 文档与复用门禁继续检查实际源码和派生资产；业务页面只在本次开发范围内渐进整改。
+The component reuse contract is defined by [components](components.md) and the actual registry. The public search tool is `apps/desktop/scripts/ci/find.mjs`; it does not depend on an internal development Skill.
+Development Skills, MasterGo integration, and host discovery are maintained in the documentation source repository and are not distributed with source code.
+Desktop documentation and reuse gates continue to check actual source and derived assets. Business pages are improved incrementally only within the scope of each development task.

@@ -1,203 +1,235 @@
-# 真实对话与任务结果候选需求
+<a id="真实对话与任务结果候选需求"></a>
+# Candidate Requirements for Real Conversations and Task Results
 
-## 用途与入口
+<a id="用途与入口"></a>
+## Purpose and Entry Point
 
-用户在项目工作区的新任务或已有任务输入区发送请求，观察同一任务的执行状态、回答及可用结果；目标版本的真实入口、需求适用性及采用状态仍需核实。本页是基于历史需求资产整理的候选，不是本轮冻结判据或产品通过结论。
+Users send requests from the new-task or existing-task input area in a project workspace and observe the same task's execution state, answer, and available results. The real entry point, requirement applicability, and adoption status for the target version still need verification. This page is a candidate compiled from historical requirement assets, not this round's frozen criteria or a product pass result.
 
-隔离项目真实单轮完成状态
+Real single-turn completion in an isolated project
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-13；隔离项目的一次合成请求及真实回复完成状态，输入框文字为占位提示。截图不证明重开读回、文件产物或正式评测通过；来源见[构建依据](./build.md)。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-13; one synthetic request and its real completed reply in an isolated project. The input field text is a placeholder. The screenshot does not prove readback after reopening, file artifacts, or a formal evaluation pass; see [Build Basis](./build.md) for the source.
 
-同进程重开任务后的显示状态
+Display after reopening a task in the same process
 
-参考：同版本隔离项目，2026-11-13；显示任务重新选中后的消息与完成状态，截图本身不证明切换过程或跨重启恢复。
+Reference: isolated project on the same version, 2026-11-13; shows the messages and completed state after reselecting a task. The screenshot itself does not prove the selection process or recovery across a restart.
 
-真实任务标题区操作菜单
+Real task title-bar action menu
 
-参考：同版本隔离项目，2026-11-13；工作台打开时的真实任务标题区操作菜单，不证明各菜单动作或工作台关闭时的状态。
+Reference: isolated project on the same version, 2026-11-13; the real task title-bar action menu with the workbench open. It does not prove any menu action or the state with the workbench closed.
 
-**参考截图缺口：** 文件产物、已发送图片组预览及其他对话状态仍缺目标版本完整窗口图。空白输入器参考图见[输入器候选](./../task-composer/requirements.md)，仅展示发送前状态；不得使用组件夹具、历史真实用户会话或合成结果冒充。
+**Reference screenshot gaps:** Full-window screenshots for file artifacts, sent image-group previews, and other conversation states on the target version are still missing. See the blank input composer reference in [Composer Candidates](./../task-composer/requirements.md); it shows only the pre-send state. Component fixtures, historical real user conversations, and synthetic results must not be used as substitutes.
 
-## 候选正常流程
+<a id="候选正常流程"></a>
+## Candidate Normal Flows
 
-### 已发送图片组预览与原文件操作（`CHAT-IMAGE-GROUP-CAND-001`；产品需求版本待确认）
+<a id="已发送图片组预览与原文件操作chat-image-group-cand-001产品需求版本待确认"></a>
+### Sent Image-Group Preview and Original-File Actions (`CHAT-IMAGE-GROUP-CAND-001`; product requirement version pending confirmation)
 
-历史用户确认已发送图片可成组查看：以同一获准隔离会话中真实发送的两张可区分图片及发送前独立记录的身份为参照，核缩略图、进入预览、同组切换、缩放拖动和关闭；预览显示的文件名与当前图片应对应。图片预览成功不证明模型读取图片。草稿缩略图及移除属于发送前状态，不替代已发送消息；混合上下文展示顺序由 `CHAT-MIXED-CONTEXT-CAND-001` 单独覆盖。
+Historical user confirmation says sent images can be viewed as a group. Use two distinguishable images actually sent in the same authorized isolated conversation, with their identities independently recorded before sending, to check thumbnails, opening the preview, switching within the group, zooming, dragging, and closing; the filename shown in the preview should correspond to the current image. A successful image preview does not prove that the model read the image. Draft thumbnails and their removal are pre-send states and do not substitute for a sent message; display order for mixed context is covered separately by `CHAT-MIXED-CONTEXT-CAND-001`.
 
-原文件操作分别核实际目标：工作台打开应对应当前图片且不自动导入；打开方式与所在文件夹操作应指向同一原文件，宿主回执不代替目标核验；复制须核获准剪贴板结果。导入资料库须独立比较导入前后目录、文件身份和字节或摘要，同名时提示改名且不覆盖原文件、不自动编号。各动作分别具备授权和参照时才可检查，不以菜单可见或成功提示代替终态。历史最新菜单要求用四项操作替代另存和系统默认打开，而当前源码仍有另存；目标包适用及冲突待 Owner 确认，不自行裁定另存菜单。失败兜底、完整菜单细节和跨平台单列专项。
+Check the actual target of each original-file action separately: opening in the workbench should correspond to the current image and must not import it automatically; Open With and Show in Folder should target the same original file, and a host acknowledgment does not replace checking the target; Copy requires checking the authorized clipboard result. For library import, independently compare the directory, file identity, and bytes or digest before and after import. When a name collides, prompt for a new name without overwriting the original or assigning a number automatically. Check an action only when it has its own authorization and reference; a visible menu or success notice does not substitute for the final state. The latest historical menu requirement replaces Save As and the system default opener with four actions, while the current source still has Save As. The target package's applicability and this conflict require Owner confirmation; do not decide the Save As menu question here. Failure handling, full menu details, and cross-platform behavior are separate topics.
 
-目标包适用、需求版本、采用及已发送图片预览真实完整窗口图待核；历史开发实例和组件图不作为目标参考。当前源码中打开“更多”菜单本身可能读取并重验会话文件、更新宿主授权根及枚举应用，须先核实际目标及授权；仅查看预览不要求打开该菜单。准备隔离合成图片、文件读取、草稿写入、发送及模型费用、剪贴板、宿主打开或定位、资料库写入分别核授权；不读取真实用户数据、不预置已发送消息。来源及差异见[构建依据](./build.md)。
+Target-package applicability, requirement version, adoption, and a real full-window screenshot of a sent-image preview remain to be checked; historical development instances and component images are not target references. In the current source, opening the More menu itself may read and revalidate session files, update the host authorization root, and enumerate applications; first verify the actual target and authorization. The menu need not be opened merely to inspect a preview. Separately verify authorization to prepare isolated synthetic images, read files, write drafts, send and incur model costs, use the clipboard, open or reveal files in the host, and write to the library. Do not read real user data or prepopulate sent messages. Sources and differences are in [Build Basis](./build.md).
 
-### 新任务与真实单轮（历史 `CHAT-NEW-01@3`、`CHAT-TURN-01@1`；产品需求版本待确认）
+<a id="新任务与真实单轮历史-chat-new-013chat-turn-011产品需求版本待确认"></a>
+### New Task and Real Single Turn (historical `CHAT-NEW-01@3`, `CHAT-TURN-01@1`; product requirement version pending confirmation)
 
-在隔离项目中，从已核新任务入口发出一条合成请求；首次发送建立可区分的新会话，原有会话的消息不混入新会话。用户能看到同一真实回合的原请求、执行变化及最终完整回答；回答应针对请求且有可核的完成终态。空回答、仅恢复空闲或模型自述不能单独证明成功。历史 ID 与资产修订不等于产品需求版本，采用与目标版本适用性待确认。
+In an isolated project, send a synthetic request from the verified new-task entry point. The first send creates a distinguishable new conversation, and messages from existing conversations do not appear in it. The user can see the original request, execution changes, and complete final answer from the same real turn; the answer should address the request and have a verifiable completed final state. An empty answer, merely returning to idle, or the model's own claim does not independently prove success. Historical IDs and asset revisions are not product requirement versions; adoption and applicability to the target version remain to be confirmed.
 
-### 待审阅文件与新任务对话（`CHAT-REVIEW-DECOUPLE-CAND-001`；产品需求版本待确认）
+<a id="待审阅文件与新任务对话chat-review-decouple-cand-001产品需求版本待确认"></a>
+### Pending Review Files and a New-Task Conversation (`CHAT-REVIEW-DECOUPLE-CAND-001`; product requirement version pending confirmation)
 
-历史用户明确要求文件未审阅时也不阻断继续对话。对于同一获准隔离项目中旧任务留下的真实待审阅文件，新任务应能正常发送并完成对应的真实对话；发送本身不应自动接受、拒绝或清空原审阅。以独立记录的项目、旧任务、文件和审阅身份及发送前后状态为参照，不以普通新任务单轮或发送成功提示替代待审阅前置和完整回复。审阅决定仍须显式处理，实际资源操作错误和修订冲突不能因对话解耦被吞掉。
+The user historically stated explicitly that an unreviewed file must not block continuing the conversation. For a real file awaiting review left by an old task in the same authorized isolated project, a new task should send and complete its corresponding real conversation normally; sending must not automatically accept, reject, or clear the original review. Use independently recorded project, old-task, file, and review identities and before/after states as references. An ordinary new-task single turn or send-success notice does not substitute for the pending-review precondition and complete reply. The review decision still requires explicit handling; actual resource-operation errors and revision conflicts must not be swallowed by decoupling the conversation.
 
-该项为候选专项，目标版本适用及采用待确认，目标包待审阅和新任务完成态真实完整窗口图缺失。需获准隔离项目、真实待审阅文件及独立状态参照；生成文件、创建任务、发送、模型调用和显式审阅涉及各自权限及副作用。此项不声称覆盖同会话续聊、队列、失败重发、未保存草稿、连续修改或跨平台，相关场景另核；不读取真实用户会话或伪造审阅状态。
+This is a candidate special case. Applicability to the target version and adoption remain to be confirmed, and a real full-window screenshot showing a pending-review file and completed new task on the target package is missing. It requires an authorized isolated project, a real file awaiting review, and an independent state reference. File generation, task creation, sending, model calls, and explicit review each have their own permissions and side effects. This item does not claim coverage of continuing the same conversation, queues, resend after failure, unsaved drafts, successive edits, or cross-platform behavior; verify those separately. Do not read real user conversations or forge review state.
 
-### 已有会话读回（历史 `CHAT-HISTORY-01@3`；产品需求版本待确认）
+<a id="已有会话读回历史-chat-history-013产品需求版本待确认"></a>
+### Readback of an Existing Conversation (historical `CHAT-HISTORY-01@3`; product requirement version pending confirmation)
 
-从任务列表打开已完成的隔离会话，读回与独立记录的会话身份对应的原用户消息、回复和终态；不串入其他会话。空任务列表或未发送草稿不能代替已完成回合。重启后的恢复及其他异常状态另列专项。
+Open a completed isolated conversation from the task list and read back the original user message, reply, and final state corresponding to the independently recorded conversation identity; do not mix in another conversation. An empty task list or an unsent draft cannot substitute for a completed turn. Recovery after restart and other exceptional states are separate topics.
 
-### 历史任务的回复时间与排序（`CHAT-HISTORY-SORT-CAND-001`；产品需求版本待确认）
+<a id="历史任务的回复时间与排序chat-history-sort-cand-001产品需求版本待确认"></a>
+### Reply Time and Ordering of Historical Tasks (`CHAT-HISTORY-SORT-CAND-001`; product requirement version pending confirmation)
 
-历史用户确认项目内及文献中心的历史任务浮层显示 Agent 最后回复时间，并按该时间倒序，不按创建、置顶或其他活动时间排序。以同一获准隔离范围内可区分的真实会话及独立记录的最后回复时间为参照，核对浮层行身份、时间和顺序；列表出现或历史会话可打开不单独证明排序。没有 Agent 回复的任务如何展示和排序仍待确认，不因当前实现自动采用。目标版本适用性、采用状态和非空浮层完整窗口图待核，跨页极值与跨平台另列专项；此浮层不同于项目侧栏置顶分组。
+Historical user confirmation says the historical-task popover in projects and the Literature Center shows the Agent's last-reply time and sorts in descending order by that time, not by creation, pinning, or other activity time. Use distinguishable real conversations in the same authorized isolated scope and independently recorded last-reply times to check row identity, time, and order in the popover; merely seeing a list or opening a historical conversation does not prove sorting. How tasks without an Agent reply should appear and sort is still unconfirmed and must not be adopted automatically from the current implementation. Target-version applicability, adoption status, and a non-empty full-window popover screenshot remain to be checked. Cross-page extremes and cross-platform behavior are separate topics; this popover is distinct from the pinned group in the project sidebar.
 
-至少需两个具有可区分最后回复时间的真实隔离会话，最好其创建顺序与回复顺序不同；无回复状态先确认要求，再准备真实任务。准备或续聊需各自授权，已有获准会话可用于观察，但不能以伪造事件或预置数据库代替，`examples` 原始文件也不提供会话结果。
+At least two real isolated conversations with distinguishable last-reply times are required, preferably with creation order different from reply order. Confirm the requirement before preparing a real task for a no-reply state. Preparation or continuation each requires authorization. An existing authorized conversation may be observed, but forged events and a prepopulated database are not substitutes; raw files in `examples` do not provide conversation results.
 
-### 创建任务分支（`CHAT-FORK-CAND-001`；产品需求版本待确认）
+<a id="创建任务分支chat-fork-cand-001产品需求版本待确认"></a>
+### Create a Task Branch (`CHAT-FORK-CAND-001`; product requirement version pending confirmation)
 
-历史用户确认项目任务菜单提供创建分支会话，分支的来源条可回到来源任务。对获准隔离源任务执行创建后，以同项目独立目录核对新分支身份与来源任务不同，再核来源条指向该源任务及回跳结果；菜单关闭、提示或新卡片本身不代替目录和来源身份参照。该动作与新建空白任务及历史消息读回不同，不以此推断完整历史继承或新回合已执行。目标版本适用、采用和真实完整窗口图待核；轮次级分叉、脱离分组、失败恢复与跨平台另列专项。
+Historical user confirmation says the project task menu offers creation of a branched conversation, and the branch's source row can return to the source task. After creating one from an authorized isolated source task, use an independent directory in the same project to verify that the new branch identity differs from the source task, then verify that its source row points to that task and that the return works. Closing a menu, a notice, or a new card does not replace the directory and source-identity reference. This differs from creating a blank task or reading historical messages; do not infer complete history inheritance or that a new turn was executed. Applicability to the target version, adoption, and a real full-window screenshot remain to be checked. Turn-level branching, detaching from a group, failure recovery, and cross-platform behavior are separate topics.
 
-创建分支改变会话状态，需获准隔离项目与真实源任务及写入权限；应先记录源身份、项目和目录前态。`examples` 可提供合成项目资料，但不提供真实源会话；本动作不要求发送模型请求，也不自动授权发送。
+Branch creation changes conversation state and requires an authorized isolated project, a real source task, and write permission. Record the source identity, project, and directory pre-state first. `examples` can provide synthetic project files but no real source conversation. This action does not require sending a model request and does not automatically authorize sending.
 
-### 文件产物交付（历史 `CHAT-ARTIFACT-01@2`；产品需求版本待确认）
+<a id="文件产物交付历史-chat-artifact-012产品需求版本待确认"></a>
+### File-Artifact Delivery (historical `CHAT-ARTIFACT-01@2`; product requirement version pending confirmation)
 
-在明确要求文件产物的获准真实回合中，任务结果提供可对应的产物入口，打开的文件身份与实际发布文件一致且内容可读；来源和语义质量另用独立资料与评审判断。不要求每次普通文字对话都产生文件；卡片、文件名或模型声称生成不能代替真实打开结果。
+In an authorized real turn that explicitly requests a file artifact, the task result provides a corresponding artifact entry point, and the identity of the opened file matches the file actually published and its contents are readable. Evaluate source fidelity and semantic quality separately against independent materials and review. Ordinary text conversations do not all need to produce files; a card, filename, or model claim of generation cannot substitute for actually opening the result.
 
-### 过程文献更多操作（`CHAT-PROCESS-LITERATURE-CAND-001`；产品需求版本待确认）
+<a id="过程文献更多操作chat-process-literature-cand-001产品需求版本待确认"></a>
+### More Actions on In-Progress Literature (`CHAT-PROCESS-LITERATURE-CAND-001`; product requirement version pending confirmation)
 
-历史缺陷截图确认过程文献条目应提供可发现的更多操作并保持正常 PDF 阅读，不伪造工作文件路径；以同一获准真实会话中的文献及附件身份为参照，观察操作入口与实际可用目标，选入 PDF 阅读时核同一附件的真实阅读终态。路径如有展示须与独立来源对应，不要求每篇文献都有本地文件，也不推断 PDF 已下载。具体菜单项的完整规则仍需确认，不能仅按源码定义；目标包适用、真实过程文献及完整窗口图待核。复制标题、联网、生成和文件访问分别核权限，不以文献中心附件入口代替。
+Historical defect screenshots confirm that an in-progress literature item should expose discoverable More actions and preserve normal PDF reading, without fabricating a working-file path. Use literature and attachment identities from the same authorized real conversation as references to observe the entry point and actual available targets; if PDF reading is selected, verify the real reading end state for that same attachment. Any displayed path must match an independent source. Not every paper is required to have a local file, and PDF download must not be inferred. The complete rules for specific menu items still require confirmation and must not be defined from source alone. Applicability to the target package, real in-progress literature, and a full-window screenshot remain to be checked. Separately verify authorization for copying titles, network access, generation, and file access; a Literature Center attachment entry is not a substitute.
 
-### 文献综述卡片与引用导航（`CHAT-REVIEW-CARD-CAND-001`；产品需求版本待确认）
+<a id="文献综述卡片与引用导航chat-review-card-cand-001产品需求版本待确认"></a>
+### Literature-Review Card and Citation Navigation (`CHAT-REVIEW-CARD-CAND-001`; product requirement version pending confirmation)
 
-历史用户要求综述卡片依次展示范围与交付、综述大纲、文献引用信息、引用核对与未解决问题；范围区去除原卡片标题和用户输入，大纲为树形且章节总结采用灰底竖线引用样式。引用信息以表格呈现并将说明收于悬浮提示；核对问题表包含引用核对状态、未解决问题和问题优先级，缺省以“—”表示。文献库引用应在新侧边窗口打开对应文献，网络引用应在新侧边窗口打开对应网页。以同次获准真实综述结果及独立范围、章节、引用和目标身份参照核对；卡片存在不证明引用正确或综述质量。数量看板的图示细节仍须回查原图，不由本候选推断。目标包适用、需求版本、真实结果及完整窗口图待核；模型、联网及目标打开分别核权限，不以模拟数据或历史开发记录代替。
+Historical user requirements say the review card displays, in order, scope and deliverables, the review outline, literature citation information, and citation checks and unresolved issues. Remove the original card title and user input from the scope area. The outline is a tree, and section summaries use a gray-background, vertical-bar quotation style. Show citation information in a table, with explanations in hover tooltips. The issue-check table includes citation-check status, unresolved issues, and issue priority; use “—” when absent. A library citation should open the corresponding paper in a new side window, and a web citation should open the corresponding page in a new side window. Check against the same authorized real review result and independent references for scope, sections, citations, and target identities; the existence of a card does not prove citation correctness or review quality. The graphic details of the count dashboard still need to be checked against the original image and are not inferred by this candidate. Target-package applicability, requirement version, real results, and a full-window screenshot remain to be checked. Separately verify permissions for model use, network access, and opening targets; do not substitute simulated data or historical development records.
 
-### 对话文件历史版本（`CHAT-ARTIFACT-VERSION-CAND-001`；产品需求版本待确认）
+<a id="对话文件历史版本chat-artifact-version-cand-001产品需求版本待确认"></a>
+### Historical Versions of Conversation Files (`CHAT-ARTIFACT-VERSION-CAND-001`; product requirement version pending confirmation)
 
-历史用户要求同一轮、同一发布路径仅呈现一张最新文件卡，并可通过版本入口按不可变 publication/artifact 身份打开历史内容。对获准真实产物，需同轮同路径至少两个可区分版本及其独立身份和内容参照，核最新卡片、版本选择与实际打开内容；普通产物入口、文件名或一张卡片不证明版本对应。目标包适用、需求版本和完整窗口图待核；模型调用、产物写入、刷新恢复及跨平台分别核条件，不预置产品结果。
+Historical user requirements say that for the same turn and publication path, only one latest-file card is shown, with a version entry point that opens historical content by immutable publication/artifact identity. For an authorized real artifact, at least two distinguishable versions from the same turn and path, with independent identity and content references, are required to check the latest card, version selection, and actual opened content. A normal artifact entry point, filename, or single card does not prove version correspondence. Target-package applicability, requirement version, and a full-window screenshot remain to be checked. Separately check conditions for model calls, artifact writes, recovery after refresh, and cross-platform behavior; do not prepopulate product results.
 
-### 对话画布与工作台往返（`CHAT-CANVAS-CAND-001`；产品需求版本待确认）
+<a id="对话画布与工作台往返chat-canvas-cand-001产品需求版本待确认"></a>
+### Conversation Canvas and Workbench Round Trip (`CHAT-CANVAS-CAND-001`; product requirement version pending confirmation)
 
-历史确认要求每张对话画布的预览独立折叠；无论展开或收起，均可打开工作台中的同一画布，使用工作台自身收起按钮回到对话后保留该画布原有预览状态和原文档，但不自动切回原文档。以同一获准真实会话中可区分的画布身份、内容与进入前预览状态为独立参照，分别观察折叠及展开时的打开、工作台承载和返回；不以外观相似证明同一画布，也不据此推断画布编辑或保存通过。
+Historical confirmation requires each conversation canvas preview to collapse independently. Whether expanded or collapsed, the same canvas can be opened in the workbench. Returning to the conversation with the workbench's own collapse button preserves that canvas's prior preview state and original document, without automatically switching back to the original document. Use a distinguishable canvas identity, content, and pre-entry preview state in the same authorized real conversation as independent references. Observe opening, workbench rendering, and return with both collapsed and expanded previews. Similar appearance does not prove the same canvas, and this does not imply canvas editing or saving passed.
 
-目标版本入口、适用性、需求版本和真实完整窗口截图待核；若没有可用的获准真实画布，生成涉及模型、工具、费用与写入，须分别核授权。画布及工作台切换可能改变隔离布局，记录副作用；预览高度与滚动、工作台正文衔接及不重复返回行的完整布局细则、画布编辑、异常和跨平台另列专项，不以组件示例或伪造事件代替。
+The target-version entry point, applicability, requirement version, and real full-window screenshot remain to be checked. If no authorized real canvas is available, generating one involves a model, tools, cost, and writes, which each require separate authorization. Record side effects because canvas/workbench switching may change the isolated layout. Full layout details for preview height and scrolling, workbench-body continuity, and avoiding a duplicate return row, as well as canvas editing, exceptions, and cross-platform behavior, are separate topics; do not substitute component examples or forged events.
 
-### 任务概览产物展开（`CHAT-OVERVIEW-CAND-001`；产品需求版本待确认）
+<a id="任务概览产物展开chat-overview-cand-001产品需求版本待确认"></a>
+### Expand Task-Overview Artifacts (`CHAT-OVERVIEW-CAND-001`; product requirement version pending confirmation)
 
-历史用户确认任务概览的输出与过程产物分别默认展示最多五项；某组超过五项时，在该组显示剩余数量，展开后原位展示全部并可收起。以同一获准隔离会话的独立产物清单核对各组身份、数量、剩余数和展开前后状态；两组分别检查，不以一组结果外推另一组，也不把产物列表展示当作文件打开或内容正确。目标版本适用、采用状态及真实完整窗口图待核；历史三项预览及悬停明细旧规则不作为此候选要求。
+Historical user confirmation says output artifacts and in-progress artifacts in the task overview each show at most five items by default. If a group has more than five, show the remaining count in that group; expansion displays all items in place and can be collapsed again. Use an independent artifact inventory for the same authorized isolated conversation to check the identities and counts in each group, the remaining count, and states before and after expansion. Check the groups separately; do not extrapolate one group's result to the other or treat listing artifacts as proof that a file opened or its content is correct. Target-version applicability, adoption status, and a real full-window screenshot remain to be checked. The historical old rule for three-item previews and hover details is not a requirement of this candidate.
 
-每个待核溢出组需要同会话中至少六个可区分的真实产物及独立清单；已有获准会话可供观察，创建、生成产物及其模型调用、费用和写入须分别授权。共享 `examples` 仅提供原始资料，不预置真实任务产物；不使用组件夹具或预填产物冒充产品终态。
+Each overflow group under review requires at least six distinguishable real artifacts from the same conversation and an independent inventory. An existing authorized conversation may be observed; creating a conversation, generating artifacts, and their model calls, costs, and writes each require separate authorization. Shared `examples` provide only source materials, not prepopulated real task artifacts. Do not use component fixtures or prefilled artifacts as product final states.
 
-### 回答的混合引用来源列表（`CHAT-CITATIONS-CAND-001`；需求版本待确认）
+<a id="回答的混合引用来源列表chat-citations-cand-001需求版本待确认"></a>
+### Mixed Citation-Source List in an Answer (`CHAT-CITATIONS-CAND-001`; requirement version pending confirmation)
 
-历史设计记录记载产品后续确认：回答保留来源数量入口，文件和网页按回答中的来源顺序在同一可滚动列表混排，不设分类页签；数量按同源对象去重。以同一获准真实会话、同轮回答及独立来源身份与顺序记录为参照，核数量和列表对应关系；入口或图标出现不代表来源身份、内容或可打开性正确。本候选不要求执行来源点击，不推断文件版本校验、网页访问或来源内容真实性已通过。
+Historical design records a later product confirmation: the answer retains a source-count entry point; files and web pages are mixed in one scrollable list in the order of their sources in the answer, without category tabs; the count deduplicates identical source objects. Use the same authorized real conversation and turn, with independently recorded source identities and order, to check the count and list correspondence. An entry point or icon does not prove source identity, content, or openability. This candidate does not require clicking a source or infer that file-version validation, web access, or source-content authenticity passed.
 
-需真实可区分的文件和网页来源、同轮回答及独立来源参照；验证去重时同轮还须至少存在一组可独立识别的同源重复引用，并记录原始顺序，否则去重子点保留未覆盖。模型、联网、文件读取与后续打开操作分别核权限，不以组件示例、伪造来源或预填回答代替。目标包适用、需求版本、采用状态及真实完整窗口图待核；不同来源条件、异常与跨平台另列专项。
+Real distinguishable file and web sources, an answer from the same turn, and independent source references are required. To verify deduplication, that turn must also contain at least one independently identifiable repeated citation to the same source, and its original order must be recorded; otherwise leave deduplication uncovered. Separately verify permissions for model use, network access, file reading, and later opening. Do not substitute component examples, fabricated sources, or prefilled answers. Target-package applicability, requirement version, adoption status, and a real full-window screenshot remain to be checked. Different source conditions, exceptions, and cross-platform behavior are separate topics.
 
-### 引用摘录展开（`CHAT-CITATION-EXCERPT-CAND-001`；需求版本待确认）
+<a id="引用摘录展开chat-citation-excerpt-cand-001需求版本待确认"></a>
+### Expand Citation Excerpts (`CHAT-CITATION-EXCERPT-CAND-001`; requirement version pending confirmation)
 
-历史要求记录单文件和分组引用预览按 Unicode 码点计数：240 字符及以内完整展示，超过 240 字符可展开和收起，分组引用的展开状态相互独立，原文导航不受影响。以获准真实会话和独立摘录原文、来源及长度为参照，分别核边界、完整内容、展开状态和原文目标；不以来源列表展示代替摘录预览。折叠行数的历史依据存在冲突，须由 Owner 确认，暂不作为判据。真实原生引用、目标包适用、采用状态和完整窗口截图均待核；模型、文件读取及导航各按实际权限执行，不纳入已采用冒烟。
+Historical requirements record that single-file and grouped citation previews count Unicode code points: show excerpts of 240 characters or fewer in full; excerpts longer than 240 characters can be expanded and collapsed; grouped citations have independent expansion states; and original-text navigation is unaffected. Use an authorized real conversation and independent references for excerpt text, source, and length to check the boundary, complete content, expansion state, and original target separately. A source list is not a substitute for an excerpt preview. Historical evidence about the number of collapsed lines conflicts and requires Owner confirmation; it is not currently a criterion. Real native citations, target-package applicability, adoption status, and a full-window screenshot all remain to be checked. Model use, file reading, and navigation follow their actual permissions; this is not part of the adopted smoke-test denominator.
 
-### 长用户消息展示与复制（`CHAT-MESSAGE-CAND-001`；产品需求版本待确认）
+<a id="长用户消息展示与复制chat-message-cand-001产品需求版本待确认"></a>
+### Display and Copy of Long User Messages (`CHAT-MESSAGE-CAND-001`; product requirement version pending confirmation)
 
-历史用户确认：发送后的用户文字超过六个视觉行时折叠，可展开及收起，折叠不截断原文或复制值。以预先记录的合成请求原文为独立参照，核对同一消息展开后的内容，并在获准操作系统剪贴板的条件下分别核对折叠与展开状态的复制结果；短消息和不同窗口宽度的视觉行数按实际布局判断，不按字符数推断。此项不覆盖助手回答复制、链接打开或消息时间；目标版本适用和采用仍待确认。
+Historical user confirmation: after sending, user text longer than six visual lines is collapsed, with expand and collapse controls; collapsing does not truncate the original text or copied value. Use a previously recorded synthetic request as the independent reference to check the expanded content of the same message. If operating the system clipboard is authorized, check copy results separately in collapsed and expanded states. Determine visual-line count for short messages and different window widths from the actual layout, not character count. This does not cover copying assistant answers, opening links, or message timestamps; applicability and adoption for the target version remain to be confirmed.
 
-长用户消息展开状态
+Expanded long user message
 
-长用户消息收起状态
+Collapsed long user message
 
-参考：macOS arm64 安装版 `0.3.2`，2026-11-13，隔离合成会话的完整渲染视口；展开后的消息下半部分超出视口，不能仅凭图证明全文可见或复制正确。该次只观察同进程状态，安装构建号、渠道和会话独立身份的关联限制见[构建依据](./build.md)。
+Reference: macOS arm64 installed build `0.3.2`, 2026-11-13, full rendered viewport of an isolated synthetic conversation. The lower part of the expanded message extends beyond the viewport, so the image alone cannot prove that all text is visible or that copying is correct. This observation was in the same process only; limitations on associating the installed build number, channel, and independent conversation identity are in [Build Basis](./build.md).
 
-长消息展开顶部视口
+Top viewport of expanded long message
 
-长消息展开中部视口
+Middle viewport of expanded long message
 
-长消息展开末尾视口
+End viewport of expanded long message
 
-参考：同日隔离合成会话的连续完整视口，前后重叠且末图展示原始文本末尾；不能仅凭图证明逐字符复制、跨窗口或重启恢复。
+Reference: consecutive full viewports of a synthetic isolated conversation from the same day, with overlap between images and the final image showing the end of the original text. The images alone cannot prove character-by-character copy, behavior across windows, or recovery after restart.
 
-需真实隔离会话及获准模型调用；目标版本完整适用及剪贴板结果仍待核，不能以输入器草稿、组件预览或历史其他会话替代。历史确认与源码线索见[构建依据](./build.md)。
+A real isolated conversation and authorized model call are required. Full applicability to the target version and clipboard results remain to be checked; an input-composer draft, component preview, or another historical conversation is not a substitute. Historical confirmation and source clues are in [Build Basis](./build.md).
 
-可复用共享示例中的[合成 Markdown 文本](../../../../../examples/projects/evaluation/files/sample.md)作为待发送原文；按清单核字节并在发送前记录实际输入。样本文本行数不等于实际视觉行数，须按当轮窗口布局观察；样本不含对话结果，也不授权发送或操作剪贴板。
+The [synthetic Markdown text](../../../../../examples/projects/evaluation/files/sample.md) in shared examples can be reused as the original text to send. Verify its bytes against the manifest and record the actual input before sending. The number of lines in the sample is not the number of visual lines; observe it in the current window layout. The sample contains no conversation result and does not authorize sending or clipboard operations.
 
-### Agent 正文裸网址（`CHAT-BARE-URL-CAND-001`；需求版本待确认）
+<a id="agent-正文裸网址chat-bare-url-cand-001需求版本待确认"></a>
+### Bare URLs in Agent Body Text (`CHAT-BARE-URL-CAND-001`; requirement version pending confirmation)
 
-历史用户确认 Agent 正文中的裸网址在容器内单行省略，悬停或键盘聚焦可查看完整地址，复制和打开仍使用完整 URL；普通描述文字链接保持原换行语义。以同一获准真实回答和独立完整地址为参照，分别核展示、提示、复制及获准打开目标；不以用户消息复制或来源列表代替。目标包适用、需求版本和真实完整窗口图待核；模型、外部导航与系统剪贴板分别核权限。
+Historical user confirmation says bare URLs in Agent body text are truncated to a single line inside the container; hovering or keyboard focus reveals the full address, while copy and open use the full URL. Ordinary descriptive text links retain their normal line-wrapping semantics. Use the same authorized real answer and an independently recorded full address to check rendering, tooltip, copy, and the authorized open target separately; copying a user message or viewing the source list is not a substitute. Target-package applicability, requirement version, and a real full-window screenshot remain to be checked. Separately verify permissions for model use, external navigation, and system clipboard access.
 
-### 已发送混合上下文展示顺序（`CHAT-MIXED-CONTEXT-CAND-001`；需求版本待确认）
+<a id="已发送混合上下文展示顺序chat-mixed-context-cand-001需求版本待确认"></a>
+### Display Order for Sent Mixed Context (`CHAT-MIXED-CONTEXT-CAND-001`; requirement version pending confirmation)
 
-历史用户确认的已发送内容按划词／注释、图片、文件、文字气泡的顺序展示，前三类分别成行；同一真实消息以发送前独立记录的引用身份、类型和文本为参照，核各类真实内容及展示顺序。该要求针对展示分组，不要求或证明发送载荷与持久引用被重排，也不由图片或文件可见推断模型已读取。目标包适用、需求版本及真实完整窗口图待核；极端溢出、打开源内容及跨平台另列专项。
+Historical user confirmation says sent content is displayed in this order: text selection/annotation, image, file, and text bubble, with the first three each on their own row. Use the identities, types, and text of the references independently recorded before sending the same real message to check the actual content and display order of each type. This requirement concerns display grouping; it neither requires nor proves reordering of the send payload or persistent references, and visible images or files do not imply that the model read them. Target-package applicability, requirement version, and a real full-window screenshot remain to be checked. Extreme overflow, opening source content, and cross-platform behavior are separate topics.
 
-需同一获准隔离会话中真实发送的混合消息、可区分的合成图片和文件以及真实可核的划词／注释；准备本地文件由人工确认，文件读取、草稿写入、模型发送及费用分别核权限。`examples` 只提供部分原始输入，不预置消息或回答；不能以空草稿、组件截图或预填消息替代。
+This requires a real mixed-context message sent in the same authorized isolated conversation, distinguishable synthetic images and files, and real verifiable selections/annotations. A person must confirm preparation of local files. Separately verify authorization for file reading, draft writing, model sending, and costs. `examples` supplies only some original inputs; it does not prepopulate messages or answers. An empty draft, component screenshot, or prefilled message is not a substitute.
 
-## 数据与独立参照
+<a id="数据与独立参照"></a>
+## Data and Independent References
 
-测试项目及输入应为获准隔离副本；必要原始资料从 [examples](../../../../../examples/README.md) 选择并记录版本、摘要与副本身份。请求、项目、会话及回合身份在执行前或生成时记录，真实回答和产物由产品生成，不预置结果。对话需独占隔离任务、模型与运行环境就绪，以及本次明确的模型调用、费用和必要文件写入授权；产物仅在获准任务目录生成。判断内容时以预先选定的请求与独立原始资料为参照，质量由独立评审，不能以驱动者或模型自述代替。
+Test projects and inputs must be authorized isolated copies. Select necessary original materials from [examples](../../../../../examples/README.md) and record their version, digest, and copy identity. Record request, project, conversation, and turn identities before execution or when generated; the product must generate real answers and artifacts, with no prepopulated results. The conversation needs an exclusive isolated task, a ready model and runtime environment, and explicit authorization for this model call, its cost, and necessary file writes. Generate artifacts only in the authorized task directory. Compare content with the preselected request and independent original materials; assess quality through independent review, not claims by the driver or model.
 
-新任务的发送前草稿及待发送队列属于[输入器候选](./../task-composer/requirements.md)，本页不重复定义；任务列表及置顶属于[任务列表候选](./../task-list/requirements.md)。普通回合、历史恢复和产物交付各自是可分辨的检查单元，不将一个截图或一条回合的结果相加为全流程通过。
+Pre-send drafts for new tasks and pending-send queues belong to [Composer Candidates](./../task-composer/requirements.md) and are not redefined here. Task lists and pins belong to [Task List Candidates](./../task-list/requirements.md). Ordinary turns, history recovery, and artifact delivery are distinct units of inspection; results from one screenshot or one turn must not be added up to claim the entire flow passed.
 
-## 专项与缺口
+<a id="专项与缺口"></a>
+## Special Cases and Gaps
 
-### 普通问答历史只读回放（`CHAT-ANSWER-REPLAY-CAND-001`；需求版本待确认）
+<a id="普通问答历史只读回放chat-answer-replay-cand-001需求版本待确认"></a>
+### Read-Only Replay of Historical Answers to Ordinary Questions (`CHAT-ANSWER-REPLAY-CAND-001`; requirement version pending confirmation)
 
-历史用户要求普通澄清及内置问答的历史回答展开后保留题面、原选项和文本框，准确回显所选单项或多项及补充内容；选项不可修改、文本可选择复制，不能重新提交。以同一真实请求的题面、选项顺序、提交前选择及补充原文和独立回执为参照，分别核提交后展开与重开后的内容、只读状态及复制结果。旧记录无法可靠识别选择时保留原文，不猜测勾选；跳过与超时须区分，超时不视为用户确认。自定义插件、授权和等待作答不属于本候选。
+Historical user requirements say that when an answer to an ordinary clarification or built-in question is expanded in history, it retains the prompt, original options, and text box, and accurately displays the selected single or multiple options and supplemental text. Options cannot be changed, text can be selected and copied, and the question cannot be resubmitted. Use the same real request's prompt, option order, pre-submit selections, original supplemental text, and independent receipt as references to check the content after submission and after reopening, read-only behavior, and copy result separately. If an old record cannot reliably identify a choice, preserve the original text and do not guess which options were selected. Skipping and timeout must be distinguished; timeout does not count as user confirmation. Custom plugins, authorization, and waiting for a response are outside this candidate.
 
-单选与补充、多选、跳过、旧记录降级、超时及重开分别记录覆盖；单选结果不能外推多选。需获准隔离真实会话和相应请求及决策记录，创建会话、模型调用与费用、提交决策、剪贴板及重开分别核权限；不以模拟事件、组件夹具或他人历史会话代替。目标包适用、需求版本、采用及完整窗口参考图待核；跨重启与跨平台分别核条件。本候选不等同 `CHAT-HISTORY-01@3` 的完整覆盖。
+Record coverage separately for single choice with supplemental text, multiple choice, skip, fallback for old records, timeout, and reopening; single-choice results do not generalize to multiple choice. This requires an authorized isolated real conversation and its request and decision records. Separately verify authorization for conversation creation, model calls and costs, decision submission, clipboard access, and reopening. Do not substitute simulated events, component fixtures, or someone else's historical conversation. Target-package applicability, requirement version, adoption, and a full-window reference screenshot remain to be checked; check restart and cross-platform conditions separately. This candidate is not equivalent to full coverage of `CHAT-HISTORY-01@3`.
 
-### 悬浮会话移动和还原（`CHAT-FLOAT-DOCK-CAND-001`；产品需求版本待确认）
+<a id="悬浮会话移动和还原chat-float-dock-cand-001产品需求版本待确认"></a>
+### Move and Restore a Floating Conversation (`CHAT-FLOAT-DOCK-CAND-001`; product requirement version pending confirmation)
 
-空任务悬浮输入状态
+Empty-task floating composer state
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-13；隔离项目的新任务悬浮输入状态，不代表已有真实会话或拖动、最小化及还原结果。来源见[构建依据](./build.md)。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-13; new-task floating composer in an isolated project. It does not represent an existing real conversation or the results of dragging, minimizing, or restoring. See [Build Basis](./build.md).
 
-历史用户确认只有六点图标可拖动会话，标题、输入区及其他按钮不触发拖动；松手后吸附到左上、右上、左下、右下或底部居中，最小化和还原保持同一停靠位置。对获准隔离会话记录会话身份、工作区边界和窗口尺寸，分别核五处停靠及最小化前后位置和身份；在标题、输入区和其他按钮的安全非把手区域分别验证拖动不移动且不误触。面板与入口尺寸不同，不要求像素坐标完全相同。按钮正常点击行为另计，不推断跨重启持久化。真实会话入口、需求版本及目标包适用待核；不同窗口尺寸和 macOS、Windows 分别验证，记录布局或标签变化，不以截图单独证明拖动。此项为候选专项，不纳入已采用冒烟分母。
+Historical user confirmation says only the six-dot icon can drag the conversation; the title, input area, and other buttons do not initiate a drag. On release, it snaps to the top-left, top-right, bottom-left, bottom-right, or bottom-center, and minimizing and restoring preserves the same dock position. For an authorized isolated conversation, record its identity, workspace bounds, and window size; check the position and identity at all five docking locations and before and after minimize/restore. Separately test safe non-handle areas in the title, input area, and other buttons to ensure dragging neither moves the window nor triggers an unintended action. Panel and entry-point dimensions differ; exact pixel coordinates need not match. Normal button clicks are evaluated separately; do not infer persistence across restarts. The real conversation entry point, requirement version, and target-package applicability remain to be checked. Verify different window sizes and macOS and Windows separately, recording layout or tab changes; screenshots alone do not prove dragging. This is a candidate special case and is not included in the adopted smoke-test denominator.
 
-### 悬浮会话左右调宽（`CHAT-FLOAT-RESIZE-CAND-001`；需求版本待确认）
+<a id="悬浮会话左右调宽chat-float-resize-cand-001需求版本待确认"></a>
+### Resize Floating Conversation Horizontally (`CHAT-FLOAT-RESIZE-CAND-001`; requirement version pending confirmation)
 
-历史用户录屏及增量要求确认：拖拽悬浮会话左右边缘只改变宽度，对侧边缘固定，不增加底边调高。以同一隔离会话的工作区边界和拖拽前后面板位置及尺寸为独立参照；左右边缘分别观察，不把整体移动或停靠结果当作调宽。目标包需求适用、需求版本及完整面板几何待核；窗口尺寸、主题及平台分别验证，不推断跨重启持久化。
+Historical user recordings and incremental requirements confirm that dragging either horizontal edge of the floating conversation changes only its width, with the opposite edge fixed; it does not add resizing by the bottom edge. Use workspace bounds and panel positions and dimensions before and after the drag in the same isolated conversation as independent references. Observe the left and right edges separately; do not count overall movement or docking as resizing. Target-package applicability, requirement version, and complete panel geometry remain to be checked. Verify window sizes, themes, and platforms separately; do not infer persistence across restarts.
 
-悬浮输入条初态
+Floating composer initial state
 
-左边缘拖动后的悬浮状态
+Floating state after dragging the left edge
 
-右边缘拖动后的悬浮状态
+Floating state after dragging the right edge
 
-参考：macOS arm64 `0.3.2 / 202611121823 / preview`，2026-11-13；隔离真实会话的悬浮输入条及两次边缘拖动后的完整窗口状态，不能单凭图片证明完整面板高度、极限、跨平台或正式评测通过。
+Reference: macOS arm64 `0.3.2 / 202611121823 / preview`, 2026-11-13; complete-window states of an isolated real conversation's floating composer before and after two edge drags. The images alone cannot prove full panel height, limits, cross-platform behavior, or a formal evaluation pass.
 
-### 文件读取恢复（`CHAT-FILE-READ-RECOVERY-CAND-001`；需求版本待确认）
+<a id="文件读取恢复chat-file-read-recovery-cand-001需求版本待确认"></a>
+### Recover from File-Read Failure (`CHAT-FILE-READ-RECOVERY-CAND-001`; requirement version pending confirmation)
 
-历史用户确认真实会话中文件无法读取时使用确认卡提供“重试／移除这个文件”；以获准隔离会话中的同一真实失败请求、文件身份及独立读取状态为参照，分别观察可用选择及所选决策后的实际结果。重试回执不证明文件已读到，仍失败时不能冒充成功；移除引用也不代表源文件已删除。具体失败恢复和后续处理需按真实请求及已确认范围单独冻结。
+Historical user confirmation says that when a file cannot be read in a real conversation, a confirmation card offers “Retry / Remove this file.” Use the same real failed request and file identity in an authorized isolated conversation, with an independent read-state reference, to inspect available choices and the actual result after the chosen decision separately. A retry acknowledgment does not prove the file was read; if it still fails, do not present it as success. Removing the reference does not mean the source file was deleted. Freeze specific failure-recovery behavior and follow-up handling separately against a real request and confirmed scope.
 
-### 文件夹写权限恢复（`CHAT-FILE-WRITE-RECOVERY-CAND-001`；需求版本待确认）
+<a id="文件夹写权限恢复chat-file-write-recovery-cand-001需求版本待确认"></a>
+### Recover from Missing Folder Write Permission (`CHAT-FILE-WRITE-RECOVERY-CAND-001`; requirement version pending confirmation)
 
-历史用户确认没有文件夹写入权限时提供“去授权／取消”的恢复交互；以获准隔离会话的同一写入请求、目标目录及独立文件前后状态为参照。打开系统设置不等于获得权限或完成写入，取消后的实际目录状态需独立核对；恢复决策不等于扩大文件访问范围的批准。系统授权、重试和保存成功分别核权限及真实终态，不能用卡片或决策回执替代。
+Historical user confirmation says that when folder write permission is missing, a recovery interaction offers “Authorize / Cancel.” Use the same write request and target directory in an authorized isolated conversation, with independent file states before and after. Opening system settings does not mean permission was granted or a write completed; independently check the actual directory state after cancellation. A recovery decision does not approve expanding file-access scope. Separately verify system authorization, retry, and successful save against the actual final state; a card or decision acknowledgment is not a substitute.
 
-上述两个候选分别需要可丢弃隔离文件或目录、真实自然触发的对应请求和独立文件状态；准备运行、模型/工具、权限设置、决策及写入须各自核授权。目标包适用性、产品需求版本、采用和完整窗口图待核；文件访问审批、其他权限与 Windows 不由上述候选外推。
+Each of the two candidates above requires disposable isolated files or directories, a corresponding request triggered naturally, and independent file state. Separately verify authorization for runtime preparation, model/tools, permission settings, decisions, and writes. Target-package applicability, product requirement version, adoption, and a full-window screenshot remain to be checked. Do not extrapolate to file-access approval, other permissions, or Windows.
 
-本节仅覆盖恢复动作及终态；后续确认的自定义卡外观及其与旧贴边提示的区别仍需按目标版本单独核对，不由本行为候选宣称覆盖或要求复原旧外壳。
+This section covers only the recovery action and final state. The later-confirmed custom-card appearance and its distinction from the old edge-attached notice still need target-version verification; this behavior candidate neither claims to cover nor requires restoration of the old shell.
 
-### 普通工具权限请求（`CHAT-TOOL-AUTH-CAND-001`；需求版本待确认）
+<a id="普通工具权限请求chat-tool-auth-cand-001需求版本待确认"></a>
+### Ordinary Tool-Permission Request (`CHAT-TOOL-AUTH-CAND-001`; requirement version pending confirmation)
 
-历史用户截图确认会话执行中待处理的工具权限请求复用确认卡。对获准隔离会话中自然产生的真实请求，以同一请求身份、所提供选项和作用范围为参照，核对卡片展示与可用操作；具体是否提供允许一次等选项以该请求为准，不为凑选项伪造权限。若本轮另获准作出决策，应分别核独立的同请求决策记录及后续真实工具状态；卡片出现、点击或回执不单独证明工具已执行。拒绝、允许和失败分支按实际请求与权限分别冻结。
+Historical user screenshots confirm that a pending tool-permission request during conversation execution reuses the confirmation card. For a real request arising naturally in an authorized isolated conversation, use the same request identity, offered choices, and scope to check the card and available actions. Whether choices such as “Allow once” are offered depends on that request; do not fabricate permissions to fill out a set of choices. If this round separately authorizes a decision, independently verify the decision record for the same request and the subsequent real tool state; a card, click, or acknowledgment alone does not prove tool execution. Freeze rejection, approval, and failure branches separately based on the actual request and permissions.
 
-模型请求、工具执行、联网、写入及授权决策须各自确认，不能为了采证触发未经授权的工具。文献全文授权与浏览器访问请求分别沿其自身判据，不用普通工具卡替代；目标包适用性、需求版本、采用和真实完整窗口图待核，异常与跨平台另列专项。
+Model requests, tool execution, network access, writes, and authorization decisions each require separate confirmation; do not trigger an unauthorized tool to gather evidence. Full-text literature authorization and browser-access requests follow their own criteria and are not replaced by a general tool card. Target-package applicability, requirement version, adoption, and a real full-window screenshot remain to be checked; exceptions and cross-platform behavior are separate topics.
 
-### 文献全文授权确认及历史回执（`CHAT-AUTH-CAND-001`；需求版本待确认）
+<a id="文献全文授权确认及历史回执chat-auth-cand-001需求版本待确认"></a>
+### Full-Text Literature Authorization and Historical Receipt (`CHAT-AUTH-CAND-001`; requirement version pending confirmation)
 
-历史用户确认的带勾选全文授权待处理卡默认收起文献范围；展开或收起不改变已选范围、原请求或授权结果。对应历史状态行默认收起，展开后展示原确认卡的完整范围和已记录选择，确认、拒绝与范围选择均为只读；自动批准或来源未知不得显示成用户手动授权。检查时以同一获准隔离会话中的真实请求身份、范围及独立决策记录为参照，不以卡片存在、展开或点击确认替代授权结果，更不推断全文下载、阅读或入库成功。
+Historical user confirmation says a pending full-text authorization card with checkboxes collapses the literature scope by default; expanding or collapsing it does not change the selected scope, original request, or authorization result. The corresponding historical status row is collapsed by default; when expanded, it shows the full scope and recorded selections from the original confirmation card. Confirmation, rejection, and scope selection are all read-only. Automatic approval or an unknown source must not appear as user-granted authorization. Use the real request identity and scope in the same authorized isolated conversation and an independent decision record as references. The presence or expansion of a card, or clicking confirmation, does not substitute for the authorization result and does not imply successful full-text download, reading, or library import.
 
-拒绝与超时后的重新授权入口在历史记录中有不同范围的描述，其适用对象和后续变化仍待确认；本候选不规定二者统一行为。真实请求、目标包适用、需求版本、采用状态及完整窗口图均待核；模型运行、范围选择及授权决策各需明确权限。通用文件审批与文件恢复另属专项，不由本文献授权卡替代。来源与差异见[构建依据](./build.md)。
+Historical records describe different scopes for reauthorization after rejection and timeout. Their applicable objects and subsequent changes remain unconfirmed; this candidate does not prescribe uniform behavior for the two. The real request, target-package applicability, requirement version, adoption status, and full-window screenshot all remain to be checked. Model execution, scope selection, and authorization decisions each require explicit permission. Generic file approval and file recovery are separate topics and are not replaced by this literature authorization card. See [Build Basis](./build.md) for sources and differences.
 
-### 文献检索结果的授权范围投影（`CHAT-RESULT-CAND-001`；需求版本待确认）
+<a id="文献检索结果的授权范围投影chat-result-cand-001需求版本待确认"></a>
+### Authorization-Scope Projection in Literature Search Results (`CHAT-RESULT-CAND-001`; requirement version pending confirmation)
 
-历史确认的检索结果列集要求：授权前、拒绝或结果未知时展示文献与推荐理由，不展示摘要列；确认授权后增加摘要列。部分授权只展示所选文献已有摘要，未选文献仍保留在结果中但不展示摘要；切换列集不重新检索或生成摘要。以同一获准真实会话、检索结果快照、独立授权决策与选中范围为参照，核各文献身份和已有摘要对应关系。授权卡、文献库列表和结果列集分别判断；授权不证明全文已下载、阅读或入库。
+Historical confirmation of the search-result column set: before authorization, or after rejection or an unknown result, show literature and recommendation reasons without an abstract column; after authorization is confirmed, add the abstract column. Partial authorization shows only existing abstracts for selected papers; unselected papers remain in the results without abstracts. Switching column sets does not search again or generate abstracts. Use the same authorized real conversation and search-result snapshot, independent authorization decision, and selected scope to check paper identities and correspondence with existing abstracts. Judge the authorization card, literature-library list, and result columns separately; authorization does not prove that full text was downloaded, read, or imported.
 
-真实结果及部分授权需具备隔离会话、可区分文献与结果快照、同次独立决策记录，并分别核模型、联网和授权操作权限；已有获准真实会话可作观察参照，不用模拟卡片或预填结果代替。目标版本适用性、采用、需求版本与真实完整窗口截图待核；独立搜索框结果、异常恢复及跨平台不由本候选外推。
+Real results and partial authorization require an isolated conversation, distinguishable papers and result snapshot, and a separate record of the decision from the same run. Separately verify permissions for model use, network access, and authorization actions. An existing authorized real conversation may be observed; simulated cards or prefilled results are not substitutes. Target-version applicability, adoption, requirement version, and a real full-window screenshot remain to be checked. Do not extrapolate to independent search-box results, exception recovery, or cross-platform behavior.
 
-### 检索结果已加入行的选择边界（`CHAT-JOIN-STATE-CAND-001`；需求版本待确认）
+<a id="检索结果已加入行的选择边界chat-join-state-cand-001需求版本待确认"></a>
+### Selection Boundaries for Already-Added Search Results (`CHAT-JOIN-STATE-CAND-001`; requirement version pending confirmation)
 
-历史确认要求检索结果中已加入文献的复选框禁用，且不计入表头全选或已选数量；未加入的文献仍可选择。以同一获准真实检索结果及独立文献库目录为参照，核对已加入和未加入的文献身份、勾选可用性、全选集合与计数；授权状态不是入库状态，不能互相推断。此候选仅核展示与选择，批量入库及导出是独立写入或文件操作专项，不能由按钮可见或选择结果推断成功。
+Historical confirmation requires checkboxes for papers already added from search results to be disabled and excluded from the header select-all and selected count; papers not yet added remain selectable. Use the same authorized real search results and an independent literature-library directory to check identities for added and not-added papers, checkbox availability, the select-all set, and count. Authorization state is not library-import state; do not infer one from the other. This candidate checks display and selection only. Batch import and export are separate write or file-operation topics; visible buttons or selection results do not prove success.
 
-需同一隔离结果中已有至少一条已入库和一条未入库的可区分文献，以及同范围独立目录；真实检索、导入或入库、联网和写入分别核权限，导入由人工确认。合成题录是原始输入，不预置检索结果或库状态。目标包适用、需求版本、采用与真实完整窗口图待核，不以模拟数据或历史截图代替。
+The same isolated results must include at least one distinguishable paper already in the library and one not yet added, with an independent directory for the same scope. Separately verify permissions for real search, import, network access, and writes; a person must confirm import. Synthetic bibliography entries are raw inputs and do not prepopulate search results or library state. Target-package applicability, requirement version, adoption, and a real full-window screenshot remain to be checked; do not substitute simulated data or historical screenshots.
 
-### 科研结果加入文献库（`CHAT-RESULT-IMPORT-CAND-001`；需求版本待确认）
+<a id="科研结果加入文献库chat-result-import-cand-001需求版本待确认"></a>
+### Add Research Results to the Literature Library (`CHAT-RESULT-IMPORT-CAND-001`; requirement version pending confirmation)
 
-历史用户确认科研结果提供加入文献库、仅添加元信息和导出 Bib；精确检索卡片中，勾选论文已有下载完成全文时，批量入库才提供“元信息和全文”，复用已下载字节作为主附件，不重新下载。不满足精确检索卡片及所选含已下载全文这两个条件时，不应提供该选项。以同次真实结果、勾选的文献身份及独立入库前后目录、元数据和附件身份为参照；核复用时还须关联同一论文的已下载原件和入库主附件，比较字节或摘要。仅添加元信息与含全文分别核终态，成功提示和选中状态不代替实际入库；所选中有无已下载全文的条件需分别具备真实参照，缺一则对应子点未覆盖。
+Historical user confirmation says research results offer adding to the literature library, adding metadata only, and exporting Bib. In exact-search cards, batch import offers “metadata and full text” only when a selected paper already has downloaded full text, reusing those downloaded bytes as the primary attachment without downloading again. Do not offer that option unless both conditions hold: the card is an exact-search card and a selected paper has downloaded full text. Use the same-run real results, selected paper identities, and independent library directories, metadata, and attachment identities before and after import as references. To verify reuse, also link the downloaded original and imported primary attachment for the same paper and compare bytes or digests. Check metadata-only and full-text final states separately; a success notice or selection state does not substitute for actual import. Each condition with and without downloaded full text among selected papers needs its own real reference; otherwise leave that subpoint uncovered.
 
-目标包适用、需求版本、真实结果和完整窗口图待核；真实检索、联网、人工确认导入、库写入与导出分别核权限。Bib 导出的真实文件是独立终态，需核目标与内容；结果加入文献库或挂载附件不等于在项目资料目录交付文件。失败、重复入库及跨平台另列专项，不以合成题录、预填结果或模拟事件代替。
+Target-package applicability, requirement version, real results, and a full-window screenshot remain to be checked. Separately verify permissions for real search, network access, human-confirmed import, library writes, and export. An actual Bib export file is a separate final state; check its target and content. Adding a result to the literature library or attaching a file is not delivery into the project materials directory. Failure, duplicate import, and cross-platform behavior are separate topics. Do not substitute synthetic bibliography entries, prefilled results, or simulated events.
 
-需求版本、目标制品适用性、采用状态、真实完成态完整窗口图及对应独立参照均待核；实际模型调用、材料读取、产物写入和跨平台条件须另有授权。多轮追问、停止、失败恢复、其他权限请求、附件问答、产物导入资料库和重启恢复不由上述候选默认覆盖，需按各自对象和真实终态单独冻结。任何条件不足或无法确认的分支保留缺口，不以模拟事件、预填结果或空态截图追认通过。
+Requirement version, target-artifact applicability, adoption status, a real full-window screenshot of completion, and corresponding independent references all remain to be checked. Actual model calls, material reads, artifact writes, and cross-platform conditions require separate authorization. Follow-up questions, stopping, failure recovery, other permission requests, attachment questions, importing artifacts into the library, and restart recovery are not covered by default by the candidates above; freeze them separately for their own objects and real final states. Keep any branch with insufficient or unverified conditions as a gap; do not retroactively claim a pass from simulated events, prefilled results, or empty-state screenshots.

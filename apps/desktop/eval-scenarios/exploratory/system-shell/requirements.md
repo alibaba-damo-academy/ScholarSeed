@@ -1,31 +1,43 @@
-# 系统入口与窗口生命周期候选需求
+<a id="系统入口与窗口生命周期候选需求"></a>
+# Candidate Requirements for System Entry Points and Window Lifecycle
 
-## 用途与入口
+<a id="用途与入口"></a>
+## Purpose and Entry Points
 
-用户可通过系统通知、应用窗口、macOS 菜单栏或 Windows 托盘感知任务并返回产品；更新提醒用于查看候选版本并决定是否执行更新。入口和具体行为以目标平台及安装制品为准。本页为历史需求和现行 Owner 资料的候选梳理，不是已采用判据或评测结果。
+Users can notice tasks and return to the product through system notifications, the application window, the macOS menu bar, or the Windows system tray. Update notices let users inspect a candidate version and decide whether to update. Entry points and specific behavior depend on the target platform and installed artifact. This page is a candidate consolidation of historical requirements and current Owner materials, not an adopted criterion or evaluation result.
 
-**参考截图缺口：** 尚无来源和目标身份均可核、可公开复用的目标版本原生关闭确认、托盘、系统通知或更新就绪的完整窗口图。通知设置页或组件夹具不能代替系统通知、托盘和真实安装；原生弹窗需保留宿主上下文，不能局部裁切。
+**Reference screenshot gap:** No complete window image has been verified as both source-traceable and approved for reuse for the target build's native close confirmation, tray, system notification, or update-ready state. A notification settings page or component fixture cannot substitute for a system notification, tray, or real installation. Keep native dialogs in their host context; do not crop them in isolation.
 
-## 候选专项
+<a id="候选专项"></a>
+## Candidate Focused Scenarios
 
-### 关闭、后台与恢复（`SYSTEM-WINDOW-CAND-001`；需求版本待确认）
+<a id="关闭后台与恢复"></a>
+<a id="关闭后台与恢复system-window-cand-001需求版本待确认"></a>
+### Close, Background, and Recovery (`SYSTEM-WINDOW-CAND-001`; requirement version pending confirmation)
 
-对获准可退出的隔离实例，以真实原生窗口操作观察关闭、后台入口和恢复：macOS 的窗口关闭与实际退出、Windows 的关闭确认、取消、后台及实际退出分别核可观察终态。应核同一实例的窗口可见性、进程及任务状态；仅看到对话框、收到点击或主窗口隐藏不证明退出、任务完成或恢复成功。跨平台差异按[窗口生命周期 Owner](../../../docs/architecture/ownership.md#窗口关闭确认与后台菜单)分别核对；真实退出、运行中任务与偏好写入均需独立授权。当前目标版本的需求采用、入口和实现对应仍待确认。
+For an authorized instance that can be exited, use real native window operations to observe closing, the background entry point, and recovery. Separately verify macOS window close and actual exit, and Windows close confirmation, cancellation, backgrounding, and actual exit as observable end states. Check window visibility, process, and task state for the same instance. Seeing a dialog, receiving a click, or hiding the main window does not prove exit, task completion, or successful recovery. Check platform differences against the [Window Lifecycle Owner](../../../docs/architecture/ownership.md#窗口关闭确认与后台菜单). Actual exit, running tasks, and preference writes each require separate authorization. Adoption of the requirement, entry point, and implementation mapping for the current target build remain unconfirmed.
 
-### 原生后台菜单（`SYSTEM-TRAY-CAND-001`；需求版本待确认）
+<a id="原生后台菜单"></a>
+<a id="原生后台菜单system-tray-cand-001需求版本待确认"></a>
+### Native Background Menu (`SYSTEM-TRAY-CAND-001`; requirement version pending confirmation)
 
-使用目标平台真实系统菜单观察可用入口及其与当前隔离项目、任务的对应。展开菜单不应自行唤起主窗口，明确选择可用目标后再核对应窗口与目标；无任务、数据失败及不可用目标的具体规则依批准依据分别判断，不以旧建议或一张静态图替代。菜单读取和选择可能影响窗口或导航状态；涉及退出、真实任务或系统权限时分别核授权与独立参照。macOS 菜单栏和 Windows 托盘不能互相代验。
+Use the target platform's real system menu to inspect available entry points and their correspondence to the current isolated project and task. Opening the menu must not itself raise the main window. After explicitly selecting an available target, check the corresponding window and target. Judge rules for no-task, data failure, and unavailable targets separately against approved evidence; do not substitute old suggestions or a static image. Reading and selecting from the menu may affect window or navigation state. Check authorization and an independent reference separately for exit, real tasks, and system permissions. The macOS menu bar and Windows tray do not validate each other.
 
-### 系统通知与任务关联（历史 `NOTIFICATION-01@1`；产品需求版本待确认）
+<a id="系统通知与任务关联"></a>
+<a id="系统通知与任务关联历史-notification-011产品需求版本待确认"></a>
+### System Notifications and Task Association (historical `NOTIFICATION-01@1`; product requirement version pending confirmation)
 
-在获准的隔离任务和已有系统通知权限条件下，观察真实任务提醒与任务身份、状态及后续定位的关系；将提醒标为已读不应修改任务业务结果。独立记录任务身份、状态和用户实际查看结果；设置页开关、模拟事件或普通组件截图不能证明原生投递或定位。历史 `@1` 是资产修订，不是产品需求版本；该点为 `pending / exploratory`、历史用例 `candidate_unapproved`，不自动纳入目标版本已采用分母。通知权限、系统设置、真实任务及已读操作分别核授权。
+With an authorized isolated task and existing system notification permission, observe how a real task alert relates to task identity, state, and subsequent navigation. Marking an alert as read must not change the task's business result. Record task identity, state, and what the user actually sees separately. A settings-page toggle, simulated event, or ordinary component screenshot does not prove native delivery or navigation. Historical `@1` is an asset revision, not a product requirement version. This item is `pending / exploratory`; historical case `candidate_unapproved` does not automatically place it in the adopted denominator for the target build. Check authorization separately for notification permissions, system settings, real tasks, and marking as read.
 
-### 更新提醒与更新全流程（`SYSTEM-UPDATE-CAND-001`；需求版本待确认）
+<a id="更新提醒与更新全流程"></a>
+<a id="更新提醒与更新全流程system-update-cand-001需求版本待确认"></a>
+### Update Notice and Full Update Flow (`SYSTEM-UPDATE-CAND-001`; requirement version pending confirmation)
 
-历史工作项确认的轻量更新提示要求：发现或准备完成时不抢占正在进行的操作焦点；用户主动进入更新入口后可查看与候选构建一致的信息，重启由用户确认。当前源码或旧包截图不能替代目标制品及同一候选版本的实测。下载、校验、安装、退出/重启、失败恢复与版本线切换独立冻结真实终态，需签名来源、可回收隔离环境和相应授权；本任务不擅自执行。关于页展示和版本信息沿[关于页基线](./../about/requirements.md)，不重复作为完整更新通过。
+The lightweight update notice confirmed in the historical work item must not take focus from an operation in progress when an update is found or prepared. After the user opens the update entry point, the notice may show information consistent with the candidate build, and the user confirms any restart. Current source or screenshots of an old package cannot substitute for testing the target artifact and the same candidate version. Freeze real end states separately for download, verification, installation, exit/restart, failure recovery, and version-line switching; these require a signed source, recoverable isolated environment, and corresponding authorization. Do not perform them as part of this task without that scope. The About page's display and version information are covered by the [About baseline](./../about/requirements.md) and do not independently establish a complete update pass.
 
-## 数据、权限与边界
+<a id="数据权限与边界"></a>
+## Data, Permissions, and Boundaries
 
-测试仅使用任务专属隔离实例、可丢弃合成任务与可回收平台环境；项目、任务、窗口和候选构建的身份需独立核对。真实通知、任务、安装及跨重启状态不可由预置数据库、模拟桥事件或静态截图替代。macOS、Windows、主题、DPI 和系统权限分别记录；无真实目标平台或权限时保留缺口，不以一端结果代表另一端。
+Test only with a task-dedicated isolated instance, disposable synthetic tasks, and recoverable platform environments. Independently verify identities for projects, tasks, windows, and candidate builds. Prepopulated databases, simulated bridge events, and static screenshots cannot substitute for real notifications, tasks, installations, or state across restarts. Record macOS and Windows, themes, DPI, and system permissions separately. If a real target platform or permission is unavailable, retain the gap; results from one platform do not represent the other.
 
-本页中产品需求版本、目标包适用、采用状态和真实完整截图均待核，详见[构建依据](./build.md)。浏览器设置、用户反馈操作记录和产品更新开发/发布操作沿各自 Owner；截图或入口可见不意味着专项执行成功。
+The product requirement version, target-package applicability, adoption state, and complete real screenshots remain unverified on this page; see the [Build Basis](./build.md). Browser settings, user-feedback action records, and product update development/release operations remain with their respective Owners. A screenshot or visible entry point does not mean a focused operation succeeded.

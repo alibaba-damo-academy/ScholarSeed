@@ -1,790 +1,822 @@
-# 产品需求概览
+<a id="产品需求概览"></a>
+# Product Requirements Overview
 
-> 本文是现有页面需求与截图的导航性摘要，不是新的需求真源或评测结果。完整判据、适用条件、版本及历史沿革以各页需求正文和构建依据为准。
+> This document is a navigational summary of existing page requirements and screenshots, not a new source of truth for requirements or evaluation results. Refer to each page's requirements and build basis for the complete criteria, applicability conditions, versions, and history.
 
-## 使用说明
+<a id="使用说明"></a>
+## Usage Notes
 
-- 本文收录 22 份既有页面需求资产及任务列表、新任务输入器、真实对话与任务结果、内置浏览器使用、账号与开发者、反馈和系统入口 7 份候选草案；直接复用与需求或构建依据对应的完整窗口或完整页面视口参考图，不复制、不改写；历史局部图留原记录，不在此嵌入。
-- 截图来自不同版本，来源和展示边界见各节；历史图片不代表当前安装版实际状态或本轮评测通过。
-- 2026-11-13 有界核查时，部分旧截图在本工作区未找到字节一致的原始运行图；对应需求及构建记录仍保留截图摘要和历史版本，不将其视为已重新采证。
-- 既有 22 份资产均提供页面级参考图；任务列表、输入器、对话及浏览器候选已有部分状态图，其余候选及其他状态仍有截图缺口。需求正文未建立完整的逐条需求与各状态截图映射，**逐项截图覆盖未核实**，不能将页面图视为所有条目的验证证据。
-- 2026-11-13 已逐张视觉核查本文现有 107 张不同截图，未发现明确的局部裁图或明文凭据。部分完整窗口中分屏很窄，PDF 放大图的正文在视口内被裁切；设置长页的单张视口也不代表整页均可见。这些是所示状态，不代表正常布局、完整内容或操作均已验证。账号、反馈和系统入口候选目前无截图。
-- 本轮不评测导入；导入候选及历史记录保留，所需原始文件从 `examples` 准备。文件存在不代表产品内已入库、接入或安装，也不自动授权写入。
-- MCP 历史需求并入连接器承载；提示词资产映射 AI 提示词与翻译配置两个页面；保存仍属专项。页面数量、采用状态和运行范围以各自真源为准。
-- 每页仅概述功能与入口，完整需求、限制及补充要求须回到需求正文核对；截图中的动态数据不是固定预期。
-- 部分 2026-10-28 设置页旧版参考图的历史运行目录记于提交 `bdd1146705` 的 `work-records/20261028-settings-evaluation.md`：`tmp/test_snapshot/desktop/settings-readonly-20261028/`；该目录当前本机不存在。仓库保留的参考副本与摘要可回查，但不能据此声称原始截图已恢复或独立核对。
+- This document includes 22 existing page-requirement assets and 7 candidate drafts covering the task list, new-task composer, real conversations and task results, built-in browser use, account and developer, feedback, and system entry points. Reuse the complete-window or full-page-viewport reference image corresponding to the requirements or build basis as-is; do not copy or rewrite it. Leave historical partial images in their original records; do not embed them here.
+- Screenshots come from different versions; their sources and display boundaries are given in each section. Historical images do not represent the actual state of the currently installed build or a pass in this evaluation round.
+- During the bounded review on 2026-11-13, byte-identical original runtime images for some old screenshots could not be found in this workspace. The corresponding requirements and build records still retain screenshot summaries and historical versions; these are not treated as newly collected evidence.
+- All 22 existing assets provide page-level reference images. Partial state images exist for the task list, composer, conversation, and browser candidates; other candidates and states still have screenshot gaps. The requirements do not establish a complete mapping from each individual requirement to screenshots of each state. **Per-requirement screenshot coverage has not been verified**; page images cannot be treated as verification evidence for every item.
+- On 2026-11-13, all 107 distinct screenshots currently in this document were visually inspected one by one; no clearly partial crops or plaintext credentials were found. Some complete windows have very narrow split panes, and the body text in enlarged PDF images is cropped within the viewport; a single viewport of a long settings page also does not mean the entire page is visible. These images show only the displayed states and do not establish that normal layout, complete content, or operations were verified. The account, feedback, and system-entry candidates currently have no screenshots.
+- Import is not evaluated in this round; import candidates and historical records are retained, and required source files should be prepared from `examples`. A file's presence does not mean it has been added to the product, connected, or installed, nor does it automatically authorize writing.
+- Historical MCP requirements are now carried under Connectors; prompt assets map to two pages, AI Prompts and Translation Settings; Save remains a dedicated evaluation. Page counts, adoption status, and runtime scope are governed by each source of truth.
+- Each page only summarizes its functionality and entry points. Check the requirements page for complete requirements, limitations, and supplementary requirements; dynamic data in screenshots is not a fixed expectation.
+- The historical runtime directory for some old settings-page reference images from 2026-10-28 is recorded in the commit `bdd1146705` at `work-records/20261028-settings-evaluation.md`: `tmp/test_snapshot/desktop/settings-readonly-20261028/`; this directory does not currently exist on this machine. The reference copies and summaries retained in the repository can be consulted, but they do not establish that the original screenshots were restored or independently checked.
 
-## 已采用核心流程
+<a id="已采用核心流程"></a>
+## Adopted Core Flows
 
-现有基线记录的核心流程包括：F1 从项目资料打开 PDF 并阅读、F2 搜索技能并查看详情、F3 在当前项目搜索并打开目标文件；各流程的具体判据和适用条件见对应需求正文及[基线记录](./README.md)。冒烟评测从已采用流程中按目标版本和适用条件选择；此处不表示核心流程清单完整，也不表示三条在每次运行中自动适用。
+The core flows in the existing baseline record are: F1, open and read a PDF from project files; F2, search for a Skill and view its details; and F3, search the current project and open a target file. See the corresponding requirements and the [baseline record](./README.md) for each flow's criteria and applicability conditions. Smoke evaluations select from adopted flows according to the target version and applicability conditions; this does not mean the core-flow list is complete or that all three flows automatically apply in every run.
 
-下文仅标明与上述流程相关的页面；未标注不等于不做页面快评。现行发布快评仍包含所有已采用且适用的页面快评层；保存等专项不因此纳入，实际范围以执行时冻结结果为准。
+The sections below only identify pages related to the flows above; an unmarked page is not thereby excluded from the page quick review. The current release quick review still includes the page-review layer for every adopted and applicable page; dedicated evaluations such as Save are not included on that basis. The frozen scope at execution time is authoritative.
 
-## 1. 主导航与工作范围
+<a id="1-主导航与工作范围"></a>
+## 1. Main Navigation and Workspace Scope
 
-[需求正文](./exploratory/navigation/requirements.md) ｜ [构建依据](./exploratory/navigation/build.md)
+[Requirements](./exploratory/navigation/requirements.md) ｜ [Build Basis](./exploratory/navigation/build.md)
 
-**功能与入口：** 通过主窗口侧边主导航切换项目、文献和扩展，并可从头像菜单进入设置。
+**Function and entry point:** Use the main navigation in the main window's sidebar to switch among Projects, Literature, and Extensions, and open Settings from the avatar menu.
 
-**页面参考截图**
+**Page Reference Screenshots**
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-12；完整窗口中的隔离项目工作台及主导航，项目和最近访问状态会变化。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-12; isolated-project workbench and main navigation in a full window. Projects and recently visited states can change.
 
-项目工作台及主导航完整窗口参考
+Full-window reference: project workbench and main navigation
 
-参考：同目标版本，2026-11-13；文献中心空态和扩展技能页的完整窗口，数量与目录随环境变化，不单凭静图证明切换动作。
+Reference: same target version, 2026-11-13; full windows showing the Literature Center empty state and Extensions Skills page. Counts and catalogs vary by environment; a static image alone does not prove the switching action.
 
-文献中心导航状态参考
+Reference: Literature Center navigation state
 
-扩展导航状态参考
+Reference: Extensions navigation state
 
-**截图缺口：** 现有图片仅覆盖所展示页面或状态；逐条需求和其他状态的对应截图尚未完整建立，待按需求正文核对补充。
+**Screenshot gap:** Existing images cover only the pages or states shown. A complete mapping of screenshots to individual requirements and other states has not yet been established; check the requirements page and supplement as needed.
 
-## 2. 项目中心：创建、查找与重命名
+<a id="2-项目中心创建查找与重命名"></a>
+## 2. Project Center: Create, Find, and Rename
 
-[需求正文](./exploratory/project-center/requirements.md) ｜ [构建依据](./exploratory/project-center/build.md)
+[Requirements](./exploratory/project-center/requirements.md) ｜ [Build Basis](./exploratory/project-center/build.md)
 
-**功能与入口：** 通过项目中心新建入口创建项目、搜索框查找项目，或从项目卡片编辑菜单修改项目信息。
+**Function and entry point:** Create a project using the Project Center's New entry point, find a project with the search box, or edit project information from the project card's edit menu.
 
-**候选专项：** 跨项目切换、已有目录接入、归档恢复及[置顶排序](./exploratory/project-center/requirements.md#项目置顶与排序候选project-pin-cand-001)已整理历史依据；置顶排序历史要求与当前源码冲突，目标适用性、操作权限与真实状态图仍待核。
+**Candidate dedicated evaluations:** Historical evidence has been assembled for switching across projects, attaching an existing directory, restoring an archive, and [pin ordering](./exploratory/project-center/requirements.md#项目置顶与排序候选project-pin-cand-001). The historical pin-ordering requirement conflicts with current source code; target applicability, operation permissions, and real state images still need verification.
 
-**最近任务：** [首页最近任务](./exploratory/project-center/requirements.md#首页最近任务候选home-task-cand-001)展示和进入会话已列候选；历史追加、搜索规则与当前源码不同，目标适用及翻页状态待核。
+**Recent tasks:** Displaying and entering a conversation from [Home Recent Tasks](./exploratory/project-center/requirements.md#首页最近任务候选home-task-cand-001) is listed as a candidate. Historical append behavior and search rules differ from current source code; target applicability and pagination states still need verification.
 
-参考：macOS arm64 `0.3.2 / 202611121823 / preview`，2026-11-13；隔离项目的三条合成任务自然显示，未验证翻页或打开；图中可见本机用户名和隔离工作区路径，外部分发前须核适用范围。
+Reference: macOS arm64 `0.3.2 / 202611121823 / preview`, 2026-11-13; three synthetic tasks appear naturally in an isolated project. Pagination and opening were not verified. The image shows the local username and isolated workspace path; verify applicability before external distribution.
 
-首页最近任务自然状态
+Home Recent Tasks: natural state
 
-**页面参考截图**
+**Page Reference Screenshots**
 
-参考图来源：macOS arm64 `0.3.0 / 202610271421`，2026-10-28；仅含隔离合成项目。名称、描述、目录和列表数量是动态示例，图中截断路径不作完整值判据；不是像素标准或本轮通过证据。
+Reference image source: macOS arm64 `0.3.0 / 202610271421`, 2026-10-28; contains only an isolated synthetic project. Names, descriptions, directories, and list counts are dynamic examples. Truncated paths in the image are not criteria for complete values; this is neither a pixel standard nor evidence of a pass in this round.
 
-![项目中心参考](./exploratory/project-center/reference.png)
+![Project Center reference](./exploratory/project-center/reference.png)
 
-![新建表单参考](./exploratory/project-center/form.png)
+![New-project form reference](./exploratory/project-center/form.png)
 
-参考：macOS arm64 `0.3.2 / 202611121823 / preview`，2026-11-12；完整窗口展示隔离项目列表，路径为当时本机元数据，不证明创建、归档或切换。
+Reference: macOS arm64 `0.3.2 / 202611121823 / preview`, 2026-11-12; a full window showing an isolated project list. Paths are local metadata from that time and do not prove creation, archiving, or switching.
 
-目标包项目中心完整窗口参考
+Target build: Project Center full-window reference
 
-参考：同目标版本，2026-11-13；合成名称和描述的新建表单，路径在图中截断，未提交创建。
+Reference: same target version, 2026-11-13; new-project form with a synthetic name and description. The path is truncated in the image; creation was not submitted.
 
-目标包新建项目表单
+Target build: new-project form
 
-**截图缺口：** 现有图片仅覆盖所展示页面或状态；逐条需求和其他状态的对应截图尚未完整建立，待按需求正文核对补充。
+**Screenshot gap:** Existing images cover only the pages or states shown. A complete mapping of screenshots to individual requirements and other states has not yet been established; check the requirements page and supplement as needed.
 
-## 3. 全局搜索
+<a id="3-全局搜索"></a>
+## 3. Global Search
 
-[需求正文](./exploratory/search/requirements.md) ｜ [构建依据](./exploratory/search/build.md)
+[Requirements](./exploratory/search/requirements.md) ｜ [Build Basis](./exploratory/search/build.md)
 
-**功能与入口：** 通过工作区搜索按钮或项目导航中的搜索入口查找资料、文献和对话；入口可达性待核实。
+**Function and entry point:** Use the workspace search button or the search entry in project navigation to find resources, literature, and conversations; entry-point reachability still needs verification.
 
-**核心流程：** 属于 F3：当前项目搜索并打开目标文件。
+**Core flow:** Part of F3: search the current project and open a target file.
 
-**页面参考截图**
+**Page Reference Screenshots**
 
-参考：macOS arm64，0.3.2 / 202611121104，2026-11-12；仅展示合成资料查询结果，不代表全部分类、空态或异常状态。
+Reference: macOS arm64, 0.3.2 / 202611121104, 2026-11-12; shows only synthetic resource search results, not all categories, empty states, or error states.
 
-搜索结果参考
+Reference: search results
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-13；当前项目的合成文件搜索命中，背景窗口较窄，不单凭截图证明打开动作。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-13; a synthetic file search hit in the current project, with a narrow background window. The screenshot alone does not prove the file was opened.
 
-目标版本合成资料搜索结果
+Target version: synthetic resource search results
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-12；合成目标文件打开后的状态，不单凭截图证明打开动作。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-12; state after opening a synthetic target file. The screenshot alone does not prove the opening action.
 
-搜索目标打开状态
+Search target: opened state
 
-**截图缺口：** 现有图片仅覆盖所展示页面或状态；逐条需求和其他状态的对应截图尚未完整建立，待按需求正文核对补充。
+**Screenshot gap:** Existing images cover only the pages or states shown. A complete mapping of screenshots to individual requirements and other states has not yet been established; check the requirements page and supplement as needed.
 
-## 4. 全局与项目文献列表
+<a id="4-全局与项目文献列表"></a>
+## 4. Global and Project Literature Lists
 
-参考：macOS arm64 `0.3.2 / 202611121823 / preview`，2026-11-12；隔离项目文献显示空态，右侧合成文档分屏较窄，不证明非空、导入或列设置通过。
+Reference: macOS arm64 `0.3.2 / 202611121823 / preview`, 2026-11-12; isolated-project literature shows an empty state, with a narrow split pane for a synthetic document on the right. This does not prove non-empty content, import, or passing column settings.
 
-项目文献显示空态
+Project literature: empty state
 
-[需求正文](./exploratory/literature-list/requirements.md) ｜ [构建依据](./exploratory/literature-list/build.md)
+[Requirements](./exploratory/literature-list/requirements.md) ｜ [Build Basis](./exploratory/literature-list/build.md)
 
-**功能与入口：** 通过主导航的文献中心或项目工作区的项目文件区域→文献查看对应范围内的文献；具体入口层级待核实。
+**Function and entry point:** View literature for the relevant scope through Literature Center in the main navigation or Project Files → Literature in the project workspace; the exact entry-point hierarchy still needs verification.
 
-**候选专项：** PDF/Bib 导入、文献附件阅读及项目关联的历史需求线索已纳入需求正文；目标版本适用性、人工导入和完整窗口截图仍待核实，不由列表空态代替。旧文件夹交付卡已下线，文献入库不等于保存到项目资料；现行资料交付入口及需求待确认。
+**Candidate dedicated evaluations:** Historical requirement leads for PDF/Bib import, reading literature attachments, and project association have been incorporated into the requirements page. Target-version applicability, manual import, and full-window screenshots still need verification; an empty list cannot substitute for them. The old folder-delivery card has been retired, and adding literature to the library is not the same as saving it to project files; the current resource-delivery entry point and requirements remain to be confirmed.
 
-**标签筛选：** 多标签交集及与关键词、分类叠加的确认依据已整理为候选；目标版本及非空截图待核。
+**Tag filtering:** Confirmation evidence for intersecting multiple tags and combining them with keywords and categories has been assembled as a candidate; the target version and non-empty screenshots still need verification.
 
-**分类和标签：** 分类、标签管理及删除后的文献保留已列候选；目标适用、写入授权及真实状态截图待核。
+**Categories and tags:** Managing categories and tags, and retaining literature after deletion, are listed as candidates; target applicability, write authorization, and real state screenshots still need verification.
 
-**批量同步：** 文献元数据批量同步入口已整理为候选；真实外部参照、目标版本及完成态截图待核。
+**Bulk synchronization:** The entry point for bulk synchronization of literature metadata has been assembled as a candidate; real external references, the target version, and completion-state screenshots still need verification.
 
-**阅读笔记：** 空态入口、直接写、重开与单篇导出已整理为候选；目标版本适用、非空状态截图和真实终态仍待核。
+**Reading notes:** The empty-state entry point, direct writing, reopening, and single-item export have been assembled as candidates; target-version applicability, non-empty-state screenshots, and real final states still need verification.
 
-**详情页签：** 历史两页签记录与后续 AI 解读及附件入口确认存在冲突，目标版本需求待 Owner 核实，原判据和历史记录保留。
+**Detail tabs:** Historical records of two tabs conflict with later confirmation of AI Interpretation and Attachment entries. The target-version requirements await Owner verification; original criteria and historical records are retained.
 
-**页面参考截图**
+**Page Reference Screenshots**
 
-参考：macOS arm64，0.3.2 / 202611121104，2026-11-12；仅展示项目文献空态，不代表非空行、列偏好或详情状态。
+Reference: macOS arm64, 0.3.2 / 202611121104, 2026-11-12; shows only the project literature empty state, not non-empty rows, column preferences, or detail states.
 
-项目文献空列表参考
+Reference: empty project literature list
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-12；展示全局文献空态，不证明项目关联、导入或非空列表。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-12; shows the global literature empty state and does not prove project association, import, or a non-empty list.
 
-目标版本全局文献空态
+Target version: global literature empty state
 
-参考：同目标版本，2026-11-12；项目文献空态与列设置，右侧分屏较窄；不证明非空列表、列修改或导入，默认列冲突仍待确认。
+Reference: same target version, 2026-11-12; project literature empty state and column settings, with a narrow split pane on the right. This does not prove a non-empty list, column changes, or import; the default-column conflict remains to be confirmed.
 
-目标版本项目文献列设置
+Target version: project literature column settings
 
-**截图缺口：** 现有图片仅覆盖所展示页面或状态；逐条需求和其他状态的对应截图尚未完整建立，待按需求正文核对补充。
+**Screenshot gap:** Existing images cover only the pages or states shown. A complete mapping of screenshots to individual requirements and other states has not yet been established; check the requirements page and supplement as needed.
 
-## 5. 资料树与列表
+<a id="5-资料树与列表"></a>
+## 5. Resource Tree and List
 
-[需求正文](./exploratory/resources/requirements.md) ｜ [构建依据](./exploratory/resources/build.md)
+[Requirements](./exploratory/resources/requirements.md) ｜ [Build Basis](./exploratory/resources/build.md)
 
-**功能与入口：** 通过项目工作区的资料树或项目文件区域→资料浏览和筛选当前项目资料；具体入口层级待核实。
+**Function and entry point:** Browse and filter resources in the current project through the resource tree in the project workspace or Project Files → Resources; the exact entry-point hierarchy still needs verification.
 
-**核心流程：** 关联 F1：从项目资料打开 PDF；资料页也有独立快评层。
+**Core flow:** Related to F1: open a PDF from project files. The Resources page also has a separate quick-review layer.
 
-**候选专项：** 目录导入、关联、冲突及文件管理的历史要求线索已整理；人工导入、目标版本适用性和对应真实完整截图仍待核。
+**Candidate dedicated evaluations:** Historical requirement leads have been assembled for directory import, association, conflicts, and file management; manual import, target-version applicability, and corresponding real full-window screenshots still need verification.
 
-**项目资源管理器：** 工作台资源管理器文件名搜索及打开方式已单列候选，不等同资料库侧栏本地搜索；目标版本行为及需求适用性待核。
+**Project resource explorer:** Filename search and opening methods in the workbench explorer are listed as separate candidates; they are not equivalent to local search in the library sidebar. Target-version behavior and requirement applicability still need verification.
 
-参考：同目标版本，2026-11-13；隔离合成文件预览的打开方式菜单完整视口，面包屑因窄分屏部分截断，未选择菜单项。
+Reference: same target version, 2026-11-13; full viewport of the Open With menu for an isolated synthetic file preview. The breadcrumb is partly truncated because of the narrow split pane; no menu item was selected.
 
-项目资源管理器打开方式菜单
+Project resource explorer: Open With menu
 
-**全网检索：** [既有资料需求](./exploratory/resources/requirements.md#项目与资料入口res-list-001--v03)仅要求发现入口展示；旧入口曾确认退役，当前源码线索与旧要求的关系及目标版本适用性待核，检索和网页导入终态尚未建基线。
+**Web search:** [Existing resource requirements](./exploratory/resources/requirements.md#项目与资料入口res-list-001--v03) only require displaying the discovery entry point. The old entry point was confirmed retired; the relationship between current source-code leads and the old requirement, as well as target-version applicability, still needs verification. Search and webpage-import final states have no baseline yet.
 
-**项目文件分类：** 资料、文献和任务产物切换时保持工作台布局的要求已整理为候选；目标版本及三类状态截图待核。
+**Project file categories:** The requirement to preserve the workbench layout while switching among resources, literature, and task artifacts has been assembled as a candidate; the target version and screenshots of all three states still need verification.
 
-**页面参考截图**
+**Page Reference Screenshots**
 
-参考：macOS arm64，0.3.2 / 202611121104，2026-11-12；仅展示合成资料树及展开状态，不代表文件操作或异常分支。
+Reference: macOS arm64, 0.3.2 / 202611121104, 2026-11-12; shows only a synthetic resource tree and its expanded state, not file operations or error branches.
 
-项目资料树参考
+Reference: project resource tree
 
-参考：macOS arm64，0.3.2 / 202611121823，2026-11-12；展示隔离项目的合成资料树展开状态，不证明导入或写入。
+Reference: macOS arm64, 0.3.2 / 202611121823, 2026-11-12; shows the expanded synthetic resource tree of an isolated project; does not prove import or writing.
 
-目标版本项目资料树参考
+Target version: project resource tree reference
 
-参考：同目标版本，2026-11-13；项目文件资料列表中两层合成目录的展开和收起状态，不单凭截图证明操作过程或侧栏树行为。
+Reference: same target version, 2026-11-13; expanded and collapsed states of two levels of synthetic directories in the Project Files resource list. The screenshots alone do not prove the operation or sidebar-tree behavior.
 
-项目文件资料列表深层目录展开状态
+Project Files resource list: deep directory expanded
 
-项目文件资料列表深层目录收起状态
+Project Files resource list: deep directory collapsed
 
-参考：同目标版本，2026-11-13；工作台项目资源管理器自然状态，右侧分屏较窄，不证明搜索或打开操作。
+Reference: same target version, 2026-11-13; natural state of the project resource explorer in the workbench, with a narrow split pane on the right; does not prove searching or opening.
 
-目标版本项目资源管理器
+Target version: project resource explorer
 
-参考：同目标版本，2026-11-13；一次合成文件搜索及打开观察，未覆盖清空、其他匹配或分页，不代表候选已采用。
+Reference: same target version, 2026-11-13; one observation of searching for and opening a synthetic file. Clearing, other matches, and pagination are not covered; this does not mean the candidate was adopted.
 
-项目资源管理器搜索状态
+Project resource explorer: search state
 
-项目资源管理器打开文件状态
+Project resource explorer: file-open state
 
-参考：同目标版本，2026-11-13；清空搜索后的项目目录树，目录处于折叠状态，不证明其完整内容。
+Reference: same target version, 2026-11-13; project directory tree after clearing the search, with directories collapsed; does not prove its complete contents.
 
-项目资源管理器清空搜索后
+Project resource explorer after clearing search
 
-**截图缺口：** 现有图片仅覆盖所展示页面或状态；逐条需求和其他状态的对应截图尚未完整建立，待按需求正文核对补充。
+**Screenshot gap:** Existing images cover only the pages or states shown. A complete mapping of screenshots to individual requirements and other states has not yet been established; check the requirements page and supplement as needed.
 
-## 6. 多标签与分屏
+<a id="6-多标签与分屏"></a>
+## 6. Multiple Tabs and Split View
 
-[需求正文](./exploratory/tabs/requirements.md) ｜ [构建依据](./exploratory/tabs/build.md)
+[Requirements](./exploratory/tabs/requirements.md) ｜ [Build Basis](./exploratory/tabs/build.md)
 
-**功能与入口：** 通过打开资料文件、工作台新标签按钮或文档标签菜单管理多标签和分屏；具体入口可达性待核实。
+**Function and entry point:** Manage multiple tabs and split view by opening resource files, using the workbench's New Tab button, or using the document-tab menu; reachability of the exact entry points still needs verification.
 
-**溢出列表：** 页签压缩仍放不下时的全部页签入口已记录为候选；已观察目标包列表，选择目标和需求适用性待核。
+**Overflow list:** The entry point to all tabs when they still do not fit after tab compression is recorded as a candidate. The target build's list has been observed; selection targets and requirement applicability still need verification.
 
-参考：macOS arm64 `0.3.2 / 202611121823 / preview`，2026-11-13；隔离项目缩窄分屏后展示全部标签列表，未选择菜单项。
+Reference: macOS arm64 `0.3.2 / 202611121823 / preview`, 2026-11-13; all-tabs list displayed after narrowing the split pane in an isolated project; no menu item was selected.
 
-页签溢出列表自然状态
+Tab overflow list: natural state
 
-**页面参考截图**
+**Page Reference Screenshots**
 
-参考：macOS arm64，0.3.2 / 202611121104，2026-11-12；只展示合成文档分屏，不代表排序、编辑传播或关闭保护。
+Reference: macOS arm64, 0.3.2 / 202611121104, 2026-11-12; shows only a synthetic document in split view, not ordering, edit propagation, or close protection.
 
-分屏页面参考
+Reference: split-view page
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-12；展示合成文档双分屏，不单凭截图证明切换动作。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-12; shows a synthetic document in a two-pane split view; the screenshot alone does not prove the switching action.
 
-目标版本分屏参考
+Target version: split-view reference
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-13；隔离项目合成文档分屏调整前后状态，不单凭截图证明拖动过程或标签排序。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-13; before-and-after states of adjusting split view for a synthetic document in an isolated project. The images alone do not prove the dragging process or tab ordering.
 
-分屏调整前完整窗口参考
+Full-window reference before split-view adjustment
 
-分屏调整后完整窗口参考
+Full-window reference after split-view adjustment
 
-**截图缺口：** 现有图片仅覆盖所展示页面或状态；逐条需求和其他状态的对应截图尚未完整建立，待按需求正文核对补充。
+**Screenshot gap:** Existing images cover only the pages or states shown. A complete mapping of screenshots to individual requirements and other states has not yet been established; check the requirements page and supplement as needed.
 
-## 7. Markdown与代码阅读、编辑
+<a id="7-markdown与代码阅读编辑"></a>
+## 7. Reading and Editing Markdown and Code
 
-[需求正文](./exploratory/editor/requirements.md) ｜ [构建依据](./exploratory/editor/build.md)
+[Requirements](./exploratory/editor/requirements.md) ｜ [Build Basis](./exploratory/editor/build.md)
 
-**功能与入口：** 通过项目资料正常打开文档，在文档查看器中阅读、查找或编辑 Markdown 与代码；真实入口可达性待核实。
+**Function and entry point:** Open a document normally from project files, then read, search, or edit Markdown and code in the document viewer; reachability of the real entry point still needs verification.
 
-**选区引用：** Markdown 预览选区添加到对话已列候选；目标适用及输入器引用终态待核，添加不等于发送。
+**Selection citation:** Adding a selection from the Markdown preview to a conversation is listed as a candidate; target applicability and the final reference state in the composer still need verification. Adding is not the same as sending.
 
-参考：macOS arm64 `0.3.2 / 202611121823 / preview`，2026-11-13；合成 Markdown 的只读模式选区及工具栏，未点击工具栏，不证明添加或发送。
+Reference: macOS arm64 `0.3.2 / 202611121823 / preview`, 2026-11-13; a selection and toolbar in read-only mode for synthetic Markdown. The toolbar was not clicked; this does not prove addition or sending.
 
-Markdown 预览选区及工具栏
+Markdown preview selection and toolbar
 
-**页面参考截图**
+**Page Reference Screenshots**
 
-参考：macOS arm64，0.3.2 / 202611121104，2026-11-12；合成资料只显示阅读状态，不代表编辑、保存或全部格式已经验证。
+Reference: macOS arm64, 0.3.2 / 202611121104, 2026-11-12; synthetic resource shown in reading state only; does not mean editing, saving, or all formats have been verified.
 
-Markdown 阅读页面参考
+Reference: Markdown reading page
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-12；合成 TypeScript 展示及 Markdown 可视查找两个命中状态分别对应 `EDITOR-OBS-003` 和 `EDITOR-OBS-004` 的部分内容，不单凭截图证明动作。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-12; synthetic TypeScript display and two Markdown visual-search match states correspond to portions of `EDITOR-OBS-003` and `EDITOR-OBS-004`, respectively. Screenshots alone do not prove the actions.
 
-TypeScript 文档显示参考
+Reference: TypeScript document display
 
-Markdown 可视查找首项参考
+Reference: first Markdown visual-search match
 
-Markdown 可视查找第二项参考
+Reference: second Markdown visual-search match
 
-**截图缺口：** 其他需求和状态的对应截图尚未完整建立；跳行、编辑、保存及全部查找分支不由以上截图证明。
+**Screenshot gap:** The mapping of other requirements and states to screenshots has not been completed; the images above do not prove line navigation, editing, saving, or all search branches.
 
-## 8. PDF基础阅读
+<a id="8-pdf基础阅读"></a>
+## 8. Basic PDF Reading
 
-[需求正文](./exploratory/pdf/requirements.md) ｜ [构建依据](./exploratory/pdf/build.md)
+[Requirements](./exploratory/pdf/requirements.md) ｜ [Build Basis](./exploratory/pdf/build.md)
 
-参考：macOS arm64 `0.3.2 / 202611121823 / preview`，2026-11-13；合成 PDF 查找无匹配的完整视口，正文因分屏较窄仅部分可见。
+Reference: macOS arm64 `0.3.2 / 202611121823 / preview`, 2026-11-13; full viewport of a no-match search in a synthetic PDF; only part of the document is visible because the split pane is narrow.
 
-PDF 查找无匹配显示状态
+PDF search: no-match state displayed
 
-除下列条目外，PDF 的补充条件及诊断边界以需求正文为准。
+Except for the items below, refer to the requirements page for supplementary conditions and diagnostic boundaries for PDF.
 
-**功能与入口：** 通过正常打开资料中的 PDF 进入阅读器，阅读、定位及使用相关工具；具体入口可达性待核实。
+**Function and entry point:** Open a PDF in resources through the normal flow to enter the reader, read, navigate, and use related tools; reachability of the exact entry point still needs verification.
 
-**核心流程：** 属于 F1：打开 PDF 并阅读。
+**Core flow:** Part of F1: open and read a PDF.
 
-**页面参考截图**
+**Page Reference Screenshots**
 
-参考：macOS arm64，0.3.2 / 202611121104，2026-11-12；合成 PDF 的第一页，不代表批注、选区或异常状态。
+Reference: macOS arm64, 0.3.2 / 202611121104, 2026-11-12; the first page of a synthetic PDF. It does not represent annotations, selections, or error states.
 
-PDF 阅读页面参考
+Reference: PDF reading page
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-12；同一合成 PDF 的两页状态，不单凭截图证明翻页动作。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-12; two page states of the same synthetic PDF. The screenshots alone do not prove page-turning actions.
 
-PDF 第一页
+PDF page 1
 
-PDF 第二页
+PDF page 2
 
-参考：同目标版本，2026-11-13；两页样本的目录与查找状态，静图不单独证明跳转或命中切换。
+Reference: same target version, 2026-11-13; table-of-contents and search states for the two-page sample. Static images alone do not prove navigation or switching between matches.
 
-PDF 目录第二页状态
+PDF table of contents: page 2 state
 
-PDF 目录第一页状态
+PDF table of contents: page 1 state
 
-PDF 第三处命中状态
+PDF third-match state
 
-PDF 第二处命中状态
+PDF second-match state
 
-参考：同目标版本，2026-11-13；两页样本分别选中的缩略图和正文状态，静图不单独证明切换。
+Reference: same target version, 2026-11-13; selected thumbnail and document states for each page of the two-page sample. Static images alone do not prove switching.
 
-PDF 第一页缩略图状态
+PDF page 1 thumbnail state
 
-PDF 第二页缩略图状态
+PDF page 2 thumbnail state
 
-参考：同目标版本，2026-11-13；普通放大图中正文局部被视口裁切，适应页面与适应宽度在此布局下原图相同，静图不能单独证明切换或模式。
+Reference: same target version, 2026-11-13; part of the document is cropped by the viewport in the regular zoom image. Fit Page and Fit Width look identical in this layout; static images alone cannot prove switching or the mode.
 
-PDF 普通放大状态
+PDF regular zoom: enlarged state
 
-PDF 普通缩小状态
+PDF regular zoom: reduced state
 
-PDF 适应页面状态
+PDF Fit Page state
 
-**截图缺口：** 现有图片仅覆盖所展示页面或状态；逐条需求和其他状态的对应截图尚未完整建立，待按需求正文核对补充。
+**Screenshot gap:** Existing images cover only the pages or states shown. A complete mapping of screenshots to individual requirements and other states has not yet been established; check the requirements page and supplement as needed.
 
-## 9. 图片查看
+<a id="9-图片查看"></a>
+## 9. Image Viewing
 
-[需求正文](./exploratory/images/requirements.md) ｜ [构建依据](./exploratory/images/build.md)
+[Requirements](./exploratory/images/requirements.md) ｜ [Build Basis](./exploratory/images/build.md)
 
-**功能与入口：** 通过正常打开项目资料中的图片进入图片查看器，查看图片并调整缩放和位置；具体入口可达性待核实。
+**Function and entry point:** Open an image in project files through the normal flow to enter the image viewer, view the image, and adjust zoom and position; reachability of the specific entry point still needs verification.
 
-**页面参考截图**
+**Page Reference Screenshots**
 
-参考：macOS arm64，0.3.2 / 202611121104，2026-11-12；展示合成图片的一个缩放状态，不代表限幅、拖动或失败状态。
+Reference: macOS arm64, 0.3.2 / 202611121104, 2026-11-12; shows one zoom state of a synthetic image, not clamping, dragging, or failure states.
 
-图片查看页面参考
+Reference: image viewing page
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-12；展示图片适应窗口状态，不证明缩放动作或限幅。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-12; shows an image fitted to the window, but does not prove zoom actions or clamping.
 
-目标版本图片查看参考
+Target version: image viewing reference
 
-**截图缺口：** 现有图片仅覆盖所展示页面或状态；逐条需求和其他状态的对应截图尚未完整建立，待按需求正文核对补充。
+**Screenshot gap:** Existing images cover only the pages or states shown. A complete mapping of screenshots to individual requirements and other states has not yet been established; check the requirements page and supplement as needed.
 
-## 10. CSV与表格阅读
+<a id="10-csv与表格阅读"></a>
+## 10. CSV and Spreadsheet Reading
 
-[需求正文](./exploratory/tables/requirements.md) ｜ [构建依据](./exploratory/tables/build.md)
+[Requirements](./exploratory/tables/requirements.md) ｜ [Build Basis](./exploratory/tables/build.md)
 
-**功能与入口：** 通过正常打开项目资料中的表格文件查看 CSV、分隔文本或工作簿；具体入口和引擎可用性待核实。
+**Function and entry point:** Open a spreadsheet file in project files through the normal flow to view CSV, delimited text, or a workbook; the exact entry point and engine availability still need verification.
 
-**页面参考截图**
+**Page Reference Screenshots**
 
-参考：macOS arm64，0.3.2 / 202611121104，2026-11-12；仅展示合成工作簿一个工作表，不代表 CSV 编辑、导出或失败状态。
+Reference: macOS arm64, 0.3.2 / 202611121104, 2026-11-12; shows only one sheet of a synthetic workbook, not CSV editing, export, or failure states.
 
-工作簿网格参考
+Reference: workbook grid
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-12；合成工作簿的 Main 和 Secondary 状态对应 `TABLE-OBS-003` 的部分内容，静图不单独证明切换动作。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-12; the Main and Secondary states of a synthetic workbook correspond to part of `TABLE-OBS-003`; static images alone do not prove switching actions.
 
-Main 工作表参考
+Reference: Main worksheet
 
-Secondary 工作表参考
+Reference: Secondary worksheet
 
-**截图缺口：** 现有图片仅覆盖所展示页面或状态；逐条需求和其他状态的对应截图尚未完整建立，待按需求正文核对补充。
+**Screenshot gap:** Existing images cover only the pages or states shown. A complete mapping of screenshots to individual requirements and other states has not yet been established; check the requirements page and supplement as needed.
 
-## 11. 技能发现与详情
+<a id="11-技能发现与详情"></a>
+## 11. Skill Discovery and Details
 
-[需求正文](./exploratory/skills/requirements.md) ｜ [构建依据](./exploratory/skills/build.md)
+[Requirements](./exploratory/skills/requirements.md) ｜ [Build Basis](./exploratory/skills/build.md)
 
-**功能与入口：** 通过主界面→扩展→技能查找技能并查看不同来源的详情。
+**Function and entry point:** Find Skills and view details from different sources through Main Interface → Extensions → Skills.
 
-**核心流程：** 属于 F2：搜索技能并查看详情。
+**Core flow:** Part of F2: search for a Skill and view its details.
 
-**候选专项：** 本地/市场安装、启停、技能带入任务、通过书深创建及生成技能审阅安装的历史线索已整理；目标适用性、相关授权及真实完成态截图待核，本轮不评测导入，生成包安装尚未选入。卡片来源展示的历史要求对应关系待确认。
+**Candidate dedicated evaluations:** Historical leads have been assembled for local/marketplace installation, enabling and disabling, using a Skill in a task, creating through ScholarSeed, and reviewing and installing generated Skills. Target applicability, related authorization, and real completion-state screenshots still need verification. Import is not evaluated in this round, and generated-package installation has not yet been selected. The mapping to historical requirements for source labels on cards remains to be confirmed.
 
-**技能名称：** 管理页与对话选择器的双语显示名及注册身份已列候选子点；目标适用和真实发送证据待核。
+**Skill names:** Bilingual display names and registered identity in the management page and conversation selector are listed as candidate sub-items; target applicability and evidence of real sending still need verification.
 
-**市场来源：** 市场与已安装市场技能的 GitHub 展示有后续用户确认；目标版本适用及与旧来源标记的映射待核。
+**Marketplace source:** Subsequent user confirmation exists for displaying GitHub as the source for marketplace and installed marketplace Skills; applicability to the target version and mapping to old source labels still need verification.
 
-参考：macOS arm64 `0.3.2 / 202611121823 / preview`，2026-11-13；技能页添加菜单完整视口，未执行菜单项。
+Reference: macOS arm64 `0.3.2 / 202611121823 / preview`, 2026-11-13; full viewport of the add menu on the Skills page; no menu item was executed.
 
-技能添加菜单自然状态
+Skills: add menu in its natural state
 
-**页面参考截图**
+**Page Reference Screenshots**
 
-补充参考：系统列表、本机详情。来源：macOS arm64，0.3.0 / 202610281438，2026-10-29；卡片、分类、名称、数量、版本及状态随当前目录变化，不固定图中取值。
+Additional references: System list and local details. Source: macOS arm64, 0.3.0 / 202610281438, 2026-10-29; cards, categories, names, counts, versions, and states vary with the current catalog; values shown in the images are not fixed.
 
-![技能广场参考](./exploratory/skills/reference.png)
+![Skills Marketplace reference](./exploratory/skills/reference.png)
 
-![系统列表](./exploratory/skills/system.png)
+![System list](./exploratory/skills/system.png)
 
-![本机详情](./exploratory/skills/detail.png)
+![Local details](./exploratory/skills/detail.png)
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-13；技能广场搜索结果，目录数据动态变化，单图不证明详情、安装或调用。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-13; Skills Marketplace search results with dynamic catalog data. A single image does not prove details, installation, or invocation.
 
-目标版本技能搜索结果参考
+Target version: Skill search results reference
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-12；市场搜索结果与详情弹窗，不证明安装或调用。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-12; marketplace search results and a details dialog; does not prove installation or invocation.
 
-目标版本技能详情参考
+Target version: Skill details reference
 
-参考：同目标版本，2026-11-12；系统技能列表与用户上传空态仅展示自然状态，旧来源分组映射仍待确认，不证明安装或启停。
+Reference: same target version, 2026-11-12; the system Skill list and user-upload empty state show only their natural states. Mapping to old source groups still needs confirmation; this does not prove installation or enabling/disabling.
 
-目标版本系统技能列表
+Target version: system Skills list
 
-目标版本用户上传空态
+Target version: user-upload empty state
 
-**截图缺口：** 现有图片仅覆盖所展示页面或状态；逐条需求和其他状态的对应截图尚未完整建立，待按需求正文核对补充。
+**Screenshot gap:** Existing images cover only the pages or states shown. A complete mapping of screenshots to individual requirements and other states has not yet been established; check the requirements page and supplement as needed.
 
-## 12. 连接器列表与详情
+<a id="12-连接器列表与详情"></a>
+## 12. Connector List and Details
 
-[需求正文](./exploratory/connectors/requirements.md) ｜ [构建依据](./exploratory/connectors/build.md)
+[Requirements](./exploratory/connectors/requirements.md) ｜ [Build Basis](./exploratory/connectors/build.md)
 
-**功能与入口：** 通过主界面→扩展→连接器查找连接器并查看状态、说明和工具信息。
+**Function and entry point:** Find connectors and view their status, description, and tool information through Main Interface → Extensions → Connectors.
 
-**候选专项：** 配置校验、授权及真实工具消费需测试服务与明确授权，现有展示图不证明连接或调用。
+**Candidate dedicated evaluations:** Configuration validation, authorization, and real tool consumption require a test service and explicit authorization; existing display images do not prove connection or invocation.
 
-**页面参考截图**
+**Page Reference Screenshots**
 
-参考：macOS arm64，0.3.2 / 202611121104，2026-11-12；表单未填写或提交，不证明连接、授权或工具调用。
-当前连接器市场参考
+Reference: macOS arm64, 0.3.2 / 202611121104, 2026-11-12; the form was neither filled nor submitted, so this does not prove connection, authorization, or tool invocation.
+Reference: current Connector Marketplace
 
-当前连接器未提交表单参考
+Reference: current connector form, not submitted
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-12；HTTP 空表单未提交，不证明保存或连接。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-12; empty HTTP form not submitted; does not prove saving or connection.
 
-目标版本连接器未提交表单
+Target version: connector form not submitted
 
-参考：同目标版本，2026-11-12；STDIO 空表单未提交，不证明命令执行、预览或连接。
+Reference: same target version, 2026-11-12; empty STDIO form not submitted; does not prove command execution, preview, or connection.
 
-目标版本 STDIO 空表单
+Target version: empty STDIO form
 
-参考：macOS arm64，0.3.0 / 202610281438，2026-10-29。目录、安装及授权状态随环境变化；图中取值不作为长期预期。
+Reference: macOS arm64, 0.3.0 / 202610281438, 2026-10-29. Catalog, installation, and authorization states vary by environment; values in the image are not long-term expectations.
 
-![连接器市场参考](./exploratory/connectors/reference.png)
+![Connector Marketplace reference](./exploratory/connectors/reference.png)
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-12；展示连接器市场自然状态，不证明连接或授权。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-12; shows the Connector Marketplace in its natural state; does not prove connection or authorization.
 
-目标版本连接器市场参考
+Target version: Connector Marketplace reference
 
-**截图缺口：** 现有图片仅覆盖所展示页面或状态；逐条需求和其他状态的对应截图尚未完整建立，待按需求正文核对补充。
+**Screenshot gap:** Existing images cover only the pages or states shown. A complete mapping of screenshots to individual requirements and other states has not yet been established; check the requirements page and supplement as needed.
 
-## 13. MCP 历史要求与当前入口映射
+<a id="13-mcp-历史要求与当前入口映射"></a>
+## 13. Historical MCP Requirements and Current Entry-Point Mapping
 
-[需求正文](./exploratory/mcp/requirements.md) ｜ [构建依据](./exploratory/mcp/build.md)
+[Requirements](./exploratory/mcp/requirements.md) ｜ [Build Basis](./exploratory/mcp/build.md)
 
-该资产保留历史编号，当前入口映射到连接器，不再表示独立设置页面。
+This asset retains its historical numbering. The current entry point maps to Connectors and no longer represents a separate Settings page.
 
-**功能与入口：** 通过主界面→扩展→连接器访问 MCP 相关能力，历史需求不再对应独立设置页。
+**Function and entry point:** Access MCP-related capabilities through Main Interface → Extensions → Connectors; historical requirements no longer correspond to a separate Settings page.
 
-**页面参考截图**
+**Page Reference Screenshots**
 
-参考：macOS arm64，0.3.2 / 202611121104，2026-11-12；仅为未填写、未提交表单，不证明连接或授权。
+Reference: macOS arm64, 0.3.2 / 202611121104, 2026-11-12; only an unfilled, unsubmitted form; does not prove connection or authorization.
 
-当前连接器未提交表单
+Current connector form, not submitted
 
-**截图缺口：** 现有图片仅覆盖所展示页面或状态；逐条需求和其他状态的对应截图尚未完整建立，待按需求正文核对补充。
+**Screenshot gap:** Existing images cover only the pages or states shown. A complete mapping of screenshots to individual requirements and other states has not yet been established; check the requirements page and supplement as needed.
 
-## 14. 新手引导
+<a id="14-新手引导"></a>
+## 14. Onboarding
 
-[需求正文](./exploratory/onboarding/requirements.md) ｜ [构建依据](./exploratory/onboarding/build.md)
+[Requirements](./exploratory/onboarding/requirements.md) ｜ [Build Basis](./exploratory/onboarding/build.md)
 
-**功能与入口：** 通过头像菜单→新手引导了解项目、文献中心和阅读器，首次进入适用工作范围时也可自动展示。
+**Function and entry point:** Learn about projects, Literature Center, and the reader through Avatar menu → Onboarding. It may also appear automatically the first time the user enters an applicable workspace.
 
-**页面参考截图**
+**Page Reference Screenshots**
 
-参考：macOS arm64，0.3.0 / 202610281438，2026-10-29。示例文献中心首步卡片及聚光区域；进度、内容及已看过状态随引导组和数据变化，不作为本轮运行证据。
+Reference: macOS arm64, 0.3.0 / 202610281438, 2026-10-29. Example first-step card and spotlight area for Literature Center; progress, content, and seen status vary with the onboarding set and data and are not evidence of a run in this round.
 
-![文献中心引导卡片参考](./exploratory/onboarding/reference.png)
+![Literature Center onboarding card reference](./exploratory/onboarding/reference.png)
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-12；展示已看过状态的引导弹窗，不代表首次引导。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-12; shows the onboarding dialog in an already-seen state, not first-time onboarding.
 
-目标版本新手引导参考
+Target version: onboarding reference
 
-**截图缺口：** 现有图片仅覆盖所展示页面或状态；逐条需求和其他状态的对应截图尚未完整建立，待按需求正文核对补充。
+**Screenshot gap:** Existing images cover only the pages or states shown. A complete mapping of screenshots to individual requirements and other states has not yet been established; check the requirements page and supplement as needed.
 
-## 15. 通知
+<a id="15-通知"></a>
+## 15. Notifications
 
-[需求正文](./exploratory/notifications/requirements.md) ｜ [构建依据](./exploratory/notifications/build.md)
+[Requirements](./exploratory/notifications/requirements.md) ｜ [Build Basis](./exploratory/notifications/build.md)
 
-**功能与入口：** 通过头像菜单→设置→通知查看通知入口、未读处理入口和声音偏好。
+**Function and entry point:** View notification entry points, unread-item handling, and sound preferences through Avatar menu → Settings → Notifications.
 
-**页面参考截图**
+**Page Reference Screenshots**
 
-参考图来源：macOS arm64，0.3.0 / 202610281438，2026-10-28。声音开关为当时偏好，不作为后续固定预期；参考图仅帮助对应页面。
+Reference image source: macOS arm64, 0.3.0 / 202610281438, 2026-10-28. The sound toggle reflects the preference at that time and is not a fixed expectation for later versions; the reference image only helps identify the page.
 
-![通知页面参考](./exploratory/notifications/reference.png)
+![Notifications page reference](./exploratory/notifications/reference.png)
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-12；仅展示通知设置，不证明通知投递。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-12; shows only notification settings and does not prove notification delivery.
 
-目标版本通知设置
+Target version: notification settings
 
-**截图缺口：** 现有图片仅覆盖所展示页面或状态；逐条需求和其他状态的对应截图尚未完整建立，待按需求正文核对补充。
+**Screenshot gap:** Existing images cover only the pages or states shown. A complete mapping of screenshots to individual requirements and other states has not yet been established; check the requirements page and supplement as needed.
 
-## 16. 模型服务
+<a id="16-模型服务"></a>
+## 16. Model Services
 
-[需求正文](./exploratory/models/requirements.md) ｜ [构建依据](./exploratory/models/build.md)
+[Requirements](./exploratory/models/requirements.md) ｜ [Build Basis](./exploratory/models/build.md)
 
-**功能与入口：** 通过头像菜单→设置→模型服务查看服务连接和模型配置。
+**Function and entry point:** View service connections and model configuration through Avatar menu → Settings → Model Services.
 
-**候选专项：** 模型配置保存、思考强度、上下文窗口和会话切换的历史要求线索已整理；需求版本、目标适用及正式采用待确认，真实配置或调用另需相应条件和授权。
+**Candidate dedicated evaluations:** Historical requirement leads have been assembled for saving model configuration, reasoning effort, context window, and switching conversations. The requirement version, target applicability, and formal adoption remain to be confirmed; real configuration changes or calls require the corresponding conditions and authorization.
 
-**页面参考截图**
+**Page Reference Screenshots**
 
-补充参考：厂商列表底部、横向滚动后的参数区域。来源：macOS arm64，0.3.0 / 202610281438，2026-10-28；连接、模型、档位和数量为当时数据，不固定后续取值。
+Additional references: bottom of the provider list and parameter area after horizontal scrolling. Source: macOS arm64, 0.3.0 / 202610281438, 2026-10-28; connection, model, tier, and count are values from that time and are not fixed for later versions.
 
-![模型服务参考](./exploratory/models/reference.png)
+![Model Services reference](./exploratory/models/reference.png)
 
-![模型配置参考](./exploratory/models/configuration.png)
+![Model configuration reference](./exploratory/models/configuration.png)
 
-![厂商列表底部](./exploratory/models/providers.png)
+![Bottom of provider list](./exploratory/models/providers.png)
 
-![横向滚动后的参数区域](./exploratory/models/parameters.png)
+![Parameter area after horizontal scrolling](./exploratory/models/parameters.png)
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-12；展示未配置状态，不证明配置生效。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-12; shows an unconfigured state and does not prove that configuration took effect.
 
-目标版本模型服务
+Target version: Model Services
 
-参考：同目标版本，2026-11-12；模型配置自然展示，不证明写入或调用。
+Reference: same target version, 2026-11-12; shows the model configuration in its natural state and does not prove writing or invocation.
 
-目标版本模型配置
+Target version: model configuration
 
-**截图缺口：** 现有图片仅覆盖所展示页面或状态；逐条需求和其他状态的对应截图尚未完整建立，待按需求正文核对补充。
+**Screenshot gap:** Existing images cover only the pages or states shown. A complete mapping of screenshots to individual requirements and other states has not yet been established; check the requirements page and supplement as needed.
 
-## 17. 资料库文件
+<a id="17-资料库文件"></a>
+## 17. Library Files
 
-[需求正文](./exploratory/file-policy/requirements.md) ｜ [构建依据](./exploratory/file-policy/build.md)
+[Requirements](./exploratory/file-policy/requirements.md) ｜ [Build Basis](./exploratory/file-policy/build.md)
 
-**功能与入口：** 通过头像菜单→设置→资料库文件查看保存偏好和版本保留限制。
+**Function and entry point:** View save preferences and version-retention limits through Avatar menu → Settings → Library Files.
 
-**页面参考截图**
+**Page Reference Screenshots**
 
-参考图来源：macOS arm64，0.3.0 / 202610281438，2026-10-28。开关和限制数值为当时设置，不作为后续固定预期。
+Reference image source: macOS arm64, 0.3.0 / 202610281438, 2026-10-28. Toggles and limit values reflect the settings at that time and are not fixed expectations for later versions.
 
-![资料库文件参考](./exploratory/file-policy/reference.png)
+![Library Files reference](./exploratory/file-policy/reference.png)
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-12；展示当时文件策略，不证明修改或生效。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-12; shows the file policy at that time and does not prove changes or effect.
 
-目标版本资料库文件设置
+Target version: Library Files settings
 
-**截图缺口：** 现有图片仅覆盖所展示页面或状态；逐条需求和其他状态的对应截图尚未完整建立，待按需求正文核对补充。
+**Screenshot gap:** Existing images cover only the pages or states shown. A complete mapping of screenshots to individual requirements and other states has not yet been established; check the requirements page and supplement as needed.
 
-## 18. 数据存储
+<a id="18-数据存储"></a>
+## 18. Data Storage
 
-[需求正文](./exploratory/storage/requirements.md) ｜ [构建依据](./exploratory/storage/build.md)
+[Requirements](./exploratory/storage/requirements.md) ｜ [Build Basis](./exploratory/storage/build.md)
 
-**功能与入口：** 通过头像菜单→设置→数据存储查看数据目录和默认项目位置。
+**Function and entry point:** View the data directory and default project location through Avatar menu → Settings → Data Storage.
 
-**页面参考截图**
+**Page Reference Screenshots**
 
-参考图来源：macOS arm64，0.3.0 / 202610281438，2026-10-28。路径为合成测试环境，平台说明和路径需按后续目标实例核对，不固定为图中值。
+Reference image source: macOS arm64, 0.3.0 / 202610281438, 2026-10-28. The paths are from a synthetic test environment; verify platform notes and paths against the later target instance rather than treating image values as fixed.
 
-![数据存储参考](./exploratory/storage/reference.png)
+![Data Storage reference](./exploratory/storage/reference.png)
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-12；图含本机用户名和隔离路径，仅展示当时设置，不证明迁移。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-12; the image contains the local username and an isolated path, and shows only the settings at that time; it does not prove migration.
 
-目标版本数据存储设置
+Target version: Data Storage settings
 
-**截图缺口：** 现有图片仅覆盖所展示页面或状态；逐条需求和其他状态的对应截图尚未完整建立，待按需求正文核对补充。
+**Screenshot gap:** Existing images cover only the pages or states shown. A complete mapping of screenshots to individual requirements and other states has not yet been established; check the requirements page and supplement as needed.
 
-## 19. AI 提示词
+<a id="19-ai-提示词"></a>
+## 19. AI Prompts
 
-[需求正文](./exploratory/prompts/requirements.md) ｜ [构建依据](./exploratory/prompts/build.md)
+[Requirements](./exploratory/prompts/requirements.md) ｜ [Build Basis](./exploratory/prompts/build.md)
 
-该资产对应 AI 提示词与翻译配置两个页面，字段和承载映射见需求正文。
+This asset corresponds to two pages, AI Prompts and Translation Settings; see the requirements page for field and hosting mappings.
 
-**翻译服务配置：** 默认服务与划词翻译开关是同页独立候选；历史 Mock 与开发实例依据已记录，目标适用性及实际生效待核，不由提示词展示判通过。
+**Translation service configuration:** The default service and selection-translation toggle are separate candidates on the same page. Historical Mock and development-instance evidence has been recorded; target applicability and actual effect still need verification. Displaying prompts does not constitute a pass.
 
-**功能与入口：** 通过头像菜单→设置→AI 提示词或翻译配置查看对应功能的提示词。
+**Function and entry point:** View prompts for the corresponding features through Avatar menu → Settings → AI Prompts or Translation Settings.
 
-**页面参考截图**
+**Page Reference Screenshots**
 
-参考图来源：macOS arm64，0.3.0 / 202610281438，2026-10-28。文本、字数和按钮状态为当时偏好，不作为后续固定预期。
+Reference image source: macOS arm64, 0.3.0 / 202610281438, 2026-10-28. Text, word counts, and button states reflect preferences at that time and are not fixed expectations for later versions.
 
-![AI提示词参考](./exploratory/prompts/reference.png)
+![AI Prompts reference](./exploratory/prompts/reference.png)
 
-![提示词底部参考](./exploratory/prompts/bottom.png)
+![Prompt bottom reference](./exploratory/prompts/bottom.png)
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-12；AI 提示词展示不证明保存。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-12; displaying AI prompts does not prove they were saved.
 
-目标版本 AI 提示词
+Target version: AI Prompts
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-12；翻译配置中的文本和字数是动态值，不证明恢复或保存。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-12; text and word count in Translation Settings are dynamic values and do not prove restoration or saving.
 
-翻译配置参考
+Translation Settings reference
 
-参考：同版本及日期；翻译配置的滚动视口展示折叠服务及当时状态，不证明服务配置或翻译。
+Reference: same version and date; the scrolled viewport of Translation Settings shows collapsed services and their state at that time; it does not prove service configuration or translation.
 
-翻译服务列表折叠状态
+Translation service list: collapsed state
 
-**截图缺口：** 现有图片仅覆盖所展示页面或状态；逐条需求和其他状态的对应截图尚未完整建立，待按需求正文核对补充。
+**Screenshot gap:** Existing images cover only the pages or states shown. A complete mapping of screenshots to individual requirements and other states has not yet been established; check the requirements page and supplement as needed.
 
-## 20. 浏览器设置展示
+<a id="20-浏览器设置展示"></a>
+## 20. Browser Settings Display
 
-[需求正文](./exploratory/browser-settings/requirements.md) ｜ [构建依据](./exploratory/browser-settings/build.md)
+[Requirements](./exploratory/browser-settings/requirements.md) ｜ [Build Basis](./exploratory/browser-settings/build.md)
 
-**功能与入口：** 通过主界面设置→浏览器查看密码库、下载和访问策略，入口仅在浏览器能力开放时显示。
+**Function and entry point:** View the password store, downloads, and access policies through Main Interface Settings → Browser. The entry point appears only when browser capabilities are enabled.
 
-**页面参考截图**
+**Page Reference Screenshots**
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-13；完整设置窗口滚动至高级设置。目标分支后续确认默认配置下高级入口下线，此历史状态仅适用于显式开启高级能力的配置；新制品配置及可达性需另核。端口、开关、站点规则和密码库状态随环境变化，不将图中取值作为固定预期。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-13; full Settings window scrolled to Advanced Settings. The target branch later confirmed that the Advanced entry is removed under the default configuration. This historical state applies only to configurations that explicitly enable advanced capabilities; verify configuration and reachability on new artifacts separately. Ports, toggles, site rules, and password-store state vary by environment; values shown are not fixed expectations.
 
-浏览器设置完整窗口参考：高级设置
+Browser Settings full-window reference: Advanced Settings
 
-参考：同目标版本，2026-11-13；中部视口展示 CDP 与站点规则自然状态，端口和规则随环境变化，不证明编辑或连接。
+Reference: same target version, 2026-11-13; middle viewport showing the natural state of CDP and site rules. Ports and rules vary by environment; this does not prove editing or connection.
 
-浏览器设置完整窗口参考：中部
+Browser Settings full-window reference: middle
 
-参考：同目标版本，2026-11-13；顶部视口含本机用户名、下载目录与本地端口，不含完整连接密钥；状态随环境变化。
+Reference: same target version, 2026-11-13; top viewport includes the local username, download directory, and local port, but not the complete connection key; state varies by environment.
 
-浏览器设置完整窗口参考：顶部
+Browser Settings full-window reference: top
 
-参考：同目标版本，2026-11-13；实际清理选项与本次冻结的类型勾选要求不符，需求适用性待 Owner 确认；未执行清理。
+Reference: same target version, 2026-11-13; the actual cleanup options differ from the type-selection requirements frozen for this round. The Owner must confirm requirement applicability; cleanup was not performed.
 
-浏览器清理选项实际状态
+Actual state of browser cleanup options
 
-**截图缺口：** 现有图片仅覆盖所展示页面或状态；逐条需求和其他状态的对应截图尚未完整建立，待按需求正文核对补充。
+**Screenshot gap:** Existing images cover only the pages or states shown. A complete mapping of screenshots to individual requirements and other states has not yet been established; check the requirements page and supplement as needed.
 
-## 21. 关于书深：快速评审基线
+<a id="21-关于书深快速评审基线"></a>
+## 21. About ScholarSeed: Quick-Review Baseline
 
-[需求正文](./exploratory/about/requirements.md) ｜ [构建依据](./exploratory/about/build.md)
+[Requirements](./exploratory/about/requirements.md) ｜ [Build Basis](./exploratory/about/build.md)
 
-**功能与入口：** 通过头像菜单→设置→关于书深查看版本、更新偏好和官方支持入口。
+**Function and entry point:** View the version, update preferences, and official support entry through Avatar menu → Settings → About ScholarSeed.
 
-**页面参考截图**
+**Page Reference Screenshots**
 
-来源：macOS arm64 安装版 `0.3.0`，构建 `202610271421`，截图日期 `2026-10-28`。仅辅助对应页面与要求；图中版本、更新提示、偏好和年份是当时取值，以文字中的动态关系为准，不作为本轮结果证据或像素标准。
+Source: macOS arm64 installed build `0.3.0`, build `202610271421`, screenshot date `2026-10-28`. This only helps identify the page and requirements. Version, update notice, preferences, and year shown in the image were values at that time; follow the dynamic relationships described in text. This is not evidence of this round's result or a pixel standard.
 
-![关于页主要区域参考](./exploratory/about/reference.png)
+![About page main area reference](./exploratory/about/reference.png)
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-12；更新提示为当时动态状态，不证明更新。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-12; the update notice is a dynamic state from that time and does not prove an update.
 
-目标版本关于页面
+Target version: About page
 
-**截图缺口：** 现有图片仅覆盖所展示页面或状态；逐条需求和其他状态的对应截图尚未完整建立，待按需求正文核对补充。
+**Screenshot gap:** Existing images cover only the pages or states shown. A complete mapping of screenshots to individual requirements and other states has not yet been established; check the requirements page and supplement as needed.
 
-## 22. 文档保存与未保存保护
+<a id="22-文档保存与未保存保护"></a>
+## 22. Document Saving and Unsaved-Changes Protection
 
-[需求正文](./exploratory/saving/requirements.md) ｜ [构建依据](./exploratory/saving/build.md)
+[Requirements](./exploratory/saving/requirements.md) ｜ [Build Basis](./exploratory/saving/build.md)
 
-**功能与入口：** 通过正常打开资料后的文档编辑视图及保存入口保存修改并处理未保存状态；真实入口可达性待核实。
+**Function and entry point:** Save changes and handle unsaved states through the document editing view and save entry point after opening a resource normally; reachability of the real entry point still needs verification.
 
-**页面参考截图**
+**Page Reference Screenshots**
 
-参考：macOS arm64，0.3.2 / 202611121104，2026-11-12；仅展示代码编辑器和保存控件，不代表保存、失败或冲突终态。
+Reference: macOS arm64, 0.3.2 / 202611121104, 2026-11-12; shows only the code editor and save control, not final states for saving, failure, or conflict.
 
-文档保存入口上下文
+Document save entry-point context
 
-**截图缺口：** 现有图片仅覆盖所展示页面或状态；逐条需求和其他状态的对应截图尚未完整建立，待按需求正文核对补充。
+**Screenshot gap:** Existing images cover only the pages or states shown. A complete mapping of screenshots to individual requirements and other states has not yet been established; check the requirements page and supplement as needed.
 
-## 23. 项目任务列表（候选）
+<a id="23-项目任务列表候选"></a>
+## 23. Project Task List (Candidate)
 
-[候选需求](./exploratory/task-list/requirements.md) ｜ [构建依据](./exploratory/task-list/build.md)
+[Candidate Requirements](./exploratory/task-list/requirements.md) ｜ [Build Basis](./exploratory/task-list/build.md)
 
-**功能与入口：** 项目工作区的任务区域用于查看当前项目任务和置顶分组；目标版本需求适用性待核实。
+**Function and entry point:** Use the task area in the project workspace to view the current project's tasks and pinned group; applicability of the requirements to the target version still needs verification.
 
-**归档任务：** 已整理查看、恢复和确认删除的候选；真实归档任务、删除授权及目标版本截图待核。
+**Archived tasks:** Candidates for viewing, restoring, and confirming deletion have been assembled; real archived tasks, deletion authorization, and target-version screenshots still need verification.
 
-**状态：** 候选草案，需求版本待确认，尚未纳入评测执行；置顶、归档、恢复及运行中归档/删除停止已整理历史确认依据，目标版本适用性与完整截图待核。
+**Status:** Candidate draft; requirement version awaits confirmation and has not been included in evaluation execution. Historical confirmation evidence has been assembled for pinning, archiving, restoring, and stopping a running task when archived/deleted; target-version applicability and complete screenshots still need verification.
 
-项目任务空态及新任务输入器
+Project tasks empty state and new-task composer
 
-参考：同版本隔离项目，2026-11-13；一个真实任务及其重新选中后的状态，不代表置顶或排序。
+Reference: isolated project on the same version, 2026-11-13; one real task and its state after being selected again; does not represent pinning or ordering.
 
-隔离项目非空任务列表
+Isolated project: non-empty task list
 
-参考：macOS 安装版 `0.3.2` 隔离实例，2026-11-13；多个合成任务的列表及一条回复，身份与构建关联并非原子，不证明列表完整性或排序规则。
+Reference: isolated instance of macOS installed build `0.3.2`, 2026-11-13; list of multiple synthetic tasks and one reply. Identity and build association are not atomic; this does not prove list completeness or ordering rules.
 
-隔离项目多任务列表状态
+Isolated project: multiple-task list state
 
-**截图缺口：** 置顶及其他任务状态仍缺完整截图。
+**Screenshot gap:** Complete screenshots are still missing for pinning and other task states.
 
-## 24. 新任务输入器（候选）
+<a id="24-新任务输入器候选"></a>
+## 24. New-Task Composer (Candidate)
 
-[候选需求](./exploratory/task-composer/requirements.md) ｜ [构建依据](./exploratory/task-composer/build.md)
+[Candidate Requirements](./exploratory/task-composer/requirements.md) ｜ [Build Basis](./exploratory/task-composer/build.md)
 
-**功能与入口：** 通过项目工作区的新任务输入器组织草稿和待发送内容；目标版本入口动作与需求适用性待核实。
+**Function and entry point:** Organize drafts and pending content in the new-task composer in the project workspace; the target-version entry-point action and requirement applicability still need verification.
 
-**状态：** 候选草案，需求版本待确认，尚未纳入评测执行。
+**Status:** Candidate draft; requirement version awaits confirmation and has not been included in evaluation execution.
 
-**附件范围：** 已整理普通文件卡片、草稿图片移除、资料目录选择及同项目资料/文献拖入的历史线索；目标版本适用性及其他状态图待核，不代表附件发送或模型消费成功。
+**Attachment scope:** Historical leads have been assembled for ordinary file cards, removing draft images, selecting a resource directory, and dragging resources/literature from the same project into the composer. Target-version applicability and images of other states still need verification; these do not prove attachment sending or model consumption succeeded.
 
-**文献引用：** 文献库选择弹窗与资料库选择及项目文献拖入分别记录；已观察显示空态，选择细则及非空截图待核。
+**Literature references:** The literature-library selection dialog is documented separately from resource-library selection and dragging project literature. An empty state has been observed; selection details and non-empty screenshots still need verification.
 
-项目空态中的新任务输入器
+New-task composer in an empty project state
 
-**截图范围：** macOS arm64 `0.3.2 / 202611121823 / preview`，2026-11-12；同一自然空态的空白输入器，草稿切换、待发送队列及发送状态尚缺截图。
+**Screenshot scope:** macOS arm64 `0.3.2 / 202611121823 / preview`, 2026-11-12; blank composer in the same natural empty state. Screenshots are still missing for switching drafts, the pending-send queue, and sending states.
 
-参考：同版本隔离项目，2026-11-13；资料引用选择器未选状态，不证明勾选或提交引用。
+Reference: isolated project on the same version, 2026-11-13; resource-reference selector with nothing selected; does not prove selection or submission of a reference.
 
-资料引用选择器未选状态
+Resource-reference selector: nothing selected
 
-参考：同版本隔离项目，2026-11-13；文献选择器显示空态，独立库内容未核，不证明库确实为空或选择已通过。
+Reference: isolated project on the same version, 2026-11-13; literature selector shows an empty state. The independent library contents were not checked, so this does not prove the library is actually empty or that selection passed.
 
-文献引用选择器显示空态
+Literature-reference selector: empty state displayed
 
-## 25. 真实对话与任务结果（候选）
+<a id="25-真实对话与任务结果候选"></a>
+## 25. Real Conversations and Task Results (Candidate)
 
-[候选需求](./exploratory/conversation/requirements.md) ｜ [构建依据](./exploratory/conversation/build.md)
+[Candidate Requirements](./exploratory/conversation/requirements.md) ｜ [Build Basis](./exploratory/conversation/build.md)
 
-**功能与入口：** 通过项目工作区的新任务或已有任务输入区发起对话，查看回答并打开任务产物；目标版本适用性待确认。
+**Function and entry point:** Start a conversation from the new-task or existing-task input area in the project workspace, view the response, and open task artifacts; applicability to the target version awaits confirmation.
 
-**状态与截图缺口：** 历史需求线索仍为候选；已有获准隔离真实单轮及同进程重选显示图，后续补采两个新任务的公开身份与回合参照但非原子关联；产物及跨重启状态仍缺，不能用空白输入器图代替。
+**States and screenshot gaps:** Historical requirement leads remain candidates. An authorized isolated real single-turn run and an image showing reselection in the same process are available. Public identities and turn references for two new tasks were collected later but are not atomically associated. Artifact and cross-restart states are still missing; an image of a blank composer cannot substitute for them.
 
-**文件审阅：** 旧任务文件待审阅不阻断新对话已列候选；目标版本适用及真实状态截图待核。
+**File review:** A candidate requirement states that files awaiting review in an old task do not block a new conversation; target-version applicability and real-state screenshots still need verification.
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-13；隔离项目的合成请求与真实回复，输入框文字为占位提示，不代表产物或正式评测通过。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-13; synthetic request and real response in an isolated project. Text in the input box is a placeholder; this does not represent an artifact or a pass in formal evaluation.
 
-隔离项目真实单轮完成状态
+Isolated project: real single-turn completion state
 
-参考：同版本隔离项目，2026-11-13；同进程重新选中任务后的显示状态，不单凭截图证明切换过程或跨重启恢复。
+Reference: isolated project on the same version, 2026-11-13; displayed state after selecting the task again in the same process. The screenshot alone does not prove the switching process or recovery across restart.
 
-同进程重开任务后的显示状态
+Displayed state after reopening the task in the same process
 
-参考：同版本隔离项目，2026-11-13；工作台打开时的真实任务标题区操作菜单，不证明菜单动作或关闭工作台时的状态。
+Reference: isolated project on the same version, 2026-11-13; operation menu in the real task title area while the workbench is open. This does not prove a menu action or the state when closing the workbench.
 
-真实任务标题区操作菜单
+Real task title-area operation menu
 
-**消息展示：** 长用户消息折叠、复制及已发送混合上下文展示顺序有历史确认依据；已观察合成长消息展开与收起，目标版本适用及复制、混合上下文仍待核。
+**Message display:** Historical confirmation evidence exists for collapsing and copying long user messages and for the display order of sent mixed context. Expanded and collapsed states of a synthetic long message have been observed; target-version applicability, copying, and mixed context still need verification.
 
-**已发送图片：** 同组预览和原文件操作已列候选；目标版本适用与真实图片消息截图待核，原文件动作按权限分别验证。
+**Sent images:** Previewing images in the same group and operating on the original file are listed as candidates; target-version applicability and screenshots of real image messages still need verification. Verify original-file actions separately according to permissions.
 
-参考：macOS arm64 安装版 `0.3.2`，2026-11-13；隔离合成会话长消息展开和收起的完整视口，展开内容末尾超出视口，构建与身份关联限制见构建依据。
+Reference: macOS arm64 installed build `0.3.2`, 2026-11-13; full viewports of an expanded and collapsed long message in an isolated synthetic conversation. The end of the expanded content extends beyond the viewport. See the build basis for limitations on associating the build and identity.
 
-长用户消息展开状态
+Long user message: expanded state
 
-长用户消息收起状态
+Long user message: collapsed state
 
-参考：同日隔离合成会话的连续完整视口，前后重叠并显示原始文本末尾；不能仅凭图证明逐字符复制或跨重启恢复。
+Reference: consecutive full viewports of an isolated synthetic conversation from the same day, overlapping and showing the end of the original text; images alone cannot prove character-by-character copying or recovery across restart.
 
-长消息展开顶部视口
+Long message expanded: top viewport
 
-长消息展开中部视口
+Long message expanded: middle viewport
 
-长消息展开末尾视口
+Long message expanded: end viewport
 
-**正文网址：** Agent 正文裸网址的省略、完整提示与复制打开另列候选；目标适用及真实回答图待核。
+**URLs in message bodies:** Omitting bare URLs in Agent message bodies, displaying the full URL in a tooltip, and copying/opening are separate candidates; target applicability and real response images still need verification.
 
-**回答来源：** 文件与网页混合引用列表及同源去重已有候选依据；真实同轮来源和目标版本截图待核。
+**Response sources:** Candidate evidence exists for mixed file-and-web citation lists and deduplication of identical sources; real sources in the same turn and target-version screenshots still need verification.
 
-**引用摘录：** 单文件及分组引用的摘录展开与原文导航已列候选；目标版本截图及折叠行数待核。
+**Citation excerpts:** Expanding excerpts and navigating to source text for single-file and grouped citations are listed as candidates; target-version screenshots and collapsed line counts still need verification.
 
-**任务历史：** 历史浮层按 Agent 最后回复时间展示和排序的需求已整理为候选；目标版本及非空状态截图待核。
+**Task history:** The requirement for the history popover to display and sort by the time of the Agent's last reply has been assembled as a candidate; target version and non-empty-state screenshots still need verification.
 
-**问答回放：** 普通澄清及内置问答的历史回显、只读和复制已列候选专项；目标版本适用及真实完整窗口图待核。
+**Q&A replay:** Historical replay, read-only display, and copying for ordinary clarifications and built-in Q&A are listed as candidate dedicated evaluations; target-version applicability and real full-window images still need verification.
 
-**悬浮会话：** 移动、五点停靠及最小化还原已整理为候选专项；真实会话入口及动作结果待核。
+**Floating conversation:** Moving, docking at five positions, and minimizing/restoring have been assembled as candidate dedicated evaluations; the real conversation entry point and action results still need verification.
 
-**悬浮调宽：** 左右边缘调宽与对侧固定另列候选；已补隔离真实会话状态图，目标版本需求适用和完整面板几何待核。
+**Floating-panel resizing:** Resizing from the left and right edges while fixing the opposite side is a separate candidate. An isolated real-conversation state image has been added; target-version requirement applicability and complete panel geometry still need verification.
 
-参考：同版本隔离项目，2026-11-13；悬浮输入条初态及两次边缘拖动后的完整窗口，不证明完整面板高度、极限或正式评测通过。
+Reference: isolated project on the same version, 2026-11-13; full windows showing the floating input bar's initial state and states after dragging both edges. This does not prove full panel height, limits, or a pass in formal evaluation.
 
-悬浮输入条初态
+Floating input bar: initial state
 
-左边缘拖动后的悬浮状态
+Floating state after dragging the left edge
 
-右边缘拖动后的悬浮状态
+Floating state after dragging the right edge
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-13；新任务悬浮输入状态，不代表真实回合或拖动结果。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-13; floating input state for a new task; does not represent a real turn or a drag result.
 
-空任务悬浮输入状态
+Empty-task floating input state
 
-**任务分支：** 任务菜单创建分支及来源回跳已有候选依据；目标版本、隔离写入及完整截图待核。
+**Task branches:** Candidate evidence exists for creating a branch from the task menu and navigating back to its source; target version, isolated writes, and complete screenshots still need verification.
 
-**任务产物：** 概览中输出及过程产物分组的预览、展开与收起已整理为候选；目标版本和足量真实产物截图待核。
+**Task artifacts:** Previewing, expanding, and collapsing output and process-artifact groups in the overview have been assembled as candidates; target version and sufficient screenshots of real artifacts still need verification.
 
-**产物版本：** 同轮同路径的最新文件卡与历史版本入口已记录为候选；真实版本、目标适用及截图待核。
+**Artifact versions:** The latest file card for the same turn and path, and the entry point to historical versions, are recorded as candidates; real versions, target applicability, and screenshots still need verification.
 
-**过程文献：** 更多操作入口与 PDF 阅读另列候选；真实过程文献、目标适用及截图待核。
+**Process literature:** The More actions entry point and PDF reading are separate candidates; real process literature, target applicability, and screenshots still need verification.
 
-**文献综述：** 卡片四区、大纲及引用导航已列候选；真实综述、目标适用和截图待核，不等于综述质量已验证。
+**Literature review:** The four card areas, outline, and citation navigation are listed as candidates; a real review, target applicability, and screenshots still need verification. This does not mean review quality has been verified.
 
-**对话画布：** 预览折叠与工作台同一画布往返已整理为候选；真实画布及目标版本截图待核。
+**Conversation canvas:** Collapsing the preview and round-tripping the same canvas in the workbench have been assembled as candidates; the real canvas and target-version screenshots still need verification.
 
-**授权确认：** 文献全文、普通工具权限及文件读取/写权限恢复已有候选依据；目标版本、真实请求截图和相关决策分支待核。
+**Authorization confirmation:** Candidate evidence exists for full-text literature, ordinary tool permissions, and restoring file-read/write permissions; the target version, screenshots of real requests, and related decision branches still need verification.
 
-**检索结果：** 已整理授权范围、已入库行选择及加入文献库的候选依据；真实结果、入库终态和目标版本截图待核。
+**Search results:** Candidate evidence has been assembled for authorization scope, selecting already-ingested rows, and adding items to the literature library; real results, final ingestion states, and target-version screenshots still need verification.
 
-## 26. 内置浏览器使用（候选）
+<a id="26-内置浏览器使用候选"></a>
+## 26. Built-In Browser Use (Candidate)
 
-[候选需求](./exploratory/browser/requirements.md) ｜ [构建依据](./exploratory/browser/build.md)
+[Candidate Requirements](./exploratory/browser/requirements.md) ｜ [Build Basis](./exploratory/browser/build.md)
 
-**功能与入口：** 在浏览器能力开放时通过工作台入口打开网页并查找内容，具体入口及目标版本适用性待核。
+**Function and entry point:** When browser capabilities are enabled, open webpages and find content through the workbench entry point; the exact entry point and applicability to the target version still need verification.
 
-**状态与截图缺口：** 网页导航、查找及历史等为候选；真实网页完整窗口图与可控测试站点尚缺，设置页截图不能代替网页结果。历史按时间检索的具体语义待确认；Agent 授权、下载及清理另列专项。
+**States and screenshot gaps:** Web navigation, search, and history are candidates. Full-window images of real webpages and a controllable test site are still missing; Settings screenshots cannot substitute for webpage results. The precise semantics of time-based history search await confirmation. Agent authorization, downloads, and cleanup are separate dedicated evaluations.
 
-**网页打印：** 历史确认的打印入口及取消行为已列候选；目标版本、原生对话框与输出终态待核。
+**Webpage printing:** The historically confirmed print entry point and cancellation behavior are listed as candidates; the target version, native dialog, and final output state still need verification.
 
-**网页工具：** 缩放、网页截图、开发者工具和设备工具栏分别记录为候选；目标版本、实际终态与平台条件待核。
+**Web tools:** Zoom, webpage screenshots, developer tools, and the device toolbar are each recorded as candidates; target version, actual final states, and platform conditions still need verification.
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-13；浏览历史自然空态及清理入口，不代表网页浏览、非空检索或清理结果。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-13; natural empty state of browsing history and its cleanup entry point; does not represent webpage browsing, non-empty search, or cleanup results.
 
-目标版本浏览历史空态
+Target version: browsing-history empty state
 
-## 27. 账号与开发者（候选）
+<a id="27-账号与开发者候选"></a>
+## 27. Account and Developer (Candidate)
 
-[候选需求](./exploratory/account/requirements.md) ｜ [构建依据](./exploratory/account/build.md)
+[Candidate Requirements](./exploratory/account/requirements.md) ｜ [Build Basis](./exploratory/account/build.md)
 
-**功能与入口：** 通过头像菜单查看账户状态及资料、额度入口，并通过设置中的开发者入口管理 API 密钥；目标版本入口与适用性待核。
+**Function and entry point:** View account status, profile, and quota entry points through the avatar menu, and manage API keys through the Developer entry in Settings; target-version entry points and applicability still need verification.
 
-**状态与截图缺口：** 登录、退出及密钥写操作需明确授权；账号菜单、登录交接与开发者设置的可复用真实完整图尚缺。页面本身是正常产品功能，实际出现的完整凭据不得作为截图内容传播。
+**States and screenshot gaps:** Login, logout, and writing API keys require explicit authorization. Reusable real full-page images of the account menu, login handoff, and developer settings are still missing. The page itself is a normal product feature; any complete credentials that actually appear must not be distributed in screenshots.
 
-## 28. 问题反馈与操作记录（候选）
+<a id="28-问题反馈与操作记录候选"></a>
+## 28. Feedback and Operation Records (Candidate)
 
-[候选需求](./exploratory/feedback/requirements.md) ｜ [构建依据](./exploratory/feedback/build.md)
+[Candidate Requirements](./exploratory/feedback/requirements.md) ｜ [Build Basis](./exploratory/feedback/build.md)
 
-**功能与入口：** 通过产品反馈入口描述问题，并可按可用条件记录操作步骤与截图后检查或提交；目标入口和适用性待核。
+**Function and entry point:** Describe an issue through the product feedback entry point and, where available, record operation steps and screenshots for review or submission; target entry point and applicability still need verification.
 
-**状态与截图缺口：** 真实反馈表单、记录及回执完整图尚缺；操作记录不预设连续视频，自动截图和外部上传需分别核实授权。
+**States and screenshot gaps:** Complete images of a real feedback form, record, and receipt are still missing. Operation records do not presuppose continuous video; authorization for automatic screenshots and external uploads must be verified separately.
 
-**步骤说明：** 成功提交的说明与提交时步骤关联、可查看的历史要求已列候选；真实记录、目标适用与截图待核。
+**Step descriptions:** The historical requirement that a successful submission's description be associated with the steps at submission time and viewable is listed as a candidate; real records, target applicability, and screenshots still need verification.
 
-## 29. 窗口、托盘与系统通知（候选）
+<a id="29-窗口托盘与系统通知候选"></a>
+## 29. Window, Tray, and System Notifications (Candidate)
 
-[候选需求](./exploratory/system-shell/requirements.md) ｜ [构建依据](./exploratory/system-shell/build.md)
+[Candidate Requirements](./exploratory/system-shell/requirements.md) ｜ [Build Basis](./exploratory/system-shell/build.md)
 
-**功能与入口：** 通过原生窗口关闭、后台菜单和系统通知管理应用，并从更新提示进入后续流程；实际平台和目标版本适用性待核。
+**Function and entry point:** Manage the application through native window closing, background menus, and system notifications, and continue the update flow from an update notice; actual platform and target-version applicability still need verification.
 
-**状态与截图缺口：** macOS 与 Windows 行为分别验证，原生窗口、托盘和系统通知的可复用完整图尚缺；安装与重启另需授权。
+**States and screenshot gaps:** macOS and Windows behavior must be verified separately. Reusable full images of native windows, tray, and system notifications are still missing; installation and restart require separate authorization.

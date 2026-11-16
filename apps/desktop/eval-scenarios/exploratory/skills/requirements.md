@@ -1,95 +1,113 @@
-# 技能发现与详情
+<a id="技能发现与详情"></a>
+# Skill Discovery and Details
 
-查找技能、区分来源并查看说明。入口：主界面“扩展” → “技能”；默认进入“技能广场”，还可查看“系统预置”和“我添加的”。
+Find skills, distinguish their sources, and inspect their descriptions. Entry: main screen “扩展” → “技能”. The default page is “技能广场”; “系统预置” and “我添加的” are also available.
 
-目标版本技能搜索结果参考
+Search-results reference for skills in the target version
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-13；展示技能广场搜索结果，名称、来源和数量随目录变化，单图不证明详情、安装或调用。来源见[构建依据](./build.md)。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-13; shows search results in the Skill Marketplace. Names, sources, and count vary with the catalog. The image alone does not prove details, installation, or invocation. See [build evidence](./build.md).
 
-目标版本技能详情参考
+Skill-detail reference for the target version
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-12；仅展示市场搜索结果及对应详情弹窗，名称、版本、来源和状态随实际目录变化，不证明安装或调用。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-12; shows marketplace search results and the corresponding detail dialog only. Names, versions, sources, and states vary with the actual catalog; it does not prove installation or invocation.
 
-目标版本系统预置技能列表参考
+System-provided skill list reference for the target version
 
-目标版本用户上传技能空态参考
+User-uploaded skill empty-state reference for the target version
 
-参考：同一目标版本，2026-11-12；分别展示当时系统预置列表及用户上传空态。旧来源分组与目标版本的承载映射仍待确认，列表、开关及空态随环境变化；两图不证明安装、启停或整页通过。
+Reference: same target version, 2026-11-12; shows the system-provided list and empty state for user uploads at that time. The mapping between old source groups and the target version remains to be confirmed. Lists, switches, and empty states vary by environment; neither image proves installation, enablement, or acceptance of the whole page.
 
-![技能广场参考](./reference.png)
+![Skill Marketplace reference](./reference.png)
 
-补充参考：[系统列表](./system.png)、[本机详情](./detail.png)。来源：macOS arm64，0.3.0 / 202610281438，2026-10-29；卡片、分类、名称、数量、版本及状态随当前目录变化，不固定图中取值。
+Additional references: [system list](./system.png), [local detail](./detail.png). Source: macOS arm64, 0.3.0 / 202610281438, 2026-10-29. Cards, categories, names, counts, versions, and states vary with the current catalog; image values are not fixed.
 
-## 发现技能
+<a id="发现技能"></a>
+## Discover Skills
 
-### 页面与来源分区（SKILL-OBS-001 · v`0.3`）
-固定：技能/连接器导航、技能来源标签、搜索及添加入口清楚，当前标签与内容一致。条件：加载、读取失败与真正空列表有可区分的提示，不能把失败显示成无技能。
+<a id="页面与来源分区skill-obs-001--v03"></a>
+### Page and source groups (SKILL-OBS-001 · v`0.3`)
+Fixed: Skills/connectors navigation, source tabs, search, and add entries are clear, and the selected tab matches its content. Conditional: Loading, read failure, and a genuinely empty list show distinguishable feedback; a failure must not appear as no skills.
 
-### 列表与卡片（SKILL-OBS-002 · v`0.3`）
-动态：系统预置、我添加的列表分别对应当前设置页目录响应中的系统及用户技能；卡片名称、当前语言简介和来源标记与目录元数据一致，不固定数量。广场卡片对应当前市场查询结果，不将全部随包技能当作设置页列表。
+<a id="列表与卡片skill-obs-002--v03"></a>
+### Lists and cards (SKILL-OBS-002 · v`0.3`)
+Dynamic: “系统预置” and “我添加的” lists separately match system and user skills in the current settings-page catalog response. Card name, current-language description, and source label match catalog metadata; count is not fixed. Marketplace cards match the current market query result; do not treat all bundled skills as settings-page list entries.
 
-### 搜索与清空（SKILL-OBS-003 · v`0.3`）
-动态：本机技能可按可见名称或简介关键词检索；市场搜索结果对照相同关键词的查询服务响应。无匹配时提示无结果，清空恢复该来源列表。条件：各来源分别保留自己的搜索词，不将另一标签的筛选误套到当前列表。
+<a id="搜索与清空skill-obs-003--v03"></a>
+### Search and clear (SKILL-OBS-003 · v`0.3`)
+Dynamic: Local skills can be searched by visible-name or description keywords. Marketplace results are checked against the service response for the same keyword. No matches show a no-results notice; clearing restores that source's list. Conditional: Each source retains its own query; do not apply a filter from another tab to the current list.
 
-### 市场分类与列表状态（SKILL-OBS-004 · v`0.3`）
-动态：技能广场分类含“全部”及当前分类服务提供的推荐分类，所选分类与结果查询一致，分类溢出时可展开/收起。条件：分类加载/失败有反馈；当前已加载卡片不重复，继续加载提示与服务分页状态一致，不把部分结果标成全部已加载。
+<a id="市场分类与列表状态skill-obs-004--v03"></a>
+### Marketplace categories and list state (SKILL-OBS-004 · v`0.3`)
+Dynamic: Skill Marketplace categories include “全部” and recommended categories supplied by the current category service. The selected category matches the result query, and overflow categories can expand/collapse. Conditional: Category loading/failure has feedback; already loaded cards are not duplicated; Load More feedback matches service pagination. Do not label partial results as fully loaded.
 
-## 查看技能
+<a id="查看技能"></a>
+## View Skills
 
-### 本机技能详情（SKILL-OBS-005 · v`0.3`）
-动态：打开系统或用户卡片后，详情标题、简介、来源、存在时的作者及版本与所选技能元数据一致，无版本时明确说明；正文对应该技能说明文件，去除元信息后正常排版，长文可滚动，关闭回到原列表。文档读取失败有反馈，不展示伪造或其他技能正文。
+<a id="本机技能详情skill-obs-005--v03"></a>
+### Local skill details (SKILL-OBS-005 · v`0.3`)
+Dynamic: After opening a system or user card, the detail title, description, source, and author/version when present match the selected skill metadata; when no version exists, say so clearly. The body corresponds to that skill's description file, with metadata removed and normal formatting; long text can scroll. Closing returns to the original list. A document-read failure has feedback; do not display fabricated content or another skill's body.
 
-### 市场技能详情（SKILL-OBS-006 · v`0.3`）
-动态：详情与所选市场技能及版本一致，名称、简介、来源、可选作者/版本及正文对照相同技能标识和版本的详情资料。条件：正文加载、失败及无正文分别有反馈；自然出现风险阻止状态时有说明，不显示为可正常安装。
+<a id="市场技能详情skill-obs-006--v03"></a>
+### Marketplace skill details (SKILL-OBS-006 · v`0.3`)
+Dynamic: Details match the selected marketplace skill and version. Compare name, description, source, optional author/version, and body against detail material for the same skill identity/version. Conditional: Body loading, failure, and absence each have feedback. If a risk block naturally appears, explain it; do not present the skill as installable normally.
 
-### 安装与可用状态展示（SKILL-OBS-007 · v`0.3`）
-动态/条件：市场“已安装”标记对应本机同一市场来源、标识及命名空间的技能，而非仅同名；本机开关对应启用偏好，不把运行未就绪当未启用，可操作性与目录许可一致。未登录且技能要求登录时显示登录提示；已启用且有非登录不可用原因时显示原因；更新标记对应可更新状态。详情中的安装、使用等入口与已安装状态一致，不以入口展示证明动作成功。
+<a id="安装与可用状态展示skill-obs-007--v03"></a>
+### Installation and availability display (SKILL-OBS-007 · v`0.3`)
+Dynamic/conditional: A marketplace “installed” marker corresponds to the same marketplace source, identity, and namespace in the local catalog, not merely a name match. A local switch matches the enable preference; runtime unavailability is not the same as disabled, and operability matches catalog permissions. If signed out and login is required, show a login prompt. If enabled but unavailable for a non-login reason, show the reason. An update marker matches update availability. Install/use entries in details match installed state; the visible entry alone does not prove an action succeeded.
 
-## 发布快评层
+<a id="发布快评层"></a>
+## Release Quick-Review Layer
 
-采用v`0.3`的正常子要点：SKILL-OBS-001–003、005/006、007；仅代表下述范围，不代表这些ID全部细则通过。
+The adopted normal subpoints from v`0.3` are SKILL-OBS-001–003, 005/006, and 007. This covers only the scope below and does not mean every detail of these IDs passes.
 
-技能目录的来源、卡片可见名称/说明与自然可用状态应相符；固定一条真实可见名称作一次搜索并查看其详情，详情应属于同一技能、正文与对应目录/文档只读参照一致。与F2共用，不改用内部标识或换来源绕过搜索失败。
+Source groups and visible card name/description in the skill catalog should match the natural availability state. Fix one genuinely visible name, search once, and open its details. The details must belong to that same skill, and the body must match an independent read-only catalog/document reference. Share this with F2; do not switch to internal IDs or another source to bypass a failed search.
 
-必要参照：本次实际可见名称，以及相同来源、语言、查询、标识与版本的目录和文档最小字段；不安装或授权。[历史制品读取记录](build.md#当前制品复核)仅供定位线索，执行前须核本次目标制品的读取契约，不能沿用旧包接口假定当前有效。
-自然安装入口/标记另对照同来源、标识及命名空间的本机目录最小投影；该参照失败则保留007缺证，搜索详情成功不等于整页状态通过，不重试或换来源追绿。
+Required reference: this run's actually visible name and minimal catalog/document fields from the same source, language, query, identity, and version; do not install or authorize. The [historical artifact-reading record](build.md#当前制品复核) is a location clue only. Verify the target artifact's read contract before execution; do not assume the old package interface still applies.
 
-## 专项层
+Separately compare the natural installed entry/marker against the minimal local-catalog projection for the same source, identity, and namespace. If this reference fails, retain the 007 evidence gap; successful search/details do not imply the whole page state passes. Do not retry or switch source to force a pass.
 
-本层未选：全分类分页、全部来源组合、安装/启停/授权/更新；历史可见名称搜索疑点保留。原完整判据、稳定ID、版本和历史结果保留；未确认分支不因分层获批。
+<a id="专项层"></a>
+## Specialized Layer
 
-## 技能使用主链候选专项
+Not selected in this layer: pagination across all categories, all source combinations, installation/enablement/authorization/update. Retain the historical visible-name search concern. The original full criteria, stable IDs, versions, and historical results remain; unconfirmed branches are not approved merely by this layering.
 
-技能添加菜单自然状态
+<a id="技能使用主链候选专项"></a>
+## Candidate Specialty: Main Skill-Use Chain
 
-参考：macOS arm64 `0.3.2 / 202611121823 / preview`，2026-11-13；隔离实例的技能页面及添加菜单完整视口，菜单项未执行，不证明创建或上传成功。
+Natural state of the skill-add menu
 
-**通过书深创建技能（`SKILL-CREATE-CAND-001`；需求版本待确认）**：历史设计记录添加菜单可进入创建任务，另有暂时隐藏未支持入口的记录，目标包实际可用性和适用范围待核。若入口适用，应区分创建入口、项目与描述、真实任务及技能产物，不以普通技能使用或本地上传代替；模型调用、生成及写入分别核授权，不预置产品结果。
+Reference: macOS arm64 `0.3.2 / 202611121823 / preview`, 2026-11-13; full viewport of the skill page and add menu in an isolated instance. No menu item was executed, so this does not prove creation or upload succeeded.
 
-**对话生成技能的审阅安装（`SKILL-GENERATED-INSTALL-CAND-001`；需求版本待确认）**：历史用户截图记录从对话安装卡发起、宿主重检同一生成包并展示只读安装预览与显式确认。需真实生成包及独立身份、摘要和获准环境；预览、确认及真实安装终态分别判断，不能以本地上传预览或模拟卡代替。本轮不评测导入，生成包安装尚未选入；目标包适用与真实截图待核。
+**Create a skill through ScholarSeed (`SKILL-CREATE-CAND-001`; requirements version to be confirmed):** Historical design records show that the Add menu can enter a creation task; another record says an unsupported entry was temporarily hidden. Actual availability and scope in the target package remain to be checked. If applicable, distinguish the creation entry, project and description, real task, and skill artifact. Ordinary skill use or local upload is not a substitute. Model calls, generation, and writes each require separate authorization; do not prefill product results.
 
-**来源展示待确认**：既有 `SKILL-OBS-002` 保留原文；后续设计对来源分组标识和 owner/repo 链接的区分与目标包映射须核，不能以源码或此次整理直接删除既有要求。
+**Review and install a conversation-generated skill (`SKILL-GENERATED-INSTALL-CAND-001`; requirements version to be confirmed):** Historical user screenshots record initiating installation from a conversation install card, the host rechecking the same generated package, showing a read-only install preview, then requiring explicit confirmation. This needs a real generated package, independent identity/digest, and authorized environment. Assess preview, confirmation, and actual installation outcome separately; local-upload preview or a simulated card is not a substitute. Import evaluation is excluded this run and generated-package installation is not selected. Target-package applicability and real screenshots remain to be checked.
 
-**市场技能来源展示（`SKILL-MARKET-SOURCE-CAND-001`；需求版本待确认）**：历史用户要求市场技能及已安装的市场来源技能详情使用 GitHub 展示，并要求“我添加的”中市场来源卡片底部标签与之保持一致；官方、用户上传及本地来源不由此外推。以同来源、同技能的独立安装来源及列表/详情身份为参照，分别核显示；展示文案不改变后端安装来源。目标包适用、需求版本及完整窗口图待核，不以菜单、单张卡片或旧版本运行证明通过。
+**Source display to be confirmed:** Keep existing `SKILL-OBS-002` text. Verify the mapping between later design distinctions for source-group labels and owner/repo links and the target package; do not remove existing requirements based directly on source code or this reorganization.
 
-以下历史需求线索的产品需求版本、当前目标包适用性及采用状态待确认；历史 `@` 后数字是业务点资产修订，不是产品需求版本。历史编号、来源和映射见[构建依据](./build.md#技能使用主链候选skills9)；不因本段建立而纳入已采用冒烟或执行分母。
+**Marketplace skill-source display (`SKILL-MARKET-SOURCE-CAND-001`; requirements version to be confirmed):** Historical user requirements say marketplace skills and installed marketplace-sourced skill details display GitHub, and the bottom label on marketplace-sourced cards in “我添加的” matches. Do not generalize this to official, user-uploaded, or local sources. Use independent installed-source data and list/detail identity for the same skill to verify both displays separately; display copy does not change backend installation source. Target-package applicability, requirements version, and complete-window images remain to be checked. A menu, single card, or old-version run does not prove acceptance.
 
-### 本地技能预览与安装（历史 `SKILL-INSTALL-LOCAL-01@1`）
+The product-requirements version, applicability to the current target package, and adoption of the following historical requirement clues remain unconfirmed. The historical `@` suffix is a business-point asset revision, not the product requirements version. See [build evidence](./build.md#技能使用主链候选skills9) for historical IDs, sources, and mappings. This section does not add them to adopted smoke or the execution denominator.
 
-从技能页的本地上传入口选择获准的合成技能，查看对应名称、版本及说明并显式确认安装；终态为本机目录中能独立读回同一对象的来源和版本，且与所选原始资料对应。本地标记或卡片出现不能单独证明安装成功；文件/目录选择和安装由人工确认并须明确授权，冲突、扫描失败和卸载另列专项。
+<a id="本地技能预览与安装历史-skill-install-local-011"></a>
+### Local skill preview and installation (historical `SKILL-INSTALL-LOCAL-01@1`)
 
-### 市场技能安装（`SKILL-MARKET-CAND-001`）
+Select an authorized synthetic skill through the local-upload entry on the skill page, inspect its corresponding name/version/description, and explicitly confirm installation. Terminal state: independently read the same object's source and version from the local catalog, matching the selected original material. A local marker or card alone does not prove installation. A human confirms file/directory selection and installation, with explicit authorization; conflicts, scan failures, and uninstall are separate specialties.
 
-对可核来源、标识和版本的市场技能，从列表或详情发起获准安装后，以同一市场来源、标识、命名空间和版本的本机目录确认结果。用户历史确认的市场链路见构建依据；目标版本适用性及安装后默认启用语义仍待核。网络、第三方内容、安装及可能的依赖处理须有相应授权；不以名称相同、显示对勾或按钮反馈代替独立目录结果。
+<a id="市场技能安装skill-market-cand-001"></a>
+### Marketplace skill installation (`SKILL-MARKET-CAND-001`)
 
-### 停用与恢复（历史 `SKILL-ENABLE-01@2`）
+For a marketplace skill whose source, identity, and version can be verified, initiate an authorized installation from the list or details, then verify the result in the local catalog under the same marketplace source, identity, namespace, and version. See build evidence for the historically user-confirmed marketplace flow; applicability to the target version and default enablement after installation remain to be checked. Network access, third-party content, installation, and possible dependency handling need corresponding authorization. A matching name, checkmark, or button feedback cannot substitute for an independent catalog result.
 
-在获准的隔离状态中，对可操作的同一技能分别观察停用和恢复：停用后新任务技能选择器不误报可选，恢复后同一技能重新可选；分别与本机目录的该技能启用状态核对。系统技能和本轮自建用户技能是不同来源，不能互相替代；详情按钮可见不证明真实可调用。失败回滚、并发和跨重启持久化另列专项。
+<a id="停用与恢复历史-skill-enable-012"></a>
+### Disable and restore (historical `SKILL-ENABLE-01@2`)
 
-### 选择技能并完成任务（历史 `SKILL-INVOKE-01@2`）
+In an authorized isolated state, separately observe disabling and restoring the same operable skill: after disable, the new-task skill picker does not falsely report it selectable; after restore, the same skill is selectable again. Compare each with that skill's enabled state in the local catalog. System skills and user-created skills in this run are different sources and cannot substitute for one another. A visible detail button does not prove actual invocability. Rollback after failure, concurrency, and persistence across restart are separate specialties.
 
-从技能中心选择可调用技能及目标项目、填写合成任务描述，观察新任务中同一技能身份与原描述；如范围包含真实发送，则核同一真实回合的技能身份、执行关联及对应最终结果。版本存在时应绑定并核对，不将当前源码中的可选版本字段视为必填需求；版本缺失或无法绑定是否影响判断须按选定技能和需求确认。输入器引用、发送请求、实际技能执行与回答终态是不同观察点，不以填入草稿、入口存在或模型自述代替任务完成。该路径可能自动提交；对停用技能选择使用还可能触发启用确认，须在操作前确认隔离项目、状态变更、模型/费用与发送权限，未授权时不得确认启用或点击可能发送的入口。
+<a id="选择技能并完成任务历史-skill-invoke-012"></a>
+### Select a skill and complete a task (historical `SKILL-INVOKE-01@2`)
 
-**跨入口显示名与注册身份候选子点**：对于同一市场来源技能，分别以同语言、同来源及身份的独立目录参照核对技能广场、“我添加的”和对话 `/`、加号技能选择器中的中英文显示名；系统预置技能也核对管理页与选择器的中英文名称。若选入发送，核发送给 Codex 的真实注册名而非本地化显示名，并分别判断后续执行关联与最终结果。名称相同不能单独证明身份，草稿或界面显示不能证明真实发送；此子点补充上述调用候选，不另计一条流程。目标包适用、需求版本及采用状态待确认；语言偏好变更、市场访问、真实发送和模型费用分别核授权，使用隔离状态与最小必要身份参照，不读取或保存用户真实技能目录及凭据。目标包跨语言选择器和真实发送的完整窗口证据缺失，不能以历史截图或源码替代。
+From the skill center, select an invocable skill and target project, enter a synthetic task description, and verify that the new task contains the same skill identity and original description. If real sending is in scope, verify the skill identity and execution association in the same real turn and its corresponding final result. When a version exists, bind and verify it; do not treat the optional version field in current source as a requirement. Confirm how a missing/unbound version affects judgment for the selected skill and requirements. Composer references, send request, actual skill execution, and answer outcome are separate observations. Draft text, a visible entry, or model self-report does not prove task completion. This path may submit automatically; selecting a disabled skill may also prompt to enable it. Before acting, confirm isolated project, state change, model/cost, and send permissions. Without authorization, do not confirm enablement or click an entry that may send.
 
-上述专项需要真实目标页面的完整窗口截图及必要中间状态，当前已收录的列表/详情参考图只展示发现阶段，不能证明安装、启停、选择器或真实回合。[合成技能输入](../../../../../examples/projects/skill-import/files/SKILL.md)及其清单供人工导入前核验，不自动安装；不能使用用户技能目录或预置安装结果冒充。真实运行缺截图、权限或独立参照时保留缺口。
+**Candidate subpoint: display names and registered identity across entries:** For one marketplace-source skill, independently verify Chinese and English display names in Skill Marketplace, “我添加的”, and conversation `/` and plus skill pickers, using same-language/source/identity catalog references. For system-provided skills, also compare Chinese/English names in the management page and picker. If sending is selected, verify the actual registered name sent to Codex (not the localized display name), and separately assess execution association and final result. A matching name alone does not prove identity; a draft or UI display does not prove a real send. This subpoint supplements the invocation candidate above and is not counted as a separate flow. Target-package applicability, requirements version, and adoption remain to be confirmed. Language-preference changes, marketplace access, real sending, and model cost each require separate authorization. Use isolated state and minimal necessary identity references; do not read/save the user's real skill directory or credentials. Complete-window evidence for cross-language pickers and real sending in the target package is missing; historical screenshots/source are not substitutes.
+
+These specialties require complete-window screenshots of the real target page and necessary intermediate states. Existing list/detail references show only discovery and cannot prove installation, enablement, picker selection, or a real turn. The [synthetic skill input](../../../../../examples/projects/skill-import/files/SKILL.md) and its manifest are for checks before human-confirmed import; do not install automatically. Do not use a user skill directory or pre-seeded installation state as a substitute. If a real run lacks screenshots, permissions, or independent references, retain the gap.

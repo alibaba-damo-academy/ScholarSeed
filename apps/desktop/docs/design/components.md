@@ -1,182 +1,162 @@
-# UI 组件规范
+<a id="ui-组件规范"></a>
+# UI Component Guidelines
 
 ## Scope / Non-goals
 
-覆盖 `components/ui` 的选择、出口、所有权、新增流程与消费约束。不在本文维护组件名或导出数量；动态库存见 [`../_generated/components.md`](../_generated/components.md)。
+This document covers selection, exports, ownership, addition workflows, and consumption constraints for `components/ui`. It does not maintain component names or export counts; see the dynamic inventory in [`../_generated/components.md`](../_generated/components.md).
 
-仅保留组件选型、业务语义和消费边界；已由组件默认实现的视觉细节不重复列为规范。
+Only component selection, business semantics, and consumption boundaries are specified here. Visual details already provided by component defaults are not repeated.
 
 ## Source of truth
 
-`components/ui/registry.ts` 是意图与族元数据真源，`components/ui/index.ts` 是唯一消费出口，具体 props/行为以实现源码为准，`ComponentsPage.tsx` 提供覆盖预览。
+`components/ui/registry.ts` is the source of truth for intents and family metadata, and `components/ui/index.ts` is the sole consumption entry point. Refer to implementation source for specific props and behavior; `ComponentsPage.tsx` provides the coverage preview.
 
 ## Current / Required / Gap / Advisory
 
-- **current**：registry、barrel、预览与 reuse gate 已形成组件发现和覆盖链。
-- **required**：写页面前 MUST 用 `npm run ui-find Q="<意图>"` 或 `ui-component-reuse` skill 查找；消费域 MUST 从 `components/ui` barrel 导入。
-- **required**：禁止新增原生 `button/input/select/textarea/table`、手写 SVG 图标或 feature 内 look-alike。确实缺少设计系统基础组件时 MUST 在 `components/ui/` 实现，同步 barrel、`components/ui/registry.ts`、`components/examples/ComponentsPage.tsx` 与测试；registry 和预览双登记均受门禁约束。
-- **gap**：原生控件存量仍由 ratchet 管理；清单见生成债务库存，存在额度不授权新增。
-- **required**：单领域业务视图归所属 `features/<domain>/`；跨领域复用的业务组件 MUST 放在 `components/business/`，可复用的非设计系统 primitive MUST 放在 `components/primitive/`。不能以业务归属为由在 feature 内仿制设计系统组件，也不能把业务组件移入 UI 层。
+- **current**: The registry, barrel, preview, and reuse gate now form a component discovery and coverage chain.
+- **required**: Before writing a page, MUST search with `npm run ui-find Q="<意图>"` or the `ui-component-reuse` skill. Consumer domains MUST import from the `components/ui` barrel.
+- **required**: Do not add native `button/input/select/textarea/table` elements, hand-written SVG icons, or feature-level look-alikes. If a foundational design-system component is genuinely missing, MUST implement it in `components/ui/` and update the barrel, `components/ui/registry.ts`, `components/examples/ComponentsPage.tsx`, and tests. Both registry and preview registration are enforced by the gate.
+- **gap**: Existing native controls remain managed by the ratchet. See the generated debt inventory; available budget does not authorize adding more.
+- **required**: A single-domain business view belongs in its `features/<domain>/` owner. Cross-domain reusable business components MUST live in `components/business/`; reusable primitives outside the design system MUST live in `components/primitive/`. Business ownership does not justify imitating a design-system component inside a feature, nor moving a business component into the UI layer.
 
-## Resizable 独立拖拽
+<a id="resizable-独立拖拽"></a>
+## Resizable Independent Dragging
 
-`ResizableHandle` 的显式 `onOffsetChange` 选择独立像素偏移模式，即使位于分栏组内部也不调整祖先分栏；祖先组的禁用约束仍然有效。未提供该回调时继续调整所属组。独立模式复用指针捕获、取消清理和方向键入口，由消费方维护几何。
+An explicit `onOffsetChange` on `ResizableHandle` selects independent pixel-offset mode. Even inside a panel group, it does not resize an ancestor panel; the ancestor group's disabled constraint still applies. Without this callback, the handle continues to resize its owning group. Independent mode reuses pointer capture, cancellation cleanup, and arrow-key entry points; consumers maintain the geometry.
 
 An explicit `ResizableHandle.onOffsetChange` selects independent pixel offsets, even inside a panel group. It does not resize the ancestor group and still respects its disabled state. Without that callback, the handle resizes its group. Consumers own geometry; pointer capture, cancellation cleanup and arrow keys remain shared.
 
-## Label 与字段间距
+<a id="label-与字段间距"></a>
+## Label and Field Spacing
 
-需填写／复杂表单选 `form`（默认），简单表单／字段回显选 `display`。
-优先用 `FormField`／`FormLabel` 或控件内置标签，复用默认样式与间距。
+Use `form` (the default) for required fields or complex forms, and `display` for simple forms or field-value display.
+Prefer `FormField` / `FormLabel` or built-in control labels to reuse default styles and spacing.
 
-## Alert 图标、关闭与会话提示
+<a id="alert-图标关闭与会话提示"></a>
+## Alert Icons, Dismissal, and Persistent Session Notices
 
-会话内常驻提示选 `layout="stacked"`；可恢复／非阻断异常用 `warning`，阻断错误用 `error`。
-关闭资格、恢复操作及提交状态由业务决定，展示交给共享组件。
+For persistent in-session notices, choose `layout="stacked"`. Use `warning` for recoverable or non-blocking issues and `error` for blocking errors.
+Business logic determines whether dismissal is allowed, the recovery action, and submission state; the shared component handles presentation.
 
-## Link 语义链接
+<a id="link-语义链接"></a>
+## Link Semantics
 
-`Link` 从 `components/ui` 统一导出，使用必需的 `href`、可选 `icon` / `disabled` 及原生 anchor 属性，支持 ref 和标准事件。默认使用主题链接色及其悬停、按下和禁用状态，不显示下划线，保留键盘焦点样式。长地址允许换行。
+`Link` is exported from `components/ui`. It requires `href`, accepts optional `icon` / `disabled` and native anchor attributes, and supports refs and standard events. By default it uses the theme link color and its hover, pressed, and disabled states; it has no underline and retains keyboard focus styling. Long URLs may wrap.
 
-新窗口链接保留调用方的其他 `rel` 值，并补齐 `noopener noreferrer`、移除冲突的 `opener`。禁用态移除 `href`、退出 Tab 顺序并阻止鼠标及辅助按钮激活。组件不识别或改写 URL，也不调用 Desktop 能力；系统浏览器策略仍由消息等业务调用方提供。
+Links that open a new window preserve other caller-provided `rel` values, add `noopener noreferrer`, and remove conflicting `opener`. The disabled state removes `href`, removes the link from the Tab order, and prevents activation by the primary or auxiliary mouse buttons. The component does not interpret or rewrite URLs and does not call Desktop capabilities; business callers such as messaging still provide the system-browser policy.
 
-注册、预览和渲染回归已接入；真实组件预览的浅色/深色及键盘焦点、真实 macOS 消息消费截图已检查。Windows 未做本轮原生验收。
+Registration, preview, and render regressions are in place. Light/dark themes and keyboard focus were inspected in the real component preview, as was a real macOS messaging-consumer screenshot. Native Windows acceptance was not performed in this round.
 
-## 文件确认与恢复
+<a id="文件确认与恢复"></a>
+## File Confirmation and Recovery
 
-E09 文件读取失败、E10 保存权限不足和 E11 原生文件审批使用 `ConfirmationCard` 的自定义内容组合，沿用共享白底外壳、右侧双操作和警告图标，不另绘旧 HTML 的红色授权皮肤或灰色文件通知条。E09/E10 的恢复请求及 E11 的原生决策仍由业务 Owner 提供，组件不会授予权限或重建请求。E11 的 `details` 展示原生路径、实际变更类型及本次变更范围；`multiline` 允许长路径和补丁换行，详情区域滚动不移动顶部操作。普通命令审批不从命令字符串推断文件授权范围。
+E09 file-read failures, E10 insufficient save permissions, and E11 native file approvals use custom content composed within `ConfirmationCard`. They retain the shared white shell, two right-side actions, and warning icon; do not redraw the old HTML's red authorization skin or gray file-notice strip. Recovery requests for E09/E10 and native decisions for E11 are still provided by the business owner; the component does not grant permissions or recreate requests. E11 `details` show the native path, actual change type, and scope of this change. `multiline` allows long paths and wrapped patches; scrolling the details area does not move the top actions. Ordinary command approvals do not infer file authorization scope from command strings.
 
-命令审批复用自定义确认卡片的 compact 配置与橙色三角告警图标。标题、暂停说明和 details 字段均使用组件默认的单行省略与溢出提示，不启用 multiline 或添加强制换行样式。“命令详情”直接展示原生命令，不提供折叠操作，溢出时通过共享提示查看完整内容。只有请求自带结构化路径时才展示路径，不解析 shell 文本生成文件访问承诺。允许一次、拒绝及其他原生授权选项沿用原请求决策。
+Command approvals reuse the custom confirmation card's compact configuration and orange triangular warning icon. The title, pause explanation, and details field all use the component's default single-line truncation and overflow hint; do not enable `multiline` or add forced-wrapping styles. “命令详情” (“Command details”) directly displays the native command without a collapse control; when it overflows, use the shared hint to view the full content. Show a path only when the request includes a structured path; do not parse shell text to create a file-access promise. Allow-once, deny, and other native authorization options follow the original request decision.
 
-## Alert 中性结果
+<a id="alert-中性结果"></a>
+## Alert Neutral Results
 
-`Alert` 的 `tone="neutral"` 用于无错误含义的空结果，继续使用信息图标和 `status` 语义；背景、边框、文字与图标分别采用现有 surface、border 和 text 中性 token，跟随主题。其他 tone 保留既有语义，不把中性状态映射成 warning 或 error。
+`Alert`'s `tone="neutral"` is for empty results that do not indicate an error, and retains the information icon and `status` semantics. The background, border, text, and icon respectively use the existing neutral surface, border, and text tokens, following the theme. Other tones retain their existing semantics; do not map a neutral state to warning or error.
 
-回答空态复用该变体及现有 action 槽，不能在消费方重复声明同名 CSS 自定义属性与 info tone 竞争级联。注册表及预览覆盖 neutral，实际回归仍需核对 computed style 与真实消费者；预览通过不证明所有产品主题或原生平台已验收。
+The answer-empty state reuses this variant and the existing action slot. Consumers must not redeclare a CSS custom property with the same name and compete with the info tone in the cascade. The registry and preview cover neutral; actual regressions must still check computed styles and real consumers. A passing preview does not prove acceptance across all product themes or native platforms.
 
-## 导航标签分隔间距
+<a id="导航标签分隔间距"></a>
+## Navigation Tab Separator Spacing
 
-**required**：`NavigationTabs` 的悬停背景到左右分隔线保持等距，由 design 的
-`--vds-navigation-tab-separator-gap` 定义。标签槽位与分隔线定位同时计入线宽和透明边框，
-不通过修改标签内部 padding 补偿。依据为用户截图与本轮间距确认，不代表新的 MasterGo 取证。
+**required**: Keep equal spacing between the `NavigationTabs` hover background and the separators on both sides, defined by design's
+`--vds-navigation-tab-separator-gap`. Account for line width and transparent borders when positioning tab slots and separators.
+Do not compensate by changing the tabs' internal padding. This is based on the user's screenshot and the spacing confirmed in this round, and does not constitute new MasterGo evidence.
 
-**required（用户最新交互调整）**：文档页签默认根据名称长度自适应，保留既有最大宽度与长标题省略，右侧关闭按钮常显且预留空间；
-空间不足时按容器宽度压缩，压缩态只在当前页签显示关闭，最小保留图标。极窄的当前页签以
-关闭按钮替代图标热区，完整标题仍可通过提示和页签列表读取。激活态左右内边距各收紧 4px，
-不改变页签分配的宽度。标题在到达最小图标宽度前持续展示；较窄的当前页签优先让出图标空间给标题，
-关闭按钮前的文字以渐变遮罩自然淡出，遮罩跟随页签表面适配主题。未保存标记继续保留，关闭不触发选中或拖拽。
-激活被裁切的页签时，横向滚动范围包含两侧完整弧形边框，尾部预留边框空间；减少动态效果偏好下直接定位。
+**required (latest user interaction adjustment)**: Document tabs adapt to their name length by default, retain the existing maximum width and long-title truncation, and keep the right-side close button visible with space reserved for it.
+When space is insufficient, tabs shrink to fit the container. In the compact state, only the active tab shows a close button, while retaining at least the icon. On an extremely narrow active tab, the close button replaces the icon hit area; the full title remains available through a hint and the tab list. Tighten the active tab's left and right padding by 4px each without changing its allocated width. Keep displaying the title until the tab reaches its minimum icon width; on narrower active tabs, give title space priority over the icon. Text before the close button fades naturally through a gradient mask that follows the tab surface and theme. Preserve the unsaved marker; closing must not trigger selection or dragging.
+When activating a clipped tab, the horizontal scroll range includes the complete curved borders on both sides and reserves border space at the end. Under reduced-motion preference, scroll directly to the tab.
 
-**current**：鼠标主键按下页签即激活，后续 `click` 不重复激活；原生拖拽即使吞掉
-`click` 也不丢失本次选择。拖动源页签先激活，排序和跨分屏放置沿用原生拖拽。
-触控、键盘和辅助技术保留各自的点击或按键激活路径；关闭按钮、鼠标辅助按键不触发主键按下激活。
+**current**: Pressing a tab with the primary mouse button activates it immediately; the subsequent `click` does not activate it again. Native dragging must not lose this selection even if it suppresses `click`. Activate the source tab before dragging; sorting and placement across split panes continue to use native dragging.
+Touch, keyboard, and assistive technology retain their respective click or key activation paths. The close button and auxiliary mouse buttons do not trigger primary-button press activation.
 
-`onOverflowChange` 报告仅图标也无法容纳的情况，宿主可将 `NavigationTabsMenu` 放入自己的
-工具栏槽位；未提供回调时由组件展示入口。工作台把入口放在全屏按钮左侧，列表使用所有可见
-页签的既有顺序、图标和真实激活动作，不创建另一份标签状态；分栏溢出由同一入口汇总。
-曲线选中态按标签主体侧边与相邻悬停背景的视觉留白对齐，不以底部外扩圆角的包围盒
-额外增加间距。下划线外观不使用该曲线补偿；隐藏测量槽同步补偿后的占位，
-但不发布选中态，避免干扰真实标签的滚动定位。视觉效果须由实际悬停截图核验。
+`onOverflowChange` reports when even the icon cannot fit. The host may place `NavigationTabsMenu` in its own toolbar slot; when no callback is provided, the component displays the entry point. The workbench places it to the left of the fullscreen button. Its list uses the existing order, icons, and actual activation behavior of all visible tabs; it does not create separate tab state. The same entry point aggregates split-pane overflow.
+Align the curved selected state's visual spacing with the tab body's side and the adjacent hover background; do not add spacing based on the bounding box of the bottom-extending rounded corners. The underline appearance does not use this curve compensation. The hidden measurement slot uses the compensated spacing but does not publish a selected state, so it cannot interfere with real-tab scroll positioning. Verify the visual result with an actual hover screenshot.
 
-**required**：标签溢出时，整行（包括标签间隙）属于横向滚动交互区，不作为原生窗口
-拖动区吞掉输入；鼠标滚轮和触控板均可滚动。未溢出的空白区域保留窗口拖动语义，
-标签的点击、关闭、右键和文档拖拽行为不因滚动改变。
+**required**: When tabs overflow, the entire row, including the gaps between tabs, is part of the horizontal scrolling interaction area and must not swallow input as a native-window drag region. Both the mouse wheel and trackpad can scroll it. Blank areas without overflow retain window-drag semantics; tab clicking, closing, context menus, and document dragging do not change because of scrolling.
 
-## Dialog 标题头
+<a id="dialog-标题头"></a>
+## Dialog Header
 
-`DialogContent` 可通过 `headerLayout="aligned"` 选择与详情弹窗一致的标题头：复用
-subhead 字号、常规字重、md 控件高度及既有内边距 token，使单行标题与关闭按钮
-处于同一水平中心线，并为关闭操作保留安全间距。该选项不改变默认弹窗或危险确认
-弹窗；长标题可换行，表单内容与关闭/焦点行为保持原语义。
+`DialogContent` can use `headerLayout="aligned"` to select a header matching the detail dialog: it reuses the subhead font size, regular weight, md control height, and existing padding tokens so a single-line title and close button share a horizontal centerline, with safe spacing for the close action. This option does not change default dialogs or dangerous-action confirmations. Long titles may wrap; form content and dismissal/focus behavior retain their original semantics.
 
-## Tooltip 边界定位
+<a id="tooltip-边界定位"></a>
+## Tooltip Boundary Positioning
 
-`consumeEscape` 默认为 `true`，保留提示优先关闭的语义。持续工具的说明可显式设为 `false`：关闭提示但不消费 Escape，由宿主按自身输入和弹层边界取消操作；不改变 Popover、Menu 或 Dialog 的关闭优先级。
+`consumeEscape` defaults to `true`, preserving tooltip-first dismissal. A persistent tool's hint may explicitly set it to `false`: dismiss the hint without consuming Escape, allowing the host to cancel the operation according to its own input and overlay boundaries. This does not change the dismissal priority of Popover, Menu, or Dialog.
 
 `consumeEscape` defaults to `true`, preserving tooltip-first dismissal. A continuous tool may set it to `false` to dismiss the hint without consuming Escape, leaving cancellation and editable/overlay boundaries to the host. Popover, Menu and Dialog priorities remain unchanged.
 
-**current**：Tooltip 默认通过 Portal 挂载到 body，沿调用方指定方向定位并将内容约束在视口内，避免面板裁剪。显式 `portalled={false}` 保留内联模式；Portal 内容样式通过 `contentClassName` 传入，不依赖触发器后代选择器。Escape 仅关闭当前触发器或提示内容正在悬停、聚焦的提示，不消费其他浮层的关闭事件。
+**current**: Tooltip content is mounted in a Portal under body by default, positioned in the direction specified by the caller and constrained to the viewport to avoid panel clipping. Explicit `portalled={false}` retains inline mode; Portal content styles are passed through `contentClassName`, without relying on trigger descendant selectors. Escape closes only a tooltip whose current trigger or content is hovered or focused, and does not consume dismissal events for other overlays.
 
-**gap**：视口边界与裁剪容器的组件回归不替代各面板最终版本的真实 Desktop 验收。
+**gap**: Component regressions for viewport boundaries and clipping containers do not replace real Desktop acceptance of each panel's final version.
 
 ## Ownership / Dependency
 
-对话的受限 OpenUI Lang 组合由 `packages/ui/library.tsx` 注册，复用上游官方组件、
-Renderer 与 CSS；主题只在 Desktop 的 `design/conversation.ts` 映射。它是声明式对话的
-复用入口，不是业务页面复制原生控件的豁免。新建同等基础组件或将可执行代码放入宿主仍被禁止。
-领域视图留在原 Owner，通过绑定会话/回合的 ports 提供引用与产物；普通页面继续消费
-`components/ui`。可执行插件的沙箱和原生权限门禁不因引用官方资源改变。
+The restricted OpenUI Lang composition for conversations is registered in `packages/ui/library.tsx` and reuses upstream official components, Renderer, and CSS; the theme is mapped only in Desktop's `design/conversation.ts`. It is a reuse entry point for declarative conversations, not an exemption allowing business pages to copy native controls. Creating equivalent foundational components or placing executable code in the host remains prohibited.
+Domain views remain with their existing owners and provide references and artifacts through session/turn-bound ports; ordinary pages continue to consume `components/ui`. Referencing official resources does not change executable-plugin sandboxing or native permission gates.
 
-消费方向为 `feature/shell/business → components/ui → design`；UI MAY 依赖无业务语义 primitive。UI 不得依赖 app、shell、feature、business、API/store。
+The dependency direction is `feature/shell/business → components/ui → design`; UI MAY depend on primitives without business semantics. UI MUST NOT depend on app, shell, feature, business, API, or store.
 
-## 引用详情触发范围
+<a id="引用详情触发范围"></a>
+## Reference Detail Trigger Area
 
-**current**：primitive `ReferenceAttachment` 的 `previewTrigger` 在外层 `HoverCard`
-内将整张引用卡片作为详情悬停触发区域，使用 pointer 光标，数量按钮支持键盘聚焦。
-图标和来源行共享悬停详情；移除动作仍交给调用方，来源行不再附带原生 title 提示。注释摘要、划词与 PDF 注释草稿
-使用同一触发实现；`SentReferenceAttachment` 的双行详情引用也沿用该实现。
-弹窗左对齐引用卡片，并与卡片保持 8px 间距；`HoverCardTrigger.positionAnchorRef`
-提供独立定位锚点，`sideOffset` 配置间距，继续由共享浮层跟随滚动、尺寸变化并约束视口边界。
-详情内的打开、编辑与移除操作仍由各业务 Owner 提供，不改变引用数据或授权。
+**current**: In the outer `HoverCard`, the primitive `ReferenceAttachment`'s `previewTrigger` makes the entire reference card the hover trigger for details, uses a pointer cursor, and allows the count button to receive keyboard focus.
+The icon and source row share the hover details; removal remains the caller's responsibility, and the source row no longer has a native title hint. Annotation summaries, text selections, and PDF annotation drafts use the same trigger implementation; the two-line detail reference in `SentReferenceAttachment` uses it as well.
+The popup aligns to the left of the reference card with an 8px gap. `HoverCardTrigger.positionAnchorRef` provides a separate positioning anchor, and `sideOffset` configures the gap. The shared overlay continues to follow scrolling and size changes and remain within viewport boundaries.
+Open, edit, and remove actions in the details remain the responsibility of each business owner; reference data and authorization are unchanged.
 
-**required**：长注释详情的唯一滚动容器同时受设计上限与共享浮层几何发布的
-`--floating-available-height` 约束；显式方向不翻转，不因视口夹取而遮挡引用卡片动作。
-该变量按当前锚点与视口测量，并扣除浮层自身的垂直 padding 与 border，表示内容区预算，
-不是新的固定视觉 token；无浮层上下文时保留设计上限，不新增第二滚动容器。
+**required**: The sole scroll container for long annotation details is constrained by both the design maximum and `--floating-available-height`, published by shared overlay geometry. An explicit side does not flip, and viewport clamping must not obscure reference-card actions.
+This variable is measured against the current anchor and viewport, with the overlay's own vertical padding and border deducted; it represents the content-area budget and is not a new fixed visual token. Without an overlay context, retain the design maximum and do not add a second scroll container.
 
-## 原生控件复用棘轮
+<a id="原生控件复用棘轮"></a>
+## Native Control Reuse Ratchet
 
-**current**：`scripts/ci/reuse.policy.json` 定义扫描根、扩展名、禁用标签与精确豁免；
-`scripts/ci/reuse.mjs` 按文件对比 `scripts/ci/reuse.baseline.json`，未列文件的预算为零。
-`scripts/ci/__tests__/reuse.test.mjs` 同时检查新增债务、债务减少后基线未收紧以及失效文件条目，
-并通过 `pnpm ops ci test --scope desktop` 接入确定性门禁。库存由源码生成，不在本文手抄数量。
+**current**: `scripts/ci/reuse.policy.json` defines scan roots, extensions, prohibited tags, and exact exemptions. `scripts/ci/reuse.mjs` compares each file with `scripts/ci/reuse.baseline.json`; files not listed have a budget of zero.
+`scripts/ci/__tests__/reuse.test.mjs` checks newly added debt, baselines not tightened after debt reduction, and stale file entries. It is wired into the deterministic gate through `pnpm ops ci test --scope desktop`. The inventory is generated from source; do not manually copy counts into this document.
 
-**required**：逐文件 counts 只能降低，不能扩大 policy 或提高预算取得通过；
-不得手改 baseline 凑绿，也不能把页面代码挪进豁免目录规避检查。
-债务实际减少后的 baseline 收紧只能在独立、明确审查的变更中由既有工具生成，
-不能把工具的写入提示当作本次授权。绿色棘轮只证明其实际扫描范围，不替代组件
-行为、主题、键盘与真实 Desktop 消费流程验收。
+**required**: Per-file counts may only decrease. Do not broaden the policy or increase budgets to pass; do not hand-edit the baseline to turn the gate green or move page code into an exempt directory to evade checks.
+After debt actually decreases, tighten the baseline with the existing tool only in a separate, explicitly reviewed change; the tool's write prompt does not constitute authorization for that change. A green ratchet proves only its actual scan scope and does not replace acceptance of component behavior, themes, keyboard use, or real Desktop consumer flows.
 
-## Resizable 禁用边界
+<a id="resizable-禁用边界"></a>
+## Resizable Disabled Boundary
 
-`ResizableHandle` 可在分栏 group 外通过 `onOffsetChange` 接收从本次按下位置起算的水平像素位移，
-由消费者约束边缘和宽度；`onResizeStart` / `onResizeEnd` 提供尺寸快照和清理时机。
-独立模式支持左右方向键，保留 pointer capture、失焦及取消清理；不自行移动业务面板。
-`appearance="invisible"` 只提供命中区域和调宽光标，不渲染分隔线、背景或握点，适用于浮动表面的边缘。
+`ResizableHandle` can receive horizontal pixel movement, measured from the current press position, through `onOffsetChange` when outside a panel group; consumers constrain the edge and width. `onResizeStart` / `onResizeEnd` provide size snapshots and a cleanup point.
+Independent mode supports left/right arrow keys and retains pointer capture, blur, and cancellation cleanup; it does not move business panels itself. `appearance="invisible"` provides only a hit area and resize cursor, rendering no divider, background, or grip; use it on the edge of a floating surface.
 
-`ResizablePanelGroup.disabled` 仅禁止调整分栏尺寸，不禁用 panel 内业务控件。
-group 通过 `data-resize-disabled` 标识该状态，不能在祖先设置会继承至全部后代的
-`aria-disabled`；拖拽 handle 继续持有其自身的 `aria-disabled`、键盘焦点及交互 guard。
-真实导航回归须同时证明关闭归档时拖拽禁用，而任务和项目入口仍可操作。
+`ResizablePanelGroup.disabled` only prevents resizing panels; it does not disable business controls inside a panel.
+The group marks this state with `data-resize-disabled`. Do not set `aria-disabled` on an ancestor where it would be inherited by all descendants; the drag handle retains its own `aria-disabled`, keyboard focus, and interaction guard.
+Real navigation regressions must show both that dragging is disabled when archive is closed and that task and project entry points remain operable.
 
-## Resizable 交换契约
+<a id="resizable-交换契约"></a>
+## Resizable Swap Contract
 
-- **current**：双面板 `ResizablePanel` 的 `reversed` 同时控制水平排列与拖拽位移方向；`leftPanel` / `rightPanel` 及对应宽度仍指逻辑面板，不随屏幕位置改名或重置。移动端纵向排列不受此属性影响。
-- **required**：消费者交换双面板时传入 `reversed`，不得仅以 `flex-row-reverse` 翻转视觉顺序。分隔线在边界内始终跟随鼠标；宽度约束、拖拽结束回写仍属于原逻辑面板。
-- **required**：水平双面板未显式指定右侧宽度时，右侧通过 flex 填满左侧实际约束宽度和分隔线之外的剩余空间，不按未约束的请求宽度相减。显式右侧宽度与移动端纵向布局保持各自原有尺寸契约。
+- **current**: For a two-panel `ResizablePanel`, `reversed` controls both horizontal order and drag-offset direction. `leftPanel` / `rightPanel` and their widths continue to refer to logical panels; they are not renamed or reset based on screen position. This property does not affect the vertical mobile layout.
+- **required**: Consumers MUST pass `reversed` when swapping two panels; they MUST NOT flip only the visual order with `flex-row-reverse`. The divider always follows the pointer within the boundary; width constraints and write-back at drag end still belong to the original logical panel.
+- **required**: For a horizontal two-panel layout with no explicit right-panel width, the right panel fills the remaining space beyond the left panel's actual constrained width and the divider using flex; do not subtract from an unconstrained requested width. Explicit right-panel widths and the vertical mobile layout retain their respective existing size contracts.
 
-## ScrollArea 高度契约
+<a id="scrollarea-高度契约"></a>
+## ScrollArea Height Contract
 
-**current**：`overlay` 可选模式隐藏原生滚动条，在视口边缘绘制绝对定位的滚动条，
-不占内容宽度；保留原生滚轮和触控板滚动，支持拖拽、轨道点击及方向键、PageUp/PageDown、Home/End。
-尺寸及内容变化由 ResizeObserver 同步，默认模式保持原生滚动条。调用方为 viewport 提供可访问名称。
-覆盖式视口的内容包裹层使用最小全高的 grid，直接子内容可拉伸填满短内容视口，
-长列表仍自然撑高；避免仅靠嵌套 `min-height: 100%` 传递高度，使加载或空态退回顶部。
+**current**: The optional `overlay` mode hides the native scrollbar and draws an absolutely positioned scrollbar at the viewport edge without taking content width. It retains native wheel and trackpad scrolling and supports dragging, track clicks, arrow keys, PageUp/PageDown, and Home/End.
+ResizeObserver synchronizes size and content changes; the default mode retains the native scrollbar. Callers provide an accessible name for the viewport.
+The overlay viewport's content wrapper uses a grid with minimum full height: direct children can stretch to fill a short-content viewport, while long lists grow naturally. Avoid relying only on nested `min-height: 100%` to propagate height, which can make loading or empty states jump to the top.
 
-**current**：视口默认继承根节点的 `max-height` 与 `min-height`；调用方显式传入
-`max-h-*` 或 `min-h-*` 时，仅替换相应默认组，不依赖 Tailwind 输出顺序。
-响应式或状态变体保留无条件默认值。
+**current**: By default, the viewport inherits the root node's `max-height` and `min-height`. When callers explicitly pass `max-h-*` or `min-h-*`, only the corresponding default group is replaced; this does not depend on Tailwind output order.
+Responsive or state variants retain the unconditional defaults.
 
-**required**：在有固定页头、页脚的 flex 弹窗中，根节点承担高度上限、收缩和裁剪，
-视口通过 `flex-1 min-h-0` 在剩余空间内滚动。列表高度上限消费
-`--vds-dialog-list-max-height`；仅有 `max-height` 不能保证视口跟随根节点收缩。
-不全局改变 ScrollArea 的布局或裁剪默认值，以保留普通内容流与横向滚动兼容。
+**required**: In a flex dialog with a fixed header and footer, the root node owns the maximum height, shrinking, and clipping; the viewport scrolls in the remaining space through `flex-1 min-h-0`. The list height limit consumes `--vds-dialog-list-max-height`; `max-height` alone does not ensure that the viewport shrinks with the root.
+Do not change ScrollArea's global layout or clipping defaults, to preserve compatibility with ordinary content flow and horizontal scrolling.
 
-`shadow="auto"` 根据视口、内容尺寸及滚动位置，只在上方或下方仍有内容时显示渐变；
-到达边界时淡出，减少动态效果偏好下即时切换。渐变消费表面语义颜色，浅色为白色，
-暗色跟随浮层表面；遮罩不接受指针事件。`shadow=true` 保持原有双边遮罩语义。
+`shadow="auto"` uses the viewport, content size, and scroll position to show a gradient only on sides where content remains above or below. It fades at the boundary and switches immediately when reduced motion is preferred. The gradient uses semantic surface colors: white in light mode and the overlay surface in dark mode. The mask does not receive pointer events. `shadow=true` retains the existing two-sided mask semantics.
 
-## 正反例
+<a id="正反例"></a>
+## Examples and anti-patterns
 
 ```tsx
 // 正例
@@ -188,60 +168,64 @@ const Save = () => <button>保存</button>
 
 ## Enforced by
 
-`reuse.test.mjs` 负责原生控件与 registry/preview 覆盖；`standards.test.mjs` 负责 barrel import 和反向依赖。
+`reuse.test.mjs` covers native controls and registry/preview coverage; `standards.test.mjs` covers barrel imports and reverse dependencies.
 
 ## Update triggers
 
-组件族、barrel、registry 字段、复用策略、归属或组件成熟度变化时更新。
+Update when a component family, barrel, registry field, reuse strategy, ownership, or component maturity changes.
 
 ## Stop condition
 
-确认一个已有 family 后直接读其实现和类型；没有匹配项时停在 owner 判定，不在 feature 内先写替代品。
+Once an existing family is identified, read its implementation and types directly. If no match exists, stop at the owner determination; do not first write a replacement inside a feature.
 
-## MasterGo 组件对齐入口
+<a id="mastergo-组件对齐入口"></a>
+## MasterGo Component Alignment Entry Point
 
-**required**：读[公开设计契约](foundations.md)确认具体页面、状态与真实接入，再用registry意图检索并读组件props；设计稿ui-component名称不是本项目组件API。相同名称的菜单、暂无资料、模型设置均可能是不同状态，按图层ID查证。
+**required**: Read the [public design contract](foundations.md) to confirm the specific page, state, and real integration, then search registry intents and read component props. A `ui-component` name in a design file is not this project's component API. Menus, empty states, and model settings with the same name may represent different states; verify by layer ID.
 
-**gap**：本次源码分析发现Input没有通用前置图标prop，Checkbox的string label与button本体不能直接容纳协议链接；这些是候选能力限制，不授权在feature手写替代组件。组件尺寸名L-36不等同现有size=lg。
+**gap**: This source analysis found that Input has no generic leading-icon prop and that Checkbox's string label and button body cannot directly contain a policy link. These are candidate capability limitations; they do not authorize hand-writing replacement components in a feature. The component size name L-36 is not equivalent to the existing `size=lg`.
 
-**advisory**：重复菜单/项目卡片/树/表格和编辑器工具条优先按现有family或业务owner组合。支持资产与其状态单列在[设计入口](mastergo.md)，不要复制完整组件库存到页面文档。
+**advisory**: For repeated menus, project cards, trees, tables, and editor toolbars, prefer compositions of existing families or business owners. List supporting assets and their states separately in the [design entry point](mastergo.md); do not copy the full component inventory into page documentation.
 
-## 表单尺寸兼容
+<a id="表单尺寸兼容"></a>
+## Form Size Compatibility
 
-**current**：组合式 `SelectContent` 默认左对齐，可用 `align="end"` 与触发器右边缘对齐；浮层宽度和水平位置约束在视口内。Markdown 查看方式选择器使用右对齐，不改变模式值和键盘选择行为。
+**current**: Composed `SelectContent` is left-aligned by default; `align="end"` aligns it with the trigger's right edge. The overlay's width and horizontal position are constrained to the viewport. The Markdown view-mode selector uses right alignment without changing the mode value or keyboard selection behavior.
 
-取消操作默认使用 `outline`：`DialogClose` 与 `AlertDialogCancel` 保持中性表面，
-不使用品牌浅色的 `secondary`。Input 设置 `required` 且提供 label 时同步显示必填星号。
-Select 选中项及其 hover/focus 使用 `--vds-brand-light-bg-default`，区别于未选项的悬停背景。
+Cancel actions default to `outline`: `DialogClose` and `AlertDialogCancel` retain a neutral surface instead of using the brand-light `secondary`. When Input has `required` and a label, it also displays the required-field asterisk.
+The selected Select item and its hover/focus states use `--vds-brand-light-bg-default`, distinct from the hover background of an unselected item.
 
-**current**：Button、Input（含 PasswordInput）与 Select 支持 `size="standard"`，使用36px高度与20px标签行高，设计依据为文件203335358980331节点25:36281/25:36288/25:36297的当前HTTP属性。Button 的 `md/sm/xs` 分别对应设计 M/S/XS：高度32/28/24px、正文14/14/12px、图标16/14/12px；Select 原 md 已是36px，其余表单控件 md 仍为32px。Select 组合式 Trigger 从根继承 size。
+**current**: Button, Input (including PasswordInput), and Select support `size="standard"`, with a height of 36px and a label line height of 20px. The design basis is the current HTTP properties of file 203335358980331, nodes 25:36281/25:36288/25:36297. Button sizes `md/sm/xs` correspond to design sizes M/S/XS: heights 32/28/24px, body text 14/14/12px, and icons 16/14/12px. Select's existing md size was already 36px; md on the other form controls remains 32px. The composed Select Trigger inherits its size from the root.
 
-**required**：按具体设计选择档位，不把设计稿的 L-36 机械解释为代码 lg；运行验证状态见[台账](../work/plan/infrastructure.md)。
+**required**: Select the size tier for the specific design; do not mechanically interpret the design's L-36 as code `lg`. See the [ledger](../work/plan/infrastructure.md) for runtime verification status.
 
-本次19族基础组件的证据、实现与运行状态见[设计对齐矩阵](alignment.md)，待补项不能按已有资产登记推断完成。
+Evidence, implementation, and runtime status for the 19 foundational component families in this round are in the [design alignment matrix](alignment.md). Do not infer that pending items are complete just because assets are registered.
 
-## IconButton几何与状态
+<a id="iconbutton几何与状态"></a>
+## IconButton Geometry and States
 
-**required（2026-11-10 用户确认）**：`Button` 的 `danger` / `destructive` 变体在禁用和加载态继续使用 `--vds-static-white` 前景色，保留既有危险禁用背景；通用禁用文字色不覆盖危险按钮，其他变体保持原有禁用规则。
+**required (user-confirmed, 2026-11-10)**: Disabled and loading `danger` / `destructive` variants of `Button` continue to use the `--vds-static-white` foreground and retain the existing disabled danger background. Generic disabled text colors must not override danger buttons; other variants retain their existing disabled rules.
 
 **Required (user-confirmed, 2026-11-10)**: Disabled and loading `danger` / `destructive` buttons retain the `--vds-static-white` foreground and their existing disabled danger background. Generic disabled text colors must not override these variants; other variants keep their existing disabled styling.
 
-IconButton支持mini/xs/sm/md/lg接口，实际方形边长26/24/28/32/40px、图标12/12/14/16/16px；mini对应用户补充的Tertiary/Mini截图（12px图标、四边7px内距）。尺寸不再叠加文本Button padding。Iconfont字号显式覆盖供应商无层级默认值，字重保持normal，避免继承文字按钮字重加粗线条。md/sm/xs与内容操作节点5:027657的M/S/XS按钮契约一致；40px ghost仍对应5:81200节点。圆角8，浅色hover/selected采用surface-hover/active（#F4F1EB/#EAE6DD），暗色沿同一语义推导。loading替换图标而非同时挤入两个内容。
+IconButton supports the mini/xs/sm/md/lg API, with actual square side lengths of 26/24/28/32/40px and icon sizes of 12/12/14/16/16px. mini corresponds to the user's supplemental Tertiary/Mini screenshot (12px icon, 7px padding on each side). Do not add text Button padding on top of these sizes. Explicitly override the icon font's unlayered vendor default size and retain normal weight so it does not inherit the text button's weight and thicken the strokes. md/sm/xs match the M/S/XS button contract at content-action node 5:027657; the 40px ghost still corresponds to node 5:81200. Use an 8px radius. In light mode, hover/selected use surface-hover/active (#F4F1EB/#EAE6DD); derive dark mode from the same semantics. Loading replaces the icon instead of squeezing in two pieces of content at once.
 
 
-## EmptyState面板变体
+<a id="emptystate面板变体"></a>
+## EmptyState Panel Variant
 
-`EmptyState variant="panel"` 使用圆角方形图标底、主色标题和次色说明，适合文件等面板的空状态。
-图标、标题、说明由调用方传入，样式复用组件默认值。
-依据为2026-10-26用户提供的“打开文件”截图；所附MasterGo节点当前返回“暂无技能 / 系统预置”，
-不作为该截图的精确属性来源。暗色沿已有主题语义推导，不声称有对应暗色设计稿。
+`EmptyState variant="panel"` uses a rounded-square icon background, primary-color title, and secondary-color description, and suits empty states in file and other panels.
+Callers provide the icon, title, and description; styling reuses component defaults.
+This is based on the user's “Open File” screenshot provided on 2026-10-26. The attached MasterGo node currently returns “暂无技能 / 系统预置” (“No skills / Built-in”) and is not the source of exact properties for that screenshot. Dark mode is derived from existing theme semantics; do not claim that a corresponding dark-mode design exists.
 
-## CopyButton反馈
+<a id="copybutton反馈"></a>
+## CopyButton Feedback
 
-CopyButton 的 `copiedIcon` 同时适用于文字和 `iconOnly` 模式；消费者可用 `feedbackDuration` 配置成功/失败反馈保持时长。成功图标仅在实际复制成功后替换，失败和恢复均回到原图标，保持既有命中区和可访问反馈。
+CopyButton's `copiedIcon` applies in both text and `iconOnly` modes; consumers can use `feedbackDuration` to configure how long success/failure feedback remains visible. Replace the icon with the success icon only after an actual successful copy; on failure or reset, return to the original icon, preserving the existing hit area and accessible feedback.
 
-## Card按设计组合
+<a id="card按设计组合"></a>
+## Card Composition by Design
 
-**current**：Card默认圆角8px保持兼容。需要25:58306的容器几何时，已有API可表达：`padding="md"` 配合 `className="grid gap-[var(--vds-space-3)] [--vds-card-radius:var(--vds-radius-6)]"`，实际为16px内距、12px间距和12px圆角。ComponentsPage的“设计容器”提供可复制示例，480px明暗实测内容无横向溢出。
+**current**: Card's default 8px radius remains for compatibility. The existing API can express the container geometry of 25:58306: use `padding="md"` with `className="grid gap-[var(--vds-space-3)] [--vds-card-radius:var(--vds-radius-6)]"`, which yields 16px padding, 12px gap, and a 12px radius. ComponentsPage's “Design Container” provides a copyable example; light and dark checks at 480px showed no horizontal overflow.
 
-**required**：430×148是项目卡组合尺寸，不是所有Card的默认尺寸；按页面布局决定宽高。仅局部覆盖Card的现有custom property，不新增CSS选择器或重复卡片组件。业务交互及hover是否适用由具体设计角色决定。
+**required**: 430×148 is the size of a project-card composition, not the default size for every Card; determine width and height from the page layout. Override only Card's existing custom property locally; do not add CSS selectors or duplicate card components. Whether business interactions and hover apply depends on the specific design role.

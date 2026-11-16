@@ -25,7 +25,9 @@ registry own reproducible constraints; no private inventory file is required.
 Public contracts live beside their implementation. Private design connection details and raw evidence
 belong to private supplements, not public build or review dependencies.
 
-## Examples and Counterexamples
+<a id="正反例"></a>
+<a id="examples-and-counterexamples"></a>
+## Examples and anti-patterns
 
 Good: compare a confirmed requirement with the actual semantic token and consumer state.
 Bad: claim pixel-exact acceptance from an inaccessible node or a static registry check.

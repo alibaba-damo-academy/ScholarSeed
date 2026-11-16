@@ -1,60 +1,77 @@
-# 新手引导
+<a id="新手引导"></a>
+# Onboarding
 
-帮助用户理解项目、文献中心与阅读器。入口：头像菜单 → 新手引导；首次进入适用工作范围也会自动展示。
+Help users understand projects, the Literature Center, and the reader. Entry: avatar menu → 新手引导 (Onboarding). On first entry into an applicable work scope, onboarding is also shown automatically.
 
-目标版本引导中心完整窗口参考
+Full-window reference: onboarding center in the target version
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-12；展示引导中心弹窗及当时已看过状态，不证明首次触发或引导进度。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-12; shows the onboarding-center dialog and the seen state at that time. It does not prove first-time triggering or onboarding progress.
 
-![文献中心引导卡片参考](./reference.png)
+![Literature Center onboarding card reference](./reference.png)
 
-参考：macOS arm64，0.3.0 / 202610281438，2026-10-29。示例文献中心首步卡片及聚光区域；进度、内容及已看过状态随引导组和数据变化，不作为本轮运行证据。
+Reference: macOS arm64, 0.3.0 / 202610281438, 2026-10-29. Example first-step card and spotlight area for the Literature Center; progress, content, and seen state vary by onboarding group and data, so this is not evidence from the current run.
 
-## 进入与理解
+<a id="进入与理解"></a>
+## Entry and Orientation
 
-### 引导中心（GUIDE-OBS-001 · v`0.3`）
-固定：显示“开始使用”“文献中心”“文献阅读”三项说明、查看及全部重置入口；项目引导合并在开始使用流程中，不要求第四个独立入口。动态：各项已看过标记按010判断。关闭中心回到工作界面。
+<a id="引导中心guide-obs-001--v03"></a>
+### Onboarding center (GUIDE-OBS-001 · v`0.3`)
+Fixed: Show descriptions for the three items “开始使用”, “文献中心”, and “文献阅读”, along with the View and Reset All entries. Project onboarding is part of the Getting Started flow; a fourth standalone entry is not required. Dynamic: assess each seen marker under 010. Closing the center returns to the work area.
 
-### 首次触发与等待（GUIDE-OBS-002 · v`0.3`）
-条件：未看过且页面就绪时，项目全览触发欢迎、项目工作范围触发项目引导、全局文献触发文献中心引导，真实PDF阅读器触发阅读引导。同一时刻只展示一组；设置、菜单或项目表单打开时不抢占，前提不满足时不假报已看过。
+<a id="首次触发与等待guide-obs-002--v03"></a>
+### First-time triggering and waiting (GUIDE-OBS-002 · v`0.3`)
+Conditional: When a group has not been seen and its page is ready, the project overview triggers the welcome flow, the project work scope triggers project onboarding, global literature triggers Literature Center onboarding, and a real PDF reader triggers reading onboarding. Only one group appears at a time. Onboarding must not take priority while settings, a menu, or a project form is open, and must not falsely mark a group as seen when its prerequisites are unmet.
 
-## 按工作场景学习
+<a id="按工作场景学习"></a>
+## Learn by Work Scenario
 
-### 欢迎与创建项目（GUIDE-OBS-003 · v`0.3`）
-固定：欢迎页说明项目、任务与产物，提供创建第一个项目及跳过入口。创建复用项目表单，点表单“取消”回到欢迎；关闭表单或明确跳过按009处理。成功后进入新项目并接续项目引导，项目真实创建结果按[项目基线](../project-center/requirements.md)核对。
+<a id="欢迎与创建项目guide-obs-003--v03"></a>
+### Welcome and project creation (GUIDE-OBS-003 · v`0.3`)
+Fixed: The welcome page explains projects, tasks, and artifacts, and offers Create First Project and Skip. Project creation reuses the project form. Clicking “取消” in the form returns to Welcome; closing the form or explicitly skipping is covered by 009. After successful creation, enter the new project and continue project onboarding. Verify the actual project creation result against the [project baseline](../project-center/requirements.md).
 
-### 项目工作引导（GUIDE-OBS-004 · v`0.3`）
-固定：完整适用场景依次介绍项目切换、科研能力、任务输入、项目文件、工作台五步，卡片对应真实区域。项目文件中的资料/文献/任务产物介绍与切换区域一致；末步“开始第一个任务”结束引导并聚焦任务输入，不等于已提交任务。
+<a id="项目工作引导guide-obs-004--v03"></a>
+### Project-work onboarding (GUIDE-OBS-004 · v`0.3`)
+Fixed: In the full applicable scenario, introduce project switching, research capabilities, task input, project files, and the workbench in five steps; each card corresponds to the actual area. The descriptions of resources, literature, and task artifacts in Project Files match the switcher area. The final step, “开始第一个任务”, ends onboarding and focuses task input; it does not mean a task has been submitted.
 
-### 文献中心引导（GUIDE-OBS-005 · v`0.3`）
-固定：完整适用场景依次介绍全局文献、导入、分类及AI入口四步，卡片指向当前真实区域；分类步骤需要时展开对应区域。末步完成后引导消失并打开AI面板，不自动导入文献或发送任务。
+<a id="文献中心引导guide-obs-005--v03"></a>
+### Literature Center onboarding (GUIDE-OBS-005 · v`0.3`)
+Fixed: In the full applicable scenario, introduce global literature, import, categories, and the AI entry in four steps; each card points to the actual current area. Expand the relevant area when needed for the category step. After the final step, onboarding disappears and the AI panel opens; no literature is imported and no task is sent automatically.
 
-### 真实PDF阅读引导（GUIDE-OBS-006 · v`0.3`）
-条件：有可读的真实文献PDF时，依次介绍图表解释、阅读助手、真实文本选区工具及文献AI入口四步；选区来自当前PDF，不插入示例文本。末步打开AI面板；这些展示不证明翻译、解释或生成结果已经完成。
+<a id="真实pdf阅读引导guide-obs-006--v03"></a>
+### Onboarding in the real PDF reader (GUIDE-OBS-006 · v`0.3`)
+Conditional: When a readable real literature PDF is available, introduce chart interpretation, the reading assistant, tools for selecting real text, and the literature AI entry in four steps. The selection comes from the current PDF; do not insert sample text. The final step opens the AI panel. These displays do not prove that translation, explanation, or generation has completed.
 
-### 内置示例与无可读PDF（GUIDE-OBS-007 · v`0.3`）
-条件：从引导中心查看阅读引导时，空文献库可打开内置示例，仅演示真实选区工具一步，明确不能替代真实文献的AI上下文或标注能力，不产生导入条目。有文献但没有可读PDF时提示先导入PDF，不冒充已打开阅读引导。
+<a id="内置示例与无可读pdfguide-obs-007--v03"></a>
+### Built-in sample and no readable PDF (GUIDE-OBS-007 · v`0.3`)
+Conditional: When viewing reading onboarding from the onboarding center with an empty literature library, a built-in sample may be opened to demonstrate only the one step for the real text-selection tool. State clearly that it cannot replace AI context or annotation capabilities for real literature; it must not create an imported item. If the library contains literature but no readable PDF, prompt the user to import a PDF; do not present this as though reading onboarding has opened.
 
-## 推进与再次使用
+<a id="推进与再次使用"></a>
+## Progress and Reuse
 
-### 卡片、进度与定位（GUIDE-OBS-008 · v`0.3`）
-动态：标题、说明及聚光目标与当前步骤一致，卡片在窗口内且关键内容可读；进度按适用场景的预期步骤清单核对，不能仅用当前界面自证总数。下一步/末步按钮语义正确，未就绪不可继续；仅项目组第二步起提供上一步，不要求所有组都有返回按钮。
+<a id="卡片进度与定位guide-obs-008--v03"></a>
+### Cards, progress, and positioning (GUIDE-OBS-008 · v`0.3`)
+Dynamic: The title, description, and spotlight target match the current step; the card remains within the window and its key content is readable. Check progress against the expected step list for the applicable scenario; the current interface alone cannot establish the expected total. Next/Finish button semantics must be correct, and users cannot continue before the page is ready. Only the project group provides a Previous button from step two onward; a Back button is not required in every group.
 
-### 跳过与落点（GUIDE-OBS-009 · v`0.3`）
-固定：v0.3跳过会退出引导并回项目全览，同时将欢迎和项目记为已看过；已就绪的当前组也保留已看过状态，不因跳过创建项目或发送任务。
+<a id="跳过与落点guide-obs-009--v03"></a>
+### Skipping and destination (GUIDE-OBS-009 · v`0.3`)
+Fixed: In v0.3, skipping exits onboarding and returns to the project overview, while marking Welcome and Project as seen. The currently ready group is also marked seen. Skipping does not create a project or send a task.
 
-### 已看过、回看与重置（GUIDE-OBS-010 · v`0.3`）
-动态：项目、文献中心及阅读组首张卡片成功展示即记已看过，不表示整组完成；欢迎仅创建成功或明确跳过后记已看过。中心“开始使用”仅在欢迎和项目均已看过时显示已看过。已看过组不自动重复，查看可主动回看；全部重置清除四组已看过标记、保留最近项目引用，不立即启动引导，也不删除项目或文献。
+<a id="已看过回看与重置guide-obs-010--v03"></a>
+### Seen state, replay, and reset (GUIDE-OBS-010 · v`0.3`)
+Dynamic: A group is marked seen once the first card for Project, Literature Center, or Reading is successfully displayed; this does not mean the entire group is complete. Welcome is marked seen only after successful project creation or an explicit skip. The center shows Getting Started as seen only when both Welcome and Project have been seen. Seen groups do not replay automatically; View allows the user to replay one. Reset All clears the seen markers for all four groups, retains the recent-project reference, does not immediately start onboarding, and does not delete projects or literature.
 
-### 失效与不可展示（GUIDE-OBS-011 · v`0.3`）
-条件：页面、项目或PDF已变更时，不继续显示指向旧对象的引导；准备异常或整组无法展示有提示。未成功展示的组不新增已看过标记，已展示过的记录不因后续失败丢失。
+<a id="失效与不可展示guide-obs-011--v03"></a>
+### Invalidated or unavailable content (GUIDE-OBS-011 · v`0.3`)
+Conditional: If the page, project, or PDF changes, do not keep showing onboarding that points to the old object. Show a notice if preparation fails or an entire group cannot be displayed. Do not add a seen marker for a group that was not successfully displayed, and do not discard a previously recorded seen state because of a later failure.
 
-## 发布快评层
+<a id="发布快评层"></a>
+## Release Quick-Review Layer
 
-仅提炼已采用GUIDE-OBS-001 · v`0.3`的中心展示与关闭：从头像菜单打开新手引导，显示开始使用、文献中心、文献阅读三项说明及查看、全部重置入口，关闭回到原工作界面；不点击查看或重置，不默认推进引导。
+This layer extracts only the adopted center display and close behavior from GUIDE-OBS-001 · v`0.3`: open onboarding from the avatar menu; show the descriptions and View and Reset All entries for Getting Started, Literature Center, and Literature Reading; closing returns to the original work area. Do not click View or Reset, and do not advance onboarding by default.
 
-必要参照：进入前工作范围；仅在已有获准合法onboarding最小投影时比较已看过徽标，开始使用须home与project均已看过。缺该参照保留徽标缺证，不从徽标自身反推正确状态。
+Required reference: the work scope before entry. Compare seen badges only when an authorized, valid minimal onboarding projection is already available. Getting Started requires both `home` and `project` to have been seen. If this reference is missing, record the badge as unverified; do not infer correct state from the badge itself.
 
-## 专项层
+<a id="专项层"></a>
+## Specialized Layer
 
-001的徽标完整状态分支及002–011首次触发、创建/推进、跳过、回看/重置、失效等完整流程保留为条件专项；原自动核验资格不变。空库内置示例不能代替真实PDF，缺数据/状态或偏好变更权限时不算已覆盖；本层通过不代表001全量或整组引导通过。
+The full badge-state branches for 001 and the complete flows for first-time triggering, creation/progression, skipping, replay/reset, and invalidation in 002–011 remain conditional specialized scenarios; their original automated-verification eligibility is unchanged. The built-in sample in an empty library cannot replace a real PDF. Missing data/state or permission to change preferences does not count as coverage. Passing this layer does not mean all of 001 or the full onboarding group passes.

@@ -1,123 +1,143 @@
-# 资料树与列表
+<a id="资料树与列表"></a>
+# Resource Tree and List
 
-项目资源管理器打开方式菜单
+Project Explorer open-mode menu
 
-参考：macOS arm64 `0.3.2 / 202611121823 / preview`，2026-11-13；隔离合成文件预览中的打开方式菜单，窄面板面包屑部分截断；未选择菜单项，不证明打开终态。
+Reference: macOS arm64 `0.3.2 / 202611121823 / preview`, 2026-11-13; open-mode menu in a synthetic-file preview in an isolated project. The breadcrumb is partly truncated in the narrow panel. No item was selected; this does not prove an opened terminal state.
 
-项目文件资料列表中的深层目录展开状态
+Expanded deep-directory state in the Project Files resource list
 
-项目文件资料列表中的深层目录收起状态
+Collapsed deep-directory state in the Project Files resource list
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-13；展示隔离项目的项目文件资料列表中两层目录状态，不单凭截图证明操作过程或侧栏树行为。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-13; shows two levels of directories in the Project Files resource list of an isolated project. Screenshots alone do not prove the action or sidebar-tree behavior.
 
-目标版本项目资料列表参考
+Project resource-list reference for target version
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-12；展示隔离合成项目的资料列表及 `notes` 展开状态，不证明文件接入、写入或其他专项操作。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-12; shows the resource list for an isolated synthetic project with `notes` expanded. It does not prove file adoption, writes, or other specialty actions.
 
-项目资料树参考
+Project resource-tree reference
 
-参考：macOS arm64，0.3.2 / 202611121104，2026-11-12；仅展示合成资料树及展开状态，不代表文件操作或异常分支。
+Reference: macOS arm64, 0.3.2 / 202611121104, 2026-11-12; shows only the synthetic resource tree and expanded state, not file operations or abnormal branches.
 
-已核实的正常资料浏览、展开、刷新及过滤行为已采用为v`0.3`需求；007的失败、关联失效/冲突及子页失败提示仍待确认，不批准无提示或失败空态。
+Verified normal resource browsing, expansion, refresh, and filtering have been adopted as v`0.3` requirements. Failure, invalidated/conflicting associations, and subpage failure feedback in 007 remain unconfirmed; this does not approve silent failure or a failed empty state.
 
-在当前项目浏览资料目录、展开层级并查看资料列表。语义入口：项目工作区的资料树及项目文件区域 → “资料”；具体可见层级与可达性待获准页面观察核实。
+Browse resource directories in the current project, expand levels, and view the resource list. Semantic entry: the project workbench resource tree and Project Files area → “资料”. Visible levels and reachability must be verified by authorized page observation.
 
-## 浏览项目资料
+<a id="浏览项目资料"></a>
+## Browse Project Resources
 
-### 项目与资料入口（RES-LIST-001 · v`0.3`）
-固定与条件：资料树和资料列表对应当前可见项目，资料列表与文献、任务产物区域能区分。树的本地文件搜索当前未开放；列表名称查询入口仍可见，全网发现只核入口展示，不混为本地搜索或提交任务。
+<a id="项目与资料入口res-list-001--v03"></a>
+### Project and resource entry (RES-LIST-001 · v`0.3`)
+Fixed and conditional: The resource tree and list correspond to the currently visible project; the resource list is distinguishable from literature and task-artifact areas. Local file search in the tree is not currently open. The list-name query entry remains visible. Check global discovery only as an entry display, not as local search or task submission.
 
-### 树节点与层级（RES-LIST-002 · v`0.3`）
-动态：可见文件和目录的名称、层级及适用图标与同项目公开资料树对应，关联资料及Git目录按元数据区别展示；目录有数量时表示直接子项总数，不是后代文件总数。出现版本策略标识时与该节点公开策略状态对应，不据图标或扩展名推断查看、编辑或版本能力已通过。
+<a id="树节点与层级res-list-002--v03"></a>
+### Tree nodes and hierarchy (RES-LIST-002 · v`0.3`)
+Dynamic: Visible file/directory names, hierarchy, and applicable icons match the same project's public resource tree. Associated resources and Git directories are distinguished by metadata. If a directory count appears, it is the total direct children, not all descendant files. If a version-policy marker appears, it matches that node's public policy state. Do not infer viewing, editing, or version capability from an icon or extension.
 
-### 展开与全部折叠（RES-LIST-003 · v`0.3`）
-动态与轻量交互：展开目录展示对应子项，收起隐藏该层后代；树与列表共享当前目录展开状态。全部折叠后已展开目录收起，无展开目录时该入口禁用；不把关闭目录当成删除资料。
+<a id="展开与全部折叠res-list-003--v03"></a>
+### Expand and collapse all (RES-LIST-003 · v`0.3`)
+Dynamic with lightweight interaction: Expanding a directory shows its children; collapsing hides descendants of that level. The tree and list share the current directory expansion state. Collapse All closes expanded directories; when none are expanded, that entry is disabled. Closing a directory is not deleting a resource.
 
-### 加载更多与刷新（RES-LIST-004 · v`0.3`）
-条件：根层或已展开目录仍有未加载子项时，继续加载入口及剩余数与同层公开总量和已加载项相符；加载后接续正确条目，不重复或遗漏。同项目刷新以当前目录数据为准，仍存在且可定位的已展开目录保持展开，根层及这些目录补回原已加载范围；数据减少时以当前总量为限，不保留已删除项，也不承诺恢复已折叠目录全部缓存。空数据不能代替分页场景通过。
+<a id="加载更多与刷新res-list-004--v03"></a>
+### Load more and refresh (RES-LIST-004 · v`0.3`)
+Conditional: When more children remain unloaded at the root or in an expanded directory, the Load More entry and remaining count match the public total and items loaded at that level. After loading, the correct next entries continue without duplicates or omissions. Refreshing the same project uses current directory data. Expanded directories that still exist and can be located remain expanded; the root and those directories restore their previously loaded ranges. When data shrinks, stop at the current total; do not retain deleted items or promise to restore all cached contents of collapsed directories. Empty data does not pass pagination.
 
-## 查看资料列表
+<a id="查看资料列表"></a>
+## View the Resource List
 
-### 文件与目录展示（RES-LIST-005 · v`0.3`）
-动态：列表名称、类型、来源及更新时间与同项目公开完整列表对应；目录类型、未知来源和无更新时间有相应缺省。更新时间以公开秒值及客户端当前时间、语言和时区显示相对时间或日期；长名称可读，不把当前折叠后行数当全部资料数。
+<a id="文件与目录展示res-list-005--v03"></a>
+### File and directory display (RES-LIST-005 · v`0.3`)
+Dynamic: List name, type, source, and update time match the same project's complete public list. Directory type, unknown source, and missing update time have appropriate fallbacks. Relative time/date display uses the public timestamp at second precision and the client's current time, language, and time zone. Long names remain readable; the currently collapsed row count is not the total resource count.
 
-### 列表查询、筛选与排序（RES-LIST-006 · v`0.3`）
-动态与轻量交互：列表按文件或目录名称查询，忽略大小写及首尾空格；类型、来源过滤对应当前公开列表。更新时间排序在各层兄弟节点内进行，缺时间项置后，不将全树扁平排序。组合过滤后保留匹配项的目录路径，清空恢复对应列表；无匹配有提示，不以此证明文件正文检索、全网搜索或任务执行。
+<a id="列表查询筛选与排序res-list-006--v03"></a>
+### List query, filters, and sort (RES-LIST-006 · v`0.3`)
+Dynamic with lightweight interaction: Search the list by file/directory name, ignoring case and leading/trailing spaces. Type/source filters match the current public list. Sort update time within sibling nodes at each level, placing missing times last; do not flatten-sort the entire tree. Combined filters preserve the paths of matching items. Clearing restores the corresponding list. A no-match notice does not prove document-content search, global search, or task execution.
 
-### 加载、空态与不可用（RES-LIST-007 · v`0.3`）
-条件：初次加载、成功空目录与整体读取失败可区分；有资料时不冒充空态，空列表显示适用入口。关联根失效/冲突、子页读取失败的用户提示仍为待确认语义缺口，不能把无提示或空目录表现批准为正确，也不以这些未确认分支宣布本项完整通过。
+<a id="加载空态与不可用res-list-007--v03"></a>
+### Loading, empty state, and unavailable data (RES-LIST-007 · v`0.3`)
+Conditional: Distinguish initial loading, a successfully empty directory, and a read failure for the whole list. When resources exist, do not present an empty state; show applicable entries when the list is empty. User notices for invalidated/conflicting associated roots or subpage read failure remain an unconfirmed semantic gap. Do not approve silent failure or an empty-directory presentation as correct; these unconfirmed branches do not make this item a complete pass.
 
-## 验证归属与数据
+<a id="验证归属与数据"></a>
+## Verification Ownership and Data
 
-七项的已采用正常分支归自动快评，按明确选入的项目与自然分支核验；007待确认提示须先有采用依据，不能执行后缩要求。非空、深层和分页分别需要可区分资料、多层目录及超过单层页大小的获准数据；缺前提保留未覆盖，不由空态替代。
+Adopted normal branches of the seven items belong in automatic quick review, for explicitly selected projects and natural branches. The 007 notices remain unconfirmed until there is an adoption basis; do not narrow requirements after execution. Non-empty, deep-tree, and pagination cases require authorized data with distinguishable resources, multiple directory levels, and more than one page at a level respectively. If prerequisites are missing, keep the scope uncovered; do not substitute an empty state.
 
-基础合成资料见[共享示例项目](../../../../../examples/projects/evaluation/project.json)，其中四个 Markdown/文本文件及嵌套目录可供本页使用；准备状态以本轮收据为准，不提供分页、关联或异常状态的完整数据。
+Basic synthetic resources are in the [shared example project](../../../../../examples/projects/evaluation/project.json); its four Markdown/text files and nested directories can be used here. Use this run's receipt for preparation status. They do not provide a complete data set for pagination, associations, or abnormal states.
 
-[分页合成输入](../../../../../examples/projects/resource-pagination/project.json)的 `pages` 目录有 101 个同层可区分文件 `item-001.md` 至 `item-101.md`，供 RES-LIST-004 的资料树续页专项准备。目标包磁盘单页大小为 100 的静态依据见构建记录；应独立冻结实际项目、目录、路径和总数，以真实续取前后状态核对，额外节点或关联根不得混入参照。文件存在不代表已准备、导入或分页通过；准备器尚未真实运行此项目，人工导入与产品 UI 操作分别核隔离目标和授权，缺条件保留未覆盖。
+The `pages` directory in the [synthetic pagination input](../../../../../examples/projects/resource-pagination/project.json) contains 101 distinguishable same-level files, `item-001.md` through `item-101.md`, for preparing the RES-LIST-004 resource-tree continuation specialty. Static target-package evidence for a single page of 100 is in the build record. Independently freeze the actual project, directory, paths, and total; compare real before/after continuation states. Do not mix extra nodes or associated roots into the reference. File existence does not mean the data is prepared, imported, or pagination passed. The preparation tool has not actually run this project. Verify the isolated target and authorization separately for human-confirmed import and product UI actions. If prerequisites are missing, keep the case uncovered.
 
-文件打开与Viewer、创建/导入/重命名/移动/删除、关联根管理、内容搜索、全网任务及版本操作另属专项。本页目录展开、过滤与刷新不代表这些业务动作通过。
+File opening/viewers, create/import/rename/move/delete, associated-root management, content search, global tasks, and version operations are separate specialties. Tree expansion, filtering, and refresh on this page do not pass those business actions.
 
-## 发布快评层
+<a id="发布快评层"></a>
+## Release Quick-Review Layer
 
-采用v`0.3`的正常子要点：RES-LIST-001–003、005、007；仅代表下述范围，不代表这些ID全部细则通过。
+The adopted normal subpoints from v`0.3` are RES-LIST-001–003, 005, and 007. This covers only the scope below and does not mean every detail of these IDs passes.
 
-资料入口应属于当前项目，已知合成目录/文件的名称、层级和类型可辨，正常非空不误报空态；对已备notes目录作一次普通展开，显示直接下级，不能以更深后代冒充直接子项。
+The resource entry belongs to the current project. Names, hierarchy, and types of known synthetic directories/files are identifiable; a normal non-empty state is not misreported as empty. Expand the prepared `notes` directory once to show its direct children; do not substitute deeper descendants for direct children.
 
-必要参照：共享示例项目的获准隔离副本、输入摘要及准备后冻结的项目身份和相对路径清单；只核选定目录，不读未知根。数据准备不等于导入功能测试，导入测试由人工确认。
+Required reference: authorized isolated copy of the shared example project, input digest, and project identity/relative-path inventory frozen after preparation. Check only the selected directory, not unknown roots. Data preparation is not an import test; a human confirms import tests.
 
-## 专项层
+<a id="专项层"></a>
+## Specialized Layer
 
-本层未选：分页、刷新、全筛选/排序、加载瞬态、失败/空根/关联失效及写入；不执行旧collector。原完整判据、稳定ID、版本和历史结果保留；未确认分支不因分层获批。
+Not selected here: pagination, refresh, all filters/sorts, loading transients, failure/empty-root/association invalidation, and writes; do not run the old collector. The original full criteria, stable IDs, versions, and historical results remain; unconfirmed branches are not approved merely by this layering.
 
-### 项目文件分类切换与布局保持（`RES-LIBRARY-CATEGORY-CAND-001`；需求版本待确认）
+<a id="项目文件分类切换与布局保持res-library-category-cand-001需求版本待确认"></a>
+### Project-file category switching and layout preservation (`RES-LIBRARY-CATEGORY-CAND-001`; requirements version to be confirmed)
 
-历史用户要求在项目文件中切换资料、文献、任务产物时仅改变内容，保留当前工作台布局。以同一获准隔离项目为范围，先独立记录已有分屏、工作台标签及当前分类，再逐项切换三类，核对布局保持与所显示内容的项目归属；空分类只验证对应空态，不能证明非空数据正确。非空分类需以同项目独立记录的真实资料、文献和任务产物身份为参照，不以分类标题或预期清单冒充实际内容。
+Historical user requirements say that switching among Resources, Literature, and Task Artifacts in Project Files changes only content and preserves the current workbench layout. For one authorized isolated project, independently record existing split view, workbench tabs, and selected category; then switch among the three categories and check layout preservation and the project scope of displayed content. An empty category verifies only its corresponding empty state, not correct non-empty data. For non-empty categories, use independent records of real same-project resources, literature, and task-artifact identities; a category title or expected list is not proof of actual content.
 
-此项是有界探索候选，不改变 `RES-LIST-001` 或自动选入冒烟；目标包适用、需求版本及各分类真实完整窗口截图待核。分类切换可能更新隔离工作台标签状态与清除选中项，不视作零副作用；数据准备和人工导入分别确认，真实任务产物及模型调用、写入另核权限。失败、跨平台和其他布局变化另列专项。
+This is a bounded exploratory candidate. It does not change `RES-LIST-001` or automatic smoke inclusion. Target-package applicability, requirements version, and real complete-window images for each category remain to be verified. Category switching may update isolated workbench tab state and clear selected items; it is not a zero-side-effect operation. Confirm data preparation and human-performed import separately. Real task artifacts, model calls, and writes require separate permissions. Failure, cross-platform behavior, and other layout changes are separate specialties.
 
-### 项目资源管理器文件名搜索（`RES-EXPLORER-SEARCH-CAND-001`；需求版本待确认）
+<a id="项目资源管理器文件名搜索res-explorer-search-cand-001需求版本待确认"></a>
+### Project Explorer filename search (`RES-EXPLORER-SEARCH-CAND-001`; requirements version to be confirmed)
 
-目标版本项目资源管理器自然状态
+Natural Project Explorer state in the target version
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-13；完整窗口显示新打开的项目资源管理器、文件树及折叠目录，右侧合成文档分屏较窄。此图仅供入口和自然展示参考，不证明搜索、文件打开或候选采用。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-13; full window showing a newly opened Project Explorer, file tree, and collapsed directory, with a narrow split view of a synthetic document on the right. This is an entry/natural-display reference only; it does not prove search, file opening, or adoption of the candidate.
 
-项目资源管理器搜索结果参考
+Project Explorer search-results reference
 
-项目资源管理器打开文件参考
+Project Explorer with a searched file open
 
-参考：同一目标版本，2026-11-13；依次展示隔离项目的合成文件名搜索结果与打开后的同一文件正文。它们是自然观察而非正式采用或评测裁决；不证明清空恢复、其他匹配语义、失败或分页，右侧合成文档分屏较窄。
+Reference: same target version, 2026-11-13; sequential views of filename search results for an isolated project's synthetic file and the same file's body after opening. These are natural observations, not formal adoption or evaluation decisions. They do not prove clear/reset, other match semantics, failure, or pagination. The synthetic-document split view on the right is narrow.
 
-项目资源管理器清空搜索后
+Project Explorer after clearing search
 
-参考：同一目标版本，2026-11-13；清空搜索后显示项目根目录及折叠的 resources 目录，未展开核对文件；仅为自然观察，来源见[构建依据](./build.md)。
+Reference: same target version, 2026-11-13; after clearing search, shows the project root and a collapsed `resources` directory, whose files were not expanded and checked. Natural observation only; see [build evidence](./build.md).
 
-历史用户截图涉及项目资源管理器文件树的“查找文件”入口；历史源码记录的候选行为是在当前项目按文件名查询，结果展示名称及相对路径并可打开，清空恢复目录树。以获准隔离项目中预先记录的合成文件名、相对路径和打开后的文件身份为独立参照；入口或搜索结果展示不单独证明目标文件已打开。上述真实完整窗口图仅覆盖所示状态；清空后完整目录内容、其他匹配、失败和分页状态仍缺，查询匹配细节及失败处理的确认级别、目标包适用性待核，不由源码自动批准。
+Historical user screenshots involve a “Find File” entry in the Project Explorer file tree. Historical source notes describe the candidate behavior: search filenames in the current project, display result names and relative paths, allow opening, and restore the directory tree when cleared. Use a synthetic filename and relative path recorded beforehand in an authorized isolated project, plus the identity of the opened file, as independent references. An entry or result display alone does not prove the target file opened. The target-package full-window images cover only the displayed states. Full directory contents after clearing, other matches, failures, and pagination remain missing. Confirmation status for detailed matching/failure semantics and target-package applicability remain to be checked; source code does not automatically approve them.
 
-此候选针对工作台项目资源管理器的新标签，与本页 `RES-LIST-001` 的资料库侧栏树及全局搜索 F3 是不同承载；不因本候选改变侧栏本地搜索未开放的既有判据，也不把文件名搜索视为正文搜索。需同项目合成目录、已知文件和路径参照，搜索及打开均核隔离范围和权限，分页极值、外部目录及跨平台另列专项。
+This candidate concerns a new-tab Project Explorer in the workbench. It is distinct from the resource-library sidebar tree in this page's `RES-LIST-001` and global search F3. It does not change the existing criterion that local search in the sidebar tree is unavailable, and filename search is not content search. Use a synthetic directory, known file, and path in the same project; verify search/open against isolation scope and permission. Pagination limits, external directories, and cross-platform behavior are separate specialties.
 
-### 项目资源管理器打开方式（`RES-EXPLORER-OPEN-CAND-001`；需求版本待确认）
+<a id="项目资源管理器打开方式res-explorer-open-cand-001需求版本待确认"></a>
+### Project Explorer open mode (`RES-EXPLORER-OPEN-CAND-001`; requirements version to be confirmed)
 
-历史用户确认的截图要求当前打开方式由主按钮与下拉菜单组成，菜单区分系统定位和新标签页方式并标识当前选择。以获准隔离项目及当前可辨合成文件为参照，可先只展开菜单观察；当前源码中选择菜单项会同时改变方式并立即执行系统定位或打开标签，须在选择前分别核对应权限与独立终态，不得把菜单选择视为纯偏好修改。历史源码记录同项目标签重新挂载保持内存选择，该状态语义及目标包适用仍待核。菜单勾选不证明文件已打开，需以同文件身份和实际工作台标签或系统定位结果判断；无权执行打开时只观察菜单，不选择条目。
+Historical user-confirmed screenshots require the current open mode to consist of a primary button and dropdown menu. The menu distinguishes system reveal from opening in a new tab and marks the current selection. With an authorized isolated project and identifiable synthetic file, first observe the menu only. In current source, selecting a menu item changes the mode and immediately performs system reveal or opens a tab. Before selection, independently confirm permission and terminal reference for each action; do not treat menu selection as a preference-only change. Historical source notes that an in-project tab remount retains the in-memory selection state; that state semantics and target-package applicability remain to be verified. A menu checkmark does not prove the file opened. Use same-file identity and actual workbench tab or system-reveal outcome. If opening is not authorized, observe only and select no menu item.
 
-此候选不同于文件名搜索；需隔离项目和可辨原始文件，系统定位及目标打开分别核宿主能力和授权。目标版本需求适用、需求版本、打开终态截图及跨平台结果待核；不承诺进程重启后保持，也不以组件回归替代真实产品操作。
+This candidate is distinct from filename search. It requires an isolated project and identifiable original file; system reveal and target opening require separate host-capability checks and authorization. Target-version applicability, requirements version, opening-outcome screenshots, and cross-platform results remain to be verified. Persistence after process restart is not promised; component regression tests do not replace real product interaction.
 
-## 资料接入与管理候选专项
+<a id="资料接入与管理候选专项"></a>
+## Candidate Specialties: Resource Import and Management
 
-以下整理自[历史冻结来源](./build.md#资料接入与管理候选resources11)，均为探索候选，产品需求版本、目标包适用及采用状态待确认，不属于上面的已采用快评或冒烟分母。`@` 后是历史业务点资产修订，不是产品需求版本。入口和动作分别核实授权；数据准备不等于真实导入。
+The following items are organized from [historical frozen sources](./build.md#资料接入与管理候选resources11). They are exploratory candidates; product requirements version, target-package applicability, and adoption status remain unconfirmed. They are outside the adopted quick review and smoke denominator above. The `@` suffix is a historical business-point asset revision, not a product requirements version. Verify authorization for each entry and action separately; preparing data is not a real import.
 
-### 目录接入与原件保护
+<a id="目录接入与原件保护"></a>
+### Import directories and protect originals
 
-- **复制导入目录（历史 `RES-COPY-DIR-01@3`）**：通过实际导入入口人工选择获准的合成目录；终态是目标项目内副本的相对层级及文件字节与独立原件对应，原目录不变。导入成功提示、选择器回显或预先放置的文件均不能代替真实结果。
-- **关联外部目录（历史 `RES-LINK-DIR-01@3`）**：若目标版本提供关联模式，获准的隔离外部目录在资料库可读取且范围与原件对应，不因关联而复制或删除原件；历史入口和当前目标包映射、权限与原件保护语义仍待确认。
+- **Copy-import a directory (historical `RES-COPY-DIR-01@3`):** Manually select an authorized synthetic directory through the actual import entry. The target project contains a copy with relative hierarchy and file bytes matching the independent original; the original directory is unchanged. A success notice, picker echo, or pre-positioned files cannot replace the real result.
+- **Associate an external directory (historical `RES-LINK-DIR-01@3`):** If the target version provides association mode, the authorized isolated external directory is readable from the resource library and its scope matches the original, without copying or deleting the original. Historical entry/current target mapping, permissions, and original-protection semantics remain to be confirmed.
 
-### 同名冲突与资料保留
+<a id="同名冲突与资料保留"></a>
+### Name conflicts and resource preservation
 
-- **重命名导入（历史 `RES-CONFLICT-RENAME-01@4`）**：对目标已有同名且内容不同的合成文件，若选择重命名导入，原文件内容不变，新文件以不同名称可读回；须独立记录两份输入与结果身份及摘要。
-- **版本化替换（历史 `RES-CONFLICT-REPLACE-01@4`）**：仅当目标包及冲突项支持版本化替换且获得写入授权时，新内容成为当前版本、旧内容可从版本记录读回；此候选不假设所有文件或环境支持替换，也不把弹窗选择当成持久化终态。
+- **Import with rename (historical `RES-CONFLICT-RENAME-01@4`):** For a synthetic file whose name already exists in the target with different contents, if Import with Rename is selected, the original content stays unchanged and the new file can be read back under a distinct name. Independently record both inputs and result identity/digests.
+- **Versioned replacement (historical `RES-CONFLICT-REPLACE-01@4`):** Only when the target package and conflicting item support versioned replacement and write authorization is granted, the new content becomes current and the old content remains readable in version history. This candidate does not assume all files/environments support replacement, and a dialog choice is not a persisted terminal outcome.
 
-### 创建与整理
+<a id="创建与整理"></a>
+### Create and organize
 
-- **创建目录和 Markdown（历史 `RES-CREATE-FOLDER-01@3`、`RES-CREATE-MD-01@4`）**：在获准的隔离项目和目标目录创建对应对象；新目录可展开且刷新后仍在，文档可打开和编辑、刷新后仍可读回。导入已有 Markdown 不等于新建验证。
-- **重命名和移动（历史 `RES-RENAME-01@4`、`RES-MOVE-01@4`）**：对获准可丢弃文件，经真实产品入口完成操作；新路径和内容与独立记录对应，移动后原路径不再出现。移动入口、跨目录冲突及目标包能力待核，不用直接文件系统操作代替真实 UI。
+- **Create directory and Markdown (historical `RES-CREATE-FOLDER-01@3`, `RES-CREATE-MD-01@4`):** Create the corresponding object in an authorized isolated project and target directory. The new directory expands and remains after refresh; a document opens/edits and remains readable after refresh. Importing an existing Markdown file is not a create test.
+- **Rename and move (historical `RES-RENAME-01@4`, `RES-MOVE-01@4`):** Perform the action through the real product entry on an authorized disposable file. New path and content match independent records, and the old path no longer appears after moving. Move entry, cross-directory conflicts, and target-package capability remain to be checked; do not substitute direct filesystem operations for the real UI.
 
-**数据与截图缺口：** 目录样本从[共享示例项目](../../../../../examples/projects/evaluation/project.json)选择并在执行前记录原件及隔离副本的相对路径、摘要和项目身份；同名不同内容的[合成输入](../../../../../examples/projects/resource-conflict/project.json)分别用于隔离目标前态与后续人工确认导入，不预置冲突或处理结果。外部关联根及版本历史需分别准备和授权，不能将旧 fixture 路径当作现行输入。导入测试由人工确认；创建、移动、替换及数据恢复需各自授权。当前没有经核来源的目标包上述操作完整窗口图，已有资料树图只展示浏览状态，不能作为这些专项通过或截图替代。
+**Data and screenshot gaps:** Select directory samples from the [shared example project](../../../../../examples/projects/evaluation/project.json). Before execution, record the original and isolated-copy relative paths, digests, and project identity. The [synthetic same-name inputs](../../../../../examples/projects/resource-conflict/project.json) separately provide isolated target pre-state and later human-confirmed import; do not pre-create a conflict or handling result. Prepare and authorize external association roots and version history separately; do not treat old fixture paths as current inputs. A human confirms import tests; creation, move, replacement, and data recovery each require their own authorization. No target-package complete-window images for these operations have a verified source. Existing resource-tree images show browsing only; they cannot count as specialty passes or replace screenshots.

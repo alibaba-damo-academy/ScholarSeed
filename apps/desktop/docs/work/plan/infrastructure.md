@@ -1,62 +1,68 @@
-# Desktop 设计基础设施整改台账
+<a id="desktop-设计基础设施整改台账"></a>
+
+# Desktop Design Infrastructure Remediation Log
 
 ## Scope / Non-goals
 
-本 Goal 仅整改 design、components/ui、registry/barrel、components/examples、资产文档、规范及门禁。features、shell、components/business 和 primitive 默认只读；混合 styles.css 仅允许有证据的基础入口/声明修改。业务页面迁移不属于本次完成条件。
+This Goal covers only remediation of design, components/ui, registry/barrel, components/examples, asset documentation, standards, and gates. features, shell, components/business, and primitive are read-only by default; in mixed styles.css files, only evidence-backed changes to foundational entry points/declarations are allowed. Migrating business pages is not a completion criterion.
 
-独立 worktree：`<task-workspace>`。
-分支：`codex/desktop-design-infrastructure`；起点：`shushen_release/mvp_v0.2_open_source`，`2745b256e69556a47bd6f28cde1a721dc43a9f52`。
-原工作区的未提交改动保持原样；本任务仅复制自身资产/规范/主题预览草稿，不包含并行国际化文档和入口。
+Separate worktree: `<task-workspace>`.
+Branch: `codex/desktop-design-infrastructure`; base: `shushen_release/mvp_v0.2_open_source`, `2745b256e69556a47bd6f28cde1a721dc43a9f52`.
+Keep uncommitted changes in the original workspace intact. This task copies only its own asset/standard/theme-preview drafts, excluding parallel localization docs and entry points.
 
 ## Source of truth
 
-用户 Goal 全文为本次范围与验收要求；设计来源文件 `203335358980331`，page `5:43395`。定位见[公开设计契约](../../design/foundations.md)，组件实况见[资产入口](../../design/assets.md)。历史截图须标注采集日期，不冒充当前节点。
+The full user Goal defines this task's scope and acceptance criteria. Design source file `203335358980331`, page `5:43395`. See the [public design contract](../../design/foundations.md) for mappings and the [asset entry point](../../design/assets.md) for component status. Historical screenshots must show their capture date and must not be presented as current design nodes.
 
 ## Current / Required / Gap / Advisory
 
-- **current**：2026-09-10 已读取 Goal、根及 Desktop 约定，核实源码与独立工作区；执行 `make ui-find Q='主按钮 输入框 选择器'`，发现 Button/Input/Select 真实入口。
-- **current**：用根工作区 `.env` 的既有凭据显式加载环境，运行 mastergo skill 的 `mastergo_analyze.py`，节点 `5:81200` 返回 Button 组件集及默认/悬停/选中三状态、10 个节点。凭据未打印或复制到 worktree。
-- **current**：已完成顶部主题切换、资产生成器、Tailwind/CSS 边界规范、组件资产与设计对齐矩阵，并以源码、真实预览和 Desktop 产物复核。
-- **required**：每阶段执行设计取证、基础层实现、确定性门禁、dev:web 与真实 Desktop 消费者验证、自审和台账更新。
-- **gap**：独立设计稿未覆盖的 Badge/Tag、Alert、Toast 队列及部分边缘状态仍按语义推导，后续可继续补充证据；不阻塞本次基础设施交付。
-- **advisory**：兼容现有 props/导出/事件语义；设计缺少尺寸时优先增补变体，不改变旧尺寸含义迫使页面迁移。
+- **current**: On 2026-09-10, read the Goal and root/Desktop conventions, and checked the source and separate work area. Ran `make ui-find Q='主按钮 输入框 选择器'` and found the actual Button/Input/Select entry points.
+- **current**: Loaded the environment explicitly using existing credentials from the root workspace `.env` and ran the MasterGo Skill's `mastergo_analyze.py`. Node `5:81200` returned the Button component set, with default/hover/selected states and 10 nodes. Credentials were neither printed nor copied to the worktree.
+- **current**: Completed the top-level theme switch, asset generator, Tailwind/CSS boundary rules, component catalog, and design-alignment matrix, and reviewed them against source, live preview, and Desktop output.
+- **required**: At every phase, gather design evidence, implement the foundational layer, run deterministic gates, verify consumers in dev:web and real Desktop, self-review, and update the log.
+- **gap**: Badge/Tag, Alert, Toast queues, and some edge states remain derived from semantics because independent design files do not cover them. Evidence can be added later; this does not block delivery of the infrastructure in this Goal.
+- **advisory**: Preserve existing props/export/event semantics. When a design omits a size, prefer adding a variant over changing the meaning of an existing size and forcing page migration.
 
 ## Ownership / Dependency
 
-| Owner / 文件范围 | 现有消费者与影响 | 兼容策略 | 验证 |
+| Owner / file scope | Existing consumers and impact | Compatibility approach | Verification |
 | --- | --- | --- | --- |
-| design/*.css | UI 与旧页面共享 token；变化可能全局生效 | 保留旧别名，区分品牌底与前景；不统一业务私有主题 | token 引用、明暗对比度、真实代表页面 |
-| components/ui | feature/shell/business 经 barrel 消费 | 保留导出与受控约定；增加必要尺寸/状态 | 组件契约、键盘、状态矩阵、消费者截图 |
-| registry/barrel/examples | 中文意图检索与开发预览 | 从源码生成库存，示例完整登记 | reuse/docs/typecheck、真实 dev:web |
-| docs/规范/技能/门禁 | 后续 Codex 与人工开发 | 渐进约束本次新增或修改 UI；历史债务不清零、不放宽 baseline | 门禁反例、真实 Codex 调用与产物审查 |
+| `design/*.css` | UI and legacy pages share tokens; changes may apply globally | Preserve legacy aliases and distinguish brand backgrounds from foregrounds; do not unify business-specific themes | Token references, light/dark contrast, and representative real pages |
+| `components/ui` | feature/shell/business consume through the barrel | Preserve exports and controlled-component conventions; add required sizes/states | Component contracts, keyboard behavior, state matrix, consumer screenshots |
+| registry/barrel/examples | Chinese intent search and development preview | Generate inventory from source and register examples completely | reuse/docs/typecheck and real dev:web |
+| docs/standards/Skills/gates | Future Codex and human development | Apply progressive constraints to UI added or changed in this task; do not erase historical debt or relax the baseline | Gate counterexamples, real Codex invocation, and artifact review |
 
-## 正反例
+<a id="正反例"></a>
 
-正例：暗色品牌按钮对比度问题在基础 token/组件解决，回归消费者；36px 设计尺寸新增明确变体，页面后续按实际设计选用。
+## Examples and anti-patterns
 
-反例：为统一设置页面视觉修改 features，或把整个 workbench.css 视作第三方覆盖；复制其他任务未提交变更进入基础分支。
+Positive example: fix dark-theme brand-button contrast in the foundational token/component and run consumer regression; add an explicit variant for a 36px design size so pages can adopt it according to their actual designs.
+
+Counterexamples: changing features to unify settings-page visuals; treating all of workbench.css as a third-party override; or copying uncommitted changes from another task into the base branch.
 
 ## Enforced by
 
-已执行：`npm run docs:check`、`npm test`、`npm run typecheck`、`make desktop-test`、`make wiki-check`、`git diff --check`；视觉验证使用真实 dev:web 和 Desktop，不以确定性测试代替产品验收。最新 Desktop 证据见 `/tmp/scholarseed-design-final2-shoot.log` 及 `tmp/test_snapshot/desktop/`。
+Executed: `npm run docs:check`, `npm test`, `npm run typecheck`, `make desktop-test`, `make wiki-check`, and `git diff --check`. Visual verification used real dev:web and Desktop; deterministic tests do not replace product acceptance. The latest Desktop evidence is in `/tmp/scholarseed-design-final2-shoot.log` and `tmp/test_snapshot/desktop/`.
 
 ## Update triggers
 
-每阶段记录设计节点/证据日期、差异、文件、兼容性、测试与截图、未验收项；实际完成才勾选。
+For each phase, record design nodes/evidence dates, differences, files, compatibility, tests and screenshots, and items not yet accepted. Check items off only after completion.
 
-- [x] 独立 worktree 与原工作区改动隔离。
-- [x] 当前 MasterGo HTTP 结构读取成功。
-- [x] 基础设施方案与完整证据映射。
-- [x] 主题、优先组件及 Tailwind 基础层整改。
-- [x] 资产、规范、渐进门禁同步。
-- [x] dev:web 状态矩阵和真实 Desktop 无新增回退证据。
-- [x] 实际 Codex 使用规范验证。
-- [x] 适用门禁、自审和最终范围审计。
+- [x] Separate worktree isolated from changes in the original workspace.
+- [x] Successfully read the current MasterGo HTTP structure.
+- [x] Infrastructure plan and complete evidence mapping.
+- [x] Remediated themes, priority components, and Tailwind foundations.
+- [x] Synchronized assets, standards, and progressive gates.
+- [x] dev:web state matrix and real Desktop evidence with no new regressions.
+- [x] Verified standards through actual Codex use.
+- [x] Applicable gates, self-review, and final scope audit.
 
 ## Stop condition
 
-仅当 Goal 全部基础设施完成条件有当前证据时结束；页面历史迁移另行记录，不阻塞基础设施完成。当前状态：基础设施交付完成，待用户授权合并/推送。
+End only when current evidence supports every infrastructure completion criterion in the Goal. Track historical page migration separately; it does not block infrastructure completion. Current status: infrastructure delivery is complete, pending user authorization to merge/push.
 
-## 后续页面迁移责任
+<a id="后续页面迁移责任"></a>
 
-业务页面旧颜色与选择器、workbench 的自有布局、literature 样式、image/editor 外壳、PDF 自有工具栏均留给对应页面 owner。后续开发仅整改新增或修改的相关 UI，不能因触碰文件要求重写整个模块。基础代码合并本身不会自动迁移页面。
+## Responsibility for Future Page Migration
+
+Legacy business-page colors and selectors, workbench-specific layout, literature styles, image/editor shells, and PDF-specific toolbars remain with their respective page owners. Future development should remediate only related UI added or changed in that task; touching a file does not require rewriting its entire module. Merging foundational code does not automatically migrate pages.

@@ -1,41 +1,56 @@
-# 问题反馈与操作记录候选需求
+<a id="问题反馈与操作记录候选需求"></a>
+# Candidate Requirements for Feedback and Activity Records
 
-## 用途与入口
+<a id="用途与入口"></a>
+## Purpose and Entry Points
 
-用户通过主界面的问题反馈入口描述问题，可按实际可用条件使用操作记录辅助说明。启动或工作区异常时可能存在反馈入口；目标安装版的入口、身份条件、需求版本和采用状态仍待核实。本页是按历史用户确认与现有源码整理的候选，不是已采用判据或本轮运行结论。
+Users describe a problem through the problem-feedback entry point in the main interface and may use an activity record to provide context when available. A feedback entry point may be available during startup or workspace failures. The target installed build's entry point, identity conditions, requirement version, and adoption state remain unverified. This page is a candidate based on historical user confirmation and current source, not an adopted criterion or a conclusion from this run.
 
-**参考截图缺口：** 当前未核实可公开复用的目标版本真实反馈表单、操作记录和提交回执完整窗口图。历史组件预览、模拟回执或真实用户诊断资料不能代替；缺图不影响记录候选，也不说明功能通过。
+**Reference screenshot gap:** No complete window screenshot has been verified for the target build's real feedback form, activity record, and submission receipt in a form approved for reuse. Historical component previews, simulated receipts, and real user diagnostic data are not substitutes. The missing image does not prevent recording this candidate, and does not mean the feature passed.
 
-## 候选功能
+<a id="候选功能"></a>
+## Candidate Features
 
-### 问题反馈与截图预览（`FEEDBACK-CAND-001`；需求版本待确认）
+<a id="问题反馈与截图预览-feedback-cand-001-需求版本待确认"></a>
+<a id="问题反馈与截图预览feedback-cand-001需求版本待确认"></a>
+### Problem Feedback and Screenshot Preview (`FEEDBACK-CAND-001`; requirement version pending confirmation)
 
-用户从获准入口打开反馈表单，填写合成问题描述并核对附件与诊断选项；如有自动截图或人工添加的图片，可打开大图查看，关闭预览后仍返回同一反馈草稿且内容和附件不丢失。截图及附件须来自获准隔离状态或合成资料，不能把系统真实屏幕或其他用户内容作为测试输入。空输入、图片数量/大小及异常反馈的完整规则需按确认要求另核。
+The user opens the feedback form from an authorized entry point, enters a synthetic problem description, and checks attachments and diagnostic options. If an automatic screenshot or manually added image is available, the user can open it at full size; closing the preview returns to the same feedback draft without losing its content or attachments. Screenshots and attachments must come from an authorized isolated state or synthetic material; do not use the real system screen or another user's content as test input. Confirm complete rules for empty input, image count/size, and error feedback separately against approved requirements.
 
-可选用[评测项目合成图片](../../../../../examples/projects/evaluation/files/icon.png)和[第二张合成图片](../../../../../examples/projects/image-secondary/files/secondary.png)作为可区分的人工附件输入，先核各自清单身份与摘要；文件选择由人工确认。这些原始图片不是产品截图，不预置反馈或上传结果；打开表单可能触发自动截图，采集、诊断与反馈提交须分别核权限。
+As distinguishable manual attachment inputs, optionally use the [synthetic evaluation-project image](../../../../../examples/projects/evaluation/files/icon.png) and [second synthetic image](../../../../../examples/projects/image-secondary/files/secondary.png), first checking each file's manifest identity and digest. A user must confirm file selection. These source images are not product screenshots and do not prepopulate a feedback or upload result. Opening the form may trigger an automatic screenshot; verify authorization separately for capture, diagnostics, and feedback submission.
 
-### 反馈真实提交（`FEEDBACK-CAND-002`；需求版本待确认）
+<a id="反馈真实提交-feedback-cand-002-需求版本待确认"></a>
+<a id="反馈真实提交feedback-cand-002需求版本待确认"></a>
+### Actual Feedback Submission (`FEEDBACK-CAND-002`; requirement version pending confirmation)
 
-在明确获准的测试环境提交可区分的合成反馈，观察实际提交结果；成功时回执与本轮反馈对应，若提示诊断不完整须可辨，失败时应保留可恢复的草稿并显示反馈。提交可能上传描述、截图、日志及会话诊断；外部提交、诊断采集、账号与费用须分别核授权及范围，不能以按钮点击、模拟回执或历史反馈编号代替本轮真实结果。
+Submit distinguishable synthetic feedback in an explicitly authorized test environment and observe the actual result. On success, the receipt corresponds to this run's feedback; any notice that diagnostics are incomplete must be visible. On failure, the draft remains recoverable and feedback is displayed. Submission may upload the description, screenshots, logs, and session diagnostics. Check authorization and scope separately for external submission, diagnostic collection, accounts, and cost. A button click, simulated receipt, or historical feedback ID is not a substitute for the real result in this run.
 
-### 操作记录与截图标注（`FEEDBACK-RECORD-CAND-001`；需求版本待确认）
+<a id="操作记录与截图标注-feedback-record-cand-001-需求版本待确认"></a>
+<a id="操作记录与截图标注feedback-record-cand-001需求版本待确认"></a>
+### Activity Records and Screenshot Annotations (`FEEDBACK-RECORD-CAND-001`; requirement version pending confirmation)
 
-在产品能力开放且明确获准采集的隔离任务中，开始、暂停及继续记录并形成操作步骤；记录中创建的截图应与对应步骤关联，用户可进入标注并返回记录。结束后检查页能查看记录与说明并选择后续操作。此处的“记录操作”指步骤和截图等记录，不预设连续视频录屏能力；系统截图权限、记录内容和产生的数据范围均需核实。历史用户对步骤分页、标注、说明与入口的确认见[构建依据](./build.md)；目标版本适用、完整窗口图及可操作状态仍待核。
+In an isolated task where the capability is available and capture is explicitly authorized, start, pause, and resume a record to create activity steps. Screenshots created in the record should be associated with their corresponding steps; the user can open annotation and return to the record. After ending, the review page can show the record and description and allow the user to choose a next action. “Record activity” here means recording steps, screenshots, and similar data; it does not assume continuous video recording. Verify system screenshot permission, recorded content, and data scope. Historical user confirmation of step pagination, annotations, descriptions, and entry points is in the [Build Basis](./build.md); target-version applicability, complete window screenshots, and operable state remain unverified.
 
-### 检查与提交操作记录（`FEEDBACK-RECORD-CAND-002`；需求版本待确认）
+<a id="检查与提交操作记录-feedback-record-cand-002-需求版本待确认"></a>
+<a id="检查与提交操作记录feedback-record-cand-002需求版本待确认"></a>
+### Review and Submit an Activity Record (`FEEDBACK-RECORD-CAND-002`; requirement version pending confirmation)
 
-在有可核独立操作和截图的真实记录中，检查页展示与输入对应的步骤及截图，修改或取消后的结果可区分；真实提交后仅以服务回执及实际保留结果判断成功。操作记录和截图中不得包含真实私密内容或完整凭据；创建记录、截图、诊断收集、剪贴板与外部提交的权限及数据范围分别核实。失败重试和跨平台权限差异另列专项。
+For a real record with independently verifiable activity and screenshots, the review page shows steps and images corresponding to the input; changes and cancellation produce distinguishable outcomes. Judge actual submission success only from the service receipt and the result actually retained. Activity records and screenshots must not contain real private content or full credentials. Verify permissions and data scope separately for creating records, capturing screenshots, collecting diagnostics, using the clipboard, and external submission. Failure retry and cross-platform permission differences are separate focused scenarios.
 
-### 提交步骤说明（`FEEDBACK-STEP-NOTE-CAND-001`；需求版本待确认）
+<a id="提交步骤说明-feedback-step-note-cand-001-需求版本待确认"></a>
+<a id="提交步骤说明feedback-step-note-cand-001需求版本待确认"></a>
+### Submit a Step Description (`FEEDBACK-STEP-NOTE-CAND-001`; requirement version pending confirmation)
 
-历史用户截图要求成功提交的说明绑定提交时所在步骤，该步骤行右侧显示说明图标，悬停可查看已提交文字；Enter 提交且输入占位提示明示快捷键。以可区分的隔离步骤身份、实际提交内容及独立回执或记录为参照；草稿、按钮点击或提示不代替提交结果。此项不同于最终反馈提交，需核记录能力、实际提交副作用和外发授权；目标包适用、需求版本及完整窗口图待核。
+Historical user screenshot requirements say a successfully submitted description is bound to the step active at submission, an explanation icon appears at the right of that step row, and hovering shows the submitted text. Enter submits, and the input placeholder identifies the shortcut. Use a distinguishable isolated step identity, actual submitted content, and independent receipt or record as references. A draft, button click, or hint does not substitute for a submission result. This is separate from final feedback submission; verify recording capability, actual submission side effects, and external-sharing authorization. Target-build applicability, requirement version, and complete window image remain unverified.
 
-## 数据与独立参照
+<a id="数据与独立参照"></a>
+## Data and Independent References
 
-正常路径需要隔离产品实例、可辨的合成描述和获准的合成画面；手动附图须使用可追溯的 `examples` 原始文件，按实际内容类型核对来源与摘要，导入/原生选择由人工确认。独立记录本轮描述、步骤身份和附件摘要，不以页面自己的计数、模型自述或预置结果作唯一参照。
+The normal path needs an isolated product instance, distinguishable synthetic description, and authorized synthetic screen content. Manual attachments must use traceable original files under `examples`; verify source and digest against actual content type and obtain user confirmation for import/native selection. Independently record this run's description, step identities, and attachment digests. Do not use the page's own counts, model assertions, or prepopulated results as the sole reference.
 
-表单打开、自动截图、操作记录、截图标注和提交是不同动作：打开表单可能触发自动截图；开始记录可能采集截图和页面操作；提交可发起外部上传并附带诊断。未逐项确认副作用、数据范围及授权时，只保留缺口，不以“页面可访问”扩大为录制、截图或上传许可。
+Opening the form, automatic screenshots, activity recording, screenshot annotation, and submission are separate actions. Opening the form may trigger an automatic screenshot; starting a record may capture screenshots and page activity; submission may initiate external upload with diagnostics. Without explicit confirmation of side effects, data scope, and authorization, retain the gap; do not expand “page is accessible” into permission to record, capture, or upload.
 
-## 专项与缺口
+<a id="专项与缺口"></a>
+## Focused Scenarios and Gaps
 
-目标包入口可达性、身份/功能开关条件、需求版本、适用与采用状态、真实完整窗口图和服务端回执待核。图像选择/预览、错误恢复、诊断部分缺失、录制权限、失败重试、截图标注、外部提交以及 Windows 与 macOS 的原生行为分别作为专项；不将模拟数据、组件测试或旧版记录外推为本目标通过。必要时应从对应页面或历史材料确认真实权限与产品语义，不修改业务代码或既有历史冻结。
+Target-build entry-point reachability, identity/feature-flag conditions, requirement version, applicability and adoption state, complete real window screenshots, and service receipts remain unverified. Image selection/preview, error recovery, partial diagnostics, recording permission, retry after failure, screenshot annotation, external submission, and native Windows/macOS behavior are separate focused scenarios. Do not generalize simulated data, component tests, or old-build records into a pass for this target. Confirm actual permissions and product semantics from the relevant page or historical source as needed; do not change business code or existing historical freezes.

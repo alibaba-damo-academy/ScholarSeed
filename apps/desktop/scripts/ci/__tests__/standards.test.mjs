@@ -7,7 +7,7 @@ import './git.test.mjs'
 
 import { cssInventory, cssDebtErrors, validateCssExceptions } from '../css.mjs'
 
-import { foundationCssErrors, unresolvedTokens, checkStandards, classifyStyleSource, compareRatchet, moduleSpecifiers, scanArchitecture, scanStyles } from '../standards.mjs'
+import { foundationCssErrors, unresolvedTokens, checkStandards, classifyStyleSource, compareRatchet, generatedDocuments, moduleSpecifiers, scanArchitecture, scanStyles, validateEnglishRegistry } from '../standards.mjs'
 
 const DESKTOP_ROOT = new URL('../../../', import.meta.url)
 const REPOSITORY_ROOT = new URL('../../../../../', import.meta.url)
@@ -79,6 +79,28 @@ test('extracted API modules do not depend on the legacy API barrel', () => {
 
 test('Desktop local standards and generated inventories stay synchronized', () => {
   assert.deepEqual(checkStandards(), [])
+})
+
+test('generated inventories use English while retaining component coverage', () => {
+  const documents = generatedDocuments()
+  for (const [path, source] of documents) {
+    const withoutLegacyAnchors = source.replace(/<a id="[^"]+"><\/a>/g, '')
+    assert.equal(/[\u4e00-\u9fff]/u.test(withoutLegacyAnchors), false, `${path} contains untranslated text`)
+  }
+  const components = documents.get('_generated/components.md')
+  assert.match(components, /\| Accordion \|/)
+  assert.match(components, /\| Button \|/)
+  assert.match(components, /<a id="ui-组件族"><\/a>/)
+})
+
+test('English component descriptions reject missing, incomplete, untranslated, and stale entries', () => {
+  const registry = { Button: { intents: ['按钮'], use: '用途', avoid: '避免' } }
+  const valid = { Button: { intents: ['button'], use: 'Use for actions.', avoid: 'Use IconButton for icon-only actions.', sourceHash: 'be9fda2c16927f98cb0a7f169d9c2a837bdece5a2a4991d47a4fb6ec3c1f1ddd' } }
+  assert.doesNotThrow(() => validateEnglishRegistry(registry, valid))
+  assert.throws(() => validateEnglishRegistry(registry, {}), /cover exactly/)
+  assert.throws(() => validateEnglishRegistry(registry, { Button: { ...valid.Button, use: '' } }), /Missing English/)
+  assert.throws(() => validateEnglishRegistry(registry, { Button: { ...valid.Button, avoid: '按钮' } }), /Untranslated/)
+  assert.throws(() => validateEnglishRegistry({ Button: { ...registry.Button, use: '已更改' } }, valid), /needs review/)
 })
 
 test('UI consumers use the barrel and UI has no business reverse dependency', () => {

@@ -1,61 +1,80 @@
-# 浏览器设置展示
+<a id="浏览器设置展示"></a>
+# Browser Settings Display
 
-查看内置浏览器的密码库状态、下载偏好和访问策略。入口：主界面设置 → 浏览器；仅在产品已开放浏览器能力时显示。
+Inspect the built-in browser's password-vault state, download preferences, and access policy. Entry point: main interface Settings → Browser; shown only if the product has enabled browser capability.
 
-浏览器设置完整窗口参考：顶部
+Complete-window reference for browser settings: top
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-13；显示设置顶部及密码库状态，图含本机用户名、下载目录与本机端口，不含完整连接密钥；不证明下载或授权操作。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-13. Shows the top of Settings and password-vault state. The image contains the local username, download directory, and local port, but not a complete connection key; it does not prove download or authorization operations.
 
-浏览器设置完整窗口参考：高级设置
+Complete-window reference for browser settings: advanced settings
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-13；完整设置窗口滚动至高级设置，未显示的区域不因本图获得覆盖。端口、开关、站点规则和密码库状态随环境变化，不将图中取值作为固定预期。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-13. The complete Settings window is scrolled to advanced settings; areas not visible are not covered by this image. Port, switches, site rules, and vault state vary with the environment; values shown are not fixed expectations.
 
-浏览器设置完整窗口参考：规则区域
+Complete-window reference for browser settings: rules section
 
-参考：同一目标版本，2026-11-13；完整窗口显示外部自动化及 Agent 网站规则区域。端口、开关与站点规则为动态状态，不含完整连接密钥；截图不证明规则编辑、Agent 授权或 CDP 连接。
+Reference: same target build, 2026-11-13. Complete window showing external automation and Agent website-rule sections. Port, switches, and site rules are dynamic; the image does not contain a complete connection key and does not prove rule editing, Agent authorization, or CDP connection.
 
-浏览数据清理选项的实际状态参考
+Reference of actual state for browser-data-clearing options
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-13；真实完整窗口中显示清理选项，未执行清除。**图中类型复选区域与下文已采用的 BROWSER-SET-006 及本轮冻结预期不符，不是正确预期图**；需求 Owner 对差异的确认仍待完成，网站数据说明另留缺证。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-13. Complete real window showing clearing options; no clearing was performed. **The type-checkbox area in the image conflicts with adopted BROWSER-SET-006 and the frozen expectation for this run; this is not a correct expected-result image.** Requirement Owner confirmation of the difference remains pending. The website-data explanation also remains an evidence gap.
 
-## 了解当前设置
+<a id="了解当前设置"></a>
+## Inspect Current Settings
 
-### 页面与分区（BROWSER-SET-001 · v`0.3`）
-固定：标题“浏览器设置”、用途说明与选中导航一致；密码库、外部浏览器自动化、下载、Agent网站规则、浏览历史及清除浏览数据区域可到达。浏览历史本轮只核区域标题和搜索入口，条目内容归历史功能。
+<a id="页面与分区browser-set-001--v03"></a>
+### Page and Sections (BROWSER-SET-001 · v`0.3`)
 
-### 密码库状态（BROWSER-SET-002 · v`0.3`）
-动态：密码库状态与本机密码库公开状态一致；尚未创建显示创建入口，已锁定显示解锁入口，已解锁显示锁定及已保存数量。条件：不可用或锁定/解锁中不允许发起创建、解锁或删除；无效格式不能解锁；已出现错误须给说明，不显示主密码或凭据内容。
+Fixed: The title “浏览器设置” (“Browser Settings”), purpose statement, and selected navigation are consistent. The Password Vault, External Browser Automation, Downloads, Agent Website Rules, Browsing History, and Clear Browsing Data sections are reachable. In this run, inspect only the Browsing History section title and search entry point; history-item contents belong to the history feature.
 
-**用户确认的补充规则（需求版本待确认）：** 密码库状态为“不可用”且接口返回 `revoked` 时，仅显示“不可用”即可，无需额外错误说明；其他错误仍按原要求处理。用户确认该规则用于本次目标包的新运行；需求版本号及更广泛的版本适用范围待确认，不追改已冻结运行及历史裁决。
+<a id="密码库状态browser-set-002--v03"></a>
+### Password-Vault State (BROWSER-SET-002 · v`0.3`)
 
-### 外部自动化状态（BROWSER-SET-003 · v`0.3`）
-动态：CDP开关对应当前浏览器自动化状态；已启用且有端口时显示本机127.0.0.1地址与端口及复制入口，否则显示访问关闭、无监听地址。固定：说明权限只涉及内置网页、不开放产品主界面，含可信程序及密钥共享风险提示；页面不得直接展示完整带密钥地址。
+Dynamic: Vault state matches the public state of the local vault. `uninitialized` shows a create entry point; locked shows an unlock entry point; unlocked shows lock and the saved-item count. Conditional: When unavailable or unlocking/locking, do not allow create, unlock, or delete. Invalid format cannot be unlocked. An error that has occurred must have an explanation; never display the master password or credential contents.
 
-### 下载偏好（BROWSER-SET-004 · v`0.3`）
-动态：下载文件夹、每次询问开关及可用性对应当前下载设置；默认文件夹时恢复默认入口禁用，目录不可用有提示；平台不支持安全自动保存时询问开关禁用并说明仍需另存为。固定：选择/恢复文件夹入口和Agent独立会话禁止下载的说明清楚。
+**Supplementary user-confirmed rule (requirement version pending confirmation):** When vault state is “unavailable” and the interface returns `revoked`, showing only “unavailable” is sufficient; no additional error explanation is required. Other errors retain the original behavior. The user confirmed this rule for a new run on the current target build; the requirement version and broader applicability across versions remain unconfirmed.
 
-## 理解访问与清理边界
+<a id="外部自动化状态browser-set-003--v03"></a>
+### External Automation State (BROWSER-SET-003 · v`0.3`)
 
-### Agent访问与网站规则（BROWSER-SET-005 · v`0.3`）
-动态：Agent Browser Use开关对应当前策略，关闭时有不授权读取的提示；站点来源及读取/交互决定对应当前网站规则，空列表有说明。条件：成功读取策略后，添加区域有网站、动作、决定及添加入口，网站为空时不可添加；读取失败显示不可用及重试入口而不是空列表。固定：说明这些规则不等于外部CDP权限或提交授权。
+Dynamic: The CDP switch corresponds to the current browser-automation state. When enabled with a port, show a localhost `127.0.0.1` address and port plus a copy entry point; otherwise show that access is closed and there is no listening address. Fixed: Explain that permission applies only to built-in webpages, does not expose the product's main interface, and includes warnings about trusted applications and key-sharing risks. Do not display a full address containing a key directly on the page.
 
-### 清理入口与默认范围（BROWSER-SET-006 · v`0.3`）
-固定：首次进入的清除范围为“最近一小时历史”，清除入口及范围说明可见；说明时间范围只适用历史、网站数据按站点处理且不删除已下载文件。当前默认范围不显示指定网站输入或按类型勾选区域；入口展示不证明数据已经清除。
+<a id="下载偏好browser-set-004--v03"></a>
+### Download Preferences (BROWSER-SET-004 · v`0.3`)
 
-## 发布快评层
+Dynamic: Download folder, ask-every-time switch, and availability match current download settings. When the default folder is in use, the restore-default entry is disabled; an unavailable directory has a notice. If the platform does not support safe automatic saving, disable the ask switch and explain that saving via another method is still required. Fixed: The choose/restore-folder entry points and explanation that Agent standalone sessions cannot download are clear.
 
-### 高级设置下线（默认产品配置）
+<a id="理解访问与清理边界"></a>
+## Understand Access and Clearing Boundaries
 
-保留 BROWSER-SET-001 的浏览器入口与历史管理、004 的下载状态及 006 的清理入口。高级设置、密码库、外部 CDP 和 Agent 网站规则不出现；002、003、005 的旧展示细则仅适用于显式开启高级能力的配置。独立历史页只核入口、搜索与返回，不提取用户历史正文。产品搜索兜底按独立流程验证，不以设置页截图代替。
+<a id="agent访问与网站规则browser-set-005--v03"></a>
+### Agent Access and Website Rules (BROWSER-SET-005 · v`0.3`)
 
-### 历史快评范围（高级能力显式开启）
+Dynamic: The Agent Browser Use switch matches current policy; when off, show a notice that reading is not authorized. Site origin and read/interaction decisions match current website rules; an empty list has an explanation. Conditional: After policy is successfully read, the add section has website, action, decision, and Add entry points; Add is disabled when website is empty. A read failure shows unavailable state and Retry instead of an empty list. Fixed: Explain that these rules are not external CDP permission or submission authorization.
 
-采用v`0.3`的正常子要点：BROWSER-SET-001–006；仅代表下述范围，不代表这些ID全部细则通过。
+<a id="清理入口与默认范围browser-set-006--v03"></a>
+### Clear Entry Point and Default Scope (BROWSER-SET-006 · v`0.3`)
 
-密码库、外部自动化、下载、Agent访问/网站规则及清理区域可辨；核自然密码库状态、CDP开关/loopback端口、下载位置/询问开关、Agent访问开关/站点规则及清理默认范围与安全参照相符。长页必要滚动；不把原004恢复默认按钮禁用等完整控件细则追加为快评门槛，原完整要求仍保留。
+Fixed: On first entry, the clearing scope is “最近一小时历史” (“History from the last hour”); the Clear entry point and scope explanation are visible. Explain that the time range applies only to history, website data is handled by site, and downloaded files are not deleted. The current default scope does not show a site field or type-checkbox area. Showing the entry point does not prove data was cleared.
 
-必要参照：按目标实例实际契约核密码库状态、自动化、下载与策略最小投影；[旧包读取记录](build.md#当前制品复核)仅作线索，不取密码、凭据或历史条目。
+<a id="发布快评层"></a>
+## Release Quick-Review Layer
 
-## 专项层
+<a id="高级设置下线默认产品配置"></a>
+### Advanced Settings Disabled (Default Product Configuration)
 
-本层未选：密码库创建/解锁、历史正文、偏好修改、CDP复制/访问、规则编辑及实际执行数据清除；清理默认范围的展示仍按快评层检查。原完整判据、稳定ID、版本和历史结果保留；未确认分支不因分层获批。
+Retain the browser entry point and history management from BROWSER-SET-001, download state from 004, and clear entry point from 006. Advanced settings, password vault, external CDP, and Agent website rules are absent. Older display details for 002, 003, and 005 apply only to a configuration where advanced capability is explicitly enabled. On the independent history page, inspect only the entry point, search, and back navigation; do not extract user history text. Verify the product's search fallback as a separate flow; a settings screenshot is not a substitute.
+
+<a id="历史快评范围高级能力显式开启"></a>
+### Historical Quick-Review Scope (Advanced Capability Explicitly Enabled)
+
+Adopted normal v`0.3` subcriteria: BROWSER-SET-001–006. This covers only the scope below, not every detail under these IDs.
+
+Password-vault, external automation, downloads, Agent access/website rules, and clearing sections are distinguishable. Compare natural vault state, CDP switch/loopback port, download location/ask switch, Agent access switch/site rules, and default clearing scope with secure references. Scroll as needed for the long page. Do not add full-control details, such as the old 004 rule that Restore default is disabled, to the quick-review gate; full requirements remain preserved.
+
+Required references: check minimum projections for vault state, automation, downloads, and policy against the target instance's actual contract. The [old-package read record](build.md#当前制品复核) is a clue only; do not obtain passwords, credentials, or history entries.
+
+<a id="专项层"></a>
+## Focused Scenarios
+
+Not selected in this layer: vault creation/unlock, history text, preference edits, CDP copying/access, rule editing, and actual data clearing. The default-scope display for clearing remains in the quick-review layer. Preserve original full criteria, stable IDs, versions, and historical results; layering does not authorize unconfirmed branches.

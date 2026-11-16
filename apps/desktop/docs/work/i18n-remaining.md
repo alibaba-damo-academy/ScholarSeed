@@ -1,51 +1,57 @@
-# Desktop 国际化剩余覆盖审计
+<a id="desktop-国际化剩余覆盖审计"></a>
+# Remaining Desktop Localization Coverage Audit
 
-状态：代码整改完成，真实验收存在独立缺口。2026-09-14，本批提交 `9deac33d3` 已推送国际化分支，进入已有 CR #29964071。源码整改、契约验证与真实产品验收分别记录。
+Status: Code remediation is complete; real acceptance has separate gaps. On 2026-09-14, commit `9deac33d3` from this batch was pushed to the localization branch and entered existing CR #29964071. Source remediation, contract verification, and real product acceptance are recorded separately.
 
-## 当前目标与剩余代码工作
+<a id="当前目标与剩余代码工作"></a>
+## Current Goal and Remaining Code Work
 
-当前 Goal 以所有生产页面和主进程的代码层中英文适配、评审、适用检查及推送为完成标准。真实 PDF 附件、OAuth 和 Windows 环境缺口独立记录，不阻塞代码整改；既有 CSS 债务不得增加或放宽。
+The current Goal is complete when all production pages and the main process have code-level English and Chinese localization, review, applicable checks, and a push. Gaps involving real PDF attachments, OAuth, and Windows are tracked separately and do not block code remediation. Existing CSS debt must not increase or be relaxed.
 
-- 已闭环：HIL resolved/submissionError、请求及恢复 fallback、系统打开/定位失败、可恢复运行时前缀和 Composer 权限/停止提示使用明确展示来源；原用户答案、请求控制值和 canonical 状态保留。
-- 已交付：`9deac33d3` 已提交推送；最终暂存 checker 已通过。资源生成、类型检查、构建与交叉评审已完成；完整 Desktop 测试 887 项中 884 通过，3 项既有失败均已在未修改基线复现，详见验证记录。
-- 已在工作区整改：助手失败来源及新摘录名；资源反馈与任务来源注册展示；账号默认展示名；Crepe 公共配置文案；思考深度选择器；删除确认框；更新失败说明；PDF Reading 30 类应用错误；Zotero 导入任务状态和错误；上下文压缩及产物失败状态。最终结果以提交及验证记录为准。
-- 会话默认标题来源已由 `3fa36754e` 实现，并完成真实附件-only会话中英标题切换；旧同名用户标题保留原文。默认来源引用 preview、rename 与冷恢复仍为真实回归缺口。
+- Closed: HIL resolved/submissionError, request and recovery fallbacks, system open/reveal failures, recoverable runtime prefixes, and Composer permission/stop notices now use explicit display sources; original user answers, request control values, and canonical states are preserved.
+- Delivered: `9deac33d3` was committed and pushed; the final staged checker passed. Resource generation, type checks, build, and cross-review are complete. Of 887 full Desktop tests, 884 passed; all three existing failures were reproduced on the unmodified baseline. See the verification record for details.
+- Remediated in the worktree: assistant failure sources and new excerpt names; resource feedback and task-source registration display; account default display names; Crepe public configuration copy; reasoning-depth selector; deletion confirmation; update failure explanation; 30 PDF Reading application errors; Zotero import task states and errors; context compaction and artifact failure states. The commit and verification record are authoritative for the final result.
+- The default session title source was implemented in `3fa36754e`, and English/Chinese title switching was completed in a real attachment-only session; an existing user title with the same name remains unchanged. Real regression coverage is still missing for default-source references in preview, rename, and cold recovery.
 
-## 持久化引用的兼容性要求
+<a id="持久化引用的兼容性要求"></a>
+## Compatibility Requirements for Persisted References
 
-- 现有来源解析会用真实 source.title 替换 ref.label。新增 fallback 必须跟随解析后的权威标题：有真实标题时清除标记，即使真实标题恰好是“未命名对话”；空标题仅继承明确已有标记，不猜测历史记录。
-- assistant/service/context.py 的 _admission_hash 包含 asdict(ref)。新增字段默认 null 也改变摘要形状，须保持既有引用身份序列化并排除展示 metadata。实际影响点是 create_snapshot 的并发/幂等冲突判定；普通已有快照恢复按 question_hash/selection_revision 验证，不能夸大为所有旧恢复必然失败。
-- 模型卡及 model_card_hash 保持原有 label 与输入；展示 metadata 不进入模型上下文。
-- 当前引用和快照表仅 additive nullable column；旧数据没有 metadata 时原文展示。16b63f278与4927f4c34已覆盖 schema/routes、领域模型、resolved来源、两类存储、历史surface、队列、preview、失败提示与前端渲染；真实Desktop完整链路仍待验收。
+- Existing source resolution replaces `ref.label` with the real `source.title`. A new fallback must follow the resolved authoritative title: clear the marker when a real title exists, even if that title happens to be “Untitled conversation”; inherit an explicit existing marker only when the title is empty, without guessing about historical records.
+- `assistant/service/context.py` includes `asdict(ref)` in `_admission_hash`. Even a new field defaulting to null changes the digest shape, so preserve existing reference identity serialization and exclude display metadata. The actual impact is concurrent/idempotency conflict detection in `create_snapshot`; normal restoration of existing snapshots validates by `question_hash`/`selection_revision`, so do not overstate this as inevitable failure of every old restore.
+- Model cards and `model_card_hash` retain the existing label and input; display metadata must not enter model context.
+- Current reference and snapshot tables use only additive nullable columns; without metadata, old data displays its original text. `16b63f278` and `4927f4c34` cover schema/routes, domain models, resolved sources, both storage types, historical surfaces, queue, preview, failure notices, and frontend rendering. The complete real Desktop path still needs acceptance.
 
-## 已整改，真实验收仍有缺口
+<a id="已整改真实验收仍有缺口"></a>
+## Remediated; Real Acceptance Gaps Remain
 
-| 范围 | 实现证据 | 验证边界 |
+| Area | Implementation evidence | Verification boundary |
 | --- | --- | --- |
-| 持久化未命名引用 | 16b63f278、4927f4c34：明确session来源跨层传递，权威真实标题清除，preview空标题保留冻结原文 | Serve 201契约与Desktop 91关联契约通过；真实选择/发送/切语言/预览已完成同名用户会话、真实工具读取和中英截图；冷重启预览未验收，空标题入口受列表默认投影限制 |
-| 选区来源标题 | bcca839b1、aabb63001：selection_source_label贯通两端，去除后缀截尾，完整/基础展示分离，失败/队列/历史保留原文 | Serve 238项、存储20项与Desktop 94项通过；真实选区流程仍需有真实文件选区/PDF/文献数据的可达回归 |
-| 工作台保存通知与PDF标签 | 2e9f93c93：保存toast以ReactNode订阅语言，PDF比例aria完整插值、Crop页码复用资源 | 42契约与类型/checker通过；真实toast热切换和PDF对应流程待验收 |
-| 搜索失败及通知 | 69d1a7e9e、1f9fe49f4：稳定失败码、展示翻译、已投递通知随语言重绘 | Chromium通知生命周期已测；真实搜索失败/降级/导入仍需覆盖 |
-| 公共 Markdown 证据与 PDF 浮窗 | 8cb882e1a：证据等级/来源外壳、任务/图片fallback、关闭/调整大小aria | 组件契约已测；真实PDF入口待完整回归 |
-| 项目/审阅/AI检索标签 | 4a70b1131：应用标签按kind/metadata翻译 | 保留原query/tab身份；真实多标签切换待回归 |
-| Crepe原生输入 | d97be4e26：图片/搜索/链接配置 | 此前真实中英图片占位已验证；固定editorLanguage须关闭重开生效 |
-| 账号设置与模型预设 | e955e1fa1、f01a128ab、a26c9176a | d12807adb构建中实际看到Settings对话框、英文八项预设和中英百炼提示；本地Ollama说明英文截图已读。未连接或保存新凭据 |
-| 回答选区文档模板 | fff5586d4：创建时语言的三个标题 | 26 API契约通过；真实保存选区待验收，既有文件不重写 |
-| 摘录/订阅列表 | 8bb1407a9：单复数、完整结果消息、列表分隔符 | 关联契约通过；真实摘录与订阅状态待回归 |
-| 订阅标题/摘录保存数量 | bdba29894：连接名称+状态和保存选择数量使用完整插值消息 | 57相关契约、typecheck/checker通过；真实操作待验收 |
-| 阅读草稿与证据页码 | c734b56b8：PDF选区/总结继续提问按点击时语言创建草稿，原文参数不变；证据按钮使用完整消息 | 18项PDF契约、typecheck/checker通过；真实PDF两入口待验收。TableViewer已通过正常TSV资源入口完成中英文草稿回归；CSV实际进入Office，不能作为该按钮证据 |
-| Office字体失败 | d0ed8a320：稳定码映射既有资源 | 25契约通过；真实字体不可读分支待验收 |
-| Markdown窄pane顶栏 | 9df01fb75：换行、自适应高度、操作组不收缩 | 12契约通过；约560px窄pane中英截图、Source/Edit切换与真实保存已通过局部回归 |
-| 模型目录及回答供应商 | 3afe3ea9e、927793295：目录明确preset身份/原模型标签、冻结ModelRun来源及统一目录重绘 | 后端与前端契约通过；实际菜单pending和新回答双语仍待验收 |
-| 原生启动失败正文 | 47e8449fd：原因descriptor与原始诊断分离、失败handle清理前保留诊断 | 6契约与node检查通过；新main真实失败分支及Windows均未验收 |
+| Persisted untitled references | `16b63f278`, `4927f4c34`: explicitly propagate session source across layers; clear it for authoritative real titles; preserve frozen original text for empty preview titles | Serve 201 contracts and Desktop 91 related contracts passed; real selection/send/language-switch/preview was completed for same-name user sessions, real tool reads, and English/Chinese screenshots. Cold-restart preview is unverified; the empty-title entry is constrained by the list's default projection |
+| Selection source titles | `bcca839b1`, `aabb63001`: propagate `selection_source_label` on both sides, remove suffix truncation, separate full/basic display, and preserve original text in failure/queue/history | Serve 238, storage 20, and Desktop 94 tests passed; real selection flow still needs an accessible regression with actual file selection/PDF/literature data |
+| Workbench save notice and PDF labels | `2e9f93c93`: save toast subscribes to language as a ReactNode; PDF ratio aria uses complete interpolation; Crop page number reuses a resource | 42 contracts and type/checker passed; real toast hot switching and corresponding PDF flow remain unverified |
+| Search failures and notices | `69d1a7e9e`, `1f9fe49f4`: stable failure codes, translated display, and delivered notices redraw on language change | Chromium notice lifecycle tested; real search failure/degradation/import still needs coverage |
+| Public Markdown evidence and PDF popover | `8cb882e1a`: evidence level/source shell, task/image fallbacks, close/resize aria | Component contracts tested; full regression through a real PDF entry point remains outstanding |
+| Project/review/AI search labels | `4a70b1131`: translate application labels by kind/metadata | Preserve original query/tab identity; real multi-tab switching remains to be regressed |
+| Crepe native input | `d97be4e26`: image/search/link configuration | Real bilingual image placeholder was previously verified; a fixed `editorLanguage` takes effect after closing and reopening |
+| Account settings and model presets | `e955e1fa1`, `f01a128ab`, `a26c9176a` | In build `d12807adb`, the Settings dialog, eight English presets, and bilingual Bailian notices were observed; the local Ollama explanation was read in an English screenshot. No new credentials were connected or saved |
+| Answer-selection document template | `fff5586d4`: three headings use the language at creation time | 26 API contracts passed; real saving of a selection remains unverified; existing files are not rewritten |
+| Excerpt/subscription lists | `8bb1407a9`: singular/plural, complete result messages, and list separators | Related contracts passed; real excerpt and subscription states remain to be regressed |
+| Subscription titles/excerpt save count | `bdba29894`: connection name + status and saved selection count use complete interpolated messages | 57 related contracts and typecheck/checker passed; real operations remain unaccepted |
+| Reading drafts and evidence page numbers | `c734b56b8`: PDF selection/summary follow-up drafts use the language at click time without changing original parameters; evidence buttons use complete messages | 18 PDF contracts and typecheck/checker passed; both real PDF entry points remain unverified. TableViewer completed bilingual draft regression through a normal TSV resource entry; CSV routes into Office and does not provide evidence for this button |
+| Office font failure | `d0ed8a320`: stable code maps to an existing resource | 25 contracts passed; real unreadable-font branch remains unverified |
+| Markdown narrow-pane toolbar | `9df01fb75`: wraps, adapts height, and keeps the action group from shrinking | Bilingual screenshots at a roughly 560px narrow pane, Source/Edit switching, and real save passed in a focused regression |
+| Model catalog and answer provider | `3afe3ea9e`, `927793295`: catalog explicitly identifies preset/original model labels, freezes ModelRun source, and redraws through one catalog | Backend and frontend contracts passed; actual menu pending state and bilingual new answers remain unverified |
+| Native startup failure body | `47e8449fd`: separates reason descriptor from raw diagnostics and preserves diagnostics before failed-handle cleanup | 6 contracts and node checks passed; the new real main-process failure branch and Windows remain unverified |
 
-## 实际可达性与内容边界待核对
+<a id="实际可达性与内容边界待核对"></a>
+## Reachability and Content Boundaries to Confirm
 
-- Office原生残余PO条目不等于生产漏译数量，需真实Writer/Calc菜单与弹窗证据；语言资源失败回退提示也待验证。
-- macOS未发现应用自定义Menu模板，默认Electron菜单实际语言仍待核实；Windows窗口setMenu(null)，不据此推断其他原生界面覆盖。
-- PDF Reading长提示先进入可编辑composer，属于应用生成的可见草稿，c734b56b8已迁移模板，用户/AI插值原文保留。TableViewer模板已通过正常TSV项目资源入口完成真实双语操作；切换语言不重写已有草稿，表格原文与路径保持。CSV入口路由到Office，不属于该按钮验收。6a2ceced6已将保存对话框建议名的应用前后缀按点击语言翻译，保留原文件basename/扩展名及既有路径；摘录父目录、已保存路径与canonical标签继续保留。
-- Office搜索location原生页码当前仅metadata，OfficeDocument展示的是已翻译状态及计数；无生产消费者的旧helper不为国际化重新连接。
+- Residual Office native PO entries do not equal the number of production translation gaps. Real Writer/Calc menu and dialog evidence is needed; language-resource failure fallback notices also remain to be verified.
+- No custom application Menu template was found on macOS; the actual language of the default Electron menu remains to be confirmed. Windows uses `setMenu(null)`; do not infer coverage of other native UI from this.
+- Long PDF Reading hints first enter the editable composer as application-generated visible drafts. `c734b56b8` migrated the template while preserving original user/AI interpolation. The TableViewer template completed real bilingual operation through a normal TSV project-resource entry; changing language does not rewrite an existing draft, and table text and paths remain unchanged. The CSV entry routes to Office and is outside this button's acceptance. `6a2ceced6` translated the application-added prefix and suffix of the suggested save-dialog name according to the click-time language, while preserving the original file basename/extension and existing path; excerpt parent directory, saved path, and canonical label remain unchanged.
+- Office search location's native page number is currently metadata only; OfficeDocument displays translated status and counts. Do not reconnect an old helper with no production consumer solely for localization.
 
-## 完成所需证据
+<a id="完成所需证据"></a>
+## Evidence Required for Completion
 
-最终资源/暂存 checker、typecheck、build 和相关测试必须对应提交内容。既有失败须独立记录并核对基线，不能声称全绿。真实平台验收未完成项仍保留，但不作为本轮代码整改 Goal 的前置条件。近期定向检查与交叉评审证据见 [验证记录](i18n-verification.md)。
+The final resource/staged checker, typecheck, build, and related tests must correspond to the committed content. Existing failures must be recorded separately and checked against the baseline; do not claim everything passed. Outstanding real-platform acceptance remains documented but is not a prerequisite for this round's code-remediation Goal. See the [verification record](i18n-verification.md) for recent focused checks and cross-review evidence.

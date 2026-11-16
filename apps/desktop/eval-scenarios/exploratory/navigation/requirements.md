@@ -1,44 +1,54 @@
-# 主导航与工作范围
+<a id="主导航与工作范围"></a>
+# Main Navigation and Work Scope
 
-在项目工作、全局文献与扩展之间切换，并从设置返回工作界面。入口：主窗口侧边主导航；设置可从头像菜单进入。
+Switch among project work, global literature, and extensions, and return from settings to the work area. Entry points: the main navigation in the main window's sidebar; settings are available from the avatar menu.
 
-项目工作台及主导航完整窗口参考
+Full-window reference: project workspace and main navigation
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-12；隔离项目工作台及主导航的完整窗口。项目及最近访问状态会变化，不以图中内容作为固定预期。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-12; the full window showing an isolated project workspace and main navigation. Project and recently visited state can change; the image is not a fixed expected state.
 
-文献中心导航状态参考
+Reference: literature-center navigation state
 
-扩展导航状态参考
+Reference: extensions navigation state
 
-参考：同一目标版本，2026-11-13；分别为文献中心空态和扩展技能页的完整窗口，图中数量与目录随环境变化；截图不单独证明切换动作或完整业务功能。来源见[构建依据](./build.md)。
+Reference: the same target version, 2026-11-13; full-window views of the empty literature center and extensions skills page. Counts and directory contents vary by environment; screenshots alone do not prove the navigation action or complete business functionality. See [build evidence](./build.md) for the source.
 
-## 切换工作范围
+<a id="切换工作范围"></a>
+## Switching Work Scopes
 
-### 主导航定位（NAV-OBS-001 · v`0.3`）
-固定：项目中心、文献中心、扩展入口名称清楚，当前入口有可见选中态；选中入口与实际工作区一致，不以隐藏面板冒充当前页。
+<a id="主导航定位nav-obs-001--v03"></a>
+### Main navigation location (NAV-OBS-001 · v`0.3`)
+Fixed: The Project Center, Literature Center, and Extensions entry names are clear, and the current entry has a visible selected state. The selected entry matches the actual workspace; a hidden panel cannot stand in for the current page.
 
-### 项目入口与返回（NAV-OBS-002 · v`0.3`）
-条件：存在最近进入且仍有效的项目时，项目中心入口可返回该项目工作台；无有效最近项目时进入项目全览。离开项目入口到全局区域再返回，仍为离开前的项目工作台或项目全览；若返回项目，标题应与此前可见项目一致。不要求打开资料面板或创建新任务。
+<a id="项目入口与返回nav-obs-002--v03"></a>
+### Project entry and return (NAV-OBS-002 · v`0.3`)
+Conditional: If a recently visited project still exists, the Project Center entry returns to that project's workspace; if no valid recent project exists, it opens the project overview. After leaving the project entry for a global area and returning, the prior project workspace or project overview remains. If returning to a project, its title matches the one previously visible. Opening the resources panel or creating a task is not required.
 
-### 全局文献范围（NAV-OBS-003 · v`0.3`）
-固定：主导航的文献中心进入全局文献范围，显示文献中心/全览对应界面，而不是之前项目的资料或对话面；不因有项目记忆而留在项目文献范围。文献条目内容和跨项目数据隔离另属业务基线。
+<a id="全局文献范围nav-obs-003--v03"></a>
+### Global literature scope (NAV-OBS-003 · v`0.3`)
+Fixed: The Literature Center in the main navigation enters the global literature scope and displays the corresponding literature-center/overview interface, rather than the previous project's resources or conversation. A remembered project must not keep the user in that project's literature scope. Literature entry contents and cross-project data isolation belong to separate business baselines.
 
-### 全局扩展范围（NAV-OBS-004 · v`0.3`）
-固定：扩展入口进入全局技能与连接器区域，两个页签入口清楚，当前选中页签有对应内容。技能目录及连接器的详细判据复用各自基线。
+<a id="全局扩展范围nav-obs-004--v03"></a>
+### Global extensions scope (NAV-OBS-004 · v`0.3`)
+Fixed: The Extensions entry opens the global skills and connectors area. Both tab entries are clear, and the selected tab shows its corresponding content. Detailed criteria for the skills directory and connectors reuse their respective baselines.
 
-## 返回工作界面
+<a id="返回工作界面"></a>
+## Returning to the Work Area
 
-### 关闭设置（NAV-OBS-005 · v`0.3`）
-固定：关闭设置后回到打开设置前的工作范围，设置遮罩消失，不因关闭设置跳转到另一个业务范围。
+<a id="关闭设置nav-obs-005--v03"></a>
+### Closing settings (NAV-OBS-005 · v`0.3`)
+Fixed: Closing settings returns to the work scope that was open before settings. The settings overlay disappears, and closing settings does not navigate to another business scope.
 
-## 发布快评层
+<a id="发布快评层"></a>
+## Release Quick-Review Layer
 
-采用v`0.3`的正常子要点：NAV-OBS-001、002–004；仅代表下述范围，不代表这些ID全部细则通过。
+The adopted normal subpoints from v`0.3` are NAV-OBS-001 and 002–004. This covers only the scope below; it does not mean every detail of these IDs passes.
 
-主导航的项目、文献、扩展入口及当前选中态应与实际工作区一致；当前项目身份以任务项目登记为参照。
+The Project Center, Literature Center, and Extensions entries in the main navigation, and the current selected state, must match the actual workspace. Use the task's project registration as the reference for the identity of the current project.
 
-必要参照：已核任务项目登记与当前工作区；无需新增输入。
+Required reference: verified task project registration and current workspace; no additional input is needed.
 
-## 专项层
+<a id="专项层"></a>
+## Specialized Layer
 
-本层未选：跨区往返、最近项目回退与关闭设置的完整流程。原完整判据、稳定ID、版本和历史结果保留；未确认分支不因分层获批。
+Not selected in this layer: the complete cross-area round trip, fallback to a recent project, and close-settings flows. The original full criteria, stable IDs, versions, and historical results remain. Unconfirmed branches are not approved merely by this layering.

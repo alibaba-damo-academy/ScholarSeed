@@ -1,71 +1,93 @@
-# Markdown与代码阅读、编辑
+<a id="markdown与代码阅读编辑"></a>
+# Markdown and Code Reading and Editing
 
-Markdown 阅读页面参考
+## Markdown Reading Page Reference
 
-参考：macOS arm64，0.3.2 / 202611121104，2026-11-12；合成资料只显示阅读状态，不代表编辑、保存或全部格式已经验证。
+Reference: macOS arm64, 0.3.2 / 202611121104, 2026-11-12. Synthetic material shows read-only state; does not represent verified editing, saving, or all formats.
 
-已核实的正常阅读、模式、查找及编辑行为已采用为v`0.3`需求；006–007为写入专项，须核当轮授权。005标题目录、只读工具一致性及错误反馈等缺依据/异常分支仍待确认，不以格式菜单或查找替代目录。
+Verified normal reading, modes, find, and editing behavior are adopted as v`0.3` requirements. 006–007 are write-focused scenarios and require authorization for the current run. 005 heading outline, read-only tool consistency, error feedback, and other unsupported/exception branches remain pending confirmation; do not substitute a format menu or find action for an outline.
 
-在项目工作台阅读Markdown或代码，定位内容并在获准时编辑。语义入口为资料正常打开后的文档Viewer；Markdown模式选择器区分预览、可视编辑与源码，代码文档为独立源码Viewer，不混作Markdown预览。真实入口待授权观察。
+Read Markdown or code in the project workbench, locate content, and edit when authorized. The semantic entry point is the document Viewer after normal material opening. The Markdown mode selector distinguishes preview (`预览`), visual editing (`可视编辑`), and source (`源码`); code documents have a separate source Viewer and are not Markdown preview. Real entry-point observation remains subject to authorization.
 
-## 阅读与定位内容
+<a id="阅读与定位内容"></a>
+## Read and Locate Content
 
-### 文档身份与模式（EDITOR-OBS-001 · v`0.3`）
-条件：实际预览/编辑能力、只读原因和当前模式对应；Markdown预览不可当作已编辑，源码模式显示原始标记并仅在文档可写时编辑。大文档受限时保留源码阅读路径及限制提示，不强求可视编辑；模式切换后仍是同一文档和当前内容，不冒充已保存。
+<a id="文档身份与模式editor-obs-001--v03"></a>
+### Document Identity and Mode (EDITOR-OBS-001 · v`0.3`)
 
-### Markdown结构与公式（EDITOR-OBS-002 · v`0.3`）
-固定输入与动态展示：合成样本的两级标题、普通列表、表格、代码块、内联及块公式在支持的预览/可视视图中可辨认，源码视图保留对应原文。以样本中的结构和数学表达式为参照，不要求源码文字与渲染画面相同，也不把代码块高亮当成执行了代码。
+Conditional: Actual preview/edit capability, read-only reason, and current mode match. Markdown preview is not edited state. Source mode displays raw markup and allows editing only when the document is writable. When a large document is constrained, preserve source-reading access and limitation notice; do not require visual editing. After mode switching, it remains the same document and current content; do not present it as saved.
 
-### 代码语法与行定位（EDITOR-OBS-003 · v`0.3`）
-动态：TypeScript输入按相应语言展示可辨语法和完整首末内容；查找或跳行后实际可见内容与样本目标行一致。换行显示只改变阅读布局，不改变原文；以已知行和首末标记核对，不把行号输入框或语言标签变化单独当定位成功。
+<a id="markdown结构与公式editor-obs-002--v03"></a>
+### Markdown Structure and Math (EDITOR-OBS-002 · v`0.3`)
 
-TypeScript 文档显示参考
+Fixed input/dynamic display: In supported preview/visual views, the synthetic sample's two-level headings, ordinary list, table, code block, inline formula, and block formula are discernible; source view preserves corresponding original text. Use sample structure and mathematical expressions as references. Source text need not match rendered appearance, and code highlighting does not mean code was executed.
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-12；展示合成 TypeScript 的语法及首末标记，不单独证明跳行或其他操作。
+<a id="代码语法与行定位editor-obs-003--v03"></a>
+### Code Syntax and Line Location (EDITOR-OBS-003 · v`0.3`)
 
-### 查找与命中切换（EDITOR-OBS-004 · v`0.3`）
-动态：Markdown可视内容及源码/代码的实际查找入口，应在各自适用范围定位已知检索标记，前后切换与无结果反馈对应真实内容。以各样本两次同名正文标记及所在位置核对；Markdown可视查找不等同跨块、公式或源码语法的全量匹配，Monaco额外查找选项按实际启用条件判断。
+Dynamic: TypeScript input displays discernible syntax in the corresponding language and complete first/last content. After find or go-to-line, visible content matches the target sample line. Wrapping changes reading layout, not source text. Verify using known lines and first/last markers; a line-number field or language-label change alone does not prove navigation succeeded.
 
-Markdown 可视查找首项参考
+TypeScript document display reference
 
-Markdown 可视查找第二项参考
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-12. Shows syntax and first/last markers in synthetic TypeScript; does not by itself prove go-to-line or other operations.
 
-参考：同一版本隔离项目的合成正文查找状态；两图显示不同命中位置，不单凭静图证明动作或覆盖全部查找分支。
+<a id="查找与命中切换editor-obs-004--v03"></a>
+### Find and Cycle Through Matches (EDITOR-OBS-004 · v`0.3`)
 
-### 标题目录与层级定位（EDITOR-OBS-005 · v`0.3`）
-候选待确认：标题目录应依据文档真实标题层级，选择条目后到达对应标题与正文；当前尚未核得此Viewer的目录入口及实现链，保留能力/入口缺口。标题格式菜单、正文标题显示或普通文本查找都不能替代目录判据，也不据源码缺证自动退役原业务。
+Dynamic: In Markdown visual content and in source/code, use each applicable real find entry point to locate a known marker. Next/previous and no-result feedback correspond to actual content. Check the two occurrences of the same body marker in each sample and their locations. Markdown visual find does not equal complete matching across blocks, formulas, or source syntax; judge extra Monaco find options only under actual enabled conditions.
 
-### Markdown 预览选区添加到对话（`EDITOR-SELECTION-CAND-001`；需求版本待确认）
-历史用户截图与确认要求预览正文可拖选，悬停工具栏时保留选区；从工具栏添加到对话后，输入区显示同一文档的选区引用，内容与事前记录的合成原文所选片段一致。点击正文可清除选区，预览仍保持只读。以干净隔离 Markdown 副本、独立原文片段及文档身份为参照；引用内容截断时须取得可观察的完整引用或其他获准证据，不能仅凭卡片标题判断。只读需以获准的安全代表动作及独立文件内容或摘要验证，缺条件保留缺证，不擅自编辑或保存。选区高亮或按钮出现不单独证明引用内容正确，添加引用也不等于发送消息或模型读取。
+Markdown visual find, first match reference
 
-Markdown 预览选区及工具栏
+Markdown visual find, second match reference
 
-参考：macOS arm64 `0.3.2 / 202611121823 / preview`，2026-11-13；隔离合成文档只读模式的完整产品视口，显示选区及工具栏，未点击工具栏；不证明添加引用、发送、只读行为或正式评测通过。来源与状态限制见[构建依据](./build.md)。
+Reference: find state on synthetic content in an isolated project on the same version; the two images show different match locations. Static images alone do not prove the action or cover every find branch.
 
-此项为候选专项，目标版本入口、适用性、采用及需求版本待确认，目标包引用终态的真实完整窗口图仍缺。须获准读取隔离副本及写入对话草稿；若文档为脏态则停止，保存另需授权。Markdown 选区、对话混合引用展示与 PDF 选区各自有不同入口和终态，不能互相代替；复杂格式、跨块选区、跨平台与模型调用另核。
+<a id="标题目录与层级定位editor-obs-005--v03"></a>
+### Heading Outline and Hierarchical Navigation (EDITOR-OBS-005 · v`0.3`)
 
-## 在授权副本上编辑
+Candidate, pending confirmation: The outline should follow actual document heading hierarchy; selecting an item should navigate to the corresponding heading/body. The outline entry and implementation chain in this Viewer have not been verified; retain capability/entry-point gap. A heading-format menu, heading displayed in body, or ordinary text find does not substitute for outline criteria. Do not automatically retire the business requirement due to missing source evidence.
 
-### 修改与撤销重做（EDITOR-OBS-006 · v`0.3`）
-写入专项：在可写文档的可视编辑或源码编辑模式修改已知目标，真实内容应改变，撤销恢复该次修改前内容，重做恢复该次修改后内容；切换支持的模式仍反映同一当前内容。按编辑器实际历史边界判断，不声称所有模式共享同一撤销栈，也不由预览成功推定编辑通过。
+<a id="markdown-预览选区添加到对话editor-selection-cand-001需求版本待确认"></a>
+### Add a Markdown-Preview Selection to a Conversation (`EDITOR-SELECTION-CAND-001`; requirement version pending confirmation)
 
-### 替换与格式化（EDITOR-OBS-007 · v`0.3`）
-写入专项：在实际支持的源码/代码替换入口，选定或全部替换只改变事前明确的命中范围；只读时不能借替换绕过限制。可视格式操作或开启保存时格式化，仅按已选分支及事前约定的结构/语义结果核对；没有独立全文格式化入口时不凭空要求出现，失败提示不等于保存失败或成功。
+Historical user screenshots/confirmation require that a user can select text in preview by dragging and that the selection remains when hovering the toolbar. After adding it to a conversation, the input area shows a quote from the same document selection, matching the synthetic source excerpt recorded beforehand. Clicking the body clears selection; preview remains read-only. Use an isolated clean Markdown copy, independent source excerpt, and document identity as references. If quote content is truncated, obtain an observable complete quote or other authorized evidence; card title alone is insufficient. Verify read-only state through an authorized safe representative action and independent file content/digest. If prerequisites are missing, retain the evidence gap; do not edit/save without authorization. Highlighted selection or a visible button alone does not prove quote content is correct. Adding a quote is not sending a message or model reading it.
 
-## 验证归属与数据
+Markdown preview selection and toolbar
 
-001–004已采用的正常分支为普通展示/模式/查找范围；005保持入口待确认，不记作已准备执行。006–007为编辑授权专项，完整Markdown/代码功能仍待专项；本页不以一次预览覆盖全部交互。保存终态直接复用[保存专项 SAVE-OBS-002及相关条目](../saving/requirements.md)的已采用适用部分，待确认异常不由引用批准；关闭保护复用[多标签 TABS-OBS-008](../tabs/requirements.md)，不复制判据。
+Reference: macOS arm64 `0.3.2 / 202611121823 / preview`, 2026-11-13. Complete product viewport of a read-only isolated synthetic document with selection and toolbar shown; toolbar was not clicked. Does not prove adding quote, sending, read-only behavior, or formal evaluation pass. See the [Build Basis](./build.md) for source and state limitations.
 
-使用共享评测项目的[Markdown样本](../../../../../examples/projects/evaluation/files/sample.md)和[TypeScript语法输入](../../../../../examples/projects/evaluation/files/sample.ts)的获准隔离副本；准备状态以本轮收据为准，数据准备不等于导入功能测试，导入由人工确认。它们不是已保存结果或真实研究资料。明确文档读取、伴随MRU/偏好和可能自动保存的授权；编辑/替换/格式化须另有相应范围。代码只阅读、不执行，不从语法高亮推断编译、运行或外部请求能力。
+This is a candidate focused scenario; target-version entry, applicability, adoption, and requirement version remain unconfirmed. A real complete-window image of the target package's quoted end state is missing. Requires authorized reading of the isolated copy and writing to conversation draft; stop if document is dirty. Saving requires separate authorization. Markdown selection, conversation mixed-quote display, and PDF selection have distinct entry points/end states and cannot substitute for one another. Complex formatting, cross-block selection, cross-platform behavior, and model invocation require separate review.
 
-## 发布快评层
+<a id="在授权副本上编辑"></a>
+## Edit an Authorized Copy
 
-采用v`0.3`的正常子要点：EDITOR-OBS-001–004；仅代表下述范围，不代表这些ID全部细则通过。
+<a id="修改与撤销重做editor-obs-006--v03"></a>
+### Modify and Undo/Redo (EDITOR-OBS-006 · v`0.3`)
 
-Markdown主要标题、列表、表格、代码和内联/块公式应与原始样本结构一致；TypeScript按语言展示可辨语法和原文。代表动作仅在Markdown可视查找EDITOR-NEEDLE并next一次，到达第二处实际正文位置；两处标记为原件第5/35行，不以仅显示两次计数替代定位，保留004历史定位问题。
+Write-focused scenario: In visual or source edit mode for a writable document, modify a known target and verify actual content changes. Undo restores the content before that edit; redo restores the content after it. Switching supported modes still reflects the same current content. Judge within the editor's actual history boundary; do not claim all modes share one undo stack or infer edit success from preview success.
 
-必要参照：[sample.md](../../../../../examples/projects/evaluation/files/sample.md)及[sample.ts](../../../../../examples/projects/evaluation/files/sample.ts)的获准隔离副本、原件行参照和本轮项目/路径映射；不敲正文，遇脏态停止。
+<a id="替换与格式化editor-obs-007--v03"></a>
+### Replace and Format (EDITOR-OBS-007 · v`0.3`)
 
-## 专项层
+Write-focused scenario: In an actually supported source/code replacement entry point, replace selected/all matches and change only the match scope explicitly recorded beforehand; read-only state must not be bypassed through replacement. For visual formatting or format-on-save, verify only the selected branch and pre-agreed structural/semantic outcome. If there is no independent full-document formatting entry point, do not invent a requirement for one. Failure feedback does not by itself mean save failed or succeeded.
 
-本层未选：全模式循环、跳行/换行偏好、全部查找选项、005目录待确认、选区添加对话候选与006–007编辑/替换/格式/保存写入。原完整判据、稳定ID、版本和历史结果保留；未确认分支不因分层获批。
+<a id="验证归属与数据"></a>
+## Verification Ownership and Data
+
+Adopted normal branches 001–004 belong to ordinary display/mode/find scope; 005 remains an unconfirmed entry point and is not ready to execute. 006–007 are authorized editing scenarios; complete Markdown/code behavior remains a focused scenario. This page does not use one preview to cover all interactions. For save end state, reuse applicable adopted portions of [SAVE-OBS-002 and related saving scenarios](../saving/requirements.md); confirmation does not approve unconfirmed failures. For close protection, reuse [multi-tab TABS-OBS-008](../tabs/requirements.md) without duplicating criteria.
+
+Use authorized isolated copies of the shared evaluation project [Markdown sample](../../../../../examples/projects/evaluation/files/sample.md) and [TypeScript syntax input](../../../../../examples/projects/evaluation/files/sample.ts); use current run receipt for preparation state. Preparation is not an import-feature test; import requires user confirmation. These are not saved results or real research material. Explicitly authorize document reads, associated MRU/preferences, and possible auto-save. Editing/replacement/formatting need separate corresponding scope. Read code only; do not execute it or infer compilation, runtime, or external-request capability from syntax highlighting.
+
+<a id="发布快评层"></a>
+## Release Quick-Review Layer
+
+Adopted normal v`0.3` subcriteria: EDITOR-OBS-001–004. This covers only the scope below, not every detail under these IDs.
+
+Main Markdown headings, lists, tables, code, and inline/block formulas should match the original sample structure; TypeScript syntax and source text should be discernible in the corresponding language. Representative action: only in Markdown visual find, search `EDITOR-NEEDLE` and press Next once to reach the second actual body occurrence. The two markers are on original lines 5/35; a count of two alone is not proof of location. Preserve the historical 004 location issue.
+
+Required reference: authorized isolated copies of [sample.md](../../../../../examples/projects/evaluation/files/sample.md) and [sample.ts](../../../../../examples/projects/evaluation/files/sample.ts), original line references, and current run project/path mapping. Do not type in body; stop if dirty.
+
+<a id="专项层"></a>
+## Focused Scenarios
+
+Not selected in this layer: full mode cycles, go-to-line/wrap preferences, all find options, unconfirmed 005 outline, selection-to-conversation candidate, and 006–007 editing/replacement/format/save writes. Preserve original full criteria, stable IDs, versions, and historical results; layering does not authorize unconfirmed branches.

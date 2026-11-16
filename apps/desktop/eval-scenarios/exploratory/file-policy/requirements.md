@@ -1,34 +1,44 @@
-# 资料库文件
+<a id="资料库文件"></a>
+# Library Files
 
-目标版本资料库文件参考
+## Target-Version Library-Files Reference
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-12；显示自然偏好和版本限制，图中数值为动态值，不证明策略保存或生效。来源与摘要见[构建依据](./build.md#202611121823-目标版本参考图)。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-12. Shows naturally occurring preferences and version limits; values in the image are dynamic and do not prove that a policy was saved or took effect. See the [Build Basis](./build.md#202611121823-目标版本参考图) for source and digest.
 
-查看文件保存偏好及版本保留限制。入口：主界面头像菜单 → 设置 → 资料库文件。
+Inspect file-saving preferences and version-retention limits. Entry point: main interface avatar menu → Settings → Library Files (`资料库文件`).
 
-![资料库文件参考](./reference.png)
+![Library files reference](./reference.png)
 
-参考图来源：macOS arm64，0.3.0 / 202610281438，2026-10-28。开关和限制数值为当时设置，不作为后续固定预期。
+Reference image source: macOS arm64, 0.3.0 / 202610281438, 2026-10-28. Switches and limit values reflect settings at that time and are not fixed expectations for later versions.
 
-## 查看保存与版本策略
+<a id="查看保存与版本策略"></a>
+## Inspect Saving and Version Policies
 
-### 保存偏好（FILE-OBS-001 · v`0.3`）
-固定：标题、说明、自动保存及保存时格式化两行清楚。动态：两个开关分别对应客户端当前保存偏好，未保存时采用该版本默认值。
+<a id="保存偏好file-obs-001--v03"></a>
+### Save Preferences (FILE-OBS-001 · v`0.3`)
 
-### 保留限制（FILE-OBS-002 · v`0.3`）
-动态：每文件版本保留数、最大文件大小及单位清楚；数值对应本实例当前文件版本设置，文件大小以MB展示并由设置中的KB换算。读取完成前的临时默认值不能作最终依据。
+Fixed: The title, explanation, and the Auto Save and Format on Save rows are clear. Dynamic: Each of the two switches corresponds to the client's current save preference; if no preference has been saved, use that version's default.
 
-### 说明与可用性（FILE-OBS-003 · v`0.3`）
-固定/条件：保留数和大小字段附用途说明；设置读取成功后数值可用，读取失败时有失败反馈，当前设置标记需迁移时展示迁移提示。高级配置仅在目标版本开放该能力时要求显示，未开放不要求额外配置区。
+<a id="保留限制file-obs-002--v03"></a>
+### Retention Limits (FILE-OBS-002 · v`0.3`)
 
-## 发布快评层
+Dynamic: The number of retained versions per file, maximum file size, and unit are clear. Values correspond to the current file-version settings in this instance. File size is displayed in MB and converted from the setting in KB. Temporary defaults before settings finish loading are not a final reference.
 
-采用v`0.3`的正常子要点：FILE-OBS-001–003；仅代表下述范围，不代表这些ID全部细则通过。
+<a id="说明与可用性file-obs-003--v03"></a>
+### Explanation and Availability (FILE-OBS-003 · v`0.3`)
 
-文件策略应显示当前自动保存/保存时格式化状态、版本保留数量与大小及说明；值与已成功读取设置/声明默认值对应，大小单位转换正确。
+Fixed/conditional: The retention count and size fields have purpose explanations. Values are available after settings load successfully; show failure feedback if loading fails. If the current setting is marked as requiring migration, show a migration notice. Require advanced configuration to appear only when that capability is enabled in the target version; when disabled, do not require an extra configuration area.
 
-必要参照：按目标实例实际契约核保存偏好与文件版本设置最小字段；[旧包读取记录](build.md#当前制品复核)仅作线索。大小按KB/1024并保留两位后去无用0比较。
+<a id="发布快评层"></a>
+## Release Quick-Review Layer
 
-## 专项层
+Adopted normal v`0.3` subcriteria: FILE-OBS-001–003. This covers only the scope below, not every detail under these IDs.
 
-本层未选：偏好修改、迁移确认、保留/清理与真实保存生命周期。原完整判据、稳定ID、版本和历史结果保留；未确认分支不因分层获批。
+File policy should display current Auto Save/Format on Save states, version-retention count and size, and their explanations. Values correspond to successfully read settings or declared defaults; the size-unit conversion is correct.
+
+Required reference: check the minimum fields for save preferences and file-version settings against the target instance's actual contract. The [old-package read record](build.md#当前制品复核) is a clue only. Convert size from KB using /1024 and compare to two decimal places after removing unnecessary trailing zeros.
+
+<a id="专项层"></a>
+## Focused Scenarios
+
+Not selected in this layer: editing preferences, migration confirmation, retention/cleanup, and the real save lifecycle. Preserve original full criteria, stable IDs, versions, and historical results. Layering does not authorize unconfirmed branches.

@@ -1,88 +1,111 @@
-# 连接器列表与详情
+<a id="连接器列表与详情"></a>
+# Connector List and Details
 
-目标版本连接器市场参考
+## Target-Version Connector Market Reference
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-12；仅展示市场自然状态，不证明连接器配置、授权或工具调用。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-12. Shows the naturally occurring market state only; does not prove connector configuration, authorization, or tool invocation.
 
-目标版本连接器未提交表单
+## Target-Version Connector Form, Not Submitted
 
-参考：同一目标版本，2026-11-12；完整窗口中的 HTTP 空表单，未填写或提交，不证明预览、保存或连接。
+Reference: same target build, 2026-11-12. HTTP empty form in a complete window, not filled or submitted; does not prove preview, saving, or connection.
 
-目标版本 STDIO 空表单参考
+## Target-Version STDIO Empty-Form Reference
 
-参考：同一目标版本，2026-11-12；完整窗口中的 STDIO 未提交空表单，仅展示命令和参数入口，不证明切换动作、预览、保存、命令执行或连接。
+Reference: same target build, 2026-11-12. Unsubmitted, empty STDIO form in a complete window; shows only command and argument entry points. Does not prove switching, preview, saving, command execution, or connection.
 
-当前连接器市场参考
+## Current Connector-Market Reference
 
-当前连接器未提交表单参考
+## Current Connector Form, Not Submitted
 
-参考：macOS arm64，0.3.2 / 202611121104，2026-11-12；表单未填写或提交，不证明连接、授权或工具调用。
+Reference: macOS arm64, 0.3.2 / 202611121104, 2026-11-12. The form was not filled or submitted; does not prove connection, authorization, or tool invocation.
 
-查找连接器并查看连接说明、当前状态和可见工具信息。入口：主界面“扩展” → “连接器”；默认“市场”，可切换“我的”。
+Find connectors and inspect connection guidance, current state, and visible tool information. Entry point: main interface “扩展” (“Extensions”) → “连接器” (“Connectors”); default tab “市场” (“Market”), switchable to “我的” (“My”).
 
-![连接器市场参考](./reference.png)
+![Connector market reference](./reference.png)
 
-参考：macOS arm64，0.3.0 / 202610281438，2026-10-29。目录、安装及授权状态随环境变化；图中取值不作为长期预期。
+Reference: macOS arm64, 0.3.0 / 202610281438, 2026-10-29. Directory, installation, and authorization state vary with the environment; displayed values are not lasting expectations.
 
-## 查找连接器
+<a id="查找连接器"></a>
+## Find Connectors
 
-### 入口与市场目录（CONNECTOR-OBS-001 · v`0.3`）
-固定：连接器导航、市场/我的标签、搜索及添加入口清楚，当前标签与内容一致。动态：市场展示当前公开目录中的非自定义连接器，名称、当前语言说明及适用认证方式/授权状态徽标与目录和产品文案一致；已安装项仍保留。加载、读取失败和真正空态须有可区分的反馈。
+<a id="入口与市场目录connector-obs-001--v03"></a>
+### Entry Point and Market Directory (CONNECTOR-OBS-001 · v`0.3`)
 
-### 我的目录与卡片状态（CONNECTOR-OBS-002 · v`0.3`）
-动态：我的仅展示当前已安装连接器，包含预置及自定义项；无安装项且未搜索时显示空态和添加入口。市场安装标记对应当前安装状态；已授权项的任务开关选中状态为已授权且已启用，未授权项显示适用授权或自定义编辑入口，不可直接切换启用；不能由入口展示推断动作成功。
+Fixed: Connector navigation, Market/My tabs, search, and Add entry point are clear; the selected tab matches the content. Dynamic: Market shows non-custom connectors from the current public directory. Names, current-language descriptions, and supported-authentication/authorization-state badges match the directory and product copy. Keep installed items visible. Loading, read failure, and genuinely empty state have distinguishable feedback.
 
-### 搜索与范围组合（CONNECTOR-OBS-003 · v`0.3`）
-动态：当前来源内可按名称、当前语言简介或来源地址检索，忽略大小写和首尾空格；无匹配有提示，清空恢复。市场/我的切换保留当前搜索词，并按新范围过滤，不套用技能页的分类或分标签关键词规则。
+<a id="我的目录与卡片状态connector-obs-002--v03"></a>
+### My Directory and Card State (CONNECTOR-OBS-002 · v`0.3`)
 
-## 查看连接器
+Dynamic: My shows only currently installed connectors, including built-in and custom items. If none are installed and no search is active, show an empty state and Add entry point. Market's installation indicator matches current installation state. For authorized items, the task switch is selected when authorization is present and enabled. Unauthorized items show the applicable authorization or custom-edit entry point; they cannot be toggled directly to enabled. Showing an entry point does not prove its action succeeded.
 
-### 详情说明与元数据（CONNECTOR-OBS-004 · v`0.3`）
-动态：未安装也可查看详情，标题、说明、来源域名或来源标识与所选目录项一致；传输协议、支持的认证方式及服务地址清楚，无远程地址时显示本地进程说明。固定：当前详情展示版本标识1.0.0，不将其作为远程服务握手版本正确性的证明。说明区域可按内容滚动，关闭回原列表。
+<a id="搜索与范围组合connector-obs-003--v03"></a>
+### Search and Scope Combination (CONNECTOR-OBS-003 · v`0.3`)
 
-### 详情安装与授权状态（CONNECTOR-OBS-005 · v`0.3`）
-条件：未安装时不显示已安装专属任务开关；已安装时，任务启用及授权信息对应当前状态。已授权且为预置或OAuth连接时，非空账户、范围及到期信息与公开授权元数据一致，到期秒值按客户端本地时区显示；已有错误或撤销影响说明不能被正常状态掩盖。安装、授权及任务入口不证明其动作链路通过。
+Dynamic: Within the current source, search by name, current-language description, or source address; ignore case and surrounding whitespace. Show a no-match message and restore results when cleared. Switching between Market/My retains the query and filters within the new scope. Do not apply skill-page category or per-tag keyword rules.
 
-### 工具区域与分页（CONNECTOR-OBS-006 · v`0.3`）
-条件：未授权不展示工具清单；已授权时区分待获取、停用后需启用、0个工具及已有工具，不将未知数据当0。已有工具的数量、名称和说明对应当前公开工具元数据，缺描述显示“暂无说明”；超过5个时每页5个，首末页前后按钮禁用状态正确，切换详情回第一页。获取失败有说明，不伪造清单；当前未出现的授权/分页状态不算已遍历。
+<a id="查看连接器"></a>
+## Inspect a Connector
 
-## 发布快评层
+<a id="详情说明与元数据connector-obs-004--v03"></a>
+### Detail Description and Metadata (CONNECTOR-OBS-004 · v`0.3`)
 
-采用v`0.3`的正常子要点：CONNECTOR-OBS-001、002；仅代表下述范围，不代表这些ID全部细则通过。
+Dynamic: Details are available even when not installed. Title, description, source domain or identifier match the selected directory item. Transport protocol, supported authentication methods, and service address are clear; if there is no remote address, show a local-process explanation. Fixed: Current details display version identifier 1.0.0; this does not prove the remote service's handshake version is correct. The description area can scroll as needed; closing returns to the list.
 
-连接器页面的市场/我的来源标签、当前目录卡片及自然安装/授权状态应与对应公开目录一致；无安装时保留真实空态，不凭市场卡片推定已连接。
+<a id="详情安装与授权状态connector-obs-005--v03"></a>
+### Detail Installation and Authorization State (CONNECTOR-OBS-005 · v`0.3`)
 
-MCP承载关系由用户于2026-10-31确认，复用MCP-OBS-001–003的v`0.3`功能身份，与本页合并核验：
-- **状态（MCP-OBS-001子范围）**：当前卡片及所选详情的安装/启用/授权状态对应公开目录；未授权不冒充已就绪或已有工具，未知工具数量不当0。
-- **列表（MCP-OBS-002子范围）**：“我的”包含已安装预置/自定义连接器，或显示与目录一致的真实空态；与CONNECTOR-OBS-002共用证据，不重复计页面。
-- **添加表单（MCP-OBS-003子范围）**：“添加连接器”可打开未提交表单，名称及HTTP/SSE/stdio协议入口可辨；自然HTTP显示URL，若自然为stdio则显示命令/参数。当前新建表单不要求旧版独立标识输入框。空表单不允许直接预览/提交，取消回列表；不填地址/凭据，不执行预览、保存、导入或连接。
+Conditional: When not installed, do not show the task switch that is only for installed items. When installed, task enablement and authorization information match current state. For an authorized built-in or OAuth connection, non-empty account, scope, and expiry information match public authorization metadata; display expiry seconds in the client's local time zone. Existing errors or revocation notices must not be masked by a normal state. An install, authorization, or task entry point does not prove its action flow passed.
 
-旧独立页的六类总数、全部传输切换、刷新/写入与异常矩阵仍见[MCP历史要求](../mcp/requirements.md)，不宣称本层全部覆盖；当前功能判据不要求复原旧设置页布局。
+<a id="工具区域与分页connector-obs-006--v03"></a>
+### Tool Area and Pagination (CONNECTOR-OBS-006 · v`0.3`)
 
-必要参照：目标实例同来源公开目录及安装/启用/授权最小字段；[目标版本沿用边界](build.md#202611121823-正常展示沿用)要求先核目标包实际读取契约，[旧制品复核](build.md#当前制品复核)仅作线索，不读取凭据或配置正文。
+Conditional: Do not show the tool list when unauthorized. When authorized, distinguish waiting to load, requiring enablement after activation, zero tools, and existing tools; do not treat unknown data as zero. Existing tool count, names, and descriptions match current public tool metadata; if a description is missing, show “暂无说明” (“No description”). If there are more than five tools, show five per page, disable previous/next appropriately on first/last page, and return to page one when switching details. Show an explanation on load failure; do not fabricate a list. Authorization/pagination states not naturally encountered are not considered covered.
 
-## 专项层
+<a id="发布快评层"></a>
+## Release Quick-Review Layer
 
-本层未选：搜索组合、详情全部元数据、已授权工具与分页、安装/授权/调用。原完整判据、稳定ID、版本和历史结果保留；未确认分支不因分层获批。
+Adopted normal v`0.3` subcriteria: CONNECTOR-OBS-001 and 002. This covers only the scope below, not every detail under these IDs.
 
-## 连接器配置与工具使用候选专项
+Connector-page source tabs Market/My, current directory cards, and naturally occurring installation/authorization state should match the corresponding public directory. Preserve a real empty state when nothing is installed; do not infer connection from a Market card.
 
-以下是历史探索要求及用户确认的连接器入口语义，目标版本适用性、产品需求版本和正式采用状态仍待确认，不属于上述已采用发布快评分母。历史 `@` 后数字为业务点资产修订，不是产品需求版本；见[构建依据](./build.md)。现有未提交空表单截图不证明预览、保存、授权、连接或工具调用。
+The user confirmed the MCP hosting relationship on 2026-10-31. Verify MCP-OBS-001–003 at v`0.3` under the same feature identities, merged with this page:
 
-### 无效配置与纠正（历史 `CONNECTOR-VALIDATE-01@2`）
+- **Status (MCP-OBS-001 sub-scope):** Current card and selected detail installation/enabled/authorization states match the public directory. Unauthorized does not appear ready or as if tools exist; unknown tool count is not treated as zero.
+- **List (MCP-OBS-002 sub-scope):** My contains installed built-in/custom connectors or shows a genuine empty state consistent with the directory. Reuse evidence from CONNECTOR-OBS-002; do not count the same page twice.
+- **Add form (MCP-OBS-003 sub-scope):** “添加连接器” (“Add Connector”) opens an unsubmitted form; name and HTTP/SSE/stdio protocol entry points are distinguishable. Natural HTTP shows URL; if naturally set to stdio, show command/arguments. A new form does not need the old standalone identifier field. An empty form cannot be previewed/submitted directly; Cancel returns to the list. Do not enter addresses/credentials or execute preview, save, import, or connect.
 
-在获准隔离实例的未保存合成草稿中填写无效 URL，预览时应有可辨的校验反馈并允许纠正；合法格式的草稿可继续预览或明确说明不可用，取消后不应形成新配置。校验反馈不证明远端服务连通；不得为验证执行 STDIO 命令或使用真实凭据。测试前须准备可区分的合成输入与独立目录前后参照，预览可能读取配置，须先核目标包实际副作用及授权。
+The old standalone page's six summary counts, all transport switching, refresh/writes, and error-state matrix remain in [Historical MCP Requirements](../mcp/requirements.md); this layer does not claim full coverage. Current criteria do not require restoring the old Settings-page layout.
 
-### 批量预览与取消（历史 `CONNECTOR-PREVIEW-01@1`）
+Required reference: same-source public directory and minimum installation/enabled/authorization fields in the target instance. [Target-version reuse boundaries](build.md#202611121823-正常展示沿用) require verifying the target package's actual read contract first; [old-artifact review](build.md#当前制品复核) is only a clue. Do not read credentials or configuration contents.
 
-对两项可区分的 HTTP/SSE 合成配置，预览内容的名称、地址和传输方式与独立输入对应；取消后重新读取获准隔离目录，确认未新增连接器。示例地址只作为格式输入，不视为可用服务；仅靠关闭弹窗或保存按钮回执不能证明配置未写入。表单/JSON 双向转换、重复项和失败恢复另列专项。
+<a id="专项层"></a>
+## Focused Scenarios
 
-### 配置、认证与真实工具消费（历史 `CONNECTOR-AUTH-01@1`）
+Not selected in this layer: search combinations, all detail metadata, authorized tools and pagination, installation/authorization/invocation. Preserve original full criteria, stable IDs, versions, and historical results; layering does not authorize unconfirmed branches.
 
-历史用户要求授权页同时支持两种方式时 API Key 在左、OAuth 在右；服务只支持一种时不伪造另一方式。以同一可控服务的独立能力参照核展示，不以空表单或源码推断认证已完成；目标包适用及具体服务状态待核。
+<a id="连接器配置与工具使用候选专项"></a>
+## Candidate Focused Scenarios for Connector Configuration and Tool Use
 
-在另行获准的隔离环境中，使用专用测试服务及本人授权的测试认证，从连接器入口配置或安装，分别观察认证、连接、可见工具和获准任务中的真实工具消费；工具身份与独立服务目录对应，消费结果与同一回合及服务证据相符。保存成功、授权入口或工具列表单独出现均不等于真实调用成功。API Key、OAuth 和 STDIO 是不同条件，外部登录、进程执行、配置写入、联网及模型调用须分别核定授权，不读取或复制真实凭据；撤销/删除及异常恢复另列专项。
+These are historical exploration requirements and user-confirmed connector-entry semantics. Applicability to the target version, product requirement version, and formal adoption remain unconfirmed; they are outside the adopted quick-review denominator above. Numbers after historical `@` markers are business-point asset revisions, not product requirement versions; see the [Build Basis](./build.md). Existing unsubmitted empty-form screenshots do not prove preview, saving, authorization, connection, or tool invocation.
 
-### 数据与截图缺口
+<a id="无效配置与纠正历史-connector-validate-012"></a>
+### Invalid Configuration and Correction (historical `CONNECTOR-VALIDATE-01@2`)
 
-可使用[合成连接器配置](../../../../../examples/projects/connector-preview/files/connector-preview.json)作为获准人工预览的输入，身份与摘要见[构建依据](./build.md)；它只供人工复制至 JSON 草稿，使用保留的 `.invalid` 域名，不提供真实服务、认证或可连接性。预览前须核隔离实例与读配置副作用，不自动保存或连接；可控 MCP 测试服务仍缺。当前仅有市场及未提交空表单的真实窗口参考图，缺预览、连接、授权和真实工具消费状态的可复用完整窗口图。执行前须确认需求与目标版本、独立参照、成本和副作用；缺任一必要条件时保留缺口，不以历史局部观察或源码模拟事件替代真实路径。
+In an authorized isolated instance, enter an invalid URL in an unsaved synthetic draft. Preview should give discernible validation feedback and allow correction; a valid-format draft may proceed to preview or clearly state that it is unavailable. Cancel must not create a configuration. Validation feedback does not prove remote connectivity. Do not execute a STDIO command or use real credentials for verification. Prepare distinguishable synthetic inputs and independent before/after catalog references first; preview may read configuration, so check the target package's actual side effects and authorization.
+
+<a id="批量预览与取消历史-connector-preview-011"></a>
+### Batch Preview and Cancel (historical `CONNECTOR-PREVIEW-01@1`)
+
+For two distinguishable synthetic HTTP/SSE configurations, preview names, addresses, and transports match independent inputs. After canceling, reread the authorized isolated catalog and confirm no connector was added. Example addresses are format inputs only, not available services. Closing a dialog or a Save-button receipt alone cannot prove that no configuration was written. Form/JSON round-tripping, duplicates, and failure recovery are separate focused scenarios.
+
+<a id="配置认证与真实工具消费历史-connector-auth-011"></a>
+### Configuration, Authentication, and Real Tool Use (historical `CONNECTOR-AUTH-01@1`)
+
+Historical user requirements say that when the authorization page supports both methods, API Key is on the left and OAuth on the right; when a service supports only one, do not fabricate the other. Verify the display against an independent capability reference for the same controllable service; an empty form or source code does not prove authentication succeeded. Target-build applicability and specific service state remain unverified.
+
+In a separately authorized isolated environment, use a dedicated test service and test authentication authorized by the user. Configure or install through the connector entry point, and separately observe authentication, connection, visible tools, and actual tool use in an authorized task. Tool identity matches an independent service directory; consumption results match evidence for the same turn and service. A successful save, authorization entry point, or tool list alone does not mean a real call succeeded. API Key, OAuth, and STDIO are distinct conditions. Separately authorize external login, process execution, configuration writes, network access, and model invocation. Do not read or copy real credentials; revocation/deletion and error recovery are separate focused scenarios.
+
+<a id="数据与截图缺口"></a>
+### Data and Screenshot Gaps
+
+The [synthetic connector configuration](../../../../../examples/projects/connector-preview/files/connector-preview.json) may be used as a user-confirmed manual-preview input; identity and digest are in the [Build Basis](./build.md). It is only for manual copying into a JSON draft, uses the reserved `.invalid` domain, and does not provide a real service, authentication, or connectivity. Before preview, verify the isolated instance and configuration-read side effects; do not save or connect automatically. A controllable MCP test service is still missing. Current real complete-window references cover only the Market and unsubmitted empty form; reusable complete-window screenshots are missing for preview, connection, authorization, and real tool-use states. Before execution, confirm requirements and target version, independent references, cost, and side effects. If any necessary prerequisite is missing, retain the gap; do not substitute historical partial observations or simulated source events for the real path.
