@@ -23,10 +23,12 @@ AGENTIC_SEARCH_ORIGIN: Literal["agentic-search"] = "agentic-search"
 LITERATURE_REVIEW_ORIGINS = frozenset({LITERATURE_REVIEW_ORIGIN, LEGACY_LITERATURE_REVIEW_ORIGIN})
 SEARCH_FILE_BYTES = 8 * 1024 * 1024
 DOWNLOAD_MANIFEST_FILE = "downloads/manifest.json"
+# The precise-search run package layout a session workdir publishes.
+PRECISE_RUN_ROOT = ".precise-literature-search"
+PRECISE_RUN_COLLECTION = "runs"
 MANAGED_STORAGE = "managed"
 DOWNLOADED_STATUS = "downloaded"
 FULLTEXT_UNVERIFIED = "literature_result_fulltext_unverified"
-SEARCH_CARD_PAPERS = 3
 SEARCH_STATUS_PAPERS = 20
 SEARCH_MAX_PAPERS = 1000
 SEARCH_TEXT = 2000
@@ -95,6 +97,7 @@ class SearchPaper(SearchRecord):
     year: int | None = None
     venue: str | None = None
     doi: str | None = None
+    arxiv_id: str | None = None
     url: str | None = None
     abstract: str | None = None
     reasons: list[str] = Field(default_factory=list, max_length=SEARCH_REASONS)
@@ -152,6 +155,11 @@ class SearchCriterion(SearchRecord):
     values: list[str]
 
 
+class FulltextApplicability(SearchRecord):
+    disposition: Literal["not_required"] = "not_required"
+    evidence_kind: Literal["abstract"] = "abstract"
+
+
 class SearchResult(SearchRecord):
     schema_version: Literal["1.0"] = SEARCH_VERSION
     run_id: str
@@ -170,16 +178,21 @@ class SearchResult(SearchRecord):
     candidates: int | None
     deduplicated: int | None
     retained: int
-    papers: list[SearchPaper] = Field(max_length=SEARCH_CARD_PAPERS)
+    papers: list[SearchPaper] = Field(max_length=SEARCH_MAX_PAPERS)
     warnings: list[str]
     session_id: str = ""
     report: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
-    origin: Literal["precise-search", "literature-review", "slr-codex", "agentic-search"] = (
-        PRECISE_SEARCH_ORIGIN
-    )
+    origin: Literal[
+        "precise-search",
+        "literature-review",
+        "slr-codex",
+        "agentic-search",
+        "research-idea-citations",
+    ] = PRECISE_SEARCH_ORIGIN
     selection: dict[str, Any] = Field(default_factory=dict)
     fulltext: dict[str, Any] = Field(default_factory=dict)
+    fulltext_authorization: FulltextApplicability | None = None
 
 
 def validate_search_card(value: Any) -> dict[str, Any]:
@@ -192,7 +205,9 @@ def search_card_slot(value: Mapping[str, Any]) -> str:
 
 
 def _count(value: Any) -> int | None:
-    return value if type(value) is int and value >= 0 else None
+    return (
+        value if (isinstance(value, int) and not isinstance(value, bool)) and value >= 0 else None
+    )
 
 
 def _text(value: Any, limit: int | None = SEARCH_TEXT) -> str:
@@ -408,6 +423,7 @@ def project_papers(raw_papers: list[dict], *, complete: bool = False) -> list[Se
             year=raw.get("year"),
             venue=_text(raw.get("venue"), text_limit) or None,
             doi=_text(raw.get("doi"), short_limit) or None,
+            arxiv_id=_text(raw.get("arxiv_id"), short_limit) or None,
             url=raw.get("url"),
             abstract=_text(raw.get("abstract") or raw.get("abstract_summary"), text_limit) or None,
             reasons=reasons,
@@ -578,7 +594,7 @@ def prepare_result(
         candidates=candidate_count,
         deduplicated=pool_count,
         retained=len(papers),
-        papers=papers[:SEARCH_CARD_PAPERS],
+        papers=papers,
         warnings=list(dict.fromkeys(warnings)),
     )
     return PreparedSearchResult(

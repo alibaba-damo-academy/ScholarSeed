@@ -1,0 +1,3 @@
+interface:
+  display_name: "Formal verification"
+  short_description: "Choose a Lean statement and obtain a verified proof"

@@ -102,6 +102,8 @@ def start_parameters(
         params["approvalsReviewer"] = request.approval_reviewer.value
     if turn_input.model:
         params["model"] = turn_input.model
+    if turn_input.output_schema is not None:
+        params["outputSchema"] = turn_input.output_schema
     if summary := request.thread_config.get(CODEX_REASONING_SUMMARY_CONFIG):
         params["summary"] = summary
     if turn_input.collaboration_mode == CollaborationMode.PLAN:

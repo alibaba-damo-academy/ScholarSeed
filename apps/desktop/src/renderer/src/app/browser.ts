@@ -10,7 +10,6 @@ import {
 } from '../../../feedback.ts'
 import { OFFICE_CLIPBOARD_ERROR } from '../../../clipboard.ts'
 import { BROWSER_ERROR } from '../../../browser.ts'
-import { DELIVERY_NATIVE_UNAVAILABLE } from '../../../delivery.ts'
 
 import type { RendererPreferences } from '../../../preferences.ts'
 
@@ -20,9 +19,11 @@ type BrowserBridge = Omit<
   | 'writeClipboardContent'
   | 'pasteClipboard'
   | 'pickImport'
+  | 'pickImportPreview'
   | 'trashToken'
   | 'openTrash'
   | 'acquireOfficeImage'
+  | 'readRemoteImage'
 >
 type UpdateState = Awaited<ReturnType<ScholarSeedBridge['getUpdateState']>>
 
@@ -91,6 +92,7 @@ export function createBrowserBridge(environment: BrowserEnvironment): BrowserBri
     channel: WEB_CHANNEL,
     developerToolsEnabled: false,
     browserEnabled: false,
+    browserAdvancedSettingsEnabled: false,
     feedbackRecorderEnabled: false,
     syncUpdateDiagnostics: async () => {},
     submitFeedback: async (request) => {
@@ -152,9 +154,6 @@ export function createBrowserBridge(environment: BrowserEnvironment): BrowserBri
     appsForFile: async () => [],
     openPathWith: async () => ({ ok: false, error: UNSUPPORTED_TEXT }),
     pickDir: async () => null,
-    pickDeliveryDirectory: async () => ({ ok: false, error: DELIVERY_NATIVE_UNAVAILABLE }),
-    openDeliveryDirectory: async () => ({ ok: false, error: DELIVERY_NATIVE_UNAVAILABLE }),
-    saveDelivery: async () => ({ ok: false, error: DELIVERY_NATIVE_UNAVAILABLE }),
     pickExecutable: async () => null,
     saveFileCopy: environment.saveFileCopy,
     requestOfficeFontAccess: async () => false,

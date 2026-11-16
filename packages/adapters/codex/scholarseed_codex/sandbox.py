@@ -11,12 +11,17 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Mapping
+from typing import Any, Awaitable, Callable, Literal, Mapping
 
 from scholarseed_codex.diagnostic import (
     NATIVE_SETUP_CANCELLED,
     NATIVE_SETUP_CODES,
+    SETUP_ACCOUNT_STAGE,
+    WIN32_CODE_TYPE,
+    WINDOWS_PASSWORD_POLICY_REJECTED,
     WINDOWS_PLATFORM,
+    sandbox_account_error,
+    sandbox_setup_metadata,
 )
 from scholarseed_codex.protocol.session import CodexRuntimeLaunchArgument
 from scholarseed_codex.protocol.state import SANDBOX_EXECUTION_METHOD, AppServerError
@@ -24,6 +29,7 @@ from scholarseed_runtime.contract.incident import RuntimeRetryability
 from scholarseed_runtime.contract.resource import RESOURCE_LIFECYCLE_LOGGER
 from scholarseed_runtime.contract.sandbox import (
     SANDBOX_CANCELLED_ERROR,
+    SANDBOX_PASSWORD_POLICY_ERROR,
     SANDBOX_PREPARING_ERROR,
     SANDBOX_PROBE_ERROR,
     SANDBOX_RESOURCE_ERROR,
@@ -69,7 +75,7 @@ NativeRequest = Callable[[str, Any], Awaitable[dict[str, Any]]]
 
 
 def _system_directory() -> Path:
-    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)
     kernel.GetSystemDirectoryW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint]
     kernel.GetSystemDirectoryW.restype = ctypes.c_uint
     buffer = ctypes.create_unicode_buffer(WINDOWS_SYSTEM_PATH_CAPACITY)
@@ -93,6 +99,15 @@ def _failure(
     cause: AppServerError | None = None,
     method: str = "",
 ) -> AppServerError:
+    if (
+        safe_error in {SANDBOX_SETUP_ERROR, SANDBOX_RESOURCE_ERROR, SANDBOX_PROBE_ERROR}
+        and retryability is RuntimeRetryability.USER_RETRYABLE
+        and cause is not None
+        and cause.native_stage == SETUP_ACCOUNT_STAGE
+        and cause.native_code_type == WIN32_CODE_TYPE
+        and cause.native_code == WINDOWS_PASSWORD_POLICY_REJECTED
+    ):
+        safe_error = SANDBOX_PASSWORD_POLICY_ERROR
     if safe_error in {SANDBOX_SETUP_ERROR, SANDBOX_RESOURCE_ERROR, SANDBOX_PROBE_ERROR}:
         if retryability is RuntimeRetryability.IN_PROGRESS:
             safe_error = SANDBOX_PREPARING_ERROR
@@ -163,7 +178,9 @@ class WindowsSandboxBootstrap:
             return
         directory = _system_directory()
         native_policy = {"type": "readOnly", "networkAccess": False}
-        await self._check_execution(request, directory, str(directory), native_policy)
+        await self._check_execution(
+            request, directory, str(directory), native_policy, probe="bootstrap"
+        )
 
     def initial_execution_timeout(self, generation: int, response_margin: float) -> float:
         deadline = self._initialization_deadline
@@ -189,8 +206,10 @@ class WindowsSandboxBootstrap:
         directory: Path,
         execution_cwd: str,
         native_policy: dict[str, Any],
+        *,
+        probe: Literal["bootstrap", "thread"],
     ) -> None:
-        LOGGER.info("windows_sandbox_execution_check event=started")
+        LOGGER.info("windows_sandbox_execution_check event=started probe=%s", probe)
         try:
             result = await request(
                 SANDBOX_EXECUTION_METHOD,
@@ -202,6 +221,16 @@ class WindowsSandboxBootstrap:
                 },
             )
         except Exception as error:
+            native = error if isinstance(error, AppServerError) else None
+            LOGGER.warning(
+                "windows_sandbox_execution_check event=failed probe=%s outcome=%s "
+                "generation=%s pid=%s rpc_request_id=%s exit_code=None",
+                probe,
+                "timeout" if isinstance(error, TimeoutError) else "rpc",
+                self._generation,
+                native.rpc_pid if native is not None else None,
+                native.rpc_request_id if native is not None else None,
+            )
             retryability = (
                 RuntimeRetryability.UNKNOWN_OUTCOME
                 if isinstance(error, TimeoutError)
@@ -223,16 +252,20 @@ class WindowsSandboxBootstrap:
                 cause=error if isinstance(error, AppServerError) else None,
                 method=SANDBOX_EXECUTION_METHOD,
             ) from error
-        if (
-            not isinstance(result.get("exitCode"), int)
-            or isinstance(result["exitCode"], bool)
-            or result["exitCode"] != 0
-        ):
+        exit_code = result.get("exitCode")
+        if type(exit_code) is not int or exit_code != 0:
+            LOGGER.warning(
+                "windows_sandbox_execution_check event=failed probe=%s outcome=validation "
+                "generation=%s pid=None rpc_request_id=None exit_code=%s",
+                probe,
+                self._generation,
+                exit_code if type(exit_code) is int else None,
+            )
             raise _failure(
                 "Windows sandbox execution check failed; startup refused",
                 method=SANDBOX_EXECUTION_METHOD,
             )
-        LOGGER.info("windows_sandbox_execution_check event=ready")
+        LOGGER.info("windows_sandbox_execution_check event=ready probe=%s", probe)
 
     async def ensure_thread_execution_ready(
         self, request: NativeRequest, cwd: Path, policy: dict[str, Any]
@@ -245,7 +278,13 @@ class WindowsSandboxBootstrap:
         if policy.get("type") == "workspaceWrite":
             native_policy = {**policy, "networkAccess": False}
             execution_cwd = str(cwd)
-        await self._check_execution(request, directory, execution_cwd, native_policy)
+        # Official credential rebuilding replaces its explicit directory ACL.
+        # Re-establish host-owned private maintenance before each attachment,
+        # while the caller holds the shared startup mutex. Never replay a turn.
+        await self._prepare_private_storage()
+        await self._check_execution(
+            request, directory, execution_cwd, native_policy, probe="thread"
+        )
         if self._resources is not None:
             writable = policy.get("type") == "workspaceWrite"
             async with self._resources.verification(cwd, writable=writable) as probes:
@@ -253,6 +292,9 @@ class WindowsSandboxBootstrap:
                     len(probes) * SANDBOX_EXECUTION_TIMEOUT_MS / 1000
                 )
                 for entry, probe in enumerate(probes):
+                    # Native execution can refresh the private DACL before the
+                    # next command. Requalify under the same startup mutex.
+                    await self._prepare_private_storage()
                     LOGGER.info(
                         "windows_sandbox_tool_check event=started kind=%s entry=%s",
                         probe.kind,
@@ -514,6 +556,8 @@ class WindowsSandboxBootstrap:
             error = result.get("error")
             error_text = error if isinstance(error, str) else ""
             native_code = error_text.partition(":")[0]
+            account_error = sandbox_account_error(error_text)
+            native_stage, native_code_type, native_system_code = sandbox_setup_metadata(error_text)
             diagnostic(
                 "completion",
                 mode=SANDBOX_MODE if result.get("mode") == SANDBOX_MODE else DIAGNOSTIC_UNKNOWN,
@@ -525,6 +569,10 @@ class WindowsSandboxBootstrap:
                 native_code=(
                     native_code if native_code in NATIVE_SETUP_CODES else DIAGNOSTIC_UNKNOWN
                 ),
+                account_update_code=account_error,
+                native_stage=native_stage,
+                native_code_type=native_code_type,
+                native_system_code=native_system_code,
                 error_present=error is not None,
                 error_is_string=isinstance(error, str),
                 error_length=len(error_text) if isinstance(error, str) else None,
@@ -547,7 +595,11 @@ class WindowsSandboxBootstrap:
                     (
                         SANDBOX_CANCELLED_ERROR
                         if native_code == NATIVE_SETUP_CANCELLED
-                        else SANDBOX_SETUP_ERROR
+                        else (
+                            SANDBOX_PASSWORD_POLICY_ERROR
+                            if terminal and account_error == WINDOWS_PASSWORD_POLICY_REJECTED
+                            else SANDBOX_SETUP_ERROR
+                        )
                     ),
                 )
             stage = "readback"

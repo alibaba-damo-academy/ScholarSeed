@@ -13,6 +13,7 @@ import logging
 import math
 import secrets
 import time
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from typing import Any, Mapping
@@ -22,6 +23,7 @@ import httpx
 import jwt
 
 from service.platform.activity import Activities, ActivityDomain
+from service.platform.egress import outbound
 from service.settings.credentials import (
     CredentialBusyError,
     CredentialConflictError,
@@ -34,6 +36,8 @@ OAUTH_HTTP_TIMEOUT_SECONDS = 30.0
 REFRESH_AHEAD_SECONDS = 60.0
 REFRESH_FAILURE_COOLDOWN_SECONDS = 30.0
 REFRESH_BUSY_CODE = "oauth_refresh_busy"
+REVOCATION_ATTEMPTS = 2
+REVOCATION_BACKOFF_SECONDS = 0.2
 PKCE_RANDOM_BYTES = 32
 AUTHORIZATION_PATH = "/api/accounts/authorize"
 TOKEN_PATH = "/api/accounts/oauth/token"
@@ -172,9 +176,24 @@ def create_pkce() -> PKCE:
 class OAuthProtocol:
     """Token exchange using a caller-owned HTTP client and fixed provider policy."""
 
-    def __init__(self, provider: OAuthProvider, client: httpx.AsyncClient) -> None:
+    def __init__(
+        self,
+        provider: OAuthProvider,
+        client: httpx.AsyncClient | None = None,
+        *,
+        trust_env: bool = True,
+    ) -> None:
         self.provider = provider
         self._client = client
+        self._trust_env = trust_env
+
+    def _http(self) -> AbstractAsyncContextManager[httpx.AsyncClient]:
+        return outbound(
+            self._client,
+            timeout=OAUTH_HTTP_TIMEOUT_SECONDS,
+            follow_redirects=False,
+            trust_env=self._trust_env,
+        )
 
     async def exchange(
         self,
@@ -216,18 +235,19 @@ class OAuthProtocol:
     ) -> OAuthTokens:
         stage = "refresh" if previous is not None else "exchange"
         if not client_id or client_id == DYNAMIC_CLIENT_ID:
-            raise OAuthFailure("oauth_client_rejected")
+            raise token_failure(stage, 0, "oauth_client_rejected")
         # Resolve trust material before consuming a code or rotating a refresh
         # token. After the token endpoint succeeds, validation must be local:
         # an identity-service outage must not discard an already rotated token.
         signing_keys = await self._signing_keys()
         try:
-            response = await self._client.post(
-                f"{self.provider.issuer}{TOKEN_PATH}",
-                data={**parameters, "client_id": client_id, "resource": OAUTH_RESOURCE},
-                timeout=OAUTH_HTTP_TIMEOUT_SECONDS,
-                follow_redirects=False,
-            )
+            async with self._http() as client:
+                response = await client.post(
+                    f"{self.provider.issuer}{TOKEN_PATH}",
+                    data={**parameters, "client_id": client_id, "resource": OAUTH_RESOURCE},
+                    timeout=OAUTH_HTTP_TIMEOUT_SECONDS,
+                    follow_redirects=False,
+                )
         except httpx.TimeoutException:
             raise token_failure(stage, 0, "oauth_network_timeout") from None
         except httpx.HTTPError:
@@ -274,6 +294,8 @@ class OAuthProtocol:
         now = time.time()
         try:
             expires_in = payload.get("expires_in")
+            if not isinstance(expires_in, (str, int, float)) or isinstance(expires_in, bool):
+                raise ValueError("invalid expiry")
             expiry = now + float(expires_in)
             if not math.isfinite(expiry) or expiry <= now:
                 raise ValueError("expired response")
@@ -304,28 +326,30 @@ class OAuthProtocol:
 
     async def _discovery(self) -> dict[str, Any]:
         try:
-            response = await self._client.get(
-                self.provider.issuer + DISCOVERY_PATH,
-                timeout=OAUTH_HTTP_TIMEOUT_SECONDS,
-                follow_redirects=False,
-            )
+            async with self._http() as client:
+                response = await client.get(
+                    self.provider.issuer + DISCOVERY_PATH,
+                    timeout=OAUTH_HTTP_TIMEOUT_SECONDS,
+                    follow_redirects=False,
+                )
             response.raise_for_status()
             document = response.json()
             if document.get("issuer") != self.provider.issuer:
                 raise ValueError("issuer mismatch")
             return document
         except (httpx.HTTPError, ValueError, AttributeError):
-            raise OAuthFailure("oauth_discovery_unavailable") from None
+            raise token_failure("discovery", 0, "oauth_discovery_unavailable") from None
 
     async def _signing_keys(self) -> Mapping[str, jwt.PyJWK]:
         document = await self._discovery()
         endpoint = document.get("jwks_uri", "")
         if not isinstance(endpoint, str) or not endpoint.startswith(self.provider.issuer + "/"):
-            raise OAuthFailure("oauth_identity_invalid")
+            raise token_failure("jwks", 0, "oauth_identity_invalid")
         try:
-            response = await self._client.get(
-                endpoint, timeout=OAUTH_HTTP_TIMEOUT_SECONDS, follow_redirects=False
-            )
+            async with self._http() as client:
+                response = await client.get(
+                    endpoint, timeout=OAUTH_HTTP_TIMEOUT_SECONDS, follow_redirects=False
+                )
             response.raise_for_status()
             keys = {}
             for key in response.json()["keys"]:
@@ -341,14 +365,17 @@ class OAuthProtocol:
                 raise ValueError("missing signing keys")
             return keys
         except (httpx.HTTPError, jwt.PyJWTError, ValueError, KeyError, TypeError, AttributeError):
-            raise OAuthFailure("oauth_identity_invalid") from None
+            raise token_failure("jwks", 0, "oauth_identity_invalid") from None
 
     def _validate_id(
         self, token: str, client_id: str, nonce: str, signing_keys: Mapping[str, jwt.PyJWK]
     ) -> Mapping[str, Any]:
         try:
             header = jwt.get_unverified_header(token)
-            key = signing_keys.get(header.get("kid"))
+            keyId = header.get("kid")
+            if not isinstance(keyId, str):
+                raise ValueError("invalid signing key")
+            key = signing_keys.get(keyId)
             if key is None or header.get("alg") != "RS256":
                 raise ValueError("invalid signing key")
             claims = jwt.decode(
@@ -369,15 +396,42 @@ class OAuthProtocol:
                 raise ValueError("nonce mismatch")
             return claims
         except (httpx.HTTPError, jwt.PyJWTError, ValueError, KeyError, TypeError, AttributeError):
-            raise OAuthFailure("oauth_identity_invalid") from None
+            raise token_failure("identity", 0, "oauth_identity_invalid") from None
 
     async def revoke(self, tokens: OAuthTokens) -> None:
-        document = await self._discovery()
-        endpoint = document.get("revocation_endpoint", "")
-        if not isinstance(endpoint, str) or not endpoint.startswith(self.provider.issuer + "/"):
-            raise OAuthFailure("oauth_revocation_unconfirmed")
-        try:
-            response = await self._client.post(
+        for attempt in range(REVOCATION_ATTEMPTS):
+            try:
+                await self._revoke_once(tokens)
+                return
+            except httpx.HTTPError as error:
+                retryable = (
+                    not isinstance(error, httpx.HTTPStatusError)
+                    or error.response.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR
+                )
+                if not retryable or attempt + 1 == REVOCATION_ATTEMPTS:
+                    break
+                await asyncio.sleep(REVOCATION_BACKOFF_SECONDS)
+        raise OAuthFailure("oauth_revocation_unconfirmed") from None
+
+    async def _revoke_once(self, tokens: OAuthTokens) -> None:
+        # Keep HTTP status for retry decisions; never retry malformed discovery or 4xx.
+        async with self._http() as client:
+            response = await client.get(
+                self.provider.issuer + DISCOVERY_PATH,
+                timeout=OAUTH_HTTP_TIMEOUT_SECONDS,
+                follow_redirects=False,
+            )
+            response.raise_for_status()
+            try:
+                document = response.json()
+                if document.get("issuer") != self.provider.issuer:
+                    raise ValueError("issuer mismatch")
+            except (ValueError, AttributeError):
+                raise OAuthFailure("oauth_revocation_unconfirmed") from None
+            endpoint = document.get("revocation_endpoint", "")
+            if not isinstance(endpoint, str) or not endpoint.startswith(self.provider.issuer + "/"):
+                raise OAuthFailure("oauth_revocation_unconfirmed")
+            response = await client.post(
                 endpoint,
                 data={
                     "token": tokens.refresh_token,
@@ -387,10 +441,9 @@ class OAuthProtocol:
                 timeout=OAUTH_HTTP_TIMEOUT_SECONDS,
                 follow_redirects=False,
             )
+            response.raise_for_status()
             if response.status_code != HTTPStatus.OK:
                 raise OAuthFailure("oauth_revocation_unconfirmed")
-        except httpx.HTTPError:
-            raise OAuthFailure("oauth_revocation_unconfirmed") from None
 
 
 class OAuthCredentials:

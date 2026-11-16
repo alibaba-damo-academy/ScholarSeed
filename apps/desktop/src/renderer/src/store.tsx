@@ -1,6 +1,10 @@
+import { CITATION_VIEW_STATE_KEY, type CitationFocus } from './contracts/citations'
+import { reconcileReferenceOrder } from './reference'
+import { ANNOTATION_VIEW_STATE_KEY, type AnnotationFocus } from './contracts/workbench'
 import { availabilityPolicy } from './app/policy'
 import type { ComposerReference } from './contracts/assistant'
 import { previewFormat } from './features/workbench/preview/routing'
+import { followCanvasSession } from './features/canvas/session'
 import { ASSISTANT_CONTEXT_REVISION_CONFLICT } from './contracts/assistant'
 import {
   sanitizeSelectionPrompts,
@@ -47,7 +51,8 @@ import type { PreferenceShutdownRequest } from '../../quiescence'
 import { preserveFrozenPreferences } from './quiescence'
 import { flushSync } from 'react-dom'
 import type { AccountSettingsPage, BrowserSettingsSection, MainView } from '../../navigation'
-import { NavigationRecoveryContext } from './contracts/navigation'
+import { NavigationRecoveryContext, WebNavigationContext } from './contracts/navigation'
+import { openWebPage, webPageErrorKey } from './app/links'
 import { HOME_LOCATION, NAVIGATION_DIAGNOSTIC_PREFIX } from '../../navigation'
 import {
   captureNavigationLocation,
@@ -63,7 +68,14 @@ import {
   NavigationCommit,
 } from './navigation'
 import { applyRendererLanguage } from './app/localization'
-import { createComposerDraftStore, type ComposerDraftStore } from './draft'
+import {
+  composerDraftKey,
+  createComposerDraftStore,
+  readComposerDrafts,
+  serializeComposerDrafts,
+  type ComposerDraftStore,
+  type ConversationDraft,
+} from './draft'
 import { createComposerSubmission, type ComposerSubmission } from './components/business/submission'
 import type { SkillInstallNotice } from './skill'
 import { Button, useToast } from './components/ui'
@@ -99,6 +111,8 @@ import {
   prepareRuntime,
   getRuntimePreparation,
   getSharedRuntimeReconfiguration,
+  listSessions,
+  openSession,
   readNavigationSession,
   registerLocalPaths,
   revealSystemPath,
@@ -143,7 +157,9 @@ import {
   PREPARATION_INSTANCE_CHANGED_ERROR,
   PREPARATION_SUPERSEDED_ERROR,
   RuntimePreparationController,
+  runtimePreparationRequestFailure,
   preparationContextMatches,
+  preparationResultMatches,
   type PreparationContext,
   type PreparationSnapshot,
 } from './preparation'
@@ -162,15 +178,19 @@ import {
   assistantContextFailure,
   assistantContextSaveError,
   assistantContextProjection,
+  assistantContextLoadState,
   loadedAssistantContext,
   beginContextCandidateLoad,
   sentAnswerAnnotationIds,
+  deletableAnswerAnnotationIds,
   submittedContextRefIds,
   mergeContextCandidates,
+  literatureAttachmentNames,
   INITIAL_AI_PANEL_STATE,
 } from './features/assistant/state'
 import {
   createAnswerAnnotation as requestAnswerAnnotation,
+  enqueueAnswerAnnotation as requestEnqueueAnswerAnnotation,
   deleteAnswerAnnotation as requestDeleteAnswerAnnotation,
   deleteAnswerAnnotations as requestDeleteAnswerAnnotations,
   getAssistantContext,
@@ -184,7 +204,7 @@ import {
   startAssistantTranslation,
   updateAnswerAnnotation as requestUpdateAnswerAnnotation,
 } from './features/assistant/api'
-import { locateAnswerAnnotation } from './features/assistant/anchors'
+import { locateAnswerAnnotation, reusableAnswerAnnotation } from './features/assistant/anchors'
 import {
   nextSelectionAttempt,
   selectionActionKey,
@@ -213,7 +233,7 @@ import type {
 } from './contracts/assistant'
 import type { AssistantSourceContribution } from './contracts/features'
 import type { LiteratureDetail, LiteratureSearchTask } from './contracts/literature'
-import type { FindTextReveal } from './contracts/workbench'
+import type { FindTextReveal, SelectionReveal } from './contracts/workbench'
 import {
   LITERATURE_EXCERPT_SOURCE_KIND,
   LITERATURE_EXCERPT_VIEW_STATE_KEY,
@@ -308,6 +328,7 @@ import { runWebSearchRoute } from './features/resources/driver'
 import {
   isMissingDocumentFailure,
   resolveDocumentLocation,
+  resolveDocumentRevealPath,
   type DocumentSource,
   type LocatedDocumentSource,
 } from './features/workbench/api'
@@ -329,7 +350,9 @@ import {
   restoreProjectWorkbenchTab,
   literatureSearchTab,
   literatureNavigation,
-  literatureResultTab,
+  literatureResultNavigation,
+  mainViewForWorkbenchTab,
+  newProjectTab,
   type CloseTabContext,
   type LiteratureResultReference,
   openLiteratureSearchTabs,
@@ -366,16 +389,6 @@ function preparationSnapshot(state: AppState): PreparationSnapshot {
   }
 }
 
-function mainViewForWorkbenchTab(tab: WorkbenchTab | undefined): MainView | null {
-  if (!tab) return null
-  if (tab.navigationView) return tab.navigationView
-  if (tab.kind === 'overview') return null
-  if (tab.kind === 'projects') return 'projects'
-  if (tab.kind === 'browser') return 'browser'
-  if (['literature', 'literature_search'].includes(tab.kind)) return 'literature'
-  return 'resource'
-}
-
 function mainViewForDocumentSource(
   source: DocumentSource,
   currentView: MainView
@@ -390,8 +403,8 @@ function mainViewForDocumentSource(
 }
 
 /**
- * 关标签时的视图上下文：接替标签必须留在当前视图，同视图没有剩余 workbench
- * 标签时回当前视图的文档焦点标签，避免全局列表的位置邻居把用户带去别的视图。
+ * 关标签时的视图上下文：同视图没有剩余 workbench 标签时回文档焦点标签；
+ * 浏览器临时视图允许恢复文档原视图，其余视图保持严格匹配。
  * 文档工作区作用域与 main.tsx 的 provider 保持一致。
  */
 function closeTabContext(current: AppState): CloseTabContext {
@@ -400,13 +413,44 @@ function closeTabContext(current: AppState): CloseTabContext {
   const focusedTab = documents.focusedTabId ? documents.tabs[documents.focusedTabId] : null
   const session = focusedTab ? documents.sessions[focusedTab.sessionId] : null
   const matchesView =
-    focusedTab && session && documentNavigationView(focusedTab, session) === current.mainView
+    focusedTab &&
+    !focusedTab.embedded &&
+    session &&
+    (current.mainView === 'browser' ||
+      documentNavigationView(focusedTab, session) === current.mainView)
   return {
     paneTabIds: documentWorkspaces.forProject(projectId).pageTabsInLeaf(current.activeTab),
-    view: current.mainView,
     projectId: current.homeSelectedProjectId,
+    sessionId: current.activeSession,
+    view: current.mainView,
     viewFallbackId: matchesView ? documents.focusedTabId : null,
   }
+}
+
+function closedWorkbenchTabState(
+  current: AppState,
+  id: string
+): Pick<AppState, 'tabs' | 'activeTab' | 'mainView'> {
+  const next = closeTab(current.tabs, current.activeTab, id, closeTabContext(current))
+  const retained = { tabs: next.tabs, activeTab: next.activeId, mainView: current.mainView }
+  if (next.activeId === current.activeTab) return retained
+  const projectId = current.homeSelectedProjectId ?? assistantProject(current).projectId
+  const documents = documentWorkspaces.forProject(projectId).getSnapshot()
+  const document = documents.tabs[next.activeId]
+  const session = document ? documents.sessions[document.sessionId] : undefined
+  if (document && session) {
+    return { ...retained, mainView: documentNavigationView(document, session) }
+  }
+  if (current.mainView === 'browser' && next.activeId === OVERVIEW_TAB.id) {
+    const tab = newProjectTab(current.homeSelectedProjectId)
+    return {
+      tabs: openFixedTab(next.tabs, tab),
+      activeTab: tab.id,
+      mainView: 'resource',
+    }
+  }
+  const mainView = mainViewForWorkbenchTab(next.tabs.find((tab) => tab.id === next.activeId))
+  return { ...retained, mainView: mainView ?? current.mainView }
 }
 
 /**
@@ -525,9 +569,12 @@ export interface AppState {
   reasoningPreferences: Record<string, string>
   modelSelectionGeneration: number
   modelSelectionPending: number
+  modelSelectionSessions: Record<string, { generation: number; pending: number }>
   literatureAiModels: LiteratureAiModelPreferences
   desktopNotifications: boolean
   soundAlerts: boolean
+  composerPredictionsEnabled: boolean
+  pdfSelectionToolbarEnabled: boolean
   autoDownloadUpdates: boolean
   autoSave: boolean
   formatOnSave: boolean
@@ -567,6 +614,7 @@ export interface AppState {
   composerSubmitRequested: boolean
   composerTaskType: '' | ProductTaskType
   composerRefs: ComposerReference[]
+  composerReferenceOrder?: string[]
   judgment: 'pending' | 'confirmed'
   tension: 'open' | 'hypothesis' | 'ignored'
   thread: 'open' | 'folded'
@@ -837,9 +885,14 @@ const INITIAL: AppState = {
   reasoningPreferences: INITIAL_PREFERENCES.reasoningPreferences ?? {},
   modelSelectionGeneration: 0,
   modelSelectionPending: 0,
+  modelSelectionSessions: {},
   literatureAiModels: INITIAL_PREFERENCES.literatureAiModels,
   desktopNotifications: INITIAL_PREFERENCES.desktopNotifications,
   soundAlerts: INITIAL_PREFERENCES.soundAlerts,
+  composerPredictionsEnabled: INITIAL_PREFERENCES.composerPredictionsEnabled,
+  pdfSelectionToolbarEnabled:
+    INITIAL_PREFERENCES.pdfSelectionToolbarEnabled ??
+    DEFAULT_RENDERER_PREFERENCES.pdfSelectionToolbarEnabled,
   autoDownloadUpdates: INITIAL_PREFERENCES.autoDownloadUpdates,
   autoSave: INITIAL_PREFERENCES.autoSave,
   formatOnSave: INITIAL_PREFERENCES.formatOnSave,
@@ -1098,7 +1151,7 @@ export function selectedLiteratureForTurn(state: AppState): string[] {
 type Patch = Partial<AppState> | ((state: AppState) => Partial<AppState>)
 type ThreadPatch = Partial<Thread> | ((thread: Thread) => Partial<Thread>)
 export type SessionSurface = 'conversation' | 'assistant' | 'workbench'
-export type SessionOpenIntent = 'assistant' | 'task'
+export type SessionOpenIntent = 'assistant' | 'task' | 'switchTask'
 const ASSISTANT_FALLBACK_VIEW: MainView = 'resource'
 
 function assistantSessionView(current: AppState, projectId?: string | null): MainView {
@@ -1277,6 +1330,7 @@ export interface Actions extends AssistantIngress {
   clearTaskMessages: (dismissals: Record<string, number>) => Promise<void>
   setLiteratureAiModel: (action: LiteratureAiModelAction, modelKey: string) => void
   setTheme: (theme: Theme) => void
+  setPdfSelectionToolbarEnabled: (enabled: boolean) => void
   setLang: (mode: PreferenceLanguageMode, beforeConfirmation?: () => Promise<void>) => Promise<void>
   confirmLanguageSwitch: () => Promise<void>
   cancelLanguageSwitch: () => void
@@ -1300,6 +1354,7 @@ export interface Actions extends AssistantIngress {
     focus?: Omit<NonNullable<AiPanelState['messageFocus']>, 'sessionId'>,
     intent?: SessionOpenIntent
   ) => void
+  forkSession: (sessionId: string, turnId?: string) => Promise<boolean>
   openPanelSession: (
     node: SessionNode,
     focus?: Omit<NonNullable<AiPanelState['messageFocus']>, 'sessionId'>
@@ -1345,7 +1400,12 @@ export interface Actions extends AssistantIngress {
   /** 切到某个工作台视图（活动栏）。 */
   openWorkbenchView: (
     view: MainView,
-    options?: { preserveProject?: boolean; returnProjectId?: string }
+    options?: {
+      preserveProject?: boolean
+      returnProjectId?: string
+      browserPageId?: string
+      browserPageOwned?: boolean
+    }
   ) => void
   /** 打开指定回合的文本变更审阅，并保留右侧当前会话。 */
   /** 模块面板开合。 */
@@ -1361,7 +1421,8 @@ export interface Actions extends AssistantIngress {
   openResourceFile: (
     path: string,
     projectId?: string | null,
-    attachment?: Extract<DocumentSource, { kind: 'session-file' }>
+    attachment?: Extract<DocumentSource, { kind: 'session-file' }>,
+    selection?: SelectionReveal
   ) => void
   /** 在资料树中高亮并展开当前文件。 */
   selectResourceFile: (path: string) => void
@@ -1449,7 +1510,7 @@ export interface Actions extends AssistantIngress {
     path: string,
     name: string
   ) => Promise<boolean>
-  revealActiveDocument: () => Promise<void>
+  revealDocument: (source: DocumentSource) => Promise<void>
   copyActiveDocumentPath: () => Promise<void>
   confirmResourceDelete: (target: DeleteConfirmState) => void
   cancelResourceDelete: () => void
@@ -1478,6 +1539,10 @@ export interface Actions extends AssistantIngress {
   prepareAiContext: (sessionId: string) => Promise<number | null>
   /** 把一段文本交给 AI 面板提问（侧栏检索框 / 划词发 AI）。 */
   askAiFromPanel: (text: string, taskType?: ProductTaskType) => void
+  prepareContextConversation: (
+    candidate: AssistantContextCandidate,
+    text: string
+  ) => Promise<boolean>
   /** 把当前活动标签的资料加为 AI 上下文（PRD「资料上下文」）。 */
   attachActiveFileToAi: () => Promise<void>
   /** 打开原型两栏菜单的资料/文献/对话候选面。 */
@@ -1495,7 +1560,7 @@ export interface Actions extends AssistantIngress {
     projectId?: string | null
     label: string
   }) => Promise<void>
-  detachAiContext: (refId: string | readonly string[]) => Promise<void>
+  detachAiContext: (refId: string | readonly string[]) => Promise<boolean>
   /** Create an answer annotation and optionally queue it for the next accepted turn. */
   createAnswerAnnotation: (
     answerId: string,
@@ -1577,7 +1642,12 @@ export interface Actions extends AssistantIngress {
     id: string,
     attachmentId?: string,
     page?: number,
-    options?: { projectId?: string | null }
+    options?: {
+      projectId?: string | null
+      citation?: Omit<CitationFocus, 'sequence'>
+      annotation?: Omit<AnnotationFocus, 'sequence'>
+      selection?: SelectionReveal
+    }
   ) => Promise<boolean>
   /** 附件被删除后收掉它已打开的文档标签，避免界面继续显示已不存在的全文。 */
   closeLiteratureAttachment: (id: string, attachmentId: string) => void
@@ -1592,12 +1662,6 @@ export interface Actions extends AssistantIngress {
   /** 把资料库当前选中的文件标记为文献（PRD「资料库标记为文献」）。 */
   markResourceAsLiterature: () => Promise<void>
   openLiteratureItem: (id: string, projectId: string) => Promise<boolean>
-  openLiteratureDownloads: (
-    sessionId: string,
-    run: string,
-    projectId: string | null,
-    excludedPapers: string[]
-  ) => void
   /** 标注全文获取状态。 */
   markLiteratureFulltext: (id: string, status: FulltextStatus) => Promise<void>
   /** 请求真实取回全文（本期后端 501，前端提示待实现）。 */
@@ -1667,11 +1731,25 @@ export function StoreProvider({
   }))
   const setState = useCallback((patch: React.SetStateAction<AppState>, cause?: NavigationCause) => {
     updateState((current) => {
-      const next = typeof patch === 'function' ? patch(current) : patch
+      let next = typeof patch === 'function' ? patch(current) : patch
+      if (next !== current) {
+        const keys = reconcileReferenceOrder(
+          next.activeSession === current.activeSession
+            ? (current.composerReferenceOrder ?? [])
+            : [],
+          [
+            ...next.aiPanel.refs
+              .filter((reference) => !next.aiPanel.submittedRefIds.includes(reference.ref_id))
+              .map((reference) => `context:${reference.ref_id}`),
+            ...next.composerRefs.map((reference) => `${reference.type}:${reference.id}`),
+          ]
+        )
+        next = { ...next, composerReferenceOrder: keys }
+      }
       const projected = preferenceWriter.current?.isFrozen()
         ? preserveFrozenPreferences(current, next)
         : projectLayoutTransition(current, next)
-      return observeNavigation(current, projected, cause)
+      return observeNavigation(current, followCanvasSession(current, projected), cause)
     })
   }, [])
   const observedNavigation = useRef(
@@ -1812,7 +1890,7 @@ export function StoreProvider({
         publish: (operation, context) => {
           preparationPublicationRef.current = { operation, context }
           setState((current) =>
-            preparationContextMatches(preparationSnapshot(current), context)
+            preparationResultMatches(preparationSnapshot(current), context, operation.state)
               ? { ...current, runtimePreparation: operation }
               : current
           )
@@ -1869,11 +1947,21 @@ export function StoreProvider({
   )
   const runModelSelection = useCallback(
     <Value,>(writer: (selectionCurrent: () => boolean) => Promise<Value>): Promise<Value> => {
+      const sessionId = stateRef.current.activeSession
       flushSync(() =>
         setState((current) => ({
           ...current,
           modelSelectionGeneration: current.modelSelectionGeneration + 1,
           modelSelectionPending: current.modelSelectionPending + 1,
+          modelSelectionSessions: sessionId
+            ? {
+                ...current.modelSelectionSessions,
+                [sessionId]: {
+                  generation: (current.modelSelectionSessions[sessionId]?.generation ?? 0) + 1,
+                  pending: (current.modelSelectionSessions[sessionId]?.pending ?? 0) + 1,
+                },
+              }
+            : current.modelSelectionSessions,
         }))
       )
       const selection = stateRef.current
@@ -1893,6 +1981,15 @@ export function StoreProvider({
           setState((current) => ({
             ...current,
             modelSelectionPending: current.modelSelectionPending - 1,
+            modelSelectionSessions: sessionId
+              ? {
+                  ...current.modelSelectionSessions,
+                  [sessionId]: {
+                    ...current.modelSelectionSessions[sessionId],
+                    pending: current.modelSelectionSessions[sessionId].pending - 1,
+                  },
+                }
+              : current.modelSelectionSessions,
           }))
         )
     },
@@ -2007,7 +2104,7 @@ export function StoreProvider({
         if (error instanceof Error && error.message === PREPARATION_SUPERSEDED_ERROR) return
         setState((latest) =>
           preparationContextMatches(preparationSnapshot(latest), context)
-            ? { ...latest, foregroundError: feedback('components', 'runtimePreparation.failed') }
+            ? { ...latest, foregroundError: runtimePreparationRequestFailure(error) }
             : latest
         )
       })
@@ -2042,7 +2139,11 @@ export function StoreProvider({
         current.runtimePreparation &&
         publication &&
         current.runtimePreparation.request_id === publication.operation.request_id &&
-        !preparationContextMatches(preparationSnapshot(current), publication.context)
+        !preparationResultMatches(
+          preparationSnapshot(current),
+          publication.context,
+          current.runtimePreparation.state
+        )
       const clearTarget =
         current.runtimePreparationTarget &&
         intent &&
@@ -2173,6 +2274,110 @@ export function StoreProvider({
 
   // 资料库异步动作需要回调自己（写完刷树、出提示），用 ref 打破自引用环。
   const actRef = useRef<Actions>(null as unknown as Actions)
+  const pendingForks = useRef(new Set<string>())
+  const sessionDrafts = useRef<Map<string, ConversationDraft> | null>(null)
+  if (!sessionDrafts.current)
+    sessionDrafts.current = readComposerDrafts(INITIAL_PREFERENCES.composerDrafts)
+  const draftChangingScope = useRef(false)
+  const draftOwner = useRef<string | null>(null)
+  const draftKey = useCallback(
+    (current: AppState) =>
+      composerDraftKey(
+        current.activeSession,
+        assistantProject(current).projectId ?? currentScopeKey(current)
+      ),
+    []
+  )
+  const rememberSessionDraft = useCallback(
+    (leaving = false) => {
+      if (draftChangingScope.current) return
+      const current = stateRef.current
+      const key = draftKey(current)
+      if (
+        key &&
+        (sessionDrafts.current!.has(key) ||
+          composerDraft.current!.getSnapshot() ||
+          current.composerRefs.length ||
+          (!current.activeSession &&
+            (current.aiPanel.refs.length ||
+              current.aiPanel.projectPolicy !== INITIAL_AI_PANEL_STATE.projectPolicy ||
+              current.aiPanel.searchScope !== INITIAL_AI_PANEL_STATE.searchScope)))
+      ) {
+        sessionDrafts.current!.set(key, {
+          text: composerDraft.current!.getSnapshot(),
+          refs: [...current.composerRefs],
+          ...(!current.activeSession
+            ? {
+                context: {
+                  refs: [...current.aiPanel.refs],
+                  projectPolicy: current.aiPanel.projectPolicy,
+                  searchScope: current.aiPanel.searchScope,
+                },
+              }
+            : {}),
+        })
+        void preferenceWriter.current!.submit({
+          composerDrafts: serializeComposerDrafts(sessionDrafts.current!),
+        })
+      }
+      if (leaving) draftChangingScope.current = true
+    },
+    [draftKey]
+  )
+  useLayoutEffect(() => {
+    draftChangingScope.current = false
+  })
+  useLayoutEffect(() => {
+    const key = draftKey(stateRef.current)
+    if (draftOwner.current !== key) {
+      draftOwner.current = key
+      const draft = key ? sessionDrafts.current!.get(key) : undefined
+      if (draft) {
+        draftChangingScope.current = true
+        composerDraft.current!.set(draft.text)
+        setState((current) =>
+          draftKey(current) === key
+            ? {
+                ...current,
+                composerRefs: draft.refs,
+                ...(!current.activeSession && draft.context
+                  ? {
+                      aiPanel: { ...current.aiPanel, ...draft.context },
+                    }
+                  : {}),
+              }
+            : current
+        )
+        return
+      }
+    }
+    draftChangingScope.current = false
+    rememberSessionDraft()
+  }, [
+    state.activeSession,
+    state.homeSelectedProjectId,
+    state.mainView,
+    state.composerRefs,
+    state.aiPanel.refs,
+    state.aiPanel.projectPolicy,
+    state.aiPanel.searchScope,
+    state.draftGeneration,
+    draftKey,
+    rememberSessionDraft,
+    setState,
+  ])
+  useEffect(
+    () =>
+      composerDraft.current!.subscribe(() => {
+        if (!draftChangingScope.current) rememberSessionDraft()
+      }),
+    [rememberSessionDraft]
+  )
+  useEffect(() => {
+    const save = (): void => rememberSessionDraft()
+    window.addEventListener('beforeunload', save)
+    return () => window.removeEventListener('beforeunload', save)
+  }, [rememberSessionDraft])
   const expandedAssistantReturns = useRef(new Map<string, () => void>())
   useEffect(
     () => () => {
@@ -2222,6 +2427,8 @@ export function StoreProvider({
         literatureAiModels: state.literatureAiModels,
         desktopNotifications: state.desktopNotifications,
         soundAlerts: state.soundAlerts,
+        composerPredictionsEnabled: state.composerPredictionsEnabled,
+        pdfSelectionToolbarEnabled: state.pdfSelectionToolbarEnabled,
         autoDownloadUpdates: state.autoDownloadUpdates,
         autoSave: state.autoSave,
         formatOnSave: state.formatOnSave,
@@ -2255,6 +2462,8 @@ export function StoreProvider({
     state.sidebarOpen,
     state.projectLayouts,
     state.soundAlerts,
+    state.composerPredictionsEnabled,
+    state.pdfSelectionToolbarEnabled,
     state.theme,
   ])
 
@@ -2268,10 +2477,9 @@ export function StoreProvider({
         ? settingsSurface.current!.project(intent)
         : null
     setState((current) => {
-      const delta = availabilityPolicy.navigationPatch(
-        current,
-        typeof patch === 'function' ? patch(current) : patch
-      )
+      const requested = typeof patch === 'function' ? patch(current) : patch
+      if (requested === current) return current
+      const delta = availabilityPolicy.navigationPatch(current, requested)
       if (Object.prototype.hasOwnProperty.call(delta, 'composerText')) {
         composerDraft.current!.set(delta.composerText ?? '')
       }
@@ -2712,6 +2920,12 @@ export function StoreProvider({
         }),
       setTheme: (theme) =>
         setState((current) => (current.theme === theme ? current : { ...current, theme })),
+      setPdfSelectionToolbarEnabled: (enabled) =>
+        setState((current) =>
+          current.pdfSelectionToolbarEnabled === enabled
+            ? current
+            : { ...current, pdfSelectionToolbarEnabled: enabled }
+        ),
       setLang: async (mode, beforeConfirmation) => {
         if (mode === stateRef.current.languageMode) return
         const dirtyCount = documentWorkspaces.dirtyEditorCount()
@@ -2859,9 +3073,14 @@ export function StoreProvider({
         setState((current) => ({ ...current, sidebarOpen: !current.sidebarOpen })),
       removeSession: (id, surface = 'conversation') => {
         if (stateRef.current.activeSession === id) composerDraft.current!.set('')
+        sessionDrafts.current!.delete(composerDraftKey(id, null)!)
+        void preferenceWriter.current!.submit({
+          composerDrafts: serializeComposerDrafts(sessionDrafts.current!),
+        })
         setState((current) => {
           current = {
             ...current,
+            tabs: current.tabs.filter((tab) => tab.canvasSessionId !== id),
             archivedSession:
               current.archivedSession?.session_id === id ? null : current.archivedSession,
           }
@@ -2928,6 +3147,7 @@ export function StoreProvider({
             kind: 'session-artifact',
             sessionId,
             artifactId: filePreview.artifactId,
+            memberPath: filePreview.memberPath,
             path: filePreview.path,
             absolutePath: filePreview.absolutePath,
             revision: filePreview.revisionId,
@@ -2980,13 +3200,52 @@ export function StoreProvider({
           workspaceFilesSessionId: null,
         }))
       },
+      forkSession: async (sessionId, turnId) => {
+        if (!sessionId || pendingForks.current.has(sessionId)) return false
+        pendingForks.current.add(sessionId)
+        try {
+          const opened = await openSession({ forkSessionId: sessionId, forkTurnId: turnId })
+          if (!opened?.session_id || opened.session_id === sessionId) return false
+          setState((current) => ({
+            ...current,
+            sessions: upsertSessionNode(current.sessions, {
+              id: opened.session_id,
+              displayParentSessionId: opened.display_parent_session_id,
+              title: opened.title ?? '',
+              title_fallback: opened.title_fallback,
+              status: 'dormant',
+              projectPath: opened.project_path,
+              workdir: opened.runtime_workdir ?? opened.workdir,
+              runtimeId: opened.runtime_id,
+            }),
+            collapsedSessionIds: opened.display_parent_session_id
+              ? { ...current.collapsedSessionIds, [opened.display_parent_session_id]: false }
+              : current.collapsedSessionIds,
+          }))
+          actRef.current.openSession(opened.session_id)
+          return true
+        } catch {
+          return false
+        } finally {
+          pendingForks.current.delete(sessionId)
+        }
+      },
       openSession: (id, focus, intent = 'assistant') => {
-        if (stateRef.current.activeSession !== id || stateRef.current.threads[id]?.readOnly)
-          composerDraft.current!.set('')
+        const previous = stateRef.current.activeSession
+        const switching = previous !== id || stateRef.current.threads[id]?.readOnly
+        if (switching) rememberSessionDraft(true)
+        const draft = sessionDrafts.current!.get(composerDraftKey(id, null)!)
+        if (switching) composerDraft.current!.set(draft?.text ?? '')
         setState((current) => {
           current = { ...current, archivedSession: null }
           const node = findSessionNode(current.sessions, id)
           if (node?.container) return current
+          if (intent === 'switchTask' && node && current.activeSession !== id) {
+            current = {
+              ...current,
+              workbenchLayout: changeProjectLayout(current.workbenchLayout, 'switchTask'),
+            }
+          }
           if (intent === 'task' || current.workbenchLayout.floating === 'minimized') {
             current = {
               ...current,
@@ -3061,6 +3320,7 @@ export function StoreProvider({
             ...current,
             ...COMPOSER_RESET,
             activeSession: id,
+            composerRefs: draft?.refs ?? [],
             mainView: assistantSessionView(current),
             aiPanel: {
               ...current.aiPanel,
@@ -3079,7 +3339,11 @@ export function StoreProvider({
         })
       },
       openPanelSession: (node, focus) => {
-        if (stateRef.current.activeSession !== node.id) composerDraft.current!.set('')
+        if (node.container || node.openable === false) return
+        if (stateRef.current.activeSession !== node.id) {
+          rememberSessionDraft(true)
+          composerDraft.current!.set('')
+        }
         setState((current) => {
           rememberOpenedConversation(
             current,
@@ -3102,6 +3366,7 @@ export function StoreProvider({
       },
       returnHome: () => {
         if (preferenceWriter.current!.isFrozen()) return
+        rememberSessionDraft(true)
         navigationRecoveryEpoch.current += 1
         navigationRestoreStarted.current = true
         rememberedProjectId.current = null
@@ -3135,6 +3400,7 @@ export function StoreProvider({
       },
       selectProject: (projectId) => {
         if (stateRef.current.homeSelectedProjectId !== projectId) {
+          rememberSessionDraft(true)
           composerDraft.current!.set('')
         }
         setState(
@@ -3149,10 +3415,7 @@ export function StoreProvider({
               current.tabs,
               projectWorkspace
             )
-            const thread = activeThread(current)
-            const crossesProject = Boolean(
-              current.activeSession && thread.projectPath !== nextProject?.path
-            )
+            const crossesProject = assistantProject(current).projectId !== projectId
             const projectScope = {
               archivedSession: null,
               homeSelectedProjectId: projectId,
@@ -3202,7 +3465,15 @@ export function StoreProvider({
         runtime,
         surface = 'conversation',
         titleFallback = null
-      ) =>
+      ) => {
+        if (surface !== 'workbench' && !stateRef.current.activeSession) {
+          draftChangingScope.current = true
+          const key = draftKey(stateRef.current)
+          if (key) sessionDrafts.current!.delete(key)
+          void preferenceWriter.current!.submit({
+            composerDrafts: serializeComposerDrafts(sessionDrafts.current!),
+          })
+        }
         setState((current) => {
           const detached = surface === 'workbench'
           if (!detached) {
@@ -3264,9 +3535,11 @@ export function StoreProvider({
               },
             },
           }
-        }),
+        })
+      },
       clearSessionSelection: () => {
-        composerDraft.current!.set('')
+        rememberSessionDraft(true)
+        composerDraft.current!.reset()
         setState((current) => {
           rememberScopeConversation(current)
           return { ...current, ...HOME_RESET }
@@ -3303,10 +3576,11 @@ export function StoreProvider({
         // 截图是增益: 成功带字节、失败/异常都置 null, 两种情况都照常打开弹窗, 永不阻断报障。
         setState((current) => ({ ...current, feedbackOpen: true, feedbackScreenshot: screenshot }))
       },
-      openWorkbenchView: (view, options) =>
+      openWorkbenchView: (view, options) => {
+        if (!availabilityPolicy.routeAvailable(view)) return
+        rememberSessionDraft(true)
         setState(
           (current) => {
-            if (!availabilityPolicy.routeAvailable(view)) return current
             if (
               view === 'literature' &&
               options?.preserveProject &&
@@ -3323,7 +3597,25 @@ export function StoreProvider({
             }
             // 项目/文献库这类视图自己没有"被点开的文件"，进去时先把它的固定标签开出来，
             // 否则中区是白板。哪个视图配哪个标签由 FIXED_TAB_BY_VIEW 决定。
-            const fixed = fixedTabForView(view)
+            const template = fixedTabForView(view)
+            const existingBrowser = options?.browserPageId
+              ? current.tabs.find(
+                  (tab) => tab.kind === 'browser' && tab.browserPageId === options.browserPageId
+                )
+              : undefined
+            const fixed =
+              template?.kind === 'browser'
+                ? {
+                    ...template,
+                    id:
+                      existingBrowser?.id ??
+                      (current.tabs.some((tab) => tab.kind === 'browser')
+                        ? `${template.id}:${crypto.randomUUID()}`
+                        : template.id),
+                    browserPageId: options?.browserPageId,
+                    browserPageOwned: options?.browserPageOwned,
+                  }
+                : template
             const tabs = fixed ? openFixedTab(current.tabs, fixed) : current.tabs
             const activeTab =
               view === 'resource' && current.homeSelectedProjectId
@@ -3335,7 +3627,7 @@ export function StoreProvider({
                     tabs,
                     documentWorkspaces.forProject(current.homeSelectedProjectId).getSnapshot()
                   )
-                : activeTabForWorkbenchView(view, current, tabs)
+                : (fixed?.id ?? activeTabForWorkbenchView(view, current, tabs))
             const workspace = documentWorkspaces.forProject(current.homeSelectedProjectId)
             if (workspace.getSnapshot().tabs[activeTab]) workspace.focusTab(activeTab)
             const leavesProjectScope =
@@ -3344,7 +3636,9 @@ export function StoreProvider({
             if (leavesProjectScope) rememberScopeConversation(current)
             const targetProjectId = leavesProjectScope ? null : current.homeSelectedProjectId
             const changesAssistantScope = assistantProject(current).projectId !== targetProjectId
-            if (changesAssistantScope) composerDraft.current!.set('')
+            if (changesAssistantScope) {
+              composerDraft.current!.set('')
+            }
             const next = {
               ...current,
               ...SURFACE_RESET,
@@ -3352,13 +3646,24 @@ export function StoreProvider({
               homeProjectMenuOpen: false,
               mainView: view,
               workbenchReturnProjectId: options?.returnProjectId ?? null,
+              ...(view === 'browser'
+                ? {
+                    workbenchLayout: {
+                      ...current.workbenchLayout,
+                      open: true,
+                      full: false,
+                      taskTab: false,
+                      conversationFull: false,
+                    },
+                  }
+                : {}),
               ...(leavesProjectScope
                 ? {
                     homeSelectedProjectId: null,
                     homeProjectLocked: false,
                   }
                 : {}),
-              modulePanelOpen: true,
+              modulePanelOpen: view === 'browser' ? current.modulePanelOpen : true,
               tabs,
               activeTab,
             }
@@ -3367,7 +3672,8 @@ export function StoreProvider({
               : next
           },
           { action: 'workbench' }
-        ),
+        )
+      },
       toggleModulePanel: () =>
         setState((current) => ({
           ...current,
@@ -3494,7 +3800,7 @@ export function StoreProvider({
           )
         })
       },
-      openResourceFile: (path, projectId, attachment) => {
+      openResourceFile: (path, projectId, attachment, selection) => {
         const current = stateRef.current
         const project = projectId ?? current.homeSelectedProjectId
         const source = {
@@ -3507,6 +3813,14 @@ export function StoreProvider({
           ? workspace.openImported(source, attachment)
           : workspace.open(source, previewFormat(path) ? 'preview' : 'edit')
         void opened.then((tabId) => {
+          if (!selection) workspace.clearSelectionReveal(tabId)
+          if (selection) {
+            try {
+              workspace.revealSelection(tabId, selection)
+            } catch {
+              actRef.current.noticeResource('error', { key: 'feedback.cannotOpenSearch' })
+            }
+          }
           const snapshot = workspace.getSnapshot()
           const tab = snapshot.tabs[tabId]
           const session = tab ? snapshot.sessions[tab.sessionId] : undefined
@@ -4239,15 +4553,13 @@ export function StoreProvider({
           transformResourceContextRefs(refs, submittedRefIds, previousPath, path, name, projectId)
         )
       },
-      revealActiveDocument: async () => {
-        const document = activeLocatedDocument(stateRef.current)
-        if (!document) return
-        const location = await resolveDocumentLocation(document.source)
-        if (!location.ok || !location.absolute) {
+      revealDocument: async (source) => {
+        const absolute = await resolveDocumentRevealPath(source)
+        if (!absolute) {
           actRef.current.noticeResource('error', { key: 'feedback.locationUnavailable' })
           return
         }
-        const opened = await revealSystemPath(location.absolute)
+        const opened = await revealSystemPath(absolute)
         if (!opened.ok)
           actRef.current.noticeResource(
             'error',
@@ -4931,7 +5243,11 @@ export function StoreProvider({
           ...current,
           aiPanel:
             current.aiPanel.sessionId === sessionId
-              ? { ...current.aiPanel, contextState: 'loading', contextError: null }
+              ? {
+                  ...current.aiPanel,
+                  contextState: assistantContextLoadState(current.aiPanel, sessionId),
+                  contextError: null,
+                }
               : {
                   ...current.aiPanel,
                   sessionId,
@@ -5046,8 +5362,24 @@ export function StoreProvider({
         setState((current) => ({
           ...current,
           composerTaskType: taskType ?? '',
+          workbenchLayout: changeProjectLayout(current.workbenchLayout, 'revealConversation'),
           aiPanel: { ...current.aiPanel, open: true },
         }))
+      },
+      prepareContextConversation: async (candidate, text) => {
+        const target = actRef.current.captureContextTarget()
+        const context = await actRef.current.addContext(candidate, target)
+        const current = actRef.current.captureContextTarget()
+        if (
+          current.sessionId !== target.sessionId ||
+          current.projectId !== target.projectId ||
+          current.draftScope !== target.draftScope ||
+          !context.accepted_ref_ids.length
+        )
+          return false
+        const draft = composerDraft.current!.getSnapshot()
+        actRef.current.askAiFromPanel(draft.trim() ? `${draft}\n\n${text}` : text)
+        return true
       },
       attachActiveFileToAi: async () => {
         const current = stateRef.current
@@ -5237,118 +5569,179 @@ export function StoreProvider({
           origin: 'explicit',
         })
       },
-      addContext: (candidate) => {
-        const pending = assistantContextMutationQueue.current.then(() =>
-          actRef.current.addContexts([candidate])
-        )
-        assistantContextMutationQueue.current = pending.then(
-          () => undefined,
-          () => undefined
-        )
-        return pending
-      },
-      addContexts: async (candidates) => {
-        const current = stateRef.current
-        const admitted: AssistantContextCandidate[] = []
-        const rejected: AssistantContextMutationResult['rejected'] = []
-        for (const candidate of candidates) {
-          const capability = current.aiPanel.capabilities.find(
-            (item) => item.name === candidate.kind
+      captureContextTarget: () => ({
+        sessionId: stateRef.current.activeSession,
+        projectId: assistantProject(stateRef.current).projectId,
+        draftScope: composerDraft.current!.getScope(),
+      }),
+      addContext: (candidate, expectedTarget) =>
+        actRef.current.addContexts([candidate], expectedTarget),
+      addContexts: (candidates, expectedTarget) => {
+        const target = expectedTarget ?? actRef.current.captureContextTarget()
+        const targetSessionId = target.sessionId
+        const targetProject = assistantProject(stateRef.current)
+        const targetDraftScope = target.draftScope
+        const matchesTarget = (value: AppState): boolean => {
+          const project = assistantProject(value)
+          return (
+            value.activeSession === targetSessionId &&
+            project.projectId === target.projectId &&
+            project.projectPath === targetProject.projectPath &&
+            composerDraft.current!.getScope() === targetDraftScope
           )
-          // 没有 activeSession 时 capabilities 还没拉回来，此时任何 kind 都不能
-          // 拿「查不到能力」当「不可用」；与上面 openAiContextPicker 的判定保持一致。
-          const unavailableReason =
-            candidate.unavailable_reason ||
-            (current.activeSession && !capability?.available
-              ? capability?.reason || ASSISTANT_CONTEXT_FAILURE.SOURCE_PENDING
-              : '')
-          if (unavailableReason) {
-            rejected.push({
-              source_id: candidate.source_id,
-              code: 'capability_unavailable',
-              message: unavailableReason,
-            })
-            continue
-          }
-          admitted.push(candidate)
         }
-        const generatedRefIds = new Map<AssistantContextCandidate, string>()
-        const createRefId = (candidate: AssistantContextCandidate): string => {
-          const existing = generatedRefIds.get(candidate)
-          if (existing) return existing
-          const refId = crypto.randomUUID()
-          generatedRefIds.set(candidate, refId)
-          return refId
-        }
-        let application = mergeContextCandidates(
-          current.aiPanel.refs,
-          admitted,
-          current.aiPanel.submittedRefIds,
-          createRefId
-        )
-        let selection: AssistantContextSelection | null = null
-        let saveFailure: AssistantFailure | undefined
-        let saved = !application.changed
-        if (application.changed && !current.activeSession) {
-          selection = await persistAssistantContext({ refs: application.refs })
-          saved = Boolean(selection)
-        } else if (application.changed && current.activeSession) {
-          const sessionId = current.activeSession
-          if (current.aiPanel.sessionId === sessionId && current.aiPanel.contextState === 'ready') {
-            setState((value) => ({
-              ...value,
-              aiPanel: { ...value.aiPanel, contextState: 'saving', contextError: null },
-            }))
-            let base: AssistantContextSelection = {
-              session_id: sessionId,
+        const pending = assistantContextMutationQueue.current.then(async () => {
+          const current = stateRef.current
+          if (!matchesTarget(current)) {
+            return {
+              session_id: targetSessionId,
               revision: current.aiPanel.revision,
-              project_policy: current.aiPanel.projectPolicy,
-              search_scope: current.aiPanel.searchScope,
-              refs: current.aiPanel.refs,
-              updated_at: Date.now() / 1000,
-              capabilities: current.aiPanel.capabilities,
+              accepted_ref_ids: [],
+              rejected: candidates.map((candidate) => ({
+                source_id: candidate.source_id,
+                code: CONTEXT_SAVE_FAILED,
+                message: CONTEXT_SAVE_FAILED,
+              })),
             }
-            for (let attempt = 0; attempt < ASSISTANT_CONTEXT_ADD_ATTEMPTS; attempt += 1) {
-              if (stateRef.current.activeSession !== sessionId) break
-              const result = await patchAssistantContext(sessionId, {
-                expected_revision: base.revision,
-                project_policy: base.project_policy,
-                search_scope: base.search_scope,
-                refs: application.refs,
+          }
+          const admitted: AssistantContextCandidate[] = []
+          const rejected: AssistantContextMutationResult['rejected'] = []
+          for (const candidate of candidates) {
+            const capability = current.aiPanel.capabilities.find(
+              (item) => item.name === candidate.kind
+            )
+            // 没有 activeSession 时 capabilities 还没拉回来，此时任何 kind 都不能
+            // 拿「查不到能力」当「不可用」；与上面 openAiContextPicker 的判定保持一致。
+            const unavailableReason =
+              candidate.unavailable_reason ||
+              (current.activeSession && !capability?.available
+                ? capability?.reason || ASSISTANT_CONTEXT_FAILURE.SOURCE_PENDING
+                : '')
+            if (unavailableReason) {
+              rejected.push({
+                source_id: candidate.source_id,
+                code: 'capability_unavailable',
+                message: unavailableReason,
               })
-              selection = result.context ?? result.latest ?? null
-              saveFailure = result
-              if (result.ok && result.context) {
-                saved = true
-                break
-              }
-              if (
-                result.error !== ASSISTANT_CONTEXT_REVISION_CONFLICT ||
-                !result.latest ||
-                attempt + 1 >= ASSISTANT_CONTEXT_ADD_ATTEMPTS
-              )
-                break
-              base = result.latest
-              const latest = stateRef.current
-              const pending = admitted.filter(
-                (candidate) =>
-                  candidate.origin !== 'current_document' ||
-                  candidate.kind !== 'file' ||
-                  (latest.aiPanel.open && latest.resource.selected === candidate.source_id)
-              )
-              application = mergeContextCandidates(
-                base.refs,
-                pending,
-                latest.aiPanel.submittedRefIds,
-                createRefId
-              )
-              if (!application.changed) {
-                saved = true
-                break
-              }
+              continue
             }
+            admitted.push(candidate)
+          }
+          const generatedRefIds = new Map<AssistantContextCandidate, string>()
+          const createRefId = (candidate: AssistantContextCandidate): string => {
+            const existing = generatedRefIds.get(candidate)
+            if (existing) return existing
+            const refId = crypto.randomUUID()
+            generatedRefIds.set(candidate, refId)
+            return refId
+          }
+          let application = mergeContextCandidates(
+            current.aiPanel.refs,
+            admitted,
+            current.aiPanel.submittedRefIds,
+            createRefId
+          )
+          let selection: AssistantContextSelection | null = null
+          let saveFailure: AssistantFailure | undefined
+          let saved = !application.changed
+          const attachmentNames = (panel: AiPanelState) =>
+            literatureAttachmentNames(
+              selection?.refs ?? panel.refs,
+              panel.literatureAttachmentNames,
+              saved ? admitted : []
+            )
+          if (application.changed && !current.activeSession) {
+            selection = await persistAssistantContext({ refs: application.refs })
+            saved = Boolean(selection)
+          } else if (application.changed && current.activeSession) {
+            const sessionId = current.activeSession
+            if (
+              current.aiPanel.sessionId === sessionId &&
+              current.aiPanel.contextState === 'ready'
+            ) {
+              setState((value) => ({
+                ...value,
+                aiPanel: { ...value.aiPanel, contextState: 'saving', contextError: null },
+              }))
+              let base: AssistantContextSelection = {
+                session_id: sessionId,
+                revision: current.aiPanel.revision,
+                project_policy: current.aiPanel.projectPolicy,
+                search_scope: current.aiPanel.searchScope,
+                refs: current.aiPanel.refs,
+                updated_at: Date.now() / 1000,
+                capabilities: current.aiPanel.capabilities,
+              }
+              for (let attempt = 0; attempt < ASSISTANT_CONTEXT_ADD_ATTEMPTS; attempt += 1) {
+                if (stateRef.current.activeSession !== sessionId) break
+                const result = await patchAssistantContext(sessionId, {
+                  expected_revision: base.revision,
+                  project_policy: base.project_policy,
+                  search_scope: base.search_scope,
+                  refs: application.refs,
+                })
+                selection = result.context ?? result.latest ?? null
+                saveFailure = result
+                if (result.ok && result.context) {
+                  saved = true
+                  break
+                }
+                if (
+                  result.error !== ASSISTANT_CONTEXT_REVISION_CONFLICT ||
+                  !result.latest ||
+                  attempt + 1 >= ASSISTANT_CONTEXT_ADD_ATTEMPTS
+                )
+                  break
+                base = result.latest
+                const latest = stateRef.current
+                const pending = admitted.filter(
+                  (candidate) =>
+                    candidate.origin !== 'current_document' ||
+                    candidate.kind !== 'file' ||
+                    (latest.aiPanel.open && latest.resource.selected === candidate.source_id)
+                )
+                application = mergeContextCandidates(
+                  base.refs,
+                  pending,
+                  latest.aiPanel.submittedRefIds,
+                  createRefId
+                )
+                if (!application.changed) {
+                  saved = true
+                  break
+                }
+              }
+              setState((value) => {
+                if (value.activeSession !== sessionId) return value
+                return {
+                  ...value,
+                  aiPanel: {
+                    ...value.aiPanel,
+                    ...(selection
+                      ? assistantContextProjection(selection, value.aiPanel.submittedRefIds)
+                      : {}),
+                    contextState: selection ? 'ready' : 'error',
+                    literatureAttachmentNames: attachmentNames(value.aiPanel),
+                    contextError: saved ? null : assistantContextSaveError(saveFailure),
+                  },
+                }
+              })
+            }
+          }
+          if (!saved) {
+            rejected.push(
+              ...admitted.map((candidate) => ({
+                source_id: candidate.source_id,
+                code: 'context_save_failed',
+                message: saveFailure
+                  ? (assistantFailureDetail(saveFailure) ?? CONTEXT_SAVE_FAILED)
+                  : CONTEXT_SAVE_FAILED,
+              }))
+            )
+          }
+          flushSync(() => {
             setState((value) => {
-              if (value.activeSession !== sessionId) return value
+              if (!matchesTarget(value)) return value
               return {
                 ...value,
                 aiPanel: {
@@ -5356,53 +5749,56 @@ export function StoreProvider({
                   ...(selection
                     ? assistantContextProjection(selection, value.aiPanel.submittedRefIds)
                     : {}),
-                  contextState: selection ? 'ready' : 'error',
-                  contextError: saved ? null : assistantContextSaveError(saveFailure),
+                  open: true,
+                  contextPickerOpen: false,
+                  literatureAttachmentNames: attachmentNames(value.aiPanel),
+                  contextError:
+                    rejected.length > 0
+                      ? rejected[0].code === 'context_save_failed'
+                        ? assistantContextSaveError(saveFailure)
+                        : assistantContextFailure(rejected[0].message)
+                      : value.aiPanel.contextError,
                 },
               }
             })
-          }
-        }
-        if (!saved) {
-          rejected.push(
-            ...admitted.map((candidate) => ({
-              source_id: candidate.source_id,
-              code: 'context_save_failed',
-              message: saveFailure
-                ? (assistantFailureDetail(saveFailure) ?? CONTEXT_SAVE_FAILED)
-                : CONTEXT_SAVE_FAILED,
-            }))
-          )
-        }
-        setState((value) => {
-          if (value.activeSession !== current.activeSession) return value
+          })
           return {
-            ...value,
-            aiPanel: {
-              ...value.aiPanel,
-              open: true,
-              contextPickerOpen: false,
-              contextError:
-                rejected.length > 0
-                  ? rejected[0].code === 'context_save_failed'
-                    ? assistantContextSaveError(saveFailure)
-                    : assistantContextFailure(rejected[0].message)
-                  : value.aiPanel.contextError,
-            },
+            session_id: current.activeSession,
+            revision: selection?.revision ?? current.aiPanel.revision,
+            accepted_ref_ids: saved ? application.acceptedRefIds : [],
+            rejected,
           }
         })
-        return {
-          session_id: current.activeSession,
-          revision: selection?.revision ?? current.aiPanel.revision,
-          accepted_ref_ids: saved ? application.acceptedRefIds : [],
-          rejected,
-        }
+        assistantContextMutationQueue.current = pending.then(
+          () => undefined,
+          () => undefined
+        )
+        return pending
       },
       detachAiContext: async (refId) => {
         const removed = new Set(typeof refId === 'string' ? [refId] : refId)
-        await persistAssistantContext({
-          refs: stateRef.current.aiPanel.refs.filter((ref) => !removed.has(ref.ref_id)),
-        })
+        const current = stateRef.current
+        const annotations = current.aiPanel.refs.filter(
+          (ref) => ref.kind === 'note' && removed.has(ref.ref_id)
+        )
+        if (annotations.length) {
+          const annotationIds = annotations.map((ref) => ref.source_id)
+          await actRef.current.detachAnswerAnnotations(annotationIds)
+          if (stateRef.current.activeSession !== current.activeSession) return false
+          if (
+            stateRef.current.aiPanel.refs.some(
+              (ref) => ref.kind === 'note' && annotationIds.includes(ref.source_id)
+            )
+          )
+            return false
+        }
+        const refs = stateRef.current.aiPanel.refs.filter(
+          (ref) => ref.kind === 'note' || !removed.has(ref.ref_id)
+        )
+        if (refs.length !== stateRef.current.aiPanel.refs.length) {
+          return (await persistAssistantContext({ refs })) !== null
+        }
+        return true
       },
       createAnswerAnnotation: async (answerId, input) => {
         const current = stateRef.current
@@ -5410,10 +5806,23 @@ export function StoreProvider({
         if (!sessionId || current.aiPanel.sessionId !== sessionId) {
           return { ok: false, error: 'assistant_session_unavailable' }
         }
-        const result = await requestAnswerAnnotation(sessionId, answerId, {
-          ...input,
-          expected_context_revision: current.aiPanel.revision,
-        })
+        const existing = reusableAnswerAnnotation(
+          current.aiPanel.annotations,
+          sessionId,
+          answerId,
+          input
+        )
+        const response = existing
+          ? await requestEnqueueAnswerAnnotation(
+              sessionId,
+              existing.annotation_id,
+              current.aiPanel.revision
+            )
+          : await requestAnswerAnnotation(sessionId, answerId, {
+              ...input,
+              expected_context_revision: current.aiPanel.revision,
+            })
+        const result = existing && response.ok ? { ...response, annotation: existing } : response
         setState((value) => {
           if (value.activeSession !== sessionId) return value
           const selection = result.context ?? result.latest
@@ -5493,15 +5902,15 @@ export function StoreProvider({
         const annotation = current.aiPanel.annotations.find(
           (item) => item.annotation_id === annotationId
         )
-        if (!sessionId || current.aiPanel.sessionId !== sessionId || !annotation) return false
-        if (
-          sentAnswerAnnotationIds(
-            activeThread(current).conversation,
-            current.aiPanel.refs,
-            current.aiPanel.submittedRefIds
-          ).has(annotationId)
+        const eligible = deletableAnswerAnnotationIds(
+          sessionId,
+          current.aiPanel,
+          activeThread(current).conversation
         )
+        if (!sessionId || !annotation || !eligible.has(annotationId)) {
+          showAnswerAnnotationRemoveFailure({})
           return false
+        }
         const result = await requestDeleteAnswerAnnotation(
           sessionId,
           annotationId,
@@ -5539,18 +5948,20 @@ export function StoreProvider({
       deleteAnswerAnnotations: async (annotationIds) => {
         const current = stateRef.current
         const sessionId = current.activeSession
-        if (!sessionId || current.aiPanel.sessionId !== sessionId) return false
         const requestedIds = new Set(annotationIds)
+        if (requestedIds.size === 0) return true
+        const eligible = deletableAnswerAnnotationIds(
+          sessionId,
+          current.aiPanel,
+          activeThread(current).conversation
+        )
+        if (!sessionId || [...requestedIds].some((annotationId) => !eligible.has(annotationId))) {
+          showAnswerAnnotationRemoveFailure({})
+          return false
+        }
         const annotations = current.aiPanel.annotations.filter((item) =>
           requestedIds.has(item.annotation_id)
         )
-        if (annotations.length === 0) return true
-        const sentIds = sentAnswerAnnotationIds(
-          activeThread(current).conversation,
-          current.aiPanel.refs,
-          current.aiPanel.submittedRefIds
-        )
-        if (annotations.some((annotation) => sentIds.has(annotation.annotation_id))) return false
         const result = await requestDeleteAnswerAnnotations(sessionId, {
           expected_context_revision: current.aiPanel.revision,
           annotations: annotations.map((annotation) => ({
@@ -5673,28 +6084,31 @@ export function StoreProvider({
             break
           }
         }
-        setState((value) => {
-          if (value.activeSession !== sessionId) return value
-          return {
-            ...value,
-            aiPanel: {
-              ...value.aiPanel,
-              ...(selection
-                ? {
-                    revision: selection.revision,
-                    projectPolicy: selection.project_policy,
-                    searchScope: selection.search_scope,
-                    refs: selection.refs,
-                    capabilities: selection.capabilities,
-                  }
-                : {}),
-              contextError: null,
-            },
-          }
-        })
+        flushSync(() =>
+          setState((value) => {
+            if (value.activeSession !== sessionId) return value
+            return {
+              ...value,
+              aiPanel: {
+                ...value.aiPanel,
+                ...(selection
+                  ? {
+                      revision: selection.revision,
+                      projectPolicy: selection.project_policy,
+                      searchScope: selection.search_scope,
+                      refs: selection.refs,
+                      capabilities: selection.capabilities,
+                    }
+                  : {}),
+                contextError: null,
+              },
+            }
+          })
+        )
       },
       startPanelDraft: (seed = {}) => {
-        composerDraft.current!.set(seed.composerText ?? '')
+        rememberSessionDraft(true)
+        composerDraft.current!.reset(seed.composerText ?? '')
         setState((current) => {
           rememberScopeConversation(current)
           const scopeKey = seed.projectId ?? currentScopeKey(current)
@@ -5816,21 +6230,17 @@ export function StoreProvider({
         setState(
           (current) => {
             const projectId = current.homeSelectedProjectId
-            const tab = literatureResultTab(result, projectId)
-            const mainView = projectId ? 'resource' : 'literature'
-            const tabs = current.tabs.filter((candidate) => candidate.id !== tab.id)
             return {
               ...current,
+              ...literatureResultNavigation(current.tabs, result, projectId),
               ...(projectId ? {} : { workbenchReturnProjectId: null, homeProjectLocked: false }),
-              mainView,
-              tabs: openWorkbenchTab(tabs, mainView, tab),
-              activeTab: tab.id,
               workbenchLayout: {
                 ...current.workbenchLayout,
                 open: true,
                 full: false,
                 taskTab: false,
                 conversationFull: false,
+                ...(projectId ? { swapped: false } : {}),
               },
               // A fullscreen (cover) assistant hides the main column that shows this tab.
               aiPanel: { ...current.aiPanel, cover: false },
@@ -6139,10 +6549,6 @@ export function StoreProvider({
           return false
         }
         const attachmentTitle = resourceNameParts(attachment.name, 'file').basename
-        // 业务标签优先于 DocumentDock 渲染；先退出文献列表标签，避免 PDF 会话
-        // 已加载却被列表遮住。项目总览只是 Shell 的非业务占位，DocumentDock
-        // 检测到打开的文档后会立即接管中央区。
-        setState((current) => ({ ...current, activeTab: OVERVIEW_TAB.id }))
         // 附件统一由 Workbench 打开；文献域只附带稳定的条目/附件身份。
         // PDF 选区组件会使用该身份，图片和不支持格式则由各自 viewer 处理。
         const workspace = documentWorkspaces.forProject(project)
@@ -6172,16 +6578,49 @@ export function StoreProvider({
             latest.mainView === 'literature' ? 'literature' : 'resource'
           )
           setState((current) => ({ ...current, activeTab: tabId }))
-          const tab = workspace.getSnapshot().tabs[tabId]
+          if (!options?.selection) workspace.clearSelectionReveal(tabId)
+          const snapshot = workspace.getSnapshot()
+          const tab = snapshot.tabs[tabId]
+          const sourceRevision = snapshot.sessions[tab.sessionId]?.revision || ''
+          if (
+            options?.citation &&
+            sourceRevision.replace(/^sha256:/, '') !==
+              options.citation.revision.replace(/^sha256:/, '')
+          )
+            throw new Error('source_revision_changed')
+          const previousCitation = tab?.viewState?.[CITATION_VIEW_STATE_KEY] as
+            CitationFocus | undefined
+          if (options?.annotation && sourceRevision !== options.annotation.revision)
+            throw new Error('source_revision_changed')
+          const previousAnnotation = tab?.viewState?.[ANNOTATION_VIEW_STATE_KEY] as
+            AnnotationFocus | undefined
           workspace.setTabViewState(tabId, {
             ...tab?.viewState,
             ...(page ? { page } : {}),
+            ...(options?.annotation
+              ? {
+                  [ANNOTATION_VIEW_STATE_KEY]: {
+                    ...options.annotation,
+                    sequence: (previousAnnotation?.sequence ?? 0) + 1,
+                  },
+                }
+              : {}),
+            ...(options?.citation
+              ? {
+                  [CITATION_VIEW_STATE_KEY]: {
+                    ...options.citation,
+                    revision: sourceRevision,
+                    sequence: (previousCitation?.sequence ?? 0) + 1,
+                  },
+                }
+              : {}),
             [LITERATURE_EXCERPT_VIEW_STATE_KEY]: {
               kind: LITERATURE_EXCERPT_SOURCE_KIND,
               literatureId: id,
               title: detail.title,
             },
           })
+          if (options?.selection) workspace.revealSelection(tabId, options.selection)
           return true
         } catch (error) {
           actRef.current.noticeLiterature('error', literatureText('attachment.openFailed'))
@@ -6312,20 +6751,6 @@ export function StoreProvider({
         await actRef.current.reloadLiterature()
         actRef.current.noticeLiterature('ok', `已从资料库入库 ${result.added ?? 0} 条`)
       },
-      openLiteratureDownloads: (sessionId, run, projectId, excludedPapers) => {
-        catalogue.downloads(sessionId, run, projectId, excludedPapers)
-        setState((current) => ({
-          ...current,
-          homeSelectedProjectId: projectId,
-          homeProjectLocked: false,
-          ...literatureNavigation(current.tabs, projectId),
-          workbenchReturnProjectId: null,
-          modulePanelOpen: true,
-          workbenchLayout: { ...current.workbenchLayout, open: true, taskTab: false },
-          aiPanel: { ...current.aiPanel, cover: false },
-          literature: { ...INITIAL_LITERATURE_STATE },
-        }))
-      },
       openLiteratureItem: async (id, projectId) => {
         const navigation = beginNavigation('literature-item')
         const sessionId = stateRef.current.activeSession
@@ -6418,15 +6843,9 @@ export function StoreProvider({
           void deleteLiteratureSearch(literatureTaskId)
             .then(() => {
               setState((current) => {
-                const next = closeTab(current.tabs, current.activeTab, id, closeTabContext(current))
-                const mainView = mainViewForWorkbenchTab(
-                  next.tabs.find((tab) => tab.id === next.activeId)
-                )
                 return {
                   ...current,
-                  tabs: next.tabs,
-                  activeTab: next.activeId,
-                  ...(mainView ? { mainView } : {}),
+                  ...closedWorkbenchTabState(current, id),
                 }
               }, navigation)
             })
@@ -6434,15 +6853,7 @@ export function StoreProvider({
           return
         }
         setState((current) => {
-          const next = closeTab(current.tabs, current.activeTab, id, closeTabContext(current))
-          const mainView = mainViewForWorkbenchTab(
-            next.tabs.find((tab) => tab.id === next.activeId)
-          )
-          const activeTabState = {
-            tabs: next.tabs,
-            activeTab: next.activeId,
-            ...(mainView ? { mainView } : {}),
-          }
+          const activeTabState = closedWorkbenchTabState(current, id)
           if (!current.resource.webSearches[id]) {
             return { ...current, ...activeTabState }
           }
@@ -6483,7 +6894,8 @@ export function StoreProvider({
           )
         )
           throw new Error('draft_model_unavailable')
-        composerDraft.current!.set(seed.composerText ?? '')
+        rememberSessionDraft(true)
+        composerDraft.current!.reset(seed.composerText ?? '')
         setState((current) => {
           rememberScopeConversation(current)
           // 点「新对话」= 该作用域最后打开的是新对话：目标作用域（seed.projectId）
@@ -6567,6 +6979,8 @@ export function StoreProvider({
       beginNavigation,
       literatureText,
       persistAssistantContext,
+      draftKey,
+      rememberSessionDraft,
       resourceI18n,
       rejectNavigation,
       revealResourceTreePath,
@@ -6814,9 +7228,10 @@ export function StoreProvider({
         contextCandidates: [],
         contextCandidatesLoading: false,
         contextError: null,
+        ...sessionDrafts.current!.get(draftKey(current) ?? '')?.context,
       },
     }))
-  }, [state.activeSession, assistantProject(state).projectPath])
+  }, [state.activeSession, assistantProject(state).projectPath, draftKey])
 
   useEffect(() => window.scholarseed.onPluginNavigation?.(() => act.openSettings('skills')), [act])
 
@@ -6848,10 +7263,27 @@ export function StoreProvider({
       appendThread,
     ]
   )
+  const navigateWebPage = useCallback(
+    (url: string, onOpened?: () => void): void => {
+      void openWebPage(url, {
+        available: availabilityPolicy.routeAvailable('browser'),
+        dispatch: (command) => window.scholarseed.browser.dispatch(command),
+        reveal: (options) => act.openWorkbenchView('browser', options),
+      })
+        .then(() => onOpened?.())
+        .catch((error) => {
+          console.error('Web navigation failed', error)
+          toast({ title: resourceI18n.t(webPageErrorKey(error)), tone: 'error' })
+        })
+    },
+    [act, toast, resourceI18n]
+  )
   return (
     <StoreContext.Provider value={value}>
       <NavigationRecoveryContext.Provider value={act.returnHome}>
-        {children}
+        <WebNavigationContext.Provider value={navigateWebPage}>
+          {children}
+        </WebNavigationContext.Provider>
       </NavigationRecoveryContext.Provider>
     </StoreContext.Provider>
   )

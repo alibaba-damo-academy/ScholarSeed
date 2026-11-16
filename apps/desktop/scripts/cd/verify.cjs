@@ -16,6 +16,7 @@ const { verifyImage } = require('./dmg.cjs')
 const { assertCleanInstallation } = require('./registration.cjs')
 const { runInstaller, engineEvidence, recordInstallerFailure } = require('./installation.cjs')
 const { inspectBrowser, verifyBrowser } = require('./browser.cjs')
+const { verifyMacOSTree } = require('../shared/macos.cjs')
 const { verifyExecution } = require('./execution.cjs')
 const { verifyAsarClosure } = require('./closure.cjs')
 const { verifyNotices } = require('./notices.cjs')
@@ -49,7 +50,7 @@ const UNINSTALL_REMAINDER_LIMIT = 32
 const CONTEXT_ENV = 'SCHOLARSEED_BUILD_CONTEXT'
 const WINDOWS_PLATFORM = 'win32'
 const PYTHON_DONT_WRITE_BYTECODE_ENV = 'PYTHONDONTWRITEBYTECODE'
-const EXPECTED_SCHEME = 'scholarseed'
+const EXPECTED_SCHEME = 'scholarseed-notification'
 const EXPECTED_PRODUCT_NAME = 'ScholarSeed'
 const EXPECTED_SEARCH_ALIAS = '书深'
 const LOCALIZED_PRODUCT_NAME = '书深'
@@ -253,7 +254,7 @@ function context() {
   if (
     result.schema !== 3 ||
     result.file !== filename ||
-    !/^[a-f0-9]{64}$/.test(result.lockSha256 || '')
+    !result.closure
   ) {
     throw new Error('invalid or unfinished build context')
   }
@@ -369,7 +370,6 @@ async function verifyContent(application, frozen, signed = false, execute = true
   if (
     (await sha256(required[5])) !== frozen.config.sha256 ||
     (await sha256(required[6])) !== frozen.product.sha256 ||
-    (await sha256(required[7])) !== frozen.lockSha256 ||
     (await sha256(current.codex)) !== frozen.binaries.codex.sha256 ||
     (signed && frozen.platform === 'darwin'
       ? (await executableDigest(current.rg)) !== frozen.binaries.rg.executable_sha256
@@ -400,7 +400,8 @@ async function verifyContent(application, frozen, signed = false, execute = true
   if (!bytecode) throw new Error('frozen build context carries no Python bytecode evidence')
   // afterPack verifies immutable inputs only. Executing inside the incomplete
   // bundle can trigger macOS first-exec scanning before signing/notarization.
-  if (!execute) return { current, imports: null, browser: inventory, closure }
+  const macos = frozen.platform === 'darwin' ? verifyMacOSTree(current.resources) : null
+  if (!execute) return { current, imports: null, browser: inventory, closure, macos }
   const browser = frozen.platform === 'darwin'
     ? await verifyBrowser(current.resources, frozen.arch, frozen.browser, signed)
     : null
@@ -464,7 +465,6 @@ async function verifyComponentArchives(application, frozen, current, closure) {
   if (
     (await sha256(required[3])) !== frozen.config.sha256 ||
     (await sha256(required[4])) !== frozen.product.sha256 ||
-    (await sha256(required[5])) !== frozen.lockSha256 ||
     (await sha256(current.rg)) !== frozen.binaries.rg.sha256
   ) {
     throw new Error('packaged resources differ from frozen build inputs')
@@ -608,6 +608,7 @@ function trustCommand(stage, executable, args) {
   } catch (error) {
     console.error(`[mac-trust] ${JSON.stringify({stage, status: 'failed', seconds: (Date.now() - started) / 1000,
       code: error.code, exit_code: error.status, signal: error.signal, pid: error.pid,
+      stdout: String(error.stdout || '').slice(-TRUST_DIAGNOSTIC_BYTES),
       stderr: String(error.stderr || '').slice(-TRUST_DIAGNOSTIC_BYTES)})}`)
     throw error
   }
@@ -1028,6 +1029,7 @@ async function verify(builderContext) {
 
 module.exports = verify
 module.exports.atomicJSON = atomicJSON
+module.exports.trustCommand = trustCommand
 module.exports.packageCheckLog = packageCheckLog
 module.exports.nativeStageRecords = nativeStageRecords
 module.exports.componentTimingRecords = componentTimingRecords

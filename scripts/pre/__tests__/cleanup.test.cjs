@@ -23,6 +23,8 @@ function npmFixture(repo) {
   fs.cpSync(path.dirname(sourceDirectory), path.join(repo, 'scripts'), { recursive: true })
   fs.cpSync(path.join(sourceDirectory, '../../apps/desktop/runtime'), path.join(repo, 'apps/desktop/runtime'), { recursive: true })
   fs.cpSync(path.join(sourceDirectory, '../../apps/desktop/scripts'), path.join(repo, 'apps/desktop/scripts'), { recursive: true })
+  fs.mkdirSync(path.join(repo, 'apps/desktop/native'), { recursive: true })
+  fs.copyFileSync(path.join(sourceDirectory, '../../apps/desktop/native/toolchain.json'), path.join(repo, 'apps/desktop/native/toolchain.json'))
   fs.copyFileSync(path.join(sourceDirectory, '../../apps/desktop/package.json'), path.join(repo, 'apps/desktop/package.json'))
   fs.copyFileSync(path.join(sourceDirectory, '../../package.json'), path.join(repo, 'package.json'))
 }
@@ -32,7 +34,10 @@ function invokeNpm(repo, home, command, venv = '.venv', args = [], extraEnv = {}
   const invocation = ['clean', 'distclean'].includes(command)
     ? ['run', 'ops', '--', 'pre', 'clean', ...args]
     : ['run', command, '--', ...args]
-  return spawnSync(npm, invocation, { cwd: repo, env: { ...process.env, ...extraEnv, VENV: venv, SCHOLARSEED_HOME: home }, encoding: 'utf8', shell: process.platform === 'win32' })
+  const environment = { ...process.env, ...extraEnv, VENV: venv, SCHOLARSEED_HOME: home }
+  delete environment.npm_execpath
+  delete environment.npm_config_user_agent
+  return spawnSync(npm, invocation, { cwd: repo, env: environment, encoding: 'utf8', shell: process.platform === 'win32' })
 }
 
 function equivalentPaths(directory) {
@@ -98,7 +103,9 @@ test('root npm cleanup entries protect home and reject mixed unsafe targets', co
   npmFixture(repo)
   const invoke = (command, venv, args = []) => invokeNpm(repo, home, command, venv, args)
   for (const venv of ['.', '..', home, 'apps']) {
-    assert.notEqual(invoke('clean', venv).status, 0)
+    const result = invoke('clean', venv)
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /invalid venv cleanup path|cleanup target must be inside repository|venv configuration identity missing/)
     assert.ok(fs.existsSync(path.join(repo, '.venv/pyvenv.cfg')))
     assert.ok(fs.existsSync(path.join(repo, 'apps/desktop/out')))
   }
@@ -161,6 +168,7 @@ test('root npm clean and distclean preflight later invalid targets before any de
   for (const command of ['clean', 'distclean']) {
     const result = invokeNpm(repo, home, command)
     assert.notEqual(result.status, 0, result.stderr)
+    assert.match(result.stderr, /cleanup refuses symbolic link/)
     assert.ok(fs.existsSync(path.join(repo, '.venv/pyvenv.cfg')))
     assert.ok(fs.existsSync(path.join(repo, '.venv/bin/python')))
     assert.ok(fs.existsSync(path.join(repo, 'apps/desktop/node_modules/keep')))

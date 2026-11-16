@@ -12,59 +12,6 @@ import { highlightRanges } from './highlight.ts'
  * backend request behavior is tested in ./api.test.ts.
  */
 const searchSource = readFileSync(new URL('./GlobalSearch.tsx', import.meta.url), 'utf8')
-const navigationSource = readFileSync(new URL('../project/Navigation.tsx', import.meta.url), 'utf8')
-
-test('project header opens the shared all-domain search without changing project scope', () => {
-  const parsed = ts.createSourceFile(
-    'Navigation.tsx',
-    navigationSource,
-    ts.ScriptTarget.Latest,
-    true,
-    ts.ScriptKind.TSX
-  )
-  const handlers: ts.Expression[] = []
-  function visit(node: ts.Node): void {
-    if (ts.isJsxSelfClosingElement(node) || ts.isJsxOpeningElement(node)) {
-      const attributes = node.attributes.properties.filter(ts.isJsxAttribute)
-      const search = attributes.some(
-        (attribute) =>
-          attribute.name.getText(parsed) === 'data-testid' &&
-          attribute.initializer &&
-          ts.isStringLiteral(attribute.initializer) &&
-          attribute.initializer.text === 'project-search'
-      )
-      if (search) {
-        const handler = attributes.find((attribute) => attribute.name.getText(parsed) === 'onClick')
-        if (
-          handler?.initializer &&
-          ts.isJsxExpression(handler.initializer) &&
-          handler.initializer.expression
-        )
-          handlers.push(handler.initializer.expression)
-      }
-    }
-    ts.forEachChild(node, visit)
-  }
-  visit(parsed)
-  assert.equal(handlers.length, 1, 'project header must expose one shared-search trigger')
-  const initial = {
-    homeSelectedProjectId: 'project-alpha',
-    globalSearchOpen: false,
-    globalSearchMode: 'files',
-  }
-  let state = initial
-  const javascript = ts.transpileModule(`const handler = ${handlers[0].getText(parsed)};`, {
-    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
-  }).outputText
-  const handler = new Function('set', javascript + '\nreturn handler;')(
-    (patch: Partial<typeof initial>) => {
-      state = { ...state, ...patch }
-    }
-  )
-  handler()
-  assert.deepEqual(state, { ...initial, globalSearchOpen: true, globalSearchMode: 'all' })
-})
-
 const parsedSearch = ts.createSourceFile(
   'GlobalSearch.tsx',
   searchSource,

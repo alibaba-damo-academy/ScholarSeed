@@ -424,7 +424,7 @@ python -m service.cli.plugins pack ./paper-reading-notes --name paper-reading-no
 <p>接下来：<a href="#cards">公共对话卡片</a> · <a href="#runtime">运行原理</a>。</p>
 </article>
 <article id="cards" data-page="cards" aria-label="Plugin 公共对话卡片"><a class="source" href="plugins/cards.zh.md">查看 Markdown 源文档</a><h1 id="cards--plugin-公共对话卡片">Plugin 公共对话卡片</h1>
-<p><a href="plugins.html#cards">English</a> · <strong>简体中文</strong> · <a href="plugins.zh.html#cards">离线阅读</a></p>
+<p><strong>简体中文</strong> · <a href="plugins.html#cards">English</a> · <a href="plugins.zh.html#cards">离线阅读</a></p>
 <p><a href="#guide">Plugin 概览</a></p>
 <p>先选择卡片由谁驱动，再选择界面。<strong>公共 slot 是业务入口；Conversation 是可组合的 UI，两者不是一回事。</strong></p>
 <h2 id="cards--选择卡片">选择卡片</h2>
@@ -443,6 +443,10 @@ python -m service.cli.plugins pack ./paper-reading-notes --name paper-reading-no
 <tr>
 <td>自己组织已有对话 UI</td>
 <td>Conversation 组件，并接入实际 props 和回调</td>
+</tr>
+<tr>
+<td>在回答中组合图表、数据表、证据或产物预览</td>
+<td>先使用 <code>scholarseed-product-operations</code> 的对话卡片指南及现有组合 slot</td>
 </tr>
 <tr>
 <td>收集自己的业务选择</td>
@@ -465,49 +469,37 @@ python -m service.cli.plugins pack ./paper-reading-notes --name paper-reading-no
 <td><code>interaction.question</code></td>
 <td>问题选项与确认</td>
 <td>由 AI 的原生提问流程展示并收集回答。</td>
-<td><a href="../apps/desktop/src/renderer/src/features/literature/Choices.tsx">Choices.tsx</a></td>
+<td><a href="../apps/desktop/src/renderer/src/features/literature/Choices.tsx#L19">Choices.tsx:19</a></td>
 </tr>
 <tr>
 <td><code>display.literature-search</code></td>
 <td>检索摘要、进入完整结果的按钮</td>
 <td>在文献检索结果流程中展示，使用本轮结果集。</td>
-<td><a href="../apps/desktop/src/renderer/src/features/literature/Summary.tsx">Summary.tsx</a></td>
+<td><a href="../apps/desktop/src/renderer/src/features/literature/Summary.tsx#L45">Summary.tsx:45</a></td>
 </tr>
 <tr>
 <td><code>preview.literature-results</code></td>
 <td>完整结果、筛选、分页与来源</td>
 <td>从检索摘要打开详情，可选择论文、查看来源或加入文献库。</td>
-<td><a href="../apps/desktop/src/renderer/src/features/literature/Details.tsx">Details.tsx</a></td>
+<td><a href="../apps/desktop/src/renderer/src/features/literature/Details.tsx#L35">Details.tsx:35</a></td>
 </tr>
 <tr>
 <td><code>literature.selection</code></td>
 <td>论文子集选择</td>
 <td>兼容已有文献流程；用户勾选后返回论文 ID 列表。</td>
-<td><a href="../apps/desktop/src/renderer/src/features/literature/Choices.tsx">Choices.tsx</a></td>
+<td><a href="../apps/desktop/src/renderer/src/features/literature/Choices.tsx#L19">Choices.tsx:19</a></td>
 </tr>
 <tr>
 <td><code>literature.authorization</code></td>
 <td>全文授权涉及的论文</td>
 <td>通过文献授权流程展示，用户确认后才获取全文。</td>
-<td><a href="../apps/desktop/src/renderer/src/features/literature/Choices.tsx">Choices.tsx</a></td>
-</tr>
-<tr>
-<td><code>display.literature-downloads</code></td>
-<td>逐篇获取或入库结果</td>
-<td>在获取或入库结束后展示，可打开全文或进入文献库。</td>
-<td><a href="../apps/desktop/src/renderer/src/features/literature/Downloads.tsx">Downloads.tsx</a></td>
-</tr>
-<tr>
-<td><code>display.literature-delivery</code></td>
-<td>保存位置、文件冲突与保存结果</td>
-<td>通过 <code>literature delivery</code> 发起，由用户选择保存目标并确认。</td>
-<td><a href="../apps/desktop/src/renderer/src/features/literature/Delivery.tsx">Delivery.tsx</a></td>
+<td><a href="../apps/desktop/src/renderer/src/features/literature/Choices.tsx#L19">Choices.tsx:19</a></td>
 </tr>
 <tr>
 <td><code>display.literature-references</code></td>
 <td>引用列表与来源操作</td>
 <td>展示正文引用的文献，可打开来源、入库或设置分类。</td>
-<td><a href="../apps/desktop/src/renderer/src/features/literature/References.tsx">References.tsx</a></td>
+<td><a href="../apps/desktop/src/renderer/src/features/literature/References.tsx#L131">References.tsx:131</a></td>
 </tr>
 </tbody>
 </table>
@@ -523,8 +515,6 @@ python -m service.cli.plugins pack ./paper-reading-notes --name paper-reading-no
 <pre><code class="language-typescript">const VIEWS = {
   'display.literature-search': LiteratureResults,
   'display.literature-references': LiteratureReferences,
-  'display.literature-downloads': LiteratureDownloads,
-  'display.literature-delivery': LiteratureDeliveryCard,
   'preview.literature-results': LiteratureDetails,
 };
 const CHOICES = ['interaction.question', 'literature.authorization'];
@@ -552,13 +542,41 @@ const LEGACY_SELECTION = 'literature.selection';
 <p><img src="assets/plugins/cards/display.literature-search.png" alt="display.literature-search 的检索摘要组件预览" /></p>
 <p><img src="assets/plugins/cards/preview.literature-results.png" alt="preview.literature-results 的完整结果组件预览" /></p>
 <h3 id="cards--全文授权与获取结果">全文授权与获取结果</h3>
-<p><code>literature.authorization</code> 展示本次全文授权涉及的论文；按钮和授权结果由书深原生流程处理。<code>display.literature-downloads</code> 显示逐篇结果。示例分别来自 <a href="../skills/community/literature-review/components/authorization.json">literature-review/components/authorization.json</a> 与 <a href="../skills/community/precise-literature-search/components/downloads.json">precise-literature-search/components/downloads.json</a>。论文子集样例在同目录 <code>scenario.json</code>。</p>
+<p><code>literature.authorization</code> 展示本次全文授权涉及的论文。托管获取仅用于获授权的阅读，不写入文献库或另存用户文件。</p>
 <p><img src="assets/plugins/cards/literature.authorization.png" alt="literature.authorization 的授权范围组件预览" /></p>
-<p><img src="assets/plugins/cards/display.literature-downloads.png" alt="display.literature-downloads 的获取结果组件预览" /></p>
 <h3 id="cards--保存交付与引用">保存交付与引用</h3>
-<p><code>display.literature-delivery</code> 收集保存目标和相关选择；<code>display.literature-references</code> 显示引用列表及来源操作。示例分别来自 <a href="../skills/community/precise-literature-search/components/delivery.json">precise-literature-search/components/delivery.json</a> 与 <a href="../skills/community/research-idea-partner/components/references.json">research-idea-partner/components/references.json</a>。</p>
-<p><img src="assets/plugins/cards/display.literature-delivery.png" alt="display.literature-delivery 的保存交付组件预览" /></p>
+<p>科研结果保留添加到文献库、仅添加元信息和 BibTeX 导出。引用入口仍打开实际来源。</p>
 <p><img src="assets/plugins/cards/display.literature-references.png" alt="display.literature-references 的引用组件预览" /></p>
+<h2 id="cards--统一技能与组合-slot">统一技能与组合 slot</h2>
+<p>Agent 通过 <code>scholarseed-product-operations</code> 按需加载对话卡片指南，发现当前官方 UI，并读取三类 reference。资料位于当前仓库的 <code>skills/community/scholarseed-product-operations/</code>，入口为 <code>references/scholarseed-chat-ui/guides/conversation.md</code>。原三个独立对话技能已经并入此技能，不再分别安装。</p>
+<table>
+<thead>
+<tr>
+<th>当前组合 slot</th>
+<th>用途</th>
+<th>数据契约与示例</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>rich-content.compose</code></td>
+<td>图表、表格、公式、流程图、代码与正文</td>
+<td><code>references/scholarseed-chat-ui/guides/content.md</code></td>
+</tr>
+<tr>
+<td><code>research-evidence.select</code></td>
+<td>完整证据、来源定位与用户选择</td>
+<td><code>references/scholarseed-chat-ui/guides/evidence.md</code></td>
+</tr>
+<tr>
+<td><code>artifacts-workbench.preview</code></td>
+<td>文件路径、版本及已提供内容的预览</td>
+<td><code>references/scholarseed-chat-ui/guides/workbench.md</code></td>
+</tr>
+</tbody>
+</table>
+<p>已有组合能表达需求时只提供符合 schema 的 JSON，不重新生成插件。组合之外的新交互由 <code>plugin-create</code> 创建、检查和发布，再由用户确认安装。公共领域 slot 仍走领域工具；不得把任意 <code>Conversation</code> 导出当作可直接调用的 slot。</p>
+<p>按“自然说明—组件卡片—结果解释”组织回答，不把十几个独立组件塞进一个插件页面。技术名称、版本和日志只用于调试。</p>
 <h2 id="cards--conversation-组件">Conversation 组件</h2>
 <p>从 <code>window.scholarseedUI.Conversation</code> 取组件，在 ui.exports 声明 <code>Conversation</code>。</p>
 <table>
@@ -571,43 +589,43 @@ const LEGACY_SELECTION = 'literature.selection';
 </thead>
 <tbody>
 <tr>
-<td>科研卡片</td>
-<td><code>Choices</code>、<code>Results</code>、<code>Details</code>、<code>References</code>、<code>Downloads</code>、<code>Delivery</code>、<code>Review</code></td>
-<td>真实业务数据、操作端口、授权结果；科研卡通常接收 <code>content</code> 与 <code>ports</code>，Choices 接收 <code>data/status/slot/submit</code></td>
+<td>正文与富内容</td>
+<td><code>Markdown</code>、<code>Code</code>、<code>Formula</code>、<code>Tabulation</code>、<code>Diagram</code>、<code>Canvas</code>、<code>Content</code></td>
+<td>原始内容及受控复制/打开回调；显示代码或图形不等于执行代码；图片共享实现保留在原生宿主，Markdown 多图接入另行规划</td>
 </tr>
 <tr>
-<td>正文与原文</td>
-<td><code>Markdown</code>、<code>Message</code>、<code>Code</code>、<code>Formula</code>、<code>Tabulation</code></td>
-<td>原始内容、复制/打开回调、引用和数学含义核对；显示代码不会执行代码</td>
+<td>图表与数据表</td>
+<td><code>Plot</code>、<code>BarChart</code>、<code>GroupedBarChart</code>、<code>StackedBarChart</code>、<code>LineChart</code>、<code>ScatterChart</code>、<code>PieChart</code>、<code>DonutChart</code>、<code>Histogram</code>、<code>BoxPlot</code>、<code>Heatmap</code>、<code>DataTable</code></td>
+<td>明确数据列、单位、缺失值与来源；复用官方 ECharts/TanStack 能力，不传任意可执行配置</td>
 </tr>
 <tr>
-<td>产物</td>
-<td><code>Artifact</code>、<code>ArtifactGroup</code>、<code>ArtifactMenuItems</code>、<code>ArtifactDestination</code></td>
-<td>不可变文件/版本身份、保存/导入/打开操作及结果；分组只负责布局</td>
+<td>科研结果</td>
+<td><code>Results</code>、<code>Details</code>、<code>References</code>、<code>Downloads</code>、<code>Delivery</code>、<code>Review</code></td>
+<td>真实业务数据与领域操作端口；通常接收 <code>content</code> 与 <code>ports</code></td>
 </tr>
 <tr>
-<td>图片</td>
-<td><code>ImageView</code>、<code>Images</code>、<code>ImageThumbnail</code></td>
-<td>已授权 URL、资源身份、加载失败、选中状态与操作；组件不会读取任意本地文件</td>
+<td>引用与证据</td>
+<td><code>CitationLink</code>、<code>CitationSources</code></td>
+<td>完整摘录、来源定位、历史快照与跳转；前端标签不是读取权限</td>
 </tr>
 <tr>
-<td>引用与上下文</td>
-<td><code>CitationLink</code>、<code>WebCitationLink</code>、<code>CitationSources</code>、<code>ConversationReference</code>、<code>ComposerRefChip</code></td>
-<td>引用解析、授权预览、历史快照、分页与跳转；前端标签不是读取权限</td>
-</tr>
-<tr>
-<td>执行过程</td>
-<td><code>ExecutionProcess</code>、<code>ExecutionBatch</code>、<code>ToolExecution</code>、<code>ExecutionIO</code>、<code>ExecutionStatus</code>、<code>WebSearchRecord</code></td>
-<td>真实轮次、状态、输入输出和时间；不能把未知/中断显示为成功</td>
-</tr>
-<tr>
-<td>任务辅助</td>
-<td><code>Plan</code>、<code>Failure</code>、<code>Suggestions</code>、<code>Attachments</code>、<code>FileFormatIcon</code></td>
-<td>计划投影、恢复资格、发送、文件身份与打开操作；UI 不自动恢复任务或发送消息</td>
+<td>产物与工作台</td>
+<td><code>FileFormatIcon</code>、<code>Artifact</code>、<code>ArtifactGroup</code>、<code>ArtifactMenuItems</code>、<code>FileMenuItems</code>、<code>ArtifactDestination</code></td>
+<td>不可变文件/版本身份、保存/导入/打开结果；图标、分组与菜单不是新业务卡片</td>
 </tr>
 </tbody>
 </table>
+<p>用户输入与上下文、处理过程与计划、确认与澄清、下一步建议、异常与空回答均使用书深原生 UI，不提供对应的官方 UI 导出或 iframe 入口。<code>interaction.question</code>、<code>literature.authorization</code> 保留宿主原生贡献；正文和产物共享的图片、菜单及组件自身的失败处理继续保留。</p>
 <p>输入提示见 <code>catalog.composition.Conversation</code>，精确类型见<a href="#api--源码与类型">源码与类型</a>。导出组件不表示其所有书深内部回调都向普通插件开放。</p>
+<h3 id="cards--实时查看官方组件">实时查看官方组件</h3>
+<p>在当前仓库安装 Desktop 前端依赖后运行：</p>
+<pre><code class="language-sh">pnpm ops dev browser
+</code></pre>
+<p>通过渲染器的回环地址打开 <a href="http://localhost:5173/?dev=components">Desktop 组件预览页</a>。</p>
+<p>Schema 规则支持种子随机数据及 JSON 编辑；随机材料只是预览数据，不能冒充真实文献、保存结果或权限。新增组件会自动发现，但仍需补齐可编辑数据契约及必要的安全交互绑定。该网页不调用真实业务，不能替代书深应用中的安装、复制或 Agent 链路验收；文档截图也不是实时预览。</p>
+<h3 id="cards--复制正文而不是界面">复制正文而不是界面</h3>
+<p>书深的“复制消息”按本轮顺序合并自然语言与卡片文本，没有独立的卡片复制按钮。官方组件登记原始数据而不是抓取 DOM：图表与数据表保留完整数据及单位，代码保留折叠行，证据保留完整摘录、来源定位与已保存选择，产物预览保留路径、版本和已提供内容，不读取所链接文件。</p>
+<p>布局容器、图标和菜单本身没有可复制业务正文；自定义内容需要按<a href="#api--提供卡片的复制内容">复制 SDK</a>补充登记。自动登记的组件使用 <code>mount()</code> 的上下文；不要再用 <code>setCopyContent()</code> 覆盖同一界面的其他组件。</p>
 <h2 id="cards--基础控件">基础控件</h2>
 <ul>
 <li><strong>输入</strong>：Button、IconButton、Checkbox、Input、Textarea、RadioGroup、Select。</li>
@@ -681,7 +699,7 @@ const LEGACY_SELECTION = 'literature.selection';
 <p>接下来：<a href="#api">可用 API</a> · <a href="#testing">测试状态与更新</a>。</p>
 </article>
 <article id="api" data-page="api" aria-label="Plugin 可用 API"><a class="source" href="plugins/api.zh.md">查看 Markdown 源文档</a><h1 id="api--plugin-可用-api">Plugin 可用 API</h1>
-<p><a href="plugins.html#api">English</a> · <strong>简体中文</strong> · <a href="plugins.zh.html#api">离线阅读</a></p>
+<p><strong>简体中文</strong> · <a href="plugins.html#api">English</a> · <a href="plugins.zh.html#api">离线阅读</a></p>
 <p><a href="#guide">Plugin 概览</a></p>
 <p><code>scholarseed-bridge</code> 是书深后端的 CLI，供 Agent 查询资料、管理文献和展示对话卡片。Skill 通过 CLI 调用这些能力；卡片界面使用<a href="#api--前端-sdk">前端 SDK</a>。</p>
 <h2 id="api--使用-cli">使用 CLI</h2>
@@ -750,8 +768,12 @@ scholarseed-bridge component request --help
 <p>普通自定义卡片的 plugin-call 目前仅接通 <code>skills.list</code>、<code>navigation.skills</code>。文献卡的全文、分类和保存由领域专用端口处理；复制 <code>literature.read</code>、<code>navigation.open</code> 等能力名不会让普通卡片自动拥有这些操作。</p>
 <h3 id="api--提供卡片的复制内容">提供卡片的复制内容</h3>
 <p>在界面状态更新后登记文本，书深会在“复制消息”中按顺序合并本轮正文与卡片。公共卡片由书深根据业务数据生成，无需重复登记。</p>
-<p>官方 UI 的 <code>Conversation.Choices</code>、<code>Results</code>、<code>Details</code>、<code>References</code>、<code>Downloads</code>、<code>Delivery</code> 和 <code>Review</code> 在 <code>mount()</code> 内使用时会自动登记文本。组合多个组件时会合并内容；综述的折叠章节、引用、检查和问题不会因未展开而遗漏。产物保留标题和路径，不会自动读取文件正文。</p>
-<p><code>Markdown</code>、<code>Message</code>、<code>Code</code>、<code>Formula</code> 和 <code>Artifact</code> 也会自动登记；代码保留未展开的完整源码，公式保留 LaTeX、说明和注释。<code>Tabulation</code> 需要提供 <code>copyText</code> 或 <code>invalidSource</code>，不会从表格 DOM 推断数据。</p>
+<p>官方 UI 的 <code>Conversation.Results</code>、<code>Details</code>、<code>References</code>、<code>Downloads</code>、<code>Delivery</code> 和 <code>Review</code> 在 <code>mount()</code> 内使用时会自动登记文本。组合多个组件时会合并内容；综述的折叠章节、引用、检查和问题不会因未展开而遗漏。产物保留标题和路径，不会自动读取文件正文。</p>
+<p><code>Markdown</code>、<code>Code</code>、<code>Formula</code> 和 <code>Artifact</code> 也会自动登记；代码保留未展开的完整源码，公式保留 LaTeX、说明和注释。<code>Tabulation</code> 需要提供 <code>copyText</code> 或 <code>invalidSource</code>，不会从表格 DOM 推断数据。</p>
+<p>用户输入、上下文、执行过程与计划、确认与澄清、下一步建议、异常与空回答使用书深原生 UI，不从官方 UI 包导出。<code>interaction.question</code> 和 <code>literature.authorization</code> 保留宿主原生入口；综述 iframe 仅展示内容，不重复提供大纲确认选项。回答与产物需要的图片、菜单及内容组件继续保留，其自身的加载、复制和渲染错误处理不受影响。</p>
+<p><code>Plot</code> 及十种具体图表、<code>DataTable</code>、<code>Content</code> 同样自动登记。图表与数据表使用完整原始行和单位，不因折叠、筛选或分页遗漏数据，不把缺失值填成零；证据包含完整摘录与定位；产物包含已提供的预览，不自动读文件。三个统一技能组合会登记标题、内容和已保存选择，不登记提交/取消等按钮。</p>
+<p>这些组件的文本进入消息下方的整轮复制入口；卡片没有独立复制按钮。任意布局、图标或菜单不会自动变成业务文本。普通插件继续使用隔离桥，不调用 <code>navigator.clipboard</code>，也不获得宿主 DOM 或文件访问权。</p>
+<p>升级官方 UI 或插件不会重写历史卡片的固定资源快照和已登记文本。历史问题的原始内容与用户最终确认值分别保留；新增自动登记能力需在新版本/新绑定中验证，不能直接改数据库或将旧卡片的复制结果当作新版组件验收。</p>
 <p>自己绘制界面时，可以在组件内调用 <code>window.scholarseedUI.useCopyContent(text)</code>，并将 <code>useCopyContent</code> 加入 <code>ui.exports</code>。它会合并同一界面中各组件的文本，并在保存状态更新后重新登记；登记失败会在卡片内提示。不要在同一界面混用这个 Hook 和下方直接覆盖整张卡片文本的 <code>setCopyContent()</code>。</p>
 <pre><code class="language-js">const { React, mount } = window.scholarseedUI;
 
@@ -857,14 +879,9 @@ mount(state =&gt; React.createElement(Notes, { state }));
 <td>下载并托管文件；逐篇返回获取结果。</td>
 </tr>
 <tr>
-<td><code>literature ingest / import</code></td>
-<td>将下载结果或会话文件导入文献库</td>
-<td>写文献库并关联当前项目；<code>import</code> 按用户明确指令直接导入。</td>
-</tr>
-<tr>
-<td><code>literature delivery</code></td>
-<td>展示全文保存流程</td>
-<td>固定本次交付批次，按用户后续选择保存或入库。</td>
+<td><code>literature import</code></td>
+<td>将会话文件导入文献库</td>
+<td>按用户明确指令写入文献库并关联当前项目。</td>
 </tr>
 <tr>
 <td><code>literature collection.list / tag.list</code></td>
@@ -950,7 +967,7 @@ mount(state =&gt; React.createElement(Notes, { state }));
 <p>升级出现不兼容时，修改源码并重新检查；不要只扩大 host 范围或略过校验。</p>
 </article>
 <article id="testing" data-page="testing" aria-label="Plugin 测试"><a class="source" href="plugins/testing.zh.md">查看 Markdown 源文档</a><h1 id="testing--plugin-测试">Plugin 测试</h1>
-<p><a href="plugins.html#testing">English</a> · <strong>简体中文</strong> · <a href="plugins.zh.html#testing">离线阅读</a></p>
+<p><strong>简体中文</strong> · <a href="plugins.html#testing">English</a> · <a href="plugins.zh.html#testing">离线阅读</a></p>
 <p><a href="#guide">Plugin 概览</a></p>
 <p>用<a href="#create">论文阅读笔记插件</a>走完检查、安装和对话使用流程。</p>
 <h2 id="testing--检查插件包">检查插件包</h2>
@@ -1015,6 +1032,10 @@ mount(state =&gt; React.createElement(Notes, { state }));
 <p>记录任务输入、工具返回和输出笔记，保留出错时的截图或录屏。</p>
 <h2 id="testing--检查界面和更新">检查界面和更新</h2>
 <p>对于自定义卡片，调用 <code>setCopyContent()</code> 后点击消息下方的复制按钮。将剪贴板粘贴到文本编辑器，核对正文、卡片、后续结论的顺序，以及选择、引用和链接是否完整。切换会话再返回，确认历史卡片内容仍包含在复制结果中；修改草稿后应重新登记，不能继续复制旧选择。未登记文本时，复制结果应明确标出缺失的卡片内容。</p>
+<p>复用官方组件时先验证自动登记，不额外覆盖：按“文字—柱状图—表格—引用/证据—产物—解释”组合，核对复制顺序、图表完整数据与单位、缺失值、折叠代码/摘录和未展开产物预览。筛选、分页或折叠不能截短原始内容；产物路径不能被误认成已读取文件正文。</p>
+<p>分别操作 <code>rich-content.compose</code>、<code>research-evidence.select</code>、<code>artifacts-workbench.preview</code>，保存选择后立刻复制，再重开会话复制。核对最后一次已保存选择与版本；模拟登记失败时应明确提示，重试或网络恢复后才能恢复登记。64 KiB 上限仍由宿主校验，不能静默截断为“成功”。卡片内部不应出现独立复制按钮，也不能直接访问剪贴板。</p>
+<p>源码预览的六类目录、JSON 编辑和 HMR 回归只验证组件与开发工具，不是应用复制/历史恢复验收。真实 Agent 验收需另有明确模型预算与完整链路证据，不因文档或样例通过而宣称通过。</p>
+<p>历史回归与新版验收分开：已有卡片继续使用其冻结资源和原登记文案，确认结果从答案回执核对；新资源需重新创建绑定。不得为使旧会话显示新样式或新文本而篡改历史快照。</p>
 <ul>
 <li><strong>界面</strong>：明暗主题、窄窗口、键盘、长文本和错误提示。</li>
 <li><strong>状态</strong>：重绘保留编辑，旧保存回执不覆盖新输入，取消后不继续。</li>

@@ -1,20 +1,16 @@
 import { app, BrowserWindow, nativeImage, Notification } from 'electron'
 import { dirname, join } from 'node:path'
 import { createHash } from 'node:crypto'
-import {
-  attentionSnapshot,
-  ATTENTION_PATH,
-  type AttentionItem,
-  type AttentionSnapshot,
-} from '../attention.ts'
+import { attentionSnapshot, type AttentionItem, type AttentionSnapshot } from '../attention.ts'
 import { AttentionDelivery, type AttentionCursor } from './attention.ts'
+import { attentionPath, notificationText, reminderSummary, withoutMarkdown } from './summary.ts'
 import { badgeBitmap, BADGE_SIZE, watchBadgeRestore } from './badge.ts'
 import { desktopStorage } from './storage'
 import { desktopDirectoryWriter } from './writer'
 import { readRecord, writeJson } from './journal.ts'
 import { loadRendererPreferences } from './preferences'
 import { mainLocalization } from './localization'
-import { notificationAttentionId, type WindowsNotifications } from './notification.ts'
+import { isNotificationAttentionId, type WindowsNotifications } from './notification.ts'
 import {
   ATTENTION_STATE_CHANNEL,
   NOTIFICATION_CHANNEL,
@@ -27,7 +23,6 @@ import {
 const ATTENTION_CURSOR_FILE = 'attention-cursor.json'
 const ATTENTION_CURSOR_MAX_BYTES = 4096
 const ATTENTION_GROUP = 'scholarseed-attention'
-const ATTENTION_TEXT_LIMIT = 500
 const ATTENTION_SCOPE_LENGTH = 16
 const MACOS_PLATFORM = 'darwin'
 const WINDOWS_PLATFORM = 'win32'
@@ -196,7 +191,7 @@ export class DesktopReminders {
         const window = this.dependencies.window()
         if (!window) throw new Error('Notification window unavailable')
         const response = await window.webContents.session.fetch(
-          `${this.dependencies.base()}${ATTENTION_PATH}`,
+          `${this.dependencies.base()}${attentionPath(this.snapshot)}`,
           {
             signal,
             headers: { 'cache-control': 'no-cache' },
@@ -215,8 +210,8 @@ export class DesktopReminders {
       },
       (snapshot) => {
         this.delivery.accept(snapshot)
-        this.snapshot = snapshot
-        this.dependencies.window()?.webContents.send(ATTENTION_STATE_CHANNEL, snapshot)
+        this.snapshot = withoutMarkdown(snapshot)
+        this.dependencies.window()?.webContents.send(ATTENTION_STATE_CHANNEL, this.snapshot)
         this.lastError = ''
       },
       (error) => this.logError(error)
@@ -294,16 +289,23 @@ export class DesktopReminders {
   private show(item: AttentionItem): void {
     try {
       const translate = mainLocalization().getFixedT(null, 'native')
-      const title = (
+      const title = notificationText(
         item.title_fallback === 'new_session' || !item.title.trim()
           ? translate('notifications.title')
           : item.title.trim()
-      ).slice(0, ATTENTION_TEXT_LIMIT)
-      const summary = item.body.trim() || translate('notifications.fallback')
-      const body = translate(`notifications.${item.kind}`, {
-        summary,
-        interpolation: { escapeValue: false },
-      }).slice(0, ATTENTION_TEXT_LIMIT)
+      )
+      let summary = ''
+      try {
+        summary = reminderSummary(item)
+      } catch (error) {
+        this.logError(error)
+      }
+      const body = notificationText(
+        translate(`notifications.${item.kind}`, {
+          summary: summary.trim() || translate('notifications.fallback'),
+          interpolation: { escapeValue: false },
+        })
+      )
       const silent = !loadRendererPreferences().soundAlerts
       if (this.dependencies.windows) {
         this.dependencies.windows.show(
@@ -338,7 +340,7 @@ export class DesktopReminders {
   }
 
   private bind(notification: Notification, id: string): void {
-    if (!notificationAttentionId(`scholarseed://notification/${id}`)) return
+    if (!isNotificationAttentionId(id)) return
     this.notifications.set(id, notification)
     notification.on('click', () => this.dependencies.activate(id))
   }

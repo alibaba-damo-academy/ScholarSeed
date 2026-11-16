@@ -1,4 +1,5 @@
 """Public, compact operations for task decisions and per-paper/figure inputs."""
+from citation_identity import normalize_outline
 from confirmation import lock, SECONDS, packet_identity
 from review_timeout import status, record_response_locked
 import publication as publication_choices
@@ -8,7 +9,7 @@ import shutil
 import uuid
 from task_contract import read_request, atomic_json, json_input, publication_view, configure, digest
 
-from paper_materials import load, material_state
+from paper_materials import load, material_state, retry_extraction
 from local_papers import import_pdfs
 from local_papers import budget
 from manuscript import validate_plan
@@ -24,16 +25,30 @@ from manuscript import check_contract
 from validate_figures_meta import _shape_errors
 from figure_caption import caption_text
 from figure_dependencies import context
+from materials import import_materials
+from budget import search_started, timing
+from planning import require_plan, completed_outline_amendment, resume_outline_amendment, begin_outline_amendment, complete_outline_amendment
 
 APPROVAL_FIELDS = {'packet_id','user_response','publication','message_id'}
 FIGURE_RENDER_FIELDS = {'_render_mode','_prompt','_caption','_latex_body','_image_size','_chart_spec'}
 
 def papers(workspace,action,ids,request=None):
     ws=Path(workspace)
+    if action=='retry-extraction':
+        return retry_extraction(ws, ids)
+    if action=='import-selected':
+        return import_materials(ws,request)
     if action=='import-local':
         return import_pdfs(ws,request)
     if action=='budget':
-        return {'status':'SUCCESS',**budget(ws)}
+        require_plan(ws)
+        result={'status':'SUCCESS',**budget(ws)}
+        if result.get('state')=='waiting_materials':
+            result.update(status='WAITING_MATERIALS',next_action='Wait for original abstracts or an explicit source-policy change; preserve every pending ref.')
+        result['processing_time']=timing(ws)
+        if result['search_target']:
+            search_started(ws)
+        return result
     if action!='show':raise ValueError('papers supports show, import-local and budget')
     if not ids: raise ValueError('papers show requires --ids; use status for the corpus summary')
     selected=load(ws/'02_retrieval/selected_paper.json',{}); info=load(ws/'02_retrieval/paper_info.json',{})
@@ -50,12 +65,13 @@ def configure_outline(ws,value):
 
 def _configure_outline(ws,value):
     ws=Path(ws)
-    normalized=outline_assets(value)
+    normalized, id_changes = normalize_outline(ws, outline_assets(value))
     validate_plan(ws,normalized)
     select_outline(normalized,read_request(ws))
     atomic_json(ws/'04_outline/outline.json',normalized)
+    atomic_json(ws/'_logs/outline_identity.json', {'changes': id_changes})
     (ws/'04_outline/outline.md').write_text(render(normalized),encoding='utf-8')
-    return {'status':'SUCCESS','artifact':str(ws/'04_outline/outline.json'),
+    return {'status':'SUCCESS','artifact':str(ws/'04_outline/outline.json'), 'id_normalizations': id_changes,
 
             'next_action':'Display the revised outline review-packet and honor applicable approval before preparing chapter tasks. Revision was saved without an LLM call.'}
 
@@ -78,7 +94,7 @@ def _review_packet(ws):
     publication=publication_view(read_request(ws))
     if publication.get('format')=='latex_pdf' and publication_language(
             resolved_language_map(outline,read_request(ws)['language']))=='chinese':
-        publication['template']='ctexart'
+        publication['template']='standard_chinese'
     publication_display={
         'format':options.get('format_labels',{}).get(publication.get('format'),publication.get('format')),
         'citation_style':next((row.get('label',row['id']) for row in options['citation_styles']
@@ -97,13 +113,13 @@ def _review_packet(ws):
         action='The current outline/task/publication snapshot already has a real approval; continue with manuscript prepare without another question.'
     elif timed:
         action=('Display the publication settings, then call scholarseed_bridge literature.review checkpoint=outline. '
-                'The product confirmation card owns the five-minute wait. Save its confirmation receipt unchanged and call writing review-complete --request FILE. '
+                'The product confirmation card owns the five-minute wait. Call writing review-complete --receipt REF using its saved receipt_ref. '
                 'Do not run review-start/review-wait alongside the bridge. Deliver a timeout notice before manuscript prepare; do not fabricate user approval.')
     else:
         action=('Retain publication choices explicitly stated by the user; do not ask the user to choose them again. '
                 'The current review still needs a real confirmation: ask once for missing choices or confirmation of the current settings, offering only usable options, '
-                'Use scholarseed_bridge literature.review checkpoint=outline and consume its confirmation receipt with writing review-complete. '
-                'Then record an actual confirmation with writing approve --request. Configured defaults alone are not user approval.')
+                'Use scholarseed_bridge literature.review checkpoint=outline and consume its receipt_ref with writing review-complete --receipt REF. '
+                'Then record actual confirmation with writing approve --receipt REF. Configured defaults alone are not user approval.')
     result={'status':'SUCCESS','packet_id':packet_id or uuid.uuid4().hex,'snapshot':snapshot,'outline':outline,
         'outline_markdown':rendered,'display_instructions':display+' '+action,
         'publication':publication, 'publication_display':publication_display, 'options':options,
@@ -118,7 +134,7 @@ def _review_packet(ws):
         result['confirmation'].update(wait_state,timeout_seconds=SECONDS,
             timeout_notice=('请在 5 分钟内确认或提出修改；若未回复，将按以上推荐设置继续。' if read_request(ws)['language']=='CHINESE' else
                             'Please confirm or request changes within five minutes. Without a reply, the displayed settings will be used.'),
-            host_integration='ScholarSeed: call the outline review bridge and consume its confirmation with writing review-complete; do not start a second timer. Standalone hosts must provide their own display and interruptible wait.')
+            host_integration='ScholarSeed: call the outline review bridge and pass its receipt_ref to writing review-complete --receipt; do not start a second timer. Standalone hosts must provide their own display and interruptible wait.')
         if wait_state['state']!='awaiting_display':
             result['next_action']=display+' '+wait_state['next_action']
             result['display_instructions']=result['next_action']
@@ -139,18 +155,40 @@ def _approve(ws,decision):
     packet_path=ws/'04_outline/review_packet.json'
     if not packet_path.exists(): raise ValueError('display outline review-packet before recording a decision')
     packet=json.loads(packet_path.read_text())
-    if decision.get('packet_id')!=packet['packet_id'] or packet['snapshot']!=approval_snapshot(ws): raise ValueError('decision belongs to a stale outline or task; display the current packet')
+    completed=completed_outline_amendment(ws,packet,decision)
+    if completed:
+        if completed.get('snapshot')!=approval_snapshot(ws):
+            raise ValueError('completed outline decision belongs to a stale outline')
+        return completed
+    pending=resume_outline_amendment(ws,packet,decision)
+    current_snapshot=approval_snapshot(ws)
+    permitted=[packet['snapshot']]
+    if pending:
+        permitted.append({**packet['snapshot'],'publication':pending['target']['publication']})
+    if decision.get('packet_id')!=packet['packet_id'] or current_snapshot not in permitted: raise ValueError('decision belongs to a stale outline or task; display the current packet')
+    if not pending:
+        require_plan(ws)
     record_response_locked(ws,decision['packet_id'],decision['user_response'],decision.get('message_id'))
     publication=decision.get('publication',{})
     if not isinstance(publication,dict):raise ValueError('publication must be an object')
-    if 'template' in publication:
+    if 'template' in publication and not (publication['template'] is None
+            and publication.get('format',packet['publication']['format'])=='markdown'):
         validate_template_value(publication['template'])
     choice={**packet['publication'],**publication}
     publication_choices.validate_publication_choice(ws,choice)
-    configure(ws,{'publication':choice})
+    current_publication=publication_view(read_request(ws))
+    changes={field:value for field,value in choice.items() if value is not None and value!=current_publication.get(field)}
+    if changes and not pending:
+        pending=begin_outline_amendment(ws,packet,decision,changes)
+    if pending:
+        configure(ws,{'publication':pending['target']['request']['publication']})
+    elif changes:
+        configure(ws,{'publication':changes})
     result={'status':'SUCCESS','snapshot':approval_snapshot(ws),'decision_source':'user','user_response':decision['user_response'],
-            'publication':choice,'message_id':decision.get('message_id'),'source_packet_id':packet['packet_id']}
+            'publication':publication_view(read_request(ws)),'message_id':decision.get('message_id'),'source_packet_id':packet['packet_id']}
     atomic_json(ws/'04_outline/approval.json',result)
+    if pending:
+        complete_outline_amendment(ws,packet,decision,result)
     return result
 
 

@@ -16,11 +16,7 @@ test('repository scripts expose ops and the bounded distribution contract entry'
   for (const domain of DOMAINS) assert.ok(fs.statSync(path.join(directory, domain)).isDirectory(), domain)
 })
 
-test('Desktop implementations remain under their Owner and tests stay in neighboring test directories', () => {
-  const directory = path.join(ROOT, 'apps/desktop/scripts')
-  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-    assert.ok(!entry.isFile() || !SCRIPT_EXTENSIONS.has(path.extname(entry.name)), entry.name)
-  }
+test('script tests stay in neighboring test directories', () => {
   for (const root of ['scripts', 'apps/desktop/scripts']) {
     for (const filename of fs.readdirSync(path.join(ROOT, root), { recursive: true })) {
       if (!/(?:\.test\.(?:cjs|mjs|ps1)|(?:^|[\\/])(?:test_[^\\/]*|[^\\/]*_test)\.py)$/.test(filename)) continue

@@ -15,6 +15,7 @@ export const FEEDBACK_LIMITS = Object.freeze({
   bundleBytes: 40 * 1024 * 1024,
   responseBytes: 256 * 1024,
   hostBytes: 256 * 1024,
+  updateLogBytes: 256 * 1024,
   submitTimeoutMs: 60000,
   collectionTimeoutMs: 10000,
   credentialTimeoutMs: 5000,

@@ -12,7 +12,15 @@ from typing import Any
 import pypdfium2
 from PIL import Image
 from pypdf import PdfReader, PdfWriter
-from pypdf.generic import DecodedStreamObject, NameObject, RectangleObject
+from pypdf.generic import (
+    ArrayObject,
+    DecodedStreamObject,
+    DictionaryObject,
+    FloatObject,
+    NameObject,
+    RectangleObject,
+    TextStringObject,
+)
 from reportlab.lib.utils import ImageReader, simpleSplit
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
@@ -441,3 +449,63 @@ __all__ = [
     "get_text_length",
     "open",
 ]
+
+
+def annotated_pdf(*, rotation: int = 0, crop: bool = False) -> bytes:
+    stream = BytesIO()
+    canvas = Canvas(stream, pagesize=(600, 800))
+    canvas.setFont("Helvetica", 12)
+    canvas.drawString(60, 700, "Left evidence")
+    canvas.drawString(300, 700, "Unselected column")
+    canvas.drawString(60, 670, "Second line")
+    canvas.save()
+    writer = PdfWriter(clone_from=PdfReader(BytesIO(stream.getvalue())))
+
+    def numbers(values: list[float]) -> ArrayObject:
+        return ArrayObject([FloatObject(value) for value in values])
+
+    highlight = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Annot"),
+            NameObject("/Subtype"): NameObject("/Highlight"),
+            NameObject("/NM"): TextStringObject("external-highlight"),
+            NameObject("/Rect"): numbers([58, 666, 145, 712]),
+            NameObject("/QuadPoints"): numbers(
+                [58, 712, 145, 712, 58, 696, 145, 696, 58, 682, 130, 682, 58, 666, 130, 666]
+            ),
+            NameObject("/Contents"): TextStringObject("原来的评论"),
+            NameObject("/T"): TextStringObject("Reader"),
+            NameObject("/C"): numbers([1, 1, 0]),
+        }
+    )
+    parent = writer.add_annotation(0, highlight)
+    writer.add_annotation(
+        0,
+        DictionaryObject(
+            {
+                NameObject("/Type"): NameObject("/Annot"),
+                NameObject("/Subtype"): NameObject("/Text"),
+                NameObject("/Rect"): numbers([150, 690, 170, 710]),
+                NameObject("/Contents"): TextStringObject("明确回复"),
+                NameObject("/IRT"): parent.indirect_reference,
+            }
+        ),
+    )
+    writer.add_annotation(
+        0,
+        DictionaryObject(
+            {
+                NameObject("/Type"): NameObject("/Annot"),
+                NameObject("/Subtype"): NameObject("/FreeText"),
+                NameObject("/Rect"): numbers([200, 600, 250, 630]),
+                NameObject("/Contents"): TextStringObject("独立的阅读想法"),
+            }
+        ),
+    )
+    if crop:
+        writer.pages[0].cropbox = RectangleObject((20, 30, 580, 770))
+    if rotation:
+        writer.pages[0].rotate(rotation)
+    output = BytesIO()
+    writer.write(output)
+    return output.getvalue()

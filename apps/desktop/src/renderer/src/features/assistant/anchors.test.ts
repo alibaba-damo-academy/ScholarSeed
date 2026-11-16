@@ -6,10 +6,44 @@ import type { ConvItem } from '../../model.ts'
 import {
   ANSWER_ANNOTATION_LOCATION,
   locateAnswerAnnotation,
-  sha256Text
+  reusableAnswerAnnotation,
+  sha256Text,
 } from './anchors.ts'
 
 const ANSWER_TEXT = '甲😀乙，保留这一段。'
+
+test('only the identical persisted answer selection can be re-enqueued without losing its note', async () => {
+  const existing = await annotation()
+  const input = { ...existing, enqueue: true }
+  assert.equal(
+    reusableAnswerAnnotation([existing], existing.session_id, existing.answer_id, input),
+    existing
+  )
+  for (const patch of [
+    { start_utf16: 0 },
+    { end_utf16: 4 },
+    { answer_revision: 'changed' },
+    { selected_text_hash: 'changed' },
+    { enqueue: false },
+  ]) {
+    assert.equal(
+      reusableAnswerAnnotation([existing], existing.session_id, existing.answer_id, {
+        ...input,
+        ...patch,
+      }),
+      undefined
+    )
+  }
+  assert.equal(
+    reusableAnswerAnnotation([existing], 'another-session', existing.answer_id, input),
+    undefined
+  )
+  assert.equal(
+    reusableAnswerAnnotation([existing], existing.session_id, 'another-answer', input),
+    undefined
+  )
+  assert.equal(existing.comment, '保留表情')
+})
 
 async function annotation(overrides: Partial<AnswerAnnotation> = {}): Promise<AnswerAnnotation> {
   return {
@@ -29,18 +63,20 @@ async function annotation(overrides: Partial<AnswerAnnotation> = {}): Promise<An
     revision: 1,
     created_at: 1,
     updated_at: 1,
-    ...overrides
+    ...overrides,
   }
 }
 
 function conversation(text = ANSWER_TEXT): ConvItem[] {
-  return [{
-    kind: 'agent',
-    text,
-    eventSeq: 12,
-    turnId: 'turn-restored',
-    itemId: 'item-restored'
-  }]
+  return [
+    {
+      kind: 'agent',
+      text,
+      eventSeq: 12,
+      turnId: 'turn-restored',
+      itemId: 'item-restored',
+    },
+  ]
 }
 
 test('locates an immutable answer annotation by product sequence and UTF-16 hashes', async () => {
@@ -58,12 +94,14 @@ test('keeps an annotation located when the answer grows after selection', async 
 })
 
 test('locates commentary annotated before its turn completes', async () => {
-  const result = await locateAnswerAnnotation(await annotation(), [{
-    kind: 'thinking',
-    text: `${ANSWER_TEXT}后续内容`,
-    turnId: 'turn-1',
-    itemId: 'item-old'
-  }])
+  const result = await locateAnswerAnnotation(await annotation(), [
+    {
+      kind: 'thinking',
+      text: `${ANSWER_TEXT}后续内容`,
+      turnId: 'turn-1',
+      itemId: 'item-old',
+    },
+  ])
   assert.equal(result.status, ANSWER_ANNOTATION_LOCATION.AVAILABLE)
 })
 
@@ -76,11 +114,13 @@ test('reports a lost position instead of fuzzy matching changed answer text', as
 })
 
 test('reports an unavailable answer when the product event is not accessible', async () => {
-  const result = await locateAnswerAnnotation(await annotation(), [{
-    kind: 'agent',
-    text: ANSWER_TEXT,
-    eventSeq: 99
-  }])
+  const result = await locateAnswerAnnotation(await annotation(), [
+    {
+      kind: 'agent',
+      text: ANSWER_TEXT,
+      eventSeq: 99,
+    },
+  ])
   assert.equal(result.status, ANSWER_ANNOTATION_LOCATION.UNAVAILABLE)
 })
 
@@ -89,7 +129,7 @@ test('falls back to the exact runtime identity before a product sequence is proj
     kind: 'agent',
     text: ANSWER_TEXT,
     turnId: 'turn-1',
-    itemId: 'item-old'
+    itemId: 'item-old',
   }
   const result = await locateAnswerAnnotation(await annotation(), [item])
   assert.equal(result.status, ANSWER_ANNOTATION_LOCATION.AVAILABLE)

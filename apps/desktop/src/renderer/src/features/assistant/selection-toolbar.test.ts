@@ -2,13 +2,18 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-import {
-  selectionToolbarPosition,
-  shouldClosePointerToolbar
-} from './selection-toolbar.ts'
+import { selectionToolbarPosition, shouldClosePointerToolbar } from './selection-toolbar.ts'
 
 const LEFT_BUTTON = 0
 const RIGHT_BUTTON = 2
+
+test('selection actions keep their intrinsic width outside the conversation clipping boundary', () => {
+  const source = readFileSync(new URL('./Annotations.tsx', import.meta.url), 'utf8')
+  assert.match(source, /createPortal\(/)
+  assert.match(source, /!fixed[^`]+w-max/)
+  assert.doesNotMatch(source, /SELECTION_TOOLBAR_MAX_WIDTH_PX|width: draft.width|overflow-x-auto/)
+  assert.match(source, /flex w-max flex-nowrap/)
+})
 
 test('a right-click on the selected text keeps the toolbar and selection intact', () => {
   // Right-click on the annotated selection: the native copy menu owns this
@@ -47,7 +52,7 @@ test('selection toolbar keeps its placement inside the boundary hysteresis', () 
     selectionTop: 260,
     toolbarHeight: 45,
     visibleBottom: 321,
-    visibleTop: 20
+    visibleTop: 20,
   })
 
   assert.equal(position.placement, 'below')
@@ -62,7 +67,7 @@ test('selection toolbar changes placement when only the other side fits', () => 
     selectionTop: 280,
     toolbarHeight: 48,
     visibleBottom: 320,
-    visibleTop: 20
+    visibleTop: 20,
   })
 
   assert.equal(position.placement, 'above')
@@ -78,7 +83,7 @@ test('selection toolbar position is normalized to a device pixel', () => {
     selectionTop: 220.34,
     toolbarHeight: 40.2,
     visibleBottom: 500,
-    visibleTop: 20
+    visibleTop: 20,
   })
 
   assert.equal(position.top, 140)

@@ -1,8 +1,38 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { answerProjectSource, projectSource, sharedTaskSources, taskSources } from './sources.ts'
+import {
+  answerProjectSource,
+  projectSource,
+  projectSourceName,
+  sharedTaskSources,
+  taskSources,
+} from './sources.ts'
 import type { ConvItem } from '../../model.ts'
+
+test('project source names come from identity rather than abbreviated answer labels', () => {
+  assert.equal(
+    projectSourceName({ kind: 'resource', path: '资料/完整的原始无页码文本.txt' }, []),
+    '完整的原始无页码文本.txt'
+  )
+  assert.equal(
+    projectSourceName({ kind: 'literature', id: 'paper' }, [
+      {
+        id: 'paper',
+        kind: 'file',
+        title: 'Complete paper title',
+        reference: {
+          id: 'paper',
+          type: 'assistant_context',
+          kind: 'literature',
+          title: 'Complete paper title',
+        },
+      },
+    ]),
+    'Complete paper title'
+  )
+  assert.equal(projectSourceName({ kind: 'literature', id: 'missing' }, []), undefined)
+})
 
 test('answer paths resolve only observed resources in the owning project', () => {
   const sources = taskSources(

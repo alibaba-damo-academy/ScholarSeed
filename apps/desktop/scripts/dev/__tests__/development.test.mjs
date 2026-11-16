@@ -15,6 +15,12 @@ async function fixture(context, invalid = false) {
   await fs.writeFile(path.join(root, 'out/main/index.js'), 'canonical sentinel')
   await fs.writeFile(path.join(root, 'main.ts'), invalid ? 'export const invalid = ;' : 'export const candidate = 42')
   await fs.writeFile(path.join(root, 'preload.ts'), 'export const preload = 43')
+  await fs.mkdir(path.join(root, 'renderer'))
+  for (const name of ['index', 'menu', 'overlay', 'monaco']) {
+    await fs.writeFile(path.join(root, 'renderer', name + '.html'),
+      `<html><body>${name}<script type="module" src="./entry.js"></script></body></html>`)
+  }
+  await fs.writeFile(path.join(root, 'renderer/entry.js'), 'document.body.dataset.ready = "true"')
   await fs.writeFile(path.join(root, '.env.development'), 'BROWSER=candidate-browser\nBROWSER_ARGS=candidate-arguments\nNODE_ENV=development\n')
   await fs.writeFile(path.join(root, 'electron.vite.config.ts'), `
 import { resolve } from 'node:path'
@@ -30,9 +36,13 @@ export async function desktopConfiguration({ protectedOutputRoot }) {
       if (name === 'main') this.emitFile({ type: 'asset', fileName: 'lease.node', source: 'fixture native bytes' })
     }
   }], build: {
-    watch: {}, rollupOptions: { input: resolve(__dirname, name + '.ts') }
+    watch: {}, rolldownOptions: { input: resolve(__dirname, name + '.ts') }
   } })
-  return { main: target('main'), preload: target('preload'), renderer: { root: resolve(__dirname, 'renderer'), server: { host: '127.0.0.1', port: 5891, strictPort: true } } }
+  return { main: target('main'), preload: target('preload'), renderer: {
+    root: resolve(__dirname, 'renderer'), base: './',
+    build: { rolldownOptions: { input: Object.fromEntries(['index', 'menu', 'overlay', 'monaco'].map(name => [name, resolve(__dirname, 'renderer', name + '.html')])) } },
+    server: { host: '127.0.0.1', port: 5891, strictPort: true }
+  } }
 }
 `)
   return root
@@ -57,6 +67,28 @@ test('compiles actual Vite main/preload builds into a new isolated candidate', a
   assert.equal(result.rendererConfig.root, path.join(await fs.realpath(root), 'renderer'))
   assert.equal(result.rendererConfig.server.port, 5891)
   assert.equal(result.rendererConfig.server.strictPort, true)
+  await assert.rejects(fs.access(path.join(result.renderer, 'index.html')), { code: 'ENOENT' })
+  assert.ok(result.rendererConfig.build.rolldownOptions.input.index)
+})
+
+test('candidate configuration resolves project-local external build dependencies', async context => {
+  const root = await fixture(context)
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), 'candidate-outside-project-'))
+  context.after(() => fs.rm(parent, { recursive: true, force: true }))
+  const dependency = path.join(root, 'node_modules', 'candidate-tool')
+  await fs.mkdir(dependency, { recursive: true })
+  await fs.writeFile(path.join(dependency, 'package.json'), JSON.stringify({
+    name: 'candidate-tool', version: '1.0.0', type: 'module', exports: './index.js',
+  }))
+  await fs.writeFile(path.join(dependency, 'index.js'), "export const marker = 'project dependency'\n")
+  const configuration = path.join(root, 'electron.vite.config.ts')
+  const original = await fs.readFile(configuration, 'utf8')
+  await fs.writeFile(configuration,
+    "import { marker } from 'candidate-tool'\nif (marker !== 'project dependency') throw new Error('wrong project dependency')\n" + original)
+  const candidate = await compileCandidate({ desktopRoot: root, parentDirectory: parent })
+  assert.match(await fs.readFile(path.join(candidate.main, 'main.js'), 'utf8'), /42/)
+  assert.equal(await fs.readFile(path.join(root, 'out/main/index.js'), 'utf8'), 'canonical sentinel')
+  assert.equal(await fs.readFile(path.join(candidate.preload, 'hook.txt'), 'utf8'), 'owner hook retained')
 })
 
 test('publication requires owned unchanged candidate and explicit stopped-instance contract', async context => {
@@ -98,10 +130,15 @@ test('publication commits complete outputs and retains old protected generations
   await assert.rejects(publishCandidate(candidate, root, { previousStopped: true }), /not ready/)
   assert.match(await fs.readFile(path.join(root, 'out/main/main.js'), 'utf8'), /42/)
   assert.match(await fs.readFile(path.join(root, 'out/preload/preload.js'), 'utf8'), /43/)
+  for (const name of ['menu', 'overlay', 'monaco']) {
+    const html = await fs.readFile(path.join(root, 'out/renderer', name + '.html'), 'utf8')
+    const resource = html.match(/src="([^"]+)"/)[1]
+    assert.ok((await fs.stat(path.resolve(root, 'out/renderer', resource))).isFile())
+  }
   assert.equal(await fs.readFile(path.join(root, 'out/protected/existing'), 'utf8'), 'protected sentinel')
   assert.equal(await fs.readFile(path.join(root, 'out/protected/generation/manifest.json'), 'utf8'), 'protected candidate')
   await publication.commit()
-  assert.deepEqual((await fs.readdir(path.join(root, 'out'))).sort(), ['main', 'preload', 'protected'])
+  assert.deepEqual((await fs.readdir(path.join(root, 'out'))).sort(), ['main', 'preload', 'protected', 'renderer'])
   await assert.rejects(publication.rollback({ previousStopped: true }), /no longer pending/)
 })
 

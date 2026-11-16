@@ -1,3 +1,4 @@
+import type * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import type { CSSProperties, HTMLAttributes } from 'react'
 
@@ -20,7 +21,7 @@ export interface IconFontProps extends HTMLAttributes<HTMLSpanElement> {
   style?: CSSProperties
 }
 
-export function IconFont({ type, className = '', style, ...props }: IconFontProps): JSX.Element {
+export function IconFont({ type, className = '', style, ...props }: IconFontProps): React.JSX.Element {
   const iconClassName = type.startsWith('icon-') ? type : `icon-${type}`
   const mergedClassName = [ICON_CLASS_NAME, iconClassName, className].filter(Boolean).join(' ')
 
@@ -47,7 +48,7 @@ export function MissingIcon({
   className = '',
   style,
   ...props
-}: MissingIconProps): JSX.Element {
+}: MissingIconProps): React.JSX.Element {
   const { t } = useTranslation('ui')
   const missingLabel = name ? t('icon.missingNamed', { name }) : t('icon.missing')
   const mergedClassName = [MISSING_ICON_CLASS_NAME, className].filter(Boolean).join(' ')

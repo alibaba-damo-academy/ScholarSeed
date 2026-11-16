@@ -10,7 +10,7 @@ import shutil
 import time
 import uuid
 from collections import deque
-from contextlib import AbstractAsyncContextManager, AsyncExitStack
+from contextlib import AbstractAsyncContextManager, AbstractContextManager, AsyncExitStack, nullcontext
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from functools import partial
@@ -25,11 +25,11 @@ from scholarseed_codex.activity import (
 )
 from scholarseed_codex.admission import NativeAdmission, NativeQuiescence
 from scholarseed_codex.attachment import ThreadAttachment
+from scholarseed_codex.capacity import CODEX_THREAD_UNLOAD_CONFIG
 from scholarseed_codex.diagnostic import (
     THREAD_HISTORY_MISSING_ERROR,
     UNSPECIFIED_REASON,
     enable_mcp_diagnostics,
-    native_diagnostic,
     stream_diagnostics,
 )
 from scholarseed_codex.emitter import CodexEmitter
@@ -38,7 +38,7 @@ from scholarseed_codex.environment import (
     CODEX_RUNTIME_HOME,
     process_environment_snapshot,
 )
-from scholarseed_codex.executable import _resolve_launch_arguments
+from scholarseed_codex.executable import _parse_codex_version, _resolve_launch_arguments
 from scholarseed_codex.history import (
     history_entries,
     resume_turn_snapshots,
@@ -67,6 +67,7 @@ from scholarseed_codex.permission import (
     reviewer_only_update,
     sandbox_policy,
 )
+from scholarseed_codex.profile import CODEX_SAMPLE_MIN_VERSION
 from scholarseed_codex.protocol.mcp import JsonValue
 from scholarseed_codex.protocol.session import (
     CodexRuntimeIdentity,
@@ -165,15 +166,22 @@ from scholarseed_runtime.contract.sandbox import (
 from scholarseed_runtime.contract.session import RUNTIME_SUSPEND_BUSY, RUNTIME_SUSPEND_STALE
 
 LOGGER = logging.getLogger(__name__)
+INITIALIZE_METHOD = "initialize"
+CODEX_SAMPLE_METHOD = "thread/sample"
+CODEX_SAMPLE_CANCEL_METHOD = "thread/sample/cancel"
+CODEX_SAMPLE_TIMEOUT_SECONDS = 40
 
 NATIVE_PROCESS_NOT_READY = "native_process_not_ready"
 NATIVE_COMMAND_UNSETTLED = "native_command_unsettled"
 NATIVE_CALLBACK_PENDING = "native_callback_pending"
 THREAD_CONFIGURATION_MISMATCH = "codex_thread_configuration_mismatch"
 THREAD_UNSUBSCRIBE_METHOD = "thread/unsubscribe"
+THREAD_UNLOAD_DELAY_SECONDS = 0
+THREAD_UNLOAD_TIMEOUT = "codex_thread_unload_timeout"
 THREAD_ID_KEY = "threadId"
 UNSUBSCRIBE_STATUS_KEY = "status"
-THREAD_UNSUBSCRIBE_STATUSES = frozenset({"unsubscribed", "notSubscribed", "notLoaded"})
+THREAD_NOT_LOADED_STATUS = "notLoaded"
+THREAD_UNSUBSCRIBE_STATUSES = frozenset({"unsubscribed", "notSubscribed", THREAD_NOT_LOADED_STATUS})
 SUBAGENT_PROGRESS_INTERVAL_SECONDS = 15
 SUBAGENT_STREAM_ACTIVITIES = {
     "item/agentMessage/delta": "message",
@@ -253,6 +261,7 @@ class CodexProcessHost:
         sandbox_resources: SandboxResources | None = None,
         sandbox_recovery: SandboxRecovery | None = None,
         startup_scope: Callable[[], AbstractAsyncContextManager[None]] | None = None,
+        runtime_descriptors: Callable[[], AbstractContextManager[tuple[int, ...]]] | None = None,
         provider_configuration: Mapping[str, Any] | None = None,
     ) -> None:
         self.executable = executable or shutil.which(CODEX_DEFAULT_BIN) or CODEX_DEFAULT_BIN
@@ -266,6 +275,7 @@ class CodexProcessHost:
         }
         self.launch_arguments = tuple(launch_arguments)
         self._startup_scope = startup_scope
+        self._runtime_descriptors = runtime_descriptors
         self.provider_configuration = dict(provider_configuration or {})
         self._mcp_environment: tuple[tuple[str, str], ...] | None = None
         self._sandbox = WindowsSandboxBootstrap(
@@ -333,7 +343,11 @@ class CodexProcessHost:
 
     @property
     def reusable(self) -> bool:
-        return not self._unconfirmed_attachment_generations and not self.admission.failed
+        return (
+            not self._unconfirmed_attachment_generations
+            and not self.admission.failed
+            and not self.admission.retired
+        )
 
     def _unconfirm_attachment(self, generation: int) -> None:
         if generation not in self._exited_generations:
@@ -642,19 +656,38 @@ class CodexProcessHost:
         self._record_activity(thread_id)
         return True
 
-    async def suspend_thread(self, thread_id: str, expected_generation: int) -> None:
+    async def suspend_thread(
+        self, thread_id: str, expected_generation: int, *, wait_closed: bool = False
+    ) -> None:
         if expected_generation != self._generation:
             raise AppServerError(RUNTIME_SUSPEND_STALE, safe_error=RUNTIME_SUSPEND_STALE)
         if self.suspend_blockers(thread_id):
             raise AppServerError(RUNTIME_SUSPEND_BUSY, safe_error=RUNTIME_SUSPEND_BUSY)
         state = self.attachment(thread_id)
-        result = await self.request(
-            THREAD_UNSUBSCRIBE_METHOD,
-            {THREAD_ID_KEY: thread_id},
-            generation=expected_generation,
-        )
-        if result.get(UNSUBSCRIBE_STATUS_KEY) not in THREAD_UNSUBSCRIBE_STATUSES:
-            raise AppServerError(RUNTIME_SUSPEND_STALE, safe_error=RUNTIME_SUSPEND_STALE)
+        confirmation = asyncio.get_running_loop().create_future() if wait_closed else None
+        state.unload_confirmation = confirmation
+        try:
+            result = await self.request(
+                THREAD_UNSUBSCRIBE_METHOD,
+                {THREAD_ID_KEY: thread_id},
+                generation=expected_generation,
+            )
+            if result.get(UNSUBSCRIBE_STATUS_KEY) not in THREAD_UNSUBSCRIBE_STATUSES:
+                raise AppServerError(RUNTIME_SUSPEND_STALE, safe_error=RUNTIME_SUSPEND_STALE)
+            if (
+                confirmation is not None
+                and result.get(UNSUBSCRIBE_STATUS_KEY) != THREAD_NOT_LOADED_STATUS
+            ):
+                try:
+                    await asyncio.wait_for(asyncio.shield(confirmation), timeout=self.rpc_timeout)
+                except TimeoutError as error:
+                    raise AppServerError(
+                        "Codex thread unload was not confirmed", safe_error=THREAD_UNLOAD_TIMEOUT
+                    ) from error
+        finally:
+            state.unload_confirmation = None
+            if confirmation is not None and not confirmation.done():
+                confirmation.cancel()
         if expected_generation != self._generation:
             raise AppServerError(RUNTIME_SUSPEND_STALE, safe_error=RUNTIME_SUSPEND_STALE)
         await self._watcher.close(state.turn, self._generation, True)
@@ -674,9 +707,15 @@ class CodexProcessHost:
     ) -> None:
         if expected_generation != self._generation:
             raise AppServerError(RUNTIME_SUSPEND_STALE, safe_error=RUNTIME_SUSPEND_STALE)
-        if self._threads or self._pending_hil or self._pending_tools:
+        if (
+            self._threads
+            or self._pending_hil
+            or self._pending_tools
+            or self._unconfirmed_attachment_generations
+            or self.admission.active
+        ):
             raise AppServerError(RUNTIME_SUSPEND_BUSY, safe_error=RUNTIME_SUSPEND_BUSY)
-        if self._known_roots:
+        if self._known_roots and self._proc is not None and self._proc.returncode is None:
             activity_revision = self._activity_revision
             with observation.phase("native_activity_inspection"):
                 activity = await NativeActivity(self, known_roots=self.known_roots).inspect()
@@ -926,17 +965,22 @@ class CodexProcessHost:
         if self._sandbox.enabled:
             arguments.extend((SANDBOX_READONLY_ARGUMENT.option, SANDBOX_READONLY_ARGUMENT.value))
 
+        launch_started = time.perf_counter()
+        LOGGER.info("codex_launch_stage generation=%s stage=spawn event=started", generation)
         try:
-            proc = await asyncio.create_subprocess_exec(
-                self.executable,
-                *arguments,
-                cwd=str(self.launch_cwd),
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                limit=CODEX_STREAM_LIMIT_BYTES,
-                env=child_environment,
-            )
+            descriptor_scope = self._runtime_descriptors or (lambda: nullcontext(()))
+            with descriptor_scope() as descriptors:
+                proc = await asyncio.create_subprocess_exec(
+                    self.executable,
+                    *arguments,
+                    cwd=str(self.launch_cwd),
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    limit=CODEX_STREAM_LIMIT_BYTES,
+                    env=child_environment,
+                    pass_fds=descriptors,
+                )
         except FileNotFoundError as exc:
             self.state = CodexProcessState.UNAVAILABLE
             self._record_process_event(RuntimeProcessEventKind.UNAVAILABLE)
@@ -946,6 +990,12 @@ class CodexProcessHost:
                 generation=generation,
                 retryability=RuntimeRetryability.TERMINAL,
             ) from exc
+        LOGGER.info(
+            "codex_launch_stage generation=%s pid=%s stage=spawn event=finished duration_ms=%.1f",
+            generation,
+            proc.pid,
+            (time.perf_counter() - launch_started) * 1000,
+        )
         self._proc = proc
         if self._closed:
             # Shutdown may finish while CreateProcess is still being awaited.
@@ -961,7 +1011,7 @@ class CodexProcessHost:
         self._stderr_task = asyncio.create_task(self._drain_stderr(proc, generation))
         try:
             self.initialize_result = await self._request_connected(
-                "initialize",
+                INITIALIZE_METHOD,
                 {
                     "clientInfo": {
                         "name": self.identity.client_name or CODEX_DEFAULT_CLIENT_NAME,
@@ -1019,6 +1069,18 @@ class CodexProcessHost:
                 )
             raise
 
+    async def sample(self, thread_id: str, turn_id: str, prompt: str) -> dict[str, Any]:
+        if (_parse_codex_version(self.version) or ()) < CODEX_SAMPLE_MIN_VERSION:
+            raise AppServerError("Text sampling requires Codex 0.164.0 or newer")
+        generation = await self.ensure_attached(thread_id)
+        return await self._request_connected(
+            CODEX_SAMPLE_METHOD,
+            {"threadId": thread_id, "expectedTurnId": turn_id, "prompt": prompt},
+            generation=generation,
+            timeout=CODEX_SAMPLE_TIMEOUT_SECONDS,
+            cancel_method=CODEX_SAMPLE_CANCEL_METHOD,
+        )
+
     async def request(
         self, method: str, params: Any, *, generation: int | None = None
     ) -> dict[str, Any]:
@@ -1035,6 +1097,7 @@ class CodexProcessHost:
         timeout: float | None = None,
         before_write: Callable[[], None] | None = None,
         submission: RpcSubmission | None = None,
+        cancel_method: str = "",
     ) -> dict[str, Any]:
         request_generation = self._generation if generation is None else generation
         request_proc = self._proc
@@ -1054,6 +1117,16 @@ class CodexProcessHost:
             submission=submission,
         )
         future = pending.future
+        initializing = method == INITIALIZE_METHOD
+        initialize_started = time.perf_counter()
+        initialize_outcome = "ok"
+        if initializing:
+            LOGGER.info(
+                "codex_launch_stage generation=%s pid=%s stage=initialize event=started request_id=%s",
+                request_generation,
+                request_proc.pid,
+                request_id,
+            )
         try:
             await self._rpc_writer.write(
                 {"id": request_id, "method": method, "params": params},
@@ -1062,6 +1135,14 @@ class CodexProcessHost:
                 before_write=before_write,
                 on_write_attempt=pending.submission.attempt,
             )
+            if initializing:
+                LOGGER.info(
+                    "codex_launch_stage generation=%s pid=%s stage=initialize event=written request_id=%s duration_ms=%.1f",
+                    request_generation,
+                    request_proc.pid,
+                    request_id,
+                    (time.perf_counter() - initialize_started) * 1000,
+                )
             result = await asyncio.wait_for(
                 asyncio.shield(future), timeout=self.rpc_timeout if timeout is None else timeout
             )
@@ -1071,7 +1152,23 @@ class CodexProcessHost:
                 round((asyncio.get_running_loop().time() - pending.started_at) * 1000),
             )
             return result
+        except asyncio.CancelledError:
+            initialize_outcome = "cancelled"
+            if cancel_method and pending.written:
+                cleanup = asyncio.create_task(
+                    self._cancel_sample_request(
+                        cancel_method, request_id, request_generation, future
+                    )
+                )
+                while not cleanup.done():
+                    try:
+                        await asyncio.shield(cleanup)
+                    except asyncio.CancelledError:
+                        continue
+                cleanup.result()
+            raise
         except AppServerError as exc:
+            initialize_outcome = "rpc_error"
             exc.rpc_latency_ms = max(
                 0,
                 round((asyncio.get_running_loop().time() - pending.started_at) * 1000),
@@ -1082,6 +1179,7 @@ class CodexProcessHost:
                 await self._handle_process_exit(generation=request_generation)
             raise
         except asyncio.TimeoutError as exc:
+            initialize_outcome = "timeout"
             retryability = (
                 RuntimeRetryability.UNKNOWN_OUTCOME
                 if pending.written
@@ -1099,8 +1197,33 @@ class CodexProcessHost:
                 ),
                 retryability=retryability,
             ) from exc
+        except BaseException:
+            initialize_outcome = "error"
+            raise
         finally:
+            if initializing:
+                LOGGER.info(
+                    "codex_launch_stage generation=%s pid=%s stage=initialize event=finished request_id=%s duration_ms=%.1f outcome=%s written=%s process_returncode=%s",
+                    request_generation,
+                    request_proc.pid,
+                    request_id,
+                    (time.perf_counter() - initialize_started) * 1000,
+                    initialize_outcome,
+                    pending.written,
+                    request_proc.returncode,
+                )
             self._rpc_requests.discard(request_id)
+
+    async def _cancel_sample_request(
+        self, method: str, request_id: int, generation: int, future: asyncio.Future
+    ) -> None:
+        try:
+            await self._request_connected(method, {"requestId": request_id}, generation=generation)
+        finally:
+            await asyncio.wait_for(
+                asyncio.gather(asyncio.shield(future), return_exceptions=True),
+                timeout=CODEX_SAMPLE_TIMEOUT_SECONDS,
+            )
 
     async def _notify(
         self,
@@ -1212,6 +1335,9 @@ class CodexProcessHost:
                 ) from error
             finally:
                 self._opening_threads.discard(opening)
+            raise AppServerError(
+                "Codex thread recovery attempts exhausted", safe_error=THREAD_RECOVERY_FAILED
+            )
 
     async def _open_thread(
         self,
@@ -1230,7 +1356,17 @@ class CodexProcessHost:
         if self.max_threads is not None and len(self._threads) >= self.max_threads:
             raise AppServerError(f"Codex App Server thread capacity reached: {self.max_threads}")
         await self.ensure_skill_roots(request.skill_roots)
-        await self._prepare_thread_resources(request, generation)
+        try:
+            await self._prepare_thread_resources(request, generation)
+        except AppServerError as error:
+            if (
+                not request.resume_session_id
+                and not (opening is not None and opening.thread_id)
+                and error.safe_error in SANDBOX_STARTUP_ERRORS
+                and error.retryability is RuntimeRetryability.USER_RETRYABLE
+            ):
+                error.thread_open_not_applied = True
+            raise
         resumed = bool(request.resume_session_id)
         forking = bool(request.fork_session_id)
         if forking and (resumed or not request.fork_turn_id):
@@ -1795,8 +1931,10 @@ class CodexProcessHost:
                     f"expected {CODEX_MULTI_AGENT_MODES}"
                 )
             params["multiAgentMode"] = request.multi_agent_mode
-        if request.thread_config:
-            params["config"] = dict(request.thread_config)
+        params["config"] = {
+            **request.thread_config,
+            CODEX_THREAD_UNLOAD_CONFIG: THREAD_UNLOAD_DELAY_SECONDS,
+        }
         if request.base_instructions:
             params["baseInstructions"] = request.base_instructions
         if request.developer_instructions:
@@ -2231,7 +2369,7 @@ class CodexProcessHost:
             and self.state is CodexProcessState.READY
             and self._proc is not None
             and self._proc.returncode is None
-            and type(failed_generation) is int
+            and (isinstance(failed_generation, int) and not isinstance(failed_generation, bool))
             and 0 < failed_generation < generation == self._generation
             and failed_generation in self._exited_generations
             and state.disconnected_generation == failed_generation
@@ -2607,6 +2745,10 @@ class CodexProcessHost:
             )
             return
         if method == "thread/closed":
+            if state.unload_confirmation is not None:
+                if not state.unload_confirmation.done():
+                    state.unload_confirmation.set_result(None)
+                return
             state.attachment_state = CodexThreadAttachmentState.DETACHED
             state.attached_generation = 0
             incident = self._attachment_incident(

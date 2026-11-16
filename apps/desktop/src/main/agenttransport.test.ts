@@ -16,65 +16,135 @@ const SCOPE = {
 const TRANSPORT_CONCURRENCY_CAPACITY = 16
 test('full-budget scope drain delivers its local acknowledgement before socket teardown', async () => {
   const controlBudgetMs = 10_000
-  const transport = await createTransport(() => [], undefined, undefined, authorizeTestList, undefined, {
-    prepare: () => { throw new Error('unused') }, execute: () => {}, cancel: () => {},
-    captureLifecycle: () => () => true,
-    waitForEffects: async (_scope, signal) => new Promise<boolean>((resolve) => {
-      signal.addEventListener('abort', () => resolve(false), { once: true })
-    }),
-  })
+  const transport = await createTransport(
+    () => [],
+    undefined,
+    undefined,
+    authorizeTestList,
+    undefined,
+    {
+      prepare: () => {
+        throw new Error('unused')
+      },
+      execute: () => {},
+      cancel: () => {},
+      captureLifecycle: () => () => true,
+      waitForEffects: async (_scope, signal) =>
+        new Promise<boolean>((resolve) => {
+          signal.addEventListener('abort', () => resolve(false), { once: true })
+        }),
+    }
+  )
   try {
     await scopeCommand(transport.port, transport.key, 'scope/start')
-    const ending = await post(transport.port, transport.key, JSON.stringify({
-      ...SCOPE, action: 'scope/end', deadline: Date.now() + controlBudgetMs,
-    }))
+    const ending = await post(
+      transport.port,
+      transport.key,
+      JSON.stringify({
+        ...SCOPE,
+        action: 'scope/end',
+        deadline: Date.now() + controlBudgetMs,
+      })
+    )
     assert.equal(ending.status, 408)
-    assert.deepEqual(JSON.parse(ending.body), { ok: false, error: 'scope_unsettled', phase: 'effects' })
-    assert.equal((await scopeCommand(transport.port, transport.key, 'scope/start', {
-      ...SCOPE, generation: 2, product_turn_id: 'next', turn_id: 'next',
-    })).status, 409)
-    assert.equal((await scopeCommand(transport.port, transport.key, 'scope/start', {
-      ...SCOPE, session_id: 'independent', instance_id: 'independent',
-    })).status, 200)
-  } finally { await transport.close() }
+    assert.deepEqual(JSON.parse(ending.body), {
+      ok: false,
+      error: 'scope_unsettled',
+      phase: 'effects',
+    })
+    assert.equal(
+      (
+        await scopeCommand(transport.port, transport.key, 'scope/start', {
+          ...SCOPE,
+          generation: 2,
+          product_turn_id: 'next',
+          turn_id: 'next',
+        })
+      ).status,
+      409
+    )
+    assert.equal(
+      (
+        await scopeCommand(transport.port, transport.key, 'scope/start', {
+          ...SCOPE,
+          session_id: 'independent',
+          instance_id: 'independent',
+        })
+      ).status,
+      200
+    )
+  } finally {
+    await transport.close()
+  }
 })
 test('action revalidation transports a new read proof without replaying the original prepare', async () => {
   let calls = 0
-  const transport = await createTransport(() => [], undefined, undefined, authorizeTestList, undefined, {
-    captureLifecycle: () => () => true,
-    prepare: (input) => {
-      calls += 1
-      assert.equal(input.requestId, 'original-action')
-      if (input.readGrant) {
-        assert.deepEqual(input.readGrant, { requestId: 'fresh-read', proofId: 'fresh-proof' })
-        assert.equal(input.signal.aborted, false)
-        throw new Error('stale_ref')
-      }
-      throw new Error('observation_read_required')
-    }, execute: () => { throw new Error('unexpected_execute') }, cancel: () => {},
-    waitForEffects: async () => true,
-  })
+  const transport = await createTransport(
+    () => [],
+    undefined,
+    undefined,
+    authorizeTestList,
+    undefined,
+    {
+      captureLifecycle: () => () => true,
+      prepare: (input) => {
+        calls += 1
+        assert.equal(input.requestId, 'original-action')
+        if (input.readGrant) {
+          assert.deepEqual(input.readGrant, { requestId: 'fresh-read', proofId: 'fresh-proof' })
+          assert.equal(input.signal.aborted, false)
+          throw new Error('stale_ref')
+        }
+        throw new Error('observation_read_required')
+      },
+      execute: () => {
+        throw new Error('unexpected_execute')
+      },
+      cancel: () => {},
+      waitForEffects: async () => true,
+    }
+  )
   try {
     await scopeCommand(transport.port, transport.key, 'scope/start')
-    const original = { ...SCOPE, action: 'prepare-action', request_id: 'original-action',
-      tab_id: 'tab', snapshot_id: 'snapshot', element_ref: 'element', browser_action: 'click',
-      intent: 'Open result', deadline: Date.now() + 5_000 }
+    const original = {
+      ...SCOPE,
+      action: 'prepare-action',
+      request_id: 'original-action',
+      tab_id: 'tab',
+      snapshot_id: 'snapshot',
+      element_ref: 'element',
+      browser_action: 'click',
+      intent: 'Open result',
+      deadline: Date.now() + 5_000,
+    }
     const required = await post(transport.port, transport.key, JSON.stringify(original))
     assert.equal(required.status, 409)
     assert.deepEqual(JSON.parse(required.body), { ok: false, error: 'observation_read_required' })
-    const renewed = { ...original, request_id: 'derived-reprepare', action_request_id: 'original-action',
-      grant_request_id: 'fresh-read', proof_id: 'fresh-proof' }
+    const renewed = {
+      ...original,
+      request_id: 'derived-reprepare',
+      action_request_id: 'original-action',
+      grant_request_id: 'fresh-read',
+      proof_id: 'fresh-proof',
+    }
     for (const invalid of [
-      { ...renewed, proof_id: undefined }, { ...renewed, action_request_id: undefined },
+      { ...renewed, proof_id: undefined },
+      { ...renewed, action_request_id: undefined },
       { ...renewed, action_request_id: renewed.request_id },
       { ...original, proof_id: 'unpaired-proof' },
-    ]) assert.equal((await post(transport.port, transport.key, JSON.stringify(invalid))).status, 400)
+    ])
+      assert.equal((await post(transport.port, transport.key, JSON.stringify(invalid))).status, 400)
     const result = await post(transport.port, transport.key, JSON.stringify(renewed))
     assert.equal(result.status, 409)
     assert.deepEqual(JSON.parse(result.body), { ok: false, error: 'stale_ref' })
-    assert.equal((await post(transport.port, transport.key, JSON.stringify(renewed))).body, result.body)
+    assert.equal(
+      (await post(transport.port, transport.key, JSON.stringify(renewed))).body,
+      result.body
+    )
     assert.equal(calls, 2)
-  } finally { await transport.close() }
+  } finally {
+    await transport.close()
+  }
 })
 test('request drain cannot classify a disposed or replaced action Owner as local', async () => {
   for (const replaced of [false, true]) {
@@ -82,80 +152,176 @@ test('request drain cannot classify a disposed or replaced action Owner as local
     let release!: () => void
     let entered!: () => void
     let capture!: () => void
-    const started = new Promise<void>(resolve => { entered = resolve })
-    const captured = new Promise<void>(resolve => { capture = resolve })
-    const pending = new Promise<void>(resolve => { release = resolve })
-    const transport = await createTransport(() => [], undefined, {
-      snapshot: async () => {
-        entered()
-        await pending
-        return { snapshotId: 'late', origin: 'https://example.org', title: 'Page', elements: [] }
-      }, read: () => { throw new Error('unused') },
-    }, authorizeTestList, undefined, {
-      prepare: () => { throw new Error('unused') }, execute: () => {}, cancel: () => {},
-      captureLifecycle: () => {
-        const original = owner
-        capture()
-        return () => original === owner && original.alive
-      },
-      waitForEffects: async () => true,
+    const started = new Promise<void>((resolve) => {
+      entered = resolve
     })
+    const captured = new Promise<void>((resolve) => {
+      capture = resolve
+    })
+    const pending = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const transport = await createTransport(
+      () => [],
+      undefined,
+      {
+        snapshot: async () => {
+          entered()
+          await pending
+          return { snapshotId: 'late', origin: 'https://example.org', title: 'Page', elements: [] }
+        },
+        read: () => {
+          throw new Error('unused')
+        },
+      },
+      authorizeTestList,
+      undefined,
+      {
+        prepare: () => {
+          throw new Error('unused')
+        },
+        execute: () => {},
+        cancel: () => {},
+        captureLifecycle: () => {
+          const original = owner
+          capture()
+          return () => original === owner && original.alive
+        },
+        waitForEffects: async () => true,
+      }
+    )
     let operation: Promise<unknown> | undefined
     try {
       await scopeCommand(transport.port, transport.key, 'scope/start')
-      operation = post(transport.port, transport.key, JSON.stringify({ ...SCOPE,
-        action: 'snapshot', request_id: 'pending', grant_request_id: 'grant', proof_id: 'proof',
-        tab_id: 'tab', deadline: Date.now() + 5_000 }))
+      operation = post(
+        transport.port,
+        transport.key,
+        JSON.stringify({
+          ...SCOPE,
+          action: 'snapshot',
+          request_id: 'pending',
+          grant_request_id: 'grant',
+          proof_id: 'proof',
+          tab_id: 'tab',
+          deadline: Date.now() + 5_000,
+        })
+      )
       await started
-      const ending = post(transport.port, transport.key,
-        JSON.stringify({ ...SCOPE, action: 'scope/end', deadline: Date.now() + 100 }))
+      const ending = post(
+        transport.port,
+        transport.key,
+        JSON.stringify({ ...SCOPE, action: 'scope/end', deadline: Date.now() + 100 })
+      )
       await captured
       if (replaced) owner = { alive: true }
       else owner.alive = false
       const end = await ending
       assert.equal(end.status, 503)
       assert.deepEqual(JSON.parse(end.body), { ok: false, error: 'browser_unavailable' })
-      assert.equal((await scopeCommand(transport.port, transport.key, 'scope/start', {
-        ...SCOPE, generation: 2, product_turn_id: 'next', turn_id: 'next',
-      })).status, 409)
-    } finally { release(); await operation; await transport.close() }
+      assert.equal(
+        (
+          await scopeCommand(transport.port, transport.key, 'scope/start', {
+            ...SCOPE,
+            generation: 2,
+            product_turn_id: 'next',
+            turn_id: 'next',
+          })
+        ).status,
+        409
+      )
+    } finally {
+      release()
+      await operation
+      await transport.close()
+    }
   }
 })
 test('scope effect timer releases only its drain waiter and preserves the old fence', async () => {
   let aborted = false
-  const transport = await createTransport(() => [], undefined, undefined, authorizeTestList, undefined, {
-    prepare: () => { throw new Error('unused') }, execute: () => {}, cancel: () => {},
-    captureLifecycle: () => () => true,
-    waitForEffects: async (_scope, signal) => new Promise<boolean>((_resolve, reject) => {
-      signal.addEventListener('abort', () => {
-        aborted = true
-        reject(new Error('request_expired'))
-      }, { once: true })
-    }),
-  })
+  const transport = await createTransport(
+    () => [],
+    undefined,
+    undefined,
+    authorizeTestList,
+    undefined,
+    {
+      prepare: () => {
+        throw new Error('unused')
+      },
+      execute: () => {},
+      cancel: () => {},
+      captureLifecycle: () => () => true,
+      waitForEffects: async (_scope, signal) =>
+        new Promise<boolean>((_resolve, reject) => {
+          signal.addEventListener(
+            'abort',
+            () => {
+              aborted = true
+              reject(new Error('request_expired'))
+            },
+            { once: true }
+          )
+        }),
+    }
+  )
   try {
     await scopeCommand(transport.port, transport.key, 'scope/start')
-    const end = await post(transport.port, transport.key,
-      JSON.stringify({ ...SCOPE, action: 'scope/end', deadline: Date.now() + 100 }))
+    const end = await post(
+      transport.port,
+      transport.key,
+      JSON.stringify({ ...SCOPE, action: 'scope/end', deadline: Date.now() + 100 })
+    )
     assert.equal(end.status, 408)
-    assert.deepEqual(JSON.parse(end.body), { ok: false, error: 'scope_unsettled', phase: 'effects' })
+    assert.deepEqual(JSON.parse(end.body), {
+      ok: false,
+      error: 'scope_unsettled',
+      phase: 'effects',
+    })
     assert.equal(aborted, true)
-    assert.equal((await scopeCommand(transport.port, transport.key, 'scope/start', {
-      ...SCOPE, generation: 2, product_turn_id: 'next', turn_id: 'next',
-    })).status, 409)
-  } finally { await transport.close() }
+    assert.equal(
+      (
+        await scopeCommand(transport.port, transport.key, 'scope/start', {
+          ...SCOPE,
+          generation: 2,
+          product_turn_id: 'next',
+          turn_id: 'next',
+        })
+      ).status,
+      409
+    )
+  } finally {
+    await transport.close()
+  }
 })
 test('concurrent scope drain acknowledgements remain idempotent', async () => {
   let release!: () => void
   let entered!: () => void
-  const waiting = new Promise<boolean>(resolve => { release = () => resolve(true) })
-  const started = new Promise<void>(resolve => { entered = resolve })
-  let waiters = 0
-  const transport = await createTransport(() => [], undefined, undefined, authorizeTestList, undefined, {
-    prepare: () => { throw new Error('unused') }, execute: () => {}, cancel: () => {},
-    captureLifecycle: () => () => true,
-    waitForEffects: () => { if (++waiters === 2) entered(); return waiting },
+  const waiting = new Promise<boolean>((resolve) => {
+    release = () => resolve(true)
   })
+  const started = new Promise<void>((resolve) => {
+    entered = resolve
+  })
+  let waiters = 0
+  const transport = await createTransport(
+    () => [],
+    undefined,
+    undefined,
+    authorizeTestList,
+    undefined,
+    {
+      prepare: () => {
+        throw new Error('unused')
+      },
+      execute: () => {},
+      cancel: () => {},
+      captureLifecycle: () => () => true,
+      waitForEffects: () => {
+        if (++waiters === 2) entered()
+        return waiting
+      },
+    }
+  )
   try {
     await scopeCommand(transport.port, transport.key, 'scope/start')
     const first = scopeCommand(transport.port, transport.key, 'scope/end')
@@ -164,310 +330,757 @@ test('concurrent scope drain acknowledgements remain idempotent', async () => {
     release()
     assert.equal((await first).status, 200)
     assert.equal((await second).status, 200)
-  } finally { release(); await transport.close() }
+  } finally {
+    release()
+    await transport.close()
+  }
 })
 test('scope drain distinguishes its lease timer from an unknown lease rejection', async () => {
   for (const failed of [false, true]) {
     let aborted = false
-    const transport = await createTransport(() => [], undefined, undefined, authorizeTestList,
-      undefined, undefined, {
-        prepare: () => { throw new Error('unused') }, execute: () => { throw new Error('unused') },
-        cancel: () => {}, complete: () => {},
+    const transport = await createTransport(
+      () => [],
+      undefined,
+      undefined,
+      authorizeTestList,
+      undefined,
+      undefined,
+      {
+        prepare: () => {
+          throw new Error('unused')
+        },
+        execute: () => {
+          throw new Error('unused')
+        },
+        cancel: () => {},
+        complete: () => {},
         waitForLeases: async (_scope, signal) => {
           if (failed) throw new Error('private failure detail')
-          await new Promise<void>((_resolve, reject) => signal.addEventListener('abort', () => {
-            aborted = true
-            reject(new Error('request_expired'))
-          }, { once: true }))
+          await new Promise<void>((_resolve, reject) =>
+            signal.addEventListener(
+              'abort',
+              () => {
+                aborted = true
+                reject(new Error('request_expired'))
+              },
+              { once: true }
+            )
+          )
         },
-      })
+      }
+    )
     try {
       await scopeCommand(transport.port, transport.key, 'scope/start')
-      const end = await post(transport.port, transport.key,
-        JSON.stringify({ ...SCOPE, action: 'scope/end', deadline: Date.now() + 100 }))
+      const end = await post(
+        transport.port,
+        transport.key,
+        JSON.stringify({ ...SCOPE, action: 'scope/end', deadline: Date.now() + 100 })
+      )
       assert.equal(end.status, failed ? 503 : 408)
-      assert.deepEqual(JSON.parse(end.body), failed
-        ? { ok: false, error: 'browser_unavailable' }
-        : { ok: false, error: 'scope_unsettled', phase: 'leases' })
+      assert.deepEqual(
+        JSON.parse(end.body),
+        failed
+          ? { ok: false, error: 'browser_unavailable' }
+          : { ok: false, error: 'scope_unsettled', phase: 'leases' }
+      )
       assert.equal(aborted, !failed)
-      assert.equal((await scopeCommand(transport.port, transport.key, 'scope/start', {
-        ...SCOPE, generation: 2, product_turn_id: 'next', turn_id: 'next',
-      })).status, 409)
-    } finally { await transport.close() }
+      assert.equal(
+        (
+          await scopeCommand(transport.port, transport.key, 'scope/start', {
+            ...SCOPE,
+            generation: 2,
+            product_turn_id: 'next',
+            turn_id: 'next',
+          })
+        ).status,
+        409
+      )
+    } finally {
+      await transport.close()
+    }
   }
 })
 test('scope drain distinguishes confirmed effect fences from unknown owner failures', async () => {
   for (const failed of [false, true]) {
-    const transport = await createTransport(() => [], undefined, undefined, authorizeTestList, undefined, {
-      prepare: () => { throw new Error('unused') }, execute: () => {}, cancel: () => {},
-      captureLifecycle: () => () => true,
-      waitForEffects: async () => {
-        if (failed) throw new Error('private failure detail')
-        return false
-      },
-    })
+    const transport = await createTransport(
+      () => [],
+      undefined,
+      undefined,
+      authorizeTestList,
+      undefined,
+      {
+        prepare: () => {
+          throw new Error('unused')
+        },
+        execute: () => {},
+        cancel: () => {},
+        captureLifecycle: () => () => true,
+        waitForEffects: async () => {
+          if (failed) throw new Error('private failure detail')
+          return false
+        },
+      }
+    )
     try {
       await scopeCommand(transport.port, transport.key, 'scope/start')
       const end = await scopeCommand(transport.port, transport.key, 'scope/end')
       assert.equal(end.status, failed ? 503 : 408)
-      assert.deepEqual(JSON.parse(end.body), failed
-        ? { ok: false, error: 'browser_unavailable' }
-        : { ok: false, error: 'scope_unsettled', phase: 'effects' })
-      assert.equal((await scopeCommand(transport.port, transport.key, 'scope/start', {
-        ...SCOPE, generation: 2, product_turn_id: 'next', turn_id: 'next',
-      })).status, 409)
-      assert.equal((await scopeCommand(transport.port, transport.key, 'scope/start', {
-        ...SCOPE, session_id: 'independent',
-      })).status, 200)
-    } finally { await transport.close() }
+      assert.deepEqual(
+        JSON.parse(end.body),
+        failed
+          ? { ok: false, error: 'browser_unavailable' }
+          : { ok: false, error: 'scope_unsettled', phase: 'effects' }
+      )
+      assert.equal(
+        (
+          await scopeCommand(transport.port, transport.key, 'scope/start', {
+            ...SCOPE,
+            generation: 2,
+            product_turn_id: 'next',
+            turn_id: 'next',
+          })
+        ).status,
+        409
+      )
+      assert.equal(
+        (
+          await scopeCommand(transport.port, transport.key, 'scope/start', {
+            ...SCOPE,
+            session_id: 'independent',
+          })
+        ).status,
+        200
+      )
+    } finally {
+      await transport.close()
+    }
   }
 })
 test('snapshot failures preserve bounded codes without leaking page or input text', async () => {
   let failure = 'snapshot_too_large'
   const transport = await createAgentTransport(() => [], undefined, {
-    snapshot: async () => { throw new Error(failure) },
-    read: () => { throw new Error('unused') },
+    snapshot: async () => {
+      throw new Error(failure)
+    },
+    read: () => {
+      throw new Error('unused')
+    },
   })
   try {
     await scopeCommand(transport.port, transport.key, 'scope/start')
-    for (const code of ['snapshot_too_large', 'snapshot_timeout', 'stale_ref', 'stale_grant', 'private page text']) {
+    for (const code of [
+      'snapshot_too_large',
+      'snapshot_timeout',
+      'stale_ref',
+      'stale_grant',
+      'private page text',
+    ]) {
       failure = code
-      const result = await post(transport.port, transport.key, JSON.stringify({ ...SCOPE,
-        action: 'snapshot', request_id: code, grant_request_id: 'grant', proof_id: 'proof',
-        tab_id: 'tab', deadline: Date.now() + 5_000 }))
+      const result = await post(
+        transport.port,
+        transport.key,
+        JSON.stringify({
+          ...SCOPE,
+          action: 'snapshot',
+          request_id: code,
+          grant_request_id: 'grant',
+          proof_id: 'proof',
+          tab_id: 'tab',
+          deadline: Date.now() + 5_000,
+        })
+      )
       assert.equal(result.status, code.startsWith('stale_') ? 409 : 503)
-      assert.deepEqual(JSON.parse(result.body), { ok: false,
-        error: code === 'private page text' ? 'browser_unavailable' : code })
+      assert.deepEqual(JSON.parse(result.body), {
+        ok: false,
+        error: code === 'private page text' ? 'browser_unavailable' : code,
+      })
       assert.equal(result.body.includes('private page text'), false)
     }
-  } finally { await transport.close() }
+  } finally {
+    await transport.close()
+  }
 })
 test('read failures distinguish stale authority without leaking arbitrary page text', async () => {
   let failure = 'stale_ref'
   const transport = await createTransport(() => [], undefined, {
-    snapshot: async () => { throw new Error('unused') },
-    read: () => { throw new Error(failure) },
+    snapshot: async () => {
+      throw new Error('unused')
+    },
+    read: () => {
+      throw new Error(failure)
+    },
   })
   try {
     await scopeCommand(transport.port, transport.key, 'scope/start')
     for (const code of ['stale_ref', 'stale_grant', 'private page text']) {
       failure = code
-      const result = await post(transport.port, transport.key, JSON.stringify({ ...SCOPE,
-        action: 'read', request_id: code, snapshot_id: 'snapshot', element_ref: 'element',
-        tab_id: 'tab', deadline: Date.now() + 5_000 }))
+      const result = await post(
+        transport.port,
+        transport.key,
+        JSON.stringify({
+          ...SCOPE,
+          action: 'read',
+          request_id: code,
+          snapshot_id: 'snapshot',
+          element_ref: 'element',
+          tab_id: 'tab',
+          deadline: Date.now() + 5_000,
+        })
+      )
       assert.equal(result.status, code === 'private page text' ? 503 : 409)
-      assert.deepEqual(JSON.parse(result.body), { ok: false,
-        error: code === 'private page text' ? 'browser_unavailable' : code })
+      assert.deepEqual(JSON.parse(result.body), {
+        ok: false,
+        error: code === 'private page text' ? 'browser_unavailable' : code,
+      })
       assert.equal(result.body.includes('private page text'), false)
     }
-  } finally { await transport.close() }
+  } finally {
+    await transport.close()
+  }
 })
 test('expired action references are reported before dispatch without exposing arbitrary failures', async () => {
   let failure = 'stale_grant'
   let executions = 0
-  const transport = await createTransport(() => [], undefined, undefined, authorizeTestList, undefined, {
-    prepare: () => { throw new Error(failure) },
-    execute: () => { executions += 1 }, cancel: () => {},
-    captureLifecycle: () => () => true, waitForEffects: async () => true,
-  })
+  const transport = await createTransport(
+    () => [],
+    undefined,
+    undefined,
+    authorizeTestList,
+    undefined,
+    {
+      prepare: () => {
+        throw new Error(failure)
+      },
+      execute: () => {
+        executions += 1
+      },
+      cancel: () => {},
+      captureLifecycle: () => () => true,
+      waitForEffects: async () => true,
+    }
+  )
   try {
     await scopeCommand(transport.port, transport.key, 'scope/start')
     for (const code of ['stale_grant', 'stale_ref', 'private page text']) {
       failure = code
-      const result = await post(transport.port, transport.key, JSON.stringify({ ...SCOPE,
-        action: 'prepare-action', request_id: code, tab_id: 'tab', snapshot_id: 'snapshot',
-        element_ref: 'element', browser_action: 'fill', value: 'private input', intent: 'Fill query',
-        deadline: Date.now() + 5_000 }))
+      const result = await post(
+        transport.port,
+        transport.key,
+        JSON.stringify({
+          ...SCOPE,
+          action: 'prepare-action',
+          request_id: code,
+          tab_id: 'tab',
+          snapshot_id: 'snapshot',
+          element_ref: 'element',
+          browser_action: 'fill',
+          value: 'private input',
+          intent: 'Fill query',
+          deadline: Date.now() + 5_000,
+        })
+      )
       assert.equal(result.status, code === 'private page text' ? 503 : 409)
-      assert.deepEqual(JSON.parse(result.body), { ok: false,
-        error: code === 'private page text' ? 'browser_unavailable' : 'stale_ref' })
+      assert.deepEqual(JSON.parse(result.body), {
+        ok: false,
+        error: code === 'private page text' ? 'browser_unavailable' : 'stale_ref',
+      })
       assert.equal(result.body.includes('private input'), false)
     }
     assert.equal(executions, 0)
-  } finally { await transport.close() }
+  } finally {
+    await transport.close()
+  }
 })
-test('snapshot honors its action deadline instead of the shorter socket idle timeout', { timeout: 25_000 }, async () => {
-  const snapshotDelayMs = 11_000
-  const actionBudgetMs = 20_000
-  const transport = await createAgentTransport(() => [], undefined, {
-    snapshot: async input => {
-      await new Promise(resolve => setTimeout(resolve, snapshotDelayMs))
-      assert.equal(input.signal.aborted, false)
-      return { snapshotId: 'snapshot', origin: 'https://example.org', title: 'Page', elements: [] }
-    },
-    read: () => { throw new Error('unused') },
-  })
-  try {
-    await scopeCommand(transport.port, transport.key, 'scope/start')
-    const result = await post(transport.port, transport.key, JSON.stringify({ ...SCOPE,
-      action: 'snapshot', request_id: 'slow-snapshot', grant_request_id: 'grant', proof_id: 'proof',
-      tab_id: 'tab', deadline: Date.now() + actionBudgetMs }))
-    assert.equal(result.status, 200)
-    assert.equal(JSON.parse(result.body).ok, true)
-  } finally { await transport.close() }
-})
+test(
+  'snapshot honors its action deadline instead of the shorter socket idle timeout',
+  { timeout: 25_000 },
+  async () => {
+    const snapshotDelayMs = 11_000
+    const actionBudgetMs = 20_000
+    const transport = await createAgentTransport(() => [], undefined, {
+      snapshot: async (input) => {
+        await new Promise((resolve) => setTimeout(resolve, snapshotDelayMs))
+        assert.equal(input.signal.aborted, false)
+        return {
+          snapshotId: 'snapshot',
+          origin: 'https://example.org',
+          title: 'Page',
+          elements: [],
+        }
+      },
+      read: () => {
+        throw new Error('unused')
+      },
+    })
+    try {
+      await scopeCommand(transport.port, transport.key, 'scope/start')
+      const result = await post(
+        transport.port,
+        transport.key,
+        JSON.stringify({
+          ...SCOPE,
+          action: 'snapshot',
+          request_id: 'slow-snapshot',
+          grant_request_id: 'grant',
+          proof_id: 'proof',
+          tab_id: 'tab',
+          deadline: Date.now() + actionBudgetMs,
+        })
+      )
+      assert.equal(result.status, 200)
+      assert.equal(JSON.parse(result.body).ok, true)
+    } finally {
+      await transport.close()
+    }
+  }
+)
 
 test('frozen action scope admits only a newer owned-target close without restoring execution', async () => {
   let closures = 0
-  const transport = await createTransport(() => [], undefined, undefined, authorizeTestList, {
-    prepare: () => { throw new Error('unused') }, execute: () => {}, cancel: () => {},
-    close: input => { assert.equal(input.scope.instanceId, SCOPE.instance_id); closures += 1 },
-  }, {
-    prepare: () => { throw new Error('unused') }, execute: () => {}, cancel: () => {},
-    captureLifecycle: () => () => true,
-    waitForEffects: async () => false,
-  })
-  const next = { ...SCOPE, generation: SCOPE.generation + 1,
+  const transport = await createTransport(
+    () => [],
+    undefined,
+    undefined,
+    authorizeTestList,
+    {
+      prepare: () => {
+        throw new Error('unused')
+      },
+      execute: () => {},
+      cancel: () => {},
+      close: (input) => {
+        assert.equal(input.scope.instanceId, SCOPE.instance_id)
+        closures += 1
+      },
+    },
+    {
+      prepare: () => {
+        throw new Error('unused')
+      },
+      execute: () => {},
+      cancel: () => {},
+      captureLifecycle: () => () => true,
+      waitForEffects: async () => false,
+    }
+  )
+  const next = {
+    ...SCOPE,
+    generation: SCOPE.generation + 1,
     interrupt_generation: SCOPE.interrupt_generation + 1,
-    product_turn_id: 'cleanup-product-turn', turn_id: 'cleanup-turn' }
+    product_turn_id: 'cleanup-product-turn',
+    turn_id: 'cleanup-turn',
+  }
   const deadline = Date.now() + 5_000
   const close = { ...next, action: 'close', request_id: 'cleanup-owned', tab_id: 'owned', deadline }
   try {
     await scopeCommand(transport.port, transport.key, 'scope/start')
     assert.equal((await scopeCommand(transport.port, transport.key, 'scope/end')).status, 408)
-    assert.equal((await scopeCommand(transport.port, transport.key, 'scope/start', next)).status, 409)
+    assert.equal(
+      (await scopeCommand(transport.port, transport.key, 'scope/start', next)).status,
+      409
+    )
     const closed = await post(transport.port, transport.key, JSON.stringify(close))
     assert.equal(closed.status, 200)
     assert.equal((await post(transport.port, transport.key, JSON.stringify(close))).status, 200)
     assert.equal(closures, 1)
     for (const action of ['list', 'open']) {
-      assert.equal((await post(transport.port, transport.key, JSON.stringify({ ...next,
-        action, request_id: `blocked-${action}`, deadline }))).status, 409)
+      assert.equal(
+        (
+          await post(
+            transport.port,
+            transport.key,
+            JSON.stringify({ ...next, action, request_id: `blocked-${action}`, deadline })
+          )
+        ).status,
+        409
+      )
     }
-    assert.equal((await post(transport.port, transport.key, JSON.stringify({ ...close, tab_id: 'other' }))).status, 409)
-    for (const invalid of [{ ...next, instance_id: 'other-instance' }, { ...next, session_id: 'other-session' },
-      { ...next, product_turn_id: SCOPE.product_turn_id }, { ...next, turn_id: SCOPE.turn_id }, SCOPE,
-      { ...next, generation: next.generation + 1, product_turn_id: 'later-product', turn_id: 'later-turn',
-        interrupt_generation: SCOPE.interrupt_generation }]) {
-      assert.notEqual((await post(transport.port, transport.key, JSON.stringify({ ...close,
-        ...invalid, request_id: 'invalid-cleanup' }))).status, 200)
+    assert.equal(
+      (await post(transport.port, transport.key, JSON.stringify({ ...close, tab_id: 'other' })))
+        .status,
+      409
+    )
+    for (const invalid of [
+      { ...next, instance_id: 'other-instance' },
+      { ...next, session_id: 'other-session' },
+      { ...next, product_turn_id: SCOPE.product_turn_id },
+      { ...next, turn_id: SCOPE.turn_id },
+      SCOPE,
+      {
+        ...next,
+        generation: next.generation + 1,
+        product_turn_id: 'later-product',
+        turn_id: 'later-turn',
+        interrupt_generation: SCOPE.interrupt_generation,
+      },
+    ]) {
+      assert.notEqual(
+        (
+          await post(
+            transport.port,
+            transport.key,
+            JSON.stringify({ ...close, ...invalid, request_id: 'invalid-cleanup' })
+          )
+        ).status,
+        200
+      )
     }
-    assert.equal((await scopeCommand(transport.port, transport.key, 'scope/start', next)).status, 409)
+    assert.equal(
+      (await scopeCommand(transport.port, transport.key, 'scope/start', next)).status,
+      409
+    )
     assert.equal((await scopeCommand(transport.port, transport.key, 'scope/end')).status, 408)
     assert.equal(closures, 1)
-  } finally { await transport.close() }
+  } finally {
+    await transport.close()
+  }
 })
 
 test('a newer revocation watermark aborts an unfinished close without restoring execution', async () => {
   let entered!: () => void
   let release!: () => void
   let closures = 0
-  const started = new Promise<void>(resolve => { entered = resolve })
-  const blocked = new Promise<void>(resolve => { release = resolve })
-  const transport = await createTransport(() => [], undefined, undefined, authorizeTestList, {
-    prepare: () => { throw new Error('unused') }, execute: () => {}, cancel: () => {},
-    close: async input => {
-      if (input.requestId === 'old-close') { entered(); await blocked }
-      if (input.signal.aborted) throw new Error('request_expired')
-      closures += 1
-    },
-  }, {
-    prepare: () => { throw new Error('unused') }, execute: () => {}, cancel: () => {},
-    captureLifecycle: () => () => true,
-    waitForEffects: async () => false,
+  const started = new Promise<void>((resolve) => {
+    entered = resolve
   })
-  const next = { ...SCOPE, generation: SCOPE.generation + 1, product_turn_id: 'cleanup-product', turn_id: 'cleanup-turn' }
-  const newest = { ...next, generation: next.generation + 1, product_turn_id: 'newest-product', turn_id: 'newest-turn' }
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const transport = await createTransport(
+    () => [],
+    undefined,
+    undefined,
+    authorizeTestList,
+    {
+      prepare: () => {
+        throw new Error('unused')
+      },
+      execute: () => {},
+      cancel: () => {},
+      close: async (input) => {
+        if (input.requestId === 'old-close') {
+          entered()
+          await blocked
+        }
+        if (input.signal.aborted) throw new Error('request_expired')
+        closures += 1
+      },
+    },
+    {
+      prepare: () => {
+        throw new Error('unused')
+      },
+      execute: () => {},
+      cancel: () => {},
+      captureLifecycle: () => () => true,
+      waitForEffects: async () => false,
+    }
+  )
+  const next = {
+    ...SCOPE,
+    generation: SCOPE.generation + 1,
+    product_turn_id: 'cleanup-product',
+    turn_id: 'cleanup-turn',
+  }
+  const newest = {
+    ...next,
+    generation: next.generation + 1,
+    product_turn_id: 'newest-product',
+    turn_id: 'newest-turn',
+  }
   const deadline = Date.now() + 5_000
   try {
     await scopeCommand(transport.port, transport.key, 'scope/start')
     await scopeCommand(transport.port, transport.key, 'scope/end')
-    const pending = post(transport.port, transport.key, JSON.stringify({ ...next, action: 'close',
-      request_id: 'old-close', tab_id: 'owned-old', deadline }))
+    const pending = post(
+      transport.port,
+      transport.key,
+      JSON.stringify({
+        ...next,
+        action: 'close',
+        request_id: 'old-close',
+        tab_id: 'owned-old',
+        deadline,
+      })
+    )
     await started
-    assert.equal((await post(transport.port, transport.key, JSON.stringify({ ...newest, action: 'close',
-      request_id: 'new-close', tab_id: 'owned-new', deadline }))).status, 200)
+    assert.equal(
+      (
+        await post(
+          transport.port,
+          transport.key,
+          JSON.stringify({
+            ...newest,
+            action: 'close',
+            request_id: 'new-close',
+            tab_id: 'owned-new',
+            deadline,
+          })
+        )
+      ).status,
+      200
+    )
     release()
     assert.equal((await pending).status, 409)
     assert.equal(closures, 1)
-    assert.equal((await scopeCommand(transport.port, transport.key, 'scope/start', newest)).status, 409)
-  } finally { release(); await transport.close() }
+    assert.equal(
+      (await scopeCommand(transport.port, transport.key, 'scope/start', newest)).status,
+      409
+    )
+  } finally {
+    release()
+    await transport.close()
+  }
 })
 
 test('owned tab close is scoped, replay-safe, and rejects extra destination fields', async () => {
   let calls = 0
-  const transport = await createTransport(() => [], undefined, undefined, () => 1, {
-    prepare: () => { throw new Error('unused') }, execute: () => {}, cancel: () => {},
-    close: input => { assert.equal(input.scope.sessionId, 'session'); assert.equal(input.tabId, 'owned'); calls += 1 },
-  })
+  const transport = await createTransport(
+    () => [],
+    undefined,
+    undefined,
+    () => 1,
+    {
+      prepare: () => {
+        throw new Error('unused')
+      },
+      execute: () => {},
+      cancel: () => {},
+      close: (input) => {
+        assert.equal(input.scope.sessionId, 'session')
+        assert.equal(input.tabId, 'owned')
+        calls += 1
+      },
+    }
+  )
   const deadline = Date.now() + 5000
-  const send = async (action: string, extra = {}) => post(transport.port, transport.key,
-    JSON.stringify({ ...SCOPE, action, ...extra, deadline }))
+  const send = async (action: string, extra = {}) =>
+    post(transport.port, transport.key, JSON.stringify({ ...SCOPE, action, ...extra, deadline }))
   try {
     assert.equal((await send('close', { request_id: 'early', tab_id: 'owned' })).status, 409)
     await send('scope/start')
-    assert.equal(JSON.parse((await send('close', { request_id: 'closed', tab_id: 'owned' })).body).ok, true)
-    assert.equal(JSON.parse((await send('close', { request_id: 'closed', tab_id: 'owned' })).body).ok, true)
+    assert.equal(
+      JSON.parse((await send('close', { request_id: 'closed', tab_id: 'owned' })).body).ok,
+      true
+    )
+    assert.equal(
+      JSON.parse((await send('close', { request_id: 'closed', tab_id: 'owned' })).body).ok,
+      true
+    )
     assert.equal(calls, 1)
-    assert.equal((await send('close', { request_id: 'extra', tab_id: 'owned', url: 'https://example.org' })).status, 400)
+    assert.equal(
+      (await send('close', { request_id: 'extra', tab_id: 'owned', url: 'https://example.org' }))
+        .status,
+      400
+    )
     await send('scope/end')
     assert.equal((await send('close', { request_id: 'late', tab_id: 'owned' })).status, 409)
     assert.equal(calls, 1)
-  } finally { await transport.close() }
+  } finally {
+    await transport.close()
+  }
 })
 test('blank browser open is scoped, replay-safe, and cannot accept a destination', async () => {
   let calls = 0
-  const transport = await createTransport(() => [], undefined, undefined, () => 1, {
-    prepare: () => { throw new Error('unused') },
-    execute: () => {}, cancel: () => {},
-    open: async () => { calls += 1; return { tabId: 'created-tab', close() {} } },
-  })
+  const transport = await createTransport(
+    () => [],
+    undefined,
+    undefined,
+    () => 1,
+    {
+      prepare: () => {
+        throw new Error('unused')
+      },
+      execute: () => {},
+      cancel: () => {},
+      open: async () => {
+        calls += 1
+        return { tabId: 'created-tab', close() {} }
+      },
+    }
+  )
   const deadline = Date.now() + 1000
-  const send = async (action: string, extra = {}) => JSON.parse((await post(transport.port, transport.key,
-    JSON.stringify({ ...SCOPE, action, ...extra, deadline }))).body)
+  const send = async (action: string, extra = {}) =>
+    JSON.parse(
+      (
+        await post(
+          transport.port,
+          transport.key,
+          JSON.stringify({ ...SCOPE, action, ...extra, deadline })
+        )
+      ).body
+    )
   try {
     await send('scope/start')
     assert.equal((await send('open', { request_id: 'opened' })).tab_id, 'created-tab')
     assert.equal((await send('open', { request_id: 'opened' })).tab_id, 'created-tab')
     assert.equal(calls, 1)
-    assert.equal((await send('open', { request_id: 'invalid', url: 'https://example.org' })).ok, false)
+    assert.equal(
+      (await send('open', { request_id: 'invalid', url: 'https://example.org' })).ok,
+      false
+    )
     await send('scope/end')
     assert.equal((await send('open', { request_id: 'late' })).ok, false)
-  } finally { await transport.close() }
+  } finally {
+    await transport.close()
+  }
 })
 test('close admits a successor turn but cancellation cannot dispatch its late close', async () => {
   let entered!: () => void
-  const entering = new Promise<void>(resolve => { entered = resolve })
-  let release!: () => void
-  const held = new Promise<void>(resolve => { release = resolve })
-  let calls = 0
-  const transport = await createTransport(() => [], undefined, undefined, () => 1, {
-    prepare: () => { throw new Error('unused') }, execute: () => {}, cancel: () => {},
-    close: async input => {
-      if (input.requestId === 'held-close') { entered(); await held }
-      if (input.signal.aborted) throw new Error('request_expired')
-      calls += 1
-    },
+  const entering = new Promise<void>((resolve) => {
+    entered = resolve
   })
-  const successor = { ...SCOPE, turn_id: 'next-turn', product_turn_id: 'next-product-turn', generation: 2 }
+  let release!: () => void
+  const held = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  let calls = 0
+  const transport = await createTransport(
+    () => [],
+    undefined,
+    undefined,
+    () => 1,
+    {
+      prepare: () => {
+        throw new Error('unused')
+      },
+      execute: () => {},
+      cancel: () => {},
+      close: async (input) => {
+        if (input.requestId === 'held-close') {
+          entered()
+          await held
+        }
+        if (input.signal.aborted) throw new Error('request_expired')
+        calls += 1
+      },
+    }
+  )
+  const successor = {
+    ...SCOPE,
+    turn_id: 'next-turn',
+    product_turn_id: 'next-product-turn',
+    generation: 2,
+  }
   try {
     await scopeCommand(transport.port, transport.key, 'scope/start')
     await scopeCommand(transport.port, transport.key, 'scope/end')
     await scopeCommand(transport.port, transport.key, 'scope/start', successor)
-    const closed = await post(transport.port, transport.key, JSON.stringify({ ...successor,
-      action: 'close', request_id: 'successor-close', tab_id: 'owned', deadline: Date.now() + 5000 }))
+    const closed = await post(
+      transport.port,
+      transport.key,
+      JSON.stringify({
+        ...successor,
+        action: 'close',
+        request_id: 'successor-close',
+        tab_id: 'owned',
+        deadline: Date.now() + 5000,
+      })
+    )
     assert.equal(JSON.parse(closed.body).ok, true)
-    const pending = post(transport.port, transport.key, JSON.stringify({ ...successor,
-      action: 'close', request_id: 'held-close', tab_id: 'owned', deadline: Date.now() + 5000 }))
+    const pending = post(
+      transport.port,
+      transport.key,
+      JSON.stringify({
+        ...successor,
+        action: 'close',
+        request_id: 'held-close',
+        tab_id: 'owned',
+        deadline: Date.now() + 5000,
+      })
+    )
     await entering
     const ending = scopeCommand(transport.port, transport.key, 'scope/end', successor)
-    await new Promise(resolve => setTimeout(resolve, 20))
+    await new Promise((resolve) => setTimeout(resolve, 20))
     release()
     assert.equal(JSON.parse((await pending).body).ok, false)
     await ending
     assert.equal(calls, 1)
-  } finally { release(); await transport.close() }
+  } finally {
+    release()
+    await transport.close()
+  }
 })
+test('search-only transport rejects general browser actions before calling their owners', async () => {
+  const calls: string[] = []
+  const transport = await createTransport(
+    () => {
+      calls.push('list')
+      return []
+    },
+    () => {
+      calls.push('read')
+      throw new Error('unexpected read')
+    },
+    undefined,
+    authorizeTestList,
+    undefined,
+    undefined,
+    undefined,
+    async () => {
+      calls.push('search')
+      return { url: 'https://www.bing.com/search?q=query', cards: [], challenge: false }
+    },
+    { advancedEnabled: false }
+  )
+  const send = (action: string, extra: Record<string, unknown> = {}) =>
+    post(
+      transport.port,
+      transport.key,
+      JSON.stringify({
+        ...SCOPE,
+        action,
+        request_id: action.replace('/', '-'),
+        deadline: Date.now() + 5000,
+        ...extra,
+      })
+    )
+  try {
+    await scopeCommand(transport.port, transport.key, 'scope/start')
+    for (const [action, extra] of [
+      ['list', {}],
+      ['open', {}],
+      ['prepare-read', { tab_id: 'tab', intent: 'Read page' }],
+      ['history/prepare', { search: 'query', offset: 0, limit: 1, intent: 'Read history' }],
+    ] as const) {
+      const result = await send(action, extra)
+      assert.equal(result.status, 503)
+      assert.equal(JSON.parse(result.body).error, 'browser_unavailable')
+    }
+    assert.equal((await send('search', { engine: 'bing', query: 'query', limit: 1 })).status, 200)
+    assert.deepEqual(calls, ['search'])
+    assert.equal((await scopeCommand(transport.port, transport.key, 'scope/end')).status, 200)
+  } finally {
+    await transport.close()
+  }
+})
+
 test('product search is scoped, bounded, and does not expose browser targets', async () => {
   const calls: unknown[] = []
-  const transport = await createTransport(() => [], undefined, undefined, authorizeTestList,
-    undefined, undefined, undefined, async input => {
+  const transport = await createTransport(
+    () => [],
+    undefined,
+    undefined,
+    authorizeTestList,
+    undefined,
+    undefined,
+    undefined,
+    async (input) => {
       calls.push(input)
-      if (input.query === 'authorization') throw new BrowserSearchError('browser_search_authorization_required')
+      if (input.query === 'authorization')
+        throw new BrowserSearchError('browser_search_authorization_required')
       return { url: 'https://www.bing.com/search?q=query', cards: [], challenge: false }
-    })
-  const payload = { ...SCOPE, action: 'search', request_id: 'search-request',
-    engine: 'bing', query: 'query', limit: 3, deadline: Date.now() + 5000 }
+    }
+  )
+  const payload = {
+    ...SCOPE,
+    action: 'search',
+    request_id: 'search-request',
+    engine: 'bing',
+    query: 'query',
+    limit: 3,
+    deadline: Date.now() + 5000,
+  }
   try {
     assert.equal((await post(transport.port, transport.key, JSON.stringify(payload))).status, 409)
     await scopeCommand(transport.port, transport.key, 'scope/start')
@@ -478,21 +1091,53 @@ test('product search is scoped, bounded, and does not expose browser targets', a
     const replay = await post(transport.port, transport.key, JSON.stringify(payload))
     assert.equal(replay.body, result.body)
     assert.equal(calls.length, 1)
-    const independent = await post(transport.port, transport.key,
-      JSON.stringify({ ...payload, request_id: 'independent-search' }))
+    const independent = await post(
+      transport.port,
+      transport.key,
+      JSON.stringify({ ...payload, request_id: 'independent-search' })
+    )
     assert.equal(independent.status, 200)
     assert.equal(calls.length, 2)
-    const denied = await post(transport.port, transport.key,
-      JSON.stringify({ ...payload, request_id: 'authorization', query: 'authorization' }))
+    const denied = await post(
+      transport.port,
+      transport.key,
+      JSON.stringify({ ...payload, request_id: 'authorization', query: 'authorization' })
+    )
     assert.equal(JSON.parse(denied.body).error, 'browser_search_authorization_required')
-    assert.equal((await post(transport.port, transport.key,
-      JSON.stringify({ ...payload, request_id: 'oversized', limit: 21 }))).status, 400)
-    assert.equal((await post(transport.port, transport.key,
-      JSON.stringify({ ...payload, request_id: 'injected', url: 'https://example.com' }))).status, 400)
+    assert.equal(
+      (
+        await post(
+          transport.port,
+          transport.key,
+          JSON.stringify({ ...payload, request_id: 'oversized', limit: 21 })
+        )
+      ).status,
+      400
+    )
+    assert.equal(
+      (
+        await post(
+          transport.port,
+          transport.key,
+          JSON.stringify({ ...payload, request_id: 'injected', url: 'https://example.com' })
+        )
+      ).status,
+      400
+    )
     await scopeCommand(transport.port, transport.key, 'scope/end')
-    assert.equal((await post(transport.port, transport.key,
-      JSON.stringify({ ...payload, request_id: 'late' }))).status, 409)
-  } finally { await transport.close() }
+    assert.equal(
+      (
+        await post(
+          transport.port,
+          transport.key,
+          JSON.stringify({ ...payload, request_id: 'late' })
+        )
+      ).status,
+      409
+    )
+  } finally {
+    await transport.close()
+  }
 })
 const authorizeTestList = () => 0
 test('search deadline aborts its owner and scope drain joins cleanup before a successor starts', async () => {
@@ -500,64 +1145,140 @@ test('search deadline aborts its owner and scope drain joins cleanup before a su
   let release!: () => void
   let aborted = false
   let cleaned = false
-  const started = new Promise<void>(resolve => { entered = resolve })
-  const held = new Promise<void>(resolve => { release = resolve })
-  const transport = await createTransport(() => [], undefined, undefined, authorizeTestList,
-    undefined, undefined, undefined, async input => {
-      input.signal.addEventListener('abort', () => { aborted = true }, { once: true })
+  const started = new Promise<void>((resolve) => {
+    entered = resolve
+  })
+  const held = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const transport = await createTransport(
+    () => [],
+    undefined,
+    undefined,
+    authorizeTestList,
+    undefined,
+    undefined,
+    undefined,
+    async (input) => {
+      input.signal.addEventListener(
+        'abort',
+        () => {
+          aborted = true
+        },
+        { once: true }
+      )
       entered()
       try {
         await held
         throw new BrowserSearchError('request_expired')
-      } finally { cleaned = true }
-    })
+      } finally {
+        cleaned = true
+      }
+    }
+  )
   let pending: Promise<unknown> | undefined
   try {
     await scopeCommand(transport.port, transport.key, 'scope/start')
-    pending = post(transport.port, transport.key, JSON.stringify({ ...SCOPE, action: 'search',
-      request_id: 'deadline-search', engine: 'bing', query: 'deadline', limit: 3,
-      deadline: Date.now() + 100 }))
+    pending = post(
+      transport.port,
+      transport.key,
+      JSON.stringify({
+        ...SCOPE,
+        action: 'search',
+        request_id: 'deadline-search',
+        engine: 'bing',
+        query: 'deadline',
+        limit: 3,
+        deadline: Date.now() + 100,
+      })
+    )
     await started
-    await new Promise(resolve => setTimeout(resolve, 150))
+    await new Promise((resolve) => setTimeout(resolve, 150))
     assert.equal(aborted, true)
     assert.equal(cleaned, false)
     const ending = scopeCommand(transport.port, transport.key, 'scope/end')
     const beforeCleanup = await Promise.race([
       ending.then(() => 'settled'),
-      new Promise<string>(resolve => setTimeout(() => resolve('pending'), 20)),
+      new Promise<string>((resolve) => setTimeout(() => resolve('pending'), 20)),
     ])
     assert.equal(beforeCleanup, 'pending')
     release()
     await pending
     assert.equal((await ending).status, 200)
     assert.equal(cleaned, true)
-    assert.equal((await scopeCommand(transport.port, transport.key, 'scope/start', {
-      ...SCOPE, generation: 2, turn_id: 'next', product_turn_id: 'next',
-    })).status, 200)
-  } finally { release(); await pending; await transport.close() }
+    assert.equal(
+      (
+        await scopeCommand(transport.port, transport.key, 'scope/start', {
+          ...SCOPE,
+          generation: 2,
+          turn_id: 'next',
+          product_turn_id: 'next',
+        })
+      ).status,
+      200
+    )
+  } finally {
+    release()
+    await pending
+    await transport.close()
+  }
 })
 test('scope cancellation joins blank-tab creation and closes its late owned target', async () => {
   let entered!: () => void
-  const entering = new Promise<void>(resolve => { entered = resolve })
-  let release!: () => void
-  const held = new Promise<void>(resolve => { release = resolve })
-  let closed = 0
-  const transport = await createTransport(() => [], undefined, undefined, () => 1, {
-    prepare: () => { throw new Error('unused') }, execute: () => {}, cancel: () => {},
-    open: async () => { entered(); await held; return { tabId: 'late-tab', close() { closed += 1 } } },
+  const entering = new Promise<void>((resolve) => {
+    entered = resolve
   })
+  let release!: () => void
+  const held = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  let closed = 0
+  const transport = await createTransport(
+    () => [],
+    undefined,
+    undefined,
+    () => 1,
+    {
+      prepare: () => {
+        throw new Error('unused')
+      },
+      execute: () => {},
+      cancel: () => {},
+      open: async () => {
+        entered()
+        await held
+        return {
+          tabId: 'late-tab',
+          close() {
+            closed += 1
+          },
+        }
+      },
+    }
+  )
   try {
     await scopeCommand(transport.port, transport.key, 'scope/start')
-    const pending = post(transport.port, transport.key, JSON.stringify({ ...SCOPE,
-      action: 'open', request_id: 'opening', deadline: Date.now() + 5000 }))
+    const pending = post(
+      transport.port,
+      transport.key,
+      JSON.stringify({
+        ...SCOPE,
+        action: 'open',
+        request_id: 'opening',
+        deadline: Date.now() + 5000,
+      })
+    )
     await entering
     const ending = scopeCommand(transport.port, transport.key, 'scope/end')
-    await new Promise(resolve => setTimeout(resolve, 20))
+    await new Promise((resolve) => setTimeout(resolve, 20))
     release()
     assert.equal(JSON.parse((await pending).body).ok, false)
     await ending
     assert.equal(closed, 1)
-  } finally { release(); await transport.close() }
+  } finally {
+    release()
+    await transport.close()
+  }
 })
 const createAgentTransport = (
   list: Parameters<typeof createTransport>[0],
@@ -1487,7 +2208,11 @@ test('scope/end timeout fails closed until the in-flight operation settles and a
       JSON.stringify({ ...SCOPE, action: 'scope/end', deadline: Date.now() + 100 })
     )
     assert.equal(end.status, 408)
-    assert.deepEqual(JSON.parse(end.body), { ok: false, error: 'scope_unsettled', phase: 'requests' })
+    assert.deepEqual(JSON.parse(end.body), {
+      ok: false,
+      error: 'scope_unsettled',
+      phase: 'requests',
+    })
     const next = {
       ...SCOPE,
       generation: 2,

@@ -12,6 +12,7 @@ from service.content.domain.model import ContentError
 from service.literature.persistence.reading import AttachmentRecordCatalog
 from service.literature.schema import PDF_MEDIA_TYPE
 from service.literature.service.attachment import LiteratureAttachmentContent
+from service.literature.service.records import attachment_snapshot
 from service.platform.content import RootKind
 from service.platform.pdf import PdfAnnotationError, embedded_pdf_records
 from service.platform.records import (
@@ -20,6 +21,7 @@ from service.platform.records import (
     RecordOwner,
     RecordTarget,
     record_revision,
+    retain_native_sources,
 )
 from service.platform.resources import ResourcePayloadImportPort
 
@@ -89,11 +91,7 @@ def register_attachment_import(
                 RecordOwner.LITERATURE_ATTACHMENT, literature_id, attachment_id
             )
             source_records = (
-                catalog.snapshot(
-                    source_target,
-                    revision,
-                    None if catalog.exists(attachment_id) else embedded_pdf_records(payload),
-                )
+                attachment_snapshot(catalog, source_target, revision, payload)
                 if body.copy_records
                 else None
             )
@@ -186,11 +184,9 @@ def register_attachment_import(
                 # Resource version capture may already have initialized this new
                 # asset from the embedded records. CAS only accepts that original
                 # initialization or an empty initialization, never unrelated edits.
-                initial = (
-                    EMPTY_RECORDS
-                    if current.records == EMPTY_RECORDS
-                    else embedded_pdf_records(payload)
-                )
+                embedded = embedded_pdf_records(payload)
+                empty = retain_native_sources(EMPTY_RECORDS, embedded)
+                initial = empty if current.records == empty else embedded
                 expected = (
                     body.target_record_revision
                     if body.replace_path

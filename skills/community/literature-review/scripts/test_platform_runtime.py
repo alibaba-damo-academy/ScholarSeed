@@ -10,12 +10,113 @@ import tempfile
 import time
 import unittest
 import venv
+from types import SimpleNamespace
+from unittest.mock import patch
+import runpy
 
-ROOT=Path(__file__).resolve().parents[1]
+ROOT=Path(os.environ.get('TEST_SKILL_ROOT', Path(__file__).resolve().parents[1])).resolve()
 sys.path[:0]=[str(ROOT/'lib'),str(ROOT/'scripts')]
 from platform_runtime import command_spec, discover_python, utf8_env, venv_python
 from platform_io import file_lock, run_stream
 from workspace_binding import bind
+import platform_runtime
+import preflight
+
+
+class InterpreterPolicyTest(unittest.TestCase):
+    def test_plugin_identity_matches_the_skill_version(self):
+        descriptor = json.loads((ROOT / '.scholarseed-plugin.json').read_text(encoding='utf-8'))
+        self.assertEqual(descriptor['version'], (ROOT / 'VERSION').read_text().strip())
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX setup wrapper contract')
+    def test_setup_wrapper_forwards_to_the_reviewed_launcher(self):
+        with tempfile.TemporaryDirectory(prefix='slr setup ') as directory:
+            temporary = Path(directory)
+            launcher = temporary / 'scholarseed-skill-python'
+            arguments = temporary / 'arguments.txt'
+            launcher.write_text('#!/bin/sh\nprintf \'%s\\n\' "$@" > "$TEST_SETUP_ARGUMENTS"\nexit 23\n',
+                                encoding='utf-8')
+            launcher.chmod(0o755)
+            environment = {**os.environ, 'PATH': str(temporary) + os.pathsep + os.environ['PATH'],
+                           'TEST_SETUP_ARGUMENTS': str(arguments)}
+            result = subprocess.run(['bash', str(ROOT / 'scripts/setup'), '--no-network'],
+                                    env=environment, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 23)
+            self.assertEqual(arguments.read_text().splitlines(),
+                             [str(ROOT / 'scripts/bootstrap.py'), 'setup', '--no-network'])
+
+    def test_child_environment_disables_bytecode_in_the_frozen_pack(self):
+        self.assertEqual(utf8_env({}).get('PYTHONDONTWRITEBYTECODE'), '1')
+
+    def test_probe_accepts_supported_python_and_rejects_other_versions(self):
+        for version, accepted in [([3, 12, 13], True), ([3, 13, 0], True),
+                                  ([3, 14, 10], True), ([3, 15, 0], True),
+                                  ([3, 11, 9], False), ([4, 0, 0], False),
+                                  ([], False), ([3], False), (["3", 14], False)]:
+            with self.subTest(version=version):
+                result = subprocess.CompletedProcess([], 0, json.dumps({
+                    'python': sys.executable, 'version': version, 'prefix': sys.prefix}))
+                with patch('platform_runtime.subprocess.run', return_value=result):
+                    self.assertEqual(platform_runtime.probe_python([sys.executable]) is not None,
+                                     accepted)
+
+    def test_active_supported_interpreter_is_discovered(self):
+        info = discover_python(ROOT, explicit=sys.executable)
+        self.assertEqual(Path(info['python']).resolve(), Path(sys.executable).resolve())
+        self.assertEqual(info['version'], list(sys.version_info[:3]))
+
+    def test_conflicting_binding_remains_unchanged(self):
+        with tempfile.TemporaryDirectory(prefix='slr binding ') as directory:
+            workspace = Path(directory)
+            bind(workspace, ROOT)
+            binding = workspace / '.slr-binding.json'
+            original = binding.read_bytes()
+            with self.assertRaisesRegex(ValueError, 'conflicts'):
+                discover_python(ROOT, explicit=str(workspace / 'other-python'), workspace=workspace)
+            self.assertEqual(binding.read_bytes(), original)
+
+    def test_preflight_accepts_active_supported_runtime(self):
+        report = preflight.Report()
+        preflight.check_python(report)
+        self.assertFalse(report.blocking)
+        conflicting = preflight.Report()
+        preflight.check_python(conflicting, str(ROOT / 'missing-python'))
+        self.assertTrue(conflicting.blocking)
+
+    def test_setup_uses_the_shared_policy_before_running_checks(self):
+        entry = runpy.run_path(str(ROOT / 'scripts/setup.py'))['main']
+        for version, accepted in [((3, 12, 13), True), ((3, 14, 10), True),
+                                  ((3, 11, 9), False), ((4, 0, 0), False)]:
+            with self.subTest(version=version):
+                selected = SimpleNamespace(version_info=version, executable=sys.executable)
+                with (patch.dict(entry.__globals__, {'sys': selected}),
+                      patch('subprocess.run') as check,
+                      patch('subprocess.call', return_value=0) as doctor):
+                    if accepted:
+                        self.assertEqual(entry(), 0)
+                        check.assert_called_once()
+                        doctor.assert_called_once()
+                    else:
+                        with self.assertRaisesRegex(SystemExit, 'required'):
+                            entry()
+                        check.assert_not_called()
+                        doctor.assert_not_called()
+
+    def test_stale_workspace_bindings_are_rejected_without_rewriting(self):
+        for field, value in [('version', 'old-skill-version'), ('platform', 'other-os'),
+                             ('workspace', 'moved-workspace'), ('python', 'missing-python')]:
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
+                workspace = Path(directory)
+                bind(workspace, ROOT)
+                binding = workspace / '.slr-binding.json'
+                data = json.loads(binding.read_text(encoding='utf-8'))
+                data[field] = value
+                binding.write_text(json.dumps(data), encoding='utf-8')
+                original = binding.read_bytes()
+                result = subprocess.run([sys.executable, '-B', str(ROOT / 'scripts/workspace_entry.py'),
+                                         str(workspace), 'info'], capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(binding.read_bytes(), original)
 
 
 class PlatformRuntimeTest(unittest.TestCase):
@@ -79,7 +180,7 @@ class PlatformRuntimeTest(unittest.TestCase):
                               env=env,capture_output=True,encoding='utf-8')
         report=json.loads(result.stdout)
         self.assertTrue(next(i['ok'] for i in report['items'] if i['name']=='workspace binding'))
-        self.assertTrue(next(i['ok'] for i in report['items'] if i['name']=='bound Python 3.12.x'))
+        self.assertTrue(next(i['ok'] for i in report['items'] if i['name']=='bound product Python'))
 
     def test_broken_binding_does_not_fall_back_to_system_python(self):
         bind(self.ws,ROOT)

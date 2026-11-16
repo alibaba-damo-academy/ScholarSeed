@@ -11,7 +11,10 @@ import {
   saveSubscriptionModels,
   subscriptionModels,
   subscriptionStatus,
-  deletePersonalApiProfile,
+  deleteSubscriptionProfile,
+  subscriptionRegistrations,
+  claimSubscriptionRegistration,
+  type SubscriptionRegistration,
   type PersonalApiModel,
   type PersonalApiProfile,
 } from '../../api'
@@ -20,6 +23,8 @@ import {
   AlertDescription,
   Button,
   Checkbox,
+  Select,
+  useToast,
   AlertDialog,
   AlertDialogTrigger,
   AlertDialogContent,
@@ -87,6 +92,11 @@ function profileMessage(result: PersonalApiFailure): Notice {
   return result.code ? { profileFailure: result } : message(result.error)
 }
 
+function SubscriptionNotice({ notice }: { notice: Notice }): React.JSX.Element {
+  const { t } = useTranslation('subscription')
+  return <>{noticeText(t, notice)}</>
+}
+
 function Connection({
   profile,
   available,
@@ -97,6 +107,7 @@ function Connection({
   refresh: () => void
 }): React.JSX.Element {
   const { t } = useTranslation('subscription')
+  const { toast } = useToast()
   const lifetime = React.useRef(0)
   React.useEffect(
     () => () => {
@@ -109,9 +120,31 @@ function Connection({
   const [notice, setNotice] = React.useState<Notice | null>(null)
   const [candidates, setCandidates] = React.useState<PersonalApiModel[]>([])
   const [selected, setSelected] = React.useState(profile.selected_models)
+  const [registrations, setRegistrations] = React.useState<SubscriptionRegistration[]>([])
+  const [registration, setRegistration] = React.useState('')
+  const [registrationsReady, setRegistrationsReady] = React.useState(false)
+  const [registrationsRevision, setRegistrationsRevision] = React.useState(0)
+  const [bound, setBound] = React.useState(false)
+  const registered = Boolean(profile.oauth?.registered || bound)
   const permissionRequired = profile.oauth?.state === 'permission_required'
   const connected = profile.oauth?.state === 'connected'
   const storageUnavailable = profile.oauth?.state === 'unavailable'
+  React.useEffect(() => {
+    if (registered || storageUnavailable) return
+    let stopped = false
+    setRegistrationsReady(false)
+    void subscriptionRegistrations(profile.id).then((result) => {
+      if (stopped) return
+      if (result.ok) {
+        setRegistrations(result.data.registrations)
+        setRegistration(result.data.registrations[0]?.id ?? '')
+        setRegistrationsReady(true)
+      } else setNotice(profileMessage(result))
+    })
+    return () => {
+      stopped = true
+    }
+  }, [profile.id, registered, storageUnavailable, registrationsRevision])
   React.useEffect(() => {
     setSelected(profile.selected_models)
   }, [profile.selected_models])
@@ -155,6 +188,18 @@ function Connection({
     setBusy(true)
     setNotice(null)
     try {
+      if (!registered && registration) {
+        const claimed = await claimSubscriptionRegistration(profile.id, registration)
+        if (attempt !== lifetime.current) return
+        if (!claimed.ok) {
+          setNotice(profileMessage(claimed))
+          setRegistrationsRevision((value) => value + 1)
+          refresh()
+          return
+        }
+        setBound(true)
+        refresh()
+      }
       const result = await window.scholarseed?.subscriptionLogin({
         action: 'login',
         connectionId: profile.id,
@@ -218,10 +263,20 @@ function Connection({
   }
   const remove = async (): Promise<void> => {
     setBusy(true)
-    const result = await deletePersonalApiProfile(profile.id)
+    const result = await deleteSubscriptionProfile(profile.id)
     setBusy(false)
-    if (result) refresh()
-    else setNotice({ key: 'deleteFailed' })
+    if (result.ok) {
+      if (result.data.warning)
+        toast({
+          title: <SubscriptionNotice notice={message(result.data.warning)} />,
+          tone: 'warning',
+          duration: false,
+        })
+      refresh()
+    } else {
+      setNotice(profileMessage(result))
+      refresh()
+    }
   }
   // 启停由设置-模型页左栏厂商行的 Switch 承担, 卡内不再放第二份入口。
   return (
@@ -261,6 +316,29 @@ function Connection({
           {profile.oauth.account_label}
         </div>
       )}
+      {!registered && !storageUnavailable && registrationsReady && (
+        <Select
+          label={t('accountChoice')}
+          value={registration}
+          disabled={busy || Boolean(transaction)}
+          onChange={(event) => setRegistration(event.target.value)}
+        >
+          {registrations.map((account) => (
+            <option key={account.id} value={account.id}>
+              {t('savedAccount', {
+                name: account.label || 'ChatGPT',
+                reference: account.reference,
+              })}
+            </option>
+          ))}
+          <option value="">{t('newAccount')}</option>
+        </Select>
+      )}
+      {!registered && !storageUnavailable && !registrationsReady && (
+        <Button variant="secondary" onClick={() => setRegistrationsRevision((value) => value + 1)}>
+          {t('retry')}
+        </Button>
+      )}
       <div className="flex flex-wrap gap-2">
         <Button
           variant="secondary"
@@ -272,7 +350,9 @@ function Connection({
         </Button>
         {!connected && !transaction && (
           <Button
-            disabled={busy || !available || storageUnavailable}
+            disabled={
+              busy || !available || storageUnavailable || (!registered && !registrationsReady)
+            }
             onClick={() => {
               void login()
             }}

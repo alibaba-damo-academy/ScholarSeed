@@ -1,9 +1,10 @@
 {
   "schema": 2,
   "id": "research-idea-partner",
-  "version": "1.2.18",
+  "version": "1.2.24",
   "host": ">=0.2.0,<0.4.0",
   "skill": "SKILL.md",
+  "ui": { "compatibility": "2.0", "exports": ["Conversation", "createLiteraturePorts"] },
   "capabilities": [
     "navigation.open",
     "literature.write",
@@ -17,87 +18,11 @@
       "preview": "components/results.json",
       "actions": [
         {
-          "id": "open-results",
-          "capability": "navigation.open"
-        }
-      ],
-      "public": true
-    },
-    {
-      "id": "references",
-      "slot": "display.literature-references",
-      "preview": "components/references.json",
-      "actions": [
-        {
           "id": "open-source",
           "capability": "navigation.open"
         },
         {
-          "id": "add-reference",
-          "capability": "literature.write"
-        },
-        {
-          "id": "collections",
-          "capability": "literature.read"
-        },
-        {
-          "id": "create-collection",
-          "capability": "literature.write"
-        }
-      ],
-      "public": true
-    },
-    {
-      "id": "downloads",
-      "slot": "display.literature-downloads",
-      "preview": "components/downloads.json",
-      "actions": [
-        {
-          "id": "open-fulltext",
-          "capability": "navigation.open"
-        },
-        {
-          "id": "open-library",
-          "capability": "navigation.open"
-        }
-      ],
-      "public": true
-    },
-    {
-      "id": "delivery",
-      "slot": "display.literature-delivery",
-      "preview": "components/delivery.json",
-      "actions": [
-        {
-          "id": "delivery",
-          "capability": "literature.read"
-        },
-        {
-          "id": "folders",
-          "capability": "literature.read"
-        },
-        {
-          "id": "collections",
-          "capability": "literature.read"
-        },
-        {
-          "id": "pick-directory",
-          "capability": "literature.write"
-        },
-        {
-          "id": "save",
-          "capability": "literature.write"
-        },
-        {
-          "id": "cancel",
-          "capability": "literature.write"
-        },
-        {
-          "id": "open-directory",
-          "capability": "navigation.open"
-        },
-        {
-          "id": "open-library",
+          "id": "open-results",
           "capability": "navigation.open"
         }
       ],

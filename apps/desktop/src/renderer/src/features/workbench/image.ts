@@ -5,8 +5,14 @@ const IMAGE_MEDIA_TYPES: Readonly<Record<string, string>> = {
   webp: 'image/webp',
   gif: 'image/gif',
   svg: 'image/svg+xml',
+  bmp: 'image/bmp',
 }
 const IMAGE_MEDIA_PREFIX = 'image/'
+const PREVIEW_MEDIA_TYPES = new Set(Object.values(IMAGE_MEDIA_TYPES))
+
+export function supportsImagePreview(path: string, mediaType = ''): boolean {
+  return PREVIEW_MEDIA_TYPES.has(imageMediaType(path, mediaType))
+}
 
 /** Remote document transports may expose binary content as octet-stream. */
 export function imageMediaType(path: string, mediaType: string): string {

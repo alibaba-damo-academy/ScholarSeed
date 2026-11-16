@@ -43,6 +43,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from compilation import layout as layout_diagnosis
 
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
 pass
@@ -106,6 +107,7 @@ def _diagnose_compile(pdf_path: Path, log_path: Path,
     log_warnings: list[str] = []
     emergency_stop = False
     driver_error = False
+    text = ''
 
     if log_path.exists():
         text = log_path.read_text(encoding="utf-8", errors="replace")
@@ -131,7 +133,7 @@ def _diagnose_compile(pdf_path: Path, log_path: Path,
         and not emergency_stop
         and not driver_error
     ):
-        verdict = "clean"
+        verdict = "clean" if layout_diagnosis(text)['status'] == 'SUCCESS' else "layout_failed"
     else:
         verdict = "partial_pdf"
 
@@ -146,6 +148,7 @@ def _diagnose_compile(pdf_path: Path, log_path: Path,
         "emergency_stop": emergency_stop,
         "driver_error": driver_error,
         "log_warnings": log_warnings,
+        "layout": layout_diagnosis(text),
     }
 
 
@@ -541,7 +544,9 @@ def _render_references(registry: _CitationRegistry,
             parts.append(f"doi:{doi}")
         if url:
             parts.append(f"URL: <{url}>")
-        lines.append(f'<a id="ref-{key}"></a>')
+        lines.append(citation_formats.reference_anchor(
+            key, title=title, authors=authors, year=year,
+            publication=venue, url=url, doi=doi))
         lines.append(" ".join(parts))
         lines.append("")
     return lines
@@ -891,7 +896,7 @@ def _main() -> int:
         return _publish_markdown(ws, spec, language, started)
 
     engine_overridden = False
-    if language == "chinese" and args.engine != "xelatex":
+    if (language == "chinese" or spec.get("citation_style") == "gbt7714_2025" or spec.get("template") in ("ctexart", "standard_chinese")) and args.engine != "xelatex":
         args.engine = "xelatex"
         engine_overridden = True
         log_debug(ws, "phase07_compile_latex", f"engine overridden to xelatex for Chinese (language={language})")

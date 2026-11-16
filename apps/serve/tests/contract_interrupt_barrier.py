@@ -3,9 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from types import SimpleNamespace
 
-from scholarseed_runtime.contract import CommandReceipt, CommandState
+from scholarseed_runtime.contract import (
+    ActorKind,
+    CommandReceipt,
+    CommandState,
+    DeliveryClass,
+    RuntimeEvent,
+    RuntimeEventKind,
+)
 from service.chat.runtime.live import LiveSession
 from service.chat.service.turns import TurnService
 from service.platform.activity import Activities
@@ -66,12 +74,14 @@ def live_session(adapter: object, catalog: _Catalog) -> LiveSession:
     live.runtime_driver = None
     live._catalog = catalog  # type: ignore[assignment]
     live.interrupting = False
+    live._close_task = None
     live.termination_task = None
     live._close_task = None
     live.terminating = False
     live.terminated = False
     live.interrupt_generation = 0
     live.last_interrupt_succeeded = None
+    live._user_interrupt_turn_id = ""
     live.current_task = None
     live._citation_review_task = None
     live.resource_task = None
@@ -157,9 +167,92 @@ async def scenario_failed_interrupt_clears_barrier() -> None:
     )
 
 
+async def scenario_rejected_user_interrupt() -> None:
+    class RejectingAdapter:
+        async def interrupt(self, request) -> CommandReceipt:
+            return CommandReceipt(request.command_id, CommandState.REJECTED, "turn-1")
+
+    live = live_session(RejectingAdapter(), _Catalog())
+    rejected = False
+    try:
+        await live.interrupt(user_requested=True)
+    except RuntimeError:
+        rejected = True
+    check(
+        "rejected user interrupt cannot attribute a subsequent unrelated stop",
+        rejected
+        and not live._user_interrupt_turn_id
+        and live.last_interrupt_succeeded is False
+        and live.interrupting is False,
+    )
+
+
+async def scenario_interruption_attribution() -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    live = live_session(_Adapter(entered, release), _Catalog())
+    event = RuntimeEvent(
+        schema_version=1,
+        event_id="stopped",
+        runtime_id="codex",
+        product_session_id=live.id,
+        native_session_id=live.vendor_thread_id,
+        process_generation=1,
+        sequence=1,
+        kind=RuntimeEventKind.TURN_INTERRUPTED,
+        delivery=DeliveryClass.MUST_PERSIST,
+        observed_at="2026-11-02T00:00:00Z",
+        native_turn_id="turn-1",
+        payload={"status": "interrupted"},
+    )
+    check(
+        "unrequested interruption stays unattributed", live._attribute_interruption(event) == event
+    )
+    request = asyncio.create_task(live.interrupt(user_requested=True))
+    await asyncio.wait_for(entered.wait(), timeout=VENDOR_ACK_TIMEOUT_SECONDS)
+    for unrelated in (
+        replace(event, native_turn_id="other-turn"),
+        replace(event, actor_kind=ActorKind.SUBAGENT),
+        replace(event, kind=RuntimeEventKind.TURN_UNKNOWN),
+    ):
+        check(
+            "unrelated or uncertain events preserve pending intent",
+            live._attribute_interruption(unrelated) == unrelated
+            and live._user_interrupt_turn_id == "turn-1",
+        )
+    attributed = live._attribute_interruption(event)
+    check(
+        "user intent is attached only to actual matching interruption",
+        attributed.payload == {"status": "interrupted", "reason": "user_requested"},
+    )
+    check("matching terminal consumes user intent", live._user_interrupt_turn_id == "")
+    release.set()
+    await asyncio.wait_for(request, timeout=VENDOR_ACK_TIMEOUT_SECONDS)
+    check(
+        "next unrelated interruption is not attributed",
+        live._attribute_interruption(event) == event,
+    )
+    for terminal in (RuntimeEventKind.TURN_COMPLETED, RuntimeEventKind.TURN_FAILED):
+        live._user_interrupt_turn_id = "turn-1"
+        completed = replace(event, kind=terminal)
+        check(
+            "a competing terminal clears intent without changing its outcome",
+            live._attribute_interruption(completed) == completed
+            and live._user_interrupt_turn_id == "",
+        )
+    live._user_interrupt_turn_id = "turn-1"
+    system = replace(event, payload={"reason": "process_exit"})
+    check(
+        "explicit runtime cause is not replaced by user intent",
+        live._attribute_interruption(system) == system,
+    )
+
+
 def main() -> int:
     asyncio.run(scenario_interrupt_closes_admission_before_cancel())
     asyncio.run(scenario_failed_interrupt_clears_barrier())
+    asyncio.run(scenario_rejected_user_interrupt())
+    asyncio.run(scenario_interruption_attribution())
     print(f"\ncontract_interrupt_barrier: PASS {PASS} / FAIL {FAIL}")
     return 1 if FAIL else 0
 

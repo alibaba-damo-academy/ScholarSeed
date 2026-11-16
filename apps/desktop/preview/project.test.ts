@@ -8,6 +8,21 @@ const SEED = { id: 'owned-project', name: 'Owned project', root: `${ROOT}/owned`
 const POLICY = { seed: 'sample' as const, read: 'normal' as const, history: 'normal' as const, write: 'normal' as const }
 const settle = async (): Promise<void> => { await new Promise(resolve => setTimeout(resolve, 350)) }
 
+test('project list orders equal creation times by descending identity without mutating its seed', () => {
+  const seed = [
+    { ...SEED, id: 'tie-a', created_at: 2 },
+    { ...SEED, id: 'older', created_at: 1 },
+    { ...SEED, id: 'tie-z', created_at: 2 },
+  ]
+  const owner = new ProjectSimulation(ROOT, seed, undefined, 'empty')
+  try {
+    assert.deepEqual(owner.all().map(project => project.id), ['tie-z', 'tie-a', 'older'])
+    owner.all()[0].name = 'Changed copy'
+    assert.equal(owner.project('tie-z')?.name, SEED.name)
+    assert.deepEqual(seed.map(project => project.id), ['tie-a', 'older', 'tie-z'])
+  } finally { owner.dispose() }
+})
+
 test('project archive changes registration visibility only and forget retains original file bytes behind an inaccessible identity', async () => {
   const owner = new ProjectSimulation(ROOT, [SEED])
   try {

@@ -57,6 +57,7 @@ from service.cli.inspection_cas import (  # noqa: E402
     PublicationOutput,
     encode_publication_reports,
     publication_preview,
+    publication_reader,
     publication_reports,
     read_candidate_publication,
 )
@@ -597,7 +598,7 @@ def main(arguments: list[str] | None = None) -> int:
                 publications = {
                     name: report.publications if report is not None else () for name, report in cas
                 }
-                received = (
+                received: dict[str, tuple[CasPublication, ...]] = (
                     check_startup_publications(
                         reader,
                         snapshot,
@@ -631,12 +632,6 @@ def main(arguments: list[str] | None = None) -> int:
                         candidate_layouts
                     )
 
-                def candidate_images(
-                    name: str,
-                    received: dict[str, tuple[CasPublication, ...]] = received,
-                ) -> tuple[CasPublication, ...]:
-                    return received.get(name, ())
-
                 checks = (
                     check_startup_sqlite(
                         core_candidates,
@@ -646,7 +641,7 @@ def main(arguments: list[str] | None = None) -> int:
                         read_candidate=lambda preview: read_candidate_rows(
                             preview, sys.stdin.buffer, sys.stdout.buffer
                         ),
-                        read_publications=candidate_images,
+                        read_publications=publication_reader(received),
                     )
                     if core_candidates is not None
                     else ()

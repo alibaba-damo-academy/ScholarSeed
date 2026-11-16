@@ -9,6 +9,7 @@ import type {
   ModeInfo,
   OperationStateData,
   PendingHIL,
+  RecoveryCheckResponse,
   RuntimeIncidentData,
   SessionResumeFailure,
   SessionTurnStatus,
@@ -93,6 +94,8 @@ const SANDBOX_INCIDENT_MESSAGE_KEYS = {
   windows_sandbox_setup_unknown: 'runtime.reason.windows_sandbox_setup_unknown',
   windows_sandbox_policy_rejected: 'runtime.reason.windows_sandbox_policy_rejected',
   windows_sandbox_setup_cancelled: 'runtime.reason.windows_sandbox_setup_cancelled',
+  windows_sandbox_password_policy_rejected:
+    'runtime.reason.windows_sandbox_password_policy_rejected',
   windows_sandbox_tool_access_failed: 'runtime.reason.windows_sandbox_tool_access_failed',
 } as const
 const INCIDENT_MESSAGE_KEYS = {
@@ -267,6 +270,37 @@ export function hasCurrentTurnCapabilityFailure(thread: Pick<Thread, 'conversati
   )
 }
 
+export function projectRecoveryCheck(
+  result: RecoveryCheckResponse
+): Pick<Thread, 'recoveryBlocked' | 'recoveryPending' | 'running' | 'status'> {
+  const hasActiveTurn = result.activity_active === true
+  return {
+    recoveryBlocked: result.recovery_blocked,
+    recoveryPending: result.recovery_pending,
+    running: hasActiveTurn,
+    status: hasActiveTurn ? 'running' : 'done',
+  }
+}
+
+export type RecoveryCheckIdentity = Pick<
+  Thread,
+  'sessionId' | 'activeTurnId' | 'recoveryIncidentId' | 'recoverySourceSeq'
+>
+
+export function recoveryCheckIdentity(thread: Thread): RecoveryCheckIdentity {
+  const { sessionId, activeTurnId, recoveryIncidentId, recoverySourceSeq } = thread
+  return { sessionId, activeTurnId, recoveryIncidentId, recoverySourceSeq }
+}
+
+export function recoveryCheckIsCurrent(current: Thread, requested: RecoveryCheckIdentity): boolean {
+  return (
+    current.sessionId === requested.sessionId &&
+    current.activeTurnId === requested.activeTurnId &&
+    current.recoveryIncidentId === requested.recoveryIncidentId &&
+    current.recoverySourceSeq === requested.recoverySourceSeq
+  )
+}
+
 export function catalogRunStateIsCurrent(
   catalog: { last_seq?: number; running?: boolean; waiting?: boolean },
   thread: Pick<Thread, 'lastSeq' | 'running'>
@@ -386,6 +420,7 @@ export function projectSessionRecovery(
     const hasCard = projected.conversation.some(
       (item) => item.kind === 'hil' && item.requestId === hil.request_id
     )
+    const pendingCard = projectHilCard(hil, snapshot.timestamp, turnId, itemId)
     projected = {
       ...projected,
       running: hil.lifetime === 'session' ? snapshot.running : true,
@@ -395,11 +430,20 @@ export function projectSessionRecovery(
           ? { ...projected.turnOutcomes, [turnId]: 'running' }
           : projected.turnOutcomes,
       conversation: hasCard
-        ? projected.conversation
-        : insertTurnRuntimeItem(
-            projected.conversation,
-            projectHilCard(hil, snapshot.timestamp, turnId, itemId)
-          ),
+        ? pendingCard.timeoutCancelled || pendingCard.timeoutAt !== undefined
+          ? projected.conversation.map((item) =>
+              item.kind === 'hil' && item.requestId === hil.request_id
+                ? {
+                    ...item,
+                    timeoutAt: pendingCard.timeoutAt ?? item.timeoutAt,
+                    cancelTimeoutOnEdit:
+                      pendingCard.cancelTimeoutOnEdit ?? item.cancelTimeoutOnEdit,
+                    timeoutCancelled: item.timeoutCancelled || pendingCard.timeoutCancelled,
+                  }
+                : item
+            )
+          : projected.conversation
+        : insertTurnRuntimeItem(projected.conversation, pendingCard),
     }
   }
   if (snapshot.running && snapshot.activeTurnId) {

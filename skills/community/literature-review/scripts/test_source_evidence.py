@@ -1,8 +1,16 @@
 import copy
 import unittest
-from source_evidence import source_windows
+from source_evidence import source_windows, bind_statements
 
 class SourceEvidenceTest(unittest.TestCase):
+    def test_mapping_binds_actual_statements_without_upgrading_logic(self):
+        text = '#1 We study a family of models.\n#2 There exists a member with the stated property under condition A.'
+        result = bind_statements(text, {'card.result': [2]})
+        self.assertEqual(result['sentences'], {'2': 'There exists a member with the stated property under condition A.'})
+        self.assertEqual(result['fields']['card.result'], [2])
+        with self.assertRaisesRegex(ValueError, 'absent'):
+            bind_statements(text, {'card.result': [99]})
+
     def test_verbatim_theory_conditions_and_dimensions_reach_assigned_writer(self):
         records = {'p1': {'sentences': '#1 Introduction.\n#2 Under convexity and Lipschitz assumptions, the theorem gives convergence to a stationary point, not a global optimum.\n#3 The algorithm requires two tasks.\n#4 The benchmark evaluates six objectives with identical experimental budgets.'},
                    'unassigned': {'sentences': '#1 A private unassigned result.'}}

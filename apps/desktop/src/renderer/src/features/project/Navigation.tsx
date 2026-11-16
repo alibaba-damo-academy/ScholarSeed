@@ -13,16 +13,21 @@ import {
 
 import {
   listAllSessions,
-  listSessionCatalog,
+  detachSession,
+  reorderSession,
+  restoreSessionParent,
   setSessionArchived,
   setSessionPinned,
   type ServeSession,
+  type SessionOrderPlacement,
 } from '../../api'
 import { sessionDisplayTitle } from '../../session'
 import emptyFolder from '../../assets/empty_img.webp'
+import { createScrollbarVisibility } from '../../components/business/scroll'
 import { IconFont } from '../../components/primitive/Iconfont'
 import {
   Alert,
+  AlertDescription,
   Button,
   Collapsible,
   CollapsibleContent,
@@ -37,24 +42,51 @@ import {
   ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
+  ScrollArea,
   Spinner,
   Tooltip,
+  useToast,
 } from '../../components/ui'
 import { ProjectMenu } from '../../shell/ProjectMenu'
 import { selectedProject, useApp } from '../../store'
-import { findSessionNode } from '../../tree'
+import { findSessionNode, projectSessionNodes, serveSessionNode } from '../../tree'
 import { HOME_TASK_LIMIT } from '../home/catalog'
 import { Tasks } from './Tasks'
 import { projectLibraryNavigation, tabMatchesProject } from '../workbench/tabs'
+import {
+  canDetachSession,
+  canDragSession,
+  canOrderSession,
+  canRestoreSession,
+  SESSION_DRAG_TYPE,
+  SESSION_DROP_KINDS,
+  type SessionDropTarget,
+} from './drag'
+import { SessionDropIndicator } from './Indicator'
 import { PROJECT_GUIDE_ANCHORS } from '../../contracts/onboarding'
 
 const PANEL_PERCENTAGE_TOTAL = 100
 const ARCHIVE_MAX_PERCENTAGE = 50
+const SESSION_CHANGE_MESSAGES = {
+  detach: { pending: 'detachingSession', failure: 'detachFailed', success: 'sessionDetached' },
+  restore: {
+    pending: null,
+    failure: 'restoreParentFailed',
+    success: null,
+  },
+  order: {
+    pending: 'orderingSession',
+    failure: 'sessionOrderFailed',
+    success: 'sessionOrderSaved',
+  },
+} as const
+type SessionChangeMessages = (typeof SESSION_CHANGE_MESSAGES)[keyof typeof SESSION_CHANGE_MESSAGES]
 
 export function ProjectNavigation(): React.JSX.Element {
   const { state, set, act } = useApp()
   const { t } = useTranslation('layout')
   const { t: shellText } = useTranslation('shell')
+  const { toast } = useToast()
   const { t: archiveText } = useTranslation('components')
   const { t: assistantText } = useTranslation('assistant')
   const project = selectedProject(state)
@@ -105,10 +137,25 @@ export function ProjectNavigation(): React.JSX.Element {
   const selectedArchive = useRef(state.archivedSession?.session_id)
   selectedArchive.current = state.archivedSession?.session_id
   const [rows, setRows] = useState<ServeSession[]>([])
+  const [taskScrollbarVisible, setTaskScrollbarVisible] = useState(false)
+  const [taskScrollbar] = useState(() =>
+    createScrollbarVisibility(setTaskScrollbarVisible, window.setTimeout, window.clearTimeout)
+  )
+  useEffect(() => taskScrollbar.hide, [taskScrollbar])
   const [loading, setLoading] = useState(true)
   const [failed, setFailed] = useState(false)
   const [revision, setRevision] = useState(0)
   const [pinFailed, setPinFailed] = useState(false)
+  const [draggedSession, setDraggedSession] = useState<ServeSession | null>(null)
+  const [dropTarget, setDropTarget] = useState<SessionDropTarget | null>(null)
+  const [changingSession, setChangingSession] = useState<{
+    id: string
+    message: SessionChangeMessages['pending']
+  } | null>(null)
+  const [changeFeedback, setChangeFeedback] = useState<SessionChangeMessages['failure'] | null>(
+    null
+  )
+  const pendingChange = useRef(false)
   const [pinning, setPinning] = useState<Set<string>>(new Set())
   const pendingPins = useRef(new Set<string>())
   const projectEpoch = useRef(0)
@@ -125,6 +172,9 @@ export function ProjectNavigation(): React.JSX.Element {
     projectEpoch.current += 1
     setLoading(true)
     setPinFailed(false)
+    setDraggedSession(null)
+    setDropTarget(null)
+    setChangeFeedback(null)
     setArchiveOpen(false)
     setArchiveSizes(null)
     setRows([])
@@ -136,12 +186,15 @@ export function ProjectNavigation(): React.JSX.Element {
     let alive = true
     const epoch = ++catalogEpoch.current
     setFailed(false)
-    if (!project) return
-    void listSessionCatalog({
-      scope: 'project',
-      projectPath: project.path,
-      limit: HOME_TASK_LIMIT,
-    }).then((catalog) => {
+    if (!projectPath) return
+    void listAllSessions(
+      {
+        scope: 'project',
+        projectPath,
+        limit: HOME_TASK_LIMIT,
+      },
+      () => alive && epoch === catalogEpoch.current
+    ).then((catalog) => {
       if (!alive || epoch !== catalogEpoch.current) return
       setLoading(false)
       setFailed(!catalog)
@@ -149,13 +202,13 @@ export function ProjectNavigation(): React.JSX.Element {
         restoreTaskFocus.current =
           [...taskActions.current].find(([, button]) => button === document.activeElement)?.[0] ??
           null
-        setRows(catalog.sessions)
+        setRows(catalog)
       }
     })
     return () => {
       alive = false
     }
-  }, [project?.path, state.activeSession, state.sessionCatalogRevision, revision])
+  }, [projectPath, state.activeSession, state.sessionCatalogRevision, revision])
   useEffect(() => {
     const refresh = (): void => setRevision((value) => value + 1)
     window.addEventListener('scholarseed:refresh-session-list', refresh)
@@ -184,6 +237,64 @@ export function ProjectNavigation(): React.JSX.Element {
     catalogEpoch.current += 1
     setRevision((value) => value + 1)
   }
+  const changeSession = async (
+    row: ServeSession,
+    execute: () => Promise<{ ok: boolean }>,
+    messages: SessionChangeMessages
+  ): Promise<void> => {
+    if (pendingChange.current) return
+    const epoch = projectEpoch.current
+    pendingChange.current = true
+    setDropTarget(null)
+    setChangingSession({ id: row.session_id, message: messages.pending })
+    setChangeFeedback(null)
+    const result = await execute()
+    pendingChange.current = false
+    setChangingSession(null)
+    if (epoch !== projectEpoch.current) return
+    if (!result.ok) {
+      setChangeFeedback(messages.failure)
+      setRevision((value) => value + 1)
+      return
+    }
+    if (messages.success) toast({ tone: 'success', title: t(messages.success) })
+    catalogEpoch.current += 1
+    set((current) => ({ sessionCatalogRevision: current.sessionCatalogRevision + 1 }))
+    setRevision((value) => value + 1)
+    window.dispatchEvent(new Event('scholarseed:refresh-session-list'))
+  }
+  const detach = (row: ServeSession): void => {
+    if (canDetachSession(row, projectPath))
+      void changeSession(row, () => detachSession(row.session_id), SESSION_CHANGE_MESSAGES.detach)
+  }
+  const reorder = (
+    row: ServeSession,
+    target: ServeSession,
+    placement: SessionOrderPlacement
+  ): void => {
+    setDraggedSession(null)
+    if (canOrderSession(row, target, projectPath, rows))
+      void changeSession(
+        row,
+        () => reorderSession(row.session_id, target.session_id, placement),
+        SESSION_CHANGE_MESSAGES.order
+      )
+  }
+  const detachDraggedSession = (): void => {
+    const row = rows.find((item) => item.session_id === draggedSession?.session_id)
+    setDraggedSession(null)
+    if (row) detach(row)
+  }
+  const acceptsListDetach = (event: React.DragEvent<HTMLDivElement>): boolean =>
+    Boolean(
+      draggedSession &&
+      !changingSession &&
+      canDetachSession(draggedSession, projectPath) &&
+      event.target === event.currentTarget &&
+      [...event.currentTarget.querySelectorAll<HTMLElement>('[draggable]')].every(
+        (row) => event.clientY >= row.getBoundingClientRect().bottom
+      )
+    )
   useEffect(() => {
     let alive = true
     setArchiveCatalog((current) => (current?.projectPath === projectPath ? current : null))
@@ -230,10 +341,43 @@ export function ProjectNavigation(): React.JSX.Element {
       waiting: live.status === 'waiting',
     }
   })
-  const renderTasks = (items: ServeSession[]): JSX.Element => (
+  const renderTasks = (items: ServeSession[]): React.JSX.Element => (
     <Tasks
       rows={items}
       pending={pinning}
+      projectPath={projectPath}
+      detaching={changingSession?.id}
+      draggedSession={draggedSession}
+      dropTarget={dropTarget}
+      onDropTargetChange={setDropTarget}
+      onOrder={reorder}
+      onRestore={(row, parent) => {
+        setDraggedSession(null)
+        if (canRestoreSession(row, parent, projectPath, rows))
+          void changeSession(
+            row,
+            () => restoreSessionParent(row.session_id, parent.session_id),
+            SESSION_CHANGE_MESSAGES.restore
+          )
+      }}
+      onDetach={(row) => {
+        setDraggedSession(null)
+        void detach(row)
+      }}
+      onDragStart={(row, event) => {
+        if (pendingChange.current || !canDragSession(row, projectPath)) {
+          event.preventDefault()
+          return
+        }
+        event.dataTransfer.effectAllowed = 'move'
+        event.dataTransfer.setData(SESSION_DRAG_TYPE, row.session_id)
+        setDropTarget(null)
+        setDraggedSession(row)
+      }}
+      onDragEnd={() => {
+        setDraggedSession(null)
+        setDropTarget(null)
+      }}
       onPin={(row) => {
         void changePin(row)
       }}
@@ -243,10 +387,17 @@ export function ProjectNavigation(): React.JSX.Element {
       }}
     />
   )
-  const pinnedTasks = visible.filter((row) => row.pinned)
-  const unpinnedTasks = visible.filter((row) => !row.pinned)
+  const taskRows = new Map(visible.map((row) => [row.session_id, row]))
+  const taskGroups = projectSessionNodes(
+    visible.map((row) => serveSessionNode(row, state.sessionActivitySeen, state.activeSession))
+  ).map((node) => [node, ...(node.children ?? [])].map((member) => taskRows.get(member.id)!))
+  const pinnedTasks = taskGroups.filter((group) => group.some((row) => row.pinned)).flat()
+  const unpinnedTasks = taskGroups.filter((group) => !group.some((row) => row.pinned)).flat()
+  const detachDropActive = Boolean(
+    draggedSession && !changingSession && dropTarget?.kind === SESSION_DROP_KINDS.detach
+  )
   const taskHeadingClassName =
-    'shrink-0 px-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-control-label-line-height)] !font-[var(--vds-fw-regular)] !text-[var(--vds-text-tertiary)]'
+    'shrink-0 px-[var(--vds-space-3)] text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-control-label-line-height)] !font-[var(--vds-fw-regular)] !text-[var(--vds-text-tertiary)]'
   return (
     <nav
       ref={navigationRef}
@@ -382,52 +533,101 @@ export function ProjectNavigation(): React.JSX.Element {
             className="flex min-h-0 flex-1 flex-col gap-[var(--vds-space-3)] px-[var(--vds-space-3)] py-[var(--vds-space-4)]"
           >
             {pinFailed && <Alert tone="error" role="alert" description={t('saveFailed')} />}
-            <div
-              className="flex min-h-0 flex-1 flex-col gap-[var(--vds-space-1)] overflow-y-auto"
-              data-testid="project-task-list"
-              aria-busy={loading}
+            {changeFeedback && (
+              <Alert tone="error" role="alert">
+                <AlertDescription truncate={false}>{t(changeFeedback)}</AlertDescription>
+              </Alert>
+            )}
+            {changingSession?.message &&
+              rows.some((row) => row.session_id === changingSession.id) && (
+                <span role="status">{t(changingSession.message)}</span>
+              )}
+            <ScrollArea
+              overlay
+              data-scrolling={taskScrollbarVisible}
+              className="flex min-h-0 flex-1 flex-col -mr-[var(--vds-space-3)] data-[scrolling=false]:[&>[role=scrollbar]]:invisible"
+              viewportClassName="min-h-0 flex-1 pr-[var(--vds-space-3)]"
+              viewportProps={{ onScroll: taskScrollbar.scroll, 'aria-label': t('tasks') }}
             >
-              {pinnedTasks.length > 0 && (
-                <section
-                  aria-labelledby="project-pinned-task-heading"
-                  data-testid="project-pinned-tasks"
-                  className="mb-[var(--vds-space-3)] flex shrink-0 flex-col gap-[var(--vds-space-1)]"
-                >
-                  <h2
-                    id="project-pinned-task-heading"
-                    className={`${taskHeadingClassName} mb-[var(--vds-space-2)]`}
-                  >
-                    {t('pinnedTasks')}
-                  </h2>
-                  {renderTasks(pinnedTasks)}
-                </section>
-              )}
-              <h2
-                id="project-task-list"
-                className={`${taskHeadingClassName} mb-[var(--vds-space-2)]`}
+              <div
+                className="flex min-h-full min-w-0 flex-col gap-[var(--vds-space-1)]"
+                data-testid="project-task-list"
+                aria-busy={loading}
+                onDragOver={(event) => {
+                  if (!event.dataTransfer.types.includes(SESSION_DRAG_TYPE)) return
+                  if (!acceptsListDetach(event)) {
+                    event.dataTransfer.dropEffect = 'none'
+                    setDropTarget(null)
+                    return
+                  }
+                  event.preventDefault()
+                  event.dataTransfer.dropEffect = 'move'
+                  setDropTarget({ kind: SESSION_DROP_KINDS.detach })
+                }}
+                onDragLeave={(event) => {
+                  if (!event.currentTarget.contains(event.relatedTarget as Node | null))
+                    setDropTarget(null)
+                }}
+                onDrop={(event) => {
+                  setDropTarget(null)
+                  if (
+                    !acceptsListDetach(event) ||
+                    event.dataTransfer.getData(SESSION_DRAG_TYPE) !== draggedSession?.session_id
+                  )
+                    return
+                  event.preventDefault()
+                  event.stopPropagation()
+                  detachDraggedSession()
+                }}
               >
-                {t('tasks')}
-              </h2>
-              {loading && !rows.length && <Spinner />}
-              {failed && (
-                <Button
-                  onClick={() => {
-                    setLoading(true)
-                    setRevision((value) => value + 1)
-                  }}
+                {pinnedTasks.length > 0 && (
+                  <section
+                    aria-labelledby="project-pinned-task-heading"
+                    data-testid="project-pinned-tasks"
+                    className="mb-[var(--vds-space-3)] flex shrink-0 flex-col gap-[var(--vds-space-1)]"
+                  >
+                    <h2
+                      id="project-pinned-task-heading"
+                      className={`${taskHeadingClassName} relative mb-[var(--vds-space-2)]`}
+                    >
+                      {t('pinnedTasks')}
+                      {detachDropActive && draggedSession?.pinned && (
+                        <SessionDropIndicator after label={t('detachToPinnedStart')} />
+                      )}
+                    </h2>
+                    {renderTasks(pinnedTasks)}
+                  </section>
+                )}
+                <h2
+                  id="project-task-list"
+                  className={`${taskHeadingClassName} relative mb-[var(--vds-space-2)]`}
                 >
-                  {t('loadFailed')}
-                </Button>
-              )}
-              {!loading && !failed && !visible.length && (
-                <EmptyState
-                  image={{ src: emptyFolder, alt: '' }}
-                  title={t('emptyTasks')}
-                  className="[&_.vds-empty-state\_\_title]:text-[length:var(--vds-font-body-lv2)] [&_.vds-empty-state\_\_title]:font-[var(--vds-fw-medium)] [&_.vds-empty-state\_\_title]:text-[var(--vds-text-secondary)]"
-                />
-              )}
-              {renderTasks(unpinnedTasks)}
-            </div>
+                  {t('tasks')}
+                  {detachDropActive && !draggedSession?.pinned && (
+                    <SessionDropIndicator after label={t('detachToTaskStart')} />
+                  )}
+                </h2>
+                {loading && !rows.length && <Spinner />}
+                {failed && (
+                  <Button
+                    onClick={() => {
+                      setLoading(true)
+                      setRevision((value) => value + 1)
+                    }}
+                  >
+                    {t('loadFailed')}
+                  </Button>
+                )}
+                {!loading && !failed && !visible.length && (
+                  <EmptyState
+                    image={{ src: emptyFolder, alt: '' }}
+                    title={t('emptyTasks')}
+                    className="[&_.vds-empty-state\_\_title]:text-[length:var(--vds-font-body-lv2)] [&_.vds-empty-state\_\_title]:font-[var(--vds-fw-medium)] [&_.vds-empty-state\_\_title]:text-[var(--vds-text-secondary)]"
+                  />
+                )}
+                {renderTasks(unpinnedTasks)}
+              </div>
+            </ScrollArea>
           </section>
         </ResizablePanel>
         <ResizableHandle

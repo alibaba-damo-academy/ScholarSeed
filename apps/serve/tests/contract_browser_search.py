@@ -330,6 +330,9 @@ class BrowserSearchFlowContract(unittest.IsolatedAsyncioTestCase):
             user_id=USER,
             applied_permission_mode=self.permission.mode.value,
             permission_intent=Mock(side_effect=lambda _mode: self.permission),
+            interactions=SimpleNamespace(
+                request_product_input=AsyncMock(return_value={"cancelled": True})
+            ),
             catalog=SimpleNamespace(get=Mock(return_value=SimpleNamespace(principal_id=OWNER))),
             publish=AsyncMock(),
         )
@@ -569,7 +572,10 @@ class BrowserSearchFlowContract(unittest.IsolatedAsyncioTestCase):
         self.runtime.invoke_once.assert_not_awaited()
         self.host.start_scope.assert_not_awaited()
         self.host.search.assert_not_awaited()
+        self.host.end_scope.assert_not_awaited()
         self.assertEqual(list((self.root / "invocations").iterdir()), [])
+        self.live.publish.assert_not_awaited()
+        self.live.interactions.request_product_input.assert_not_awaited()
 
     async def test_website_authorization_remains_independent_of_parent_permission(self):
         for mode in (RuntimePermissionMode.SAFE_AUTO, RuntimePermissionMode.BYPASS):
@@ -587,6 +593,8 @@ class BrowserSearchFlowContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.host.search.await_count, 4)
         self.assertEqual(self.host.end_scope.await_count, 4)
         self.live.publish.assert_not_awaited()
+        self.live.interactions.request_product_input.assert_not_awaited()
+        self.assertEqual(self.runtime.invoke_once.await_count, 4)
 
     async def test_request_cannot_supply_its_own_permission_source(self):
         for override in (

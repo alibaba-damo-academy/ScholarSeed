@@ -45,7 +45,7 @@ from enum import Enum
 from errno import ENOSPC
 from os import PathLike
 from pathlib import Path, PureWindowsPath
-from typing import Callable, Iterable, Iterator, TypeVar, overload
+from typing import Callable, Iterable, Iterator, Literal, TypeVar, overload
 from urllib.parse import quote
 
 from service.platform.storage import WINDOWS_PATH_PREFIX, WINDOWS_PLATFORM, WINDOWS_RESERVED_NAMES
@@ -80,7 +80,7 @@ def open_database(
     mode: DatabaseMode = DatabaseMode.CREATE,
     timeout: float = SQLITE_TIMEOUT_SECONDS,
     check_same_thread: bool = True,
-    isolation_level: str | None = "",
+    isolation_level: Literal["", "DEFERRED", "EXCLUSIVE", "IMMEDIATE"] | None = "",
     factory: type[DatabaseConnection],
 ) -> DatabaseConnection: ...
 
@@ -92,7 +92,7 @@ def open_database(
     mode: DatabaseMode = DatabaseMode.CREATE,
     timeout: float = SQLITE_TIMEOUT_SECONDS,
     check_same_thread: bool = True,
-    isolation_level: str | None = "",
+    isolation_level: Literal["", "DEFERRED", "EXCLUSIVE", "IMMEDIATE"] | None = "",
 ) -> sqlite3.Connection: ...
 
 
@@ -102,7 +102,7 @@ def open_database(
     mode: DatabaseMode = DatabaseMode.CREATE,
     timeout: float = SQLITE_TIMEOUT_SECONDS,
     check_same_thread: bool = True,
-    isolation_level: str | None = "",
+    isolation_level: Literal["", "DEFERRED", "EXCLUSIVE", "IMMEDIATE"] | None = "",
     factory: type[sqlite3.Connection] = sqlite3.Connection,
 ) -> sqlite3.Connection:
     """Open a file with one SQLite spelling, without preparing directories or schema.
@@ -137,6 +137,14 @@ def open_database(
         filename += "?mode=" + mode.value
         if windows:
             filename += "&vfs=" + SQLITE_WINDOWS_VFS
+    if isolation_level == "":
+        return sqlite3.connect(
+            filename,
+            uri=uri,
+            timeout=timeout,
+            check_same_thread=check_same_thread,
+            factory=factory,
+        )
     return sqlite3.connect(
         filename,
         uri=uri,
@@ -333,7 +341,7 @@ DatabaseFingerprint = tuple[tuple[int, int, int, int, int] | None, ...]
 
 def database_fingerprint(database: Path) -> DatabaseFingerprint:
     """Change detection inside directory qualification, not content validation."""
-    result = []
+    result: list[tuple[int, int, int, int, int] | None] = []
     for path in (database, *(Path(str(database) + suffix) for suffix in _SQLITE_SIDECARS)):
         identity = _database_identity(path, DatabaseBindingError)
         if identity is None:
@@ -572,7 +580,11 @@ def rebuild_table(
             "SELECT seq FROM sqlite_sequence WHERE name = ?", (table,)
         ).fetchall()
         if sequences:
-            if len(sequences) != 1 or type(sequences[0][0]) is not int or sequences[0][0] < 0:
+            if (
+                len(sequences) != 1
+                or (not isinstance(sequences[0][0], int) or isinstance(sequences[0][0], bool))
+                or sequences[0][0] < 0
+            ):
                 raise RuntimeError("schema repair refuses invalid autoincrement state")
             sequence = sequences[0][0]
     create(connection, temporary)

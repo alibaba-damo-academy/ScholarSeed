@@ -132,9 +132,6 @@ function PreviewPages({ mount }: { mount: PluginMount }): React.JSX.Element {
             compatibility: mount.ui.compatibility,
             version: mount.ui.version,
           })}
-          <span className="block break-all text-[var(--vds-text-secondary)]">
-            {mount.ui.fingerprint}
-          </span>
         </p>
       )}
       <div className="flex flex-wrap items-center justify-between gap-[var(--vds-space-2)]">
@@ -278,7 +275,7 @@ function ScenarioContent({
   const scenario = mount.scenarios[component.id]
   const [execution] = useState(() => createPreviewSession(scenario))
   const [data] = useState(scenario.data)
-  const [status, setStatus] = useState('pending')
+  const [status, setStatus] = useState(component.actions.length ? 'pending' : 'resolved')
   const [target, setTarget] = useState<PreviewTarget | null>(null)
   const [viewer, setViewer] = useState<{ title: string; body: string; identifier?: string } | null>(
     null

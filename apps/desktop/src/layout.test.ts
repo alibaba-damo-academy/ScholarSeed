@@ -6,6 +6,7 @@ import {
   projectLayoutsEqual,
   sanitizeProjectLayouts,
   changeProjectLayout,
+  projectConversationMode,
 } from './layout.ts'
 import {
   DEFAULT_RENDERER_PREFERENCES,
@@ -17,6 +18,29 @@ const initial = () => ({
   homeSelectedProjectId: null as string | null,
   workbenchLayout: { ...DEFAULT_PROJECT_LAYOUT },
   projectLayouts: {},
+})
+
+test('revealing a conversation preserves workspace visibility, size and side', () => {
+  for (const open of [false, true]) {
+    for (const full of [false, true]) {
+      for (const floating of ['compact', 'expanded', 'minimized'] as const) {
+        const layout = {
+          ...DEFAULT_PROJECT_LAYOUT,
+          open,
+          full,
+          floating,
+          swapped: true,
+          conversationWidth: 420,
+        }
+        const next = changeProjectLayout(layout, 'revealConversation')
+        assert.equal(next.open, open)
+        assert.equal(projectConversationMode(next, false), 'split')
+        assert.equal(next.swapped, true)
+        assert.equal(next.conversationWidth, 420)
+        assert.notEqual(next.floating, 'minimized')
+      }
+    }
+  }
 })
 
 test('showing a task selects its full workspace tab and preserves document layout preferences', () => {
@@ -36,6 +60,31 @@ test('showing a task selects its full workspace tab and preserves document layou
         floating: floating === 'minimized' ? layout.floatingRestore : floating,
       })
       assert.equal(changeProjectLayout(layout, 'showTask').full, full)
+    }
+  }
+})
+
+test('switching tasks restores a left split only from a fullscreen content tab', () => {
+  for (const floating of ['compact', 'expanded', 'minimized'] as const) {
+    const layout = {
+      ...DEFAULT_PROJECT_LAYOUT,
+      open: true,
+      full: true,
+      swapped: true,
+      floating,
+      conversationWidth: 420,
+    }
+    assert.deepEqual(changeProjectLayout(layout, 'switchTask'), {
+      ...layout,
+      full: false,
+      swapped: false,
+      floating: floating === 'minimized' ? layout.floatingRestore : floating,
+    })
+    for (const unchanged of [
+      { ...layout, full: false },
+      { ...layout, taskTab: true },
+    ]) {
+      assert.equal(changeProjectLayout(unchanged, 'switchTask'), unchanged)
     }
   }
 })
@@ -229,4 +278,17 @@ test('layout equality ignores record order and preferences detect layout changes
     }),
     false
   )
+})
+
+test('non-overlapping viewers support full workspace and task tabs without floating over native content', () => {
+  for (const floating of ['compact', 'expanded', 'minimized'] as const) {
+    const saved = { ...DEFAULT_PROJECT_LAYOUT, open: true, full: true, floating }
+    assert.equal(projectConversationMode(saved, false), 'hidden')
+    assert.equal(projectConversationMode({ ...saved, taskTab: true }, false), 'tab')
+    assert.equal(projectConversationMode({ ...saved, full: false }, false), 'split')
+    assert.equal(saved.full, true)
+    assert.equal(projectConversationMode(saved), 'floating')
+  }
+  const conversation = { ...DEFAULT_PROJECT_LAYOUT, full: true, conversationFull: true }
+  assert.equal(projectConversationMode(conversation, false), 'fullscreen')
 })

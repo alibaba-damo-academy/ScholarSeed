@@ -8,7 +8,7 @@ import '../src/renderer/src/styles.css'
 import type { PreferenceLanguage, PreferenceTheme, RendererPreferences } from '../src/preferences.ts'
 import { rendererLanguagePatch } from '../src/preferences.ts'
 import { PREVIEW_CATALOG, type PreviewScenario } from './catalog.ts'
-import { DEFAULT_PREVIEW_SCENE, PREVIEW_DIAGNOSTIC_EVENT, PREVIEW_INSTANCE_PARAMETER, PREVIEW_SCENE_PARAMETER, previewStatePath } from './bridge.ts'
+import { DEFAULT_PREVIEW_SCENE, PREVIEW_DIAGNOSTIC_EVENT, PREVIEW_INSTANCE_PARAMETER, PREVIEW_SCENE_PARAMETER, previewPreferenceWrite, previewStatePath } from './bridge.ts'
 import zh from './locales/zh.json'
 import en from './locales/en.json'
 import type { PreviewDiagnosticSnapshot } from './diagnostics.ts'
@@ -23,6 +23,9 @@ import { PdfeNavigation } from './Navigation'
 import { PdfeHeader } from './Header'
 import { PdfeDivider } from './Divider'
 import { PdfeControls } from './Controls'
+import { PdfeIterationFilter } from './Filter'
+import { PDFE_ITERATION_STORAGE, readIterationFilter } from './iterations.ts'
+import { pdfeIterationPages } from './collaboration.ts'
 import { isPreviewLoginMode, PREVIEW_LOGIN, type PreviewAccountBootstrap, type PreviewLoginMode } from './accounts.ts'
 
 const PREVIEW_NAMESPACE = 'preview'
@@ -75,12 +78,15 @@ function PreviewConsole(): React.JSX.Element {
   useEffect(() => native.onDockChange(setDock), [native])
   const [pageId, setPageId] = useState(initialPage.id)
   const [query, setQuery] = useState('')
+  const iterationKey = PDFE_ITERATION_STORAGE + instance
+  const [iteration, setIteration] = useState(() => readIterationFilter(sessionStorage.getItem(iterationKey)))
+  useEffect(() => { sessionStorage.setItem(iterationKey, JSON.stringify(iteration)) }, [iterationKey, iteration])
   const selectedPage = PREVIEW_CATALOG.find((page) => page.id === pageId) ?? initialPage
   const selectedScenario = selectedPage.scenarios.find((scenario) => scenario.id === currentScene) ?? selectedPage.scenarios[0]
   const guidance = pdfeGuidance(selectedPage, selectedScenario, translate)
   const currentScenario = initialPage.scenarios.find((scenario) => scenario.id === currentScene)
   const accountControl = true
-  const matches = pdfeNavigationPages(PREVIEW_CATALOG, query, translate)
+  const matches = pdfeNavigationPages(pdfeIterationPages(PREVIEW_CATALOG, iteration), query, translate)
   const [theme, setTheme] = useState<PreferenceTheme>(window.scholarseed.preferences.theme)
   const [language, setLanguage] = useState<PreferenceLanguage>(window.scholarseed.preferences.language)
   const [login, setLogin] = useState<PreviewLoginMode>()
@@ -120,8 +126,7 @@ function PreviewConsole(): React.JSX.Element {
     await native.openScenario({ pageId: targetPage, sceneId: scene })
   }
   const saveAppearance = async (patch: Partial<Pick<RendererPreferences, 'theme' | 'language' | 'languageMode'>>): Promise<void> => {
-    const state = await request(previewStatePath(instance, currentScene, initialPage.id))
-    const saved = await request(previewStatePath(instance, currentScene, initialPage.id), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ preferences: { ...state.preferences, ...patch } }) })
+    const saved = await request(previewStatePath(instance, currentScene, initialPage.id), { method: 'POST', headers: { 'content-type': 'application/json' }, body: previewPreferenceWrite(patch, Object.keys(patch) as (keyof typeof patch)[]) })
     setTheme(saved.preferences.theme)
     setLanguage(saved.preferences.language)
     await native.reload()
@@ -149,13 +154,14 @@ function PreviewConsole(): React.JSX.Element {
               await native.reload()
             })} />
             {currentScenario?.simulation?.account && <p className="text-[length:var(--vds-font-body-lv3)] text-[var(--vds-text-secondary)]">{translate('loginOverride')}</p>}
+            {!materials && <PdfeIterationFilter value={iteration} pending={pending} translate={translate} onChange={setIteration} />}
             {!materials && <SearchBox aria-label={translate('discovery')} value={query} onChange={event => setQuery(event.target.value)} placeholder={translate('discoveryPlaceholder')} size="standard" />}
             <p data-testid="preview-current-scene" className="text-[length:var(--vds-font-body-lv3)] leading-[var(--vds-lh-body-lv3)] text-[var(--vds-text-secondary)]">{translate('currentScene')}: {pdfeTitle(initialPage, translate)} · {pdfeTitle(currentScenario ?? initialPage.scenarios[0], translate)}</p>
             {pending && <p role="status">{translate('operationPending')}</p>}
             {error && <p role="alert">{translate('requestFailed')}</p>}
           </div>
           <div className={CONSOLE_PANEL_CLASS}>
-            {materials ? <section className={SECTION_CLASS} aria-label={translate('componentsEntry')}><h2>{translate('componentsEntry')}</h2><p className="text-[var(--vds-text-secondary)]">{translate('materialsDescription')}</p></section> : <PdfeNavigation pages={matches} selected={selectedPage} activePage={initialPage.id} scene={currentScene} searching={Boolean(query.trim())} query={query} pending={pending} translate={translate} stateLabel={state => pdfeStateLabel(state, translate)} onSelect={page => setPageId(page.id)} onLaunch={(page, scene) => void run(() => reset(scene, page.id))} />}
+            {materials ? <section className={SECTION_CLASS} aria-label={translate('componentsEntry')}><h2>{translate('componentsEntry')}</h2><p className="text-[var(--vds-text-secondary)]">{translate('materialsDescription')}</p></section> : <PdfeNavigation pages={matches} selected={selectedPage} activePage={initialPage.id} scene={currentScene} searching={Boolean(query.trim()) || iteration.version !== 'all'} query={query} pending={pending} translate={translate} stateLabel={state => pdfeStateLabel(state, translate)} onSelect={page => setPageId(page.id)} onLaunch={(page, scene) => void run(() => reset(scene, page.id))} />}
             {!materials && !matches.length && <p role="status">{translate('discoveryEmpty')}</p>}
             {RECOVERY_CONTROLS.filter(control => control.available(currentScenario?.simulation, currentScenario)).map(control => <Button key={control.id} data-testid={control.id} variant="secondary" disabled={pending} onClick={() => void run(async () => {
               const query = new URLSearchParams({ [PREVIEW_INSTANCE_PARAMETER]: instance })

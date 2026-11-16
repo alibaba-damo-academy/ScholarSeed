@@ -12,6 +12,8 @@ export type ProviderFailureKind =
   | 'request'
   | 'model_config'
   | 'unavailable'
+  | 'timeout'
+  | 'connection'
   | 'overloaded'
   | 'content_policy'
 
@@ -31,6 +33,8 @@ const RECOVERABLE_FAILURE_KINDS: ReadonlySet<string> = new Set([
   'unavailable',
   'overloaded',
   'rate_limit',
+  'timeout',
+  'connection',
   'unknown',
 ])
 const FAILURE_KIND_BY_CODE: Readonly<Partial<Record<string, ProviderFailureKind>>> = {
@@ -61,7 +65,8 @@ const FAILURE_KIND_BY_CODE: Readonly<Partial<Record<string, ProviderFailureKind>
   server_error: 'unavailable',
   server_is_overloaded: 'overloaded',
   service_unavailable: 'unavailable',
-  timeout: 'unavailable',
+  timeout: 'timeout',
+  connection_error: 'connection',
 }
 
 function providerFrame(message: string): { code: string; message: string } | null {
@@ -105,6 +110,8 @@ const FAILURE_TEXT = {
   credits: { messageKey: 'failure.credits.message', actionKey: 'failure.credits.action' },
   rate_limit: { messageKey: 'failure.rateLimit.message', actionKey: 'failure.rateLimit.action' },
   auth: { messageKey: 'failure.auth.message', actionKey: 'failure.auth.action' },
+  timeout: { messageKey: 'failure.timeout.message', actionKey: 'failure.timeout.action' },
+  connection: { messageKey: 'failure.connection.message', actionKey: 'failure.connection.action' },
   unavailable: {
     messageKey: 'failure.unavailable.message',
     exhaustedKey: 'failure.unavailable.exhausted',
@@ -145,12 +152,7 @@ export function describeTurnFailure(data: {
   const kind = classified || fallbackKind(frame ? frame.message : rawMessage) || 'unknown'
   const fallback = frame ? 'frame' : data.message ? 'raw' : 'runtime'
   const retry =
-    kind === 'auth' ||
-    (data.retryable === true &&
-      (kind === 'rate_limit' ||
-        kind === 'unavailable' ||
-        kind === 'overloaded' ||
-        kind === 'unknown'))
+    kind === 'auth' || (data.retryable === true && RECOVERABLE_FAILURE_KINDS.has(kind))
       ? { runtimeAction: 'continue_turn' as const, actionState: 'idle' as const }
       : {}
   const automaticRetryAttempts =
@@ -236,6 +238,8 @@ const LEGACY_FAILURE_MESSAGES = {
   rate_limit: '模型请求过于频繁，请稍后再试。',
   auth: '模型服务认证失败。',
   unavailable: '模型服务暂时不可用。',
+  timeout: '',
+  connection: '',
   overloaded: '上游模型服务返回过载。',
   request: '当前请求未被模型服务接受。',
   frame: '模型服务返回了无法识别的错误。',

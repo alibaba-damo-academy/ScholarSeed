@@ -38,11 +38,7 @@ def publication_options(ws):
                 else None
             )
             usable = bool(found and found.returncode == 0 and found.stdout.strip())
-        pdf_label = (
-            "PDF（推荐）：中文排版，含参考文献列表。"
-            if language == "CHINESE"
-            else "PDF (recommended): English typesetting with a reference list."
-        )
+        pdf_label = row['title']
         templates.append({"id": row["id"], "title": pdf_label, "usable": usable})
     if not (Path(ws) / "03_process/references.bib").exists():
         _, status = build(Path(ws))
@@ -70,18 +66,20 @@ def publication_options(ws):
     format_labels = (
         {
             "markdown": "Markdown：可编辑文档，含参考文献列表。",
+            "docx": "Word DOCX：可编辑文档，含参考文献列表。",
             "latex_pdf": "PDF（推荐）：中文排版，含参考文献列表。",
         }
         if language == "CHINESE"
         else {
             "markdown": "Markdown: editable document with a reference list.",
+            "docx": "Word DOCX: editable document with a reference list.",
             "latex_pdf": "PDF (recommended): English typesetting with a reference list.",
         }
     )
     return {
         "templates": templates,
         "citation_styles": citations,
-        "formats": ["markdown"]
+        "formats": ["markdown", "docx"]
         + (["latex_pdf"] if any(option["usable"] for option in templates) else []),
         "format_labels": format_labels,
     }

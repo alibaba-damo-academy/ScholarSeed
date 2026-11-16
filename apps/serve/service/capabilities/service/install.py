@@ -473,13 +473,13 @@ def _plugin_journal(path: Path) -> dict[str, Any]:
         valid = (
             isinstance(record, dict)
             and set(record) == PLUGIN_INSTALL_FIELDS
-            and type(record["schema"]) is int
+            and (isinstance(record["schema"], int) and not isinstance(record["schema"], bool))
             and record["schema"] == PLUGIN_INSTALL_SCHEMA
             and isinstance(record["name"], str)
             and SKILL_NAME_PATTERN.fullmatch(record["name"])
             and isinstance(record["directory"], str)
             and PLUGIN_INSTALL_DIRECTORY.fullmatch(record["directory"])
-            and type(record["update"]) is bool
+            and isinstance(record["update"], bool)
             and isinstance(record["phase"], str)
             and record["phase"] in PLUGIN_INSTALL_PHASES
             and isinstance(record["candidate_digest"], str)
@@ -558,7 +558,7 @@ def recover_plugin_installation(
                 raise SkillPackageError("plugin_install_identity_invalid")
             shutil.rmtree(target)
         _install_journal(journal, {**record, "phase": PLUGIN_INSTALL_ROLLED_BACK})
-        if record["previous_state"] is not None:
+        if record["previous_state"] is not None and restore_state is not None:
             restore_state(record["previous_state"])
     journal.unlink()
     shutil.rmtree(staging)

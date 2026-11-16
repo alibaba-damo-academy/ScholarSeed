@@ -41,8 +41,21 @@ export interface PaperMetaMatch {
 
 export type PaperMetaDimension = 'doi' | 'arxiv' | 'title'
 
-/** 一次同步查询: 维度 + 该维度上的值, 不带其他维度。 */
-export type PaperMetaQuery = { dimension: PaperMetaDimension; value: string }
+/** 能当摘要备用来源的维度: 只有标识符算, 标题不是标识符。 */
+export type PaperMetaIdentifier = Exclude<PaperMetaDimension, 'title'>
+
+/**
+ * 一次同步查询: 题录维度 + 该维度上的值 + 记录上其他已知标识符。
+ *
+ * 题录腿仍然只按 `dimension` 打一个来源; `alternates` 只喂给可选的摘要补充腿
+ * (出版商没向 Crossref 存摘要时, 改用同一篇论文在 arXiv 上的那一份), 既不改变维度
+ * 选择, 也不参与 `requiresConfirmation` 的判断。
+ */
+export type PaperMetaQuery = {
+  dimension: PaperMetaDimension
+  value: string
+  alternates: Partial<Record<PaperMetaIdentifier, string>>
+}
 
 export type PaperMetaFailureKind = 'quota' | 'network' | 'missing' | 'failed'
 
@@ -50,7 +63,7 @@ export const PAPER_META_FAILURE_KEYS = {
   quota: 'detail.sync.quotaFailed',
   network: 'detail.sync.networkFailed',
   missing: 'detail.sync.missed',
-  failed: 'detail.sync.failed'
+  failed: 'detail.sync.failed',
 } as const
 
 /**
@@ -59,17 +72,18 @@ export const PAPER_META_FAILURE_KEYS = {
  */
 const DIMENSION_PRECEDENCE: readonly PaperMetaDimension[] = ['doi', 'arxiv', 'title']
 
+/** 标识符维度的顺序: 由上表滤掉 title 得到, 不再维护第二份顺序真源。 */
+const IDENTIFIER_DIMENSIONS = DIMENSION_PRECEDENCE.filter(
+  (dimension): dimension is PaperMetaIdentifier => dimension !== 'title'
+)
+
 /** 横幅说明文案键: 先告诉用户这次会拿哪个维度去检索。 */
 export type PaperMetaDescriptionKey =
-  | 'detail.sync.byDoi'
-  | 'detail.sync.byArxiv'
-  | 'detail.sync.byTitle'
+  'detail.sync.byDoi' | 'detail.sync.byArxiv' | 'detail.sync.byTitle'
 
 /** 横幅标题文案键: 一句话点明这次会去哪个站点取元数据。 */
 export type PaperMetaTitleKey =
-  | 'detail.sync.bannerByDoi'
-  | 'detail.sync.bannerByArxiv'
-  | 'detail.sync.bannerByTitle'
+  'detail.sync.bannerByDoi' | 'detail.sync.bannerByArxiv' | 'detail.sync.bannerByTitle'
 
 /** 与 serve 侧 `QUOTA_EXHAUSTED` 同一对判据: 状态码或 code 任一命中即算配额。 */
 const QUOTA_EXHAUSTED_STATUS = 429
@@ -95,9 +109,11 @@ function text(value: unknown): string {
 }
 
 /**
- * 按 doi > arxiv > title 选出唯一同步维度; 三者皆空时返回 null。
+ * 按 doi > arxiv > title 选出唯一**题录**维度; 三者皆空时返回 null。
  *
- * 只发中选维度的值, 不发其余维度 —— 上游按优先级只看第一个, 多带只会让请求体撒谎。
+ * 题录腿只发中选维度的值, 上游按优先级只看第一个。记录上**其他**标识符仍然一起带上,
+ * 但只作为摘要补充腿的备用来源 —— 这不是「多带让请求体撒谎」: 请求体的键就是服务端
+ * `PaperMetaRequest` 的字段, 题录维度由服务端自己按优先级选, 其余标识符只进摘要链。
  * title 维度额外要求值像个论文标题, 不像就当作这一维不可用 (返回 null), 详情页的
  * 同步卡与按钮同源于此, 会一起收起。
  */
@@ -108,9 +124,23 @@ export function selectPaperMetaQuery(
     const value = text(item[dimension])
     if (!value) continue
     if (dimension === 'title' && !looksLikePaperTitle(value)) continue
-    return { dimension, value }
+    return { dimension, value, alternates: paperMetaAlternates(item, dimension) }
   }
   return null
+}
+
+/** 记录上除题录维度以外、真的有值的标识符; 标题不进备用来源。 */
+export function paperMetaAlternates(
+  item: Pick<LiteratureDetail, PaperMetaIdentifier>,
+  dimension: PaperMetaDimension
+): Partial<Record<PaperMetaIdentifier, string>> {
+  const alternates: Partial<Record<PaperMetaIdentifier, string>> = {}
+  for (const identifier of IDENTIFIER_DIMENSIONS) {
+    if (identifier === dimension) continue
+    const value = text(item[identifier])
+    if (value) alternates[identifier] = value
+  }
+  return alternates
 }
 
 /**
@@ -130,9 +160,7 @@ export function requiresConfirmation(dimension: PaperMetaDimension): boolean {
 }
 
 /** 维度 → 说明文案键; 联合类型穷尽, 新增维度必须在这里补一条。 */
-export function paperMetaDescriptionKey(
-  dimension: PaperMetaDimension
-): PaperMetaDescriptionKey {
+export function paperMetaDescriptionKey(dimension: PaperMetaDimension): PaperMetaDescriptionKey {
   if (dimension === 'doi') return 'detail.sync.byDoi'
   if (dimension === 'arxiv') return 'detail.sync.byArxiv'
   return 'detail.sync.byTitle'
@@ -252,17 +280,14 @@ function diffCurrentField(field: string): keyof LiteratureDetail | undefined {
  * 确认填充要让用户逐字段勾选, 所以对比行直接以更新体的键为主键, 当前值取文献上
  * 同义字段 (authors ↔ creators_display 等), 空值显示为空串由调用方渲染成「—」。
  */
-export function paperMetaDiff(
-  fields: PaperMetaFields,
-  item: LiteratureDetail
-): PaperMetaDiffRow[] {
+export function paperMetaDiff(fields: PaperMetaFields, item: LiteratureDetail): PaperMetaDiffRow[] {
   return Object.entries(fields)
     .filter(([field]) => diffCurrentField(field) !== undefined)
     .map(([field, value]) => ({
       field,
       labelKey: diffLabelKey(field),
       current: text(item[diffCurrentField(field) as keyof LiteratureDetail]),
-      next: String(value)
+      next: String(value),
     }))
 }
 

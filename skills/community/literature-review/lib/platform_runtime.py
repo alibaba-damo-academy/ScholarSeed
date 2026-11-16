@@ -9,6 +9,15 @@ import subprocess
 import sys
 
 PRODUCT_LAUNCHER_MODULE = 'service.cli.skill_python'
+MIN_PYTHON = (3, 12)
+PYTHON_REQUIREMENT = f'Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]}+ within {MIN_PYTHON[0]}.x'
+
+
+def supports_python(version):
+    return (isinstance(version, (tuple, list)) and len(version) >= len(MIN_PYTHON)
+            and all(type(part) is int and part >= 0 for part in version[:len(MIN_PYTHON)])
+            and version[0] == MIN_PYTHON[0]
+            and tuple(version[:len(MIN_PYTHON)]) >= MIN_PYTHON)
 
 
 def product_command(script, *arguments):
@@ -24,7 +33,8 @@ def venv_python(root, windows=None):
 
 def utf8_env(base=None):
     env = dict(os.environ if base is None else base)
-    env.update(PYTHONUTF8='1', PYTHONIOENCODING='utf-8', PYTHONUNBUFFERED='1')
+    env.update(PYTHONUTF8='1', PYTHONIOENCODING='utf-8', PYTHONUNBUFFERED='1',
+               PYTHONDONTWRITEBYTECODE='1')
     return env
 
 
@@ -35,7 +45,7 @@ def probe_python(command):
             '"version":list(sys.version_info[:3]),"prefix":sys.prefix}))'],
             capture_output=True, encoding='utf-8', timeout=10, env=utf8_env())
         info = json.loads(result.stdout) if result.returncode == 0 else None
-        return info if info and info.get('version', [])[:2] == [3, 12] else None
+        return info if isinstance(info, dict) and supports_python(info.get('version')) else None
     except (OSError, ValueError, subprocess.SubprocessError):
         return None
 
@@ -55,12 +65,12 @@ def discover_python(root, explicit=None, workspace=None):
     if explicit:
         info = probe_python([explicit])
         if not info:
-            raise ValueError('SCHOLARSEED_PYTHON must name an executable Python 3.12.x.')
+            raise ValueError(f'SCHOLARSEED_PYTHON must name an executable {PYTHON_REQUIREMENT}.')
         return info
     info = probe_python([sys.executable])
     if info:
         return info
-    raise ValueError('The product requires Python 3.12.x; restore the ScholarSeed installation.')
+    raise ValueError(f'The product requires {PYTHON_REQUIREMENT}; restore the ScholarSeed installation.')
 
 
 def command_spec(argv):

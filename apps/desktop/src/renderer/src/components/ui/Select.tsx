@@ -1,3 +1,4 @@
+import { usePortalDocument } from './portal'
 import type {
   ButtonHTMLAttributes,
   CSSProperties,
@@ -47,6 +48,7 @@ import {
 import { cx } from './utils'
 import { useFocusScope, visibleContent } from './focus'
 import type { LocalizationMetadata } from './metadata'
+import type { LabelVariant } from './Label'
 
 export type SelectSize = ControlSize
 
@@ -54,6 +56,7 @@ export interface SelectProps
   extends Omit<SelectHTMLAttributes<HTMLSelectElement>, 'size'>, LocalizationMetadata {
   error?: string
   label?: string
+  labelVariant?: LabelVariant
   onValueChange?: (value: string) => void
   size?: SelectSize
   value?: string
@@ -62,7 +65,7 @@ export interface SelectProps
 interface SelectContextValue {
   contentId: string
   size: SelectSize
-  contentRef: React.RefObject<HTMLDivElement>
+  contentRef: React.RefObject<HTMLDivElement | null>
   disabled: boolean
   labels: Record<string, ReactNode>
   open: boolean
@@ -111,6 +114,7 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(
       error,
       id,
       label,
+      labelVariant,
       onChange,
       onValueChange,
       size = 'md',
@@ -120,6 +124,7 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(
     ref
   ) => {
     const generatedId = useId()
+    const document = usePortalDocument()
     const labelSource = import.meta.env.DEV ? props['data-i18n-label'] : undefined
     const errorSource = import.meta.env.DEV ? props['data-i18n-error'] : undefined
     const selectId = id ?? generatedId
@@ -146,7 +151,7 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(
 
       document.addEventListener('pointerdown', closeOnOutsidePointer, true)
       return () => document.removeEventListener('pointerdown', closeOnOutsidePointer, true)
-    }, [open])
+    }, [open, document])
 
     const context = useMemo<SelectContextValue>(
       () => ({
@@ -202,7 +207,7 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(
           >
             {label ? (
               <span
-                className={fieldLabelClassName({})}
+                className={fieldLabelClassName({ variant: labelVariant })}
                 {...(labelSource ? { 'data-i18n-text': labelSource } : {})}
               >
                 {label}
@@ -227,7 +232,7 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(
       <label className={fieldClassName({})} htmlFor={selectId}>
         {label ? (
           <span
-            className={fieldLabelClassName({})}
+            className={fieldLabelClassName({ variant: labelVariant })}
             {...(labelSource ? { 'data-i18n-text': labelSource } : {})}
           >
             {label}
@@ -378,10 +383,16 @@ SelectTrigger.displayName = 'SelectTrigger'
 
 export interface SelectContentProps extends HTMLAttributes<HTMLDivElement> {
   align?: 'start' | 'end'
+  minWidth?: number
 }
 
 export const SelectContent = forwardRef<HTMLDivElement, SelectContentProps>(
-  ({ align = 'start', className, style, onKeyDown, ...props }, ref) => {
+  (
+    { align = 'start', className, minWidth = SELECT_CONTENT_MIN_WIDTH, style, onKeyDown, ...props },
+    ref
+  ) => {
+    const document = usePortalDocument()
+    const window = document.defaultView ?? globalThis.window
     const context = useContext(SelectContext)
     const fallbackRef = useRef<HTMLDivElement>(null)
     const contentRef = context?.contentRef ?? fallbackRef
@@ -411,10 +422,7 @@ export const SelectContent = forwardRef<HTMLDivElement, SelectContentProps>(
     const fitsAbove = aboveTop >= SELECT_VIEWPORT_PADDING
     const top = fitsBelow || !fitsAbove ? belowTop : aboveTop
     const availableWidth = Math.max(0, window.innerWidth - SELECT_VIEWPORT_PADDING * 2)
-    const width = Math.min(
-      Math.max(context.triggerRect.width, SELECT_CONTENT_MIN_WIDTH),
-      availableWidth
-    )
+    const width = Math.min(Math.max(context.triggerRect.width, minWidth), availableWidth)
     const left =
       context.triggerRect.left + (align === 'end' ? context.triggerRect.width - width : 0)
     const positionedStyle: CSSProperties = {

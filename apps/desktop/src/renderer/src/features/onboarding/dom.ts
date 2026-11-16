@@ -1,4 +1,5 @@
 import type { GuideStep } from './engine'
+import { PROJECT_GUIDE_ANCHORS } from '../../contracts/onboarding.ts'
 
 export const OB_TIMING = { poll: 60, targetTimeout: 2500, readerTimeout: 12000 } as const
 export const OB_GEOMETRY = { margin: 16, gap: 16, padding: 6, radius: 10, maxWidth: 600 } as const
@@ -17,6 +18,14 @@ export function target(name: string): HTMLElement | null {
         element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0
     ) ?? null
   )
+}
+export function activateCategory(anchor: string): boolean {
+  const control =
+    target(anchor) ??
+    target(PROJECT_GUIDE_ANCHORS.categories)?.querySelector<HTMLElement>(`[data-ob="${anchor}"]`)
+  if (!control) return false
+  control.click()
+  return true
 }
 export async function waitUntil(
   test: () => boolean,

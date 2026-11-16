@@ -40,5 +40,6 @@ export async function validatePluginBinding(
     throw error
   } finally {
     clearTimeout(timeout)
+    controller.abort()
   }
 }

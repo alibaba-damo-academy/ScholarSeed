@@ -61,7 +61,8 @@ from _utils import (  # noqa: E402
     write_status,
 )
 from output_spec import read_output_spec  # noqa: E402
-from citation_styles import CITATION_STYLES, style_asset  # noqa: E402
+from citation_styles import CITATION_STYLES, style_asset
+from layouts import template_preamble, copy_template_assets, document_title  # noqa: E402
 
 # Markdown counterparts of the versioned LaTeX drafts. Kept here rather than on
 # `Workspace` because only the Markdown branch of generation knows they exist;
@@ -73,7 +74,7 @@ from branding import review_byline, full_survey
 MD_ABSTRACT_HEADING = {"chinese": "摘要", "english": "Abstract"}
 
 
-# English mode is built on the NeurIPS 2026 style file (`neurips_2026.sty`),
+# Default English mode is built on the NeurIPS 2026 style file (`neurips_2026.sty`),
 # loaded with the `preprint` option so the document is non-anonymized and the
 # `lineno` package is NOT loaded (lineno is known to clash with tikz/forest).
 # The .sty file ships with this skill at
@@ -132,40 +133,17 @@ PREAMBLE_EN = r"""\documentclass{article}
 # configures CJK fonts, and localises \section / \abstract headings. Must
 # be compiled with xelatex — phase07_compile_latex.py auto-promotes the
 # engine when language=chinese is recorded in query_meta.json.
-PREAMBLE_ZH = r"""\documentclass[UTF8,11pt,a4paper,fontset=fandol]{ctexart}
-\usepackage[a4paper,margin=2.4cm]{geometry}
-\usepackage{graphicx}
-\usepackage{booktabs}
-\usepackage{array}
-\usepackage{tabularx}
-\usepackage{longtable}
-\usepackage{amsmath,amssymb}
-\usepackage{bm}
-\usepackage[colorlinks=true,urlcolor=blue,linkcolor=black,citecolor=black]{hyperref}
-\usepackage[numbers,sort]{natbib}
-\usepackage{xcolor}
-% 图/表标题分隔符：编号后用句点而非默认冒号，渲染为「图1. 标题」「表1. 标题」。
-% 在 hyperref 之后加载，确保覆盖生效。
-\usepackage{caption}
-\captionsetup{labelsep=period}
-\usepackage[edges]{forest}
-\usetikzlibrary{shapes.geometric,arrows.meta}
-\providecommand{\todo}[2][]{{\color{red}\textbf{[TODO #1: #2]}}}
-\bibliographystyle{unsrtnat_scholarseed}
-% ctexart 默认 \pagestyle{headings}（节标题作运行页眉 + 右上角页码），
-% 而 \maketitle 又把首页强制成 plain（底部居中页码），导致首页与后续页页码
-% 位置不一致。统一改为 plain：所有页页码均居中放在页面底部，且不显示页眉。
-\pagestyle{plain}
-"""
+PREAMBLE_ZH = (_slr_paths.HOME / 'assets/templates/standard_chinese/standard_chinese.tex').read_text(encoding='utf-8')
 
 
 def _citation_preamble(language: str, spec: dict) -> str:
     """Inject the resolved citation style into the language preamble."""
-    base = PREAMBLE_ZH if language == "chinese" else PREAMBLE_EN
-    base = base.replace("numbers,sort", spec["natbib_options"])
+    base = template_preamble(spec.get("template"), language, PREAMBLE_ZH, PREAMBLE_EN, spec)
+    base = base.replace("numbers,sort", spec["natbib_options"], 1)
     extra = CITATION_STYLES[spec['citation_style']].get('latex_preamble')
     if extra and language != 'chinese':
         base += '\n' + extra + '\n'
+    base += '\n' + r'\AtBeginDocument{\setcitestyle{' + spec['natbib_options'] + '}}'
     return base.replace(
         "\\bibliographystyle{unsrtnat_scholarseed}",
         f"\\bibliographystyle{{{spec['bibliography_style']}}}",
@@ -311,19 +289,7 @@ def _emit_latex(ws: Workspace, outline: dict, language: str, spec: dict) -> None
     preamble = _citation_preamble(language, spec)
     author_line = r'\author{' + review_byline(language, latex=True) + '}'
 
-    # English mode depends on the NeurIPS style file. Copy it from the
-    # skill's `assets/templates/neurips/` directory into the workspace's
-    # 05_generation/ so pdflatex resolves \usepackage{neurips_2026} regardless
-    # of where the build is run. Chinese mode uses ctexart and does not need
-    # this.
-    if language != "chinese":
-        src = NEURIPS_TEMPLATE_DIR / NEURIPS_STY_FILENAME
-        if not src.exists():
-            raise FileNotFoundError(
-                f"NeurIPS style file missing at {src}. "
-                f"Expected to ship inside the survey-merge-draft skill assets."
-            )
-        shutil.copyfile(src, ws.gen / NEURIPS_STY_FILENAME)
+    copy_template_assets(spec.get('template', 'standard_chinese' if language == 'chinese' else 'neurips'), ws.gen)
 
     style_id = spec["citation_style"]
     registered = CITATION_STYLES[style_id]
@@ -347,7 +313,7 @@ def _emit_latex(ws: Workspace, outline: dict, language: str, spec: dict) -> None
         body_lines.append(author_line)
     body_lines.append("\\date{\\today}")
     body_lines.append("\\begin{document}")
-    body_lines.append("\\maketitle")
+    body_lines.append(document_title(spec.get("template"), survey_title, review_byline(language, latex=True) if full_survey(ws.root) else ""))
 
     abstract = doc["abstract"]
     if abstract:

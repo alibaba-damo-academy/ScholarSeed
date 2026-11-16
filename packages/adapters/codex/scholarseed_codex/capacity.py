@@ -54,10 +54,12 @@ class CapacityPolicy:
             self.queue_limit,
             self.tombstone_limit,
         ):
-            if type(value) is not int or value <= 0:
+            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
                 raise ValueError(CAPACITY_CONFIGURATION_INVALID)
         for host_limit in (self.execution_hosts, self.control_hosts):
-            if host_limit is not None and (type(host_limit) is not int or host_limit <= 0):
+            if host_limit is not None and (
+                not isinstance(host_limit, int) or isinstance(host_limit, bool) or host_limit <= 0
+            ):
                 raise ValueError(CAPACITY_CONFIGURATION_INVALID)
         for duration in (self.wait_seconds, self.idle_seconds, self.tombstone_seconds):
             if (

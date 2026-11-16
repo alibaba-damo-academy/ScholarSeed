@@ -19,6 +19,7 @@ from scholarseed_runtime.contract.resource import (
 from service.capabilities.domain import SKILL_ERROR_IMMUTABLE, SKILL_MANIFEST_NAME
 from service.capabilities.service.clawhub import (
     CLAWHUB_MODERATION_BLOCKED,
+    CLAWHUB_NAMESPACE_SEPARATOR,
     CLAWHUB_SOURCE,
     ClawHub,
     ClawHubError,
@@ -40,7 +41,6 @@ from service.capabilities.service.skills import (
     SkillProductState,
     load_skill_state,
     replace_skill_state,
-    save_skill_state,
 )
 from service.paths import SERVICE_SKILLS_DIR
 from service.platform.activity import Activities
@@ -274,6 +274,9 @@ class SkillManagement:
                         "message": "Skill blocked by registry moderation",
                     },
                 )
+            localized = await hub.localized_copy(
+                detail["namespace"], slug.split(CLAWHUB_NAMESPACE_SEPARATOR, 1)[-1]
+            )
             payload = await hub.download(slug, version)
             discovered = await self.inventory(user_id=user_id, force_reload=True)
             reserved_names = frozenset(
@@ -288,6 +291,7 @@ class SkillManagement:
                 fallback_name=slug,
                 reserved_names=reserved_names,
                 origin={
+                    **localized,
                     "source": CLAWHUB_SOURCE,
                     "display_name": detail.get("name", ""),
                     "description": detail.get("description", ""),
@@ -421,6 +425,9 @@ class SkillManagement:
                         "message": "Skill blocked by registry moderation",
                     },
                 )
+            localized = await hub.localized_copy(
+                detail["namespace"], slug.split(CLAWHUB_NAMESPACE_SEPARATOR, 1)[-1]
+            )
             payload = await hub.download(slug, version)
             authorize()
             installed = update_skill_archive(
@@ -430,6 +437,7 @@ class SkillManagement:
                 expected_origin=origin,
                 origin={
                     **origin,
+                    **localized,
                     "version": version,
                     "registry": hub.base,
                     "display_name": detail.get("name", ""),

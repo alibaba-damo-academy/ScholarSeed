@@ -90,3 +90,55 @@ class ActivationTiming:
                     failure_type,
                 )
             )
+
+
+class InvocationTiming:
+    """Monotonic invocation milestones; absent stream evidence remains unknown."""
+
+    def __init__(self, *, clock: Callable[[], float] = perf_counter) -> None:
+        self._clock = clock
+        self._started = clock()
+        self._dispatch: float | None = None
+        self._first: float | None = None
+        self._last: float | None = None
+        self._result: float | None = None
+        self._cleanup: float | None = None
+        self._closed: float | None = None
+        self._stages: dict[str, float] = {}
+
+    def activation(self, sample: ActivationMeasurement) -> None:
+        self._stages[sample.stage] = sample.duration_ms / MILLISECONDS_PER_SECOND
+
+    def dispatch(self) -> None:
+        self._dispatch = self._clock()
+
+    def assistant_delta(self) -> None:
+        observed = self._clock()
+        if self._first is None:
+            self._first = observed
+        self._last = observed
+
+    def complete(self) -> None:
+        self._result = self._clock()
+
+    def begin_cleanup(self) -> None:
+        self._cleanup = self._clock()
+
+    def close(self) -> None:
+        self._closed = self._clock()
+
+    @staticmethod
+    def _elapsed(start: float | None, end: float | None) -> float | None:
+        return None if start is None or end is None else end - start
+
+    def payload(self) -> dict[str, object]:
+        return {
+            "stages_seconds": dict(self._stages),
+            "activation_seconds": self._stages.get(ActivationStage.TOTAL.value),
+            "dispatch_to_first_assistant_delta_seconds": self._elapsed(self._dispatch, self._first),
+            "assistant_delta_stream_seconds": self._elapsed(self._first, self._last),
+            "last_assistant_delta_to_result_seconds": self._elapsed(self._last, self._result),
+            "dispatch_to_result_seconds": self._elapsed(self._dispatch, self._result),
+            "cleanup_seconds": self._elapsed(self._cleanup, self._closed),
+            "total_seconds": self._elapsed(self._started, self._closed),
+        }

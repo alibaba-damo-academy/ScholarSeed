@@ -64,3 +64,8 @@ func registeredDirectory(string) (string, error) { return "", errors.New("Window
 func inspectRemoval(string, string) (removalState, error) {
 	return removalState{}, errors.New("Windows installer only")
 }
+
+func installationActive(string) (bool, error) { return false, errors.New("Windows installer only") }
+func requestInstallationExit(string) (bool, error) {
+	return false, errors.New("Windows installer only")
+}

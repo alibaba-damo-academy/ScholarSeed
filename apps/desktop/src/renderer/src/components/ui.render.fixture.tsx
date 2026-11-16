@@ -1,12 +1,15 @@
-import { useRef, useState } from 'react'
+import type * as React from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { I18nextProvider } from 'react-i18next'
 import { Check, Copy } from 'lucide-react'
 import { IconFont } from './primitive'
+import { InlineAlertExamples } from './examples/Alert'
 import { createLocalization } from '../../../localization/engine'
 import { resources } from '../../../localization/resources'
 import aiThinking from '../assets/ai-thinking.gif'
 import { AnnotationSummary } from '../features/assistant/Notes'
+import { SelectionQuote } from './primitive/Attachment'
 import { Motion } from '../shell/Motion'
 
 import '../styles.css'
@@ -19,6 +22,8 @@ import {
   AlertDescription,
   AlertDialog,
   AlertDialogCancel,
+  AlertDialogAction,
+  AlertDialogTitle,
   AlertDialogContent,
   AlertDialogTrigger,
   AspectRatio,
@@ -56,6 +61,8 @@ import {
   Dialog,
   DialogClose,
   DialogContent,
+  DialogDescription,
+  DialogTitle,
   DialogTrigger,
   DropdownMenu,
   DropdownMenuTrigger,
@@ -143,37 +150,61 @@ import {
   type ToastData,
 } from './ui'
 
-function AnnotationSummaryDemo(): JSX.Element {
+function AnnotationSummaryDemo({ sentOnly = false }: { sentOnly?: boolean }): React.JSX.Element {
+  const longAnnotations = new URLSearchParams(window.location.search).has('long-annotations')
+  const longText =
+    'Compare the original evidence, experimental conditions, controls and limitations before generalizing the conclusion. '.repeat(
+      12
+    )
   const [annotations, setAnnotations] = useState([
-    { id: 'first', previewText: '第一段原文', comment: '第一条注释' },
-    { id: 'second', previewText: '第二段原文', comment: '第二条注释' },
+    {
+      id: 'first',
+      previewText: longAnnotations ? longText : '第一段原文',
+      comment: longAnnotations ? longText : '第一条注释',
+    },
+    {
+      id: 'second',
+      previewText: longAnnotations ? longText : '第二段原文',
+      comment: longAnnotations ? longText : '第二条注释',
+    },
   ])
   return (
     <section
       className="grid bg-[var(--vds-surface-raised)]"
       data-testid="render-annotation-workspace"
     >
-      <AnnotationSummary
-        annotations={annotations}
-        onClear={() => setAnnotations([])}
-        onEdit={async (annotationId, comment) => {
-          setAnnotations((items) =>
-            items.map((item) => (item.id === annotationId ? { ...item, comment } : item))
-          )
-          return true
-        }}
-        onRemove={(annotationId) =>
-          setAnnotations((items) => items.filter((item) => item.id !== annotationId))
+      {!sentOnly && (
+        <AnnotationSummary
+          annotations={annotations}
+          onClear={() => setAnnotations([])}
+          onEdit={async (annotationId, comment) => {
+            setAnnotations((items) =>
+              items.map((item) => (item.id === annotationId ? { ...item, comment } : item))
+            )
+            return true
+          }}
+          onRemove={(annotationId) =>
+            setAnnotations((items) => items.filter((item) => item.id !== annotationId))
+          }
+        />
+      )}
+      <div
+        className={
+          sentOnly ? 'flex bg-[var(--vds-other-overlay-2)]' : 'bg-[var(--vds-other-overlay-2)]'
         }
-      />
-      <div className="bg-[var(--vds-other-overlay-2)]" data-testid="render-annotation-message">
-        <AnnotationSummary annotations={annotations} testId="render-sent-annotation-summary" />
+        data-testid="render-annotation-message"
+      >
+        <AnnotationSummary
+          presentation="sent"
+          annotations={annotations}
+          testId="render-sent-annotation-summary"
+        />
       </div>
     </section>
   )
 }
 
-function ToastQueueDemo(): JSX.Element {
+function ToastQueueDemo(): React.JSX.Element {
   const { toast } = useToast()
 
   return (
@@ -199,7 +230,7 @@ function ToastQueueDemo(): JSX.Element {
   )
 }
 
-function NavigationTabsScrollDemo(): JSX.Element {
+function NavigationTabsScrollDemo(): React.JSX.Element {
   const [activeTab, setActiveTab] = useState('tab-1')
   const [, setRenderVersion] = useState(0)
 
@@ -232,7 +263,7 @@ function NavigationTabsScrollDemo(): JSX.Element {
   )
 }
 
-function NavigationTabsReorderDemo(): JSX.Element {
+function NavigationTabsReorderDemo(): React.JSX.Element {
   const [tabs, setTabs] = useState([
     { id: 'first', label: 'First.md' },
     { id: 'second', label: 'Second.md', dirty: true },
@@ -279,7 +310,12 @@ function NavigationTabsReorderDemo(): JSX.Element {
   )
 }
 
-function Fixture(): JSX.Element {
+function Fixture(): React.JSX.Element {
+  const [controlledPopoverOpen, setControlledPopoverOpen] = useState(false)
+  const controlledMenuRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (controlledPopoverOpen) controlledMenuRef.current?.focus()
+  }, [controlledPopoverOpen])
   const [conversationWidth, setConversationWidth] = useState('360px')
   const [morph, setMorph] = useState(false)
   const [morphEntry, setMorphEntry] = useState(false)
@@ -404,6 +440,16 @@ function Fixture(): JSX.Element {
       <Spinner size="sm" data-testid="render-spinner-default" />
       <Spinner imageSrc={aiThinking} size="sm" data-testid="render-spinner-image" />
       <Button loading data-testid="render-button-loading-default" />
+      {(['danger', 'destructive'] as const).map((variant) => (
+        <Fragment key={variant}>
+          <Button variant={variant} disabled data-testid={`render-${variant}-disabled`}>
+            Delete
+          </Button>
+          <Button variant={variant} loading data-testid={`render-${variant}-loading`}>
+            Delete
+          </Button>
+        </Fragment>
+      ))}
       <Button
         loading
         loadingIcon={<Spinner imageSrc={aiThinking} size="sm" />}
@@ -456,6 +502,13 @@ function Fixture(): JSX.Element {
         showOverview={false}
         tabs={[{ id: 'split', label: '右侧文件.md' }]}
         value="split"
+      />
+      <NavigationTabs
+        data-testid="render-navigation-tabs-trailing"
+        showOverview={false}
+        tabs={[{ id: 'trailing', label: 'Browser' }]}
+        value="trailing"
+        trailing={<IconButton label="New tab" icon={<span>+</span>} />}
       />
       <NavigationTabs
         data-testid="render-navigation-tabs-long-label"
@@ -667,6 +720,39 @@ function Fixture(): JSX.Element {
         title="保存失败"
         tone="error"
       />
+      <Alert
+        data-testid="render-alert-persistent"
+        layout="stacked"
+        title="请求失败"
+        description="请检查网络连接，然后重试。"
+        tone="warning"
+        action={
+          <>
+            <Button variant="ghost">重试</Button>
+            <Button variant="outline">切换模型</Button>
+          </>
+        }
+      />
+      <Alert
+        data-testid="render-alert-close-alignment"
+        closable
+        title="请求失败"
+        description="请检查网络连接，然后重试。"
+        tone="error"
+      />
+      <FormField data-testid="render-label-form">
+        <FormLabel>复杂表单</FormLabel>
+        <FormControl>
+          <Input />
+        </FormControl>
+      </FormField>
+      <FormField data-testid="render-label-display">
+        <FormLabel variant="display">字段回显</FormLabel>
+        <FormControl>
+          <Input readOnly value="科研项目" />
+        </FormControl>
+      </FormField>
+      <Input data-testid="render-input-display-label" label="简单表单" labelVariant="display" />
       <Alert>
         <AlertDescription data-testid="render-alert-full" truncate={false}>
           完整处置说明不能因提示区宽度不足而丢失。
@@ -679,6 +765,7 @@ function Fixture(): JSX.Element {
       <Alert data-testid="render-alert-align-single" tone="warning">
         <AlertDescription truncate={false}>文件将移到废纸篓。</AlertDescription>
       </Alert>
+      <InlineAlertExamples />
       <Alert data-testid="render-alert-align-multiple" tone="warning" style={{ width: 220 }}>
         <AlertDescription truncate={false}>
           这会同步影响你的本地文件：文件将被移到系统废纸篓，可以从废纸篓恢复。
@@ -741,6 +828,7 @@ function Fixture(): JSX.Element {
       />
       <EmptyState
         variant="panel"
+        iconTone="subtle"
         data-testid="render-empty-panel"
         icon={<Copy />}
         title="打开文件"
@@ -753,6 +841,7 @@ function Fixture(): JSX.Element {
       <CopyButton
         data-testid="render-copy-icon"
         iconOnly
+        tooltip
         icon={<Copy size={14} />}
         copiedIcon={<Check size={14} />}
         feedbackDuration={3000}
@@ -1042,6 +1131,7 @@ function Fixture(): JSX.Element {
       <ScrollArea
         data-testid="render-scroll-area"
         orientation="both"
+        horizontalControls={{ previous: '向左查看附件', next: '向右查看附件', hoverOnly: true }}
         shadow
         style={{ maxHeight: '80px', maxWidth: '160px' }}
         viewportClassName="render-scroll-area-viewport max-h-10 min-h-0"
@@ -1057,12 +1147,21 @@ function Fixture(): JSX.Element {
           滚动内容滚动内容滚动内容滚动内容滚动内容滚动内容滚动内容滚动内容
         </div>
       </ScrollArea>
+      <div data-testid="render-selection-quote">
+        <SelectionQuote
+          text="Selected content"
+          label="Open selection"
+          removeLabel="Remove selection"
+          onRemove={() => {}}
+        />
+      </div>
 
       <ScrollArea
         overlay
         shadow="auto"
         orientation="both"
         data-testid="render-overlay-scroll"
+        horizontalControls={{ previous: 'Overlay previous', next: 'Overlay next' }}
         style={{ height: '80px', width: '160px' }}
         viewportClassName="h-full"
         viewportProps={{ 'aria-label': '覆盖式滚动视口', 'data-testid': 'render-overlay-viewport' }}
@@ -1322,15 +1421,21 @@ function Fixture(): JSX.Element {
         <ResizablePanel aria-label="下方面板">下方内容</ResizablePanel>
       </ResizablePanelGroup>
 
-      <div className="relative h-[var(--vds-space-10)] w-[var(--vds-floating-conversation-width)]">
-        <ResizableHandle
-          aria-label="独立调整宽度"
-          appearance="invisible"
-          className="!absolute inset-y-0 left-1/2 !h-auto !w-[var(--vds-space-3)]"
-          data-testid="render-resizable-standalone"
-          onOffsetChange={setResizeOffset}
-        />
-      </div>
+      <ResizablePanelGroup defaultSizes={[60, 40]}>
+        <ResizablePanel data-testid="render-resizable-offset-parent">
+          <div className="relative h-[var(--vds-space-10)] w-[var(--vds-floating-conversation-width)]">
+            <ResizableHandle
+              aria-label="独立调整宽度"
+              appearance="invisible"
+              className="!absolute inset-y-0 left-1/2 !h-auto !w-[var(--vds-space-3)]"
+              data-testid="render-resizable-standalone"
+              onOffsetChange={setResizeOffset}
+            />
+          </div>
+        </ResizablePanel>
+        <ResizableHandle aria-label="外层区域" />
+        <ResizablePanel>Outer panel</ResizablePanel>
+      </ResizablePanelGroup>
       <output data-testid="render-resizable-offset">{resizeOffset}</output>
       <ResizablePanelGroup
         data-testid="render-resizable-disabled"
@@ -1784,12 +1889,28 @@ function Fixture(): JSX.Element {
           <AlertDialogTrigger data-testid={`render-alert-open-${showCloseButton}`}>
             打开确认
           </AlertDialogTrigger>
-          <AlertDialogContent showCloseButton={showCloseButton || undefined} aria-label="确认操作">
+          <AlertDialogContent
+            tone={showCloseButton ? 'danger' : 'default'}
+            showCloseButton={showCloseButton || undefined}
+            aria-label="确认操作"
+          >
+            <AlertDialogTitle>确认操作</AlertDialogTitle>
             <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction variant="danger">删除</AlertDialogAction>
           </AlertDialogContent>
         </AlertDialog>
       ))}
 
+      {(['default', 'info', 'danger', 'warning'] as const).map((tone) => (
+        <Dialog key={tone}>
+          <DialogTrigger data-testid={`render-feedback-open-${tone}`}>{tone}</DialogTrigger>
+          <DialogContent tone={tone} hideCloseButton aria-label={tone}>
+            <DialogTitle>{tone}</DialogTitle>
+            <DialogDescription>Feedback description</DialogDescription>
+            <DialogClose>Close feedback</DialogClose>
+          </DialogContent>
+        </Dialog>
+      ))}
       <Button data-testid="render-dialog-open" onClick={() => setDialogOpen(true)}>
         打开弹窗
       </Button>
@@ -1924,6 +2045,28 @@ function Fixture(): JSX.Element {
         </PopoverContent>
       </Popover>
       <Button data-testid="focus-popover-outside">外部操作</Button>
+      <Popover open={controlledPopoverOpen} onOpenChange={setControlledPopoverOpen}>
+        <PopoverTrigger asChild>
+          <Button data-testid="controlled-popover-trigger">Select a value</Button>
+        </PopoverTrigger>
+        <PopoverContent data-testid="controlled-popover-content">
+          <div
+            ref={controlledMenuRef}
+            role="menu"
+            tabIndex={-1}
+            className="visible"
+            data-testid="controlled-popover-menu"
+          >
+            <Button
+              role="menuitem"
+              data-testid="controlled-popover-option"
+              onClick={() => setControlledPopoverOpen(false)}
+            >
+              Choose a value
+            </Button>
+          </div>
+        </PopoverContent>
+      </Popover>
       <div className="fixed left-1/2 top-1/2">
         <HoverCard>
           <HoverCardTrigger asChild>
@@ -1934,7 +2077,14 @@ function Fixture(): JSX.Element {
             data-testid="viewport-hover-card-content"
           >
             <div className="h-[100vh]">原文预览</div>
-            <Button data-testid="viewport-hover-card-action">查看原文</Button>
+            <Button
+              data-testid="viewport-hover-card-action"
+              onClick={(event) => {
+                event.currentTarget.disabled = true
+              }}
+            >
+              查看原文
+            </Button>
           </HoverCardContent>
         </HoverCard>
       </div>
@@ -2008,12 +2158,33 @@ function Fixture(): JSX.Element {
         <Button>保存配置</Button>
       </Tooltip>
 
+      <Tooltip
+        data-testid="render-tooltip-pass-escape"
+        content="Non-consuming hint"
+        consumeEscape={false}
+      >
+        <Button>Host cancellation</Button>
+      </Tooltip>
+
       <Tooltip data-testid="render-tooltip-focus" defaultOpen={false} side="right">
         <TooltipTrigger asChild>
           <Button>聚焦说明</Button>
         </TooltipTrigger>
         <TooltipContent>聚焦时显示提示</TooltipContent>
       </Tooltip>
+
+      {(['top', 'bottom', 'left', 'right'] as const).map((side) => (
+        <Tooltip
+          key={side}
+          data-testid={`render-tooltip-end-${side}`}
+          content={`End aligned ${side} tooltip`}
+          side={side}
+          align="end"
+          portalled
+        >
+          <Button>End {side}</Button>
+        </Tooltip>
+      ))}
 
       <Tooltip
         data-testid="render-tooltip-controlled"
@@ -2097,6 +2268,12 @@ function Fixture(): JSX.Element {
 const localization = createLocalization('zh', resources, { escapeValue: false })
 createRoot(document.getElementById('root')!).render(
   <I18nextProvider i18n={localization}>
-    <Fixture />
+    {new URLSearchParams(window.location.search).get('annotation-layout') === 'sent' ? (
+      <main className="grid h-full place-items-center">
+        <AnnotationSummaryDemo sentOnly />
+      </main>
+    ) : (
+      <Fixture />
+    )}
   </I18nextProvider>
 )

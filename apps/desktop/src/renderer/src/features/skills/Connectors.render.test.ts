@@ -111,11 +111,11 @@ test(
     await page.getByRole('button', { name: '重试', exact: true }).click()
     await expect(page.getByRole('alert')).toHaveCount(0)
     await expect(page.getByRole('button', { name: '查看 GitLab', exact: true })).toHaveCount(0)
-    await page.getByRole('tab', { name: '我的', exact: true }).click()
+    await page.getByRole('button', { name: /^已添加 \d+$/ }).click()
     await page.getByRole('button', { name: '查看 GitLab', exact: true }).click()
     await expect(page.getByTestId('connector-detail')).toContainText('GitLab')
     await page.keyboard.press('Escape')
-    await page.getByRole('tab', { name: '市场', exact: true }).click()
+    await page.getByRole('button', { name: '已添加连接器', exact: true }).click()
     await expect(page.getByRole('button', { name: '查看 GitLab', exact: true })).toHaveCount(0)
     await expect(page.getByRole('button', { name: '重新授权', exact: true })).toHaveCount(0)
     for (const name of ['Zotero', 'Notion']) {
@@ -279,7 +279,7 @@ test(
     )
     await page.keyboard.press('Escape')
     await page.evaluate(() => Reflect.get(window, 'language')('zh'))
-    await page.getByRole('tab', { name: '我的', exact: true }).click()
+    await page.getByRole('button', { name: /^已添加 \d+$/ }).click()
     for (const name of ['local', 'anonymous', 'protected', 'protocol']) {
       await page.getByRole('button', { name: `查看 ${name}`, exact: true }).click()
       const detail = page.getByTestId('connector-detail')

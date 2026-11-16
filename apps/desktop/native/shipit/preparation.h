@@ -4,6 +4,9 @@
 BOOL SSPreparationOpen(NSString *label, NSError **error);
 BOOL SSPreparationOpenDirectory(NSString *directory, NSError **error);
 BOOL SSPreparationOpenExistingDirectory(NSString *directory, NSError **error);
+// Explicit maintenance only: caller holds native/data locks and a stopped-job
+// barrier, and has durably archived the exact journal and native request.
+BOOL SSPreparationRetireRequest(NSDictionary *entry, NSError **error);
 BOOL SSPreparationOpenMaintenanceDirectory(NSString *directory, NSError **error);
 int SSPreparationUncertaintyCode(void);
 typedef NS_ENUM(NSInteger, SSPreparationActivity) {
@@ -11,6 +14,11 @@ typedef NS_ENUM(NSInteger, SSPreparationActivity) {
     SSPreparationActivityActive = 0,
     SSPreparationActivityAbsent = 1,
 };
+NSDictionary *SSPreparationRetirementSnapshot(NSURL *source, NSURL *target, NSDictionary *binding,
+    NSURL *state, NSDictionary *expected, SSPreparationActivity (^activity)(void), NSError **error);
+BOOL SSPreparationRetirementRepair(NSURL *source, NSURL *target, NSDictionary *binding, NSURL *state,
+    NSDictionary *expected, SSPreparationActivity (^activity)(void), BOOL (^verify)(NSError **), NSError **error);
+BOOL SSPreparationArchiveSnapshot(NSDictionary *proof, NSError **error);
 NSDictionary *SSPreparationFailureSnapshot(NSURL *source, NSURL *target, NSDictionary *binding,
     NSURL *state, SSPreparationActivity (^activity)(void), NSError **error);
 // Prepare before waiting for termination. Reuse does not replace signature validation.

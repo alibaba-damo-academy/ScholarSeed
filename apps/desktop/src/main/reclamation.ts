@@ -1,4 +1,10 @@
-import { reclaimCoordination, uncertainRelease, type ReclamationNative } from '../../native/reclamation.cjs'
+import { basename } from 'node:path'
+import {
+  reclaimCoordination,
+  uncertainRelease,
+  type ReclamationNative,
+} from '../../native/reclamation.cjs'
+import { REGISTRY_DIRECTORY } from '../../native/registry.cjs'
 
 /** Startup precedes our writers; ready also covers the first run after an update.
  * Active domains are skipped in both passes, including this process's own domains.
@@ -14,8 +20,10 @@ export class CoordinationReclamation {
 
   run(reason: 'startup' | 'ready'): void {
     if (this.completed.has(reason)) return
+    const directory = this.directory()
+    if (basename(directory) === REGISTRY_DIRECTORY) return
     try {
-      const result = reclaimCoordination(this.native, this.directory())
+      const result = reclaimCoordination(this.native, directory)
       this.log(`[coordination] reclaim reason=${reason} ${JSON.stringify(result)}\n`)
       this.completed.add(reason)
     } catch (error) {

@@ -1,4 +1,6 @@
 export const API_DIAGNOSTIC_PREFIX = '[api-request]'
+export const API_DIAGNOSTIC_HEADER = 'x-scholarseed-diagnostic-id'
+export const HTTP_LATENCY_DIAGNOSTIC_PREFIX = '[http-latency]'
 export const REQUEST_TIMEOUT_ERROR_NAME = 'TimeoutError'
 export const REQUEST_ABORT_ERROR_NAME = 'AbortError'
 export const MODEL_PROFILES_PATH = '/api/serve/model-profiles'

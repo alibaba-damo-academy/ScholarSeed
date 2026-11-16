@@ -18,6 +18,7 @@ test('main startup tolerates damaged preferences but reconciliation cannot ackno
     await build({
       stdin: { contents: `export * from './src/main/preferences.ts'; export { selectStorage, publishStorage } from './src/main/storage.ts'; export { writerEvents } from './src/main/writer'`, resolveDir: DESKTOP, sourcefile: 'preferences-contract.ts' }, outfile: output,
       bundle: true, platform: 'node', format: 'esm',
+      banner: { js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url)" },
       plugins: [{ name: 'isolated-electron-path', setup(builder) {
         builder.onResolve({ filter: /^electron$/ }, () => ({ path: 'electron', namespace: 'contract' }))
         builder.onLoad({ filter: /.*/, namespace: 'contract' }, () => ({ contents: `export const app = {

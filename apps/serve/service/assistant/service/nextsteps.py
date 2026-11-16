@@ -6,7 +6,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 NEXT_STEPS_CARD = "next-steps"
-NEXT_STEPS_MIN_OPTIONS = 2
+NEXT_STEPS_MIN_OPTIONS = 1
 NEXT_STEPS_MAX_OPTIONS = 3
 NEXT_STEPS_TITLE_LIMIT = 500
 NEXT_STEPS_LABEL_LIMIT = 200

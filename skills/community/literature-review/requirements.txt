@@ -2,6 +2,9 @@
 #   pip install -r requirements.txt
 # Run `scholarseed-skill-python scripts/preflight.py` afterwards to confirm the environment.
 
+# Supplied by the product's pinned local wheel; no runtime installation.
+deep-rnd-l1==0.2.5
+
 # LLM client. Every scripted LLM call runs on qwen-3.8-max through one
 # OpenAI-protocol gateway, so the openai SDK is the only client the pipeline
 # needs. (Codex subagents use the host model and do not use this gateway.)
@@ -17,6 +20,8 @@ pdfplumber>=0.11,<0.12
 pypdf>=6.15.0,<7
 pysbd>=0.3.4
 filelock>=3.16
+python-docx>=1.1
+markdown-it-py>=3
 
 # data_chart figures. Missing required charts are technical failures.
 matplotlib>=3.7

@@ -2,11 +2,27 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
+test('literature selection navigation is published after the attachment view state', () => {
+  const store = readFileSync(new URL('../../store.tsx', import.meta.url), 'utf8')
+  const start = store.indexOf('openLiteratureAttachment: async')
+  assert.ok(start >= 0)
+  const opening = store.slice(start, store.indexOf('closeLiteratureAttachment:', start))
+  const stateUpdate = opening.indexOf('workspace.setTabViewState(tabId,')
+  const selectionReveal = opening.indexOf('workspace.revealSelection(tabId, options.selection)')
+  assert.ok(stateUpdate >= 0)
+  assert.ok(selectionReveal > stateUpdate)
+  assert.match(opening, /if \(!options\?\.selection\) workspace\.clearSelectionReveal\(tabId\)/)
+})
+
 test('Assistant selection references use an Assistant-owned composition of public primitives', () => {
   const panel = readFileSync(new URL('./AiPanel.tsx', import.meta.url), 'utf8')
   const quote = readFileSync(new URL('./Quote.tsx', import.meta.url), 'utf8')
   const stream = readFileSync(
     new URL('../../components/business/Stream.tsx', import.meta.url),
+    'utf8'
+  )
+  const selections = readFileSync(
+    new URL('../../components/business/Conversation.tsx', import.meta.url),
     'utf8'
   )
   const failure = readFileSync(
@@ -16,16 +32,16 @@ test('Assistant selection references use an Assistant-owned composition of publi
   const workbenchCss = readFileSync(new URL('../../shell/workbench.css', import.meta.url), 'utf8')
 
   assert.match(panel, /<AssistantContextQuote/)
-  assert.match(panel, /<HoverCardTrigger asChild>\{tag\}<\/HoverCardTrigger>/)
-  assert.match(panel, /<HoverCardContent[^>]*>[\s\S]*<AssistantContextQuote/)
-  assert.match(panel, /tabIndex=\{ref\.anchor \? 0 : undefined\}/)
+  assert.match(panel, /<HoverCard key=\{ref\.ref_id\}>\s*\{tag\}\s*<SelectionPreview/)
+  assert.match(panel, /<SelectionPreview[^>]*>[\s\S]*<AssistantContextQuote/)
+  assert.match(panel, /previewTrigger=\{Boolean\(ref\.anchor\) \|\| ref\.kind === 'pdf_comment'\}/)
   assert.match(
     panel,
-    /act\.openResourceFile\(\s*ref\.source_id,\s*state\.homeSelectedProjectId \?\? undefined\s*\)/
+    /act\.openResourceFile\(\s*selection\.source_id,\s*state\.homeSelectedProjectId \?\? undefined,\s*undefined,\s*\{\s*locator: selection\.anchor!\.locator/
   )
   assert.match(
     panel,
-    /act\.openLiteratureAttachment\(\s*ref\.source_id,\s*ref\.anchor\?\.document_id \?\? undefined\s*\)/
+    /act\.openLiteratureAttachment\(\s*selection\.source_id,\s*selection\.anchor\?\.document_id \?\? undefined,\s*undefined,\s*\{\s*selection: \{\s*locator: selection\.anchor!\.locator/
   )
   assert.doesNotMatch(panel, /已引用 \{otherRefs\.length\} 项/)
   assert.match(panel, /data-testid="ai-context-ref"/)
@@ -94,13 +110,19 @@ test('Assistant selection references use an Assistant-owned composition of publi
     /\.vds-ai-session-(?:popover|list|row|main|title|time|more|actions|action-item|error|menu|new)/
   )
   assert.doesNotMatch(panel, /className="vds-selection-action-source"/)
-  assert.match(quote, /from '\.\.\/\.\.\/components\/ui'/)
-  assert.match(quote, /<blockquote/)
-  assert.match(quote, /<ScrollArea/)
-  assert.match(quote, /data-testid="assistant-selection-open-source"/)
+  assert.match(quote, /from '\.\.\/\.\.\/components\/primitive'/)
+  assert.match(quote, /<SelectionQuote/)
+  assert.match(quote, /onRemove=\{onRemove\}/)
+  assert.match(quote, /openTestId="assistant-selection-open-source"/)
   assert.match(stream, /data-testid="sent-context-references"/)
-  assert.match(stream, /data-testid="sent-selection-reference"/)
-  assert.match(stream, /act\.openResourceFile\(reference\.sourceId, project\.id\)/)
+  assert.match(
+    stream,
+    /<SelectionReferences\s+references=\{contextRefs\}\s+label=\{contextSourceLabel\}\s+onOpen=\{openContextSource\}/
+  )
+  assert.match(
+    stream,
+    /act\.openResourceFile\(reference\.sourceId, project\.id, undefined, selection\)/
+  )
   assert.doesNotMatch(stream, />\{r\.status\}</)
   assert.match(stream, /<Failure[\s\S]*onContinue=\{onContinue\}/)
   assert.match(failure, /data-testid="turn-continue"[\s\S]*variant="outline"/)

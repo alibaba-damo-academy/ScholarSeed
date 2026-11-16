@@ -1,11 +1,13 @@
 import { createContext, useContext } from 'react'
 
 import type { ProductTask } from '../../contracts/tasks'
+import type { TaskSourceContribution } from '../../contracts/features'
 
 // Keep context identity outside the Fast Refresh component boundary.
 export interface TaskCenterValue {
   activeCount: number
   tasks: ProductTask[]
+  sources: readonly TaskSourceContribution[]
   open: boolean
   setOpen: (open: boolean) => void
   clearCompleted: () => Promise<void>

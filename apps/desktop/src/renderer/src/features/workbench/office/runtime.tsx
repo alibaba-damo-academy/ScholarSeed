@@ -13,6 +13,7 @@ import { createPortal } from 'react-dom'
 import { OfficeImageError } from '../../../../../images'
 import { LOCALES } from '../../../../../localization/catalog'
 import type { SelectionLocator } from '../../../contracts/workbench'
+import { documentSelectionReveal } from '../workspace'
 
 import { Toaster } from '../../../components/ui'
 import { useApp } from '../../../store'
@@ -242,6 +243,12 @@ function OfficeHost({
     ? `${binding.viewId}:${binding.revision}:preview`
     : `${tab?.id}:${session?.id}:${session?.documentId}:${session?.revision}:${tab?.viewKind}`
   const reveal = documentTextReveal(tab)
+  const selectionReveal = documentSelectionReveal(tab)
+  const handledSelectionReveal = useRef<{
+    binding: typeof bindingIdentity
+    request: typeof selectionReveal
+  } | null>(null)
+  const selectionRevealRequest = useRef('')
   const [frame, setFrame] = useState<OfficeFrameTransport | null>(null)
   const [frameEpoch, setFrameEpoch] = useState(0)
   const [frameReady, setFrameReady] = useState(false)
@@ -370,6 +377,40 @@ function OfficeHost({
     },
     [frame]
   )
+  useEffect(() => {
+    if (selectionReveal)
+      console.info('[selection-reveal-office]', {
+        documentReady,
+        focused: workspace.focusedTabId === tab?.id,
+        sequence: selectionReveal.sequence,
+      })
+    if (!documentReady || !tab || workspace.focusedTabId !== tab.id || !selectionReveal) return
+    if (
+      handledSelectionReveal.current?.binding === bindingIdentity &&
+      handledSelectionReveal.current.request === selectionReveal
+    )
+      return
+    handledSelectionReveal.current = { binding: bindingIdentity, request: selectionReveal }
+    const requestId = crypto.randomUUID()
+    selectionRevealRequest.current = requestId
+    post('reveal-selection', {
+      requestId,
+      locator: selectionReveal.locator,
+      text: selectionReveal.text,
+      duration: Number.parseFloat(
+        getComputedStyle(document.documentElement).getPropertyValue(
+          '--vds-selection-reveal-duration'
+        )
+      ),
+      reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+    })
+    const timeout = setTimeout(() => {
+      if (selectionRevealRequest.current !== requestId) return
+      selectionRevealRequest.current = ''
+      setNotice({ id: requestId, message: OFFICE_REVEAL_TIMEOUT })
+    }, OFFICE_SEARCH_TIMEOUT_MS)
+    return () => clearTimeout(timeout)
+  }, [documentReady, selectionReveal, bindingIdentity, post, tab?.id, workspace.focusedTabId])
   useEffect(() => {
     const observer = new MutationObserver(() => setPalette(officePalette(document.documentElement)))
     observer.observe(document.documentElement, {
@@ -968,6 +1009,16 @@ function OfficeHost({
         else if (message.error === 'selection_unsupported')
           pending.resolve({ ok: false, error: 'unsupported' })
         else pending.resolve({ ok: false, error: 'replacement_failed' })
+      } else if (
+        message.type === 'selection-revealed' ||
+        message.type === 'selection-reveal-failed'
+      ) {
+        console.info('[selection-reveal-office-result]', { type: message.type })
+        if (message.requestId === selectionRevealRequest.current) {
+          selectionRevealRequest.current = ''
+          if (message.type === 'selection-reveal-failed')
+            setNotice({ id: crypto.randomUUID(), message: OFFICE_REVEAL_MISSING })
+        }
       } else if (message.type === 'selection' && session) {
         const selection = message.selection as OfficeSelection
         const calcAddress =

@@ -49,16 +49,21 @@ test('Node scheduler omissions require explicit quarantine and exact reviewed id
 })
 
 test('Node quarantine cannot be moved into a different stage', () => {
-  const policy = QUARANTINE.nodeCases.find(item => item.stage === 'desktop-i18n-test')
-  const item = { id: `${policy.stage}:quarantine:${policy.file}:${policy.title}`,
-    status: 'skipped', reason: policy.reason, retries: 0, file: policy.file,
-    title: policy.title, omissionMethod: 'node-test-skip-pattern' }
-  const stage = { id: policy.stage, platform: 'darwin', commit: COMMIT,
-    exitCode: 0, timedOut: false, report: 'raw/node.json', cases: [item] }
-  const candidate = run({ profile: 'offline', quarantine: true, expected: [item.id], stages: [stage] })
-  assert.equal(judgeRun(candidate).verdict, 'pass')
-  assert.equal(judgeRun({ ...candidate, stages: [{ ...stage, id: 'desktop-unit' }] }).verdict, 'fail')
-  assert.equal(judgeRun({ ...candidate, quarantine: false }).verdict, 'fail')
+  assert.ok(QUARANTINE.nodeCases.length, 'this policy test requires reviewed Node omissions')
+  for (const policy of QUARANTINE.nodeCases) {
+    const stageId = policy.stage || 'desktop-unit'
+    const otherStage = stageId === 'desktop-unit' ? 'desktop-extra-node' : 'desktop-unit'
+    const item = { id: `${stageId}:quarantine:${policy.file}:${policy.title}`,
+      status: 'skipped', reason: policy.reason, retries: 0, file: policy.file,
+      title: policy.title, omissionMethod: 'node-test-skip-pattern' }
+    const stage = { id: stageId, platform: 'darwin', commit: COMMIT,
+      exitCode: 0, timedOut: false, report: 'raw/node.json', cases: [item] }
+    const candidate = run({ profile: 'offline', quarantine: true, expected: [item.id], stages: [stage] })
+    assert.equal(judgeRun(candidate).verdict, 'pass')
+    assert.equal(judgeRun({ ...candidate, stages: [{ ...stage, id: otherStage }] }).verdict, 'fail')
+    assert.equal(judgeRun({ ...candidate, quarantine: false }).verdict, 'fail')
+    assert.equal(judgeRun({ ...candidate, profile: 'full' }).verdict, 'fail')
+  }
 })
 
 test('quarantine accepts only exact declared cases and never allows full or strict runs', () => {

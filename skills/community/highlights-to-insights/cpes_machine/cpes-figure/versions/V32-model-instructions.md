@@ -1,0 +1,32 @@
+# Figure Card reading instructions
+
+Inspect every attached image. Treat the packet as the complete default text context. Preserve original symbols and terminology.
+
+Return only the schema-conforming mutable JSON object. Do not reproduce fixed metadata or add a card title; the numbered author caption is the heading. Use the exact field names below, with no aliases. All five fields are required even when an array is empty.
+
+## Field semantics
+
+- `overview` is a string of one or two short declarative sentences. Start with a short overview of what the Figure shows and its role, not a question or a list of graphical objects.
+- `how_to_read` is a string or an array of strings. For multiple subfigures or distinct regions, briefly map their visible labels or locations to what each shows; do not invent panel labels. Explain the reading order, essential axes, units, legend encodings, metric direction and what to compare. For heatmaps, explain row/column coordinates, the color scale and metric direction, and a few legible printed off-diagonal values with their labels. An overall within-group/cross-group pattern requires an explicit source statement or verified aggregate; a partition alone does not establish it. For diagrams, explain the flow, arrows, operations and the role of complex formulas without rewriting those formulas. Explain shared encodings once. Preserve important visible structure without listing decorative objects or duplicating author findings. Aim for roughly 200–300 tokens in this field, allowing more for complex figures when needed to avoid losing essential information. A simple single-panel figure needs no panel inventory.
+- `author_findings` selects relevant author statements from the supplied complete caption/passage IDs (C1, S1, ...). Return objects containing only a non-empty `evidence_ids` array; do not generate a claim, summary or quotation. Each ID selects its whole bounded passage, possibly multiple sentences. The program copies each selected passage into a separate source quotation with its original provenance. Preserve distinct supported mechanisms and results by selecting their complete units, including joint figure/table attributions. Select each ID once; use an empty array when no supplied unit is relevant.
+- `prerequisites` is an array of strings describing notation and setup needed to read the figure.
+- `scope` is an array of strings describing datasets, models, parameters, sample sizes, domains, and statistical conditions under which the result holds.
+
+## Reading discipline
+
+- Use exact values only when legible in the figure or explicitly stated in the paper. Never estimate a precise value from pixels and present it as reported data.
+- For curves, prefer qualitative trends to pixel-derived estimates; include an approximate plotted value only when useful and clearly marked. For heatmaps, use printed cell values, not pixel-derived estimates. Never invent an unreadable value.
+- Treat a defined legend as a mapping, not extra plotted series. If caption/legend/text does not define emphasis such as bold or color, omit its meaning. Describe numerical rankings directly from comparable values and metric direction, checking ties. Formatting alone establishes neither best nor significance. Count panels, curves, entities, arrows or stages only after checking the whole figure; omit ambiguous counts.
+- Read every selected complete evidence unit as a standalone passage. Select relevant author statements, not a sentence fragment or an inferred conclusion. Original disjoint line ranges remain local provenance; line numbers are not selectable IDs.
+- Preserve operation polarity when paraphrasing mechanisms: for example, “receives a smaller bonus” is not “is penalized,” correlation is not causation, and an absent increase is not a decrease.
+- Do not invent generic limitations. If the paper supplies no figure-relevant limitation, say so and state only evidence-based scope boundaries.
+- Avoid repeating the same fact across fields. Explain each fact fully only in its most appropriate field; other fields should add distinct information, not paraphrase that explanation.
+- Before returning JSON, silently verify: every visual statement is directly visible; every selected author unit is relevant and complete; every count and legend mapping was checked; and no uncertainty was converted into a fact.
+
+## Checks motivated by previous figure reviews
+
+- Resolve evidence across line breaks before selecting it. Keep subject, predicate, value, unit and qualification together. Do not cite a caption naming a star as support for a percentage visible only in the plot.
+- Preserve mathematical identity in clearly legible notation: subscripts, superscripts, signs and multiplication matter. Explain complex formulas by their purpose and inputs; do not reconstruct their equations. Do not transcribe uncertain symbols or assign guessed meanings. Distinguish coordinates from units and phase from frequency; retain source terminology rather than familiar substitutes.
+- Verify every named visual marker against the supplied crop. Do not invent stars, arrows, reference lines or a legend entry because such marks are common in similar plots. Count tasks separately from their paired input/output grids. Distinguish model output from ground truth using the actual labels. A familiar appearance does not establish that a plot is an echelle diagram, a residual plot or another named chart type. For region diagrams, verify containment, overlap and local versus global relationships before describing them.
+- Allocate content once: how_to_read explains where to look, the visual encodings and how to compare; author_findings selects the original passages for supported mechanisms or results. Scope adds only relevant conditions, not another description of the pipeline. Describe initialization separately from recurrent updates when t=0 and later steps have different roles. Do not turn availability of traced examples into a requirement that every training example has intermediate targets.
+- Emit valid JSON. Within JSON strings, escape each literal backslash as a doubled backslash; prefer plain-text mathematical notation when LaTeX escaping is unnecessary. Escape quotation marks inside strings. how_to_read may be either one string or an array of strings; preserve the required types of all other fields. Check syntax and evidence support silently before returning the object.

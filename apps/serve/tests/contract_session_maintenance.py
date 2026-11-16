@@ -20,6 +20,7 @@ from service.chat.persistence.events import ProductEventStore
 from service.chat.service.maintenance import (
     SessionMaintenanceService,
     await_storage_maintenance,
+    inspect_session_storage,
     maintain_session_storage,
 )
 from service.persistence.project import transaction
@@ -85,6 +86,62 @@ class SessionStorageMaintenanceContracts(unittest.TestCase):
 
     def _logical_history(self):
         return self.events.replay("session", limit=1000), self.catalog.portable_history("session")
+
+    def test_probe_detects_migration_without_changing_data(self) -> None:
+        self.assertIs(inspect_session_storage(self.database), False)
+        self._legacy_history(3)
+        expected = self._logical_history()
+        before = {path.name for path in self.database.parent.iterdir()}
+        self.assertIs(inspect_session_storage(self.database), True)
+        self.assertEqual(self._logical_history(), expected)
+        self.assertEqual({path.name for path in self.database.parent.iterdir()}, before)
+        self.assertFalse(maintain_session_storage(self.database))
+        self.assertIs(inspect_session_storage(self.database), False)
+        self.assertEqual(self._logical_history(), expected)
+
+    def test_probe_distinguishes_live_journal_from_reclaimable_bodies(self) -> None:
+        self._legacy_history(1)
+        self.assertFalse(maintain_session_storage(self.database))
+        with patch.object(journal, "COMPACT_MIN_BYTES", 1):
+            self.assertIs(inspect_session_storage(self.database), False)
+            with transaction(self.database, immediate=True) as connection:
+                with journal.Journal(connection, self.database) as bodies:
+                    bodies.put("unreferenced body" * 1024)
+                    active_path = bodies.path
+            before = active_path.read_bytes()
+            self.assertIs(inspect_session_storage(self.database), True)
+            self.assertEqual(active_path.read_bytes(), before)
+            self.assertFalse(maintain_session_storage(self.database))
+            self.assertIs(inspect_session_storage(self.database), False)
+
+    def test_probe_defers_on_sqlite_lock_and_budget(self) -> None:
+        with closing(sqlite3.connect(self.database)) as writer:
+            writer.execute("PRAGMA journal_mode=DELETE")
+            writer.execute("BEGIN EXCLUSIVE")
+            with self.assertLogs("service.chat.service.maintenance", level="INFO") as log:
+                self.assertIsNone(inspect_session_storage(self.database))
+            self.assertIn("reason=probe_busy", log.output[0])
+        with (
+            patch("service.chat.service.maintenance.MAINTENANCE_BUDGET_SECONDS", 0),
+            self.assertLogs("service.chat.service.maintenance", level="INFO") as log,
+        ):
+            self.assertIsNone(inspect_session_storage(self.database))
+        self.assertIn("reason=probe_budget", log.output[0])
+        self.assertIs(inspect_session_storage(self.database), False)
+
+    def test_probe_detects_vacuum_without_reclaiming_pages(self) -> None:
+        with transaction(self.database, immediate=True) as connection:
+            connection.execute("CREATE TABLE extensions(id INTEGER PRIMARY KEY, body BLOB)")
+            connection.executemany(
+                "INSERT INTO extensions(body) VALUES (zeroblob(?))", [(4 * 1024 * 1024,)] * 6
+            )
+            connection.execute("DELETE FROM extensions")
+        before = self.database.stat().st_size
+        self.assertIs(inspect_session_storage(self.database), True)
+        self.assertEqual(self.database.stat().st_size, before)
+        self.assertFalse(maintain_session_storage(self.database))
+        self.assertIs(inspect_session_storage(self.database), False)
+        self.assertLess(self.database.stat().st_size, before)
 
     def test_scheduled_migration_and_gc_keep_event_and_catalog_live_bodies(self) -> None:
         self._legacy_history(3)
@@ -163,6 +220,32 @@ class SessionStorageMaintenanceContracts(unittest.TestCase):
 
 
 class SessionMaintenanceContracts(unittest.IsolatedAsyncioTestCase):
+    async def test_no_work_and_uncertain_probe_keep_resident_resource(self) -> None:
+        activities = Activities()
+        outcomes = iter((False, None, True))
+        admitted = asyncio.Event()
+        probed = []
+
+        def probe() -> bool | None:
+            probed.append(next(outcomes, True))
+            return probed[-1]
+
+        async def maintain() -> None:
+            self.assertEqual(probed[:3], [False, None, True])
+            self.assertEqual(activities.snapshot().phase, ActivityPhase.OPEN)
+            self.assertEqual(activities.snapshot().counts, {ActivityDomain.RESOURCE.value: 1})
+            admitted.set()
+
+        with activities.enter(ActivityDomain.RESOURCE):
+            service = SessionMaintenanceService(
+                activities, maintain, probe=probe, interval=INTERVAL
+            )
+            await service.start()
+            try:
+                await asyncio.wait_for(admitted.wait(), 1)
+            finally:
+                await service.aclose()
+
     async def test_idle_admission_refuses_business_and_unready_workbench(self) -> None:
         activities = Activities()
         for domain in ActivityDomain:
@@ -264,7 +347,7 @@ class SessionMaintenanceContracts(unittest.IsolatedAsyncioTestCase):
         async def maintain() -> None:
             called.set()
 
-        service = SessionMaintenanceService(Activities(), maintain, interval=60)
+        service = SessionMaintenanceService(Activities(), maintain, probe=lambda: True, interval=60)
         await service.start()
         await asyncio.sleep(INTERVAL)
         self.assertFalse(called.is_set())
@@ -284,7 +367,9 @@ class SessionMaintenanceContracts(unittest.IsolatedAsyncioTestCase):
                 raise MaintenanceActive("busy")
             completed.set()
 
-        service = SessionMaintenanceService(activities, maintain, interval=INTERVAL)
+        service = SessionMaintenanceService(
+            activities, maintain, probe=lambda: True, interval=INTERVAL
+        )
         await service.start()
         try:
             await asyncio.sleep(3 * INTERVAL)
@@ -308,7 +393,9 @@ class SessionMaintenanceContracts(unittest.IsolatedAsyncioTestCase):
             entered.set()
             await asyncio.to_thread(disk)
 
-        service = SessionMaintenanceService(Activities(), maintain, interval=INTERVAL)
+        service = SessionMaintenanceService(
+            Activities(), maintain, probe=lambda: True, interval=INTERVAL
+        )
         await service.start()
         await asyncio.wait_for(entered.wait(), 1)
         closing = asyncio.create_task(service.aclose())
@@ -336,7 +423,9 @@ class SessionMaintenanceContracts(unittest.IsolatedAsyncioTestCase):
                 raise OSError("disk unavailable")
             completed.set()
 
-        service = SessionMaintenanceService(Activities(), maintain, interval=INTERVAL)
+        service = SessionMaintenanceService(
+            Activities(), maintain, probe=lambda: True, interval=INTERVAL
+        )
         with self.assertLogs("service.chat.service.maintenance", level="ERROR"):
             await service.start()
             try:
@@ -354,7 +443,9 @@ class SessionMaintenanceContracts(unittest.IsolatedAsyncioTestCase):
             await release.wait()
             raise OSError("disk flush failed")
 
-        service = SessionMaintenanceService(Activities(), maintain, interval=INTERVAL)
+        service = SessionMaintenanceService(
+            Activities(), maintain, probe=lambda: True, interval=INTERVAL
+        )
         await service.start()
         await asyncio.wait_for(entered.wait(), 1)
         closing = asyncio.create_task(service.aclose())
@@ -375,7 +466,9 @@ class SessionMaintenanceContracts(unittest.IsolatedAsyncioTestCase):
             failed.set()
             raise MaintenanceIncomplete("directory qualification unresolved")
 
-        service = SessionMaintenanceService(activities, maintain, interval=INTERVAL)
+        service = SessionMaintenanceService(
+            activities, maintain, probe=lambda: True, interval=INTERVAL
+        )
         with self.assertLogs("service.chat.service.maintenance", level="ERROR"):
             await service.start()
             await asyncio.wait_for(failed.wait(), 1)

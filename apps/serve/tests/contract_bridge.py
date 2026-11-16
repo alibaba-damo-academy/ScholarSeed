@@ -26,6 +26,17 @@ TOOL_BYTES_LIMIT = 5000
 
 
 class BridgeToolContracts(unittest.TestCase):
+    def test_bridge_request_sources_are_exclusive_and_preserve_inline_contracts(self):
+        validator = Draft202012Validator(SERVICE_BRIDGE_TOOL.input_schema)
+        base = {"capability": "component", "operation": "display"}
+        self.assertTrue(validator.is_valid({**base, "request": {}}))
+        self.assertTrue(validator.is_valid({**base, "request_file": "output/plot.json"}))
+        self.assertFalse(validator.is_valid(base))
+        self.assertFalse(
+            validator.is_valid({**base, "request": {}, "request_file": "output/plot.json"})
+        )
+        self.assertFalse(validator.is_valid({**base, "request_file": ""}))
+
     def test_artifact_contract_distinguishes_explicit_stage_delivery_from_working_files(self):
         contract = describe_contract("artifact", "publish")
         schema = contract["request_schema"]
@@ -138,7 +149,12 @@ class BridgeToolContracts(unittest.TestCase):
         )
         invalid_values = (None, "", -1, True, [], {}, [""], [None])
         for contract, valid in contracts:
-            candidates = [valid, {**valid, "reason": "observed reason"}]
+            candidates = [
+                valid,
+                {**valid, "reason": "observed reason"},
+                {**valid, "reason": ""},
+                {**valid, "reason": "   "},
+            ]
             candidates.extend(
                 {key: value for key, value in valid.items() if key != missing} for missing in valid
             )
@@ -165,6 +181,8 @@ class BridgeToolContracts(unittest.TestCase):
                     request["action"] = request.pop("operation", None)
                 else:
                     valid_operation = True
+                if contract is not PlanRead:
+                    request.setdefault("turn_id", "callback-turn")
                 try:
                     contract.model_validate(request)
                     accepted = valid_operation
@@ -213,7 +231,7 @@ class BridgeToolContracts(unittest.TestCase):
             with self.assertRaises(ValueError):
                 request_type.model_validate(request)
 
-    def test_dialogue_import_contract_is_separate_from_download_ingest(self):
+    def test_dialogue_import_contract_keeps_explicit_user_import(self):
         contract = describe_contract("literature", "import", project_id="project")
         self.assertTrue(contract["ok"], contract)
         self.assertEqual(contract["approval"], "none")
@@ -229,7 +247,8 @@ class BridgeToolContracts(unittest.TestCase):
         ):
             with self.assertRaises(ValueError):
                 request_type.model_validate(request)
-        self.assertIn("run", BRIDGE_REQUESTS[("literature", "ingest")].request_type.model_fields)
+        self.assertNotIn(("literature", "ingest"), BRIDGE_REQUESTS)
+        self.assertNotIn(("literature", "delivery"), BRIDGE_REQUESTS)
 
     def activation(self, **updates):
         request = {
@@ -524,7 +543,8 @@ class BridgeToolContracts(unittest.TestCase):
             "step_ids": ["leaf"],
         }
         validator.validate(request)
-        for field in ("plan_id", "expected_revision", "turn_id", "request_id"):
+        validator.validate({name: value for name, value in request.items() if name != "turn_id"})
+        for field in ("plan_id", "expected_revision", "request_id"):
             with self.subTest(field=field):
                 result = asyncio.run(
                     execute_service_tool(
@@ -533,6 +553,8 @@ class BridgeToolContracts(unittest.TestCase):
                         token="contract",
                         local_socket=None,
                         tool_name="update_plan",
+                        callback_request_id="callback",
+                        callback_turn_id="turn",
                     )
                 )
                 self.assertEqual(result["error"], "bridge_invalid_parameters")
@@ -617,6 +639,16 @@ class BridgeToolContracts(unittest.TestCase):
         self.assertNotIn(
             "PDF", SERVICE_BRIDGE_TOOL.input_schema["properties"]["request"]["description"]
         )
+
+    def test_managed_fulltext_contract_keeps_acquired_refs_out_of_catalogue_admission(self):
+        acquire = describe_contract("literature", "acquire")
+        self.assertIn("papers[].ref", acquire["guidance"])
+        self.assertIn("pdf/read", acquire["guidance"])
+        for operation in ("read", "search"):
+            contract = describe_contract("pdf", operation)
+            self.assertIn("paper:<id>", contract["guidance"])
+            self.assertIn("unchanged", contract["guidance"])
+            self.assertEqual(contract["prerequisites"], [])
 
     def test_invalid_pdf_parameters_name_rejected_and_allowed_fields(self):
         for operation, request, rejected in (

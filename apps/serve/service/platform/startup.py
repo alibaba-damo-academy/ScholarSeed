@@ -129,7 +129,7 @@ def acquire_startup_domains(
     failed discovery has closed every qualification successfully. Maintenance
     remains strict, as do main-file changes and uncertain release failures.
     """
-    if type(attempts) is not int or not 1 <= attempts <= 16:
+    if (not isinstance(attempts, int) or isinstance(attempts, bool)) or not 1 <= attempts <= 16:
         raise ValueError("startup discovery attempts must be between 1 and 16")
     for attempt in range(attempts):
         try:
@@ -193,7 +193,7 @@ def _acquire_startup_domains(
     Explicit maintenance busy_timeout shares a native-lock wait budget across
     discovery and full qualification; ordinary startup remains nonblocking.
     """
-    if type(attempts) is not int or not 1 <= attempts <= 16:
+    if (not isinstance(attempts, int) or isinstance(attempts, bool)) or not 1 <= attempts <= 16:
         raise ValueError("startup discovery attempts must be between 1 and 16")
     sources = _roots(discovery_roots)
     deadline = time.monotonic() + busy_timeout

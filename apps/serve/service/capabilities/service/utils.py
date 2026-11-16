@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import json
 import math
-from typing import Any
+from typing import Any, TypeGuard
+
+
+def integer(value: object) -> TypeGuard[int]:
+    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -27,8 +31,8 @@ def _finite_float(value: str) -> float:
     return number
 
 
-def json_object(payload: bytes, *, limit: int) -> dict[str, Any]:
-    if len(payload) > limit:
+def json_object(payload: bytes, *, limit: int | None = None) -> dict[str, Any]:
+    if limit is not None and len(payload) > limit:
         raise ValueError("JSON resource exceeds its size limit")
     try:
         result = json.loads(

@@ -2,8 +2,7 @@
 // performs the complete nested signing pass before the DMG is assembled.
 const fs = require('node:fs')
 const path = require('node:path')
-const { signAsync } = require('@electron/osx-sign')
-const { walkAsync, getAppContentsPath } = require('@electron/osx-sign/dist/cjs/util')
+const { signAsync, walkAsync, getAppContentsPath } = require('./osx-sign.cjs')
 const { isMachO, isSignable } = require('./macho.cjs')
 const verify = require('./verify.cjs')
 const { installApplication } = require('./engine.cjs')

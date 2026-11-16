@@ -232,12 +232,12 @@ def run() -> None:
             source_target = RecordTarget(
                 RecordOwner.LITERATURE_ATTACHMENT, "paper", attachment["id"]
             )
-            assert (
-                AttachmentRecords(LiteratureAttachmentContent(repository), repository)
-                .snapshot_target(source_target)
-                .records
-                == embedded_records
-            )
+            assert AttachmentRecords(
+                LiteratureAttachmentContent(repository), repository
+            ).snapshot_target(source_target).records == {
+                **embedded_records,
+                "native_annotations": [],
+            }
             empty = source_catalog.snapshot(source_target, content.revision(source))
             source_catalog.commit(
                 source_target, content.revision(source), _records(), empty.record_revision
@@ -273,7 +273,10 @@ def run() -> None:
             copied = client.post(route, json=commit, headers={"Idempotency-Key": "api-copy"})
             assert copied.status_code == 200, copied.text
             asset = content.identify(project.id, copied.json()["path"]).asset.asset_id
-            assert record_store.snapshot_asset(project.id, asset).records == _records()
+            assert record_store.snapshot_asset(project.id, asset).records == {
+                **_records(),
+                "native_annotations": [],
+            }
             count = len(versions.history(project.id, copied.json()["path"]))
             retry = client.post(route, json=commit, headers={"Idempotency-Key": "api-copy"})
             assert retry.status_code == 200, retry.text

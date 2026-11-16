@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { STARTUP_PHASE } from '../../../startup'
+import { STARTUP_PHASE, SCHEMA_UPGRADE_REQUIRED } from '../../../startup'
 import { Progress } from '../components/primitive/Progress'
 import { useThemeEffect } from '../theme'
 import { useStartup } from './connection'
@@ -23,13 +23,21 @@ export function Startup({ children }: { children: React.ReactNode }): React.JSX.
 function StartupProgress(): React.JSX.Element {
   const snapshot = useStartup()
   const { t } = useTranslation('shell')
+  const { t: foundation } = useTranslation('foundation')
   useThemeEffect(window.scholarseed?.preferences.theme ?? 'system')
   const failed = snapshot.phase === STARTUP_PHASE.failed
+  const upgradeRequired = snapshot.error === SCHEMA_UPGRADE_REQUIRED
   if (failed)
     return (
       <FeedbackRecovery
-        title={t('workspaceLoading.failedTitle')}
-        detail={t('workspaceLoading.failedDetail')}
+        title={
+          upgradeRequired ? t('workspaceLoading.upgradeTitle') : t('workspaceLoading.failedTitle')
+        }
+        detail={
+          upgradeRequired
+            ? foundation('backendFailure.schemaUpgradeRequired')
+            : t('workspaceLoading.failedDetail')
+        }
         actionLabel={snapshot.retryable ? t('workspaceLoading.reload') : undefined}
         onAction={
           snapshot.retryable

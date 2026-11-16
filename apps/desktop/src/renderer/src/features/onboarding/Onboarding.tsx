@@ -27,6 +27,7 @@ import { useApp } from '../../store'
 import { guideSteps, guideValid, navigateGuide, type Notice } from './adapter'
 import { OB_COPY } from './copy'
 import {
+  activateCategory,
   clearSelection,
   cardPosition,
   OB_GEOMETRY,
@@ -498,9 +499,9 @@ export function OnboardingHost({ blocked }: { blocked: boolean }): React.JSX.Ele
                   variant="ghost"
                   size="content"
                   className="!justify-start !whitespace-normal !text-left !p-[var(--vds-space-3)] !bg-[var(--vds-surface-muted)] hover:!bg-[var(--vds-brand-light-bg-default)] focus-visible:!bg-[var(--vds-brand-light-bg-default)]"
-                  onMouseEnter={() => target(anchor)?.click()}
-                  onFocus={() => target(anchor)?.click()}
-                  onClick={() => target(anchor)?.click()}
+                  onMouseEnter={() => activateCategory(anchor)}
+                  onFocus={() => activateCategory(anchor)}
+                  onClick={() => activateCategory(anchor)}
                 >
                   <span className="grid gap-[var(--vds-space-1)]">
                     <strong>{t(titleKey)}</strong>

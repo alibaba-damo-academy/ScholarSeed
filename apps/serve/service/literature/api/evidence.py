@@ -23,7 +23,6 @@ from service.platform.bridge import (
     PDF_ROUTE_PREFIX,
     PaperCardRegister,
 )
-from service.platform.vocabulary import BRIDGE_MAX_REQUEST_BYTES
 
 CARD_REGISTERED_EVENT = "literature.card_registered"
 CARD_ORIGIN_SESSION = "session:"
@@ -56,11 +55,7 @@ def register_card_bridge(
         if live is None or not live.publication_turn_id:
             return JSONResponse({"error": "bridge_access_denied"}, HTTP_403_FORBIDDEN)
         turn_id = live.publication_turn_id
-        raw = bytearray()
-        async for chunk in request.stream():
-            raw.extend(chunk)
-            if len(raw) > BRIDGE_MAX_REQUEST_BYTES:
-                return JSONResponse({"error": "bridge_request_too_large"}, HTTP_400_BAD_REQUEST)
+        raw = await request.body()
         try:
             command = PaperCardRegister.model_validate(json.loads(raw))
             if not command.ref_id.startswith(LIBRARY_REF_PREFIX):

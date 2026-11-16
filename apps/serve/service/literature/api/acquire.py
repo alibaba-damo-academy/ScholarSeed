@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import logging
 from collections.abc import Callable
 
 from fastapi import APIRouter, Depends, FastAPI, Request
@@ -22,33 +21,29 @@ from service.chat.service.tasks import (
     fulltext_binding_workspace,
     verified_authorization_context,
 )
-from service.literature.api.downloads import (
-    DOWNLOAD_SCOPE_PREPARERS,
-    DOWNLOAD_TURN_STALE,
-    admit_downloads,
-)
 from service.literature.domain.delivery import AcquisitionScope
 from service.literature.persistence.files import scoped_relative
 from service.literature.service.acquire import AcquirePaper, acquire_fulltexts
 from service.literature.service.arxiv import normalize_arxiv_id
-from service.literature.service.downloads import (
-    DOWNLOAD_METADATA_CONFLICT,
-    DownloadEntry,
-)
 from service.literature.service.fulltext import normalize_doi
 from service.literature.service.fulltexts import PAPER_REF_PREFIX
+from service.literature.service.scope import (
+    DOWNLOAD_METADATA_CONFLICT,
+    DOWNLOAD_TURN_STALE,
+    prepare_selection_scope,
+)
 from service.platform.activity import Activities, ActivityDomain
 from service.platform.bridge import (
     LITERATURE_ACQUIRE_ROUTE,
     LiteratureAcquire,
 )
 from service.platform.content import ProjectRef
-
-logger = logging.getLogger(__name__)
+from service.platform.context import ProductTaskType
 
 ACQUIRE_TASK_REQUIRED = "fulltext_authorization_task_required"
 ACQUIRE_AUTHORIZATION_REQUIRED = "fulltext_authorization_required"
 ACQUIRE_PROJECT_REQUIRED = "fulltext_acquisition_project_required"
+ACQUIRE_SCOPE_PREPARERS = {ProductTaskType.PRECISE_SEARCH.value: prepare_selection_scope}
 ACQUIRE_IDENTIFIER_POLICY = {
     "arxiv": ("arxiv_id", normalize_arxiv_id),
     "doi": ("doi", normalize_doi),
@@ -71,17 +66,9 @@ def register_acquire_routes(
         if live is None or not live.publication_turn_id:
             return JSONResponse({"ok": False, "error": "bridge_access_denied"}, HTTP_403_FORBIDDEN)
         turn_id = live.publication_turn_id
-        prepare_scope = DOWNLOAD_SCOPE_PREPARERS.get(getattr(live, "active_task_type", ""))
-        download_turn = (
-            (
-                getattr(live, "active_product_turn_id", ""),
-                live.runtime_workdir,
-                live.id,
-                live.project_id or "",
-            )
-            if prepare_scope is not None
-            else None
-        )
+        prepare_scope = ACQUIRE_SCOPE_PREPARERS.get(getattr(live, "active_task_type", ""))
+        selection_workdir = live.runtime_workdir if prepare_scope is not None else None
+        client_turn_id = getattr(live, "active_product_turn_id", "")
         policy = task_authorization_policy(getattr(live, "active_task_type", ""))
         if policy is None:
             return JSONResponse(
@@ -130,13 +117,11 @@ def register_acquire_routes(
             )
         if sessions.bridge_caller(live.id) is not live or live.publication_turn_id != turn_id:
             return JSONResponse({"ok": False, "error": "bridge_access_denied"}, HTTP_403_FORBIDDEN)
-        scope = None
         if prepare_scope is not None:
-            assert download_turn is not None
-            client_turn_id, runtime_workdir, _session_id, _project_id = download_turn
+            assert selection_workdir is not None
             try:
                 scope = await activities.to_thread(
-                    ActivityDomain.BRIDGE, prepare_scope, runtime_workdir, query.run
+                    ActivityDomain.BRIDGE, prepare_scope, selection_workdir, query.run
                 )
                 if (
                     sessions.bridge_caller(live.id) is not live
@@ -181,11 +166,7 @@ def register_acquire_routes(
                     authorization_type=policy.authorization_type,
                     ref_id=PAPER_REF_PREFIX + paper.paper_id,
                     task_context=task_context,
-                    client_turn_id=(
-                        download_turn[0]
-                        if scope is not None and download_turn is not None
-                        else getattr(live, "active_product_turn_id", "")
-                    ),
+                    client_turn_id=client_turn_id,
                 )
                 binding = fulltext_binding_scope(
                     (
@@ -194,7 +175,7 @@ def register_acquire_routes(
                             snapshot_id=snapshot_id,
                             turn_id=turn_id,
                             authorization_type=policy.authorization_type,
-                            client_turn_id=getattr(live, "active_product_turn_id", ""),
+                            client_turn_id=client_turn_id,
                             task_context=task_context,
                         )
                         if not workspace
@@ -234,46 +215,24 @@ def register_acquire_routes(
             )
         except (ValueError, OSError) as error:
             return JSONResponse({"ok": False, "error": str(error)}, HTTP_400_BAD_REQUEST)
-        payload = outcome.payload()
-        if scope is None:
-            if (
-                sessions.bridge_caller(live.id) is not live
-                or live.publication_turn_id != turn_id
-                or live.active_assistant_snapshot_id != snapshot_id
-            ):
-                return JSONResponse(
-                    {"ok": False, "error": "bridge_access_denied"}, HTTP_403_FORBIDDEN
-                )
-            try:
-                if (
-                    verified_authorization_context(live, policy.task_type, workspace=query.run)
-                    != task_context
-                ):
-                    raise ValueError(DOWNLOAD_TURN_STALE)
-                if fulltext_binding_workspace(live, policy.task_type) != workspace:
-                    raise ValueError(DOWNLOAD_TURN_STALE)
-            except ValueError as error:
-                return JSONResponse({"ok": False, "error": str(error)}, HTTP_400_BAD_REQUEST)
-            return JSONResponse(payload)
-        assert download_turn is not None
-        _client_turn_id, _runtime_workdir, session_id, project_id = download_turn
+        if (
+            sessions.bridge_caller(live.id) is not live
+            or live.publication_turn_id != turn_id
+            or live.active_assistant_snapshot_id != snapshot_id
+            or getattr(live, "active_product_turn_id", "") != client_turn_id
+        ):
+            return JSONResponse({"ok": False, "error": "bridge_access_denied"}, HTTP_403_FORBIDDEN)
         try:
-            admitted = await admit_downloads(
-                scope,
-                tuple(
-                    DownloadEntry(
-                        paper.paper_id, storage="managed", ref=paper.ref, revision=paper.revision
-                    )
-                    for paper in outcome.papers
-                ),
-                session_id=session_id,
-                project_id=project_id,
-                activities=activities,
-            )
-            payload["admission"] = {"ok": not admitted.failures, **admitted.model_dump(mode="json")}
+            if (
+                verified_authorization_context(live, policy.task_type, workspace=query.run)
+                != task_context
+            ):
+                raise ValueError(DOWNLOAD_TURN_STALE)
+            if fulltext_binding_workspace(live, policy.task_type) != workspace:
+                raise ValueError(DOWNLOAD_TURN_STALE)
         except ValueError as error:
-            payload["admission"] = {"ok": False, "error": str(error), "papers": []}
-        return JSONResponse(payload)
+            return JSONResponse({"ok": False, "error": str(error)}, HTTP_400_BAD_REQUEST)
+        return JSONResponse(outcome.payload())
 
     app.include_router(router)
     return router

@@ -4,8 +4,42 @@ import {
   FEEDBACK_SCREENSHOT_MIME_TYPE,
   type FeedbackScreenshotResult,
 } from '../../../../feedback.ts'
+import type { NetworkTiming } from './model.ts'
 
 export const RECORDER_BODY_MAX_BYTES = 200
+
+export function networkTiming(
+  entries: readonly PerformanceResourceTiming[],
+  fetchCalledAt: number,
+  fetchSettledAt: number,
+  timeOrigin: number
+): NetworkTiming {
+  const candidates = entries.filter(
+    (entry) => entry.startTime >= fetchCalledAt && entry.startTime <= fetchSettledAt
+  )
+  const base = { timeOrigin, fetchCalledAt, fetchSettledAt }
+  if (candidates.length !== 1) {
+    return { ...base, state: candidates.length ? 'ambiguous' : 'unavailable' }
+  }
+  const entry = candidates[0]!
+  if (entry.requestStart <= 0 || entry.responseStart <= 0) {
+    return { ...base, state: 'restricted', startTime: entry.startTime }
+  }
+  return {
+    ...base,
+    state: 'available',
+    startTime: entry.startTime,
+    fetchStart: entry.fetchStart,
+    domainLookupStart: entry.domainLookupStart,
+    domainLookupEnd: entry.domainLookupEnd,
+    secureConnectionStart: entry.secureConnectionStart,
+    requestStart: entry.requestStart,
+    responseStart: entry.responseStart,
+    responseEnd: entry.responseEnd,
+    connectStart: entry.connectStart,
+    connectEnd: entry.connectEnd,
+  }
+}
 
 const encoder = new TextEncoder()
 const FILE_URL_BASE = 'http://localhost'

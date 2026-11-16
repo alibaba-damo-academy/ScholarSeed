@@ -14,13 +14,14 @@ from dataclasses import asdict, replace
 from pathlib import Path
 from time import time
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock, Mock, patch
 
 import scholarseed_codex.environment as environment_module
 import scholarseed_codex.executable as executable_module
 import scholarseed_codex.pool as pool_module
 import scholarseed_codex.provider as provider_module
-from scholarseed_codex.admission import NativeAdmission, NativeQuiescence
+from scholarseed_codex.admission import NativeAdmission, NativeQuiescence, RetiredExecutionAuthority
 from scholarseed_codex.attachment import ThreadAttachment
 from scholarseed_codex.capacity import (
     CODEX_HOST_START_FAILED,
@@ -91,6 +92,7 @@ from scholarseed_runtime.contract.inventory import (
 from scholarseed_runtime.contract.model import ModelIntent, ModelTransport
 from scholarseed_runtime.contract.provider import RuntimeOpenNotAppliedError
 from scholarseed_runtime.contract.resource import (
+    RESOURCE_CANCELLED,
     RESOURCE_HOST_BUSY,
     RESOURCE_HOST_CONFIGURATION_CONFLICT,
     RESOURCE_HOST_CONFIGURATION_UNCERTAIN,
@@ -260,66 +262,6 @@ class ModelConfigurationContracts(unittest.IsolatedAsyncioTestCase):
 
 
 class CapacityContracts(unittest.IsolatedAsyncioTestCase):
-    async def test_isolated_home_rejects_shared_sqlite_override(self) -> None:
-        pool = self.pool()
-        with patch.object(pool_module, "runtime_sqlite_home", return_value=Path.cwd()):
-            with self.assertRaises(AppServerError) as denied:
-                pool.prepare_home(isolated=True)
-        self.assertEqual(denied.exception.safe_error, pool_module.ISOLATED_STORAGE_CONFLICT)
-        self.assertFalse(self.hosts)
-
-    async def test_isolated_host_does_not_bypass_capacity_or_cancel_existing_owner(self) -> None:
-        pool = self.pool(execution_hosts=1)
-        shared = await pool.acquire(self.request("shared"))
-        home = str(Path(tempfile.gettempdir()) / "isolated-runtime")
-        request = replace(
-            self.request("isolated"),
-            isolation_scope=home,
-            process_environment={CODEX_HOME_ENV: home},
-        )
-        waiting = await pool.reserve(
-            request,
-            role=HostRole.EXECUTION,
-            request_id=request.request_id,
-            deadline=time() + TEST_WAIT_SECONDS,
-        )
-        self.assertEqual(waiting.state, ResourceState.WAITING)
-        self.assertEqual(len(self.hosts), 1)
-        with patch.object(pool, "release_home") as released:
-            await pool.cancel(waiting)
-        released.assert_called_once_with(Path(home))
-        self.assertFalse(self.hosts[0].closed)
-        self.assertEqual(self.capacity(pool).used, 1)
-        await shared.close()
-
-    async def test_isolated_hosts_keep_shared_host_and_close_independently(self) -> None:
-        pool = self.pool(execution_hosts=3)
-        shared = await pool.acquire(self.request("shared"))
-        first_home = str(Path(tempfile.gettempdir()) / "first-runtime")
-        second_home = str(Path(tempfile.gettempdir()) / "second-runtime")
-        first_request = replace(
-            self.request("first", "first"),
-            isolation_scope=first_home,
-            process_environment={CODEX_HOME_ENV: first_home},
-        )
-        second_request = replace(
-            self.request("second", "second"),
-            isolation_scope=second_home,
-            process_environment={CODEX_HOME_ENV: second_home},
-        )
-        first = await pool.acquire(first_request)
-        second = await pool.acquire(second_request)
-        self.assertEqual(len({shared.host_id, first.host_id, second.host_id}), 3)
-        self.assertEqual(self.capacity(pool).used, 3)
-        with self.assertRaises(AppServerError):
-            await pool.acquire(replace(first_request, request_id="conflict", cwd=Path.cwd()))
-        await first.close()
-        self.assertTrue(self.hosts[1].closed)
-        self.assertFalse(self.hosts[0].closed)
-        self.assertFalse(self.hosts[2].closed)
-        await second.close()
-        await shared.close()
-
     @contextmanager
     def warmup_provider(self):
         runtime = CodexRuntimeProvider()
@@ -639,6 +581,33 @@ class CapacityContracts(unittest.IsolatedAsyncioTestCase):
         replacement = await pool.acquire(self.request("same-config-recovery"))
         self.assertIsNot(first.host, replacement.host)
         self.assertEqual(self.capacity(pool).used, 1)
+        await replacement.close()
+
+    async def test_configuration_conflict_diagnostics_never_disclose_values(self) -> None:
+        pool = self.pool()
+        first = await pool.acquire(self.request("diagnostic-first", "private-original-value"))
+        await first.close()
+        self.assertTrue(await pool.release_idle())
+        with self.assertLogs(
+            f"{pool_module.RESOURCE_LIFECYCLE_LOGGER}.configuration", level="WARNING"
+        ) as captured:
+            rejected = await self.reserve(pool, "diagnostic-conflict", "private-changed-value")
+        self.assertIs(rejected.state, ResourceState.REJECTED)
+        self.assertEqual(rejected.safe_error, RESOURCE_HOST_CONFIGURATION_CONFLICT)
+        self.assertEqual(len(self.hosts), 1)
+        self.assertEqual(len(captured.records), 1)
+        diagnostic = json.loads(captured.records[0].getMessage().split(" ", 1)[1])
+        self.assertEqual(diagnostic["request_id"], "diagnostic-conflict")
+        self.assertEqual(diagnostic["changed_fields"], [f"environment.{TEST_HOST_ENV}"])
+        for private_value in (
+            "private-original-value",
+            "private-changed-value",
+            pool._execution_key[2],
+            str(self.request("path").cwd),
+        ):
+            self.assertNotIn(private_value, captured.output[0])
+        await pool.reset_execution_configuration("")
+        replacement = await pool.acquire(self.request("diagnostic-replacement", "next-value"))
         await replacement.close()
 
     async def test_provider_reconfiguration_serializes_close_target_and_old_prewarm(self) -> None:
@@ -1383,17 +1352,24 @@ class CapacityContracts(unittest.IsolatedAsyncioTestCase):
                     owner.host.close_gate.set()
                     await closing
 
-    async def test_retry_after_unsubscribe_failure_obeys_platform_host_retention(self) -> None:
-        for platform, retained in (("darwin", True), (WINDOWS_PLATFORM, False)):
+    async def test_retry_after_unsubscribe_failure_retains_shared_host_on_both_platforms(
+        self,
+    ) -> None:
+        for platform in ("darwin", WINDOWS_PLATFORM):
             with (
                 self.subTest(platform=platform),
-                patch("scholarseed_codex.thread.sys", SimpleNamespace(platform=platform)),
+                patch.object(sys, "platform", platform),
             ):
                 pool = self.pool()
                 request = replace(
                     self.request("unsubscribe-retry"), process_sharing_scope="fixture-owner"
                 )
-                reservation = await self.reserve(pool, request.request_id)
+                reservation = await pool.reserve(
+                    request,
+                    role=HostRole.EXECUTION,
+                    request_id=request.request_id,
+                    deadline=time() + TEST_TIMEOUT_SECONDS,
+                )
                 lease = await pool.consume(reservation)
                 host = lease.host
                 host.process_generation = host.readiness.process_generation
@@ -1418,16 +1394,15 @@ class CapacityContracts(unittest.IsolatedAsyncioTestCase):
                 )
                 receipt = await session.commit_suspend(ticket, TEST_WATERMARK)
                 self.assertEqual(receipt.state, SuspendState.RELEASED)
-                self.assertEqual(pool.snapshot()[0].used, int(retained))
-                expected_closes = int(not retained)
-                self.assertEqual(host.safe_close_calls, expected_closes)
+                self.assertEqual(pool.snapshot()[0].used, 1)
+                self.assertEqual(host.safe_close_calls, 0)
                 self.assertEqual(host.suspend_thread.await_count, 2)
                 self.assertIsNone(native.lease)
                 self.assertEqual(
                     (await session.commit_suspend(ticket, TEST_WATERMARK)).state,
                     SuspendState.RELEASED,
                 )
-                self.assertEqual(host.safe_close_calls, expected_closes)
+                self.assertEqual(host.safe_close_calls, 0)
                 self.assertTrue(await pool.release_idle())
                 self.assertEqual(pool.snapshot()[0].used, 0)
                 self.assertEqual(host.safe_close_calls, 1)
@@ -1489,7 +1464,7 @@ class CapacityContracts(unittest.IsolatedAsyncioTestCase):
         host.state = CodexProcessState.READY
         host.start = AsyncMock()
         host.aclose = AsyncMock()
-        host.request = AsyncMock(return_value={"status": "unsubscribed"})
+        host.request = AsyncMock(return_value={"status": "notLoaded"})
         host._emitter = SimpleNamespace(incident=AsyncMock())
 
         async def drain() -> None:
@@ -2678,21 +2653,187 @@ class CapacityContracts(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0)
         self.assertEqual(self.capacity(pool).used, 0)
 
-    async def test_reborrow_cancels_the_previous_idle_deadline(self) -> None:
+    async def test_shared_host_residence_does_not_schedule_process_idle_timeout(self) -> None:
         pool = self.pool()
-        first = await pool.acquire(self.request("idle-first"))
-        slot = first._reservation.slot
-        await first.close(safe=True, retain=True)
-        previous = slot.idle_timer
-        self.assertIsNotNone(previous)
-        second = await pool.acquire(self.request("idle-second"))
+        request = replace(self.request("idle-first"), process_sharing_scope="owner")
+        first = await pool.acquire(request)
+        loop = asyncio.get_running_loop()
+        with patch.object(loop, "call_later", wraps=loop.call_later) as call_later:
+            await first.close(safe=True, retain=True)
+        self.assertNotIn(
+            pool.policy.idle_seconds, [call.args[0] for call in call_later.call_args_list]
+        )
+        self.assertEqual(self.capacity(pool).used, 1)
+        second = await pool.acquire(replace(request, request_id="idle-second"))
         self.assertIs(second.host, first.host)
-        self.assertTrue(previous.cancelled())
-        self.assertIsNone(slot.idle_timer)
         await second.close(safe=True, retain=True)
-        self.assertIsNot(slot.idle_timer, previous)
-        self.assertFalse(slot.idle_timer.cancelled())
         self.assertTrue(await pool.release_idle())
+        self.assertEqual(cast(ControlledHost, first.host).safe_close_calls, 1)
+
+    async def test_suspending_does_not_retain_an_unreusable_host(self) -> None:
+        pool = self.pool()
+        request = replace(self.request("unreusable"), process_sharing_scope="owner")
+        lease = await pool.acquire(request)
+        host = cast(ControlledHost, lease.host)
+        host.reusable = False
+        await lease.close(safe=True, retain=True)
+        self.assertEqual(self.capacity(pool).used, 0)
+        self.assertEqual(host.safe_close_calls, 1)
+
+    async def test_resident_host_recovers_after_exit_only_on_demand(self) -> None:
+        pool = self.pool()
+        request = replace(self.request("before-exit"), process_sharing_scope="owner")
+        first = await pool.acquire(request)
+        await first.close(safe=True, retain=True)
+        host = cast(ControlledHost, first.host)
+        generation = host.readiness.process_generation
+        host.readiness.ready = False
+        with patch.object(
+            host,
+            "start",
+            AsyncMock(
+                side_effect=lambda: vars(host.readiness).update(
+                    ready=True, process_generation=generation + 1
+                )
+            ),
+        ) as start:
+            await asyncio.sleep(0)
+            start.assert_not_awaited()
+            second = await pool.acquire(replace(request, request_id="after-exit"))
+            start.assert_awaited_once()
+        self.assertIs(second.host, host)
+        self.assertEqual(second.host.readiness.process_generation, generation + 1)
+        await second.close(safe=True, retain=True)
+        self.assertTrue(await pool.release_idle())
+
+    async def test_retired_scope_fences_attached_work_and_safely_drains_only_its_host(self) -> None:
+        pool = self.pool()
+        request = replace(self.request("old-lease"), process_sharing_scope="old-login")
+        lease = await pool.acquire(request)
+        old_host = cast(ControlledHost, lease.host)
+        queued = await pool.reserve(
+            replace(request, request_id="old-reservation"),
+            role=HostRole.EXECUTION,
+            request_id="old-reservation",
+            deadline=time() + TEST_TIMEOUT_SECONDS,
+        )
+        async with old_host.admission.enter():
+            pool.retire_execution_scope(request.process_sharing_scope)
+            self.assertEqual(old_host.admission.active, 1)
+            self.assertFalse(await pool.release_idle())
+            self.assertEqual(old_host.close_calls, 0)
+            with self.assertRaises(AppServerError):
+                async with old_host.admission.enter():
+                    self.fail("retired host admitted new work")
+            with self.assertRaises(AppServerError):
+                await pool.consume(queued)
+            with self.assertRaises(AppServerError):
+                await pool.replace_execution_scope("new-login")
+
+        old_host.close_error = AppServerError(RUNTIME_SUSPEND_BUSY, safe_error=RUNTIME_SUSPEND_BUSY)
+        await lease.close()
+        self.assertFalse(await pool.release_idle())
+        self.assertEqual(old_host.safe_close_calls, old_host.close_calls)
+        self.assertEqual(self.capacity(pool).used, 1)
+
+        old_host.close_error = None
+        self.assertTrue(await pool.release_idle())
+        with self.assertRaises(AppServerError):
+            await pool.replace_execution_scope(request.process_sharing_scope)
+        await pool.replace_execution_scope("new-login")
+        new_lease = await pool.acquire(
+            replace(request, request_id="new-lease", process_sharing_scope="new-login")
+        )
+        await new_lease.close(safe=True, retain=True)
+        pool.retire_execution_scope(request.process_sharing_scope)
+        new_host = cast(ControlledHost, new_lease.host)
+        self.assertIsNot(new_host, old_host)
+        self.assertTrue(new_host.admission.accepting)
+        self.assertEqual(new_host.close_calls, 0)
+        self.assertEqual(self.capacity(pool).used, 1)
+
+    async def test_retirement_fences_immediately_but_serializes_reservation_cleanup(self) -> None:
+        pool = self.pool()
+        request = replace(self.request("attached"), process_sharing_scope="old-login")
+        lease = await pool.acquire(request)
+        reservation = await pool.reserve(
+            replace(request, request_id="pending"),
+            role=HostRole.EXECUTION,
+            request_id="pending",
+            deadline=time() + TEST_TIMEOUT_SECONDS,
+        )
+        async with pool._lock:
+            pool.retire_execution_scope(request.process_sharing_scope)
+            with self.assertRaises(RetiredExecutionAuthority):
+                pool.authorize_scope(request.process_sharing_scope)
+            with self.assertRaises(RetiredExecutionAuthority):
+                async with lease.host.admission.enter():
+                    self.fail("retired host admitted work while pool cleanup waited")
+            self.assertEqual(reservation.state, ResourceState.GRANTED)
+            self.assertFalse(reservation.settled.done())
+        with self.assertRaises(AppServerError) as rejected:
+            await pool.consume(reservation)
+        self.assertEqual(rejected.exception.safe_error, RESOURCE_CANCELLED)
+        settled = await asyncio.wait_for(asyncio.shield(reservation.settled), TEST_TIMEOUT_SECONDS)
+        self.assertEqual(settled, ResourceState.REJECTED)
+        await lease.close()
+        self.assertTrue(await pool.release_idle())
+
+    async def test_retired_authorities_survive_handover_and_are_released_on_shutdown(self) -> None:
+        pool = self.pool()
+        for scope in ("first-login", "second-login"):
+            await pool.replace_execution_scope(scope)
+            pool.retire_execution_scope(scope)
+        await pool.replace_execution_scope("current-login")
+        for scope in ("first-login", "second-login"):
+            with self.assertRaises(RetiredExecutionAuthority):
+                await pool.replace_execution_scope(scope)
+        self.assertTrue(pool._retired_authorities)
+        await pool.aclose()
+        self.assertFalse(pool._retired_authorities)
+        with self.assertRaises(AppServerError) as rejected:
+            pool.authorize_scope("current-login")
+        self.assertEqual(rejected.exception.safe_error, RESOURCE_CANCELLED)
+
+    async def test_retiring_an_idle_scope_keeps_physical_lease_until_native_exit(self) -> None:
+        pool = self.pool()
+        request = replace(self.request("resident-logout"), process_sharing_scope="old-login")
+        lease = await pool.acquire(request)
+        host = cast(ControlledHost, lease.host)
+        await lease.close(safe=True, retain=True)
+        host.close_gate.clear()
+        try:
+            pool.retire_execution_scope(request.process_sharing_scope)
+            await asyncio.wait_for(host.close_entered.wait(), TEST_TIMEOUT_SECONDS)
+            self.assertEqual(host.safe_close_calls, 1)
+            self.assertEqual(self.capacity(pool).used, 1)
+        finally:
+            host.close_gate.set()
+        self.assertTrue(await pool.release_idle())
+        self.assertEqual(self.capacity(pool).used, 0)
+
+    async def test_logout_while_probing_readiness_cannot_grant_the_revoked_request(self) -> None:
+        pool = self.pool()
+        request = replace(self.request("probe-logout"), process_sharing_scope="old-login")
+        entered = asyncio.Event()
+        released = asyncio.Event()
+        readiness = await pool.probe_readiness(request.executable)
+
+        async def gated_probe(*args, **kwargs):
+            entered.set()
+            await released.wait()
+            return readiness
+
+        with patch.object(pool, "probe_readiness", side_effect=gated_probe):
+            pending = asyncio.create_task(pool.acquire(request))
+            try:
+                await asyncio.wait_for(entered.wait(), TEST_TIMEOUT_SECONDS)
+                pool.retire_execution_scope(request.process_sharing_scope)
+            finally:
+                released.set()
+            with self.assertRaises(AppServerError):
+                await pending
+        self.assertFalse(self.hosts)
 
     async def test_native_windows_launch_arguments_select_the_startup_budget(self) -> None:
         pool = self.pool()
@@ -2979,14 +3120,14 @@ class PoolProbeOwnershipContracts(unittest.TestCase):
 
 
 class CapacityPolicyContracts(unittest.TestCase):
-    def test_only_windows_provider_refreshes_execution_before_turn(self) -> None:
+    def test_provider_reuses_attachments_before_turn_on_all_platforms(self) -> None:
         provider = CodexRuntimeProvider()
-        for platform, refresh in (("win32", True), ("darwin", False), ("linux", False)):
+        for platform in ("win32", "darwin", "linux"):
             with (
                 self.subTest(platform=platform),
                 patch.object(sys, "platform", platform),
             ):
-                self.assertIs(provider.resource_policy.refresh_before_turn, refresh)
+                self.assertIs(provider.resource_policy.refresh_before_turn, False)
 
     def test_process_hosts_have_no_default_numeric_limit(self) -> None:
         policy = CapacityPolicy()
@@ -4582,6 +4723,45 @@ class OpeningContracts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(caught.exception.safe_error, failure.safe_error)
         self.assertIs(caught.exception.__cause__, failure)
         session.detach.assert_awaited_once()
+
+    async def test_preflight_negative_proof_waits_for_resource_cleanup(self):
+        runtime, request, session, reservation = self.prepared_open()
+        failure = AppServerError(
+            "sandbox preflight failed", safe_error="windows_sandbox_password_policy_rejected"
+        )
+        failure.thread_open_not_applied = True
+        session.open.side_effect = failure
+        reservation.slot = object()
+        entered, finish = asyncio.Event(), asyncio.Event()
+
+        async def detach():
+            entered.set()
+            await finish.wait()
+            reservation.slot = None
+
+        session.detach.side_effect = detach
+        task = asyncio.create_task(runtime.open(request))
+        await asyncio.wait_for(entered.wait(), TEST_TIMEOUT_SECONDS)
+        self.assertFalse(task.done())
+        finish.set()
+        with self.assertRaises(RuntimeOpenNotAppliedError) as raised:
+            await task
+        self.assertEqual(raised.exception.reservation_id, request.reservation_id)
+        self.assertEqual(raised.exception.safe_error, failure.safe_error)
+        self.assertIs(raised.exception.__cause__, failure)
+
+    async def test_preflight_proof_does_not_survive_incomplete_cleanup(self):
+        for cleanup_failure in (None, OSError("detach failed"), asyncio.CancelledError()):
+            with self.subTest(cleanup_failure=cleanup_failure):
+                runtime, request, session, reservation = self.prepared_open()
+                failure = AppServerError("sandbox preflight failed")
+                failure.thread_open_not_applied = True
+                session.open.side_effect = failure
+                reservation.slot = object()
+                session.detach.side_effect = cleanup_failure
+                with self.assertRaises(BaseException) as raised:
+                    await runtime.open(request)
+                self.assertNotIsInstance(raised.exception, RuntimeOpenNotAppliedError)
 
     async def test_open_errors_and_cancellation_are_not_negative_proof(self):
         for at_open, failure in (

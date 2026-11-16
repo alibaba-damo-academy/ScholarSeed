@@ -1,10 +1,12 @@
 import { createContext, useContext, useSyncExternalStore } from 'react'
+import { selectionLocator } from './reveal.ts'
 
 import {
   FIND_TEXT_REVEAL_KIND,
   type ContentKind,
   type FindTextReveal,
   type SelectionAnchor,
+  type SelectionReveal,
   type SessionFileSource,
   type ViewerKind,
 } from '../../contracts/workbench.ts'
@@ -126,6 +128,24 @@ export function documentNavigationView(
 }
 
 export const DOCUMENT_TEXT_REVEAL_VIEW_STATE_KEY = 'documentTextReveal' as const
+export const DOCUMENT_SELECTION_REVEAL_KEY = 'documentSelectionReveal' as const
+
+export interface SelectionRevealState extends SelectionReveal {
+  sequence: number
+}
+
+export function documentSelectionReveal(
+  tab: DocumentTab | null | undefined
+): SelectionRevealState | undefined {
+  const value = tab?.viewState?.[DOCUMENT_SELECTION_REVEAL_KEY] as SelectionRevealState | undefined
+  return value &&
+    Number.isSafeInteger(value.sequence) &&
+    value.sequence > 0 &&
+    typeof value.text === 'string' &&
+    selectionLocator(value.locator)
+    ? value
+    : undefined
+}
 
 export interface DocumentTextRevealState extends FindTextReveal {
   sequence: number
@@ -178,6 +198,7 @@ export interface SelectionViewport {
   rect: ViewportRect
   point: ViewportPoint
   visible?: boolean
+  boundary?: Pick<ViewportRect, 'left' | 'right' | 'top' | 'bottom'>
 }
 
 /**
@@ -635,6 +656,36 @@ export class DocumentWorkspace {
     const navigation = this.documentNavigation.then(() => this.navigateText(source, reveal, title))
     this.documentNavigation = navigation.catch(() => undefined)
     return navigation
+  }
+
+  clearSelectionReveal(tabId: string): void {
+    const tab = this.state.tabs[tabId]
+    if (!tab?.viewState || !documentSelectionReveal(tab)) return
+    const viewState = { ...tab.viewState }
+    delete viewState[DOCUMENT_SELECTION_REVEAL_KEY]
+    this.setTabViewState(tabId, viewState)
+  }
+
+  revealSelection(tabId: string, reveal: SelectionReveal): void {
+    const tab = this.state.tabs[tabId]
+    const session = tab && this.state.sessions[tab.sessionId]
+    if (!tab || !session || session.loadState !== 'ready') throw new Error('source_unavailable')
+    if (
+      reveal.sourceRevision &&
+      reveal.sourceRevision.replace(/^sha256:/, '') !== session.revision.replace(/^sha256:/, '')
+    )
+      throw new Error('source_revision_changed')
+    const previous = documentSelectionReveal(tab)
+    console.info('[selection-reveal]', {
+      viewer: session.viewer,
+      kind: reveal.locator.kind,
+      sequence: (previous?.sequence ?? 0) + 1,
+    })
+    this.focusTab(tabId)
+    this.setTabViewState(tabId, {
+      ...tab.viewState,
+      [DOCUMENT_SELECTION_REVEAL_KEY]: { ...reveal, sequence: (previous?.sequence ?? 0) + 1 },
+    })
   }
 
   private async navigateText(
@@ -1719,9 +1770,15 @@ export class DocumentWorkspace {
     const changeVersion = session.changeVersion
     const documentId = session.documentId
     const loaded = await this.loader.load(session.source)
-    if (isDocumentLoadFailure(loaded)) return false
     const current = this.state.sessions[sessionId]
     if (!current || current.documentId !== documentId) return false
+    if (isDocumentLoadFailure(loaded)) {
+      this.publish({
+        ...this.state,
+        sessions: { ...this.state.sessions, [sessionId]: { ...current, loadFailure: loaded } },
+      })
+      return false
+    }
     if (current.dirty) {
       this.markConflict(sessionId)
       return false
@@ -1975,6 +2032,7 @@ export class DocumentWorkspace {
         rect: viewport.rect,
         point: viewport.point,
         visible: viewport.visible,
+        boundary: viewport.boundary,
       }
     }
     this.publish({

@@ -1,6 +1,4 @@
 import assert from 'node:assert/strict'
-import { createRequire } from 'node:module'
-import type { DomainNative } from '../../native/domains.cjs'
 import { test } from 'node:test'
 import {
   existsSync,
@@ -9,13 +7,12 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
-  readdirSync,
   rmSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { migrateLegacyHome, transferLegacyHome } from './legacy.ts'
+import { transferLegacyHome } from './legacy.ts'
 
 function homes(): { root: string; source: string; target: string } {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'ss-legacy-')))
@@ -87,55 +84,6 @@ for (const interrupted of ['copy', 'publication', 'source changed'] as const) {
       assert.equal(existsSync(stage), false)
       assert.equal(readFileSync(join(target, 'config.json'), 'utf8'), '{"owned":true}')
       assert.equal(readFileSync(join(source, 'config.json'), 'utf8'), '{"owned":true}')
-    } finally {
-      rmSync(root, { recursive: true, force: true })
-    }
-  })
-}
-
-for (const mode of [
-  'normal',
-  'interrupted retirement',
-  'new source file',
-  'missing destination',
-] as const) {
-  test(`native legacy retirement: ${mode}`, async (t) => {
-    const library = process.env.SCHOLARSEED_LEASE_LIBRARY
-    if (!library) return t.skip('actual compiled directory library required')
-    const native = createRequire(import.meta.url)(library) as DomainNative
-    const { root, source, target } = homes()
-    const coordinator = join(root, 'coordinator')
-    try {
-      if (mode !== 'normal') transferLegacyHome(source, target)
-      if (mode === 'interrupted retirement') rmSync(join(source, 'config.json'))
-      if (mode === 'new source file') {
-        writeFileSync(join(source, 'new-user-file'), 'must survive')
-        await assert.rejects(
-          migrateLegacyHome(native, coordinator, source, target),
-          /source changed/
-        )
-        assert.equal(readFileSync(join(source, 'new-user-file'), 'utf8'), 'must survive')
-        assert.equal(existsSync(join(source, 'config.json')), true)
-        return
-      }
-      if (mode === 'missing destination') {
-        rmSync(join(target, 'nested', 'document.txt'))
-        await assert.rejects(migrateLegacyHome(native, coordinator, source, target))
-        assert.equal(readFileSync(join(source, 'nested', 'document.txt'), 'utf8'), 'user document')
-        assert.equal(existsSync(join(source, 'config.json')), true)
-        return
-      }
-      const result = await migrateLegacyHome(native, coordinator, source, target)
-      assert.equal(result?.retired, mode === 'normal' ? 2 : 1)
-      assert.deepEqual(readdirSync(source), [])
-      assert.equal(readFileSync(join(target, 'nested', 'document.txt'), 'utf8'), 'user document')
-      assert.equal(
-        JSON.parse(readFileSync(join(target, '.desktop-legacy-migration.json'), 'utf8')).phase,
-        'retired'
-      )
-      writeFileSync(join(target, 'config.json'), 'new active settings')
-      assert.equal(await migrateLegacyHome(native, coordinator, source, target), null)
-      assert.equal(readFileSync(join(target, 'config.json'), 'utf8'), 'new active settings')
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

@@ -1,4 +1,4 @@
-"""Agent-facing CLI for scoped ScholarSeed product capabilities."""
+"""Compatibility CLI for host-authenticated scoped ScholarSeed capabilities."""
 
 from __future__ import annotations
 
@@ -16,6 +16,8 @@ from service.platform.bridge import (
     BRIDGE_COMMAND,
     BRIDGE_REQUESTS,
     COMPONENT_CAPABILITY,
+    GENERATION_CAPABILITY,
+    GENERATION_RUN_OPERATION,
     HISTORY_REQUESTS,
     LITERATURE_REQUESTS,
     PDF_REQUESTS,
@@ -24,7 +26,13 @@ from service.platform.bridge import (
     DisplayCard,
     TaskActivate,
 )
-from service.platform.channel import BridgeResponseError, decode, request
+from service.platform.channel import (
+    BRIDGE_CONTEXT_RECOVERY,
+    BRIDGE_CONTEXT_UNAVAILABLE,
+    BridgeResponseError,
+    decode,
+    request,
+)
 
 EXIT_FAILURE = 1
 
@@ -32,7 +40,11 @@ EXIT_FAILURE = 1
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(
         prog=BRIDGE_COMMAND,
-        description="书深 Agent 内部作用域接口。可查询会话历史和当前项目资料、登记文件产物或展示业务卡片。",
+        description=(
+            "宿主已提供认证作用域的兼容 CLI；普通 Agent 使用 scholarseed_bridge 模型工具。"
+            "CLI 不提供模型 callback 身份；不要复制凭据。 "
+            "Host-authenticated compatibility CLI; Agents use the scholarseed_bridge model tool."
+        ),
     )
     groups = root.add_subparsers(dest="capability")
     history = groups.add_parser(
@@ -57,7 +69,11 @@ def parser() -> argparse.ArgumentParser:
     publish = artifact_verbs.add_parser(
         "publish",
         help="登记一个已写入当前会话工作目录的文件",
-        description="登记一个已写入当前会话工作目录的文件，并在回答中展示产物卡片。",
+        description=(
+            "登记一个已写入当前会话工作目录的文件，并在回答中展示产物卡片。"
+            "CLI仅适用于宿主已提供桥接上下文的终端；Agent终端不提供该上下文时，"
+            "请改用 scholarseed_bridge 模型工具，不要复制凭据或反复重试CLI。"
+        ),
     )
     publish.add_argument(
         "--json",
@@ -114,16 +130,6 @@ def parser() -> argparse.ArgumentParser:
             "run 目录不是真源，阅读前必须以本命令的返回为准。"
             '示例：--json \'{"run":"<run 相对会话工作目录>"}\'。'
         ),
-        "delivery": (
-            "冻结当前 run 实际获取的全文批次并显示产品保存弹框；不指定目录，不等同于保存成功。"
-            '示例：--json \'{"run":"<run 相对会话工作目录>"}\'。'
-        ),
-        "ingest": (
-            "将本轮已获准下载的论文入库并关联当前项目，展示可打开全文的文献卡；"
-            "读取 run 清单、校验 PDF 与题录，同一次重试不重复入库；"
-            "大结果按 next_cursor 传回 cursor 续页，只读已保存回执。"
-            '示例：--json \'{"run":"<run 相对会话工作目录>"}\'。'
-        ),
         ANNOTATIONS_OPERATION: (
             "分页读取当前项目或全局文献中的用户标注和阅读笔记；这些内容不是 PDF 引用证据。"
             '示例：--json \'{"ref_id":"literature:<id>","limit":10}\'。'
@@ -132,6 +138,7 @@ def parser() -> argparse.ArgumentParser:
             "读取指定精准检索 run 的结果、来源和报告；checkpoint=selection 会等待产品授权决策，不执行检索或下载。"
             "checkpoint=final 会校验已完成的 run，并发布最终报告及其支撑报告。"
             "研究想法任务可对 agentic-search 结果目录使用 checkpoint=candidates，展示候选并等待授权决策。"
+            "checkpoint=citations 从想法目录发布实际引用子集，复用检索结果入口，不发起或改变全文授权。"
         ),
         "review": "读取综述工作区标准产物并发布阶段快照；retrieval 会等待产品授权决策。",
     }
@@ -156,6 +163,8 @@ def parser() -> argparse.ArgumentParser:
             "import": "按用户明确要求将已发布会话文件导入资料库，并保留会话关联。",
             "list": "列出当前会话项目的资料库文件；返回 cursor 可用于续页。",
             "read": "读取当前会话项目资料库或关联根中的一段文件内容。",
+            "read-text": "解析项目文件正文；失败项等待用户重试或移除，其余材料保留。",
+            "read-external": "Read one external file through task-scoped approval; never grants directory or write access.",
         }[name]
         command = resource_verbs.add_parser(
             name,
@@ -181,6 +190,22 @@ def parser() -> argparse.ArgumentParser:
         command.add_argument("--json", required=True, help="查询、引擎与结果数量；身份由宿主提供")
         command.epilog = json.dumps(entry.request_type.model_json_schema(), ensure_ascii=False)
     search.set_defaults(capability_parser=search)
+    generation = groups.add_parser(
+        GENERATION_CAPABILITY, help="使用当前会话的模型连接执行一次独立结构化生成"
+    )
+    generation_verbs = generation.add_subparsers(dest="operation")
+    generation_entry = BRIDGE_REQUESTS[(GENERATION_CAPABILITY, GENERATION_RUN_OPERATION)]
+    generate = generation_verbs.add_parser(
+        GENERATION_RUN_OPERATION, description=generation_entry.guidance
+    )
+    generate.add_argument(
+        "--json", required=True, help="会话内输入文件、新输出文件和唯一请求 ID；模型身份由宿主绑定"
+    )
+    generate.epilog = json.dumps(
+        generation_entry.request_type.model_json_schema(), ensure_ascii=False
+    )
+    generation.set_defaults(capability_parser=generation)
+
     history.set_defaults(capability_parser=history)
     artifact.set_defaults(capability_parser=artifact)
     task = groups.add_parser("task", help="激活当前 turn 的已验证产品任务身份")
@@ -199,8 +224,8 @@ def parser() -> argparse.ArgumentParser:
         required=True,
         help=(
             "请求 JSON。示例："
-            '\'{"type":"literature-references",'
-            '"content":{"path":"research_ideas/topic/references.json"}}\''
+            '\'{"type":"next-steps",'
+            '"content":{"data":{"title":"Next","options":[{"label":"Continue"}]}}}\''
         ),
     )
     display_card.epilog = json.dumps(DisplayCard.model_json_schema(), ensure_ascii=False)
@@ -245,6 +270,8 @@ def main(argv: list[str] | None = None) -> int:
         result = error.payload
     except (ValueError, TypeError) as error:
         result = {"ok": False, "error": str(error)}
+        if str(error) == BRIDGE_CONTEXT_UNAVAILABLE:
+            result["next_action"] = BRIDGE_CONTEXT_RECOVERY
     print(json.dumps(result, ensure_ascii=False))
     return 0 if result.get("ok") else EXIT_FAILURE
 

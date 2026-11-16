@@ -80,7 +80,7 @@ def check_report(
     if (
         not isinstance(value, dict)
         or set(value) != fields
-        or type(value["version"]) is not int
+        or (not isinstance(value["version"], int) or isinstance(value["version"], bool))
         or value["version"] != 1
     ):
         raise ValueError("invalid Desktop report")
@@ -101,7 +101,7 @@ def check_report(
         if not isinstance(owner, str) or owner not in inputs or owner in seen:
             raise ValueError("invalid Desktop reader identity")
         data = inputs[owner]
-        if type(row["present"]) is not bool or row["present"] != (data is not None):
+        if not isinstance(row["present"], bool) or row["present"] != (data is not None):
             raise ValueError("Desktop source presence changed")
         if row["sourceDigest"] != hashlib.sha256(b"absent" if data is None else data).hexdigest():
             raise ValueError("Desktop source bytes changed")

@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 from scholarseed_runtime.contract.inventory import SkillAvailability, SkillInventory, SkillView
 from service.capabilities.service.candidates import Candidates
@@ -18,6 +20,16 @@ from service.capabilities.service.skills import SkillCatalog, SkillPresentation,
 
 
 class CandidateContract(unittest.TestCase):
+    def test_preview_missing_snapshot_is_not_a_dependency_change(self):
+        report = self.store.check(self.payload)
+        candidate = self.store.get(report["candidate"], report["sha256"])
+        self.assertEqual(
+            self.store.preview(report["candidate"], report["sha256"]), candidate.snapshot
+        )
+        with patch.object(self.store, "get", return_value=replace(candidate, snapshot=None)):
+            with self.assertRaisesRegex(ValueError, "^plugin_candidate_snapshot_missing$"):
+                self.store.preview(report["candidate"], report["sha256"])
+
     def test_delivery_reconciles_unknown_without_overwriting_another_revision(self):
         report = {
             "fingerprint": "one",
@@ -234,6 +246,37 @@ class CandidateContract(unittest.TestCase):
         report = constrained.check(self.payload)
         self.assertFalse(report["valid"])
         self.assertNotIn("candidate", report)
+
+    def test_installed_host_mismatch_only_warns_for_bundled(self):
+        package = read_package(self.payload)
+        origin = {"kind": PLUGIN_ORIGIN_KIND, "fingerprint": package.fingerprint, "grants": []}
+        user = install_skill_archive(self.payload, self.root / "installed", origin=origin)
+        bundled = install_skill_archive(self.payload, self.root / "bundled")
+        with self.assertRaisesRegex(ValueError, "plugin_contract_incompatible"):
+            installed_snapshot(user.path, host_version="0.1.0", capabilities=())
+        with self.assertLogs("service.capabilities.service.plugins", level="WARNING") as logs:
+            snapshot = installed_snapshot(
+                bundled.path, host_version="0.1.0", capabilities=(), bundled=True
+            )
+        self.assertIn("host_incompatible", logs.output[0])
+        self.assertEqual(snapshot["fingerprint"], package.fingerprint)
+        (bundled.path / "SKILL.md").write_text("changed bytes")
+        with self.assertRaisesRegex(ValueError, "file integrity mismatch"):
+            installed_snapshot(bundled.path, host_version="0.1.0", capabilities=(), bundled=True)
+
+    def test_bundled_host_mismatch_does_not_waive_missing_capability(self):
+        source = self.root / "source"
+        descriptor_path = source / PLUGIN_DESCRIPTOR
+        descriptor = json.loads(descriptor_path.read_text())
+        descriptor["capabilities"] = ["skills.list"]
+        descriptor_path.write_text(json.dumps(descriptor))
+        archive = self.root / "requires-capability.zip"
+        pack_skill(
+            source, archive, expected_name="candidate-test", version="0.1.0", dependencies={}
+        )
+        bundled = install_skill_archive(archive.read_bytes(), self.root / "bundled")
+        with self.assertRaisesRegex(ValueError, "plugin_contract_incompatible"):
+            installed_snapshot(bundled.path, host_version="0.1.0", capabilities=(), bundled=True)
 
     def test_repeated_check_reuses_immutable_candidate(self):
         first = self.store.check(self.payload)

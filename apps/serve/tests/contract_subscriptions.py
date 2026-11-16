@@ -5,12 +5,16 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import os
 import socket
 import sqlite3
 import ssl
 import tempfile
+import threading
 import time
 import unittest
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -49,7 +53,7 @@ from service.platform.inference import (
 from service.settings.catalog import DEEPRD_GATEWAY_BASE_URL
 from service.settings.connections import ModelProfileStore, UnknownProfileError, personal_model_key
 from service.settings.credentials import CredentialState, ModelCredentialStore, OAuthTokens
-from service.settings.oauth import CHATGPT_PROVIDER, OAuthFailure
+from service.settings.oauth import CHATGPT_PROVIDER, OAuthFailure, OAuthProvider
 from tests.siwc import ISSUER, JWK
 
 OWNER = "owner"
@@ -74,6 +78,44 @@ UPSTREAM_MODELS_PAYLOAD = {
 
 
 class SubscriptionContract(unittest.IsolatedAsyncioTestCase):
+    async def test_visibility_during_drain_is_rejected_before_writing(self):
+        connection = await self.connected()
+        before = self.profiles.profile(connection, owner_id=OWNER)["selected_models"]
+        generation = self.activities.begin()
+        try:
+            with self.assertRaises(MaintenanceActive):
+                await self.models.set_model_hidden(connection, MODEL, True, user_id=OWNER)
+            self.assertEqual(
+                self.profiles.profile(connection, owner_id=OWNER)["selected_models"], before
+            )
+        finally:
+            self.activities.resume(generation)
+
+    async def test_visibility_admitted_before_drain_finishes_with_selection(self):
+        connection = await self.connected()
+        entered, release = asyncio.Event(), asyncio.Event()
+        selection = self.models._selection
+
+        async def delayed_selection(*, user_id=""):
+            entered.set()
+            await release.wait()
+            return await selection(user_id=user_id)
+
+        with patch.object(self.models, "_selection", side_effect=delayed_selection):
+            task = asyncio.create_task(
+                self.models.set_model_hidden(connection, MODEL, True, user_id=OWNER)
+            )
+            await entered.wait()
+            generation = self.activities.begin()
+            try:
+                release.set()
+                result = await task
+                profile = next(p for p in result["profiles"] if p["id"] == connection)
+                self.assertTrue(profile["selected_models"][0]["hidden"])
+            finally:
+                release.set()
+                self.activities.resume(generation)
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
@@ -350,6 +392,56 @@ class SubscriptionContract(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(item["content"][0]["encrypted_content"], "opaque")
                 self.assertIs(payload["input"][0], item)
 
+    async def test_delete_and_readd_reuses_registration_without_copying_tokens(self):
+        connection = await self.connected()
+        with patch("service.chat.service.models.load_builtin_work_config", return_value={}):
+            await self.models.delete_profile(connection, user_id=OWNER)
+        new = (await self.models.save_profile(self.values, user_id=OWNER))["profile"]["id"]
+        self.assertNotEqual(connection, new)
+        choices = self.subscriptions.registrations(OWNER, new)["registrations"]
+        self.assertEqual([choice["id"] for choice in choices], [connection])
+        self.subscriptions.claim_registration(OWNER, new, connection)
+        self.assertEqual(self.subscriptions.registrations(OWNER, new)["registrations"], [])
+        self.assertTrue(self.subscriptions.status(OWNER, new)["registered"])
+        start = await self.subscriptions.login(OWNER, new)
+        self.assertIn("client_id=oaiapp_contract", start["authorization_url"])
+        self.assertNotIn("dynamic_agent_client", start["authorization_url"])
+        self.assertIsNone(self.credentials.read(OWNER, new).tokens)
+
+    async def test_delete_receipt_does_not_depend_on_model_catalog(self):
+        connection = await self.connected()
+        with patch.object(
+            self.models, "catalog", side_effect=MaintenanceActive("update_maintenance")
+        ):
+            result = await self.models.delete_profile(connection, user_id=OWNER)
+        self.assertNotIn(connection, [item["id"] for item in result["profiles"]])
+        self.assertIsNone(self.profiles.profile(connection, owner_id=OWNER))
+        self.assertIsNone(self.credentials.read(OWNER, connection).tokens)
+
+    async def test_toggle_receipt_does_not_depend_on_model_catalog(self):
+        connection = await self.connected()
+        with patch.object(
+            self.models, "catalog", side_effect=MaintenanceActive("update_maintenance")
+        ):
+            for enabled in (False, True):
+                result = await self.models.set_profile_enabled(connection, enabled, user_id=OWNER)
+                profile = next(item for item in result["profiles"] if item["id"] == connection)
+                self.assertEqual(profile["enabled"], enabled)
+                self.assertEqual(
+                    self.profiles.profile(connection, owner_id=OWNER)["enabled"], enabled
+                )
+
+    async def test_deleted_profile_returns_remote_revocation_warning(self):
+        connection = await self.connected()
+        self.subscriptions.resolvers["chatgpt"].protocol.revoke.side_effect = OAuthFailure(
+            "oauth_revocation_unconfirmed"
+        )
+        with patch("service.chat.service.models.load_builtin_work_config", return_value={}):
+            result = await self.models.delete_profile(connection, user_id=OWNER)
+        self.assertEqual(result["warning"], "oauth_revocation_unconfirmed")
+        self.assertIsNone(self.profiles.profile(connection, owner_id=OWNER))
+        self.assertIsNone(self.credentials.read(OWNER, connection).tokens)
+
     async def test_remote_revocation_failure_keeps_local_disconnect(self):
         connection = await self.connected()
         self.subscriptions.resolvers["chatgpt"].protocol.revoke.side_effect = OAuthFailure(
@@ -361,6 +453,10 @@ class SubscriptionContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(record.state, CredentialState.DISCONNECTED)
         self.assertIsNone(record.tokens)
         self.assertEqual(record.client_id, "oaiapp_contract")
+        self.assertTrue(record.revocation_unconfirmed)
+        # A second click must not claim remote success after the token was erased.
+        with self.assertRaisesRegex(OAuthFailure, "oauth_revocation_unconfirmed"):
+            await self.subscriptions.disconnect(OWNER, connection)
 
     async def test_runtime_catalog_reuses_full_configuration_for_three_hours(self):
         connection = await self.connected()
@@ -443,22 +539,93 @@ class SubscriptionContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.requests), 1)
         self.assertEqual(self.requests[0].headers["authorization"], "Bearer new-access")
 
-    async def test_default_subscription_client_inherits_environment_proxy(self):
+    async def test_borrowed_subscription_client_keeps_caller_lifecycle(self):
         client = httpx.AsyncClient(
             transport=httpx.MockTransport(lambda request: httpx.Response(200, json={"models": []}))
         )
         bridge = CompletionBridge("http://127.0.0.1:8771")
-        with patch(
-            "service.chat.service.subscriptions.httpx.AsyncClient", return_value=client
-        ) as create:
-            subscriptions = SubscriptionService(
-                self.profiles, self.credentials, bridge, activities=Activities()
-            )
-        try:
-            self.assertIs(subscriptions.client, client)
-            self.assertIs(create.call_args.kwargs["trust_env"], True)
-        finally:
-            await subscriptions.close()
+        subscriptions = SubscriptionService(
+            self.profiles, self.credentials, bridge, activities=Activities(), client=client
+        )
+        self.assertIs(subscriptions.client, client)
+        await subscriptions.close()
+        self.assertTrue(client.is_closed)
+
+    async def test_default_egress_observes_proxy_changes_mid_session(self):
+        proxy_hits: list[str] = []
+        issuer_hits: list[str] = []
+        issuer_url = ""
+
+        class Proxy(BaseHTTPRequestHandler):
+            def do_GET(self):
+                proxy_hits.append(self.path)
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                with opener.open(self.path, timeout=5) as upstream:
+                    body, status = upstream.read(), upstream.status
+                self.send_response(status)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        class Issuer(BaseHTTPRequestHandler):
+            def do_GET(self):
+                issuer_hits.append(self.path)
+                body = json.dumps({"issuer": issuer_url, "jwks_uri": issuer_url + "/jwks"}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        proxy_server = ThreadingHTTPServer(("127.0.0.1", 0), Proxy)
+        issuer_server = ThreadingHTTPServer(("127.0.0.1", 0), Issuer)
+        issuer_url = f"http://127.0.0.1:{issuer_server.server_address[1]}"
+        for server in (proxy_server, issuer_server):
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            self.addCleanup(server.server_close)
+            self.addCleanup(server.shutdown)
+        provider = OAuthProvider(
+            id="chatgpt", label="ChatGPT", issuer=issuer_url, client_id="client", scopes=("openid",)
+        )
+        proxy_keys = (
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+            "NO_PROXY",
+            "no_proxy",
+        )
+        with patch.dict(os.environ):
+            for key in proxy_keys:
+                os.environ.pop(key, None)
+            with patch.dict(
+                "service.chat.service.subscriptions.OAUTH_PROVIDERS", {"chatgpt": provider}
+            ):
+                subscriptions = SubscriptionService(
+                    self.profiles,
+                    self.credentials,
+                    CompletionBridge("http://127.0.0.1:8771"),
+                    activities=Activities(),
+                )
+                self.addAsyncCleanup(subscriptions.close)
+                protocol = subscriptions.resolvers["chatgpt"].protocol
+                os.environ["HTTP_PROXY"] = f"http://127.0.0.1:{proxy_server.server_address[1]}"
+                document = await protocol._discovery()
+                self.assertEqual(document["issuer"], issuer_url)
+                self.assertEqual(len(proxy_hits), 1)
+                self.assertEqual(issuer_hits, ["/.well-known/openid-configuration"])
+                del os.environ["HTTP_PROXY"]
+                await protocol._discovery()
+                self.assertEqual(len(proxy_hits), 1)
+                self.assertEqual(len(issuer_hits), 2)
 
     async def test_suspended_subscription_reference_restores_the_child_endpoint(self):
         connection = await self.connected()
@@ -1542,6 +1709,130 @@ class SubscriptionContract(unittest.IsolatedAsyncioTestCase):
             actual["models"][0]["provider_extension"]["future"].append(4)
             self.assertEqual(changed["models"][0]["provider_extension"], {"future": [1, 2, 3]})
 
+    async def test_catalog_validation_logs_distinct_reasons_without_payload_or_secrets(self):
+        connection = await self.connected()
+        session = "catalog-diagnostic-session"
+        secret = "private-token\nAuthorization: Bearer secret"
+        cases = (
+            ({"models": None}, "invalid_models", None, None),
+            ({"models": []}, "empty_models", None, 0),
+            ({"models": [{"instructions": secret}]}, "invalid_model", 0, 1),
+            (
+                {"models": [{"slug": secret}, {"slug": secret, "instructions": secret}]},
+                "conflicting_model",
+                1,
+                2,
+            ),
+            ({"models": [{"slug": "other", "instructions": secret}]}, "missing_models", None, 1),
+        )
+        with patch("service.chat.service.models.load_builtin_work_config", return_value={}):
+            self.models.session_spec(
+                personal_model_key(connection, MODEL), session_id=session, user_id=OWNER
+            )
+            upstream = next(iter(self.bridge._upstreams.values()))
+            for payload, reason, row_index, count in cases:
+                with (
+                    self.subTest(reason=reason),
+                    patch.object(self.subscriptions, "catalog", return_value=payload),
+                    self.assertLogs("service.chat.service.models", level="WARNING") as captured,
+                ):
+                    response = await self.bridge.catalog(next(iter(self.bridge._upstreams)))
+                self.assertEqual(response.status_code, 502)
+                self.assertEqual(
+                    json.loads(response.body)["error"]["code"], "model_catalog_unavailable"
+                )
+                self.assertEqual(len(captured.records), 1)
+                record = captured.records[0].getMessage()
+                diagnostic = json.loads(record.split(" ", 1)[1])
+                self.assertEqual(diagnostic["reason"], reason)
+                self.assertEqual(diagnostic["phase"], "payload")
+                self.assertEqual(diagnostic["session_id"], session)
+                self.assertEqual(diagnostic["row_index"], row_index)
+                self.assertEqual(diagnostic["received_count"], count)
+                self.assertEqual(len(diagnostic["connection_ref"]), 64)
+                self.assertNotIn(secret, record)
+                self.assertNotIn("Authorization", record)
+                self.assertNotIn("instructions", record)
+                self.assertNotIn(connection, record)
+            with (
+                patch.object(self.subscriptions, "catalog", return_value=UPSTREAM_MODELS_PAYLOAD),
+                self.assertNoLogs("service.chat.service.models", level="WARNING"),
+            ):
+                self.assertEqual(
+                    await upstream.catalog_resolver(OWNER, connection), UPSTREAM_MODELS_PAYLOAD
+                )
+
+    async def test_catalog_validation_logs_changed_snapshot_before_and_after_fetch(self):
+        connection = await self.connected()
+        with patch("service.chat.service.models.load_builtin_work_config", return_value={}):
+            self.models.session_spec(
+                personal_model_key(connection, MODEL), session_id="changed-catalog", user_id=OWNER
+            )
+            upstream = next(iter(self.bridge._upstreams.values()))
+
+            async def disable(owner, identifier):
+                self.profiles.set_enabled(connection, False, owner_id=OWNER)
+                return UPSTREAM_MODELS_PAYLOAD
+
+            with (
+                patch.object(self.subscriptions, "catalog", side_effect=disable),
+                self.assertLogs("service.chat.service.models", level="WARNING") as captured,
+                self.assertRaisesRegex(SessionModelUnavailableError, "model_catalog_changed"),
+            ):
+                await upstream.catalog_resolver(OWNER, connection)
+            diagnostic = json.loads(captured.records[0].getMessage().split(" ", 1)[1])
+            self.assertEqual(diagnostic["reason"], "selected_model_missing")
+            self.assertEqual(diagnostic["phase"], "after_fetch")
+            with (
+                self.assertLogs("service.chat.service.models", level="WARNING") as captured,
+                self.assertRaisesRegex(SessionModelUnavailableError, "model_catalog_changed"),
+            ):
+                await upstream.catalog_resolver(OWNER, connection)
+            diagnostic = json.loads(captured.records[0].getMessage().split(" ", 1)[1])
+            self.assertEqual(diagnostic["phase"], "before_fetch")
+
+    async def test_catalog_validation_logs_registration_and_definition_failures(self):
+        connection = await self.connected()
+        with patch("service.chat.service.models.load_builtin_work_config", return_value={}):
+            self.models.session_spec(
+                personal_model_key(connection, MODEL),
+                session_id="definition-catalog",
+                user_id=OWNER,
+            )
+            upstream = next(iter(self.bridge._upstreams.values()))
+            # Exercise the product resolver beneath the subscription's outer scope guard.
+            row = self.models._catalog_models({}, self.profiles.list(owner_id=OWNER))[0]
+            resolver = self.models._catalog_resolver(
+                [row],
+                row,
+                user_id=OWNER,
+                registration_owner=OWNER,
+                registration_connection=connection,
+                session_id="definition-catalog",
+            )
+            with (
+                self.assertLogs("service.chat.service.models", level="WARNING") as captured,
+                self.assertRaisesRegex(SessionModelUnavailableError, "model_catalog_unavailable"),
+            ):
+                await resolver(OTHER, connection)
+            diagnostic = json.loads(captured.records[0].getMessage().split(" ", 1)[1])
+            self.assertEqual(diagnostic["reason"], "registration_mismatch")
+            self.assertEqual(diagnostic["phase"], "registration")
+
+            self.profiles.upsert(
+                {**self.values, "selected_models": [{"id": MODEL, "reasoning_efforts": ["high"]}]},
+                connection,
+                owner_id=OWNER,
+            )
+            with (
+                self.assertLogs("service.chat.service.models", level="WARNING") as captured,
+                self.assertRaisesRegex(SessionModelUnavailableError, "model_catalog_changed"),
+            ):
+                await upstream.catalog_resolver(OWNER, connection)
+            diagnostic = json.loads(captured.records[0].getMessage().split(" ", 1)[1])
+            self.assertEqual(diagnostic["reason"], "required_models_changed")
+            self.assertEqual(diagnostic["phase"], "before_fetch")
+
     async def test_unified_catalog_revalidates_required_connection_after_fetch(self):
         connection = await self.connected()
         with patch("service.chat.service.models.load_builtin_work_config", return_value={}):
@@ -1596,15 +1887,12 @@ class SubscriptionContract(unittest.IsolatedAsyncioTestCase):
             async def catalog(owner, identifier):
                 self.assertEqual(owner, OWNER)
                 calls.append(identifier)
-                return {
-                    "models": [
-                        (
-                            UPSTREAM_MODELS_PAYLOAD["models"][0]
-                            if identifier == first
-                            else second_definition
-                        )
-                    ]
-                }
+                first_definition = UPSTREAM_MODELS_PAYLOAD["models"][0]
+                if identifier == first:
+                    return {
+                        "models": [first_definition, {**second_definition, "visibility": "hide"}]
+                    }
+                return {"models": [second_definition, {**first_definition, "visibility": "hide"}]}
 
             with patch.object(self.subscriptions, "catalog", side_effect=catalog):
                 actual = await upstream.catalog_resolver(OWNER, first)
@@ -1617,6 +1905,29 @@ class SubscriptionContract(unittest.IsolatedAsyncioTestCase):
                     SessionModelUnavailableError, "model_catalog_unavailable"
                 ):
                     await upstream.catalog_resolver(OWNER, first)
+
+    async def test_native_catalog_same_slug_uses_selected_connection_definition(self):
+        first = await self.connected()
+        second = await self.connected()
+        with patch("service.chat.service.models.load_builtin_work_config", return_value={}):
+            for selected in (first, second):
+                spec = self.models.session_spec(
+                    personal_model_key(selected, MODEL), session_id=selected, user_id=OWNER
+                )
+                self.assertEqual(
+                    [entry.native_catalog_source for entry in spec.catalog_models], [selected]
+                )
+                upstream = next(
+                    item for item in self.bridge._upstreams.values() if item.session_id == selected
+                )
+                definition = {"slug": MODEL, "vendor_extension": selected}
+                with patch.object(
+                    self.subscriptions, "catalog", return_value={"models": [definition]}
+                ) as read:
+                    self.assertEqual(
+                        await upstream.catalog_resolver(OWNER, selected), {"models": [definition]}
+                    )
+                    read.assert_awaited_once_with(OWNER, selected)
 
     async def test_custom_catalog_resolver_keeps_owner_and_activity_guards(self):
         connection = await self.connected()

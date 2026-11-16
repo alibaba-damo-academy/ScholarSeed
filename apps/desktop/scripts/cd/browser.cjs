@@ -4,13 +4,17 @@ const path = require('node:path')
 const { execFileSync } = require('node:child_process')
 const semver = require('semver')
 const { sha256, executableDigest } = require('../shared/digest.cjs')
-const { BROWSER_NODE_RELATIVE, BUNDLED_PYTHON_RELATIVE, browserEnvironment } = require('../../runtime/browser.cjs')
+const { BROWSER_NODE_RELATIVE, BROWSER_NODE_LICENSE_RELATIVE, BUNDLED_PYTHON_RELATIVE, browserEnvironment } = require('../../runtime/browser.cjs')
+const { ensureArtifact, artifactCache } = require('../../../../scripts/shared/artifacts.cjs')
+const { nativeTar } = require('../../../../scripts/shared/python.cjs')
+const { verifyMachO } = require('../shared/macos.cjs')
+const buildCache = require('./cache.cjs')
+const nodePolicy = require('./browser.json')
 
 const PROBE_TIMEOUT_MS = 30_000
 const DIAGNOSTIC_BYTES = 4096
 const NODE_TARGETS = { arm64: 'arm64', x86_64: 'x64' }
 const SYSTEM_PATH = '/usr/bin:/bin:/usr/sbin:/sbin'
-const PRIMARY_NODE_SOURCE = 'playwright/driver/node'
 const NODE_PROBE = 'console.log(JSON.stringify({version:process.version,platform:process.platform,arch:process.arch}))'
 const DRIVER_PROBE = `
 import asyncio
@@ -91,7 +95,7 @@ function command(executable, args, env = cleanEnvironment()) {
   }
 }
 
-function containedFile(resources, relative) {
+function containedFile(resources, relative, executable = true) {
   if (path.isAbsolute(relative) || relative.split('/').includes('..')) throw new Error('browser runtime path escapes resources')
   const filename = path.resolve(resources, relative)
   if (!filename.startsWith(path.resolve(resources) + path.sep)
@@ -99,7 +103,7 @@ function containedFile(resources, relative) {
     || !fs.realpathSync(filename).startsWith(fs.realpathSync(resources) + path.sep)) {
     throw new Error('browser runtime is not a regular contained file')
   }
-  fs.accessSync(filename, fs.constants.X_OK)
+  if (executable) fs.accessSync(filename, fs.constants.X_OK)
   return filename
 }
 
@@ -152,15 +156,31 @@ function assertMatchingNodes(rows) {
   }
 }
 
-async function prepareBrowser(resources, arch) {
+function assertCompatibleNode(identity, consumers) {
+  for (const consumer of consumers) {
+    if (!semver.satisfies(identity.version, consumer.node_engine)) throw new Error(`shared browser Node violates driver engine: ${consumer.distribution}`)
+  }
+}
+
+async function prepareBrowser(resources, arch, environment = process.env) {
   // Discover from the actual product Python, never from the development venv.
-  const python = path.join(resources, BUNDLED_PYTHON_RELATIVE)
-  const site = command(python, ['-I', '-B', '-c', 'import sysconfig; print(sysconfig.get_path("purelib"))'])
-  const firstSource = path.relative(resources, path.join(site, PRIMARY_NODE_SOURCE))
-  const source = containedFile(resources, firstSource)
+  const selected = nodePolicy.targets[arch]
+  if (!selected) throw new Error('unsupported browser Node architecture')
+  const archive = path.join(artifactCache(environment), 'browser-node', selected.filename)
+  await ensureArtifact(archive, selected, {environment})
+  const directory = buildCache.expanded(archive, selected, environment, output => {
+    execFileSync(nativeTar(), ['-xzf', archive, '-C', output, '--strip-components=1',
+      `${selected.directory}/bin/node`, `${selected.directory}/LICENSE`], {env: environment})
+  })
+  const source = containedFile(directory, 'bin/node')
+  const identity = nodeIdentity(source, arch)
+  if (identity.version !== `v${nodePolicy.version}`) throw new Error('browser Node version differs from reviewed policy')
+  const native = verifyMachO(source)
+  if (!native) throw new Error('browser Node is not Mach-O')
   const shared = path.join(resources, BROWSER_NODE_RELATIVE)
   prepareDirectory(resources, path.posix.dirname(BROWSER_NODE_RELATIVE))
   fs.copyFileSync(source, shared, fs.constants.COPYFILE_EXCL)
+  fs.copyFileSync(containedFile(directory, 'LICENSE', false), path.join(resources, BROWSER_NODE_LICENSE_RELATIVE), fs.constants.COPYFILE_EXCL)
   const consumers = probeDrivers(resources)
   const rows = []
   for (const consumer of consumers) {
@@ -169,9 +189,11 @@ async function prepareBrowser(resources, arch) {
       identity: nodeIdentity(filename, arch) })
   }
   assertMatchingNodes(rows)
-  if (await sha256(shared) !== rows[0].sha256) throw new Error('shared browser Node copy differs from source')
-  const frozen = { path: BROWSER_NODE_RELATIVE, sha256: rows[0].sha256,
-    executable_sha256: await executableDigest(shared), identity: rows[0].identity,
+  assertCompatibleNode(identity, rows)
+  if (await sha256(shared) !== await sha256(source)) throw new Error('shared browser Node copy differs from source')
+  const frozen = { path: BROWSER_NODE_RELATIVE, sha256: await sha256(shared),
+    executable_sha256: await executableDigest(shared), identity, native,
+    archive_sha256: selected.sha256, license_sha256: await sha256(path.join(resources, BROWSER_NODE_LICENSE_RELATIVE)),
     consumers: rows, saved_bytes: rows.reduce((sum, row) => sum + row.bytes, 0) - fs.statSync(shared).size }
   // Only exact, validated staging duplicates are removed, before any signing.
   for (const row of rows) fs.unlinkSync(containedFile(resources, row.source))
@@ -183,6 +205,8 @@ async function prepareBrowser(resources, arch) {
 async function inspectBrowser(resources, frozen, signed = false) {
   if (!frozen || frozen.path !== BROWSER_NODE_RELATIVE) throw new Error('frozen browser Node inventory is missing')
   const shared = containedFile(resources, frozen.path)
+  if (await sha256(containedFile(resources, BROWSER_NODE_LICENSE_RELATIVE, false)) !== frozen.license_sha256)
+    throw new Error('browser Node license differs from frozen input')
   if (await executableDigest(shared) !== frozen.executable_sha256) throw new Error('browser Node executable differs from frozen input')
   if (!signed && await sha256(shared) !== frozen.sha256) throw new Error('unsigned browser Node bytes differ from frozen input')
   for (const consumer of frozen.consumers) assertAbsent(path.join(resources, consumer.source))
@@ -192,9 +216,11 @@ async function inspectBrowser(resources, frozen, signed = false) {
 async function verifyBrowser(resources, arch, frozen, signed = false) {
   await inspectBrowser(resources, frozen, signed)
   const shared = containedFile(resources, frozen.path)
+  if (!verifyMachO(shared)) throw new Error('browser Node is not Mach-O')
   if (signed) command('codesign', ['--verify', '--strict', shared])
   if (JSON.stringify(nodeIdentity(shared, arch)) !== JSON.stringify(frozen.identity)) throw new Error('browser Node identity differs from frozen input')
   const consumers = probeDrivers(resources)
+  assertCompatibleNode(frozen.identity, consumers)
   const expected = frozen.consumers.map(({ distribution, version, source, node_engine, transport }) =>
     ({ distribution, version, source, node_engine, transport }))
   if (JSON.stringify(consumers) !== JSON.stringify(expected)) throw new Error('browser driver inventory differs from frozen input')
@@ -204,4 +230,4 @@ async function verifyBrowser(resources, arch, frozen, signed = false) {
   return { identity: frozen.identity, consumers, saved_bytes: frozen.saved_bytes, executable_sha256: frozen.executable_sha256 }
 }
 
-module.exports = { prepareBrowser, inspectBrowser, verifyBrowser, assertMatchingNodes, containedFile, prepareDirectory, assertAbsent, DRIVER_PROBE }
+module.exports = { prepareBrowser, inspectBrowser, verifyBrowser, assertMatchingNodes, assertCompatibleNode, containedFile, prepareDirectory, assertAbsent, DRIVER_PROBE }

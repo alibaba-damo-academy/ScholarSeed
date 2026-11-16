@@ -157,6 +157,7 @@ class CredentialRecord:
     tokens: OAuthTokens | None = field(default=None, repr=False)
     client_id: str = ""
     subject: str = field(default="", repr=False)
+    revocation_unconfirmed: bool = False
 
 
 @dataclass(frozen=True)
@@ -362,7 +363,14 @@ class ModelCredentialStore:
                 id_token=metadata.get("id_token", ""),
                 scopes=tuple(metadata.get("scopes", [])),
             )
-        return CredentialRecord(row["generation"], state, tokens, client_id, subject)
+        return CredentialRecord(
+            row["generation"],
+            state,
+            tokens,
+            client_id,
+            subject,
+            metadata.get("revocation_unconfirmed", False),
+        )
 
     @staticmethod
     def _metadata(raw: str | None) -> dict:
@@ -374,9 +382,11 @@ class ModelCredentialStore:
                 raise ValueError("unsupported metadata version")
             if any(
                 not isinstance(metadata.get(key, ""), str)
-                for key in ("client_id", "subject", "id_token")
+                for key in ("client_id", "subject", "id_token", "account_label")
             ):
                 raise ValueError("invalid registration")
+            if not isinstance(metadata.get("revocation_unconfirmed", False), bool):
+                raise ValueError("invalid revocation state")
             scopes = metadata.get("scopes", [])
             if not isinstance(scopes, list) or any(not isinstance(scope, str) for scope in scopes):
                 raise ValueError("invalid scopes")
@@ -398,6 +408,92 @@ class ModelCredentialStore:
                 database.execute("SELECT identifier FROM oauth_host WHERE singleton=1").fetchone()[
                     0
                 ]
+            )
+
+    def registrations(self, owner_id: str, *, excluded: set[str]) -> list[dict[str, str]]:
+        """List token-free registrations whose model configuration was removed.
+
+        Credential tombstones outlive profiles and are the registration inventory;
+        do not duplicate tokens or infer account equivalence from email addresses.
+        """
+        self._scope(owner_id, owner_id)
+        with self._database() as database:
+            rows = database.execute(
+                "SELECT * FROM model_credentials WHERE owner_id = ? OR ? ORDER BY connection_id",
+                (owner_id, self._shared_ownership),
+            ).fetchall()
+        result = []
+        for row in rows:
+            record = self._record(row)
+            if (
+                row["connection_id"] in excluded
+                or row["access_token"]
+                or row["refresh_token"]
+                or not record.client_id
+            ):
+                continue
+            metadata = self._metadata(row[OAUTH_METADATA_COLUMN])
+            result.append(
+                {
+                    "id": row["connection_id"],
+                    "label": metadata.get("account_label", ""),
+                    "reference": record.client_id[-8:],
+                }
+            )
+        return result
+
+    def claim_registration(
+        self, owner_id: str, connection_id: str, source_id: str, *, target_owner_id: str = ""
+    ) -> None:
+        """Atomically move a signed-out registration, fencing both old and new login attempts."""
+        if source_id == connection_id:
+            raise CredentialConflictError("oauth_connection_changed")
+        with self._database() as database:
+            database.execute("BEGIN IMMEDIATE")
+            source = self._stored_scope(database, self._scope(owner_id, source_id))
+            target = self._stored_scope(
+                database, self._scope(target_owner_id or owner_id, connection_id)
+            )
+            previous = database.execute(
+                "SELECT * FROM model_credentials WHERE owner_id = ? AND connection_id = ?", source
+            ).fetchone()
+            current = database.execute(
+                "SELECT * FROM model_credentials WHERE owner_id = ? AND connection_id = ?", target
+            ).fetchone()
+            if previous is None:
+                raise CredentialConflictError("oauth_connection_changed")
+            record = self._record(previous)
+            if (
+                not record.client_id
+                or record.tokens
+                or previous["access_token"]
+                or previous["refresh_token"]
+                or (
+                    current is not None
+                    and (
+                        self._record(current).client_id
+                        or current["access_token"]
+                        or current["refresh_token"]
+                    )
+                )
+            ):
+                raise CredentialConflictError("oauth_connection_changed")
+            metadata = self._metadata(previous[OAUTH_METADATA_COLUMN])
+            metadata.pop("id_token", None)
+            metadata.pop("scopes", None)
+            generation = current["generation"] if current else INITIAL_GENERATION
+            database.execute(
+                """INSERT INTO model_credentials
+                (owner_id, connection_id, generation, state, oauth_metadata) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(owner_id, connection_id) DO UPDATE SET
+                generation = excluded.generation, state = excluded.state,
+                oauth_metadata = excluded.oauth_metadata""",
+                (*target, generation + 1, CredentialState.DISCONNECTED.value, json.dumps(metadata)),
+            )
+            database.execute(
+                "UPDATE model_credentials SET generation = generation + 1, oauth_metadata = NULL "
+                "WHERE owner_id = ? AND connection_id = ?",
+                source,
             )
 
     @classmethod
@@ -447,6 +543,7 @@ class ModelCredentialStore:
                             "version": OAUTH_METADATA_VERSION,
                             "client_id": tokens.client_id,
                             "subject": tokens.account_id,
+                            "account_label": tokens.account_label,
                             "id_token": tokens.id_token,
                             "scopes": tokens.scopes,
                         }
@@ -464,6 +561,7 @@ class ModelCredentialStore:
         *,
         state: CredentialState = CredentialState.DISCONNECTED,
         expected_generation: int | None = None,
+        remote_pending: bool = False,
     ) -> None:
         if state == CredentialState.CONNECTED:
             raise ValueError("revoked credentials cannot be connected")
@@ -481,6 +579,8 @@ class ModelCredentialStore:
             metadata = self._metadata(row[OAUTH_METADATA_COLUMN]) if row else {}
             metadata.pop("id_token", None)
             metadata.pop("scopes", None)
+            if remote_pending:
+                metadata["revocation_unconfirmed"] = True
             database.execute(
                 """INSERT INTO model_credentials (owner_id, connection_id, generation, state, oauth_metadata)
                 VALUES (?, ?, ?, ?, ?) ON CONFLICT(owner_id, connection_id) DO UPDATE SET
@@ -488,6 +588,23 @@ class ModelCredentialStore:
                     access_token = NULL, refresh_token = NULL, expires_at = NULL,
                     account_id = NULL, account_label = NULL, oauth_metadata = excluded.oauth_metadata""",
                 (*scope, generation + 1, state.value, json.dumps(metadata)),
+            )
+
+    def confirm_revocation(self, owner_id: str, connection_id: str, generation: int) -> None:
+        with self._database() as database:
+            database.execute("BEGIN IMMEDIATE")
+            scope = self._stored_scope(database, self._scope(owner_id, connection_id))
+            row = database.execute(
+                "SELECT generation, oauth_metadata FROM model_credentials WHERE owner_id = ? AND connection_id = ?",
+                scope,
+            ).fetchone()
+            if row is None or row["generation"] != generation:
+                return
+            metadata = self._metadata(row[OAUTH_METADATA_COLUMN])
+            metadata.pop("revocation_unconfirmed", None)
+            database.execute(
+                "UPDATE model_credentials SET oauth_metadata = ? WHERE owner_id = ? AND connection_id = ?",
+                (json.dumps(metadata), *scope),
             )
 
     @asynccontextmanager

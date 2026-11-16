@@ -1,14 +1,77 @@
-import type { Element, RootContent } from 'hast'
+import type { Element, Root, RootContent } from 'hast'
 import type { Root as MarkdownRoot, RootContent as MarkdownContent } from 'mdast'
 import remarkParse from 'remark-parse'
 import { unified } from 'unified'
 
 import { isCitationUrl } from '../../contracts/citations.ts'
-import { remarkAnswerMath } from './math.ts'
-import { prepareMathSource } from './source.ts'
+import { remarkAnswerMath } from '../../../../markdown/math.ts'
+import { prepareMathSource } from '../../../../markdown/source.ts'
 
 export const CITATION_MARKER = 'dataCitationMarker'
 export const CITATION_PENDING = 'dataCitationPending'
+export const CITATION_GROUP = 'dataCitationGroup'
+export const CITATION_GROUP_HIDDEN = 'dataCitationGroupHidden'
+const CITATION_BLOCK_TAGS = new Set([
+  'p',
+  'li',
+  'ul',
+  'ol',
+  'blockquote',
+  'pre',
+  'table',
+  'div',
+  'h1',
+  'h2',
+  'h3',
+  'h4',
+  'h5',
+  'h6',
+])
+export interface MarkdownCitationEntry {
+  href: string
+  start: number
+  end: number
+  label: string
+}
+
+export function groupParagraphCitations(tree: Root, keys: Readonly<Record<string, string>>): void {
+  const visit = (parent: Root | Element): void => {
+    if (parent.type === 'element' && (parent.tagName === 'p' || parent.tagName === 'li')) {
+      const groups = new Map<string, Element[]>()
+      const collect = (node: Element): void => {
+        if (node !== parent && CITATION_BLOCK_TAGS.has(node.tagName)) return
+        const href = String(node.properties.href ?? '')
+        const key = Object.hasOwn(keys, href) ? keys[href] : undefined
+        if (
+          node.tagName === 'a' &&
+          node.properties[CITATION_MARKER] &&
+          key &&
+          node.position?.start.offset !== undefined &&
+          node.position.end.offset !== undefined
+        ) {
+          const entries = groups.get(key) ?? []
+          entries.push(node)
+          groups.set(key, entries)
+        }
+        for (const child of node.children) if (child.type === 'element') collect(child)
+      }
+      collect(parent)
+      for (const nodes of groups.values()) {
+        const entries: MarkdownCitationEntry[] = nodes.map((node) => ({
+          href: String(node.properties.href),
+          start: node.position!.start.offset!,
+          end: node.position!.end.offset!,
+          label: citationText(node),
+        }))
+        nodes[0].properties[CITATION_GROUP] = JSON.stringify(entries)
+        for (const node of nodes.slice(1)) node.properties[CITATION_GROUP_HIDDEN] = true
+      }
+      if (parent.tagName === 'p') return
+    }
+    for (const child of parent.children) if (child.type === 'element') visit(child)
+  }
+  visit(tree)
+}
 export const CITATION_LABEL = /^(?:[0-9]+|\[[0-9]+\])$/
 export const REFERENCE_LABEL = /\[([0-9]+)\](?!\(|\[(?![0-9]+\]))/g
 const DESTINATION_BOUNDARY = /\s/

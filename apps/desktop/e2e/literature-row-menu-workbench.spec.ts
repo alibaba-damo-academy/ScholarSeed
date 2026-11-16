@@ -1,6 +1,6 @@
-import { openProjectMenu } from './fixtures/projects'
+import { createReadyProject, openProjectMenu } from './fixtures/projects'
 import { expect, test, type Locator, type Page } from '@playwright/test'
-import { writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 import { DesktopSession, apiBase } from './fixtures/electron'
@@ -14,6 +14,7 @@ const PROJECT_PDF = resolve('e2e/fixtures/preview_pdf_1MB.pdf')
 const METADATA_BIB = resolve('e2e/fixtures/data/minimal-project/metadata-only.bib')
 const BIB_TITLE = 'Row Menu Metadata Only Entry'
 const PROJECT_NAME = 'Row-menu-project'
+const LONG_PROJECT_NAME = '文献中心项目归属标签省略与悬停验证'
 const IMPORT_PARSE_TIMEOUT_MS = 90_000
 
 interface LiteratureRow {
@@ -65,6 +66,63 @@ async function closeRowMenu(page: Page): Promise<void> {
 async function shoot(page: Page, runtime: RuntimePaths, name: string): Promise<void> {
   await page.screenshot({ path: resolve(runtime.artifacts, `${name}.png`), fullPage: true })
 }
+
+test('long project labels fit the literature cell and reveal their full name', async ({}, testInfo) => {
+  const runtime = createRuntime(testInfo)
+  writeFileSync(
+    resolve(runtime.userData, 'renderer-preferences.json'),
+    JSON.stringify({
+      language: 'zh',
+      onboarding: { seen: { home: true, project: true, globalLib: true, pdf: true } }
+    })
+  )
+  const desktop = new DesktopSession(runtime, testInfo, { nativeWindowLifecycle: true })
+  try {
+    const page = await desktop.launch()
+    const base = await apiBase(page)
+    const project = await createReadyProject(page, LONG_PROJECT_NAME)
+    const query = new URLSearchParams({ project_id: project.id })
+    const response = await page.request.post(`${base}/api/v1/imports/bibliography?${query}`, {
+      multipart: {
+        files: {
+          name: 'metadata-only.bib',
+          mimeType: 'application/x-bibtex',
+          buffer: readFileSync(METADATA_BIB),
+        },
+      },
+    })
+    expect(response.ok(), await response.text()).toBe(true)
+
+    await page.reload()
+    await page.getByTestId('activity-literature').click()
+    const aiPanel = page.getByTestId('ai-panel')
+    if (await aiPanel.isVisible()) {
+      await aiPanel.getByRole('button', { name: '关闭', exact: true }).click()
+      await expect(aiPanel).toBeHidden()
+    }
+    const collapseSidebar = page.getByRole('button', { name: '收起侧栏', exact: true })
+    if (await collapseSidebar.isVisible()) {
+      await collapseSidebar.click()
+    }
+    const overview = page.getByTestId('literature-overview')
+    const row = overview.locator('.lit-row').filter({ hasText: BIB_TITLE })
+    const badge = row.locator('.vds-badge').filter({ hasText: project.name })
+    await expect(badge).toBeVisible()
+    const badgeFitsCell = await badge.evaluate((element) => {
+      const cell = element.closest('.lit-row > span')
+      return cell !== null && element.getBoundingClientRect().right <= cell.getBoundingClientRect().right
+    })
+    expect(badgeFitsCell).toBe(true)
+    const label = badge.locator('[data-slot="ellipsis-text"]')
+    await expect(label).toHaveAttribute('data-overflowing', 'true')
+    await expect(label).toHaveCSS('text-overflow', 'ellipsis')
+    await page.mouse.move(4, 4)
+    await label.hover()
+    await expect(page.getByRole('tooltip').filter({ hasText: project.name })).toBeVisible()
+  } finally {
+    await desktop.attachArtifacts()
+  }
+})
 
 test('literature rows carry a right click menu with scoped destructive action', async ({}, testInfo) => {
   const runtime = createRuntime(testInfo)

@@ -50,8 +50,8 @@ const activityIconFor = (key: string, icon: ActivityItem['icon']): React.JSX.Ele
 const ACTIVITY_RAIL_CLASS_NAME =
   'vds-activity-rail relative z-[var(--vds-z-rail)] has-[.vds-tooltip--open]:z-[var(--vds-z-tooltip)] box-border flex w-[var(--vds-layout-rail-width)] flex-none flex-col items-center gap-[var(--vds-space-2)] border-r border-[var(--vds-divider-default)] bg-[var(--vds-bg-gray-default)] py-[var(--vds-space-4)]'
 const ACTIVITY_RAIL_MAIN_CLASS_NAME =
-  'grid content-start justify-items-center gap-[var(--vds-space-2)]'
-const ACTIVITY_RAIL_FOOTER_CLASS_NAME = 'mt-auto grid justify-items-center gap-[var(--vds-space-2)]'
+  'grid content-start justify-items-center gap-[var(--vds-space-1)]'
+const ACTIVITY_RAIL_FOOTER_CLASS_NAME = 'mt-auto grid justify-items-center gap-[var(--vds-space-1)]'
 const ACTIVITY_BUTTON_CLASS_NAME = navigationRailButtonClassName
 // 选中态字色加 important: 基类 text-[var(--vds-text-tertiary)] 在编译后样式表中排在
 // text-[var(--vds-brand-text-primary)] 之后, 同特异性下会压掉选中态字色, 导致选中图标

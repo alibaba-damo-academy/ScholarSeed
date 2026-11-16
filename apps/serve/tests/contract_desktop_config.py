@@ -23,6 +23,7 @@ PASS = 0
 FAIL = 0
 REPO_ROOT = Path(__file__).resolve().parents[3]
 BUNDLE_SCRIPT = REPO_ROOT / "apps" / "desktop" / "scripts" / "cd" / "bundle.cjs"
+CODEX_PACKAGING = REPO_ROOT / "apps" / "desktop" / "runtime" / "codex.cjs"
 PACKAGE_SCRIPT = REPO_ROOT / "apps" / "desktop" / "scripts" / "cd" / "build.cjs"
 BUILD_SCRIPT = REPO_ROOT / "apps" / "desktop" / "scripts" / "cd" / "build.cjs"
 VERIFY_SCRIPT = REPO_ROOT / "apps" / "desktop" / "scripts" / "cd" / "verify.cjs"
@@ -105,6 +106,35 @@ def test_packaged_config_installation_layout() -> None:
         ("missing seed selection", {"source": ""}),
     ):
         check(f"installation binding rejects {name}", discover(**values) is None)
+
+
+def test_managed_tex_cache_installation_layout() -> None:
+    root = r"C:\Installed\ScholarSeed"
+    module = root + r"\current\resources\backend\pylibs\service\bootstrap.py"
+    executable = root + r"\runtime\python\3.12.13-r2\python\python.exe"
+    cache = root + r"\runtime\cache\texlive\2026-r4"
+    with (
+        patch.object(bootstrap, "__file__", module),
+        patch.object(bootstrap.sys, "executable", executable),
+        patch.object(bootstrap.sys, "platform", "win32"),
+        patch.dict(bootstrap.os.environ, {bootstrap.CONFIG_SEED_ENV: ""}),
+    ):
+        resolved = bootstrap._managed_tex_cache_root(cache)
+        check(
+            "managed TeX locks the installed cache without relying on seed selection",
+            resolved is not None and resolved.replace("/", "\\") == cache,
+        )
+        for supplied in (
+            cache.replace("ScholarSeed", "Other"),
+            cache.replace("2026-r4", "..\\2026-r4"),
+            cache.replace("2026-r4", "invalid"),
+        ):
+            try:
+                bootstrap._managed_tex_cache_root(supplied)
+            except ValueError:
+                check("managed TeX rejects another cache root", True)
+            else:
+                check("managed TeX rejects another cache root", False, supplied)
 
 
 def test_windows_installation_native_composition() -> None:
@@ -253,6 +283,9 @@ def test_desktop_synchronizes_repository_skill_pack() -> None:
         source = root / "source"
         skill = source / "demo"
         skill.mkdir(parents=True)
+        (root / "registry.json").write_text(
+            json.dumps({"dependencies": {"demo": {}}}), encoding="utf-8"
+        )
         (skill / "SKILL.md").write_text(
             "---\nname: demo\ndescription: Desktop source synchronization contract\n---\n",
             encoding="utf-8",
@@ -283,6 +316,7 @@ def test_desktop_synchronizes_repository_skill_pack() -> None:
 
 def test_packaged_codex_runtime_is_a_complete_pair() -> None:
     bundle = BUNDLE_SCRIPT.read_text(encoding="utf-8")
+    codex_packaging = CODEX_PACKAGING.read_text(encoding="utf-8")
     package = PACKAGE_SCRIPT.read_text(encoding="utf-8")
     build = BUILD_SCRIPT.read_text(encoding="utf-8")
     build_arguments = re.sub(r"\s+", " ", build)
@@ -299,7 +333,8 @@ def test_packaged_codex_runtime_is_a_complete_pair() -> None:
 
     check(
         "bundle requires an explicit custom Codex input",
-        "context.binaries.codex.root" in bundle,
+        "stageVendoredCodex(context.binaries.codex," in bundle
+        and "path.resolve(runtime.root)" in codex_packaging,
     )
     check(
         "local package discovers the reviewed upstream Codex binary",
@@ -309,8 +344,11 @@ def test_packaged_codex_runtime_is_a_complete_pair() -> None:
         and "SCHOLARSEED_BUNDLE_CODEX_CODE_MODE_HOST" not in package,
     )
     check(
-        "bundle preserves the complete official Codex runtime package",
-        "fs.cpSync(context.binaries.codex.root" in bundle and "codex-runtime" in bundle,
+        "bundle stages Codex through verified platform packaging policy",
+        "stageVendoredCodex(context.binaries.codex, path.join(backend, 'codex-runtime'), target.platform)"
+        in bundle
+        and "verifyCachedFiles(source, cached)" in codex_packaging
+        and "verifyCachedFiles(target, { files })" in codex_packaging,
     )
     check(
         "bundle validates the target architecture",
@@ -336,11 +374,13 @@ def test_packaged_codex_runtime_is_a_complete_pair() -> None:
         and "resourceRoot" in build,
     )
     check(
-        "skill compilation is offline and the frozen lock is re-checked",
-        # 开源版没有 Hub sync: 从源码编译, 冻结 lock, 构建末尾复核 lock 未漂移。
-        "'service.cli.prebundle', '--build'" in build_arguments
-        and "context.lockSha256 = await verify.sha256(context.lock)" in build
-        and "!== frozen.lockSha256" in verify,
+        "offline skill build writes the installed verifier inventory directly to the backend",
+        "'--build', '--source', context.skillSource, '--lock', context.skillInventory"
+        in build_arguments
+        and "path.join(REPO, 'skills', 'community')" in build
+        and "skillInventory: path.join(backend, 'skills.lock.json')" in build
+        and "context.lockSha256" not in build
+        and "frozen.lockSha256" not in verify,
     )
     check(
         "local DMG needs no delivered Skillhub baseline",
@@ -363,12 +403,6 @@ def test_packaged_codex_runtime_is_a_complete_pair() -> None:
         and "service.cli.skills" not in build
         and "scholarseed_skills" not in build
         and "--previous" not in build,
-    )
-    check(
-        "packaging compiles skills from the in-repo source and re-verifies bytes",
-        "'--build', '--source', context.skillSource, '--lock', context.lock" in build_arguments
-        and "path.join(REPO, 'skills', 'community')" in build
-        and "!== frozen.lockSha256" in verify,
     )
     check(
         "development desktop launch synchronizes repository skills before runtime discovery",
@@ -460,6 +494,7 @@ def test_packaged_codex_runtime_is_a_complete_pair() -> None:
 def main() -> int:
     print("desktop packaged config contract")
     test_packaged_config_installation_layout()
+    test_managed_tex_cache_installation_layout()
     test_windows_installation_native_composition()
     test_resource_logging_preserves_hosting_and_third_party_configuration()
     test_seed_user_config()

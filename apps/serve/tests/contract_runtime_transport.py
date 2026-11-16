@@ -18,6 +18,7 @@ from service.chat.persistence.events import ProductEventRecord, ProductEventStor
 from service.chat.persistence.worker import PersistenceWorker
 from service.chat.runtime.content import MessageSnapshots
 from service.chat.runtime.live import LiveSession
+from service.chat.runtime.projection import execution_batch_id
 from service.chat.service.events import SSE_HEARTBEAT_FRAME, EventService
 
 SESSION_ID = "runtime-transport-session"
@@ -30,6 +31,33 @@ SUBSCRIBER_TEST_CAPACITY = 3
 
 
 class RuntimeTransportContract(unittest.IsolatedAsyncioTestCase):
+    def test_execution_batches_follow_durable_public_stage_boundaries(self) -> None:
+        def append(kind, item_id, payload):
+            self.events.append(
+                session_id=SESSION_ID,
+                runtime_id=RUNTIME_ID,
+                vendor_thread_id=VENDOR_THREAD_ID,
+                vendor_turn_id="batch-turn",
+                vendor_item_id=item_id,
+                kind=kind,
+                payload=payload,
+                idempotency_key=f"batch-{kind}-{item_id}",
+            )
+
+        def records():
+            return self.events.turn_records(
+                SESSION_ID, "batch-turn", None, kinds=("message_delta", "tool_started")
+            )
+
+        self.assertEqual(execution_batch_id(records(), "first"), "first")
+        append("tool_started", "first", {"tool_id": "first", "name": "read", "batch_id": "first"})
+        self.assertEqual(execution_batch_id(records(), "parallel"), "first")
+        append("message_delta", "stage", {"phase": "commentary", "delta": "Next stage"})
+        self.assertEqual(execution_batch_id(records(), "next"), "next")
+        append("tool_started", "next", {"tool_id": "next", "name": "search", "batch_id": "next"})
+        self.assertEqual(execution_batch_id(records(), "another"), "next")
+        self.assertEqual(execution_batch_id(records(), "first"), "first")
+
     def test_message_snapshots_isolate_turns_and_items(self) -> None:
         snapshots = MessageSnapshots()
         self.assertEqual(snapshots.append("turn-1", "comment", "正在"), "正在")
@@ -44,7 +72,7 @@ class RuntimeTransportContract(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory(prefix="runtime-transport-")
-        database = Path(self._temporary.name) / "sessions.sqlite3"
+        database = Path(self._temporary.name).resolve() / "sessions.sqlite3"
         catalog = SessionCatalogStore(database)
         catalog.register(
             SESSION_ID,

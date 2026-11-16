@@ -52,6 +52,39 @@ const resources = Object.fromEntries(
   ])
 )
 
+test('model selection header is shown only when filtered candidates exist', () => {
+  const syntax = ts.createSourceFile(
+    'AccountPanel.tsx',
+    readFileSync(new URL('./AccountPanel.tsx', import.meta.url), 'utf8'),
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX
+  )
+  const conditions: ts.Expression[] = []
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken &&
+      ts.isParenthesizedExpression(node.right) &&
+      ts.isJsxElement(node.right.expression) &&
+      node.right.expression.getText(syntax).includes('data-testid="model-endpoint-select-all"')
+    )
+      conditions.push(node.left)
+    ts.forEachChild(node, visit)
+  }
+  visit(syntax)
+  assert.equal(conditions.length, 1)
+  for (const visibleCandidates of [[], ['matching-model']]) {
+    assert.equal(
+      runInNewContext(conditions[0].getText(syntax), {
+        form: { candidates: ['matching-model', 'another-model'] },
+        visibleCandidates,
+      }),
+      visibleCandidates.length > 0
+    )
+  }
+})
+
 test('floating composer uses a ten-row height budget without changing conversation limits', () => {
   const source = ts.createSourceFile(
     'Composer.tsx',
@@ -265,7 +298,10 @@ test('composer has one combined model control at the right of the spacer', () =>
   assert.match(menu, /min-w-0 flex-\[0_1_auto\]/)
   assert.doesNotMatch(menu, /compact \? 'max-w-\[160px\]' : 'max-w-\[180px\]'/)
   assert.doesNotMatch(menu, /max-w-\[120px\]|max-w-\[220px\]/)
-  assert.match(menu, /className=\{`\$\{MODEL_CHIP_CLASS\} w-full overflow-hidden/)
+  assert.match(
+    menu,
+    /className=\{\s*variant === 'outline'[\s\S]*: `\$\{MODEL_CHIP_CLASS\} w-full overflow-hidden/
+  )
   assert.match(
     menu,
     /className="[^"]*flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-left[^"]*"/
@@ -274,12 +310,18 @@ test('composer has one combined model control at the right of the spacer', () =>
 
 test('conversation context picker keeps a stable request and popover identity', () => {
   const composer = readFileSync(new URL('./Composer.tsx', import.meta.url), 'utf8')
-  assert.match(composer, /const atContextSourceId = atContextSource\?\.id/)
   assert.match(
     composer,
-    /act\.openAiContextPicker\(atContextSourceId, atTerm\)[\s\S]*\[atActive, atContextSourceId, atTerm\]/
+    /const \[referenceDialogSource, setReferenceDialogSource\] = React\.useState<string \| null>\(null\)/
   )
-  assert.match(composer, /`act` intentionally excluded from deps/)
+  assert.match(
+    composer,
+    /act\.openAiContextPicker\(state\.aiPanel\.contextPickerSource, referenceQuery\)[\s\S]*\[\s*plusMenuOpen,\s*referenceDialogSource,\s*referenceQuery,\s*state\.aiPanel\.contextPickerOpen,\s*state\.aiPanel\.contextPickerSource,?\s*\]/
+  )
+  assert.match(
+    composer,
+    /referenceSearchSourceRef\.current !== state\.aiPanel\.contextPickerSource/
+  )
   assert.doesNotMatch(composer, /\[act, atActive, atContextSourceId, atTerm\]/)
   assert.doesNotMatch(composer, /\[act, atActive, atContextSource, atTerm\]/)
   assert.doesNotMatch(

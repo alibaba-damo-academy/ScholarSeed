@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import ast
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
+import zipfile
 from pathlib import Path
 
 from scripts.ci import lint
@@ -177,6 +180,69 @@ def check(value):
             path = Path(directory) / "source.py"
             path.write_bytes(source.encode("latin-1"))
             self.assertEqual(lint._syntax_issues(path), [])
+
+
+class L1TypingContracts(unittest.TestCase):
+    def test_dataclass_types_match_the_reviewed_wheel(self) -> None:
+        project = tomllib.loads((ROOT / "pyproject.toml").read_text())
+        wheel = ROOT / project["tool"]["uv"]["sources"]["deep-rnd-l1"]["path"]
+        stub = ast.parse(
+            (ROOT / "apps/serve/typings/knowledge_layer/comprehend/__init__.pyi").read_text()
+        )
+        with zipfile.ZipFile(wheel) as archive:
+            source = ast.parse(archive.read("knowledge_layer/comprehend/options.py"))
+        for name in ("ExtractionOptions", "SourceImage"):
+            declarations = []
+            for module in (source, stub):
+                model = next(
+                    node
+                    for node in module.body
+                    if isinstance(node, ast.ClassDef) and node.name == name
+                )
+                fields = [
+                    (node.target.id, ast.dump(node.annotation), node.value is not None)
+                    for node in model.body
+                    if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+                ]
+                frozen = any(
+                    isinstance(decorator, ast.Call)
+                    and any(
+                        keyword.arg == "frozen"
+                        and isinstance(keyword.value, ast.Constant)
+                        and keyword.value.value is True
+                        for keyword in decorator.keywords
+                    )
+                    for decorator in model.decorator_list
+                )
+                declarations.append((fields, frozen))
+            self.assertEqual(declarations[0], declarations[1], name)
+
+    def test_extraction_call_shape_matches_the_reviewed_wheel(self) -> None:
+        project = tomllib.loads((ROOT / "pyproject.toml").read_text())
+        wheel = ROOT / project["tool"]["uv"]["sources"]["deep-rnd-l1"]["path"]
+        with zipfile.ZipFile(wheel) as archive:
+            source = ast.parse(archive.read("knowledge_layer/comprehend/api.py"))
+        stub = ast.parse(
+            (ROOT / "apps/serve/typings/knowledge_layer/comprehend/__init__.pyi").read_text()
+        )
+        signatures = []
+        for module in (source, stub):
+            function = next(
+                node
+                for node in module.body
+                if isinstance(node, ast.AsyncFunctionDef) and node.name == "process_single_doc"
+            )
+            arguments = function.args
+            signatures.append(
+                (
+                    [argument.arg for argument in arguments.posonlyargs],
+                    [argument.arg for argument in arguments.args],
+                    [argument.arg for argument in arguments.kwonlyargs],
+                    len(arguments.defaults),
+                    [default is not None for default in arguments.kw_defaults],
+                )
+            )
+        self.assertEqual(signatures[0], signatures[1])
 
 
 if __name__ == "__main__":

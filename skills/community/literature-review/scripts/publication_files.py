@@ -1,18 +1,24 @@
 """Publication dependencies, without identities or caches."""
 from pathlib import Path
 import re
+import json
+from layouts import TEMPLATES, canonical_template
 
-COMMANDS = re.compile(r'\\(input|include|includegraphics|bibliography|addbibresource|usepackage|bibliographystyle)(?:\[[^]]*\])?\{([^}]+)\}')
+COMMANDS = re.compile(r'\\(input|include|includegraphics|bibliography|addbibresource|usepackage|documentclass|bibliographystyle)(?:\[[^]]*\])?\{([^}]+)\}')
 
 
 def dependencies(source):
     source=Path(source).resolve();base=source.parent
     pending=[source];seen=set()
+    publication = base / 'publication.json'
+    if publication.is_file():
+        template = canonical_template(json.loads(publication.read_text()).get('template'))
+        pending.extend(base / Path(name).name for name in TEMPLATES.get(template, {}).get('files', []))
     while pending:
         path=pending.pop()
         if path in seen or not path.is_file():continue
         seen.add(path)
-        if path.suffix not in ('.tex','.sty','.md'):continue
+        if path.suffix not in ('.tex','.sty','.cls','.md'):continue
         text=re.sub(r'(?m)(?<!\\)%[^\n]*','',path.read_text(errors='replace'))
         if path.suffix=='.md':
             for name in re.findall(r'!\[[^]]*\]\(([^)]+)\)',text):
@@ -22,7 +28,7 @@ def dependencies(source):
         for command,names in COMMANDS.findall(text):
             extensions={'input':['.tex'],'include':['.tex'],'includegraphics':['.pdf','.png','.jpg','.jpeg'],
                         'bibliography':['.bib'],'addbibresource':['.bib'],'usepackage':['.sty'],
-                        'bibliographystyle':['.bst']}[command]
+                        'documentclass':['.cls'],'bibliographystyle':['.bst']}[command]
             for name in names.split(','):
                 for folder in (path.parent,base,base.parent):
                     candidate=folder/name.strip()

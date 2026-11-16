@@ -8,13 +8,30 @@ import {
   type TerminalRestorationRuntime,
   type TerminalRestorationOptions,
 } from './restoration.ts'
-import { captureRecord, orphanSource, TERMINAL_RECORD_LIMITS } from './terminal.ts'
+import {
+  captureRecord,
+  orphanSource,
+  retirementOperation,
+  TERMINAL_RECORD_LIMITS,
+} from './terminal.ts'
 import { decodeUpdateLaunch, updateLaunchContextPath, updateStorageIdentities } from './relaunch.ts'
 import { decodeSquirrelHandoff, squirrelHandoffRecordPath } from './squirrel.ts'
 
 export const UPDATE_REPAIR_ARGUMENT = '--repair-update-target='
 export const UPDATE_REPAIR_WIZARD_ARGUMENT = '--repair-update'
 export const UPDATE_REPAIR_PROTOCOL = 1
+export const UPDATE_REPAIR_MODE = '--repair-update-mode='
+export function updateRepairMode(argv: readonly string[]): 'orphan' | 'retire' {
+  const values = argv.filter((value) => value.startsWith(UPDATE_REPAIR_MODE))
+  if (!values.length) return 'orphan'
+  if (
+    values.length !== 1 ||
+    values[0] !== UPDATE_REPAIR_MODE + 'retire' ||
+    !argv.some((value) => value.startsWith(UPDATE_REPAIR_ARGUMENT))
+  )
+    throw new Error('ERR_UPDATE_REPAIR_ARGUMENT')
+  return 'retire'
+}
 export const UPDATE_REPAIR_SELECTION = {
   home: '--repair-update-home=',
   userData: '--repair-update-user-data=',
@@ -83,6 +100,7 @@ export interface UpdateRepairScope {
   bundleId: string
   expectedTeam: string
   selection?: TerminalRestorationOptions['selection']
+  recovery?: 'orphan' | 'retire'
 }
 
 export function repairNativePaths(scope: UpdateRepairScope) {
@@ -224,6 +242,8 @@ export async function repairInstalledUpdate(
     { ...common, selection: scope.selection },
     runtime.uid
   )
+  if (options && options.recovery !== (scope.recovery ?? 'orphan'))
+    throw new Error('ERR_UPDATE_REPAIR_SCOPE')
   if (
     options &&
     Object.entries(nativePaths).some(
@@ -254,22 +274,31 @@ export async function repairInstalledUpdate(
       throw new Error('ERR_UPDATE_REPAIR_SCOPE')
     if (!context && !scope.selection) throw new Error('ERR_UPDATE_REPAIR_SELECTION_REQUIRED')
     const handoffPath = squirrelHandoffRecordPath(context?.home ?? scope.selection!.home)
+    let handoffBytes: Buffer
     let handoff: ReturnType<typeof decodeSquirrelHandoff>
     try {
-      handoff = decodeSquirrelHandoff(
-        captureRecord(handoffPath, TERMINAL_RECORD_LIMITS.handoff, [runtime.uid]).bytes
-      )
+      handoffBytes = captureRecord(handoffPath, TERMINAL_RECORD_LIMITS.handoff, [runtime.uid]).bytes
+      handoff = decodeSquirrelHandoff(handoffBytes)
     } catch (error) {
       throw new Error('ERR_UPDATE_REPAIR_STATE', { cause: error })
     }
-    if (!handoff.binding || !['requested', 'failed'].includes(handoff.state))
+    const binding =
+      scope.recovery === 'retire' ? retirementOperation(handoffBytes) : handoff.binding
+    if (
+      !binding ||
+      ![
+        'requested',
+        'failed',
+        ...(scope.recovery === 'retire' ? ['installing', 'downloaded'] : []),
+      ].includes(handoff.state)
+    )
       throw new Error('ERR_UPDATE_REPAIR_STATE')
     options = {
       ...common,
       ...nativePaths,
       handoff: handoffPath,
-      requestId: handoff.binding.requestId,
-      recovery: 'orphan',
+      requestId: binding.requestId,
+      recovery: scope.recovery ?? 'orphan',
       ...(scope.selection ? { selection: scope.selection } : {}),
     }
   }

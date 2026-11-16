@@ -38,6 +38,38 @@ def search_event(kind: str, search_id: str, results: list[dict]) -> ProductEvent
 
 
 class AnswerSourceContracts(unittest.TestCase):
+    def test_project_navigation_is_included_without_claiming_verified_evidence(self) -> None:
+        markdown = (
+            "Local [1](/api/resource/raw?project=p&path=output%2Freport.md).\n\n"
+            "| Item | Source |\n| --- | --- |\n"
+            "| Result | [1](/api/resource/raw?path=output%2Freport.md&project=p) |\n"
+            "| Paper | [2](/api/v1/literatures/paper-one?project_id=p) |\n"
+            "[3](https://example.test/paper)"
+        )
+        result = answer_sources(markdown, ())
+        self.assertEqual(
+            [source["kind"] for source in result["sources"]], ["project", "project", "searched"]
+        )
+        self.assertEqual(result["sources"][0]["title"], "report.md")
+        self.assertEqual(len(result["sources"][0]["citation_urls"]), 2)
+        self.assertNotIn("evidence", result["sources"][0])
+        line = answer_sources(
+            "[说明](/api/resource/raw?project=p&path=output%2Freport.md#L2-L5)", ()
+        )
+        self.assertEqual(line["sources"][0]["path"], "output/report.md")
+        self.assertTrue(line["sources"][0]["url"].endswith("#L2-L5"))
+        for path in ("..%2Fsecret", "%2Fsecret", "C%3A%2Fsecret", "a%5Cb", "a%00b"):
+            self.assertEqual(
+                answer_sources(f"[1](/api/resource/raw?project=p&path={path})", ())["sources"], []
+            )
+        for href in (
+            "/api/resource/raw?project=p&project=q&path=a.md",
+            "//foreign.test/api/resource/raw?project=p&path=a.md",
+            "/api/v1/literatures/one%2Ftwo?project_id=p",
+            "/api/resource/raw?project=p&path=report.md#arbitrary",
+        ):
+            self.assertEqual(answer_sources(f"[1]({href})", ())["sources"], [])
+
     def test_native_annotations_do_not_require_markdown_links_or_search_skill(self) -> None:
         text = "😀这是原生搜索结论。"
         payload = item_provenance(
@@ -67,6 +99,20 @@ class AnswerSourceContracts(unittest.TestCase):
         )
         result = answer_sources(text, [event], item_id="native-message")
         self.assertEqual(result["sources"][0]["title"], "原始来源")
+        search = search_event(
+            PRODUCT_EVENT_WEB_SEARCH_COMPLETED,
+            "web",
+            [
+                {
+                    "url": "https://example.test/source",
+                    "title": "完整来源标题",
+                    "snippet": "来源摘要",
+                }
+            ],
+        )
+        enriched = answer_sources(text, [search, event], item_id="native-message")
+        self.assertEqual(enriched["sources"][0]["title"], "完整来源标题")
+        self.assertEqual(enriched["sources"][0]["excerpt"], "来源摘要")
         self.assertEqual(
             result["sources"][0]["occurrences"], [{"start_utf16": 2, "end_utf16": len(text) + 1}]
         )

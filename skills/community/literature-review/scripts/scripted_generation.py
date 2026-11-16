@@ -13,87 +13,15 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT/'lib'))
 import slr_paths
 slr_paths.bootstrap(__file__)
+from citation_identity import normalize_outline
 from task_input import task_input
 from evidence import ensure, read, save
 from generation_errors import GenerationError, diagnostic
-from writing_prompt_guidance import OUTLINE_WRITING_GUIDANCE, TASK_GUIDANCE as SYSTEM
+from outlining import build_prompt, restore_ids
+from task_contract import read_request
 
+OUTLINE_RAW_CANDIDATE = 'raw_candidate.json'
 
-from chapter_plan import GUIDANCE as ANALYTICAL_PLANNING_GUIDANCE
-
-from figure_caption import CAPTION_CONTENT_GUIDANCE
-
-OUTLINE_PROTOCOL = r'''Plan the requested document and return one JSON object.
-
-DOCUMENT AND CHAPTER STRUCTURE
-The root has survey_title (may be empty for a component), topic, description,
-outline_tree, review_thesis, organizing_axis and prerequisites. An unsectioned
-component may use outline_tree=[] with a nonempty description; do not manufacture
-a chapter. Optional warnings contains concrete unresolved issues.
-Required_outline_nodes and structure_contract are binding: include a required
-abstract as section_id "0" in this response and omit forbidden sections.
-
-Use two distinct node shapes, not one recursive chapter template:
-- L1 chapter: section_id (unique numeric string), title, description, language,
-  role, paper_ids, requires, analysis_tasks; optional depends_on, subsections,
-  figures and tables. language is default|chinese|english, normally default.
-  An explicit user chapter exception alone justifies chinese or english; academic
-  convention does not make an abstract English.
-- L2 subsection: section_id (parent.child, e.g. "2.1"), title, description;
-  optional paper_ids, figures and tables. Its language is inherited from L1;
-  omit the language key entirely, including null, default or the parent's value.
-  There is no third outline level.
-Section choices follow the task, with no paper quotas, word budgets or claim lists.
-Do not put References, Bibliography or 参考文献 in outline_tree at either level.
-The publisher supplies that list, including when the user requests complete
-references. A literature-comparison or related-work chapter is different.
-
-ASSET PLANNING
-Plan supported figures and tables where they help the owning section's argument.
-Respect requested counts and exclusions; there is no default asset quota. Nest
-an asset under its exact L1 or L2 owner once, with a globally unique F/T ID.
-A sectioned document has no root figures/tables, even with section_id fields.
-For an unsectioned table-only component, root tables is allowed with null ownership;
-root figures is not supported. Assets are referenced within their owning chapter.
-
-Each asset has purpose (why needed), content_plan (objects/relations or candidate
-rows and comparison scope), caption_draft (reader-facing content), paper_ids
-(supporting IDs), optional qualifications (assumptions/comparability/illustration).
-Figures have figure_id and optional visual_guidance for style, label language,
-palette or metaphor; this drawing guidance stays separate from scientific content.
-Tables have table_id, row_unit and comparison_dimensions; the final columns are
-[row_unit, *comparison_dimensions]. Choose clear labels and relevant conditions.
-Use real paper IDs; [] leaves the selected corpus eligible, never invented evidence.
-Final table rows/cells and image prompts belong to later authoring.
-''' + '\n' + CAPTION_CONTENT_GUIDANCE + r'''
-
-STRUCTURAL EXAMPLE
-The example illustrates field placement, not required content or an asset quota.
-Replace its content and IDs with the actual task and evidence.
-{"survey_title":"Review","topic":"Methods","description":"Review the methods",
- "review_thesis":"Which conditions distinguish the methods?",
- "organizing_axis":"Mechanisms and conditions","prerequisites":[],
- "outline_tree":[{"section_id":"2","title":"Mechanisms","description":"Compare mechanisms","language":"default",
-   "role":"analysis","paper_ids":["p1"],"requires":[],
-   "analysis_tasks":[{"task_id":"A1","kind":"compare","question":"Which conditions distinguish the mechanisms?","completion":"Explain supported differences and limits."}],
-   "figures":[{"figure_id":"F1","purpose":"Explain the relationship",
-     "content_plan":"Show supported objects and their directed relationship",
-     "caption_draft":"The objects form a conditional relationship.",
-     "visual_guidance":"Use the requested visual style","paper_ids":[]}],
-   "subsections":[{"section_id":"2.1","title":"Conditions","description":"Compare conditions",
-     "tables":[{"table_id":"T1","purpose":"Compare methods under their assumptions",
-       "content_plan":"Rows represent methods and applicable assumptions",
-       "caption_draft":"Methods differ in mechanism and assumptions.",
-       "row_unit":"Method","comparison_dimensions":["Assumptions"],"paper_ids":[]}]}]}]}
-''' + '\n' + OUTLINE_WRITING_GUIDANCE + '\n' + ANALYTICAL_PLANNING_GUIDANCE + r'''
-
-FINAL STRUCTURE CHECK
-Before returning, check L1 and L2 separately: only L1 contains language; L2 has no
-language key. For a nonempty outline_tree, root figures/tables are absent and each
-F/T ID occurs once beneath its exact owner. Captions start with their subject,
-without a figure/table number. Check required nodes and real paper IDs against
-this task rather than copying the example.
-'''
 
 def parse_response(text):
     text = text.strip()
@@ -107,13 +35,24 @@ def parse_response(text):
 
 
 from request_capacity import capacity
+from budget import measure
 
 
-async def invoke(ws, stage, messages, cfg, identity=None, client=None, json_output=True):
+async def invoke(ws, stage, messages, cfg, identity=None, client=None, json_output=True, adapter=None):
+    with measure(ws):
+        return await _invoke(ws, stage, messages, cfg, identity, client, json_output, adapter)
+
+
+async def _invoke(ws, stage, messages, cfg, identity=None, client=None, json_output=True, adapter=None):
     counts = capacity(messages, cfg)
     owns_client = client is None
     request_id = uuid.uuid4().hex
     folder = ws/'_logs/llm'/request_id
+    if identity is not None:
+        save(folder/'input_identity.json',{'request_id':request_id,'identity':identity})
+    if adapter is not None:
+        adapter['request_id'] = request_id
+        save(folder/'outline_adapter.json', adapter)
     safe_config = {k:v for k,v in cfg.items() if k not in ('api_key', 'authorization', 'headers')}
     save(folder/'request.json', {'stage':stage, 'messages':messages, 'config':safe_config,
          'capacity':counts,
@@ -204,6 +143,11 @@ async def generate(ws, stage, request=None, cfg=None, client=None):
         from chapter_pipeline import generate as generate_chapters
         return await generate_chapters(ws,chapter_cfg=cfg,refine_cfg=cfg,client=client)
     task = task_input(ws, request)
+    if stage == 'outline' and read_request(ws).get('execution', {}).get('mode') == 'quick':
+        raise GenerationError(
+            'STAGE_NOT_APPLICABLE', 'Quick writes directly from abstracts without an outline model.',
+            next_action='Run workflow evidence --from processing, then manuscript prepare and manuscript generate.',
+        )
     if stage=='outline' and (ws/'04_outline/outline.json').exists():
         from manuscript import validate_plan
         current=read(ws/'04_outline/outline.json')
@@ -217,31 +161,45 @@ async def generate(ws, stage, request=None, cfg=None, client=None):
     from output_spec import read_output_spec
     spec = read_output_spec(ws)
     if spec.get('spec_error'): raise GenerationError('SCHEMA_INVALID', spec['spec_error'])
-    context = {'task':task, 'stage':stage, 'output_format':spec['format'], 'structure_contract':task['structure']}
-    if stage == 'outline':
-        context['required_outline_nodes'] = [{**v,'section_id':'0'} if v.get('role')=='abstract' else v for v in task['structure']['required_sections']]
     evidence = ensure(ws, 'outline')
-    context['evidence'] = Path(evidence['artifacts'][1]).read_text(encoding='utf-8')
-    # Keep full evidence intact while placing the current generative target last.
-    context = {'evidence':context['evidence'],
-               **{k:v for k,v in context.items() if k not in ('evidence','task')},
-               'task':context['task']}
-    protocol = OUTLINE_PROTOCOL
-    messages = [{'role':'system','content':SYSTEM+protocol},
-                {'role':'user','content':json.dumps(context, ensure_ascii=False)}]
+    messages, adapter = build_prompt(task, read_request(ws), read(evidence['artifacts'][0]), spec['format'])
     if cfg is None:
         from load_model_config import load_stage_config
         cfg = load_stage_config(stage+'_generation')
     if not cfg: raise GenerationError('INPUT_MISSING', 'model stage is not configured: '+stage+'_generation')
-    value, metrics = await invoke(ws, stage, messages, cfg, client=client)
+    value, metrics = await invoke(ws, stage, messages, cfg, client=client, adapter=adapter)
+    changes=[]
+    try:
+        value = restore_ids(value, adapter,changes=changes)
+    except ValueError as exc:
+        if metrics.get('evidence_dialogue'):
+            save(Path(metrics['evidence_dialogue'])/'rejected.json', {'reason': str(exc)})
+        candidate = Path(metrics['log_dir']).resolve()/OUTLINE_RAW_CANDIDATE
+        save(candidate, value)
+        raise GenerationError('SCHEMA_INVALID', str(exc), str(Path(metrics['log_dir'])/'outline_adapter.json'),
+                              log_dir=metrics['log_dir'], model_calls=metrics['model_calls'],
+                              outline_recovery={
+                                  'strategy':'repair_raw_response',
+                                  'request':str(candidate),
+                                  'command':'outline import --request <recovery-request.json>',
+                                  'import_request':{'request_id':metrics['request_id'],
+                                                    'response_path':str(candidate)}},
+                              next_action=('Copy the complete raw candidate to a new absolute path and repair only the named alias errors. '
+                                  'Keep request-local aliases in reference fields; use [[paper:P01]] for a narrative reference or escape a literal. '
+                                  'Set import_request.response_path to that corrected file and submit outline import, not outline configure. '
+                                  'The importer restores canonical identities against the saved request. Do not guess original IDs. '
+                                  'Do not rerun the outline model or overwrite the raw response.')) from exc
+    save(Path(metrics['log_dir'])/'normalization.json',{'request_id':metrics['request_id'],'changes':changes})
     candidate = Path(metrics['log_dir'])/'candidate.json'; save(candidate, value)
     if stage == 'outline':
         from manuscript import validate_plan
         from submission_normalization import outline_assets
         try:
-            value = outline_assets(value)
+            value, id_changes = normalize_outline(ws, outline_assets(value))
             validate_plan(ws, value, preparing=True)
         except (ValueError, KeyError, TypeError) as exc:
+            if metrics.get('evidence_dialogue'):
+                save(Path(metrics['evidence_dialogue'])/'rejected.json', {'reason': str(exc)})
             report=diagnostic(exc)
             raise GenerationError(report['code'],report['message'],report.get('location'),
                                   candidate_path=str(candidate),log_dir=metrics['log_dir'],
@@ -256,6 +214,7 @@ async def generate(ws, stage, request=None, cfg=None, client=None):
                                       'do not rerun outline generation for local schema, ID, enum, caption, '
                                       'duplication or ownership errors.')) from exc
         target = ws/'04_outline/outline.json'; save(target, value)
+        save(ws/'_logs/outline_identity.json', {'changes': id_changes})
         from manuscript import run_script
         run_script(ws, 'scripts/outline/render_outline_md.py', str(ws))
     result = {'status':'SUCCESS', 'stage':stage, 'artifact':str(target), **metrics,
@@ -270,7 +229,8 @@ async def generate(ws, stage, request=None, cfg=None, client=None):
 
 def main():
     p = argparse.ArgumentParser(); p.add_argument('stage', choices=['outline','manuscript'])
-    p.add_argument('--workspace', required=True); p.add_argument('--request'); args = p.parse_args()
+    p.add_argument('--workspace', required=True); p.add_argument('--request')
+    args = p.parse_args()
     ws = Path(args.workspace).resolve()
     try: result = asyncio.run(generate(ws, args.stage, __import__('task_contract').json_input(args.request) if args.request else None))
     except (ValueError, OSError, TypeError, KeyError, RuntimeError) as exc:

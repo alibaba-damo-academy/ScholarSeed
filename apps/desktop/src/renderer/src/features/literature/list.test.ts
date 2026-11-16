@@ -13,6 +13,16 @@ import type { LiteratureSummary } from '../../contracts/literature.ts'
 
 const listSource = readFileSync(new URL('./LiteratureList.tsx', import.meta.url), 'utf8')
 
+test('successful imports restore title visibility without resetting column preferences', () => {
+  const reveal = listSource.slice(
+    listSource.indexOf('const revealImported ='),
+    listSource.indexOf('const resolveDestinationLabel =')
+  )
+  assert.match(reveal, /tableScroll\.current\?\.scrollTo\(\{ left: 0, behavior: 'instant' \}\)/)
+  assert.doesNotMatch(reveal, /saveColumns|setColumns|sort:/)
+  assert.match(listSource, /if \(landed > 0\) revealImported\(\)/)
+})
+
 test('literature filter uses category terminology in both languages', () => {
   for (const [language, labels] of [
     ['zh', ['未分类', '新建分类']],
@@ -203,6 +213,23 @@ test('an in-flight list response keeps an equally new local row update', () => {
   assert.equal(newerFetch[0].title, 'Newer fetch')
 })
 
+test('cached rows only outrank older fetches and never mask equal-version scope projections', () => {
+  const fetched = {
+    ...summary('first', 'Fetched', 3),
+    project_collections: [{ id: 'current', name: 'Current', count: 1 }],
+  }
+  const cached = { ...summary('first', 'Cached', 3), project_collections: [] }
+  assert.equal(
+    mergeLiteratureSummaries([fetched], new Map([[cached.id, cached]]), false)[0],
+    fetched
+  )
+  const updated = { ...cached, version: 4 }
+  assert.equal(
+    mergeLiteratureSummaries([fetched], new Map([[updated.id, updated]]), false)[0],
+    updated
+  )
+})
+
 test('the time columns keep room for a timestamp that carries seconds', () => {
   for (const key of ['created_at', 'updated_at']) {
     assert.match(listSource, timestampColumnContract(key))
@@ -251,7 +278,7 @@ test('the literature header checkbox shows mixed selection for some visible rows
   assert.match(listSource, /checked=\{selectAllState\}/)
 })
 
-test('chip columns let the cell do the clipping so truncation stays detectable', () => {
+test('the collections column keeps its existing overflow behavior', () => {
   // 芯片自己压缩并内部省略时单元格永不溢出, tooltip 便无从判定, 因此必须保持自然宽度。
   assert.match(listSource, /const CHIP_CLASS = 'shrink-0 max-w-none'/)
   // 遗留的 .lit-row-projects 胶囊样式会覆盖设计系统徽标并让它自我省略。
@@ -267,7 +294,7 @@ test('the projects column shows only the first project and folds the rest into a
   assert.doesNotMatch(listSource, /item\.projects\.map\(/)
   assert.match(
     listSource,
-    /<Badge\s+className=\{CHIP_CLASS\}\s+tone="brand"\s*>\s*\{item\.projects\[0\]\.name\}\s*<\/Badge>/
+    /<Badge\s+className="min-w-0"\s+tone="brand"\s*>\s*<EllipsisText\s+tooltipPortalled\s*>\s*\{item\.projects\[0\]\.name\}\s*<\/EllipsisText>\s*<\/Badge>/
   )
   assert.match(listSource, /\+\{item\.projects\.length - 1\}/)
   // 计数芯片同样不参与压缩, 否则它会先自我省略而失去 tooltip 判定依据。
@@ -303,7 +330,7 @@ test('every literature column reveals its full text through a truncation tooltip
   const portalled = listSource.match(/tooltipPortalled/g) ?? []
   assert.equal(cells.length, portalled.length)
   assert.ok(cells.length >= 9)
-  assert.doesNotMatch(listSource, /<span key=\{key\}/)
+  assert.doesNotMatch(listSource, /<span key=\{key\}(?! className=\{CHIP_CELL_CLASS\})/)
   assert.doesNotMatch(listSource, /title=\{item\./)
   assert.doesNotMatch(listSource, /title=\{facetNames/)
   assert.doesNotMatch(listSource, /title=\{attachment\.name\}/)

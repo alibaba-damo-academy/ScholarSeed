@@ -1,6 +1,38 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { createArchiveReader } from './archives.ts'
+import { archiveStopRequired, createArchiveReader } from './archives.ts'
+import type { SessionStatusSnapshot } from '../../api.ts'
+
+test('archive confirmation uses the selected session status, including pending work and uncertainty', () => {
+  const idle = {
+    running: false,
+    waiting: false,
+    interrupting: false,
+    pending_hil: [],
+    queued_messages: [],
+    uncertain_operations: [],
+    unknown_outcome: false,
+  } as unknown as SessionStatusSnapshot
+  for (const last_turn_status of [null, 'completed', 'interrupted', 'failed']) {
+    assert.equal(archiveStopRequired({ ...idle, last_turn_status } as SessionStatusSnapshot), false)
+  }
+  assert.equal(
+    archiveStopRequired({ ...idle, pending_hil: [{ blocking: false }] } as SessionStatusSnapshot),
+    false
+  )
+  for (const active of [
+    { running: true },
+    { waiting: true },
+    { interrupting: true },
+    { pending_hil: [{}] },
+    { queued_messages: [{ status: 'failed' }] },
+    { uncertain_operations: [{}] },
+    { unknown_outcome: true },
+    { running: undefined },
+  ]) {
+    assert.equal(archiveStopRequired({ ...idle, ...active } as SessionStatusSnapshot), true)
+  }
+})
 
 function deferred<Value>() {
   let resolve!: (value: Value) => void

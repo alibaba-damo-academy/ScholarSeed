@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 
 from service.chat.constants import (
     PRODUCT_EVENT_MESSAGE_DELTA,
@@ -25,6 +26,7 @@ FINAL_ANSWER_PHASE = "final_answer"
 # `item:{vendor_item_id}` is the canonical form used for thinking/tool and, for
 # newly created annotations, for agent answers too.
 ITEM_MESSAGE_ID_PREFIX = "item:"
+TURN_ANSWER_ID_PREFIX = "turn:"
 
 
 class ProductAnswerSource:
@@ -36,10 +38,42 @@ class ProductAnswerSource:
     excerpted using the same identity contract used for agent answers.
     """
 
-    def __init__(self, events: ProductEventStore) -> None:
+    def __init__(
+        self,
+        events: ProductEventStore,
+        card_markdown: Callable[[str, str], tuple[str, ...]] | None = None,
+    ) -> None:
         self._events = events
+        self._card_markdown = card_markdown
 
     def answer(self, *, session_id: str, answer_id: str) -> AssistantAnswer | None:
+        if answer_id.startswith(TURN_ANSWER_ID_PREFIX):
+            turn_id = answer_id.removeprefix(TURN_ANSWER_ID_PREFIX)
+            records = self._events.turn_records(
+                session_id, turn_id, turn_id, kinds=(PRODUCT_EVENT_MESSAGE_DELTA,)
+            )
+            messages: dict[str, str] = {}
+            for record in records:
+                if record.payload.get("phase") == FINAL_ANSWER_PHASE:
+                    messages[record.vendor_item_id or str(record.product_seq)] = str(
+                        record.payload.get("delta") or ""
+                    )
+            context = self._events.turn_context(session_id, turn_id)
+            binding_turn = str(context.get("client_turn_id") or turn_id)
+            cards = self._card_markdown(session_id, binding_turn) if self._card_markdown else ()
+            markdown = "\n\n".join((*messages.values(), *cards))
+            if not markdown:
+                return None
+            return AssistantAnswer(
+                answer_id=answer_id,
+                session_id=session_id,
+                turn_id=turn_id,
+                source_product_seq=records[0].product_seq if records else 0,
+                vendor_item_id=None,
+                markdown=markdown,
+                revision=self._revision(markdown),
+                completed_at=None,
+            )
         item_id = self._item_id(answer_id)
         if item_id is not None:
             return self._by_item(session_id, answer_id, item_id)

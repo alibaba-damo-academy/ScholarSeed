@@ -21,9 +21,6 @@ PUBLIC_SLOTS = frozenset(
         "preview.literature-results",
         "literature.selection",
         "literature.authorization",
-        "display.literature-downloads",
-        "display.literature-delivery",
-        "display.literature-references",
     }
 )
 PACKAGE_NAMES = (
@@ -32,7 +29,7 @@ PACKAGE_NAMES = (
     "literature-review",
     "research-idea-partner",
 )
-PRIVATE_SLOTS = frozenset({"literature.outline", "display.literature-review"})
+PRIVATE_SLOTS = frozenset({"display.literature-review"})
 AUTHOR_PLUGIN = "method-comparison"
 AUTHOR_VERSION = "0.1.0"
 

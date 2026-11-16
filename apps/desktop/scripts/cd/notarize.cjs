@@ -130,7 +130,7 @@ exports.default = async function notarizeMacApplication(context) {
     }
 
     log(`accepted ${receipt.id}, stapling ${appPath}`)
-    command('xcrun', ['stapler', 'staple', appPath])
+    verify.trustCommand('staple', 'xcrun', ['stapler', 'staple', appPath])
     verify.atomicJSON(path.join(frozen.runDirectory, 'notary.json'), {
       id: receipt.id,
       status: receipt.status,

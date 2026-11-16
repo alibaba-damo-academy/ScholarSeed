@@ -1,3 +1,4 @@
+import type * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import type { HTMLAttributes, MouseEvent } from 'react'
 
@@ -30,7 +31,7 @@ export function badgeVariants({ className, size = 'md', tone, variant }: BadgeVa
   return cx(badgeClassName({ size, tone: resolvedTone }), badgeStyleClassName({ size, tone: resolvedTone }), className)
 }
 
-export function Badge({ children, className, onRemove, size = 'md', tone, variant, ...props }: BadgeProps): JSX.Element {
+export function Badge({ children, className, onRemove, size = 'md', tone, variant, ...props }: BadgeProps): React.JSX.Element {
   const { t } = useTranslation('ui')
   const handleRemove = (event: MouseEvent<HTMLButtonElement>): void => {
     event.stopPropagation()
@@ -55,6 +56,6 @@ export function Badge({ children, className, onRemove, size = 'md', tone, varian
 }
 
 /** Compact decoration shared by document tabs and file/status indicators. */
-export function BadgeDot({ className, tone = 'danger', ...props }: HTMLAttributes<HTMLSpanElement> & { tone?: 'danger' | 'neutral' }): JSX.Element {
+export function BadgeDot({ className, tone = 'danger', ...props }: HTMLAttributes<HTMLSpanElement> & { tone?: 'danger' | 'neutral' }): React.JSX.Element {
   return <i className={cx('block size-[6px] shrink-0 rounded-full', tone === 'danger' ? 'bg-[var(--vds-error-bg-default)]' : 'bg-current', className)} {...props} />
 }

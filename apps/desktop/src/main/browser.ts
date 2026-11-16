@@ -25,11 +25,13 @@ import type { PageActions } from './page.ts'
 import type {
   BrowserDataRequest,
   BrowserDataType,
+  BrowserDownloadNotice,
   BrowserDownloadSettings,
   BrowserHistoryPage,
   BrowserHistoryQuery,
   BrowserPageCommand,
   BrowserSnapshot,
+  BrowserCommandSnapshot,
   BrowserTabSnapshot,
 } from '../browser.ts'
 import type { MenuTarget } from '../menu.ts'
@@ -52,15 +54,16 @@ import {
 import type { DownloadStage } from './downloads.ts'
 import { mainLocalization } from './localization.ts'
 import { desktopHome } from './storage.ts'
-import { browserResourceAllowed, normalizeBrowserInput } from './navigation.ts'
+import { BLANK_PAGE, browserResourceAllowed, normalizeBrowserInput } from './navigation.ts'
+import { createPdfViewerPolicy } from './pdf.ts'
 import { BROWSER_PROXY_ERROR_HEADER, createBrowserNetwork } from './network.ts'
 import type { BrowserNetwork } from './network.ts'
 import { createSearchFormExecutor } from './searchform.ts'
 import type { PreparedSearchForm, SearchFormConfig } from './searchform.ts'
+import { FAVICON_WORLD, faviconScript, type FaviconData } from './favicon.ts'
 
 const EMPTY_BOUNDS: Rectangle = { x: 0, y: 0, width: 0, height: 0 }
 const DEBUGGER_VERSION = '1.3'
-const BLANK_PAGE = 'about:blank'
 const LOOPBACK = '127.0.0.1'
 const PROXY_BYPASS_RULES = '<-loopback>'
 const owners = new WeakSet<Electron.Session>()
@@ -129,6 +132,12 @@ interface BrowserContext {
 }
 
 interface BrowserEntry {
+  documentReady?: boolean
+  pdf: ReturnType<typeof createPdfViewerPolicy>
+  pendingUrl?: string
+  openerTabId?: string
+  favicon?: string
+  faviconSource?: string
   page: PageActions
   tabId: string
   agentInstanceId: string
@@ -248,6 +257,7 @@ async function awaitNavigationIdle(contents: WebContents): Promise<void> {
 
 export interface BrowserRegistry {
   createSearchTarget(): Promise<{ tabId: string; close(): void }>
+  isSearchTarget(tabId: string): boolean
   takeSearchRedirect(tabId: string): Readonly<{ requestedUrl: string; url: string }> | null
   prepareSearchForm(
     tabId: string,
@@ -263,7 +273,7 @@ export interface BrowserRegistry {
   stopFind(target: BrowserPageTarget): void
   focusPage(target: BrowserPageTarget): void
   snapshot(): BrowserSnapshot
-  dispatch(command: BrowserPageCommand): Promise<BrowserSnapshot>
+  dispatch(command: BrowserPageCommand): Promise<BrowserCommandSnapshot>
   target(tabId: string): WebContents
   menuTarget(tabId: string): Extract<MenuTarget, { kind: 'browser' }>
   nativeVisible(): boolean
@@ -317,9 +327,11 @@ export interface BrowserRegistry {
 }
 
 interface BrowserOptions {
+  onDownload?(notice: BrowserDownloadNotice): void
   onFind?(target: BrowserPageTarget): void
   onPageFocus?(): void
   onVisibilityChanged?(): void
+  onLayout?(): void
   apiBase: string
   python?: string | null
   publish(snapshot: BrowserSnapshot): void
@@ -340,6 +352,7 @@ export function createBrowserRegistry(
   options: BrowserOptions
 ): BrowserRegistry {
   const windowEvents: EventEmitter = window
+  const rendererEvents: EventEmitter = window.webContents
   const logSearch = (
     category: 'form' | 'navigation' | 'render',
     details: Record<string, string | number | boolean | null | undefined>
@@ -463,7 +476,9 @@ export function createBrowserRegistry(
   const searchOwners = new Map<string, BrowserContext>()
   const searchNavigationRequests = new WeakMap<BrowserEntry, SearchNavigationAttempt>()
   const searchRedirects = new Map<string, SearchRedirectRecord>()
-  const popupAdmissions = new Set<{ source: BrowserEntry; tabId: string | null }>()
+  type PopupAdmission = { pendingSource: BrowserEntry | null; tabId: string | null }
+  const popupAdmissions = new Set<PopupAdmission>()
+  const pendingPopups = new Map<string, Promise<void> | null>()
   const stagingEntries = new Set<BrowserEntry>()
   const liveEntries = new Set<BrowserEntry>()
   const stageControllers = new Map<BrowserEntry, AbortController>()
@@ -549,7 +564,8 @@ export function createBrowserRegistry(
   }
   const externalEntryFor = (tabId: string): BrowserEntry => {
     const entry = entryFor(tabId)
-    if (entry.context.agentIsolated) throw new Error(BROWSER_ERROR.permissionDenied)
+    if (entry.context.agentIsolated || pendingPopups.has(tabId))
+      throw new Error(BROWSER_ERROR.permissionDenied)
     return entry
   }
   const attachEntry = (entry: BrowserEntry): WebContents => {
@@ -563,22 +579,27 @@ export function createBrowserRegistry(
     return contents
   }
   const snapshot = (): BrowserSnapshot => ({
-    tabs: [...entries.values()].map((entry) => {
-      const contents = entry.view.webContents
-      return {
-        tabId: entry.tabId,
-        url: contents.getURL(),
-        title: contents.getTitle(),
-        loading: contents.isLoadingMainFrame(),
-        canGoBack: contents.navigationHistory.canGoBack(),
-        canGoForward: contents.navigationHistory.canGoForward(),
-        navigationError: entry.error,
-        devtoolsOpen:
-          entry.devtoolsWindow !== null || entry.devtoolsOpening || contents.isDevToolsOpened(),
-        zoomFactor: entry.page.zoom(),
-        cdpStatus: entry.cdpStatus,
-      }
-    }),
+    tabs: [...entries.values()]
+      .filter((entry) => !pendingPopups.has(entry.tabId))
+      .map((entry) => {
+        const contents = entry.view.webContents
+        return {
+          tabId: entry.tabId,
+          url: entry.pendingUrl ?? contents.getURL(),
+          title: contents.getTitle(),
+          favicon: entry.favicon,
+          openerTabId: entry.openerTabId,
+          loading: contents.isLoadingMainFrame(),
+          documentReady: entry.documentReady ?? false,
+          canGoBack: contents.navigationHistory.canGoBack(),
+          canGoForward: contents.navigationHistory.canGoForward(),
+          navigationError: entry.error,
+          devtoolsOpen:
+            entry.devtoolsWindow !== null || entry.devtoolsOpening || contents.isDevToolsOpened(),
+          zoomFactor: entry.page.zoom(),
+          cdpStatus: entry.cdpStatus,
+        }
+      }),
     activeTabId,
     automation: { enabled: false, port: null },
   })
@@ -603,6 +624,7 @@ export function createBrowserRegistry(
     if (window.isDestroyed()) return
     const windowBounds = window.getContentBounds()
     const zoom = window.webContents.getZoomFactor()
+    let presentationChanged = false
     for (const entry of entries.values()) {
       const visible =
         !entry.context.searchOnly &&
@@ -618,13 +640,44 @@ export function createBrowserRegistry(
       }
       bounds.width = Math.max(0, Math.min(bounds.width, windowBounds.width - bounds.x))
       bounds.height = Math.max(0, Math.min(bounds.height, windowBounds.height - bounds.y))
-      entry.view.setBounds(
-        entry.context.searchOnly ? SEARCH_VIEWPORT_BOUNDS : visible ? bounds : EMPTY_BOUNDS
+      const next = entry.context.searchOnly
+        ? SEARCH_VIEWPORT_BOUNDS
+        : visible
+          ? bounds
+          : EMPTY_BOUNDS
+      const previous = entry.view.getBounds()
+      const previousVisible = entry.view.getVisible()
+      const geometryChanged =
+        previous.x !== next.x ||
+        previous.y !== next.y ||
+        previous.width !== next.width ||
+        previous.height !== next.height
+      const visibilityChanged = previousVisible !== visible
+      if (
+        (previousVisible && previous.width > 0 && previous.height > 0) !==
+          (visible && next.width > 0 && next.height > 0) ||
+        visibilityChanged
       )
-      entry.view.setVisible(visible)
-      syncSearchRendering(entry, 'layout')
+        presentationChanged = true
+      if (geometryChanged) entry.view.setBounds(next)
+      if (visibilityChanged) entry.view.setVisible(visible)
+      if (geometryChanged || visibilityChanged) syncSearchRendering(entry, 'layout')
     }
-    options.onVisibilityChanged?.()
+    if (presentationChanged) options.onVisibilityChanged?.()
+    options.onLayout?.()
+  }
+  const revokeRendererPresentation = (): void => {
+    for (const entry of entries.values()) {
+      entry.visible = false
+      entry.bounds = { ...EMPTY_BOUNDS }
+    }
+    layout()
+  }
+  const onRendererNavigation = (details: {
+    isMainFrame: boolean
+    isSameDocument: boolean
+  }): void => {
+    if (details.isMainFrame && !details.isSameDocument) revokeRendererPresentation()
   }
   const resourceAllowed = (
     entry: BrowserEntry,
@@ -704,7 +757,15 @@ export function createBrowserRegistry(
         return
       }
       entry.downloadHandoffUrls = new Set(urls)
-      if (!downloadSourceAllowed(urls, contents.getURL(), entry.context.origin, apiOrigin)) {
+      if (
+        !downloadSourceAllowed(
+          urls,
+          contents.getURL(),
+          entry.context.origin,
+          apiOrigin,
+          entry.downloadNavigation?.url
+        )
+      ) {
         event.preventDefault()
         if (entry.downloadNavigation && urls.includes(entry.downloadNavigation.url))
           entry.downloadNavigation.complete(false)
@@ -714,12 +775,15 @@ export function createBrowserRegistry(
       }
       const settings = downloads.snapshot()
       const filename = safeDownloadName(item.getFilename())
-      if (
+      const downloadId = randomUUID()
+      const notifyDownload = (status: BrowserDownloadNotice['status']) =>
+        options.onDownload?.({ id: downloadId, status })
+      const usesSaveDialog =
         settings.askEveryTime ||
         !settings.directoryAvailable ||
         !options.python ||
         !settings.automaticAvailable
-      ) {
+      if (usesSaveDialog) {
         item.setSaveDialogOptions({
           defaultPath: settings.directoryAvailable ? join(settings.directory, filename) : filename,
         })
@@ -743,15 +807,22 @@ export function createBrowserRegistry(
                 stage!.path,
                 settings.directory,
                 filename
-              ).then(cleanup, (error) => {
-                entry.error = BROWSER_ERROR.automaticDownloadUnavailable
-                options.log(
-                  `[browser-download] safe publication failed: ${String(error)}; staged file retained at ${stage!.path}`
-                )
-                publish()
-                if (window.isVisible()) queueRecovery(stage!)
-                else pendingRecovery.push(stage!)
-              })
+              ).then(
+                () => {
+                  cleanup()
+                  notifyDownload('saved')
+                },
+                (error) => {
+                  notifyDownload('interrupted')
+                  entry.error = BROWSER_ERROR.automaticDownloadUnavailable
+                  options.log(
+                    `[browser-download] safe publication failed: ${String(error)}; staged file retained at ${stage!.path}`
+                  )
+                  publish()
+                  if (window.isVisible()) queueRecovery(stage!)
+                  else pendingRecovery.push(stage!)
+                }
+              )
               downloadPublications.add(publication)
               void publication.then(
                 () => downloadPublications.delete(publication),
@@ -768,6 +839,7 @@ export function createBrowserRegistry(
             }
           }
           event.preventDefault()
+          notifyDownload('interrupted')
           entry.error = BROWSER_ERROR.automaticDownloadUnavailable
           options.log(`[browser-download] staging failed: ${String(error)}`)
           publish()
@@ -779,10 +851,21 @@ export function createBrowserRegistry(
         finishDownload = resolve
       })
       downloadItems.set(item, downloadDone)
-      item.once('done', () => {
+      if (pendingPopups.has(entry.tabId)) pendingPopups.set(entry.tabId, downloadDone)
+      const onDownloadProgress = (_event: Electron.Event, state: 'progressing' | 'interrupted') => {
+        if (state !== 'progressing' || !item.getSavePath()) return
+        item.removeListener('updated', onDownloadProgress)
+        notifyDownload('started')
+      }
+      if (usesSaveDialog) item.on('updated', onDownloadProgress)
+      item.once('done', (_event, state) => {
+        if (usesSaveDialog) item.removeListener('updated', onDownloadProgress)
+        if (state === 'interrupted' || state === 'cancelled') notifyDownload(state)
+        if (state === 'completed' && usesSaveDialog) notifyDownload('saved')
         downloadItems.delete(item)
         finishDownload()
       })
+      if (!usesSaveDialog) notifyDownload('started')
       entry.error = null
       if (entry.downloadNavigation && urls.includes(entry.downloadNavigation.url))
         entry.downloadNavigation.complete(true)
@@ -821,7 +904,8 @@ export function createBrowserRegistry(
                         entry.agentNavigationOrigin !== null &&
                         originOf(details.url) !== entry.agentNavigationOrigin
                       ? 'origin_mismatch'
-                      : !resourceAllowed(
+                      : !entry.pdf.allows(details) &&
+                          !resourceAllowed(
                             entry,
                             details.url,
                             details.resourceType === 'mainFrame',
@@ -841,13 +925,29 @@ export function createBrowserRegistry(
     isolatedSession.webRequest.onHeadersReceived((details, callback) => {
       const marker = details.responseHeaders?.[BROWSER_PROXY_ERROR_HEADER]?.[0]
       const proxyError = marker ? boundary?.consumeProxyError(marker) : null
-      const entry = [...stagingEntries].find(
+      const entry = [...entries.values(), ...stagingEntries].find(
         (value) =>
           value.context.session === isolatedSession &&
           value.view.webContents.id === details.webContentsId
       )
       if (entry && details.resourceType === 'mainFrame' && proxyError) entry.proxyError = proxyError
+      if (!disposed && entry && !entry.context.searchOnly && !blocksSessionClear(entry.context))
+        entry.pdf.response(details)
       callback({})
+    })
+    isolatedSession.webRequest.onErrorOccurred((details) => {
+      const entry = [...entries.values(), ...stagingEntries].find(
+        (value) =>
+          value.context.session === isolatedSession &&
+          value.view.webContents.id === details.webContentsId
+      )
+      if (!disposed && entry?.pdf.viewerFailure(details)) {
+        entry.error = BROWSER_ERROR.navigationFailed
+        options.log(
+          `[browser-pdf] viewer resource failed tab=${entry.tabId} error=${details.error}`
+        )
+        publish()
+      }
     })
     const network = createBrowserNetwork(
       () => (localOrigin === apiOrigin ? localOrigin : null),
@@ -1144,6 +1244,7 @@ export function createBrowserRegistry(
         throw error
       }
       staged.bounds = entry.bounds
+      staged.openerTabId = entry.openerTabId
       staged.view.webContents.setZoomFactor(entry.page.zoom())
       entry.page.invalidate()
       staged.visible = entry.visible
@@ -1297,7 +1398,7 @@ export function createBrowserRegistry(
   }
   const closePopupChildren = (entry: BrowserEntry) => {
     for (const admission of [...popupAdmissions]) {
-      if (admission.source !== entry) continue
+      if (admission.pendingSource !== entry) continue
       popupAdmissions.delete(admission)
       if (!admission.tabId) continue
       const child = entries.get(admission.tabId)
@@ -1320,6 +1421,7 @@ export function createBrowserRegistry(
         retireContext(staged.context)
       }
     entries.delete(entry.tabId)
+    pendingPopups.delete(entry.tabId)
     for (const admission of [...popupAdmissions])
       if (admission.tabId === entry.tabId) popupAdmissions.delete(admission)
     closePopupChildren(entry)
@@ -1329,7 +1431,8 @@ export function createBrowserRegistry(
     if (!entry.view.webContents.isDestroyed())
       entry.view.webContents.close({ waitForBeforeUnload: false })
     retireContext(entry.context)
-    if (activeTabId === entry.tabId) activeTabId = entries.keys().next().value ?? null
+    if (activeTabId === entry.tabId)
+      activeTabId = [...entries.keys()].find((tabId) => !pendingPopups.has(tabId)) ?? null
     layout()
     publish()
   }
@@ -1337,7 +1440,8 @@ export function createBrowserRegistry(
     context: BrowserContext,
     tabId: string = randomUUID(),
     registered = true,
-    zoom?: number
+    zoom?: number,
+    pendingPopup = false
   ): BrowserEntry => {
     const view = new WebContentsView({
       webPreferences: {
@@ -1377,6 +1481,7 @@ export function createBrowserRegistry(
       },
     })
     const entry: BrowserEntry = {
+      pdf: createPdfViewerPolicy(),
       page,
       tabId,
       agentInstanceId: randomUUID(),
@@ -1423,7 +1528,7 @@ export function createBrowserRegistry(
     })
     contents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp')
     if (registered) {
-      if (activeTabId) {
+      if (activeTabId && !pendingPopup) {
         const previous = entries.get(activeTabId)
         if (previous) {
           previous.menuNavigationId += 1
@@ -1431,7 +1536,10 @@ export function createBrowserRegistry(
         }
       }
       entries.set(entry.tabId, entry)
-      activeTabId = entry.tabId
+      if (pendingPopup) {
+        pendingPopups.set(entry.tabId, null)
+        view.setVisible(false)
+      } else activeTabId = entry.tabId
       window.contentView.addChildView(view)
     } else stagingEntries.add(entry)
     contents.on('before-input-event', (event, input) => {
@@ -1477,7 +1585,7 @@ export function createBrowserRegistry(
         popupAdmissions.size < MAX_ACTIVE_POPUPS &&
         resourceAllowed(entry, url, false, originOf(contents.getURL()))
       ) {
-        const admission = { source: entry, tabId: null as string | null }
+        const admission: PopupAdmission = { pendingSource: entry, tabId: null }
         popupAdmissions.add(admission)
         void open(url, admission)
           .catch(() => options.log('[browser] popup navigation denied'))
@@ -1562,7 +1670,14 @@ export function createBrowserRegistry(
       guard(event, url, true, event.isMainFrame ?? isMainFrame)
     )
     contents.on('did-start-navigation', (details) => {
+      if (details.isMainFrame && !details.isSameDocument) {
+        entry.pdf.reset()
+        entry.favicon = undefined
+        entry.faviconSource = undefined
+      }
       if (!details.isMainFrame) return
+      entry.pendingUrl = details.url
+      publish()
       entry.menuNavigationId += 1
       entry.page.invalidate()
       if (entry.searchForm?.active()) {
@@ -1652,9 +1767,48 @@ export function createBrowserRegistry(
         history.updateTitle(entry.latestVisitId, title)
       publish()
     })
+    contents.on('page-favicon-updated', (_event, sources) => {
+      const source = sources[0]
+      const page = contents.getURL()
+      entry.faviconSource = source
+      entry.favicon = undefined
+      publish()
+      if (!source || entry.context.agentIsolated) return
+      const code = faviconScript(source, page)
+      if (!code) return
+      void (
+        contents.executeJavaScriptInIsolatedWorld(FAVICON_WORLD, [
+          { code },
+        ]) as Promise<FaviconData | null>
+      )
+        .then((icon) => {
+          if (
+            !icon ||
+            entries.get(entry.tabId) !== entry ||
+            contents.isDestroyed() ||
+            contents.getURL() !== page ||
+            entry.faviconSource !== source
+          )
+            return
+          entry.favicon = `data:${icon.mediaType};base64,${Buffer.from(icon.bytes).toString('base64')}`
+          publish()
+        })
+        .catch((error) =>
+          options.log(
+            `[browser-favicon] Icon unavailable: ${error instanceof Error ? error.name : 'unknown'}`
+          )
+        )
+    })
     contents.on('did-start-loading', publish)
-    contents.on('did-stop-loading', publish)
-    contents.on('dom-ready', () => syncSearchRendering(entry, 'document-ready'))
+    contents.on('did-stop-loading', () => {
+      entry.pendingUrl = undefined
+      publish()
+    })
+    contents.on('dom-ready', () => {
+      entry.documentReady = contents.getURL() !== BLANK_PAGE
+      syncSearchRendering(entry, 'document-ready')
+      publish()
+    })
     contents.on('did-navigate-in-page', (_event, url, isMainFrame) => {
       if (isMainFrame) {
         if (entry.searchForm?.active()) {
@@ -1757,19 +1911,20 @@ export function createBrowserRegistry(
     layout()
     return entry
   }
-  const open = async (input?: string, popup?: { source: BrowserEntry; tabId: string | null }) => {
+  const open = async (input?: string, popup?: PopupAdmission) => {
     if (clearing) throw new Error(BROWSER_ERROR.cdpBusy)
     const openingEpoch = clearEpoch
     const openingProfileEpoch = profileClearEpoch
     const openingHistoryEpoch = historyClearEpoch
     const url = input ? normalizeBrowserInput(input) : null
-    const context = popup?.source.context.agentIsolated
-      ? popup.source.context
+    const source = popup?.pendingSource
+    const context = source?.context.agentIsolated
+      ? source.context
       : url?.origin === apiOrigin
         ? createContext(apiOrigin)
         : remoteContext
     await context.ready
-    if (popup && entries.get(popup.source.tabId) !== popup.source) {
+    if (popup && (!source || entries.get(source.tabId) !== source)) {
       retireContext(context)
       throw new Error(BROWSER_ERROR.targetClosed)
     }
@@ -1785,7 +1940,8 @@ export function createBrowserRegistry(
       retireContext(context)
       throw new Error(BROWSER_ERROR.permissionDenied)
     }
-    const entry = createEntry(context)
+    const entry = createEntry(context, undefined, true, undefined, Boolean(popup))
+    if (source && !source.context.agentIsolated) entry.openerTabId = source.tabId
     entry.historyNavigationEpoch = openingHistoryEpoch
     entry.historyNavigationPending = true
     if (popup) popup.tabId = entry.tabId
@@ -1796,7 +1952,7 @@ export function createBrowserRegistry(
           input,
           true,
           undefined,
-          Boolean(popup?.source.context.agentIsolated),
+          Boolean(source?.context.agentIsolated),
           openingHistoryEpoch
         )
       else {
@@ -1809,9 +1965,26 @@ export function createBrowserRegistry(
       }
       if (
         popup &&
-        (entries.get(popup.source.tabId) !== popup.source || entries.get(entry.tabId) !== entry)
+        (!source || entries.get(source.tabId) !== source || entries.get(entry.tabId) !== entry)
       ) {
         throw new Error(BROWSER_ERROR.targetClosed)
+      }
+      if (popup) {
+        const downloadDone = pendingPopups.get(entry.tabId)
+        if (downloadDone) {
+          await downloadDone
+          if (entries.get(entry.tabId) === entry) closeEntry(entry)
+          return entry.tabId
+        }
+        const previous = activeTabId ? entries.get(activeTabId) : undefined
+        if (previous) {
+          previous.menuNavigationId += 1
+          previous.page.invalidate()
+        }
+        pendingPopups.delete(entry.tabId)
+        popup.pendingSource = null
+        activeTabId = entry.tabId
+        layout()
       }
     } catch (error) {
       if (entries.get(entry.tabId) === entry) closeEntry(entry)
@@ -1823,26 +1996,31 @@ export function createBrowserRegistry(
   const dispose = (): Promise<void> => {
     if (disposal) return disposal
     disposed = true
-    historyAgent.revokeAll()
-    const downloadsDone = [...downloadItems.values()]
-    for (const item of downloadItems.keys()) item.cancel()
-    for (const entry of [...entries.values()]) closeEntry(entry)
-    for (const staged of [...stagingEntries]) {
-      stageControllers.get(staged)?.abort()
-      stageControllers.delete(staged)
-      stagingEntries.delete(staged)
-      if (!staged.view.webContents.isDestroyed())
-        staged.view.webContents.close({ waitForBeforeUnload: false })
-      retireContext(staged.context)
-    }
-    for (const event of WINDOW_LAYOUT_EVENTS) windowEvents.removeListener(event, layout)
-    window.removeListener('show', onRecoveryShow)
-    window.removeListener('closed', onClosed)
-    disposal = Promise.allSettled([
-      ...pendingDisposals,
-      ...[...contexts].map((context) => context.close()),
-    ])
-      .then(async (results) => {
+    disposal = Promise.resolve()
+      .then(async () => {
+        historyAgent.revokeAll()
+        for (const event of WINDOW_LAYOUT_EVENTS) windowEvents.removeListener(event, layout)
+        windowEvents.removeListener('show', onRecoveryShow)
+        windowEvents.removeListener('closed', onClosed)
+        rendererEvents.removeListener('did-start-navigation', onRendererNavigation)
+        rendererEvents.removeListener('render-process-gone', revokeRendererPresentation)
+        const downloadsDone = [...downloadItems.values()]
+        for (const item of downloadItems.keys()) item.cancel()
+        for (const entry of [...entries.values()]) {
+          if (entries.has(entry.tabId)) closeEntry(entry)
+        }
+        for (const staged of [...stagingEntries]) {
+          stageControllers.get(staged)?.abort()
+          stageControllers.delete(staged)
+          stagingEntries.delete(staged)
+          if (!staged.view.webContents.isDestroyed())
+            staged.view.webContents.close({ waitForBeforeUnload: false })
+          retireContext(staged.context)
+        }
+        const results = await Promise.allSettled([
+          ...pendingDisposals,
+          ...[...contexts].map((context) => context.close()),
+        ])
         await Promise.all(downloadsDone)
         await Promise.all([recoveryQueue, ...downloadPublications])
         await historyAgent.waitForLeases()
@@ -1861,6 +2039,8 @@ export function createBrowserRegistry(
   }
   for (const event of WINDOW_LAYOUT_EVENTS) windowEvents.on(event, layout)
   window.once('closed', onClosed)
+  rendererEvents.on('did-start-navigation', onRendererNavigation)
+  rendererEvents.on('render-process-gone', revokeRendererPresentation)
   const createIsolatedTarget = async (
     searchOnly = false
   ): Promise<{ tabId: string; close(): void }> => {
@@ -1968,7 +2148,7 @@ export function createBrowserRegistry(
     },
     externalTabIds: () =>
       [...entries.values()]
-        .filter((entry) => !entry.context.agentIsolated)
+        .filter((entry) => !entry.context.agentIsolated && !pendingPopups.has(entry.tabId))
         .map((entry) => entry.tabId),
     externalTarget: (tabId) => externalEntryFor(tabId).view.webContents,
     agentTarget(tabId) {
@@ -2031,6 +2211,10 @@ export function createBrowserRegistry(
           target.close()
         },
       }
+    },
+    isSearchTarget(tabId) {
+      const entry = entries.get(tabId)
+      return !!entry && searchOwners.get(tabId) === entry.context
     },
     takeSearchRedirect(tabId) {
       const receipt = searchRedirects.get(tabId)
@@ -2110,8 +2294,8 @@ export function createBrowserRegistry(
       if (disposed) throw new Error(BROWSER_ERROR.targetClosed)
       if (clearing) throw new Error(BROWSER_ERROR.cdpBusy)
       if (command.kind === 'open') {
-        await open(command.input)
-        return snapshot()
+        const openedTabId = await open(command.input)
+        return { ...snapshot(), openedTabId }
       }
       const entry = entryFor(command.tabId)
       const contents = entry.view.webContents
@@ -2144,7 +2328,7 @@ export function createBrowserRegistry(
           }
           entry.visible = command.visible
           layout()
-          break
+          return snapshot()
         case 'back':
           if (contents.navigationHistory.canGoBack()) {
             invalidateAgentTarget(entry)
@@ -2160,6 +2344,12 @@ export function createBrowserRegistry(
         case 'reload':
           invalidateAgentTarget(entry)
           contents.reload()
+          break
+        case 'stop-loading':
+          if (contents.isLoadingMainFrame()) {
+            if (entry.agentNavigationOrigin !== null) cancelAgentLoad(entry)
+            else contents.stop()
+          }
           break
         case 'devtools':
           if (command.open) {
@@ -2279,7 +2469,7 @@ export function createBrowserRegistry(
       return snapshot()
     },
     async clearData(request, stopAutomation) {
-      if (request.kind === 'clear-site-data') parseBrowserDataRequest(request)
+      parseBrowserDataRequest(request)
       if (clearing) throw new Error(BROWSER_ERROR.cdpBusy)
       clearing = true
       if (
@@ -2293,6 +2483,7 @@ export function createBrowserRegistry(
         await historyAgent.beginClear()
         if (request.kind === 'clear-history') return history.clear({ since: request.since })
         const selected = request.kind === 'clear-selected' ? request.types : null
+        const historyRange = request.kind === 'clear-selected' ? { since: request.since } : {}
         const profileOnly = selected !== null || request.kind === 'clear-site-data'
         const clearHistory =
           request.kind === 'clear-all' ||
@@ -2301,7 +2492,7 @@ export function createBrowserRegistry(
         const dataTypes =
           selected?.flatMap((type) => (type === 'history' ? [] : SELECTED_DATA_TYPES[type])) ??
           SITE_DATA_TYPES
-        if (dataTypes.length === 0) return history.clear({})
+        if (dataTypes.length === 0) return history.clear(historyRange)
         clearingProfileOnly = profileOnly
         if (profileOnly) profileClearEpoch += 1
         else clearEpoch += 1
@@ -2326,7 +2517,7 @@ export function createBrowserRegistry(
           await Promise.all([...pendingDisposals])
           await browserSession.closeAllConnections()
           await browserSession.clearData({ dataTypes, ...(origin ? { origins: [origin] } : {}) })
-          return clearHistory ? history.clear(origin ? { origin } : {}) : 0
+          return clearHistory ? history.clear(origin ? { origin } : historyRange) : 0
         } catch (error) {
           throw new Error(BROWSER_ERROR.partialClear, { cause: error })
         }

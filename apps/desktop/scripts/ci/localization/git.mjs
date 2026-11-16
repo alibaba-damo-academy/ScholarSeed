@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve, relative } from 'node:path'
 import { DESKTOP } from './resources.mjs'
 import { scanSource, newFindings } from './source.mjs'
+import { readGitBlobs } from '../git.mjs'
 
 export const DEBT_PATH = resolve(DESKTOP, 'scripts/ci/localization/debt.json')
 const ROOT = resolve(DESKTOP, '../..')
@@ -75,12 +76,17 @@ export function checkSources(ref, { root = ROOT, debtPath = DEBT_PATH } = {}) {
   // Inspect the index separately: an unstaged correction must not hide staged debt.
   const stagedFiles = new Set(candidates(git(['diff', '--cached', '--name-only', '--diff-filter=ACMR', '-z', base, '--', PREFIX + 'src'], root).split('\0').filter(Boolean)))
   const currentFiles = candidates(git(['ls-files', '--cached', '--others', '--exclude-standard', '-z', '--', PREFIX + 'src'], root).split('\0').filter(Boolean))
-  for (const path of new Set([...currentFiles, ...stagedFiles])) {
+  const paths = [...new Set([...currentFiles, ...stagedFiles])]
+  const blobs = readGitBlobs(paths.flatMap((path) => [
+    ...(baseFiles.has(path) ? [`${base}:${path}`] : []),
+    ...(stagedFiles.has(path) ? [`:${path}`] : []),
+  ]), { root })
+  for (const path of paths) {
     const absolute = resolve(root, path)
-    const previous = baseFiles.has(path) ? scanSource(at(base, path, root), path) : []
+    const previous = baseFiles.has(path) ? scanSource(blobs.get(`${base}:${path}`), path) : []
     const snapshots = []
     if (existsSync(absolute)) snapshots.push(['worktree', readFileSync(absolute, 'utf8')])
-    if (stagedFiles.has(path)) snapshots.push(['index', at('', path, root)])
+    if (stagedFiles.has(path)) snapshots.push(['index', blobs.get(`:${path}`)])
     const reported = new Set()
     for (const [surface, source] of snapshots) {
       for (const hit of newFindings(scanSource(source, path), previous, debt.files[path] ?? [])) {

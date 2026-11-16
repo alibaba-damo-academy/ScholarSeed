@@ -30,7 +30,11 @@ from service.assistant.service.context import (
     protect_answer,
 )
 from service.chat.active import RUNTIME_ID
-from service.chat.constants import PRODUCT_EVENT_MESSAGE_DELTA, PRODUCT_EVENT_TURN_COMPLETED
+from service.chat.constants import (
+    PRODUCT_EVENT_MESSAGE_DELTA,
+    PRODUCT_EVENT_TURN_COMPLETED,
+    PRODUCT_EVENT_USER_MESSAGE,
+)
 from service.chat.persistence.catalog import (
     SessionCatalogStore,
     SessionPrincipal,
@@ -85,6 +89,73 @@ class StaticAnswerSource:
 
 
 class AssistantAnnotationContract(unittest.TestCase):
+    def test_turn_answer_combines_current_final_text_and_card_markdown(self) -> None:
+        events = ProductEventStore(self.database)
+        events.append(
+            session_id=SESSION_ID,
+            runtime_id=RUNTIME_ID,
+            vendor_thread_id=VENDOR_THREAD_ID,
+            vendor_turn_id=VENDOR_TURN_ID,
+            vendor_item_id="user-message",
+            kind=PRODUCT_EVENT_USER_MESSAGE,
+            payload={"client_turn_id": "product-turn", "assistant_snapshot_id": "snapshot"},
+            idempotency_key="turn-source-user",
+        )
+        for sequence, phase, text in (
+            (1, "commentary", "not answer"),
+            (2, "final_answer", "old text"),
+            (3, "final_answer", "answer [1](https://example.org)"),
+        ):
+            events.append(
+                session_id=SESSION_ID,
+                runtime_id=RUNTIME_ID,
+                vendor_thread_id=VENDOR_THREAD_ID,
+                vendor_turn_id=VENDOR_TURN_ID,
+                vendor_item_id=VENDOR_ITEM_ID if phase == "final_answer" else "commentary",
+                kind=PRODUCT_EVENT_MESSAGE_DELTA,
+                payload={"delta": text, "phase": phase},
+                idempotency_key=f"turn-source-{sequence}",
+            )
+        cards = ["| field | source |\n| --- | --- |\n| result | [1](https://example.org) |"]
+        source = ProductAnswerSource(
+            events,
+            lambda session, turn: (
+                tuple(cards) if (session, turn) == (SESSION_ID, "product-turn") else ()
+            ),
+        )
+        answer = source.answer(session_id=SESSION_ID, answer_id=f"turn:{VENDOR_TURN_ID}")
+        self.assertIsNotNone(answer)
+        assert answer is not None
+        self.assertEqual(answer.markdown, "answer [1](https://example.org)\n\n" + cards[0])
+        cards[0] = "updated card"
+        updated = source.answer(session_id=SESSION_ID, answer_id=f"turn:{VENDOR_TURN_ID}")
+        assert updated is not None
+        self.assertNotEqual(answer.revision, updated.revision)
+        self.assertIsNone(source.answer(session_id="other", answer_id=f"turn:{VENDOR_TURN_ID}"))
+
+    def test_turn_sources_projects_cards_and_rejects_other_sessions(self) -> None:
+        events = ProductEventStore(self.database)
+        app = FastAPI()
+        app.state.auth_enabled = False
+        app.state.session_catalog = self.catalog
+        app.state.assistant = AssistantService(self.store)
+        app.state.product_events = events
+        app.state.answer_source = ProductAnswerSource(
+            events,
+            lambda session, turn: (
+                ("| result | [1](https://example.org) |",)
+                if (session, turn) == (SESSION_ID, VENDOR_TURN_ID)
+                else ()
+            ),
+        )
+        register_assistant_routes(app)
+        client = TestClient(app)
+        path = f"/api/assistant/sessions/{SESSION_ID}/turns/{VENDOR_TURN_ID}/sources"
+        response = client.get(path)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["sources"][0]["url"], "https://example.org")
+        self.assertEqual(client.get(path.replace(SESSION_ID, "other-session")).status_code, 404)
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="assistant-annotations-")
         self.database = Path(self.temporary.name) / "sessions.sqlite3"

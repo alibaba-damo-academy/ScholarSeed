@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { chromium } from '@playwright/test'
 import { build } from 'esbuild'
 import test from 'node:test'
 
@@ -48,20 +48,35 @@ test('batch API uses durable review endpoints and idempotent decisions', () => {
 test('batch API sends revised bytes only with the explicit commit request', async () => {
   const originalFetch = globalThis.fetch
   const originalWindow = globalThis.window
-  globalThis.window = { scholarseed: { getApiBase: () => 'http://test' } } as Window & typeof globalThis
+  globalThis.window = { scholarseed: { getApiBase: () => 'http://test' } } as Window &
+    typeof globalThis
   let submitted: Record<string, unknown> | null = null
   globalThis.fetch = async (_input, init) => {
     submitted = JSON.parse(String(init?.body)) as Record<string, unknown>
     return Response.json({ batch: { state: 'completed' }, results: [] })
   }
   try {
-    const result = await decideResourceReviewBatch('project', 'batch', [{
-      file_id: 'file', review_id: 'review', pending_revision: 1,
-      action: 'revise', expected_disk_revision: 'sha256:disk',
-      revised_content: new TextEncoder().encode('修订')
-    }], 'commit-key')
+    const result = await decideResourceReviewBatch(
+      'project',
+      'batch',
+      [
+        {
+          file_id: 'file',
+          review_id: 'review',
+          pending_revision: 1,
+          action: 'revise',
+          expected_disk_revision: 'sha256:disk',
+          revised_content: new TextEncoder().encode('修订'),
+        },
+      ],
+      'commit-key'
+    )
     assert.equal(result.ok, true)
-    assert.equal((submitted as unknown as { decisions: Array<Record<string, unknown>> }).decisions[0].revised_content, btoa('ä¿®è®¢'))
+    assert.equal(
+      (submitted as unknown as { decisions: Array<Record<string, unknown>> }).decisions[0]
+        .revised_content,
+      btoa('ä¿®è®¢')
+    )
   } finally {
     globalThis.fetch = originalFetch
     globalThis.window = originalWindow
@@ -198,13 +213,8 @@ test('resource drop highlights stay inside the scrollable tree bounds', () => {
   )
 })
 
-test('review surfaces identify agent and external changes', () => {
+test('review detail identifies both origins', () => {
   assert.match(apiSource, /origin: 'agent' \| 'external'/)
-  assertLocalized(cardSource, 'resources', 'reviewOrigin.agent', ['Agent 改动', 'Agent changes'])
-  assertLocalized(cardSource, 'resources', 'reviewOrigin.external', [
-    '外部改动',
-    'External changes',
-  ])
   assertLocalized(batchSource, 'resources', 'reviewBatch.agent', ['Agent 改动', 'Agent changes'])
   assertLocalized(batchSource, 'resources', 'reviewBatch.external', [
     '外部改动',
@@ -212,14 +222,18 @@ test('review surfaces identify agent and external changes', () => {
   ])
 })
 
-test('review card refreshes from the durable batch and replaces pending controls at completion', () => {
+test('review card shows a compact summary and refreshes from the durable batch', () => {
   assert.match(cardSource, /state\.resourceRevision/)
-  assert.match(cardSource, /batch\.state === 'completed'/)
+  assert.match(cardSource, /batch\?\.state === 'completed'/)
   assert.match(cardSource, /reviewOutcome\(batch\)/)
   assert.match(cardSource, /reviewCard\.outcome/)
-  assert.match(cardSource, /!completed\s*\? <CardFooter/)
-  assert.match(cardSource, /lineCounts\(base, candidate\)/)
-  assert.match(cardSource, /current\.revision !== member\.candidate_revision/)
+  assert.match(cardSource, /!completed\s*\?\s*\(\s*<Button[^>]*review-card-open-/)
+  assert.match(cardSource, /variant="outline"/)
+  assertLocalized(cardSource, 'resources', 'reviewCard.review', ['查看', 'View'])
+  assert.doesNotMatch(
+    cardSource,
+    /fetchReviewMemberContent|fetchReviewMemberCurrent|lineCounts|members\.map/
+  )
   assert.match(cardSource, /data-testid=\{`review-card-open-\$\{review\.batchId\}`\}/)
   assert.doesNotMatch(composerSource, /composer-review-admission/)
 })
@@ -312,26 +326,30 @@ function assertLocalized(source: string, namespace: string, key: string, expecte
 test('completed file decisions are disabled while unfinished batch can still submit', async () => {
   const desktop = new URL('../../../../../', import.meta.url).pathname
   const directory = mkdtempSync(join(desktop, 'node_modules/.review-bar-'))
+  const browser = await chromium.launch()
   try {
     const output = join(directory, 'contract.mjs')
     await build({
       stdin: {
         contents: `
         import React from 'react';
-        import { renderToStaticMarkup } from 'react-dom/server';
+        import { createRoot } from 'react-dom/client';
+        import { flushSync } from 'react-dom';
         import { I18nextProvider } from 'react-i18next';
         import { createLocalization } from './src/localization/engine';
         import { resources } from './src/localization/resources';
         import { ReviewBar } from './src/renderer/src/features/workbench/ReviewBar';
-        export function render(selectedEnabled, decisionsEnabled) {
+        const root = createRoot(document.getElementById('root'));
+        window.render = function(selectedEnabled, decisionsEnabled) {
           const engine = createLocalization('en', resources);
-          return renderToStaticMarkup(React.createElement(I18nextProvider, {i18n: engine},
+          flushSync(() => root.render(React.createElement(I18nextProvider, {i18n: engine},
             React.createElement(ReviewBar, {busy: false, decided: 1, reviewed: 0, pending: 1,
               failed: 0, total: 1, hasEdits: false, selectedAction: 'reject',
               filePath: 'resources/long-folder/review-notes.md',
               previewLabel: 'Agent version', acceptEnabled: selectedEnabled,
               reviseEnabled: true, selectedEnabled, decisionsEnabled,
-              onChoose() {}, onUndo() {}, onBulk() {}, onSubmit() {}})));
+              onChoose() {}, onUndo() {}, onBulk() {}, onSubmit() {}}))));
+          return document.getElementById('root').innerHTML;
         }
       `,
         resolveDir: desktop,
@@ -339,11 +357,10 @@ test('completed file decisions are disabled while unfinished batch can still sub
       },
       outfile: output,
       bundle: true,
-      platform: 'node',
-      format: 'esm',
-      packages: 'external',
+      platform: 'browser',
+      format: 'iife',
       jsx: 'automatic',
-      define: { 'import.meta.env.DEV': 'false' },
+      define: { 'import.meta.env.DEV': 'false', 'process.env.NODE_ENV': '"production"' },
       loader: { '.png': 'dataurl', '.svg': 'dataurl' },
       plugins: [
         {
@@ -361,7 +378,17 @@ test('completed file decisions are disabled while unfinished batch can still sub
         },
       ],
     })
-    const { render } = await import(pathToFileURL(output).href)
+    const page = await browser.newPage()
+    await page.setContent('<div id="root"></div>')
+    await page.addScriptTag({ path: output })
+    const render = (selectedEnabled: boolean, decisionsEnabled: boolean): Promise<string> =>
+      page.evaluate(
+        ([selected, decisions]) =>
+          (
+            window as unknown as { render: (selected: boolean, decisions: boolean) => string }
+          ).render(selected, decisions),
+        [selectedEnabled, decisionsEnabled]
+      )
     const buttons = (html: string): Map<string, boolean> =>
       new Map(
         [...html.matchAll(/<button\b([^>]*)>([\s\S]*?)<\/button>/g)].map((match) => [
@@ -369,8 +396,8 @@ test('completed file decisions are disabled while unfinished batch can still sub
           /\bdisabled(?:=|\s|$)/.test(match[1]),
         ])
       )
-    const completed = buttons(render(false, false))
-    const markup = render(true, true)
+    const completed = buttons(await render(false, false))
+    const markup = await render(true, true)
     assert.match(markup, /resources\/long-folder\/review-notes\.md/)
     assert.match(markup, /data-testid="review-preview-source"/)
     assert.match(markup, /data-testid="review-progress"/)
@@ -378,15 +405,31 @@ test('completed file decisions are disabled while unfinished batch can still sub
     assert.match(markup, /grid-cols-\[minmax\(0,1fr\)_auto\]/)
     assert.match(markup, /aria-pressed="true"[^>]*data-testid="review-file-reject"/)
     assert.match(markup, /aria-pressed="false"[^>]*data-testid="review-file-accept"/)
-    for (const label of ['Accept', 'Reject', 'Revise', 'Undo', 'Accept all', 'Reject all', 'Undo all']) {
+    for (const label of [
+      'Accept',
+      'Reject',
+      'Revise',
+      'Undo',
+      'Accept all',
+      'Reject all',
+      'Undo all',
+    ]) {
       assert.equal(completed.get(label), true, `${label} is disabled for completed members`)
     }
     assert.equal(completed.get('Submit'), false, 'batch recovery can still submit')
-    const pending = buttons(render(true, true))
-    for (const label of ['Accept', 'Reject', 'Revise', 'Undo', 'Accept all', 'Reject all', 'Undo all']) {
+    const pending = buttons(await render(true, true))
+    for (const label of [
+      'Accept',
+      'Reject',
+      'Revise',
+      'Undo',
+      'Accept all',
+      'Reject all',
+      'Undo all',
+    ]) {
       assert.equal(pending.get(label), false, `${label} remains available for unfinished members`)
     }
-    const mixed = buttons(render(false, true))
+    const mixed = buttons(await render(false, true))
     assert.equal(mixed.get('Accept'), true)
     assert.equal(mixed.get('Accept all'), false)
     assert.match(
@@ -398,6 +441,7 @@ test('completed file decisions are disabled while unfinished batch can still sub
       /decisionsEnabled=\{batch.members.some\(\(member\) => member.state !== 'completed'\)\}/
     )
   } finally {
+    await browser.close()
     rmSync(directory, { recursive: true, force: true })
   }
 })

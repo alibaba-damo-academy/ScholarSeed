@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
+from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -22,6 +23,7 @@ os.environ["SCHOLARSEED_HOME"] = str(_HOME)
 from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
+from scholarseed_runtime.contract.capability import CapabilitySet  # noqa: E402 -- after isolation
 from scholarseed_runtime.contract.command import (  # noqa: E402 -- after isolation
     CommandReceipt,
     CommandState,
@@ -63,6 +65,7 @@ from service.identity.service.skill_credentials import (  # noqa: E402
     skill_credentials_from_env,
 )
 from service.paths import SERVICE_BUNDLED_SKILLS_DIR, SERVICE_SKILLS_DIR  # noqa: E402
+from service.platform.http_activity import ServeApplication  # noqa: E402
 from service.workbench.domain.model import WorkbenchFormatPolicy  # noqa: E402
 
 PASS = 0
@@ -81,6 +84,7 @@ def check(name: str, condition: bool, detail: str = "") -> None:
 
 class _Adapter:
     runtime_id = RUNTIME_ID
+    capabilities = CapabilitySet()
     history = ()
     skill_control = None
     model_control = None
@@ -112,6 +116,9 @@ class _Driver:
 
     def __init__(self, adapter: _Adapter) -> None:
         self._adapter = adapter
+
+    async def close(self) -> None:
+        await self._adapter.aclose()
 
     async def submit(self, request: Any) -> RuntimeTurnResult:
         self._adapter.inputs.append(request)
@@ -198,7 +205,10 @@ def _preparation_contracts(
         reconfigure_host=AsyncMock(),
     )
     settings = SimpleNamespace(set_runtime_model=Mock(), runtime_model=lambda: live.model_id)
-    credentials = SimpleNamespace(environment=AsyncMock(return_value={"CONTRACT_ENV": "present"}))
+    credentials = SimpleNamespace(
+        environment=AsyncMock(return_value={"CONTRACT_ENV": "present"}),
+        ensure=AsyncMock(return_value={"CONTRACT_ENV": "present"}),
+    )
     app = FastAPI()
     app.state.auth_enabled = False
     app.state.ownership_axis = "machine"
@@ -222,7 +232,10 @@ def _preparation_contracts(
         patch.object(session_service, "_activities", activities),
         patch.object(session_service, "_settings", settings),
         TestClient(app) as client,
+        ExitStack() as cleanup,
     ):
+        cleanup.callback(client.portal.call, live.aclose)
+        cleanup.callback(client.portal.call, manager.aclose)
         identity = str(uuid4())
         intent = {
             "request_id": identity,
@@ -489,10 +502,153 @@ def _preparation_contracts(
                 and live.catalog.queued_message(live.id, "preparation-rejected") is None
                 and live.catalog.queued_message(live.id, "invalid-preparation") is None,
             )
-        client.portal.call(manager.aclose)
+
+
+def _file_contracts(
+    client: TestClient,
+    catalog: SessionCatalogStore,
+    workspaces: SessionWorkspaceService,
+    root: Path,
+    lives: tuple[LiveSession, ...],
+    activities: Activities,
+) -> None:
+    empty = root / "empty-project"
+    empty.mkdir()
+    denied = root.parent / (root.name + "-outside")
+    projects = {root, empty, denied}
+    workspaces.register(
+        policy=lambda **_options: False,
+        project_resolver=lambda requested: requested if requested in projects else None,
+    )
+    for live in lives:
+        catalog.relocate(
+            live.id,
+            SessionPrincipal("local"),
+            runtime_workdir=str(live.runtime_workdir),
+            project_path=str(root),
+            output_root=str(live.output_root),
+        )
+        (live.runtime_workdir / "result.md").write_text(live.id, encoding="utf-8")
+        (live.runtime_workdir / ".private").write_text("hidden", encoding="utf-8")
+    route = "/api/serve/task-files"
+    query = {"project_path": str(root), "limit": 1}
+    first = client.get(route, params=query)
+    first_page = first.json()
+    check(
+        "task files use the real project-scoped session page",
+        first.status_code == 200
+        and len(first_page["entries"]) == 1
+        and bool(first_page["next_cursor"]),
+        first.text,
+    )
+    second = client.get(route, params={**query, "cursor": first_page["next_cursor"]})
+    entries = first_page["entries"] + second.json()["entries"]
+    check(
+        "task file pages preserve distinct sessions and terminate the cursor",
+        second.status_code == 200
+        and {entry["session"]["session_id"] for entry in entries} == {live.id for live in lives}
+        and second.json()["next_cursor"] is None,
+        second.text,
+    )
+    for entry in entries:
+        session_id = entry["session"]["session_id"]
+        listing = client.get(
+            f"/api/serve/sessions/{session_id}/files", params={"outputs_only": "true"}
+        )
+        names = {item["name"] for item in listing.json()["items"]}
+        check(
+            f"task and session files agree without exposing inputs: {session_id}",
+            listing.status_code == 200
+            and listing.json() == entry["files"]
+            and listing.json()["has_files"]
+            and "result.md" in names
+            and not {"attachments", ".private", "settings.json", "config.json"} & names,
+            listing.text,
+        )
+    result = client.get(route, params={"project_path": str(empty)})
+    check(
+        "registered projects without sessions are a successful empty result",
+        result.status_code == 200 and result.json() == {"entries": [], "next_cursor": None},
+        result.text,
+    )
+    for endpoint, scope in ((route, {}), ("/api/serve/sessions", {"scope": "project"})):
+        result = client.get(endpoint, params={**scope, "project_path": str(denied)})
+        check(
+            f"registered projects outside the allowed workspace fail closed: {endpoint}",
+            result.status_code == 404 and result.json().get("code") == "session_not_found",
+            result.text,
+        )
+        for project in ("", str(root / "unregistered-project")):
+            result = client.get(endpoint, params={**scope, "project_path": project})
+            expected = 422 if scope and not project else 404
+            check(
+                f"unregistered or blank projects fail rather than fake emptiness: {endpoint}",
+                result.status_code == expected
+                and (expected != 404 or result.json().get("code") == "session_not_found"),
+                result.text,
+            )
+    for params in ({}, {**query, "cursor": "invalid"}, {**query, "limit": 0}):
+        result = client.get(route, params=params)
+        check("task file HTTP parameters fail validation", result.status_code == 422, result.text)
+    result = client.get("/api/serve/sessions", params={"scope": "project"})
+    check(
+        "project session scope requires its project parameter",
+        result.status_code == 422,
+        result.text,
+    )
+    result = client.get("/api/serve/sessions/missing/files")
+    check("unknown session file reads fail closed", result.status_code == 404, result.text)
+    result = client.get(f"/api/serve/sessions/{lives[0].id}/files", params={"offset": -1})
+    check("negative file offsets fail HTTP validation", result.status_code == 422, result.text)
+    live = lives[0]
+    unavailable = live.runtime_workdir.with_name(live.runtime_workdir.name + "-unavailable")
+    live.runtime_workdir.rename(unavailable)
+    try:
+        result = client.get(route, params={"project_path": str(root)})
+        affected = next(
+            entry for entry in result.json()["entries"] if entry["session"]["session_id"] == live.id
+        )
+        check(
+            "unavailable task roots stay visible as files null rather than fake emptiness",
+            result.status_code == 200 and affected["files"] is None,
+            result.text,
+        )
+    finally:
+        unavailable.rename(live.runtime_workdir)
+
+    generation = activities.begin()
+    try:
+        result = client.get(route, params={"project_path": str(root)})
+        check(
+            "task file observations remain readable during maintenance drain",
+            result.status_code == 200 and result.json()["entries"] == entries,
+            result.text,
+        )
+        check(
+            "completed task file observations permit maintenance seal", activities.seal(generation)
+        )
+        result = client.get(route, params={"project_path": str(root)})
+        check(
+            "sealed maintenance still rejects task file observations",
+            result.status_code == 503 and result.json()["detail"] == "update_maintenance",
+            result.text,
+        )
+    finally:
+        activities.resume(generation)
+    result = client.get(route, params={"project_path": str(root)})
+    check(
+        "task file observations recover after maintenance without losing entries",
+        result.status_code == 200 and result.json()["entries"] == entries,
+        result.text,
+    )
 
 
 def main() -> int:
+    with ExitStack() as lifecycle:
+        return exercise(lifecycle)
+
+
+def exercise(lifecycle: ExitStack) -> int:
     root = Path(tempfile.mkdtemp(prefix="serve-attachment-contract-")).resolve()
     database = _HOME / "catalog.sqlite3"
     catalog = SessionCatalogStore(database)
@@ -532,6 +688,7 @@ def main() -> int:
         drain=AsyncMock(return_value=()),
         logger=logger,
     )
+    workspaces = SessionWorkspaceService(workspace_allows)
     session_service = SessionService(
         root,
         sessions,
@@ -539,6 +696,7 @@ def main() -> int:
         access=catalog,
         events=events,
         runtime=SimpleNamespace(  # type: ignore[arg-type]
+            runtime_id=RUNTIME_ID,
             realign_metering_identity=AsyncMock(return_value=False),
             reconfiguration=manager,
             reconfiguration_wait_seconds=1,
@@ -548,14 +706,15 @@ def main() -> int:
             ),
             reconfigure_host=AsyncMock(),
         ),
-        workspaces=SessionWorkspaceService(workspace_allows),
+        workspaces=workspaces,
         artifacts=artifacts,
         settings=SimpleNamespace(runtime_executable=lambda: "codex", runtime_model=lambda: ""),  # type: ignore[arg-type]
         credentials=skill_credentials_from_env({}, activities=Activities()),
         logger=logger,
     )
-    app = FastAPI()
+    app = ServeApplication(activities=activities)
     app.state.auth_enabled = False
+    app.state.activities = activities
     event_service = EventService(sessions, events, logger)
     for index, turn_id in enumerate(("failed-old", "failed-next", "success-new")):
         events.append(
@@ -592,7 +751,9 @@ def main() -> int:
         artifacts=ArtifactService(catalog, artifacts, events, WorkbenchFormatPolicy()),
         credentials=skill_credentials_from_env({}, activities=Activities()),
     )
-    client = TestClient(app)
+    client = lifecycle.enter_context(TestClient(app))
+    lifecycle.callback(client.portal.call, live_a.aclose)
+    lifecycle.callback(client.portal.call, live_b.aclose)
 
     image_bytes = b"\x89PNG\r\n\x1a\ncontract-image"
     uploaded = client.post(
@@ -714,6 +875,19 @@ def main() -> int:
 
     local_file = root / "selected-local.md"
     local_file.write_text("selected directly", encoding="utf-8")
+    many_files = [root / f"selected-{index}.txt" for index in range(41)]
+    for selected in many_files:
+        selected.write_text("reference", encoding="utf-8")
+    many_registration = client.post(
+        "/api/serve/sessions/session-a/file-references",
+        json={"paths": [str(selected) for selected in many_files]},
+    )
+    check(
+        "local references have no example-count cap",
+        many_registration.status_code == 200
+        and len(many_registration.json().get("references", [])) == len(many_files),
+        many_registration.text,
+    )
     registered = client.post(
         "/api/serve/sessions/session-a/file-references",
         json={"paths": [str(local_file)]},
@@ -772,6 +946,22 @@ def main() -> int:
     )
     directory_reference = (directory_registration.json().get("references") or [{}])[0]
     directory_reference_id = str(directory_reference.get("reference_id") or "")
+    location = client.get(
+        "/api/serve/sessions/session-a/file-references/location",
+        params={"reference_id": directory_reference_id},
+    )
+    check(
+        "directory actions resolve the registered object without reading descendants",
+        location.status_code == 200
+        and location.json().get("path") == str(local_directory)
+        and location.json().get("kind") == "directory",
+        location.text,
+    )
+    foreign_location = client.get(
+        "/api/serve/sessions/session-b/file-references/location",
+        params={"reference_id": directory_reference_id},
+    )
+    check("native location rejects a different session", foreign_location.status_code == 404)
     check(
         "selected directory stays one typed reference without importing its children",
         directory_registration.status_code == 200
@@ -883,13 +1073,27 @@ def main() -> int:
         and live_a.runtime_workdir in traversal_path.parents,
         str(traversal_path),
     )
-    _preparation_contracts(
-        session_service,
-        sessions,
-        live_a,
-        event_service,
-        ArtifactService(catalog, artifacts, events, WorkbenchFormatPolicy()),
+    preparation_live, _adapter = _live(
+        session_id="session-preparation",
+        root=root,
+        catalog=catalog,
+        events=events,
+        artifacts=artifacts,
+        skills=skills,
+        logger=logger,
     )
+    sessions[preparation_live.id] = preparation_live
+    try:
+        _preparation_contracts(
+            session_service,
+            sessions,
+            preparation_live,
+            event_service,
+            ArtifactService(catalog, artifacts, events, WorkbenchFormatPolicy()),
+        )
+    finally:
+        sessions.pop(preparation_live.id)
+    _file_contracts(client, catalog, workspaces, root, (live_a, live_b), activities)
     print(f"\ncontract_serve_attachments: PASS {PASS} / FAIL {FAIL}")
     return 1 if FAIL else 0
 

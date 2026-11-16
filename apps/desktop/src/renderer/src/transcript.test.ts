@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import type { ConvItem } from './model.ts'
+import { activityRows, processRows } from './activity.ts'
 import type { HistoryResult, ProductEvent } from './api.ts'
 import { feedback } from './contracts/feedback.ts'
 import type { AssistantContextRef } from './contracts/assistant.ts'
@@ -12,6 +13,7 @@ import {
   insertTurnRuntimeItem,
   latestDisplayCardItems,
   projectActivityEvents,
+  projectToolCompletion,
   projectReasoningEvent,
   projectAnswerSources,
   projectArtifactSnapshot,
@@ -38,6 +40,200 @@ import {
   upsertConversationArtifact,
 } from './transcript.ts'
 
+test('bridge search receipts survive history replay as distinct search records', () => {
+  const events = ['WCAG', 'HTML'].map((query, index) => ({
+    v: 2,
+    seq: index + 1,
+    ts: index + 1,
+    type: 'source_candidates',
+    session_id: 'session-search',
+    turn_id: 'turn-search',
+    item_id: 'tool-search',
+    data: {
+      search_id: 'tool-search',
+      query,
+      purpose: `Find ${query} specifications`,
+      provider: 'official-api',
+      results: [{ title: query, url: `https://example.test/${query}` }],
+      result_count: 1,
+    },
+  })) as Extract<ProductEvent, { type: 'source_candidates' }>[]
+  const restored = projectActivityEvents([], events)
+  const live = events.reduce<ConvItem[]>(
+    (items, event) => projectWebSearchEvent(items, event, 'live'),
+    []
+  )
+  assert.deepEqual(live, restored)
+  assert.equal(restored.length, 2)
+  for (const [index, item] of restored.entries()) {
+    assert.equal(item.kind, 'web_search')
+    if (item.kind !== 'web_search') continue
+    assert.equal(item.status, 'done')
+    assert.equal(item.query, events[index].data.query)
+    assert.equal(item.action.purpose, events[index].data.purpose)
+    assert.deepEqual(item.results, events[index].data.results)
+  }
+  assert.deepEqual(projectActivityEvents(restored, events), restored)
+})
+
+test('authoritative plan recovery projects identically live and after history reopen', () => {
+  const items: ConvItem[] = [
+    {
+      kind: 'tool',
+      toolId: 'failed',
+      name: 'update_plan',
+      status: 'error',
+      turnId: 'turn',
+      result: 'Original failure',
+    },
+    { kind: 'tool', toolId: 'failed', name: 'update_plan', status: 'error', turnId: 'other-turn' },
+    { kind: 'tool', toolId: 'recovery', name: 'update_plan', status: 'running', turnId: 'turn' },
+  ]
+  const event: Extract<ProductEvent, { type: 'tool_completed' }> = {
+    v: 2,
+    seq: 3,
+    ts: 1,
+    type: 'tool_completed',
+    session_id: 'session',
+    turn_id: 'turn',
+    data: { tool_id: 'recovery', success: true, resolved_tool_ids: ['failed'] },
+  }
+  const started: Extract<ProductEvent, { type: 'tool_started' }> = {
+    ...event,
+    type: 'tool_started',
+    seq: 2,
+    data: { tool_id: 'recovery', name: 'update_plan' },
+  }
+  const live = projectToolCompletion(projectActivityEvents(items, [started]), event, 1000)
+  const restored = projectActivityEvents(items, [started, event])
+  assert.deepEqual(restored, live)
+  assert.deepEqual(projectActivityEvents(restored, [started, event]), restored)
+  assert.equal(live[0].kind === 'tool' && live[0].recoveredBy, 'recovery')
+  assert.equal(live[0].kind === 'tool' && live[0].result, 'Original failure')
+  assert.equal(live[0].kind === 'tool' && live[0].status, 'error')
+  assert.equal(live[1].kind === 'tool' && live[1].recoveredBy, undefined)
+  const rejected = projectToolCompletion(
+    items,
+    { ...event, data: { ...event.data, success: false } },
+    1000
+  )
+  assert.equal(rejected[0].kind === 'tool' && rejected[0].recoveredBy, undefined)
+  const orphan = projectToolCompletion(items.slice(0, 2), event, 1000)
+  assert.equal(orphan[0].kind === 'tool' && orphan[0].recoveredBy, undefined)
+})
+
+test('authorization continuation is a system boundary in live and restored history', () => {
+  const event: Extract<ProductEvent, { type: 'user_message' }> = {
+    v: 2,
+    seq: 1,
+    ts: 1,
+    type: 'user_message',
+    session_id: 'session',
+    turn_id: 'continuation',
+    item_id: 'continuation',
+    data: {
+      text: 'internal authorization notice',
+      refs: [],
+      client_turn_id: 'continuation',
+      binding: 'admitted',
+      origin: 'authorization',
+    },
+  }
+  const live = upsertUserMessageEvent([], event)
+  assert.equal(live.length, 1)
+  assert.equal(live[0].kind, 'status')
+  assert.deepEqual(activityRows(live), [])
+  const bound = upsertUserMessageEvent(live, {
+    ...event,
+    seq: 2,
+    turn_id: 'native',
+    data: { ...event.data, binding: 'bound' },
+  })
+  assert.equal(bound.length, 1)
+  assert.equal(bound[0].turnId, 'native')
+  const history = projectHistory([
+    {
+      kind: 'user',
+      text: event.data.text,
+      origin: 'authorization',
+      turn_id: 'native',
+      item_id: 'continuation',
+    },
+  ])
+  assert.equal(history[0].kind, 'status')
+  assert.deepEqual(activityRows(history), [])
+  assert.doesNotMatch(JSON.stringify(history), /internal authorization notice/)
+})
+
+test('successful reauthorization displays one localized user bubble in live and history', () => {
+  const event: Extract<ProductEvent, { type: 'user_message' }> = {
+    v: 2,
+    seq: 1,
+    ts: 1,
+    type: 'user_message',
+    session_id: 'session',
+    item_id: 'continuation',
+    data: {
+      text: '已重新授权，继续原任务。',
+      refs: [],
+      client_turn_id: 'continuation',
+      binding: 'admitted',
+      origin: 'authorization',
+    },
+  }
+  const live = upsertUserMessageEvent([], event)
+  assert.equal(live[0].kind, 'user')
+  assert.deepEqual(live[0].displayMessage, feedback('conversation', 'authorization.renewed'))
+  const bound = upsertUserMessageEvent(live, {
+    ...event,
+    seq: 2,
+    turn_id: 'native',
+    data: { ...event.data, binding: 'bound' },
+  })
+  assert.equal(bound.length, 1)
+  assert.equal(bound[0].turnId, 'native')
+  const history = projectHistory([
+    {
+      kind: 'user',
+      text: event.data.text,
+      origin: 'authorization',
+      turn_id: 'native',
+      item_id: 'continuation',
+    },
+  ])
+  assert.equal(history[0].kind, 'user')
+  assert.deepEqual(history[0].displayMessage, live[0].displayMessage)
+  const cancelled = upsertUserMessageEvent(live, {
+    ...event,
+    seq: 3,
+    data: { ...event.data, binding: 'cancelled' },
+  })
+  assert.equal(cancelled[0].kind, 'status')
+  assert.deepEqual(upsertUserMessageEvent(cancelled, { ...event, seq: 2 }), cancelled)
+  assert.equal(
+    projectHistory([
+      { kind: 'user', text: event.data.text, origin: 'authorization', status: 'cancelled' },
+    ])[0].kind,
+    'status'
+  )
+})
+
+test('durable tool batch identity survives activity replay', () => {
+  const event: ProductEvent = {
+    v: 2,
+    seq: 1,
+    session_id: 'session',
+    turn_id: 'turn',
+    item_id: 'tool',
+    ts: 1,
+    type: 'tool_started',
+    data: { tool_id: 'tool', name: 'Read', batch_id: 'batch' },
+  }
+  const replayed = projectActivityEvents([], [event])
+  assert.equal(replayed[0].batchId, 'batch')
+  assert.deepEqual(projectActivityEvents(replayed, [event]), replayed)
+})
+
 test('user history identity accepts native user records and text records without reclassifying assistant or tools', () => {
   for (const turn of [{ kind: 'user' }, { kind: 'text', role: 'user' }]) {
     assert.equal(isUserHistoryTurn(turn), true)
@@ -49,6 +245,124 @@ test('user history identity accepts native user records and text records without
     { kind: 'thinking' },
   ])
     assert.equal(isUserHistoryTurn(turn), false)
+})
+
+function generationPreviewEvent(
+  revision: number,
+  status: 'streaming' | 'generated' | 'failed' | 'cancelled' = 'streaming',
+  text = 'First paragraph',
+  turnId = 'preview-turn'
+): ProductEvent {
+  return {
+    v: 2,
+    seq: revision,
+    ts: revision,
+    type: 'generation_preview',
+    session_id: 'session',
+    turn_id: turnId,
+    item_id: 'generation',
+    data: {
+      preview_id: 'generation',
+      revision,
+      status,
+      verified: false,
+      blocks: [{ id: '$.paragraphs[0].text', kind: 'paragraph', text }],
+    },
+  } as ProductEvent
+}
+
+test('generation preview snapshots replace prose without becoming answers or artifacts', () => {
+  const first = projectActivityEvents([], [generationPreviewEvent(1)])
+  assert.equal(first.length, 1)
+  assert.equal(first[0].kind, 'generation_preview')
+  const next = projectActivityEvents(first, [
+    generationPreviewEvent(2, 'streaming', 'New assistant prose'),
+  ])
+  assert.equal(next.length, 1)
+  assert.equal(
+    next[0].kind === 'generation_preview' && next[0].preview.blocks[0].text,
+    'New assistant prose'
+  )
+  assert.equal(next[0].kind === 'generation_preview' && next[0].preview.verified, false)
+  assert.equal(
+    next.some((item) => item.kind === 'agent' || item.kind === 'artifact'),
+    false
+  )
+  assert.deepEqual(projectActivityEvents(next, [generationPreviewEvent(1)]), next)
+  assert.deepEqual(projectActivityEvents(next, [generationPreviewEvent(2)]), next)
+  assert.deepEqual(
+    projectActivityEvents(next, [
+      generationPreviewEvent(3, 'streaming', 'Wrong turn', 'other-turn'),
+    ]),
+    next
+  )
+})
+
+test('generation preview recovers from history and rejects late streaming after a terminal', () => {
+  const events = [
+    generationPreviewEvent(1),
+    generationPreviewEvent(2, 'generated', 'Complete draft'),
+  ]
+  const recovered = projectActivityEvents([], events)
+  assert.equal(recovered.length, 1)
+  assert.equal(
+    recovered[0].kind === 'generation_preview' && recovered[0].preview.status,
+    'generated'
+  )
+  assert.deepEqual(projectActivityEvents(recovered, events), recovered)
+  assert.deepEqual(projectActivityEvents(recovered, [generationPreviewEvent(3)]), recovered)
+  assert.deepEqual(projectHistoryWithRuntime([], recovered), recovered)
+})
+
+test('parent interruption and failure settle only unfinished previews of the owning turn', () => {
+  const initial = projectActivityEvents([], [generationPreviewEvent(1)])
+  const other = projectActivityEvents(
+    [],
+    [
+      {
+        ...generationPreviewEvent(1),
+        item_id: 'other',
+        turn_id: 'other-turn',
+        data: { ...generationPreviewEvent(1).data, preview_id: 'other' },
+      } as ProductEvent,
+    ]
+  )
+  const mixed = [...initial, ...other]
+  const stopped = projectTurnInterruption(mixed, {
+    v: 2,
+    seq: 5,
+    ts: 5,
+    type: 'turn_interrupted',
+    session_id: 'session',
+    turn_id: 'preview-turn',
+    data: { reason: 'user' },
+  })
+  assert.equal(stopped[0].kind === 'generation_preview' && stopped[0].preview.status, 'cancelled')
+  const otherPreview = stopped.find(
+    (item) => item.kind === 'generation_preview' && item.turnId === 'other-turn'
+  )
+  assert.equal(
+    otherPreview?.kind === 'generation_preview' && otherPreview.preview.status,
+    'streaming'
+  )
+  const failed = projectActivityEvents(initial, [
+    {
+      v: 2,
+      seq: 5,
+      ts: 5,
+      type: 'turn_failed',
+      session_id: 'session',
+      turn_id: 'preview-turn',
+      data: { code: 'model_failed', retryable: false },
+    } as ProductEvent,
+  ])
+  assert.equal(failed[0].kind === 'generation_preview' && failed[0].preview.status, 'failed')
+  assert.equal(
+    failed[0].kind === 'generation_preview' && failed[0].preview.blocks[0].text,
+    'First paragraph'
+  )
+  const generated = projectActivityEvents([], [generationPreviewEvent(2, 'generated')])
+  assert.deepEqual(settleInterruptedActivities(generated, 'preview-turn', 100), generated)
 })
 
 test('command exit code survives history projection and durable activity replay', () => {
@@ -538,12 +852,12 @@ test('keeps distinct display cards in one turn and de-duplicates replay', () => 
     type: 'display_card' as const,
     session_id: 'session',
     turn_id: 'turn-card',
-    data: { card_id: 'card-1', type: 'literature-references', content: {} },
+    data: { card_id: 'card-1', type: 'literature-search', content: {} },
   }
   const second = {
     ...first,
     seq: 6,
-    data: { card_id: 'card-2', type: 'literature-references', content: {} },
+    data: { card_id: 'card-2', type: 'literature-search', content: {} },
   }
   const projected = projectDisplayCardEvent(projectDisplayCardEvent(base, first), second)
   const replayed = projectDisplayCardEvent(projected, first)
@@ -554,7 +868,7 @@ test('keeps distinct display cards in one turn and de-duplicates replay', () => 
   assert.equal(replayed.filter((item) => item.kind === 'display_card').length, 2)
 })
 
-test('delivery replay is distinguishable from a fresh live event without changing durable card identity', () => {
+test('card replay is distinguishable from a fresh live event without changing durable card identity', () => {
   const event = {
     v: 2 as const,
     seq: 19,
@@ -563,9 +877,9 @@ test('delivery replay is distinguishable from a fresh live event without changin
     session_id: 'session',
     turn_id: 'turn',
     data: {
-      card_id: 'delivery-card',
-      type: 'literature-delivery',
-      content: { delivery_id: 'batch' },
+      card_id: 'search-card',
+      type: 'literature-search',
+      content: { run_id: 'run' },
       component: { plugin: 'example', component: 'result', fingerprint: 'version-one' },
     },
   }
@@ -579,6 +893,13 @@ test('delivery replay is distinguishable from a fresh live event without changin
     live.kind === 'display_card' && live.card.cardId,
     history.kind === 'display_card' && history.card.cardId
   )
+  for (const type of ['literature-downloads', 'literature-delivery']) {
+    const previous = [history]
+    assert.equal(
+      projectDisplayCardEvent(previous, { ...event, data: { ...event.data, type } }),
+      previous
+    )
+  }
 })
 
 test('projects the latest feature-owned card snapshot without deleting durable history', () => {
@@ -677,7 +998,7 @@ test('restores display card below the final answer from activity history', () =>
         turn_id: 'turn-card',
         data: {
           card_id: 'card-1',
-          type: 'literature-references',
+          type: 'literature-search',
           content: { schema_version: '1.0', project: 'demo', references: [] },
         },
       },
@@ -1119,6 +1440,227 @@ test('migrates one live assistant item when its authoritative phase arrives', ()
       commentary: true,
     },
   ])
+})
+
+test('stage boundaries preserve item identity and first sequence through late phase and process folding', () => {
+  const turnId = 'turn-stage-order'
+  let conversation: ConvItem[] = []
+  const stages = [
+    {
+      tool: 'call_a93ebfc2bf5b49c28994df41',
+      toolSeq: 208,
+      message: 'msg_c306327d-922e-4c91-a56b-030bb12fa233',
+      messageSeq: 214,
+    },
+    {
+      tool: 'call_f7cecae3430a408a82d77921',
+      toolSeq: 230,
+      message: 'msg_31d17a22-cee0-4198-8b64-5daa71e40a34',
+      messageSeq: 236,
+    },
+  ]
+  for (const stage of stages) {
+    conversation.push({
+      kind: 'tool',
+      toolId: stage.tool,
+      itemId: stage.tool,
+      turnId,
+      name: 'shell',
+      status: 'done',
+      eventSeq: stage.toolSeq,
+    })
+    conversation = projectStreamDelta(
+      conversation,
+      'agent',
+      'Stage complete.',
+      turnId,
+      stage.message,
+      true,
+      stage.messageSeq
+    )
+    conversation = projectStreamDelta(
+      conversation,
+      'thinking',
+      'Stage complete.',
+      turnId,
+      stage.message,
+      true,
+      stage.messageSeq + 1
+    )
+  }
+  const expected = stages.flatMap((stage) => [
+    [stage.tool, stage.toolSeq],
+    [stage.message, stage.messageSeq],
+  ])
+  assert.deepEqual(
+    conversation.map((item) => [item.itemId, item.eventSeq]),
+    expected
+  )
+  const sections = processRows(activityRows(conversation, { [turnId]: 'running' }))
+  const rows = sections.flatMap((section) =>
+    section.kind === 'process' ? section.entries.map((entry) => entry.row) : [section.row]
+  )
+  const flattened = rows.flatMap((row) => (row.kind === 'item' ? [row.item] : row.items))
+  assert.deepEqual(
+    flattened.map((item) => [item.itemId, item.eventSeq]),
+    expected
+  )
+})
+
+test('history refresh retains known first sequences around a recovery boundary before activity replay', () => {
+  const turnId = 'turn-refresh-stage-order'
+  const current: ConvItem[] = [
+    {
+      kind: 'status',
+      text: '',
+      turnBoundary: true,
+      retainOnHistoryRefresh: true,
+      turnId,
+      eventSeq: 200,
+    },
+    {
+      kind: 'tool',
+      toolId: 'tool-a',
+      itemId: 'tool-a',
+      name: 'shell',
+      status: 'done',
+      turnId,
+      eventSeq: 208,
+    },
+    {
+      kind: 'thinking',
+      commentary: true,
+      text: 'Stage complete.',
+      turnId,
+      itemId: 'message-a',
+      eventSeq: 214,
+    },
+    {
+      kind: 'tool',
+      toolId: 'tool-b',
+      itemId: 'tool-b',
+      name: 'shell',
+      status: 'done',
+      turnId,
+      eventSeq: 230,
+    },
+    {
+      kind: 'thinking',
+      commentary: true,
+      text: 'Stage complete.',
+      turnId,
+      itemId: 'message-b',
+      eventSeq: 236,
+    },
+    { kind: 'agent', text: 'Final answer.', turnId, itemId: 'final', eventSeq: 240 },
+  ]
+  const restored = projectHistoryWithRuntime(
+    [
+      { kind: 'text', origin: 'recovery', role: 'user', text: '', turn_id: turnId },
+      {
+        kind: 'thinking',
+        phase: 'commentary',
+        text: 'Stage complete.',
+        turn_id: turnId,
+        item_id: 'message-a',
+      },
+      {
+        kind: 'thinking',
+        phase: 'commentary',
+        text: 'Stage complete.',
+        turn_id: turnId,
+        item_id: 'message-b',
+      },
+      { kind: 'text', role: 'assistant', text: 'Final answer.', turn_id: turnId, item_id: 'final' },
+    ],
+    current
+  )
+  assert.deepEqual(
+    restored.map((item) => [item.kind, item.itemId, item.eventSeq]),
+    current.map((item) => [item.kind, item.itemId, item.eventSeq])
+  )
+})
+
+test('live first sequences keep later commentary after tools despite an earlier artifact', () => {
+  const turnId = 'turn-artifact-stage-order'
+  const toolId = 'call_523a730b5a5c44009eef7171'
+  const messageId = 'msg_36735a0a-f0c4-496a-8129-ae698c25b74a'
+  let conversation = projectArtifactSnapshot(
+    [],
+    [
+      {
+        artifact_id: 'stage-artifact',
+        name: 'stage.json',
+        path: 'stage.json',
+        source_event_seq: 209,
+        vendor_turn_id: turnId,
+      },
+    ]
+  )
+  conversation.push({
+    kind: 'tool',
+    toolId,
+    itemId: toolId,
+    name: 'shell',
+    status: 'done',
+    turnId,
+    eventSeq: 217,
+  })
+  conversation = projectStreamDelta(
+    conversation,
+    'agent',
+    'Stage complete.',
+    turnId,
+    messageId,
+    true,
+    254
+  )
+  conversation = projectStreamDelta(
+    conversation,
+    'thinking',
+    'Stage complete.',
+    turnId,
+    messageId,
+    true,
+    258
+  )
+  const rows = activityRows(conversation, { [turnId]: 'running' })
+  const visible = rows.flatMap((row) => (row.kind === 'item' ? [row.item] : row.items))
+  assert.deepEqual(
+    visible.map((item) => [item.itemId, item.eventSeq]),
+    [
+      [toolId, 217],
+      [messageId, 254],
+    ]
+  )
+  assert.equal(conversation.filter((item) => item.kind === 'artifact').length, 1)
+})
+
+test('history refresh replaces one commentary identity without retaining its older text as a duplicate', () => {
+  const turnId = 'turn-commentary-normalization'
+  const itemId = 'message-commentary'
+  const current: ConvItem[] = [
+    {
+      kind: 'thinking',
+      commentary: true,
+      text: 'Stage complete.\n',
+      turnId,
+      itemId,
+      eventSeq: 214,
+    },
+  ]
+  const turns = [
+    {
+      kind: 'thinking',
+      phase: 'commentary' as const,
+      text: 'Stage complete.',
+      turn_id: turnId,
+      item_id: itemId,
+    },
+  ]
+  const restored = projectHistoryWithRuntime(turns, current)
+  assert.deepEqual(restored, [{ ...current[0], text: 'Stage complete.' }])
+  assert.deepEqual(projectHistoryWithRuntime(turns, restored), restored)
 })
 
 test('replayed activity stays before the next ordinary or recovery turn boundary', () => {
@@ -2414,6 +2956,53 @@ test('preserves answer annotation identity for the sent user-message summary', (
   assert.equal(reference?.sourceId, 'annotation-1')
 })
 
+test('preserves frozen quote text in durable and optimistic surface projections', () => {
+  const text = '<script>literal</script>\n' + '完整选区正文。'.repeat(100)
+  const anchor = {
+    document_id: 'pdf',
+    preview_text: '短预览',
+    snapshot_text: text,
+    selected_text_hash: 'sha256:frozen',
+    locator: { kind: 'pdf' as const, page: 2, quads: [] },
+  }
+  const original = JSON.stringify(anchor)
+  const rows = projectHistory([
+    {
+      kind: 'user',
+      role: 'user',
+      text: '比较这些片段',
+      refs: [
+        {
+          type: 'assistant_context',
+          id: 'quote',
+          title: '论文',
+          kind: 'literature',
+          source_id: 'paper',
+          snapshot_id: 'snapshot',
+          anchor,
+        },
+      ],
+    },
+  ])
+  assert.equal(rows[0].kind === 'user' && rows[0].refs?.[0].anchor?.snapshotText, text)
+  const optimistic = projectAssistantContextRefs(
+    [
+      {
+        ref_id: 'quote',
+        kind: 'literature',
+        label: '论文',
+        source_id: 'paper',
+        retention: 'next_turn',
+        origin: 'explicit',
+        anchor,
+      },
+    ],
+    []
+  )
+  assert.equal(optimistic[0].anchor?.snapshotText, text)
+  assert.equal(JSON.stringify(anchor), original)
+})
+
 test('preserves Assistant snapshot, revision and selection locator for sent reference review', () => {
   const rows = projectHistory([
     {
@@ -2554,7 +3143,19 @@ test('binds a durable user-message event without duplicating the optimistic bubb
   })
   assert.equal(rows.length, 1)
   assert.equal(rows[0].turnId, 'vendor-turn')
+  assert.equal(rows[0].startedAt, 1000)
   assert.equal(rows[0].kind === 'user' ? rows[0].refs?.[0]?.path : '', '/tmp/invoice.pdf')
+})
+
+test('user send times restore from history without inventing times for legacy rows', () => {
+  const items = projectHistory([
+    { kind: 'user', text: 'hello', turn_id: 'turn', item_id: 'message', sent_at: 12 },
+    { kind: 'user', text: 'legacy' },
+    { kind: 'user', text: 'invalid', sent_at: Number.NaN },
+  ])
+  assert.equal(items[0].startedAt, 12000)
+  assert.equal(items[1].startedAt, undefined)
+  assert.equal(items[2].startedAt, undefined)
 })
 
 test('adds an optimistic user message once and rolls back only while unbound', () => {
@@ -2604,6 +3205,7 @@ test('collapses admitted and vendor-bound copies of one steered user message', (
       turnId: 'vendor-turn',
       itemId: 'client-turn',
       refs: undefined,
+      startedAt: 1000,
       steer: true,
       steerLabel: '已用于当前任务',
     },
@@ -2793,9 +3395,65 @@ test('keeps an interrupted turn status below its replayed tool activity', () => 
   )
 })
 
+test('cold history restores unnamed tools alongside named activity and messages', () => {
+  const turnId = 'restored-turn'
+  const toolEvent = { v: 2, ts: 1, session_id: 'session', turn_id: turnId } as const
+  const missingName = JSON.parse(
+    JSON.stringify({
+      ...toolEvent,
+      seq: 1,
+      type: 'tool_started',
+      data: { tool_id: 'unnamed' },
+    })
+  ) as ProductEvent
+  const history: HistoryResult = {
+    turns: [
+      { kind: 'user', text: 'Inspect the report', turn_id: turnId },
+      { kind: 'text', role: 'assistant', text: 'Report inspected', turn_id: turnId },
+    ],
+    todos: [],
+    todo_turn_id: null,
+    artifacts: [],
+    activity_events: [
+      missingName,
+      { ...toolEvent, seq: 2, type: 'tool_started', data: { tool_id: 'read', name: 'Read' } },
+      {
+        ...toolEvent,
+        seq: 3,
+        type: 'tool_completed',
+        data: { tool_id: 'unnamed', name: '', success: true },
+      },
+    ],
+    turn_activity: [{ turn_id: turnId, started_at: 1, completed_at: 2, outcome: 'completed' }],
+  }
+
+  const restored = projectHistorySnapshot(history, [])
+  assert.deepEqual(
+    restored.map((item) => item.kind),
+    ['user', 'tool', 'tool', 'agent']
+  )
+  assert.deepEqual(
+    restored.flatMap((item) => (item.kind === 'tool' ? [[item.toolId, item.name]] : [])),
+    [
+      ['unnamed', 'tool'],
+      ['read', 'Read'],
+    ]
+  )
+  assert.deepEqual(projectHistorySnapshot(history, restored), restored)
+})
+
 test('interruption notice survives cold history recovery and repeated refresh', () => {
   const history: HistoryResult = {
-    turns: [{ kind: 'user' as const, text: 'stop the command', turn_id: 'stopped' }],
+    turns: [
+      { kind: 'user' as const, text: 'stop the command', turn_id: 'stopped' },
+      {
+        kind: 'text' as const,
+        role: 'assistant',
+        text: 'retained partial answer',
+        turn_id: 'stopped',
+      },
+      { kind: 'user' as const, text: 'next question', turn_id: 'later' },
+    ],
     todos: [],
     todo_turn_id: null,
     artifacts: [],
@@ -2817,7 +3475,7 @@ test('interruption notice survives cold history recovery and repeated refresh', 
         session_id: 'session',
         turn_id: 'stopped',
         item_id: 'interruption',
-        data: {},
+        data: { reason: 'user_requested' },
       },
     ],
     turn_activity: [
@@ -2827,7 +3485,7 @@ test('interruption notice survives cold history recovery and repeated refresh', 
   const restored = projectHistorySnapshot(history, [])
   assert.deepEqual(
     restored.map((item) => item.kind),
-    ['user', 'tool', 'status']
+    ['user', 'tool', 'agent', 'status', 'user']
   )
   const notice = restored.find((item) => item.kind === 'status')
   assert.equal(notice?.kind === 'status' ? notice.hideIcon : undefined, true)
@@ -2837,6 +3495,10 @@ test('interruption notice survives cold history recovery and repeated refresh', 
   )
   assert.equal(notice?.eventSeq, 2)
   assert.equal(notice?.itemId, 'interruption')
+  assert.equal(notice?.kind === 'status' ? notice.interruptionReason : undefined, 'user_interrupt')
+  const interruption = history.activity_events?.[1]
+  assert.ok(interruption?.type === 'turn_interrupted')
+  assert.deepEqual(projectTurnInterruption([], interruption), [notice])
   assert.deepEqual(projectHistorySnapshot(history, restored), restored)
   assert.deepEqual(projectHistorySnapshot(history, []), restored)
 })
@@ -2892,6 +3554,7 @@ test('interruption notice distinguishes process exit from a user stop', () => {
   if (notice.kind !== 'status') return
   assert.equal(notice.hideIcon, false)
   assert.equal(notice.tone, 'tension')
+  assert.equal(notice.interruptionReason, 'process_exit')
   assert.deepEqual(notice.displayMessage, feedback('components', 'stream.runtimeInterrupted'))
   assert.deepEqual(projectActivityEvents(rows, [event]), rows)
 })
@@ -2911,7 +3574,7 @@ test('interruption projection is shared by live and history without marking othe
   assert.deepEqual(projectActivityEvents(live, [event]), live)
   assert.deepEqual(
     live[0]?.kind === 'status' ? live[0].displayMessage : undefined,
-    feedback('components', 'stream.stopped')
+    feedback('components', 'stream.interrupted')
   )
   const unknown: ProductEvent = {
     v: 2,
@@ -2925,6 +3588,22 @@ test('interruption projection is shared by live and history without marking othe
   assert.equal(
     projectActivityEvents([], [unknown]).some((item) => item.kind === 'status'),
     false
+  )
+})
+
+test('an interruption without an attributed user request does not claim the user stopped it', () => {
+  const rows = projectTurnInterruption([], {
+    v: 2,
+    seq: 1,
+    ts: 1,
+    type: 'turn_interrupted',
+    session_id: 'session',
+    turn_id: 'interrupted',
+    data: {},
+  })
+  assert.deepEqual(
+    rows[0]?.kind === 'status' ? rows[0].displayMessage : undefined,
+    feedback('components', 'stream.interrupted')
   )
 })
 
@@ -3372,6 +4051,32 @@ test('durable message anchors restore answer models when native history omits or
   )
   assert.equal(rebound.length, 1)
   if (rebound[0].kind === 'agent') assert.deepEqual(rebound[0].modelRun, model)
+})
+
+test('credit exhaustion retains partial output and never grants automatic retry on replay', () => {
+  const partial: ConvItem = {
+    kind: 'agent',
+    text: 'Completed first paragraph',
+    turnId: 'credit-turn',
+  }
+  const event: ProductEvent = {
+    v: 2,
+    seq: 12,
+    ts: 2,
+    type: 'turn_failed',
+    session_id: 'session',
+    turn_id: 'credit-turn',
+    data: { code: 'credit_balance_exhausted', message: 'Credits exhausted', retryable: true },
+  }
+  const projected = projectActivityEvents([partial], [event])
+  assert.deepEqual(projected[0], partial)
+  assert.equal(projected.length, 2)
+  const failure = projected[1]
+  assert.equal(failure.kind, 'error')
+  if (failure.kind !== 'error') throw new Error('Expected credit failure')
+  assert.equal(failure.failure?.kind, 'credits')
+  assert.equal(failure.runtimeAction, undefined)
+  assert.deepEqual(projectActivityEvents(projected, [event]), projected)
 })
 
 test('provider failure replay deduplicates reconstructed descriptors and legacy cards', () => {

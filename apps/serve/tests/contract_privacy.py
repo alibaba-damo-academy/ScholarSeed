@@ -7,6 +7,7 @@ import io
 import os
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import closing
@@ -19,6 +20,74 @@ from service.platform.configuration import ConfigurationStorage
 
 
 class PrivacyContracts(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Windows inherited Modify ACL")
+    def test_config_publication_needs_no_ownership_privilege(self) -> None:
+        # A fresh process avoids altering the test runner's token. SSH admins
+        # have SeTakeOwnershipPrivilege enabled, which otherwise hides this bug.
+        program = r"""
+import ctypes
+import json
+import msvcrt
+import os
+import tempfile
+from ctypes import wintypes
+from pathlib import Path
+from service.platform import windows
+from service.settings.config import ConfigSeed, publish_config_seed
+from service.settings.connections import ModelProfileStore
+
+security = windows.SECURITY
+security.AdjustTokenPrivileges.argtypes = [wintypes.HANDLE, wintypes.BOOL, wintypes.LPVOID, wintypes.DWORD, wintypes.LPVOID, wintypes.LPVOID]
+security.AdjustTokenPrivileges.restype = wintypes.BOOL
+token = wintypes.HANDLE()
+windows.check(security.OpenProcessToken(windows.KERNEL.GetCurrentProcess(), 0x28, ctypes.byref(token)))
+try:
+    windows.check(security.AdjustTokenPrivileges(token, True, None, 0, None, None))
+finally:
+    windows.close(token.value)
+security.SetFileSecurityW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.LPVOID]
+security.SetFileSecurityW.restype = wintypes.BOOL
+with tempfile.TemporaryDirectory() as temporary:
+    root = Path(temporary).resolve()
+    descriptor = wintypes.LPVOID()
+    windows.check(security.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        f'D:P(A;OICI;0x1301bf;;;{windows.current_sid()})(A;OICI;FA;;;SY)',
+        1, ctypes.byref(descriptor), None))
+    try:
+        windows.check(security.SetFileSecurityW(str(root),
+            windows.DACL_INFORMATION | windows.PROTECTED_DACL_INFORMATION, descriptor))
+    finally:
+        windows.KERNEL.LocalFree(descriptor)
+    with tempfile.NamedTemporaryFile(dir=root, delete=False) as probe:
+        probe.write(b'writable')
+        probe.flush()
+        handle = msvcrt.get_osfhandle(probe.fileno())
+        reopened = windows.KERNEL.ReOpenFile(handle, windows.WRITE_OWNER, 3, 0)
+        assert reopened in (None, windows.INVALID_HANDLE), 'fixture must reject WRITE_OWNER'
+        assert ctypes.get_last_error() == 5
+        reopened = windows.KERNEL.ReOpenFile(handle, windows.READ_CONTROL | windows.WRITE_DAC, 3, 0)
+        assert reopened not in (None, windows.INVALID_HANDLE)
+        windows.close(reopened)
+    Path(probe.name).unlink()
+    target = root / 'config.json'
+    seed = ConfigSeed(target, b'{"model_name":"seed"}', ())
+    assert publish_config_seed(seed)
+    assert not publish_config_seed(ConfigSeed(target, b'overwrite forbidden', ()))
+    assert target.read_bytes() == seed.payload
+    profile = root / 'profiles.json'
+    ModelProfileStore(profile)._write({'api_key': 'synthetic'})
+    ModelProfileStore(profile)._write({'api_key': 'replacement'})
+    assert json.loads(profile.read_bytes()) == {'api_key': 'replacement'}
+    assert set(root.iterdir()) == {target, profile}
+    assert all(path.stat().st_nlink == 1 for path in (target, profile))
+    for path in (target, profile):
+        with path.open('rb') as stream:
+            windows.validate_private(msvcrt.get_osfhandle(stream.fileno()))
+    print('modify_acl_without_privileges: config seed, no-overwrite, profile replacement, private ACL PASS')
+"""
+        result = subprocess.run([sys.executable, "-c", program], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def assert_private(self, path: Path, *, directory: bool = False) -> None:
         if os.name != "nt":
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o700 if directory else 0o600)
@@ -174,11 +243,17 @@ class PrivacyContracts(unittest.TestCase):
                         self.assertEqual(f.read(), b"vendor config")
                 self.assertEqual(self.security_bytes(target), before)
                 self.set_security(target, f"O:{user}D:P(A;;FA;;;{user})(A;;FA;;;{logon})")
+                before = self.security_bytes(target)
                 with self.assertRaises(PermissionError):
-                    ConfigurationStorage((target,), io.BytesIO).update(
-                        target, lambda previous: previous
-                    )
+                    self.validate_private(target)
+                self.assertEqual(self.security_bytes(target), before)
+                # Existing-file access follows the OS; explicit admission remains strict.
+                ConfigurationStorage((target,), io.BytesIO).update(
+                    target, lambda previous: previous
+                )
+                self.assertEqual(target.read_bytes(), b"vendor config")
                 self.set_security(target, f"O:{user}D:P(A;;FA;;;{user})(A;;FR;;;{logon})")
+                self.validate_private(target)
                 ConfigurationStorage((target,), io.BytesIO).update(
                     target, lambda previous: previous + b" updated"
                 )
@@ -207,8 +282,16 @@ class PrivacyContracts(unittest.TestCase):
                 try:
                     before = self.security_bytes(root)
                     with self.assertRaises(PermissionError):
+                        self.validate_private(root)
+                    # An empty DACL denies native access. Other fixtures grant the
+                    # current user access without satisfying private admission.
+                    if descriptor != f"O:{user}D:P":
                         with closing(storage.open_private_directory(root, ())):
                             pass
+                    else:
+                        with self.assertRaises(PermissionError):
+                            with closing(storage.open_private_directory(root, ())):
+                                pass
                     self.assertEqual(self.security_bytes(root), before)
                 finally:
                     self.set_security(root, f"O:{user}D:P(A;OICI;FA;;;{user})")
@@ -226,8 +309,25 @@ class PrivacyContracts(unittest.TestCase):
             self.set_security(root, f"O:BAD:P(A;;FA;;;{user})(A;;FA;;;OW)")
             with patch.object(windows, "current_groups", return_value=frozenset()):
                 with self.assertRaises(PermissionError):
-                    with closing(storage.open_private_directory(root, ())):
-                        pass
+                    self.validate_private(root)
+                with closing(storage.open_private_directory(root, ())):
+                    pass
+
+    @staticmethod
+    def validate_private(path: Path) -> None:
+        parent, name = storage.open_parent(path)
+        with closing(parent):
+            handle = windows.open_relative(
+                parent.native_handles[-1],
+                name,
+                directory=path.is_dir(),
+                access=windows.READ_CONTROL | windows.READ_ATTRIBUTES | windows.SYNCHRONIZE,
+                private=False,
+            )
+            try:
+                windows.validate_private(handle)
+            finally:
+                windows.close(handle)
 
     @unittest.skipUnless(os.name == "nt", "Windows private creation")
     def test_lease_created_directory_satisfies_configuration_contract(self) -> None:

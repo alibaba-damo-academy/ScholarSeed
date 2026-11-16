@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from confirmation import valid_timeout_approval
 from task_contract import validate_request, read_request, structural_contract, publication_view, CONTRACT_VERSION
+from planning import require_plan, PLAN_POLICY
 
 import copy
 import hashlib
@@ -90,7 +91,10 @@ def preparation_identity(workspace: Path) -> str:
 
 
 def require_approval(workspace: Path) -> None:
+    require_plan(workspace)
     mode=read_request(workspace)["outline_review"]
+    if mode == PLAN_POLICY:
+        return
     if mode == "auto":
         return
     p = Path(workspace) / "04_outline/approval.json"

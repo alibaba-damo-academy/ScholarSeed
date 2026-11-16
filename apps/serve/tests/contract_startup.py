@@ -30,8 +30,7 @@ from service.cli.utils import startup_checkpoint
 from service.paths import DEFAULT_WORKSPACE_ENV
 from service.platform import startup as platform_startup
 from service.platform.startup import startup_phase
-from service.platform.storage import WindowsDirectoryNative, account_directory
-from service.settings import config as config_module
+from service.platform.storage import DirectoryHandle, WindowsDirectoryNative, account_directory
 from service.settings import connections
 from service.settings.config import (
     decode_config_object,
@@ -781,15 +780,14 @@ asyncio.run(verify())
             source, config = root / "seed.json", root / "config.json"
             source.write_text('{"model_name":"test"}')
 
-            def refuse(path, _mode, _descriptor):
-                self.assertEqual(path.read_bytes(), b"")
-                raise PermissionError("cannot protect staged file")
+            def refuse(*args, **kwargs):
+                raise PermissionError("cannot create private staged file")
 
-            with patch.object(connections, "protect_path", side_effect=refuse):
+            with patch.object(DirectoryHandle, "open_private", side_effect=refuse):
                 with self.assertRaises(PermissionError):
                     connections.ModelProfileStore(profile)._write({"api_key": "synthetic"})
             self.assertEqual(profile.read_bytes(), b"existing profile")
-            with patch.object(config_module, "protect_path", side_effect=refuse):
+            with patch.object(DirectoryHandle, "open_private", side_effect=refuse):
                 with self.assertRaises(PermissionError):
                     seed_user_config(source=source, target=config)
             self.assertFalse(config.exists())
@@ -916,8 +914,10 @@ asyncio.run(verify())
             root = Path(directory).resolve()
             source, target = root / "seed.json", root / "config.json"
             source.write_text('{"model_name":"seed"}')
-            with patch(
-                "service.settings.config.os.link", side_effect=OSError(errno.ENOTSUP, "unsupported")
+            with patch.object(
+                DirectoryHandle,
+                "replace_private",
+                side_effect=OSError(errno.ENOTSUP, "unsupported"),
             ):
                 with self.assertRaises(OSError):
                     seed_user_config(source=source, target=target)
@@ -966,7 +966,7 @@ async def verify_owner_refusal():
     created_root = Path(created.root)
     assert created.layout.value == "managed"
     assert (created_root / "resources").is_dir()
-    assert (created_root / "literature").is_dir()
+    assert not (created_root / "literature").exists()
     assert (created_root / ".scholarseed" / "service" / "project.sqlite3").is_file()
     assert not startup_storage_needs_write(app.state.startup_sources)
     external = Path(os.environ["SCHOLARSEED_DEFAULT_WORKSPACE"]).parent / "external"

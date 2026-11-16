@@ -22,9 +22,11 @@ from service.chat.service.completions import (
 from service.chat.service.rejections import SUBSCRIPTION_CAPABILITY_UNSUPPORTED_CODE
 from service.chat.service.transport import retryable_connect_failure, transport_diagnostics
 from service.platform.activity import Activities, ActivityDomain, ActivityLease
+from service.platform.egress import outbound
 from service.settings.authorization import BrowserAuthorization
 from service.settings.capabilities import INPUT_MODALITIES_KEY, MODALITY_KINDS
 from service.settings.connections import (
+    CONNECTION_OWNER_KEY,
     ENABLED_KEY,
     MODEL_ID_KEY,
     OAUTH_PROVIDER_KEY,
@@ -139,13 +141,12 @@ class SubscriptionService:
         # machine 轴下连接归这台机器: 授权事务、目录任务、热桥一律按机器级归属身份键控,
         # 因此账号登出不该撕它们(见 logout)。
         self._shared_ownership = bool(shared_ownership)
-        self.client = client or httpx.AsyncClient(
-            timeout=OAUTH_HTTP_TIMEOUT_SECONDS,
-            follow_redirects=False,
-            trust_env=SUBSCRIPTION_TRUST_ENV,
-        )
+        # Borrowed clients keep the caller's lifecycle; default egress clients are
+        # created per outbound operation so proxy changes take effect mid-session.
+        self.client = client
         protocols = {
-            key: OAuthProtocol(policy, self.client) for key, policy in OAUTH_PROVIDERS.items()
+            key: OAuthProtocol(policy, self.client, trust_env=SUBSCRIPTION_TRUST_ENV)
+            for key, policy in OAUTH_PROVIDERS.items()
         }
         self.resolvers = {
             key: OAuthCredentials(credentials, protocol, activities=activities)
@@ -207,6 +208,7 @@ class SubscriptionService:
                 else record.state.value
             ),
             "account_label": record.tokens.account_label if record.tokens else "",
+            "registered": bool(record.client_id),
             "billing": SUBSCRIPTION_BILLING,
             **(
                 {"error": "oauth_plan_permission_required"}
@@ -280,6 +282,25 @@ class SubscriptionService:
             owner_id, connection_id, transaction_id
         )
 
+    def registrations(self, owner_id: str, connection_id: str) -> dict[str, Any]:
+        self.profile(owner_id, connection_id)
+        excluded = {profile["id"] for profile in self.profiles.list(owner_id=owner_id)["profiles"]}
+        return {"registrations": self.credentials.registrations(owner_id, excluded=excluded)}
+
+    def claim_registration(self, owner_id: str, connection_id: str, source_id: str) -> dict:
+        profile = self.profile(owner_id, connection_id)
+        available = self.registrations(owner_id, connection_id)["registrations"]
+        if source_id not in {registration["id"] for registration in available}:
+            raise OAuthFailure("oauth_connection_changed")
+        self.authorizations[profile[OAUTH_PROVIDER_KEY]].cancel_connection(owner_id, connection_id)
+        try:
+            self.credentials.claim_registration(
+                owner_id, connection_id, source_id, target_owner_id=profile[CONNECTION_OWNER_KEY]
+            )
+        except CredentialConflictError:
+            raise OAuthFailure("oauth_connection_changed") from None
+        return self.status(owner_id, connection_id)
+
     async def disconnect(self, owner_id: str, connection_id: str) -> None:
         profile = self.profile(owner_id, connection_id)
         scope = (owner_id, connection_id)
@@ -288,12 +309,15 @@ class SubscriptionService:
         self.authorizations[profile[OAUTH_PROVIDER_KEY]].cancel_connection(owner_id, connection_id)
         self.bridge.revoke_connection(owner_id, connection_id)
         record = self.credentials.read(owner_id, connection_id)
-        self.credentials.revoke(owner_id, connection_id)
+        self.credentials.revoke(owner_id, connection_id, remote_pending=record.tokens is not None)
         if record.tokens is not None:
             try:
                 await self.resolvers[profile[OAUTH_PROVIDER_KEY]].protocol.revoke(record.tokens)
             except OAuthFailure:
                 raise OAuthFailure("oauth_revocation_unconfirmed") from None
+            self.credentials.confirm_revocation(owner_id, connection_id, record.generation + 1)
+        elif record.revocation_unconfirmed:
+            raise OAuthFailure("oauth_revocation_unconfirmed")
 
     async def logout(self, owner_id: str) -> None:
         if self._shared_ownership:
@@ -535,11 +559,20 @@ class SubscriptionService:
             response: httpx.Response | None = None
             for attempt in range(SUBSCRIPTION_MODELS_RETRY_ATTEMPTS):
                 try:
-                    response = await self.client.get(
-                        policy.models_endpoint,
-                        headers={**material.headers, "Authorization": f"Bearer {material.api_key}"},
+                    async with outbound(
+                        self.client,
+                        timeout=OAUTH_HTTP_TIMEOUT_SECONDS,
                         follow_redirects=False,
-                    )
+                        trust_env=SUBSCRIPTION_TRUST_ENV,
+                    ) as client:
+                        response = await client.get(
+                            policy.models_endpoint,
+                            headers={
+                                **material.headers,
+                                "Authorization": f"Bearer {material.api_key}",
+                            },
+                            follow_redirects=False,
+                        )
                 except httpx.HTTPError as error:
                     # TLS 信任失败、DNS 失败与超时都归到这一支，只报「不可用」无法区分，
                     # 而错误详情正是唯一能分辨它们的字段。上游响应体与请求头不入日志。
@@ -693,6 +726,7 @@ class SubscriptionService:
         turn_id_provider: Callable[[str], str] | None = None,
         catalog_activity: ActivityLease | None = None,
         catalog_resolver: Callable[[str, str], Awaitable[dict[str, Any]]] | None = None,
+        allow_tools: bool = True,
         catalog_identity: str = "",
     ) -> CompletionRegistration:
         profile = self.profile(owner_id, connection_id)
@@ -767,6 +801,7 @@ class SubscriptionService:
             reasoning_effort=reasoning_effort,
             turn_id_provider=turn_id_provider,
             provider=OPENAI_PROVIDER,
+            allow_tools=allow_tools,
             renewal_source=renewal_source,
             resume_scope=(
                 json.dumps({"model": model_id, "catalog": catalog_identity}, sort_keys=True)
@@ -838,4 +873,5 @@ class SubscriptionService:
         await self.bridge.close()
         for resolver in self.resolvers.values():
             await resolver.close()
-        await self.client.aclose()
+        if self.client is not None:
+            await self.client.aclose()

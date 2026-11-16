@@ -14,11 +14,15 @@ sys.path.insert(0, str(ROOT / 'lib'))
 import slr_paths
 slr_paths.bootstrap(__file__)
 sys.path.insert(0, str(ROOT / 'scripts'))
+from authoring import writing_content
 from evidence import read, save
 from writing_contract import read_request, require_approval, select_outline, explicit_length_budget
 from output_spec import read_output_spec
 from _utils import read_query_meta, section_label
 from generation_errors import GenerationError
+from citation_identity import authoring_view
+from paper_materials import is_quick, evidence_records
+from quick import manuscript_packet as quick_packet
 
 
 def base_outline(ws):
@@ -40,6 +44,8 @@ def run_script(ws, relative, *args):
 
 
 def validate_plan(ws, outline, preparing=False):
+    if is_quick(ws) and any(node.get('figures') for node in nodes(outline)):
+        raise ValueError('Quick cannot include figures; recommend Standard for image requirements')
     from validate_outline import validate, derive_from_task, load_whitelist
     allowed, cite_index, _ = load_whitelist(ws)
     limits, _ = derive_from_task(ws)
@@ -57,6 +63,10 @@ def validate_plan(ws, outline, preparing=False):
 def prepare(ws, assets=None, legacy_cards=False):
     from paper_materials import require_ready
     require_ready(ws)
+    if is_quick(ws):
+        quick_packet(ws)
+        return {'status':'SUCCESS','pipeline':'abstract_markdown','draft_jobs':1,'figure_slots':[],
+                'packet':'05_generation/_internal/quick_packet.json','next':'Run manuscript generate once.'}
     require_approval(ws)
     existing=ws/'05_generation/_internal/manuscript_contract.json'
     if existing.exists():
@@ -75,7 +85,7 @@ def prepare(ws, assets=None, legacy_cards=False):
     spec = read_output_spec(ws)
     if spec.get('spec_error'):
         raise ValueError(spec['spec_error'])
-    cards = read(ws / '03_process/paper_cards.json')
+    cards = evidence_records(ws)
     keys = read(ws / '03_process/cite_keys.json')
     selected = read(ws/'02_retrieval/selected_paper.json')
     cards = {pid:cards[pid] for pid in selected}
@@ -137,26 +147,25 @@ def prepare(ws, assets=None, legacy_cards=False):
     brief = {'workspace': str(ws), 'skill': str(ROOT), 'language': language,
              'task': task, 'preparation_id': preparation_id,
              'figures': [{k: it[k] for k in ('figure_id','section_id','section_title','purpose','content_plan','caption_draft','visual_guidance','qualifications')} for it in figures],
-             'evidence_paths': ['03_process/paper_cards.json','03_process/cite_keys.json','03_process/source_maps.json','02_retrieval/paper_info.json'],
+             'evidence_paths': ['05_generation/_internal/writing_evidence.json'],
              'ownership': 'Submit rendering fields through figures plan --request; CLI owns the internal worklist. Own generated figure files only. Do not edit outline, manuscript, tables or task identity.'}
     from asset_prompt_guidance import FIGURE_DESIGN_GUIDANCE
     brief['rendering_guidance'] = FIGURE_DESIGN_GUIDANCE
     brief['completion_policy'] = 'Generate prepared figures concurrently, then return completed asset paths for direct integration. No visual review, inspection receipt or refinement pass.'
-    from evidence import writing_content
     from figure_authoring import authoring_packet, CAPTION_GUIDANCE, PROMPT_GUIDANCE
     relevant=list(dict.fromkeys(pid for item in figures for pid in item['paper_ids']))
     evidence_path=internal/'figure_evidence.json'
-    save(evidence_path, {'papers':{pid:{'paper_id':pid,'cite_key':keys[pid],
+    save(evidence_path, {'papers':{keys[pid]:{'cite_key':keys[pid],
         'title':cards[pid].get('title'), 'year':cards[pid].get('year'),
         'paper_type':cards[pid].get('paper_type'), 'reading_depth':cards[pid].get('reading_depth'),
         **writing_content(cards[pid])} for pid in relevant}})
-    brief['evidence_path']=str(evidence_path)
+    brief['evidence_path']=evidence_path.relative_to(ws).as_posix()
     brief['prompt_guidance']=PROMPT_GUIDANCE
     brief['caption_guidance']=CAPTION_GUIDANCE
     for item,summary in zip(figures,brief['figures']):
         path=internal/'figure_authoring'/f"{item['figure_id']}.json"
-        save(path,authoring_packet(item,task,evidence_path,preparation_id))
-        summary.update(authoring_packet=str(path),section_description=item['section_description'],
+        save(path,authoring_packet(authoring_view(item,keys),task,evidence_path.relative_to(ws).as_posix(),preparation_id))
+        summary.update(authoring_packet=path.relative_to(ws).as_posix(),section_description=item['section_description'],
                        evidence_scope=item['evidence_scope'])
     save(internal / 'figure_brief.json', brief)
     budget = explicit_length_budget(ws, language)

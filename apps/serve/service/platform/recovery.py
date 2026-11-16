@@ -42,6 +42,7 @@ RECOVERY_STAGES = frozenset(
         "worker",
         "worker_privilege",
         "verification",
+        "metadata",
     }
 )
 RECOVERY_REASONS = frozenset(
@@ -118,7 +119,9 @@ class SandboxRecovery:
             )
         except OSError as error:
             system_error = getattr(error, "winerror", None) or error.errno or 0
-            if type(system_error) is not int or not 0 <= system_error <= NATIVE_ERROR_LIMIT:
+            if (
+                not isinstance(system_error, int) or isinstance(system_error, bool)
+            ) or not 0 <= system_error <= NATIVE_ERROR_LIMIT:
                 system_error = 0
             raise _failure("helper_launch", "launch_failed", None, system_error) from None
         assert process.stdout is not None
@@ -147,7 +150,7 @@ class SandboxRecovery:
                 and stage in RECOVERY_STAGES
                 and isinstance(reason, str)
                 and reason in RECOVERY_REASONS
-                and type(system_error) is int
+                and (isinstance(system_error, int) and not isinstance(system_error, bool))
                 and 0 <= system_error <= NATIVE_ERROR_LIMIT
             ):
                 raise _failure(stage, reason, code, system_error)

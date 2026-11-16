@@ -1,5 +1,13 @@
+import { randomUUID } from 'node:crypto'
+import { lstat, open, realpath, rename, unlink } from 'node:fs/promises'
+import { basename, dirname, join } from 'node:path'
+
 const DEFAULT_COPY_NAME = 'artifact-copy'
 const MAX_COPY_NAME_LENGTH = 180
+const COPY_BUFFER_BYTES = 1024 * 1024
+const INVALID_SOURCE = 'save_copy_source_unavailable'
+const ORIGINAL_TARGET = 'save_copy_target_is_original'
+export const SAVE_COPY_SENDER_ERROR = 'save_copy_sender_invalid'
 
 export interface SaveCopyRequest {
   suggestedName: string
@@ -36,7 +44,7 @@ export function prepareSaveCopy(value: unknown): PreparedSaveCopy | null {
   const view = request.bytes as ArrayBufferView
   return {
     suggestedName: safeName(request.suggestedName),
-    bytes: new Uint8Array(view.buffer, view.byteOffset, view.byteLength)
+    bytes: new Uint8Array(view.buffer, view.byteOffset, view.byteLength),
   }
 }
 
@@ -55,5 +63,73 @@ export async function saveFileCopy(
     return { ok: true, path }
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+export async function savePathCopy(
+  value: unknown,
+  pick: SaveCopyPicker,
+  authorize: (path: string) => string | null
+): Promise<SaveCopyResult> {
+  if (!value || typeof value !== 'object') return { ok: false, error: INVALID_SOURCE }
+  const request = value as { sourcePath?: unknown; suggestedName?: unknown }
+  if (typeof request.sourcePath !== 'string') return { ok: false, error: INVALID_SOURCE }
+  let staging: string | undefined
+  try {
+    const source = authorize(request.sourcePath)
+    if (!source) throw new Error(INVALID_SOURCE)
+    const selected = await pick(safeName(request.suggestedName))
+    if (!selected) return { ok: false, canceled: true }
+    if (authorize(request.sourcePath) !== source) throw new Error(INVALID_SOURCE)
+    const destination = join(await realpath(dirname(selected)), basename(selected))
+    const before = await lstat(source)
+    if (!before.isFile() || before.isSymbolicLink()) throw new Error(INVALID_SOURCE)
+    const existing = await lstat(destination).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') throw error
+      return null
+    })
+    if (destination === source || (existing?.dev === before.dev && existing?.ino === before.ino))
+      throw new Error(ORIGINAL_TARGET)
+    const input = await open(source, 'r')
+    try {
+      const opened = await input.stat()
+      if (
+        opened.dev !== before.dev ||
+        opened.ino !== before.ino ||
+        (await realpath(source)) !== source
+      )
+        throw new Error(INVALID_SOURCE)
+      const temporary = join(dirname(destination), `.save-${randomUUID()}`)
+      const output = await open(temporary, 'wx')
+      staging = temporary
+      try {
+        const buffer = new Uint8Array(COPY_BUFFER_BYTES)
+        let read: number
+        while ((read = (await input.read(buffer)).bytesRead) > 0) {
+          let written = 0
+          while (written < read)
+            written += (await output.write(buffer, written, read - written)).bytesWritten
+        }
+        await output.sync()
+        const after = await input.stat()
+        if (
+          opened.size !== after.size ||
+          opened.mtimeMs !== after.mtimeMs ||
+          opened.ctimeMs !== after.ctimeMs
+        )
+          throw new Error(INVALID_SOURCE)
+      } finally {
+        await output.close()
+      }
+      await rename(temporary, destination)
+      staging = undefined
+      return { ok: true, path: destination }
+    } finally {
+      await input.close()
+    }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+  } finally {
+    if (staging) await unlink(staging)
   }
 }

@@ -31,7 +31,6 @@
     "badge": "{{count}} unread reminders"
   },
   "dialogs": {
-    "literatureDelivery": "Choose a folder for full texts",
     "importResource": "Select files or folders",
     "importFile": "Select files",
     "importDirectory": "Select folders",
@@ -58,6 +57,12 @@
     "minimize": "Minimize to tray",
     "cancel": "Cancel",
     "doNotAskAgain": "Do not ask again"
+  },
+  "overinstall": {
+    "title": "Install ScholarSeed",
+    "message": "Quit ScholarSeed and continue installation?",
+    "detail": "Active tasks will stop. ScholarSeed will save pending settings and stop its background processes before the installer replaces the application. Your projects and history will be retained.",
+    "confirm": "Quit and install"
   },
   "updateRecovery": {
     "title": "ScholarSeed update recovery",
@@ -127,6 +132,9 @@
     "componentExpanding": "Extracting {{name}}: {{percent}}%"
   },
   "installer": {
+    "closeRunning": "ScholarSeed is running. This version requires manual exit. Quit ScholarSeed from its system tray menu, then choose Yes to continue. Cancel keeps the current installation.",
+    "running": "ScholarSeed could not finish shutting down. Close its active tasks and quit from the system tray, then run this installer again.",
+    "downgrade": "A newer version is already installed. Use an installer with the same or a higher version.",
     "title": "Install ScholarSeed",
     "uninstallWaiting": "Click OK in the old uninstaller. Waiting up to 2 minutes for it to exit and finish directory cleanup.",
     "uninstallIncomplete": "The previous uninstall has not finished, or the installation directory is incomplete: {{path}}. Click OK in the old uninstaller and wait for it to exit and finish cleanup, then run Setup again. If this persists, contact support; do not manually delete unknown files.",

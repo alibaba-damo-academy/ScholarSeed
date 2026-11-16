@@ -175,9 +175,12 @@ class SkillManagementContracts(unittest.TestCase):
         )
         for operation, method, body in operations:
             with self.subTest(operation=operation):
-                if operation != "document":
-                    body = {**body, "client_op_id": operation + "-identity"}
-                result = self.call(operation, body)
+                request = (
+                    body
+                    if operation == "document"
+                    else {**body, "client_op_id": operation + "-identity"}
+                )
+                result = self.call(operation, request)
                 self.assertEqual(result.status_code, 200, result.text)
                 self.assertEqual(
                     getattr(self.manager, method).await_args.kwargs.get("user_id"),
@@ -421,6 +424,7 @@ class SkillMutationSafetyContracts(unittest.IsolatedAsyncioTestCase):
                     }
                 ),
                 download=AsyncMock(return_value=payload.getvalue()),
+                localized_copy=AsyncMock(return_value={"display_names": {}, "descriptions": {}}),
             )
             with (
                 patch("service.capabilities.service.management.SERVICE_SKILLS_DIR", user),
@@ -440,6 +444,7 @@ class SkillMutationSafetyContracts(unittest.IsolatedAsyncioTestCase):
                     )
                 self.assertEqual(error.exception.status, 403)
                 self.assertFalse((user / "papers").exists())
+                remote.localized_copy.assert_awaited_once_with("global", "papers")
                 runtime.configure_skills.side_effect = [RuntimeError("sync failed"), None]
                 with self.assertRaises(SkillManagementError) as error:
                     await manager.marketplace_install(
@@ -447,6 +452,10 @@ class SkillMutationSafetyContracts(unittest.IsolatedAsyncioTestCase):
                     )
                 self.assertEqual(error.exception.status, 503)
                 self.assertFalse((user / "papers").exists())
+                self.assertEqual(
+                    remote.localized_copy.await_args_list,
+                    [call("global", "papers"), call("global", "papers")],
+                )
 
 
 if __name__ == "__main__":

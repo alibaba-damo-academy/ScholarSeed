@@ -1,0 +1,5 @@
+pypdf>=6.15.0,<7
+pdfplumber>=0.11.10,<0.12
+pypdfium2>=5,<5.12
+Pillow>=12.2,<13
+markdown-it-py>=4.2,<5

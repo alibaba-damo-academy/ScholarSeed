@@ -1,13 +1,60 @@
 {
+  "externalRead": {
+    "title": "Read an external file",
+    "description": "File: {{path}}\nOperation: read-only. Scope: this file and the current task only; no parent-directory access, writes or permanent link.",
+    "allow": "Allow this read",
+    "deny": "Deny",
+    "allowed": "This task may read this file. No directory or write access was granted; the read result depends on execution.",
+    "denied": "Reading this file was denied. The original file is unchanged."
+  },
+  "recovery": {
+    "saveTitle": "No write permission for “{{path}}”",
+    "saveDescription": "Grant access in system settings and retry, or cancel this save.",
+    "authorize": "Open permissions",
+    "settingsFailed": "Could not open system permission settings. Check file and folder permissions manually. No retry or write has occurred.",
+    "cancelSave": "Cancel",
+    "saveCancelled": "Cancelled this save without creating or saving the file elsewhere",
+    "saveRetryRequested": "Requested another attempt of the original save; await the execution result",
+    "fileTitle": "Cannot read {{path}}",
+    "fileDescription": "Check file access, or replace or decrypt the file and retry. Other files remain usable.",
+    "retryFile": "Retry",
+    "removeFile": "Remove this file",
+    "fileRetryRequested": "Requested another read of the original file",
+    "fileRemoved": "Excluded the failed file from this read without deleting the original or history",
+    "searchTitle": "Search incomplete",
+    "searchDescription": "Query: {{query}}\nFailure: {{reason}}\nExisting content and search results are preserved. This failed query does not mean no relevant research exists. Retry runs only this query.",
+    "retrySearch": "Retry search",
+    "dismiss": "Close",
+    "retryRequested": "Search retry requested; await the execution result",
+    "dismissed": "Notice closed; the failed query is not marked successful"
+  },
+  "toolProcess": {
+    "retry": "Retry this search",
+    "retrying": "Retrying…",
+    "retryFailed": "Retry failed. The original record is preserved.",
+    "checkRetry": "Check retry result",
+    "retryTitle": "Retry the failed search?",
+    "retryDescription": "Only the recorded read-only search below will run again, not successful steps. Model usage may be charged. Both the original failure and new result will be preserved.",
+    "failures_one": "{{count}} tool step failed. Review the execution record to check its impact.",
+    "failures_other": "{{count}} tool steps failed. Review the execution record to check their impact.",
+    "viewFailure": "View",
+    "label": "Processing"
+  },
+  "toolSearch": {
+    "empty": "No web results returned",
+    "more_one": "+{{count}} more result",
+    "more_other": "+{{count}} more results",
+    "collapse": "Show less"
+  },
   "cancel": "Cancel",
   "overview": {
     "showMore": "Show more ({{count}})",
     "showLess": "Show less"
   },
   "save": {
-    "materialsRoot": "Materials (root)",
+    "materialsRoot": "Resources (root)",
     "destination": "Save location: {{path}}",
-    "materials": "Materials",
+    "materials": "Resources",
     "literature": "Literature",
     "import": "Import",
     "collapse": "Collapse",
@@ -28,8 +75,8 @@
     "positionLost": "Original position unavailable",
     "unavailable": "Original answer unavailable",
     "count": "annotations",
-    "selectedText": "Selected text:",
-    "userComment": "User comment:"
+    "selectedText": "Selected text",
+    "userComment": "User comment"
   },
   "translation": {
     "title": "Translation",
@@ -128,20 +175,36 @@
   },
   "attachments": {
     "openImage": "Open original image",
+    "scrollPrevious": "Scroll attachments left",
+    "scrollNext": "Scroll attachments right",
     "actions": "Attachment actions for {{title}}",
-    "save": "Save to library",
+    "save": "Import to library",
     "title": "Save attachment to library",
     "description": "Save a copy of the attachment while keeping the original in the task.",
     "currentProject": "Current project",
     "errors": {
+      "nameExists": "A file with this name already exists here. Change the name and import again. The original will not be overwritten.",
       "assistant_project_unavailable": "This task has no associated project. Cannot save to the library.",
       "session_attachment_not_found": "The attachment is unavailable. Add it again.",
       "session_attachment_changed": "The attachment has changed. Add it again before saving.",
       "session_attachment_forbidden": "The attachment location has changed and the original file cannot be read. Add it again.",
       "saveFailed": "Could not save. Try again later."
-    }
+    },
+    "saveAs": "Save as…",
+    "copyPath": "Copy path",
+    "openFolder": "Open in file manager",
+    "defaultApplication": "System default application",
+    "actionSucceeded": "File operation succeeded",
+    "actionFailed": "File operation failed. Check that the source exists and is readable, and check system permissions. The reference is kept."
   },
   "artifactEntry": {
+    "directorySnapshot": "Read-only directory snapshot captured at publication. Later source changes or deletion do not change this version. Open a file in the workbench to inspect it.",
+    "directoryLabel": "Read-only directory snapshot",
+    "directoryReadOnly": "Read-only snapshot",
+    "directoryOpenSourceMac": "Open source folder in Finder",
+    "directoryOpenSource": "Open source folder",
+    "directoryLoading": "Loading directory snapshot…",
+    "directoryEmpty": "This directory snapshot is empty.",
     "addToConversation": "Add to current conversation",
     "projectUnavailable": "This session is not linked to a project and cannot save to resources.",
     "notFound": "This artifact no longer exists.",
@@ -159,6 +222,8 @@
     "importShort": "Import",
     "open": "Open",
     "openWith": "Open with",
+    "openInRightTab": "Open in the right-side tab",
+    "chooseOpenMethod": "Choose how to open",
     "loadingApps": "Loading applications…",
     "noApps": "No applications available",
     "defaultApp": "Default",
@@ -208,6 +273,7 @@
     "previousVersion": "Version {{version}}"
   },
   "citations": {
+    "projectNavigationSource": "Project source navigation; not a claim-level verification or a historical file version",
     "searchSources": "Candidate sources (not linked to claims)",
     "toolDeclared": "Tool-declared candidate, not yet linked to supporting evidence",
     "noAssociatedSources": "Some content is not linked to sources; verify important facts independently",
@@ -221,14 +287,30 @@
       "interrupted": "Source review interrupted; some claims may lack citations"
     },
     "displayUnavailable": "This excerpt cannot be displayed correctly. View the original source.",
+    "expandExcerpt": "Show full excerpt",
+    "collapseExcerpt": "Collapse excerpt",
     "manualCheck": "For manual verification",
     "pageOnly": "Exact location unavailable; showing a page thumbnail.",
     "evidenceImageAlt": "Source evidence region on page {{page}}",
     "viewOriginal": "View original",
     "undecoded": "Some characters could not be decoded. Open the PDF to verify the source.",
     "unavailableTitle": "Source is temporarily unavailable",
-    "preview": "PDF citation preview",
+    "fileMissing": "The file does not exist. The previously saved citation excerpt is preserved.",
+    "preview": "Citation preview",
     "webPreview": "Web source preview",
+    "webPreviewUnavailable": "Page preview is unavailable. You can still open the source.",
+    "paperSource": "Literature",
+    "paperMultipleAuthors": "{{author}} et al.",
+    "webSource": "Web page",
+    "fileSource": "File",
+    "selectionSource": "File selection",
+    "unknownSource": "Unknown source",
+    "resourceSource": "Resources",
+    "attachmentSource": "Attachment",
+    "previousSource": "Previous source",
+    "nextSource": "Next source",
+    "referenceCount_one": "{{formattedCount}} citation",
+    "referenceCount_other": "{{formattedCount}} citations",
     "webSearchSource": "Web search source",
     "pageEvidenceSource": "Page read and supporting evidence linked",
     "declaredSource": "Web source declared by the answer",
@@ -261,7 +343,8 @@
       "fulltext": "PDF source text",
       "sourceExcerpt": "PaperCard source excerpt",
       "abstract": "Abstract",
-      "papercard": "PaperCard synthesis"
+      "papercard": "PaperCard synthesis",
+      "structuredText": "Source excerpt"
     },
     "error": {
       "sourceChanged": "The PDF cannot be opened or its content has changed. The citation excerpt is preserved for verification.",
@@ -294,14 +377,14 @@
     "emptyFolders": "There are no folders yet. Save to the project root or create a folder.",
     "save": "Save",
     "removeAll": "Remove all annotations",
-    "addConversation": "Add to task",
-    "copyText": "Copy text",
+    "addConversation": "Add to chat",
+    "copyText": "Copy content",
     "textCopied": "Text copied",
     "textCopyFailed": "Could not copy text. Please try again.",
-    "importAnswer": "Import answer to resources",
+    "importAnswer": "Import to resources",
     "selectionActions": "Answer selection actions",
     "comment": "Annotation content",
-    "optionalComment": "Note how you handled it and add to the task (optional)",
+    "optionalComment": "Please add a comment",
     "add": "Add",
     "cancelAdd": "Cancel annotation",
     "addAnnotation": "Add answer annotation",
@@ -318,6 +401,8 @@
     "createIn": "Create in “{{name}}”",
     "correctRetry": "{{detail}} Correct the issue and try again.",
     "editNote": "Edit annotation {{number}}",
+    "editNoteTooltip": "Edit this annotation",
+    "deleteNoteTooltip": "Delete this annotation",
     "removeNote": "Remove annotation {{number}}",
     "annotationLabel": "Annotation {{number}}: {{comment}}",
     "saveFailed": "Save failed: {{detail}}"
@@ -336,7 +421,11 @@
     "assistant": "ScholarSeed"
   },
   "quote": {
-    "open": "Open {{name}}"
+    "open": "Open {{name}}",
+    "fragments": "Selections: {{count}}",
+    "openItem": "Open source for excerpt {{index}}",
+    "noText": "The original text is unavailable for this reference.",
+    "previewOnly": "This historical reference contains only a preview, not the complete original text."
   },
   "contextOption": {
     "collapse": "Collapse folder {{name}}",
@@ -347,12 +436,17 @@
     "more": "Load more"
   },
   "referencePicker": {
+    "resourcesTitle": "Select from resources",
+    "literatureTitle": "Select from literature",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
     "collections": "My collections",
     "ungrouped": "Unorganized",
     "ungroupedEmpty": "No unorganized literature yet.",
     "searchResults": "Search results",
     "collectionEmpty": "No literature in this collection yet.",
     "select": "Select {{name}}",
+    "selectAll": "Select all",
     "selected": "{{count}} selected",
     "add": "Add references",
     "file": "File",
@@ -431,5 +525,44 @@
   "excerptName": {
     "default": "AI task excerpt",
     "named": "{{subject}}_conversation-excerpt"
+  },
+  "contextGroups": {
+    "annotations_one": "{{count}} annotation",
+    "annotations_other": "{{count}} annotations",
+    "selections_one": "{{count}} selection",
+    "selections_other": "{{count}} selections",
+    "unavailable": "Source preview unavailable"
+  },
+  "pdfComment": {
+    "title": "PDF comment",
+    "label": "PDF comment · {{source}}",
+    "feedback": "Your feedback, not source-document evidence.",
+    "page": "PDF · Page {{page}}",
+    "unavailable": "The comment or source changed or is unavailable. Remove it and add it again from the document."
+  },
+  "images": {
+    "open": "View image {{name}} ({{index}} / {{count}})",
+    "remove": "Remove image {{name}}",
+    "scrollPrevious": "Scroll images left",
+    "scrollNext": "Scroll images right",
+    "copy": "Copy image",
+    "more": "More image actions",
+    "openWorkbench": "Open in ScholarSeed workbench",
+    "openWith": "Open with",
+    "loadingApps": "Loading applications…",
+    "noApps": "No applications available",
+    "import": "Import to resources",
+    "saveAs": "Save original as",
+    "openSystem": "Open original in system application",
+    "reveal": "Open containing folder",
+    "close": "Close image viewer",
+    "previous": "Previous image",
+    "next": "Next image",
+    "goto": "Go to image {{index}}",
+    "position": "{{index}} / {{count}} · Zoom {{zoom}}%",
+    "loadFailed": "The image could not be loaded. You can still try opening the original file.",
+    "actionSucceeded": "Image action succeeded",
+    "copySucceeded": "Image copied successfully",
+    "actionFailed": "Image action failed. Check the original file or system permissions."
   }
 }

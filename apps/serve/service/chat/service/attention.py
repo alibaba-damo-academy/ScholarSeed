@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from service.chat.constants import (
@@ -37,6 +38,8 @@ ATTENTION_NOT_FOUND = "attention_not_found"
 HTTP_OK = 200
 HTTP_NOT_FOUND = 404
 ATTENTION_PROGRESS = "progress"
+ATTENTION_SOURCE_BYTES = 1_048_576
+ATTENTION_BATCH_BYTES = 4_194_304
 ATTENTION_FOCUS_KINDS = {
     PRODUCT_EVENT_TURN_COMPLETED: AttentionKind.COMPLETED.value,
     PRODUCT_EVENT_TURN_FAILED: AttentionKind.FAILED.value,
@@ -55,6 +58,46 @@ class AttentionService:
         self._catalog = catalog
         self._events = events
         self._sessions = sessions
+
+    def snapshot(
+        self,
+        principal: SessionPrincipal,
+        *,
+        epoch: str | None = None,
+        after_revision: int | None = None,
+    ) -> dict[str, Any]:
+        snapshot = self.store.snapshot(principal)
+        if (
+            epoch != snapshot["epoch"]
+            or after_revision is None
+            or not 0 <= after_revision <= snapshot["revision"]
+        ):
+            return snapshot
+        remaining = ATTENTION_BATCH_BYTES
+        for reminder in snapshot["items"]:
+            if (
+                reminder["revision"] <= after_revision
+                or reminder["kind"] != AttentionKind.COMPLETED.value
+            ):
+                continue
+            reminder["markdown"] = None
+            if not reminder["item_id"] or not reminder["turn_id"] or remaining <= 0:
+                continue
+            answer = self._events.latest_answer(
+                reminder["session_id"],
+                reminder["turn_id"],
+                item_id=reminder["item_id"],
+                before_seq=reminder["source_seq"],
+            )
+            if answer is None:
+                continue
+            text = str(answer.payload.get("delta") or "")
+            size = len(json.dumps(text, ensure_ascii=False).encode("utf-8"))
+            if size > min(ATTENTION_SOURCE_BYTES, remaining):
+                continue
+            reminder["markdown"] = text
+            remaining -= size
+        return snapshot
 
     def navigation(self, identity: str, principal: SessionPrincipal) -> tuple[dict[str, Any], int]:
         reminder = self.store.get(principal, identity)

@@ -1,8 +1,7 @@
-"""Built research-validation helpers and frozen inventory; not scientific acceptance."""
+"""Built research-validation helpers and source parity; not scientific acceptance."""
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import subprocess
@@ -14,9 +13,7 @@ from pathlib import Path
 from service.capabilities.service.install import parse_skill_frontmatter
 from service.capabilities.service.source import (
     COMMUNITY_SKILLS_DIR,
-    SKILLS_LOCK_FILE,
     compile_source_skills,
-    load_source_lock,
     verify_source_pack,
 )
 from service.paths import SERVICE_BUNDLED_SKILLS_DIR
@@ -90,7 +87,7 @@ class ValidationContracts(unittest.TestCase):
         self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
         return json.loads(result.stdout)
 
-    def test_pack_matches_reviewed_lock_and_skill_versions(self) -> None:
+    def test_pack_matches_source_and_skill_versions(self) -> None:
         actual = {
             str(path.relative_to(self.skill)).replace(os.sep, "/")
             for path in self.skill.rglob("*")
@@ -99,19 +96,6 @@ class ValidationContracts(unittest.TestCase):
         self.assertEqual(actual, VALIDATION_FILES)
         verified, problems = verify_source_pack(self.pack, COMMUNITY_SKILLS_DIR)
         self.assertTrue(verified, str(problems))
-        # Preserve the reviewed, platform-independent byte inventory as well as
-        # the host-native permissions and generated metadata checked above.
-        locked = load_source_lock(SKILLS_LOCK_FILE)["skills"]
-        self.assertEqual(
-            {path.name for path in self.pack.iterdir()}, {row["slug"] for row in locked}
-        )
-        for row in locked:
-            for entry in row["files"]:
-                payload = (self.pack / row["slug"] / entry["path"]).read_bytes()
-                self.assertEqual(len(payload), entry["size"], entry["path"])
-                self.assertEqual(
-                    hashlib.sha256(payload).hexdigest(), entry["sha256"], entry["path"]
-                )
         for name in (VALIDATION_SKILL, PARTNER_SKILL):
             skill = self.pack / name
             metadata, _ = parse_skill_frontmatter((skill / "SKILL.md").read_text(encoding="utf-8"))

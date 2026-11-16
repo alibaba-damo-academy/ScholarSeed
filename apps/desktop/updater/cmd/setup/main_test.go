@@ -23,7 +23,7 @@ func TestInstallerArguments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"--installto", `D:\书深 Apps\ScholarSeed`, "--silent", "--log", `D:\log file.txt`, "--", "--say", "hello"}
+	want := []string{"--installto", `D:\书深 Apps\ScholarSeed`, "--silent", "--log", `D:\log file.txt`}
 	if got := installerArguments(o, o.Directory); !reflect.DeepEqual(got, want) {
 		t.Fatalf("%v", got)
 	}
@@ -45,7 +45,7 @@ func TestDirectoryRiskArgumentStaysInOuterInstaller(t *testing.T) {
 	if !parsed.AcceptDirectoryRisk || !parsed.Silent {
 		t.Fatalf("missing explicit authorization: %+v", parsed)
 	}
-	want := []string{"--installto", "chosen", "--silent", "--log", "setup.log", "--", "--say", "hello"}
+	want := []string{"--installto", "chosen", "--silent", "--log", "setup.log"}
 	if got := installerArguments(parsed, parsed.Directory); !reflect.DeepEqual(got, want) {
 		t.Fatalf("inner installer arguments = %v, want %v", got, want)
 	}

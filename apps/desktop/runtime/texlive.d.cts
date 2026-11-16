@@ -11,9 +11,10 @@ export function bundledTexlive(resourcesRoot: string, platform?: string): string
 
 export function texliveStateRoot(runtimeRoot: string, version: string): string
 export interface TexliveEnvironmentOptions { binDirectory: string; writableRoot: string; environment?: NodeJS.ProcessEnv; platform?: string; systemFonts?: boolean; version?: string; archiveSha256?: string }
-export function prepareTexliveEnvironment(options: TexliveEnvironmentOptions): Record<string, string>
+export function prepareTexliveEnvironment(options: TexliveEnvironmentOptions, publish?: (staged: string, name: string) => void): Record<string, string>
 export function rebuildTexliveEnvironment(options: TexliveEnvironmentOptions): Record<string, string>
 export function texliveEnvironmentCurrent(options: TexliveEnvironmentOptions): boolean
+export function texliveLegacyCacheAliases(writableRoot: string): readonly (readonly [string, string])[]
 export function texliveExecutionResources(options: { binDirectory: string; environment?: NodeJS.ProcessEnv; platform?: string; systemFonts?: boolean; version: string; archiveSha256: string }): { readonly version: string; readonly archiveSha256: string; readonly fontDirectories: readonly string[] }
 
 export function reviewedTexliveVersion(platform?: string): string

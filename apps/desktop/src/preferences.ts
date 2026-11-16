@@ -138,7 +138,10 @@ export function isPreferenceLanguage(value: unknown): value is PreferenceLanguag
 export const PREFERENCE_THEMES: readonly PreferenceTheme[] = ['light', 'dark', 'system']
 
 export interface RendererPreferences {
+  composerDrafts?: string
   taskMessageDismissals?: Record<string, number>
+  composerPredictionsEnabled: boolean
+  pdfSelectionToolbarEnabled: boolean
   projectLayouts?: ProjectLayouts
   browserAutomationEnabled: boolean
   lastLocation: NavigationLocation | null
@@ -170,7 +173,10 @@ export interface RendererPreferences {
 
 /** 各项默认值。其中 `language` 是检测链全部失败时的最终兜底，不是无条件默认值。 */
 export const DEFAULT_RENDERER_PREFERENCES: RendererPreferences = {
+  composerDrafts: '',
   taskMessageDismissals: {},
+  composerPredictionsEnabled: true,
+  pdfSelectionToolbarEnabled: true,
   browserAutomationEnabled: true,
   lastLocation: null,
   selectionPrompts: sanitizeSelectionPrompts(undefined),
@@ -436,8 +442,11 @@ export function rendererPreferencesEqual(
   right: RendererPreferences
 ): boolean {
   return (
+    (left.composerDrafts ?? '') === (right.composerDrafts ?? '') &&
     preferenceRecordEqual(left.taskMessageDismissals ?? {}, right.taskMessageDismissals ?? {}) &&
     left.browserAutomationEnabled === right.browserAutomationEnabled &&
+    left.composerPredictionsEnabled === right.composerPredictionsEnabled &&
+    left.pdfSelectionToolbarEnabled === right.pdfSelectionToolbarEnabled &&
     left.recentProjectId === right.recentProjectId &&
     onboardingEqual(left.onboarding, right.onboarding) &&
     navigationLocationsEqual(left.lastLocation, right.lastLocation) &&
@@ -550,6 +559,7 @@ export function sanitizeRendererPreferences(
       : undefined
   const language = pinnedLanguage ?? fallback.language
   return {
+    composerDrafts: typeof parsed.composerDrafts === 'string' ? parsed.composerDrafts : '',
     taskMessageDismissals:
       parsed.taskMessageDismissals &&
       typeof parsed.taskMessageDismissals === 'object' &&
@@ -560,6 +570,14 @@ export function sanitizeRendererPreferences(
             )
           )
         : {},
+    composerPredictionsEnabled:
+      typeof parsed.composerPredictionsEnabled === 'boolean'
+        ? parsed.composerPredictionsEnabled
+        : DEFAULT_RENDERER_PREFERENCES.composerPredictionsEnabled,
+    pdfSelectionToolbarEnabled:
+      typeof parsed.pdfSelectionToolbarEnabled === 'boolean'
+        ? parsed.pdfSelectionToolbarEnabled
+        : DEFAULT_RENDERER_PREFERENCES.pdfSelectionToolbarEnabled,
     browserAutomationEnabled:
       typeof parsed.browserAutomationEnabled === 'boolean'
         ? parsed.browserAutomationEnabled

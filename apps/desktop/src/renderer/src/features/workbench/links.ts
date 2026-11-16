@@ -5,6 +5,9 @@ const FRAGMENT_PREFIX = '#'
 const EXTERNAL_PROTOCOLS = new Set(['http:', 'https:'])
 const EXACT_CITATION_STATE = 'exact'
 const TARGET_UNAVAILABLE = 'document_link_target_unavailable'
+const REFERENCE_LINK_LIMIT = 4096
+const REFERENCE_LINK = /^[^:#?\\]+\.(?:md|markdown)#ref-.+$/iu
+const REFERENCE_UNSAFE_ENCODING = /%(?:2f|5c)|%(?![a-f\d]{2})/iu
 const CITATION_FAILURE_MESSAGES = {
   citation_evidence_unavailable: 'markdown.citationRecordMissing',
   citation_source_unavailable: 'markdown.citationSourceUnavailable',
@@ -47,6 +50,7 @@ export type DocumentLinkTarget =
   | { kind: 'external'; href: string }
   | { kind: 'citation'; href: string; handle: string }
   | { kind: 'fragment'; href: string }
+  | { kind: 'reference'; href: string }
   | { kind: 'unavailable'; href: string }
 
 export function documentLinkTarget(href: string): DocumentLinkTarget {
@@ -56,12 +60,29 @@ export function documentLinkTarget(href: string): DocumentLinkTarget {
   if (href.startsWith(FRAGMENT_PREFIX) && href.length > FRAGMENT_PREFIX.length) {
     return { kind: 'fragment', href }
   }
+  if (relativeReferenceLink(href)) return { kind: 'reference', href }
   try {
     if (EXTERNAL_PROTOCOLS.has(new URL(href).protocol)) return { kind: 'external', href }
   } catch {
     return { kind: 'unavailable', href }
   }
   return { kind: 'unavailable', href }
+}
+
+export function relativeReferenceLink(href: string): boolean {
+  if (href.length > REFERENCE_LINK_LIMIT || REFERENCE_UNSAFE_ENCODING.test(href)) return false
+  if (!REFERENCE_LINK.test(href)) return false
+  try {
+    const decoded = decodeURIComponent(href)
+    const path = decodeURIComponent(href.slice(0, href.indexOf('#')))
+    return (
+      !/[\p{Cc}]/u.test(decoded) &&
+      !/[\\:%?#<>|*"]/u.test(path) &&
+      !path.split('/').some((part) => !part || part === '.' || part === '..')
+    )
+  } catch {
+    return false
+  }
 }
 
 export interface DocumentLinkActions {
@@ -101,6 +122,7 @@ export async function navigateDocumentLink(
       }
       return
     }
+    case 'reference':
     case 'unavailable':
       throw new Error(TARGET_UNAVAILABLE)
   }

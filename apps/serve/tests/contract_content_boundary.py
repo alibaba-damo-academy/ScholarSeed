@@ -20,6 +20,7 @@ from __future__ import annotations
 import ast
 import io
 import re
+import tempfile
 import tokenize
 from pathlib import Path
 
@@ -211,17 +212,17 @@ def main() -> int:
 
     # guard 自身必须真的会红: 拿一段违规源码验一次, 否则一个写错的正则会让
     # 三道 guard 永远绿着放行。
-    probe = SERVE_ROOT / "tests" / "_boundary_probe.py"
-    probe.write_text(
-        "from pathlib import Path\n\n\n"
-        "def bad(root: str, content: object) -> None:\n"
-        "    target = Path(root).expanduser() / 'x'\n"
-        "    target.mkdir(parents=True)\n"
-        "    target.write_text('y', encoding='utf-8')\n"
-        "    content.write_text('p', 'x', 'y')\n",
-        encoding="utf-8",
-    )
-    try:
+    with tempfile.TemporaryDirectory() as temporary:
+        probe = Path(temporary) / "probe.py"
+        probe.write_text(
+            "from pathlib import Path\n\n\n"
+            "def bad(root: str, content: object) -> None:\n"
+            "    target = Path(root).expanduser() / 'x'\n"
+            "    target.mkdir(parents=True)\n"
+            "    target.write_text('y', encoding='utf-8')\n"
+            "    content.write_text('p', 'x', 'y')\n",
+            encoding="utf-8",
+        )
         violations = write_violations(probe)
         check("写操作 guard 对违规样本会红", len(violations) >= 2, str(violations))
         check(
@@ -230,8 +231,6 @@ def main() -> int:
             str(violations),
         )
         check("路径拼接 guard 对违规样本会红", len(path_violations(probe)) >= 1)
-    finally:
-        probe.unlink()
 
     print(f"\ncontract_content_boundary: PASS {PASS} / FAIL {FAIL}")
     return 1 if FAIL else 0

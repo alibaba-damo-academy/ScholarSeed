@@ -26,6 +26,7 @@ from service.content.persistence.catalog import (
     ProjectCreationActive,
     ProjectRow,
 )
+from service.content.persistence.utils import finite_number
 from service.content.service.operations import (
     PROJECT_RECOVERY_PENDING,
     AdoptProject,
@@ -44,6 +45,14 @@ from service.platform.storage import LeaseError
 
 
 class ContentOperationContracts(unittest.IsolatedAsyncioTestCase):
+    def test_persisted_numeric_guard_preserves_finite_and_bool_rules(self):
+        for value in (-1, 0, 1, 0.5):
+            with self.subTest(value=value):
+                self.assertTrue(finite_number(value))
+        for value in (True, False, None, "1", float("nan"), float("inf"), -float("inf")):
+            with self.subTest(value=value):
+                self.assertFalse(finite_number(value))
+
     def setUp(self):
         fixture = tempfile.TemporaryDirectory()
         self.addCleanup(fixture.cleanup)

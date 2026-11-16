@@ -1,3 +1,5 @@
+import type * as React from 'react'
+import { usePortalDocument } from './portal'
 import {
   cloneElement,
   createContext,
@@ -41,17 +43,19 @@ import { inFocusScope, useFocusScope, visibleContent } from './focus'
 import { menuPositionStyle, type MenuPosition } from './placement'
 
 interface MenuContextValue {
+  closeMenu: () => void
   contentId: string
-  contentRef: RefObject<HTMLDivElement>
+  contentRef: RefObject<HTMLDivElement | null>
   openMenu: (open: boolean) => void
   open: boolean
   position: MenuPosition | null
   setPosition: (position: MenuPosition | null) => void
   setOpen: (open: boolean) => void
-  triggerRef: RefObject<HTMLElement>
+  triggerRef: RefObject<HTMLElement | null>
 }
 
 const MenuContext = createContext<MenuContextValue | null>(null)
+const MenuPointerMotionContext = createContext<RefObject<boolean> | null>(null)
 
 function useMenuContext(component: string): MenuContextValue {
   const context = useContext(MenuContext)
@@ -65,6 +69,7 @@ export interface MenuRootProps {
   defaultOpen?: boolean
   onOpenChange?: (open: boolean) => void
   open?: boolean
+  nested?: boolean
 }
 
 export interface MenuItemProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'onSelect'> {
@@ -81,7 +86,10 @@ export function MenuRoot({
   defaultOpen = false,
   onOpenChange,
   open: controlledOpen,
-}: MenuRootProps): JSX.Element {
+  nested = false,
+}: MenuRootProps): React.JSX.Element {
+  const parent = useContext(MenuContext)
+  const document = usePortalDocument()
   const id = useId()
   const contentRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLElement>(null)
@@ -92,6 +100,10 @@ export function MenuRoot({
     if (controlledOpen === undefined) setUncontrolledOpen(nextOpen)
     onOpenChange?.(nextOpen)
   }
+  const closeMenu = (): void => {
+    setMenuOpen(false)
+    if (nested) parent?.closeMenu()
+  }
 
   useEffect(() => {
     if (!closeOnSiblingOpen) return
@@ -101,7 +113,7 @@ export function MenuRoot({
     }
     document.addEventListener(MENU_OPEN_EVENT, closeSiblingMenu)
     return () => document.removeEventListener(MENU_OPEN_EVENT, closeSiblingMenu)
-  }, [closeOnSiblingOpen, id])
+  }, [closeOnSiblingOpen, id, document])
 
   useEffect(() => {
     if (!open) return
@@ -131,7 +143,7 @@ export function MenuRoot({
       document.removeEventListener('pointerdown', closeOnOutsidePointer)
       document.removeEventListener('keydown', closeOnEscape)
     }
-  }, [open])
+  }, [open, document])
 
   const openMenu = (nextOpen: boolean): void => {
     setMenuOpen(nextOpen)
@@ -143,6 +155,7 @@ export function MenuRoot({
   return (
     <MenuContext.Provider
       value={{
+        closeMenu,
         contentId: id,
         contentRef,
         open,
@@ -164,7 +177,7 @@ export function MenuTrigger({
   className,
   onClick,
   ...props
-}: ButtonHTMLAttributes<HTMLButtonElement> & { asChild?: boolean }): JSX.Element {
+}: ButtonHTMLAttributes<HTMLButtonElement> & { asChild?: boolean }): React.JSX.Element {
   const { contentId, open, openMenu, setPosition, triggerRef } = useMenuContext('MenuTrigger')
   const triggerProps = {
     ...props,
@@ -186,7 +199,7 @@ export function MenuTrigger({
       })
       openMenu(!open)
     },
-    ref: triggerRef as RefObject<HTMLButtonElement>,
+    ref: triggerRef as RefObject<HTMLButtonElement | null>,
   }
   if (asChild && isValidElement(children)) {
     const child = children as ReactElement<ButtonHTMLAttributes<HTMLButtonElement>>
@@ -213,7 +226,7 @@ export function ContextMenuTrigger({
   className,
   onContextMenu,
   ...props
-}: HTMLAttributes<HTMLDivElement> & { asChild?: boolean }): JSX.Element {
+}: HTMLAttributes<HTMLDivElement> & { asChild?: boolean }): React.JSX.Element {
   const { contentId, open, openMenu, setPosition, triggerRef } =
     useMenuContext('ContextMenuTrigger')
   const triggerProps = {
@@ -229,7 +242,7 @@ export function ContextMenuTrigger({
       setPosition({ kind: 'point', x: event.clientX, y: event.clientY })
       openMenu(true)
     },
-    ref: triggerRef as RefObject<HTMLDivElement>,
+    ref: triggerRef as RefObject<HTMLDivElement | null>,
   }
   if (asChild && isValidElement(children)) {
     const child = children as ReactElement<HTMLAttributes<HTMLDivElement>>
@@ -250,6 +263,8 @@ export function ContextMenuTrigger({
 }
 
 export interface MenuContentProps extends HTMLAttributes<HTMLDivElement> {
+  /** Keep one active row; stationary pointers must not compete with keyboard navigation. */
+  coordinateNavigation?: boolean
   horizontalAnchorRef?: RefObject<HTMLElement | null>
   sideOffset?: number | `--${string}`
   position?: MenuPosition
@@ -263,6 +278,7 @@ export interface MenuContentProps extends HTMLAttributes<HTMLDivElement> {
 }
 
 export function MenuContent({
+  coordinateNavigation = false,
   horizontalAnchorRef,
   sideOffset,
   autoFocus = true,
@@ -273,11 +289,32 @@ export function MenuContent({
   style,
   position: controlledPosition,
   onKeyDown,
+  onKeyDownCapture,
+  onPointerMoveCapture,
   ...props
-}: MenuContentProps): JSX.Element | null {
+}: MenuContentProps): React.JSX.Element | null {
+  const document = usePortalDocument()
+  const window = document.defaultView ?? globalThis.window
   const { contentId, contentRef, open, position: triggerPosition } = useMenuContext('MenuContent')
   const position = controlledPosition ?? triggerPosition
   const [floatingStyle, setFloatingStyle] = useState<CSSProperties | undefined>(undefined)
+  const [navigation, setNavigation] = useState<'keyboard' | 'pointer'>('keyboard')
+  const pointerPosition = useRef<{ x: number; y: number } | null>(null)
+  const pointerMoved = useRef(false)
+  useEffect(() => {
+    if (!coordinateNavigation) return
+    const trackPointer = (event: PointerEvent): void => {
+      const previous = pointerPosition.current
+      pointerMoved.current =
+        previous === null || previous.x !== event.clientX || previous.y !== event.clientY
+      pointerPosition.current = { x: event.clientX, y: event.clientY }
+    }
+    document.addEventListener('pointermove', trackPointer, true)
+    return () => document.removeEventListener('pointermove', trackPointer, true)
+  }, [coordinateNavigation, document])
+  useLayoutEffect(() => {
+    if (open) setNavigation('keyboard')
+  }, [open])
 
   useLayoutEffect(() => {
     if (!open || !position || !contentRef.current) {
@@ -324,7 +361,7 @@ export function MenuContent({
       observer.disconnect()
       window.removeEventListener('resize', reposition)
     }
-  }, [align, contentRef, horizontalAnchorRef, open, position, side, sideOffset])
+  }, [align, contentRef, horizontalAnchorRef, open, position, side, sideOffset, window])
 
   const positionedStyle = position
     ? {
@@ -337,50 +374,82 @@ export function MenuContent({
   if (!open || typeof document === 'undefined') return null
   return (
     <Portal>
-      <div
-        className={cx(menuContentClassName, className)}
-        id={contentId}
-        tabIndex={-1}
-        ref={contentRef}
-        role="menu"
-        style={positionedStyle}
-        {...props}
-        onKeyDown={(event) => {
-          onKeyDown?.(event)
-          if (
-            event.defaultPrevented ||
-            (event.target as HTMLElement).closest('[role="menu"]') !== event.currentTarget
-          )
-            return
-          if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
-          const items = [
-            ...event.currentTarget.querySelectorAll<HTMLElement>(MENU_ITEM_SELECTOR),
-          ].filter(
-            (item) =>
-              item.closest('[role="menu"]') === event.currentTarget &&
-              !item.matches(':disabled') &&
-              item.getAttribute('aria-disabled') !== 'true' &&
-              visibleContent(item)
-          )
-          if (!items.length) return
-          event.preventDefault()
-          const current = items.indexOf(document.activeElement as HTMLElement)
-          const index =
-            event.key === 'Home'
-              ? 0
-              : event.key === 'End'
-                ? items.length - 1
-                : event.key === 'ArrowDown'
-                  ? (current + 1) % items.length
-                  : (current - 1 + items.length) % items.length
-          items[index].focus()
-        }}
-      />
+      <MenuPointerMotionContext.Provider value={coordinateNavigation ? pointerMoved : null}>
+        <div
+          className={cx(
+            menuContentClassName,
+            'no-drag',
+            coordinateNavigation &&
+              '[&[data-navigation=keyboard]_:is(button,[role=menuitem]):hover:not(:focus):not([aria-expanded=true])]:!bg-transparent',
+            className
+          )}
+          id={contentId}
+          tabIndex={-1}
+          ref={contentRef}
+          role="menu"
+          style={positionedStyle}
+          {...props}
+          data-navigation={coordinateNavigation ? navigation : undefined}
+          onKeyDownCapture={(event) => {
+            onKeyDownCapture?.(event)
+            if (
+              coordinateNavigation &&
+              ['ArrowDown', 'ArrowUp', 'Home', 'End', 'Enter'].includes(event.key)
+            )
+              setNavigation('keyboard')
+          }}
+          onPointerMoveCapture={(event) => {
+            onPointerMoveCapture?.(event)
+            if (
+              !coordinateNavigation ||
+              event.pointerType !== 'mouse' ||
+              !(event.target instanceof Element) ||
+              event.target.closest('[role="menu"]') !== event.currentTarget
+            )
+              return
+            if (!pointerMoved.current) return
+            setNavigation('pointer')
+            const item = event.target.closest<HTMLElement>(`${MENU_ITEM_SELECTOR}, button`)
+            if (item && !item.matches(':disabled') && item.getAttribute('aria-disabled') !== 'true')
+              item.focus({ preventScroll: true })
+          }}
+          onKeyDown={(event) => {
+            onKeyDown?.(event)
+            if (
+              event.defaultPrevented ||
+              (event.target as HTMLElement).closest('[role="menu"]') !== event.currentTarget
+            )
+              return
+            if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+            const items = [
+              ...event.currentTarget.querySelectorAll<HTMLElement>(MENU_ITEM_SELECTOR),
+            ].filter(
+              (item) =>
+                item.closest('[role="menu"]') === event.currentTarget &&
+                !item.matches(':disabled') &&
+                item.getAttribute('aria-disabled') !== 'true' &&
+                visibleContent(item)
+            )
+            if (!items.length) return
+            event.preventDefault()
+            const current = items.indexOf(document.activeElement as HTMLElement)
+            const index =
+              event.key === 'Home'
+                ? 0
+                : event.key === 'End'
+                  ? items.length - 1
+                  : event.key === 'ArrowDown'
+                    ? (current + 1) % items.length
+                    : (current - 1 + items.length) % items.length
+            items[index].focus()
+          }}
+        />
+      </MenuPointerMotionContext.Provider>
     </Portal>
   )
 }
 
-export function MenuArrow(): JSX.Element {
+export function MenuArrow(): React.JSX.Element {
   return <ChevronRight aria-hidden="true" className={menuChevronClassName} />
 }
 
@@ -390,14 +459,16 @@ export function MenuSubTrigger({
   inset = false,
   openOnHover = false,
   onPointerEnter,
+  onPointerMove,
   onKeyDown,
   onClick,
   ...props
 }: ButtonHTMLAttributes<HTMLButtonElement> & {
   inset?: boolean
   openOnHover?: boolean
-}): JSX.Element {
+}): React.JSX.Element {
   const { contentId, open, setOpen, setPosition, triggerRef } = useMenuContext('MenuSubTrigger')
+  const pointerMotion = useContext(MenuPointerMotionContext)
   const expand = (element: HTMLElement): void => {
     const rect = element.getBoundingClientRect()
     setPosition({
@@ -415,7 +486,7 @@ export function MenuSubTrigger({
       aria-expanded={open}
       aria-controls={contentId}
       aria-haspopup="menu"
-      ref={triggerRef as RefObject<HTMLButtonElement>}
+      ref={triggerRef as RefObject<HTMLButtonElement | null>}
       className={cx(
         menuItemClassName,
         menuSubTriggerClassName,
@@ -424,7 +495,14 @@ export function MenuSubTrigger({
       )}
       onPointerEnter={(event) => {
         onPointerEnter?.(event)
+        if (event.currentTarget.closest('[data-navigation="keyboard"]')) return
         if (openOnHover && !props.disabled && !event.defaultPrevented) expand(event.currentTarget)
+      }}
+      onPointerMove={(event) => {
+        onPointerMove?.(event)
+        if (pointerMotion && !pointerMotion.current) return
+        if (openOnHover && !open && !props.disabled && !event.defaultPrevented)
+          expand(event.currentTarget)
       }}
       onKeyDown={(event) => {
         onKeyDown?.(event)
@@ -451,7 +529,7 @@ export function MenuSubTrigger({
           top: rect.top,
           width: rect.width,
         })
-        setOpen(!open)
+        setOpen(openOnHover || !open)
       }}
       role="menuitem"
       type="button"
@@ -471,8 +549,8 @@ export function MenuItem({
   onSelect,
   onClick,
   ...props
-}: MenuItemProps & { destructive?: boolean }): JSX.Element {
-  const { setOpen } = useMenuContext('MenuItem')
+}: MenuItemProps & { destructive?: boolean }): React.JSX.Element {
+  const { closeMenu } = useMenuContext('MenuItem')
   return (
     <button
       className={cx(
@@ -486,7 +564,7 @@ export function MenuItem({
         onClick?.(event)
         if (event.defaultPrevented || disabled) return
         onSelect?.()
-        setOpen(false)
+        closeMenu()
       }}
       role="menuitem"
       type="button"
@@ -495,46 +573,54 @@ export function MenuItem({
   )
 }
 
-export const MenuGroup = ({ className, ...props }: HTMLAttributes<HTMLDivElement>): JSX.Element => (
+export const MenuGroup = ({
+  className,
+  ...props
+}: HTMLAttributes<HTMLDivElement>): React.JSX.Element => (
   <div className={cx(menuGroupClassName, className)} {...props} />
 )
 export const MenuSeparator = ({
   className,
   ...props
-}: HTMLAttributes<HTMLHRElement>): JSX.Element => (
+}: HTMLAttributes<HTMLHRElement>): React.JSX.Element => (
   <hr className={cx(menuSeparatorClassName, className)} {...props} />
 )
 export const MenuLabel = ({
   className,
   inset = false,
   ...props
-}: HTMLAttributes<HTMLDivElement> & { inset?: boolean }): JSX.Element => (
+}: HTMLAttributes<HTMLDivElement> & { inset?: boolean }): React.JSX.Element => (
   <div className={cx(menuLabelClassName, inset && menuLabelInsetClassName, className)} {...props} />
 )
 export const MenuShortcut = ({
   className,
   ...props
-}: HTMLAttributes<HTMLSpanElement>): JSX.Element => (
+}: HTMLAttributes<HTMLSpanElement>): React.JSX.Element => (
   <span className={cx(menuShortcutClassName, className)} {...props} />
 )
 
 export interface MenuCheckboxItemProps extends MenuItemProps {
   checked?: boolean
+  indicatorAlign?: 'start' | 'end'
   onCheckedChange?: (checked: boolean) => void
 }
 
 export function MenuCheckboxItem({
   checked,
+  indicatorAlign = 'start',
   children,
   className,
   onCheckedChange,
   onSelect,
   ...props
-}: MenuCheckboxItemProps): JSX.Element {
+}: MenuCheckboxItemProps): React.JSX.Element {
   return (
     <MenuItem
       aria-checked={checked}
-      className={cx(menuItemCheckableClassName, className)}
+      className={cx(
+        indicatorAlign === 'end' ? 'relative pr-[var(--vds-space-8)]' : menuItemCheckableClassName,
+        className
+      )}
       role="menuitemcheckbox"
       onSelect={() => {
         onCheckedChange?.(!checked)
@@ -542,7 +628,13 @@ export function MenuCheckboxItem({
       }}
       {...props}
     >
-      <span aria-hidden="true" className={menuIndicatorClassName}>
+      <span
+        aria-hidden="true"
+        className={cx(
+          menuIndicatorClassName,
+          indicatorAlign === 'end' && '!left-auto right-[var(--vds-space-2)]'
+        )}
+      >
         {checked ? '✓' : null}
       </span>
       {children}
@@ -556,7 +648,7 @@ export function MenuRadioItem({
   className,
   variant = 'default',
   ...props
-}: MenuItemProps & { checked?: boolean; variant?: 'default' | 'select' }): JSX.Element {
+}: MenuItemProps & { checked?: boolean; variant?: 'default' | 'select' }): React.JSX.Element {
   return (
     <MenuItem
       aria-checked={checked}

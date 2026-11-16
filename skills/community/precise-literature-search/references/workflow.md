@@ -2,7 +2,7 @@
 
 ## Run storage
 
-Create each run at `<working-directory>/.precise-literature-search/runs/<YYYYMMDD-HHMMSS-random>/`. Store runtime outputs there, never in the installed skill. Use UTF-8, two-space JSON and atomic JSON replacement. Retain all completed artifacts after failure.
+Create new session runs at `SESSION_DIR/.precise-literature-search/runs/<YYYYMMDD-HHMMSS-random>/`, without an outer work/ layer. SESSION_DIR is the actual conversation directory, not a new skill or topic directory. Resume existing runs at their recorded paths, including previous session work/ and cwd-level layouts; never migrate or recreate them. Keep all skill-generated persistent files and the three delivery reports in the run directory, with no outer-level report copies; publish through the existing result checkpoint. Internal run subdirectories are unchanged. Stage the initial request only as described in SKILL.md, preserving user-owned inputs. Product-managed full texts stay in their product-owned storage. Never write outputs in the installed skill. Use UTF-8, two-space JSON and atomic JSON replacement. Retain all completed artifacts after failure.
 
 ## Interaction modes
 
@@ -148,7 +148,7 @@ deadline; other release formats are rejected. See SKILL.md for commands.
 
 Use the capability matrix in `SKILL.md` and the selected download module's invocation rules. If the download stage is blocked by a missing or inconsistent `downloads/acquire-result.json`, remain in `DOWNLOADING_OPEN`; complete the `scholarseed_bridge` tool calls the script's reason asks for, save the verbatim acquire response, and rerun the stage. Do not relabel the event as an arXiv access failure and do not download inside the sandbox yourself.
 
-In the download-scope prompt, relayed download progress, and consolidated completion summary, describe papers only as `arXiv` or `non-arXiv`; never expose `PaperHub`, `paper-dl`, module IDs, or internal fields. Include verified acquired counts, failure/skip/action-required counts, and verified browser-cleanup status when applicable. After the managed batches finish, call `literature delivery` for the same run to present the product save dialog once. Acquired does not mean saved or added to the library. Only product save receipts establish those outcomes; otherwise report "acquired, not saved" and point to the save card. Never invent a `downloads/papers/` location for managed PDFs. User cancellation does not block authorized reading. Reading proceeds through `pdf read` and caches the text actually used under `work-reading/`. No separate reading-confirmation question is asked. Internal logs may retain backend names.
+Report verified acquisition, failure and skipped counts. Acquired full text is managed evidence for the authorized task, not a saved file or a library entry. Use `pdf read` for the authorized references. Library actions and BibTeX export are available in research results.
 
 ## Paid resume semantics
 

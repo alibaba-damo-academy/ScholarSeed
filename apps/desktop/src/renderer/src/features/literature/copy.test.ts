@@ -164,11 +164,7 @@ test('public card copy uses business data, includes non-visible pages and preser
     doi: `10.123/${index}`,
     evidence: 'Page 3: observed result',
   }))
-  const copied = literatureCopy(
-    'display.literature-references',
-    { references: papers },
-    translate
-  )!.text
+  const copied = literatureCopy('display.literature-search', { papers }, translate)!.text
   assert.match(copied, /Paper 8/)
   assert.match(copied, /https:\/\/doi.org\/10.123\/7/)
   assert.match(copied, /Page 3: observed result/)
@@ -202,6 +198,7 @@ test('search copy keeps the displayed heading, retained count and translated war
     status: 'success',
     retained: 15,
     selection: { artifact_id: 'selection' },
+    context: { authorization: { status: 'pending' } },
     criteria: ['长上下文检索'],
     papers: [],
     warnings: ['agentic-search returned a partial result'],
@@ -216,54 +213,27 @@ test('search copy keeps the displayed heading, retained count and translated war
     )
   )
   assert.ok(copied.includes(translate('result.warning.partial')))
+  for (const status of ['unknown', 'authorized', 'rejected']) {
+    const settled = { ...content, context: { authorization: { status } } }
+    assert.ok(
+      !literatureCopy('display.literature-search', settled, translate)!.text.includes(
+        translate('searchResult.authorizationPending')
+      )
+    )
+  }
+  assert.ok(
+    !literatureCopy(
+      'display.literature-search',
+      { ...content, context: undefined },
+      translate
+    )!.text.includes(translate('searchResult.authorizationPending'))
+  )
   const english = localization.getFixedT('en', 'literature')
   assert.ok(
     literatureCopy('display.literature-search', content, english)!.text.includes(
       english('searchResult.authorizationPending')
     )
   )
-})
-
-test('downloads copy preserves the admission count and project outcome', () => {
-  const copied = literatureCopy(
-    'display.literature-downloads',
-    {
-      schema_version: '1.0',
-      session_id: 'session',
-      run: 'run',
-      project_id: 'project',
-      papers: [
-        {
-          paper_id: 'paper',
-          literature_id: 'literature',
-          attachment_id: 'attachment',
-          revision: 'revision',
-          title: 'Lost in the Middle',
-        },
-      ],
-      failures: [],
-    },
-    translate
-  )!.text
-  assert.ok(copied.includes(translate('downloads.heading', { count: 1 })))
-  assert.ok(copied.includes(translate('downloads.projectLinked')))
-})
-
-test('delivery copy preserves its heading, live counts and readable state', () => {
-  const copied = literatureCopy(
-    'display.literature-delivery',
-    {
-      state: 'pending',
-      papers: [{ title: 'Lost in the Middle', saved: 'pending', library: 'saved' }],
-    },
-    translate
-  )!.text
-  for (const value of [
-    translate('delivery.cardTitle'),
-    translate('delivery.counts', { acquired: 1, saved: 0, admitted: 1 }),
-    translate('delivery.status.pending'),
-  ])
-    assert.ok(copied.includes(value), value)
 })
 
 test('references copy includes DOI and source URL independently on every page', () => {
@@ -274,30 +244,36 @@ test('references copy includes DOI and source URL independently on every page', 
     arxiv_id: `2601.00${index}`,
     cited_by: [`claim-${index}`],
   }))
-  const copied = literatureCopy('display.literature-references', { references }, translate)!.text
+  const copied = literatureCopy(
+    'display.literature-search',
+    { papers: references },
+    translate
+  )!.text
   for (const paper of references)
     for (const value of [paper.title, paper.doi, paper.url, paper.arxiv_id])
       assert.ok(copied.includes(value), value)
   assert.doesNotMatch(copied, /claim-/)
-  assert.ok(copied.includes(translate('references.heading', { count: 26 })))
+  assert.ok(copied.includes(references[0].title))
 })
 
-test('delivery copy includes reuse and skipped-version outcomes without claiming files were saved', () => {
-  const copied = literatureCopy(
-    'display.literature-delivery',
-    {
-      state: 'saved',
-      papers: [{ title: 'Existing', saved: 'skipped', library: 'skipped', library_reused: true }],
-    },
-    translate
-  )!.text
-  for (const value of [
-    translate('delivery.allSkipped'),
-    translate('delivery.reused', { count: 1 }),
-    translate('delivery.skipped', { count: 1 }),
-    translate('delivery.counts', { acquired: 1, saved: 0, admitted: 0 }),
-  ])
-    assert.ok(copied.includes(value), value)
+test('review copy preserves published reference numbers without inventing missing numbers', () => {
+  const content = JSON.parse(
+    readFileSync(
+      new URL(
+        '../../../../../../../skills/community/literature-review/components/outline.json',
+        import.meta.url
+      ),
+      'utf8'
+    )
+  ).data
+  content.checkpoint = 'result'
+  content.citations = [
+    { number: 5, title: 'Published fifth', authors: '', year: null, venue: '' },
+    { title: 'Unnumbered source', authors: '', year: null, venue: '' },
+  ]
+  const copied = literatureCopy('display.literature-review', content, translate)!.text
+  assert.match(copied, /5\. Published fifth/)
+  assert.doesNotMatch(copied, /2\. Unnumbered source/)
 })
 
 test('public review and outline retain their full snapshot and current choice', () => {

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from importlib.metadata import version as distribution_version
 from pathlib import Path
 from typing import Any
@@ -14,11 +15,14 @@ from scholarseed_runtime.contract import (
     RuntimeReadiness,
     RuntimeStatus,
 )
+from scholarseed_runtime.contract.history import MessagePhase
 from service.chat.active import RUNTIME_ID
 from service.chat.constants import (
     AUTOMATIC_RECOVERY_MESSAGE,
+    PRODUCT_EVENT_MESSAGE_DELTA,
     PRODUCT_EVENT_NATIVE_ACTIVITY_COMPLETED,
     PRODUCT_EVENT_NATIVE_ACTIVITY_STARTED,
+    PRODUCT_EVENT_TOOL_STARTED,
     PRODUCT_EVENT_TURN_COMPLETED,
     PRODUCT_EVENT_TURN_FAILED,
     PRODUCT_EVENT_TURN_INTERRUPTED,
@@ -34,11 +38,42 @@ from service.chat.persistence.artifacts import (
     artifact_identity,
     current_artifact_records,
 )
-from service.chat.persistence.catalog import QUEUE_PURPOSE_RECOVERY, QueuedMessageRecord
+from service.chat.persistence.catalog import (
+    QUEUE_PURPOSE_AUTHORIZATION,
+    QUEUE_PURPOSE_RECOVERY,
+    QueuedMessageRecord,
+)
+from service.chat.persistence.events import ProductEventRecord
 from service.platform.bridge import ArtifactPublishFailure
+from service.platform.content import ArtifactContentKind
 from service.platform.files import export_file_name
 
 PORTABLE_HISTORY_ROLES = frozenset(("user", "assistant"))
+
+EXECUTION_BATCH_FIELD = "batch_id"
+EXECUTION_BATCH_EVENT_KINDS = (PRODUCT_EVENT_MESSAGE_DELTA, PRODUCT_EVENT_TOOL_STARTED)
+
+
+def execution_batch_id(records: Iterable[ProductEventRecord], tool_id: str) -> str:
+    current = ""
+    stage = ""
+    for record in records:
+        if record.kind == PRODUCT_EVENT_MESSAGE_DELTA:
+            if (
+                record.payload.get("phase") == MessagePhase.COMMENTARY.value
+                and record.vendor_item_id
+                and record.vendor_item_id != stage
+            ):
+                stage = record.vendor_item_id
+                current = ""
+        elif record.kind == PRODUCT_EVENT_TOOL_STARTED:
+            identity = record.payload.get("tool_id")
+            batch = record.payload.get(EXECUTION_BATCH_FIELD)
+            if identity == tool_id:
+                return batch if isinstance(batch, str) and batch else tool_id
+            if not current and isinstance(batch, str) and batch:
+                current = batch
+    return current or tool_id
 
 
 PORTABLE_ASSISTANT_ROLE = "assistant"
@@ -275,6 +310,7 @@ def runtime_payload(
 
 def artifact_payload(record: SessionArtifactRecord, *, change: str) -> dict[str, Any]:
     canonical = Path(record.canonical_path)
+    content = record.metadata.get("content")
     name = export_file_name(canonical.name, record.mime_type, b"")
     status = (
         ARTIFACT_STATUS_DELETED if change == ARTIFACT_CHANGE_DELETE else ARTIFACT_STATUS_AVAILABLE
@@ -286,14 +322,19 @@ def artifact_payload(record: SessionArtifactRecord, *, change: str) -> dict[str,
         "name": name,
         "title": str(record.metadata.get("title") or name),
         "publication_id": record.metadata.get("publication_id"),
+        "kind": (
+            content.get("kind", ArtifactContentKind.FILE.value)
+            if isinstance(content, dict)
+            else ArtifactContentKind.FILE.value
+        ),
         "media_type": record.mime_type,
         "size": record.size_bytes,
         "sha256": record.content_sha256,
         "role": record.role,
         "change": change,
         "status": status,
-        "source_event_id": f"product:{record.source_product_seq}",
-        "source_event_seq": record.source_product_seq,
+        "source_event_id": f"product:{record.display_product_seq or record.source_product_seq}",
+        "source_event_seq": record.display_product_seq or record.source_product_seq,
         "vendor_turn_id": record.vendor_turn_id,
         "vendor_item_id": record.vendor_item_id,
         "updated_at": record.created_at,
@@ -307,7 +348,9 @@ def artifact_snapshot_payload(records: tuple[SessionArtifactRecord, ...]) -> lis
     ]
 
 
-def queued_message_payload(record: QueuedMessageRecord) -> dict[str, Any]:
+def queued_message_payload(
+    record: QueuedMessageRecord, *, retry_blocked_error: str | None = None
+) -> dict[str, Any]:
     """Project durable queue state independently of a resident runtime attachment."""
     return {
         "queued_message_id": record.queued_message_id,
@@ -318,13 +361,18 @@ def queued_message_payload(record: QueuedMessageRecord) -> dict[str, Any]:
         "purpose": record.purpose,
         "submission_mode": record.submission_mode.value,
         "input": (
-            [{"type": "text", "text": AUTOMATIC_RECOVERY_MESSAGE}]
-            if record.purpose == QUEUE_PURPOSE_RECOVERY
-            else record.body.get("input", [])
+            []
+            if record.purpose == QUEUE_PURPOSE_AUTHORIZATION
+            else (
+                [{"type": "text", "text": AUTOMATIC_RECOVERY_MESSAGE}]
+                if record.purpose == QUEUE_PURPOSE_RECOVERY
+                else record.body.get("input", [])
+            )
         ),
         "assistant_context_revision": record.body.get("assistant_context_revision"),
         "assistant_references": record.body.get(QUEUED_ASSISTANT_REFERENCES, []),
         "safe_error": record.safe_error,
+        "retry_blocked_error": retry_blocked_error,
         "safe_error_details": record.safe_error_details,
         # The uncertainty correlation handle a human confirmation must present.
         "native_turn_id": record.native_turn_id,

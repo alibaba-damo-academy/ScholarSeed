@@ -1,23 +1,28 @@
 import { draftSessionTitle } from '../../session'
 import { assistantContextFailure } from '../../features/assistant/state'
-import { feedback, renderFeedback } from '../../contracts/feedback'
 import {
-  candidateLabel,
-  candidateHint,
-  useAssistantContextText,
-} from '../../features/assistant/text'
+  feedback,
+  isRuntimePreparationBusyFeedback,
+  renderFeedback,
+  runtimePreparationBusyFeedback,
+  stopFailureFeedback,
+} from '../../contracts/feedback'
 import React from 'react'
+import { ComposerConfirmationContext } from './confirmation'
+import { saveFollowUpPreference, useFollowUpPreference } from './followup'
 import { useTranslation } from 'react-i18next'
 import {
   ArrowUp,
+  CornerDownRight,
+  MoreHorizontal,
   BookOpenText,
+  Database,
   Folder,
-  Gauge,
+  LogIn,
   Paperclip,
   Plus,
-  Plug,
-  Quote,
-  Settings,
+  MessageCircle,
+  Hammer,
   Upload,
   X,
   type LucideIcon,
@@ -33,16 +38,19 @@ import {
 import { assistantSourceAvailable } from '../../features/assistant/candidates'
 import type { AppState, SessionSurface, ComposerReference } from '../../store'
 import { effectiveSessionModelKey, hasSelectableModel } from '../../catalog'
+import { modelSelectionBlocked } from '../../modelselection'
 import { CLOUD_PAGE_ANCHORS, cloudPageUrl, creditsBlockBuiltInModel } from '../../account'
 import { Icon, type IconName } from '../../icons'
 import type {
   CollaborationMode,
+  FollowUpMode,
   ModeInfo,
   SkillInfo,
   TurnInputItem,
   UploadedAttachment,
 } from '../../api'
 import {
+  MODEL_SELECTION_UNCONFIRMED,
   confirmUnknownTurn,
   deleteQueuedMessage,
   getMode,
@@ -54,30 +62,50 @@ import {
   listQueuedMessages,
   openSession,
   postTurn,
+  postSide,
+  updateQueuedMessage,
   reconcileQueuedMessage,
   requestFailureFeedback,
   registerLocalPaths,
+  respondHil,
   setMode,
   setGlobalPermissionMode,
   sendQueuedMessage,
   type TurnContextAdmission,
   uploadAttachmentFile,
 } from '../../api'
-import { COMPOSER_FOCUS_EVENT } from '../../reference'
+import { COMPOSER_FOCUS_EVENT, partitionComposerReferences } from '../../reference'
 import { PROJECT_GUIDE_ANCHORS } from '../../contracts/onboarding'
 import { createComposerDraftStore, restoreComposerDraft } from '../../draft'
-import { ComposerEditor, type ComposerEditorLayout } from './Editor'
+import { ComposerEditor, type ComposerEditorLayout, type ComposerEditorReference } from './Editor'
+import { ConfirmationCard } from '../primitive/Confirmation'
+import { useInteractionPolicies } from './Interactions'
+import {
+  directQuestionTarget,
+  hasHostQuestions,
+  pendingQuestionItems,
+  hilEventResolution,
+  hilSubmissionFailure,
+  isTerminalHil,
+} from '../../hil'
+import { predictionTurn } from '../../prediction'
+import { useComposerPrediction } from '../../features/assistant/prediction'
 import { ModelMenu } from './ModelMenu'
 import { Reconfigure } from './Reconfigure'
 import { HOST_CONFIGURATION_CONFLICT } from '../../../../reconfiguration'
-import { PREPARATION_SUPERSEDED_ERROR, waitForPreparation } from '../../preparation'
+import {
+  PREPARATION_SUPERSEDED_ERROR,
+  runtimePreparationFailure,
+  runtimePreparationForegroundFailure,
+  runtimePreparationRequestFailure,
+  waitForPreparation,
+} from '../../preparation'
 import { LoginPrompt } from './LoginPrompt'
 import { modelDefaultEffort, reasoningPreference } from '../../reasoning'
 
 import { ReferencePicker } from './References'
 import { SkillAdd } from './Skills'
 import { StatusStrip } from './StatusStrip'
-import { fuzzyFilter } from '../../fuzzy'
 import { skillCallable, skillCategory, skillDescription, skillName } from '../../skill'
 import { SKILL_SURFACE_CONVERSATION, SKILL_SURFACE_SETTINGS } from '../../../../skills'
 import { useAccountAccess } from './access'
@@ -92,7 +120,8 @@ import {
   turnAdmissionFeedback,
   isAbsoluteInputPath,
   isComposerSubmissionAccepted,
-  queuedReferenceLabel,
+  isComposerSubmissionRejectedBeforeEnqueue,
+  queuedContextSummary,
   queuedReferenceSummary,
   replaceComposerTrigger,
 } from '../../input'
@@ -110,18 +139,21 @@ import {
   readProjectEntryDrag,
 } from '../../drag'
 import { clipboardImageFiles } from '../../attachments'
+import { OFFICE_IMAGE_MEDIA_TYPE } from '../../../../images'
 import {
   IMPORT_PICKER_TARGET,
   supportsImportPickerTarget,
   type ImportPickerTarget,
 } from '../../../../picker'
 import { ComposerSkillRefs } from './SkillRefs'
-import { ComposerAttachments } from '../primitive/Attachments'
+import { AttachmentImages, DraftAttachments } from '../../features/assistant/Images'
+import { isImageAttachment } from '../../features/assistant/utils'
 import {
   appendOptimisticUserMessage,
   bindSubmittedTurn,
   projectAssistantContextRefs,
   removeOptimisticUserMessage,
+  resolveHilItem,
 } from '../../transcript'
 import {
   canContinueFailedTurn,
@@ -132,9 +164,11 @@ import {
   permissionModeNeedsConfirmation,
   permissionModeShowsNextTurn,
   readinessAdmission,
+  requestSessionResume,
 } from '../../runtime'
 import {
   canCancelQueuedMessage,
+  canEditQueuedMessage,
   confirmQueuedOutcome,
   hasAcceptedMessageAwaitingRuntime,
   QUEUED_MESSAGE_SAFE_ERRORS,
@@ -143,6 +177,8 @@ import {
   markOptimisticQueueOutcomeUnknown,
   optimisticQueuedMessage,
   queuedMessageErrorText,
+  queuedMessageNeedsStatusCheck,
+  queuedMessageHasUnknownOpen,
   queuedWithdrawalFeedback,
   queuedMessageFromPayload,
   settleOptimisticQueuedMessage,
@@ -152,11 +188,7 @@ import {
 } from '../../queue'
 import { mergeQueuedOutbox, releaseQueuedOutbox, retainQueuedOutbox } from '../../outbox'
 import { useDocumentWorkspace } from '../../features/workbench/workspace'
-import {
-  RESOURCE_CONTEXT_KIND,
-  resourceContextSearchTerm,
-  resourceContextTriggerPath,
-} from '../../features/assistant/api'
+import { RESOURCE_CONTEXT_KIND } from '../../features/assistant/api'
 import {
   ANSWER_ANNOTATION_LOCATION,
   locateAnswerAnnotation,
@@ -164,6 +196,11 @@ import {
 import {
   Alert,
   AlertDialog,
+  Dialog,
+  DialogContent,
+  DialogPortal,
+  DialogHeader,
+  DialogTitle,
   AlertDialogAction,
   AlertDialogCancel,
   AlertDialogContent,
@@ -173,10 +210,6 @@ import {
   AlertDialogPortal,
   AlertDialogTitle,
   Button,
-  Card,
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -186,6 +219,7 @@ import {
   DropdownMenuTrigger,
   EmptyState,
   IconButton,
+  ScrollArea,
   Input,
   Popover,
   PopoverContent,
@@ -193,21 +227,20 @@ import {
   SearchBox,
   Spinner,
   Tooltip,
+  cx,
 } from '../ui'
 import { IconFont } from '../primitive'
 import aiThinking from '../../assets/ai-thinking.gif'
 
-const AT_CANDIDATE_LIMIT = 200
 const AT_CONTEXT_SEARCH_DELAY_MS = 150
+const COMPOSER_FOCUS_INTERRUPTS = ['beforeinput', 'keydown', 'pointerdown'] as const
 const CREDITS_EXHAUSTED_NOTICE_ID = 'composer-credits-exhausted-notice'
 // Sentinel root-row kind: unlike the other rows it never becomes `atKind` text —
 // selecting it triggers the native file picker immediately instead of a sub-search.
-const AT_LOCAL_FILE_KIND = 'local-file'
-const AT_LOCAL_DIRECTORY_KIND = 'local-directory'
 const PLUS_MENU_SOURCE_ICONS: Partial<Record<IconName, LucideIcon>> = {
   folder: Folder,
   books: BookOpenText,
-  quote: Quote,
+  quote: MessageCircle,
 }
 
 function plusMenuSourceIcon(icon: IconName): React.JSX.Element {
@@ -231,7 +264,7 @@ const UNKNOWN_MODE_TONE: ModeTone = 'neutral'
 const DEFAULT_MODE = 'ask'
 const MODE_CONFIRMATION_REQUIRED_ERROR = 'session_permission_confirmation_required'
 const HOME_COMPOSER_MAX_HEIGHT_PX = 105
-const COMPOSER_MAX_HEIGHT_PX = 132
+export const COMPOSER_MAX_HEIGHT_PX = 132
 const INLINE_COMPOSER_MAX_ROWS = 10
 /* assistant 面 pt-12 与 TodoPanel compact 的 -mb-4 相抵，使执行计划与输入框容器间距为 8px。 */
 const composerRootPaddingClass = (home: boolean, surface: SessionSurface): string =>
@@ -246,13 +279,13 @@ const composerDropZoneClass = (
   surface: SessionSurface
 ): string =>
   [
-    'relative flex flex-col rounded-[var(--vds-radius-4)] border border-solid transition-[background-color,border-color]',
-    'duration-[var(--vds-duration-fast)] ease-[var(--vds-ease-standard)]',
+    'relative flex flex-col rounded-[var(--vds-radius-4)] border border-solid [interpolate-size:allow-keywords] transition-[height,background-color,border-color] motion-reduce:transition-none',
+    '[transition-duration:var(--vds-duration-normal),var(--vds-duration-fast),var(--vds-duration-fast)] ease-[var(--vds-ease-standard)]',
     surface === 'assistant'
-      ? '!rounded-[var(--vds-radius-6)] bg-[var(--vds-bg-white-default)] p-[var(--vds-space-3)]'
+      ? '!rounded-[var(--vds-radius-6)] bg-[var(--vds-bg-white-default)] p-[var(--vds-composer-right-padding)] [--vds-composer-right-padding:var(--vds-space-3)]'
       : home
-        ? 'px-[18px] pb-[15px] pt-[var(--vds-space-4)] shadow-[0_14px_36px_rgb(45_35_20_/_0.08)]'
-        : 'pb-[9px] pl-[13px] pr-[11px] pt-[var(--vds-space-0)]',
+        ? 'px-[var(--vds-composer-right-padding)] pb-[15px] pt-[var(--vds-space-4)] shadow-[0_14px_36px_rgb(45_35_20_/_0.08)] [--vds-composer-right-padding:18px]'
+        : 'pb-[9px] pl-[13px] pr-[var(--vds-composer-right-padding)] pt-[var(--vds-space-0)] [--vds-composer-right-padding:11px]',
     draggingFiles
       ? 'border-[var(--active-border)] bg-[color-mix(in_srgb,var(--active-bg)_72%,var(--bg-2))]'
       : surface === 'assistant'
@@ -276,61 +309,19 @@ const readingColumnClass = (home: boolean, inline: boolean): string =>
         ? 'w-full min-w-0'
         : 'w-full min-w-0 max-w-[var(--vds-conversation-content-width)]',
   ].join(' ')
-const popoverClass = [
-  'absolute z-[60] rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg-2)]',
-  'shadow-[var(--shadow)] animate-[cardIn_0.16s_ease_both]',
-].join(' ')
 const composerInputShellClass = (surface: SessionSurface): string =>
   `relative ${surface === 'assistant' ? 'mb-[var(--vds-space-1)]' : ''}`
 // 待处理消息随排队增多而变长; 与执行计划 (TodoPanel) 同处 flex:0 0 auto 的 composer-host,
 // 不设上限时会把上方的执行计划顶出视口。限高并在本区域内滚动, 保证计划等始终可见。
 const queuedMessageClass =
-  'mb-[var(--vds-space-2)] grid max-h-[var(--vds-composer-suggestion-list-max-height)] divide-y divide-[var(--vds-divider-default)] overflow-y-auto overscroll-contain rounded-[var(--vds-radius-4)] border border-solid border-[var(--vds-border-default)] px-[var(--vds-space-3)] py-[var(--vds-space-2)] [scrollbar-color:var(--vds-scrollbar-thumb)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-[var(--vds-scrollbar-size)] [&::-webkit-scrollbar-thumb]:rounded-[var(--vds-scrollbar-radius)] [&::-webkit-scrollbar-thumb]:bg-[var(--vds-scrollbar-thumb)] [&::-webkit-scrollbar-track]:bg-transparent'
+  'mx-[var(--vds-space-3)] grid max-h-[var(--vds-composer-suggestion-list-max-height)] divide-y divide-[var(--vds-divider-default)] overflow-y-auto overscroll-contain rounded-t-[var(--vds-radius-4)] border border-b-0 border-solid border-[var(--vds-border-default)] px-[var(--vds-space-3)] py-0 [scrollbar-color:var(--vds-scrollbar-thumb)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-[var(--vds-scrollbar-size)] [&::-webkit-scrollbar-thumb]:rounded-[var(--vds-scrollbar-radius)] [&::-webkit-scrollbar-thumb]:bg-[var(--vds-scrollbar-thumb)] [&::-webkit-scrollbar-track]:bg-transparent'
 const queuedMessageRowClass =
-  'flex min-w-0 flex-wrap items-center gap-[var(--vds-space-2)] py-[var(--vds-space-1)]'
-const atPanelClass = [
-  popoverClass,
-  'bottom-[calc(100%+9px)] left-[var(--vds-space-0)] z-[64] box-border max-h-[min(252px,42vh)] w-[min(420px,100%)]',
-  'overflow-hidden rounded-[var(--radius)] border-[color-mix(in_srgb,var(--brand-ink)_22%,var(--border))]',
-  'bg-[var(--bg-2)] p-[var(--vds-space-0)] shadow-[0_14px_36px_rgb(41_33_20_/_0.15),0_2px_7px_rgb(41_33_20_/_0.08)]',
-].join(' ')
-const atHeadClass = [
-  'flex min-h-[34px] items-center justify-between gap-[var(--vds-space-2)] border-b border-[var(--border-soft)]',
-  'px-[var(--vds-space-2)] text-[var(--text-3)]',
-].join(' ')
-const atTitleClass =
-  'inline-flex shrink-0 items-center gap-[var(--vds-space-1)] whitespace-nowrap text-[length:var(--vds-font-body-lv1)] font-[650] tracking-[0.02em] text-[var(--brand-ink)]'
-const atBackClass = [
-  'grid size-[23px] place-items-center rounded-[var(--vds-radius-2)] border-0 bg-transparent p-[var(--vds-space-0)]',
-  'text-[var(--text-3)] hover:bg-[var(--hover-bg)] hover:text-[var(--text)] focus-visible:bg-[var(--hover-bg)] focus-visible:text-[var(--text)]',
-].join(' ')
-const atListClass = [
-  'max-h-[min(216px,calc(42vh-35px))] overflow-y-auto overscroll-contain p-[5px]',
-  '[scrollbar-color:var(--vds-scrollbar-thumb)_transparent] [scrollbar-gutter:stable] [scrollbar-width:thin]',
-  '[&::-webkit-scrollbar]:w-[7px] [&::-webkit-scrollbar-track]:bg-transparent',
-  '[&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:border-2 [&::-webkit-scrollbar-thumb]:border-[var(--bg-2)]',
-  '[&::-webkit-scrollbar-thumb]:bg-[var(--vds-scrollbar-thumb)]',
-].join(' ')
-const atRowClass = (selected: boolean, unavailable = false, root = false): string =>
-  [
-    'group flex w-full items-center gap-[10px] rounded-[9px] border-0 bg-transparent px-[var(--vds-space-2)] py-[6px] text-left text-[var(--text)]',
-    'transition-[background,transform] duration-[120ms] ease-[ease]',
-    root ? 'min-h-[52px]' : 'min-h-[43px]',
-    selected ? 'bg-[var(--accent-soft)]' : '',
-    unavailable ? 'cursor-not-allowed opacity-[0.52]' : 'cursor-pointer',
-  ].join(' ')
-const atLoadingClass = 'p-[var(--vds-space-3)]'
-const atLoadingCopyClass =
-  'flex items-center gap-[9px] px-[var(--vds-space-1)] pb-[10px] pt-[var(--vds-space-1)] text-[11.5px] font-[var(--vds-fw-medium)] text-[var(--brand-ink)]'
-const atSkeletonRowClass = [
-  'relative grid min-h-[41px] grid-cols-[27px_minmax(0,1fr)_46px] items-center gap-[10px] overflow-hidden rounded-[9px]',
-  'bg-[color-mix(in_srgb,var(--bg-3)_78%,transparent)] px-[9px]',
-  'after:absolute after:inset-[var(--vds-space-0)] after:animate-pulse',
-  'after:bg-[linear-gradient(100deg,transparent_22%,rgb(255_255_255_/_0.62)_48%,transparent_74%)] after:content-[""]',
-].join(' ')
+  'flex min-h-[var(--vds-control-height-lg)] min-w-0 flex-wrap items-center gap-[var(--vds-space-2)] py-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] font-[var(--vds-fw-regular)]'
+const queuedAlertClass =
+  'mb-[var(--vds-space-3)] [&_.vds-alert__title]:text-[length:var(--vds-font-body-lv1)] [&_.vds-alert__title]:leading-[var(--vds-lh-body-lv1)] [&_.vds-alert__title]:font-[var(--vds-fw-regular)]'
 const referenceTrayClass = 'mt-[5px] overflow-visible'
 const referenceTrayScrollerClass =
-  'flex flex-nowrap gap-[2px] overflow-x-auto overflow-y-hidden pb-[var(--vds-space-0)] pl-[var(--vds-space-0)] pr-[2px] pt-[5px] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden'
+  'flex w-max min-w-full flex-nowrap items-center gap-[var(--vds-composer-attachment-gap)] py-[var(--vds-space-1)] pl-[var(--vds-space-0)] pr-[var(--vds-space-1)]'
 const PLUS_MENU_PAGE_SIZE = 10
 const contextPaneClass =
   'max-h-[var(--vds-composer-reference-picker-max-height)] min-h-0 w-[268px] flex-none overflow-hidden bg-[var(--bg-2)]'
@@ -341,24 +332,26 @@ const skillPanelHeadClass = [
   'grid flex-none gap-[var(--vds-space-2)] border-b border-[var(--border-soft)]',
   'bg-[var(--bg-2)] px-[var(--vds-space-2)] pb-[var(--vds-space-3)] pt-[var(--vds-space-2)]',
 ].join(' ')
+const skillMenuRowClass =
+  'w-full rounded-[var(--vds-radius-3)] border-0 px-[var(--vds-space-3)] py-[calc(var(--vds-space-2)+var(--vds-border-width-1))] text-left text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)] font-[var(--vds-fw-regular)] hover:bg-[var(--vds-bg-white-hover-transparent)] focus:bg-[var(--vds-bg-white-hover-transparent)]'
 const composerTextareaClass = (
   home: boolean,
   surface: SessionSurface,
   launching: boolean
 ): string =>
   [
-    'block w-full resize-none overflow-y-hidden rounded-none border-0 bg-transparent font-[var(--font-serif)] font-[var(--vds-fw-regular)] text-[var(--text)] outline-none',
+    'block w-full resize-none overflow-y-hidden rounded-none border-0 bg-transparent [font:inherit] tracking-[inherit] text-[var(--text)] outline-none',
     'shadow-none focus:outline-none focus-visible:border-0 focus-visible:shadow-none',
     surface === 'assistant'
-      ? 'min-h-[44px] max-h-[132px] text-[length:var(--vds-font-body-lv2)] leading-[1.65]'
+      ? 'min-h-[44px] max-h-[132px]'
       : home
-        ? 'min-h-[105px] max-h-[105px] text-[length:var(--vds-font-body-lv2)] leading-[1.45] tracking-[0.01em]'
-        : 'min-h-[23px] max-h-[132px] text-[15.5px] leading-[1.45]',
+        ? 'min-h-[105px] max-h-[105px]'
+        : 'min-h-[23px] max-h-[132px]',
     launching ? 'opacity-[0.58]' : 'opacity-100',
   ].join(' ')
 const stopButtonClass = (interrupting: boolean): string =>
   [
-    'grid size-8 min-h-8 min-w-8 place-items-center rounded-[var(--vds-radius-4)] border-0 bg-[var(--vds-brand-light-bg-default)] text-[var(--vds-brand-bg-default)] p-0 transition-colors duration-[var(--vds-duration-fast)] hover:bg-[var(--vds-brand-light-bg-hover)]',
+    'ml-auto grid size-8 min-h-8 min-w-8 place-items-center rounded-[var(--vds-radius-4)] border-0 bg-[var(--vds-brand-light-bg-default)] text-[var(--vds-brand-bg-default)] p-0 transition-colors duration-[var(--vds-duration-fast)] hover:bg-[var(--vds-brand-light-bg-hover)]',
     interrupting ? 'cursor-wait opacity-[0.68]' : 'cursor-pointer opacity-100',
   ].join(' ')
 const sendButtonClass = (surface: SessionSurface, canSend: boolean, launching: boolean): string =>
@@ -374,8 +367,6 @@ const sendButtonClass = (surface: SessionSurface, canSend: boolean, launching: b
 // 无可用模型提示行: 小圆点与两条下划线出口与正文同基线, 钉在输入卡片上方。
 const NO_MODEL_HINT_CLASS =
   'mb-[var(--vds-space-3)] flex flex-wrap items-center gap-x-[var(--vds-space-2)] gap-y-[var(--vds-space-1)] px-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-primary)]'
-const NO_MODEL_HINT_LINK_CLASS =
-  'border-0 bg-transparent p-0 text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-brand-text-primary)] underline underline-offset-[3px]'
 // 会话尚未创建时（首页首条消息才 openSession）的本地待选清单。
 const PRE_SESSION_MODES: GlobalPermissionMode[] = ['ask', 'safe_auto', 'bypassPermissions']
 const COLLABORATION_MODE_OPTIONS: ReadonlyArray<{
@@ -403,11 +394,260 @@ function composerReasoningEffort(state: AppState): string {
     : reasoningPreference(model, state.reasoningPreferences)
 }
 
+export interface ComposerQueueProps {
+  followUpMode?: FollowUpMode
+  followUpPending?: boolean
+  toggleFollowUp?: () => void | Promise<unknown>
+  messages: QueuedMessage[]
+  skillTitle?: (name: string) => string | undefined
+  queuedActionId?: string | null
+  editing?: boolean
+  running?: boolean
+  interrupting?: boolean
+  waiting?: boolean
+  activeTurnId?: string | null
+  creditBlocked?: boolean
+  recoveryAvailable?: boolean
+  retractQueuedMessage?: (id: string) => void | Promise<unknown>
+  confirmQueuedUnknown?: (message: QueuedMessage) => void | Promise<unknown>
+  steerQueued?: (message: QueuedMessage) => void | Promise<unknown>
+  reconcileQueued?: (id: string) => void | Promise<unknown>
+  sendQueued?: (id: string) => void | Promise<unknown>
+  editQueued?: (message: QueuedMessage) => void
+}
+
+export function ComposerQueue({
+  followUpMode = 'queue',
+  followUpPending = false,
+  toggleFollowUp,
+  messages: visibleQueuedMessages,
+  skillTitle,
+  queuedActionId = null,
+  editing = false,
+  running = false,
+  interrupting = false,
+  waiting = false,
+  activeTurnId = null,
+  creditBlocked = false,
+  recoveryAvailable = false,
+  retractQueuedMessage,
+  confirmQueuedUnknown,
+  steerQueued,
+  reconcileQueued,
+  sendQueued,
+  editQueued,
+}: ComposerQueueProps): React.JSX.Element {
+  const { t } = useTranslation('components')
+  const { t: assistantText } = useTranslation('assistant')
+  return (
+    <>
+      {visibleQueuedMessages.length > 0 && (
+        <div className={queuedMessageClass} data-testid="composer-message-queue">
+          {visibleQueuedMessages.map((queued) => {
+            const contextSummary = queuedContextSummary(
+              queued.input,
+              queued.assistantReferences,
+              assistantText,
+              skillTitle
+            )
+            const summary = [queued.text, contextSummary].filter((part) => part.trim()).join(' ')
+            const blockedByUnknown =
+              queued.state === 'queued' && queueBlockedByUnconfirmed(visibleQueuedMessages)
+            const needsStatusCheck = queuedMessageNeedsStatusCheck(queued)
+            const unknownOpen = queuedMessageHasUnknownOpen(queued)
+            const showQueuedSendAction =
+              (queued.state === 'failed' && recoveryAvailable) || needsStatusCheck
+            const actionDisabled =
+              (creditBlocked && !needsStatusCheck) ||
+              queuedActionId !== null ||
+              (queued.state === 'failed' && !needsStatusCheck && !recoveryAvailable) ||
+              (needsStatusCheck ? !reconcileQueued : !sendQueued)
+            const cancelAction = (
+              <IconButton
+                data-testid={`queued-delete-${queued.queuedMessageId}`}
+                size="xs"
+                variant="ghostIcon"
+                icon={<Icon name="trash" />}
+                label={t('composer.delete')}
+                disabled={
+                  queuedActionId !== null ||
+                  !canCancelQueuedMessage(queued) ||
+                  !retractQueuedMessage
+                }
+                onClick={() => void retractQueuedMessage?.(queued.queuedMessageId)}
+              />
+            )
+            const confirmUnknownAction = (
+              <Button
+                data-testid={`queued-confirm-${queued.queuedMessageId}`}
+                size="xs"
+                variant="primary"
+                disabled={queuedActionId !== null || !confirmQueuedUnknown}
+                onClick={() => void confirmQueuedUnknown?.(queued)}
+              >
+                {queuedActionId === queued.queuedMessageId
+                  ? t('composer.confirmingOutcome')
+                  : t('composer.confirmContinue')}
+              </Button>
+            )
+            return (
+              <React.Fragment key={queued.queuedMessageId}>
+                <div
+                  className={queuedMessageRowClass}
+                  data-testid={`queued-message-${queued.queuedMessageId}`}
+                >
+                  <Tooltip
+                    className="min-w-0 flex-1 basis-1/2"
+                    content={summary}
+                    contentClassName="whitespace-pre-wrap"
+                    disabled={!summary}
+                  >
+                    <span
+                      className="min-w-0 truncate text-[var(--vds-text-primary)]"
+                      data-testid={`queued-summary-${queued.queuedMessageId}`}
+                      tabIndex={summary ? 0 : undefined}
+                    >
+                      {summary}
+                    </span>
+                  </Tooltip>
+                  <div className="ml-auto flex shrink-0 flex-nowrap items-center gap-[var(--vds-space-2)]">
+                    <Button
+                      size="xs"
+                      variant="ghost"
+                      className="!text-[var(--vds-text-secondary)]"
+                      data-testid={`queued-steer-${queued.queuedMessageId}`}
+                      icon={<CornerDownRight aria-hidden="true" />}
+                      disabled={
+                        !canEditQueuedMessage(queued) ||
+                        !running ||
+                        interrupting ||
+                        waiting ||
+                        !activeTurnId ||
+                        !steerQueued ||
+                        queuedActionId !== null
+                      }
+                      loading={queuedActionId === queued.queuedMessageId}
+                      onClick={() => void steerQueued?.(queued)}
+                    >
+                      {t('composer.steer')}
+                    </Button>
+                    {(blockedByUnknown ||
+                      queued.state === 'failed' ||
+                      queued.state === 'outcome_unknown') && (
+                      <span className="whitespace-nowrap rounded-[var(--vds-radius-3)] bg-[var(--vds-surface-raised)] px-[var(--vds-space-2)] py-[var(--vds-space-1)] text-[var(--vds-text-secondary)]">
+                        {blockedByUnknown
+                          ? t('composer.waitingUnknown')
+                          : t(QUEUE_PRESENTATION_MESSAGE_KEYS[queued.state])}
+                      </span>
+                    )}
+                    {showQueuedSendAction ? (
+                      <Button
+                        data-testid={`queued-send-${queued.queuedMessageId}`}
+                        size="xs"
+                        variant="outline"
+                        disabled={actionDisabled}
+                        loading={queuedActionId === queued.queuedMessageId}
+                        onClick={() =>
+                          void (needsStatusCheck
+                            ? reconcileQueued?.(queued.queuedMessageId)
+                            : sendQueued?.(queued.queuedMessageId))
+                        }
+                      >
+                        {needsStatusCheck ? t('composer.checkOutcome') : t('composer.resend')}
+                      </Button>
+                    ) : null}
+                    {queued.state === 'outcome_unknown'
+                      ? !unknownOpen && confirmUnknownAction
+                      : cancelAction}
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <IconButton
+                          size="xs"
+                          variant="ghostIcon"
+                          icon={<MoreHorizontal />}
+                          label={t('composer.queueMore')}
+                          data-testid={`queued-more-${queued.queuedMessageId}`}
+                        />
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent>
+                        <DropdownMenuItem
+                          disabled={
+                            Boolean(editing) ||
+                            queuedActionId !== null ||
+                            !canEditQueuedMessage(queued) ||
+                            !editQueued
+                          }
+                          onSelect={() => editQueued?.(queued)}
+                        >
+                          {t('composer.editQueued')}
+                        </DropdownMenuItem>
+                        {toggleFollowUp && (
+                          <DropdownMenuItem
+                            data-testid="queued-toggle-follow-up"
+                            disabled={followUpPending}
+                            onSelect={() => void toggleFollowUp()}
+                          >
+                            {t(
+                              followUpMode === 'queue'
+                                ? 'followUp.disableQueue'
+                                : 'followUp.enableQueue'
+                            )}
+                          </DropdownMenuItem>
+                        )}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
+                  {(queued.state === 'outcome_unknown' || blockedByUnknown) && (
+                    <div className="w-full min-w-0 basis-full">
+                      {queued.state === 'outcome_unknown' && !unknownOpen ? (
+                        <Alert
+                          className={queuedAlertClass}
+                          tone="warning"
+                          title={t('composer.unconfirmed')}
+                          description={t('composer.unconfirmedHint')}
+                        />
+                      ) : null}
+                      {blockedByUnknown ? (
+                        <Alert
+                          className={queuedAlertClass}
+                          data-testid={`queued-blocked-${queued.queuedMessageId}`}
+                          tone="info"
+                          title={t('composer.waitingUnknown')}
+                          description={t('composer.blockedByUnknownHint')}
+                        />
+                      ) : null}
+                    </div>
+                  )}
+                  {queued.retryBlockedErrorCode || queued.safeErrorCode ? (
+                    <div
+                      className="w-full min-w-0 basis-full whitespace-pre-wrap break-words text-[var(--vds-error-text-primary)]"
+                      data-error-code={queued.safeErrorCode}
+                    >
+                      {queuedMessageErrorText(
+                        queued.retryBlockedErrorCode || queued.safeErrorCode,
+                        queued.state,
+                        t,
+                        queued.safeErrorDetails
+                      )}
+                    </div>
+                  ) : null}
+                </div>
+              </React.Fragment>
+            )
+          })}
+        </div>
+      )}
+    </>
+  )
+}
+
 export function Composer({
   home = false,
   homeExtras,
   contextTray,
+  contextReferences,
   header,
+  notice,
   inputBoxRef,
   surface = 'conversation',
   inline = false,
@@ -418,6 +658,11 @@ export function Composer({
   homeExtras?: React.ReactNode
   /** Session context queue rendered inside the composer card above the draft text. */
   contextTray?: React.ReactNode
+  notice?: React.ReactNode
+  contextReferences?: (ComposerEditorReference & {
+    inline: boolean
+    attachment?: ComposerReference
+  })[]
   header?: (controls: {
     continueTurn: () => Promise<boolean>
     continueDisabled: boolean
@@ -444,48 +689,25 @@ export function Composer({
     patchThread,
     act,
   } = useApp()
+  const followUp = useFollowUpPreference(state.serviceInstanceId)
+  const confirmation = React.useContext(ComposerConfirmationContext)
+  const interactionPolicies = useInteractionPolicies()
+  const editingHilRequest = React.useRef<string | null>(null)
   const { authenticated, revision: skillRevision } = useAccountAccess(state.backendReady)
   const documents = useDocumentWorkspace()
   const { t, i18n } = useTranslation('components')
   const language = i18n.resolvedLanguage || i18n.language
   const { t: assistantText } = useTranslation('assistant')
   const { t: skillText } = useTranslation('skills')
-  const contextText = useAssistantContextText()
   const collaborationModeLabel =
     COLLABORATION_MODE_OPTIONS.map((option) => ({
       value: option.value,
       label: t(option.labelKey),
     })).find((option) => option.value === state.collaborationMode)?.label ?? t('composer.question')
-  const AT_SKILL_PANEL_LABEL = t('composer.skill')
-  const AT_SKILL_BUILTIN_LABEL = t('composer.builtin')
-  const AT_SKILL_USER_LABEL = t('composer.local')
-  const AT_SKILL_LOADING_LABEL = t('composer.loadingSkills')
-  const AT_SKILL_EMPTY_LABEL = t('composer.emptySkills')
-  const AT_ROOT_LABEL = t('composer.references')
   const unifiedLocalPicker = supportsImportPickerTarget(
     window.scholarseed?.platform,
     IMPORT_PICKER_TARGET.RESOURCE
   )
-  const AT_LOCAL_FILE_ROOT_ROW = Object.freeze({
-    kind: AT_LOCAL_FILE_KIND,
-    label: t('composer.addLocal'),
-    description: t(
-      unifiedLocalPicker ? 'composer.addLocalCombinedDescription' : 'composer.addLocalDescription'
-    ),
-    icon: 'clip' as const,
-  })
-  const AT_LOCAL_DIRECTORY_ROOT_ROW = Object.freeze({
-    kind: AT_LOCAL_DIRECTORY_KIND,
-    label: t('composer.addLocalFolder'),
-    description: t('composer.addLocalFolderDescription'),
-    icon: 'folder' as const,
-  })
-  const AT_SKILL_ROOT_ROW = Object.freeze({
-    kind: COMPOSER_SKILL_KIND,
-    label: AT_SKILL_PANEL_LABEL,
-    description: t('composer.skillDescription'),
-    icon: 'skills' as const,
-  })
 
   const MODE_META: Record<string, ModeMeta> = {
     // key 必须与后端 GLOBAL_PERMISSION_MODES 一致 (service/chat/constants.py: ask / safe_auto)。
@@ -515,14 +737,25 @@ export function Composer({
   const MODE_FULL_ACCESS_CONFIRM_TITLE = t('composer.fullConfirm')
   const MODE_FULL_ACCESS_CONFIRM_BODY = t('composer.fullBody')
   const MODE_PENDING_LABEL = t('composer.pending')
-  const RUNNING_INPUT_PLACEHOLDER = t('composer.runningPlaceholder')
+  const RUNNING_INPUT_PLACEHOLDER = t(
+    followUp.mode === 'steer' ? 'followUp.runningPlaceholder' : 'composer.runningPlaceholder'
+  )
   const INTERRUPTING_INPUT_PLACEHOLDER = t('composer.stoppingPlaceholder')
-  const RUNNING_SEND_HINT_TITLE = t('composer.enqueue')
+  const RUNNING_SEND_HINT_TITLE = t(
+    followUp.mode === 'steer' ? 'followUp.sendSteer' : 'composer.enqueue'
+  )
   const COMPOSER_DROP_LABEL = t('composer.drop')
+  const [queueEdit, setQueueEdit] = React.useState<{
+    sessionId: string
+    message: QueuedMessage
+    draft: ReturnType<typeof createComposerDraftStore>
+  } | null>(null)
+  const editing = queueEdit?.sessionId === activeThread(state).sessionId ? queueEdit : null
+  const activeDraft = editing?.draft ?? composerDraft
   const text = React.useSyncExternalStore(
-    composerDraft.subscribe,
-    composerDraft.getSnapshot,
-    composerDraft.getSnapshot
+    activeDraft.subscribe,
+    activeDraft.getSnapshot,
+    activeDraft.getSnapshot
   )
   const thread = activeThread(state)
   const readOnlyDraft = React.useMemo(() => createComposerDraftStore(), [])
@@ -535,13 +768,18 @@ export function Composer({
   )
   const exactDraftModelId = state.draftModelId
   const sidNow = thread.sessionId
+  const selectionBlocked = Boolean(sidNow && modelSelectionBlocked(state.serviceInstanceId, sidNow))
   const selectedEffort = composerReasoningEffort(state)
   const running = Boolean(thread.running)
-  const recoveryAvailable = canOfferTurnRecovery(thread) && !thread.recoveryPending
+  const recoveryAvailable =
+    canOfferTurnRecovery(thread) && !thread.recoveryPending && !selectionBlocked
   const queuedMessages = thread.queuedMessages ?? []
-  const visibleQueuedMessages = queuedMessages.filter((message) =>
-    shouldPresentQueuedMessage(message, thread.conversation)
+  const visibleQueuedMessages = queuedMessages.filter(
+    (message) =>
+      shouldPresentQueuedMessage(message, thread.conversation) &&
+      message.queuedMessageId !== editing?.message.queuedMessageId
   )
+  const [queueEditError, setQueueEditError] = React.useState(false)
   const interrupting = Boolean(thread.interrupting)
   const canStop = running || interrupting || hasAcceptedMessageAwaitingRuntime(queuedMessages)
   const launching =
@@ -552,6 +790,14 @@ export function Composer({
     files: state.workspaceFilesOpen,
     documents: Object.keys(documents.tabs).length > 0,
   })
+  const prediction = useComposerPrediction(
+    sidNow,
+    predictionTurn(thread.turnOutcomes),
+    running,
+    state.composerPredictionsEnabled,
+    Boolean(editing || thread.readOnly || launching || nonConversationSurfaceOpen || interrupting),
+    text
+  )
   const submissionInFlight = React.useRef(false)
   const preparationWait = React.useRef<AbortController | null>(null)
   const composerMounted = React.useRef(true)
@@ -581,12 +827,32 @@ export function Composer({
   )
   const composerInputRef = React.useRef<HTMLTextAreaElement>(null)
   const composerDropZoneRef = React.useRef<HTMLDivElement>(null)
+  const [inlineReferencesExpanded, setInlineReferencesExpanded] = React.useState(false)
+  React.useEffect(() => {
+    setInlineReferencesExpanded(false)
+  }, [inline, thread.sessionId])
   const [inlineEditorLayout, setInlineEditorLayout] = React.useState<ComposerEditorLayout>({
     multiline: false,
     above: false,
     below: false,
   })
   const pendingCaretRef = React.useRef<number | null>(null)
+  const shortcutOpeningRef = React.useRef(false)
+  const composerFocusFrameRef = React.useRef<number | null>(null)
+  const cancelComposerFocus = React.useCallback((): void => {
+    if (composerFocusFrameRef.current !== null) {
+      window.cancelAnimationFrame(composerFocusFrameRef.current)
+    }
+    composerFocusFrameRef.current = null
+  }, [])
+  const restoreComposerFocus = (): void => {
+    // Wait for menu/dialog focus scopes to unmount before returning to the draft.
+    cancelComposerFocus()
+    composerFocusFrameRef.current = window.requestAnimationFrame(() => {
+      composerFocusFrameRef.current = null
+      composerInputRef.current?.focus({ preventScroll: true })
+    })
+  }
   const [selection, setSelection] = React.useState({ start: 0, end: 0 })
   const syncComposerSelection = React.useCallback(() => {
     const input = composerInputRef.current
@@ -600,12 +866,13 @@ export function Composer({
   React.useLayoutEffect(() => {
     const input = composerInputRef.current
     if (input && pendingCaretRef.current !== null) {
-      input.focus()
+      if (!shortcutOpeningRef.current) input.focus()
       input.setSelectionRange(pendingCaretRef.current, pendingCaretRef.current)
       pendingCaretRef.current = null
+      shortcutOpeningRef.current = false
     }
     syncComposerSelection()
-  }, [text, syncComposerSelection])
+  }, [text, activeDraft, syncComposerSelection])
   const attachmentInputRef = React.useRef<HTMLInputElement>(null)
   const dragDepthRef = React.useRef(0)
   const [attaching, setAttaching] = React.useState(false)
@@ -613,10 +880,12 @@ export function Composer({
   const [loginPromptOpen, setLoginPromptOpen] = React.useState(false)
   const [draggingFiles, setDraggingFiles] = React.useState(false)
   const [queuedActionId, setQueuedActionId] = React.useState<string | null>(null)
-  const [expandedQueuedMessages, setExpandedQueuedMessages] = React.useState<Set<string>>(
-    () => new Set()
-  )
   const [plusMenuOpen, setPlusMenuOpen] = React.useState(false)
+  const [menuEntry, setMenuEntry] = React.useState<'plus' | 'skills'>('plus')
+  React.useEffect(() => {
+    if (!plusMenuOpen) setMenuEntry('plus')
+  }, [plusMenuOpen])
+  const [referenceDialogSource, setReferenceDialogSource] = React.useState<string | null>(null)
   const [referenceQuery, setReferenceQuery] = React.useState('')
   const referenceSearchSourceRef = React.useRef<string | null>(null)
   const openingReferenceSourceRef = React.useRef<string | null>(null)
@@ -631,15 +900,16 @@ export function Composer({
     rows: SkillInfo[]
   } | null>(null)
   const [skillQuery, setSkillQuery] = React.useState('')
+  const skillSearchRef = React.useRef<HTMLInputElement>(null)
+  const skillPanelRef = React.useRef<HTMLDivElement>(null)
   const [skillVisibleCount, setSkillVisibleCount] = React.useState(PLUS_MENU_PAGE_SIZE)
   React.useEffect(() => {
     setPlusMenuOpen(false)
     setSkillPanelOpen(false)
+    setReferenceDialogSource(null)
     setSkillQuery('')
     setSkillVisibleCount(PLUS_MENU_PAGE_SIZE)
     setReferenceQuery('')
-    setSelIdx(0)
-    setDismissed(false)
   }, [state.activeSession, home])
   React.useEffect(() => {
     const focus = (event: Event): void => {
@@ -647,7 +917,9 @@ export function Composer({
         event instanceof CustomEvent
           ? (event.detail as { selectionStart?: number; selectionEnd?: number } | undefined)
           : undefined
-      window.requestAnimationFrame(() => {
+      cancelComposerFocus()
+      composerFocusFrameRef.current = window.requestAnimationFrame(() => {
+        composerFocusFrameRef.current = null
         const input = composerInputRef.current
         if (!input) return
         input.focus()
@@ -658,12 +930,17 @@ export function Composer({
       })
     }
     window.addEventListener(COMPOSER_FOCUS_EVENT, focus)
-    return () => window.removeEventListener(COMPOSER_FOCUS_EVENT, focus)
-  }, [])
-  // @ 引用候选的键盘导航 (↑↓ 移动 · Enter/Tab 选中 · Esc 关闭)。
-  // dismissed: Esc/选中后压住弹层, 直到下次输入 (onChange) 复位。
-  const [selIdx, setSelIdx] = React.useState(0)
-  const [dismissed, setDismissed] = React.useState(false)
+    for (const event of COMPOSER_FOCUS_INTERRUPTS) {
+      window.addEventListener(event, cancelComposerFocus, true)
+    }
+    return () => {
+      window.removeEventListener(COMPOSER_FOCUS_EVENT, focus)
+      for (const event of COMPOSER_FOCUS_INTERRUPTS) {
+        window.removeEventListener(event, cancelComposerFocus, true)
+      }
+      cancelComposerFocus()
+    }
+  }, [cancelComposerFocus])
 
   // 空闲会话由 Serve 重绑同一 Codex thread 的权限；未开会话在本地选择，
   // 随 openSession 提交。只以服务端确认结果更新已开会话的显示。
@@ -838,16 +1115,7 @@ export function Composer({
     applyMode(target, application)
   }
 
-  // @ 与“+”复用同一组 Assistant 来源贡献；项目文件和 Skill 保留原有专用入口。
-  const atQuery =
-    selection.start === selection.end
-      ? (composerTrigger(text, selection.start)?.query ?? null)
-      : null
-  const atColon = atQuery?.indexOf(':') ?? -1
-  const atKind = atQuery !== null && atColon >= 0 ? atQuery.slice(0, atColon) : null
-  const atTerm = atQuery !== null && atColon >= 0 ? atQuery.slice(atColon + 1) : (atQuery ?? '')
-  const atRoot = atQuery !== null && atColon < 0
-  const atSkill = atKind === COMPOSER_SKILL_KIND
+  const shortcut = selection.start === selection.end ? composerTrigger(text, selection.start) : null
   const assistantProjectId = assistantProject(state).projectId
   const availableContextSources = state.aiPanel.contextSources
     .filter((source) => assistantSourceAvailable(source, assistantProjectId))
@@ -856,6 +1124,11 @@ export function Composer({
       label: renderFeedback(i18n, source.label),
       emptyLabel: renderFeedback(i18n, source.emptyLabel),
     }))
+  const closePlusSubmenus = (): void => {
+    openingReferenceSourceRef.current = null
+    setSkillPanelOpen(false)
+    if (state.aiPanel.contextPickerOpen) act.closeAiContextPicker()
+  }
   const openSkillSubmenu = (): void => {
     clearAtTrigger()
     openingReferenceSourceRef.current = null
@@ -875,13 +1148,31 @@ export function Composer({
     setReferenceQuery('')
     act.openAiContextPicker(source.id)
   }
-  const atContextSource = availableContextSources.find((source) => source.id === atKind)
-  const atContextSourceId = atContextSource?.id
-  const atContext = Boolean(atContextSourceId)
-  const atResourceContext = atContextSourceId === RESOURCE_CONTEXT_KIND
-  const pendingRefs = thread.readOnly ? [] : state.composerRefs
+  const dialogSource = availableContextSources.find((source) => source.id === referenceDialogSource)
+  const closeReferenceDialog = (): void => {
+    setReferenceDialogSource(null)
+    openingReferenceSourceRef.current = null
+    act.closeAiContextPicker()
+  }
+  const pendingRefs: ComposerReference[] = thread.readOnly
+    ? []
+    : editing
+      ? editing.message.input.flatMap((item): ComposerReference[] =>
+          item.type === 'skill'
+            ? [
+                {
+                  type: 'skill',
+                  id: item.name,
+                  title: item.name,
+                  path: item.path,
+                  version: item.version,
+                },
+              ]
+            : []
+        )
+      : state.composerRefs
   const pendingContextRefs =
-    surface === 'assistant' && !thread.readOnly
+    surface === 'assistant' && !thread.readOnly && !editing
       ? pendingAssistantContextRefs(state.aiPanel.refs, state.aiPanel.submittedRefIds)
       : []
   const hasContent = composerHasContent(text, pendingRefs, pendingContextRefs)
@@ -911,6 +1202,10 @@ export function Composer({
       current = false
     }
   }, [state.backendReady, selectedSkillKey, skillRevision, language])
+  const selectedSkillsChecking =
+    selectedSkillNames.length > 0 &&
+    (selectedSkillCatalog?.revision !== skillRevision ||
+      selectedSkillCatalog.selection !== selectedSkillKey)
   const selectedSkillsReady =
     selectedSkillNames.length === 0 ||
     (selectedSkillCatalog?.revision === skillRevision &&
@@ -920,19 +1215,19 @@ export function Composer({
           (skill) => skill.name === name && skillCallable(skill, authenticated)
         )
       ))
-  const hasComposerReferenceCards = pendingRefs.length > 0
   // 运行中发送会进入产品持久队列；插话必须由用户对指定队列项显式触发。
   const runtimeAdmission = readinessAdmission(thread, state.runtimeReadiness)
   // starting/recovering 只在已有会话时放行: 草稿先落持久队列, 运行时恢复后自动执行。新建会话
   // 没有队列兜底, 未知态（readiness 尚未加载）同样必须闭门。
   const runtimeReady =
-    runtimeAdmission === 'ready' ||
-    (runtimeAdmission === 'transient' && Boolean(sidNow)) ||
-    (!sidNow && state.runtimePreparationTarget === state.model) ||
-    (!sidNow &&
-      state.runtimePreparation?.model_id === state.model &&
-      state.runtimePreparation.service_instance_id === state.serviceInstanceId &&
-      ['accepted', 'applied'].includes(state.runtimePreparation.state))
+    state.runtimePreparation?.state !== 'restart_required' &&
+    (runtimeAdmission === 'ready' ||
+      (runtimeAdmission === 'transient' && Boolean(sidNow)) ||
+      (!sidNow && state.runtimePreparationTarget === state.model) ||
+      (!sidNow &&
+        state.runtimePreparation?.model_id === state.model &&
+        state.runtimePreparation.service_instance_id === state.serviceInstanceId &&
+        ['accepted', 'applied'].includes(state.runtimePreparation.state)))
   const selectedModel = state.catalog.models.find((model) => model.key === selectedModelKey)
   const creditBlocked = creditsBlockBuiltInModel(state.credits, selectedModel)
   // 目录里一个可选模型都没有（未登录且未配置自有连接时内置/订阅行全被置灰）: 草稿发出去
@@ -941,28 +1236,73 @@ export function Composer({
     ? Boolean(selectedModel && !selectedModel.disabled)
     : hasSelectableModel(state.catalog.models)
   const canSend =
+    !confirmation.pending &&
     !thread.readOnly &&
-    canSubmitComposer({
-      runtimeReady:
-        runtimeReady &&
-        contextReady &&
-        selectedSkillsReady &&
-        activeThread(state).terminated !== true &&
-        !thread.recoveryPending,
-      creditsAvailable: !creditBlocked,
-      modelAvailable,
-      launching,
-      running,
-      interrupting,
-      hasContent,
-    })
+    !(running && (followUp.loading || followUp.saving || followUp.error)) &&
+    (editing
+      ? Boolean(text.trim()) && queuedActionId === null
+      : canSubmitComposer({
+          runtimeReady:
+            runtimeReady &&
+            contextReady &&
+            selectedSkillsReady &&
+            !selectionBlocked &&
+            activeThread(state).terminated !== true &&
+            !thread.recoveryPending,
+          creditsAvailable: !creditBlocked,
+          modelAvailable,
+          launching,
+          running,
+          interrupting,
+          hasContent,
+        }))
   const setPendingRefs = React.useCallback(
     (patch: React.SetStateAction<ComposerReference[]>) => {
+      if (editing) return
       set((current) => ({
         composerRefs: typeof patch === 'function' ? patch(current.composerRefs) : patch,
       }))
     },
-    [set]
+    [set, editing]
+  )
+  const referenceGroups = partitionComposerReferences(
+    [
+      ...(!editing ? (contextReferences ?? []) : []),
+      ...pendingRefs.map((reference) => {
+        const onRemove = editing
+          ? undefined
+          : () =>
+              setPendingRefs((items) =>
+                items.filter((item) => item.type !== reference.type || item.id !== reference.id)
+              )
+        return {
+          key: `${reference.type}:${reference.id}`,
+          inline: reference.type === 'skill',
+          attachment: reference,
+          content:
+            reference.type === 'skill' ? (
+              <ComposerSkillRefs refs={[reference]} onRemove={onRemove} />
+            ) : (
+              <DraftAttachments
+                refs={[reference]}
+                sessionId={thread.sessionId ?? undefined}
+                onRemove={onRemove}
+                onOpen={act.openFilePreview}
+              />
+            ),
+          onRemove,
+        }
+      }),
+    ],
+    editing ? [] : state.composerReferenceOrder
+  )
+  const galleryReferences = referenceGroups.attachments.filter(
+    (reference) => reference.attachment && isImageAttachment(reference.attachment)
+  )
+  const galleryAttachments = galleryReferences.flatMap((reference) =>
+    reference.attachment && isImageAttachment(reference.attachment)
+      ? [{ ...reference.attachment, id: reference.key }]
+      : []
   )
   const replaceAtTrigger = React.useCallback(
     (replacement: string): void => {
@@ -987,156 +1327,153 @@ export function Composer({
     })
   }
   React.useEffect(() => {
-    if (atQuery === null || nonConversationSurfaceOpen) return
-    setPlusMenuOpen(false)
-    setSkillPanelOpen(false)
-  }, [atQuery, nonConversationSurfaceOpen])
-  const ensureAttachmentSession = async (): Promise<string | null> => {
-    if (exactDraftModelId && !modelAvailable) {
-      set({ foregroundError: feedback('conversation', 'continuation.modelUnavailable') })
-      return null
-    }
-    if (sidNow) return sidNow
-    if (!state.runtimeReadiness?.ready) {
-      set({
-        foregroundError:
-          state.runtimeReadiness?.message || feedback('components', 'composer.runtimePreflight'),
-      })
-      return null
-    }
-    const projectPath = selectedProjectPath(state)
-    const targetWorkdir = projectPath ?? state.defaultWorkspacePath ?? state.workspacePath ?? ''
-    const openingPermissionMode = pendingMode ?? state.globalPermissionMode
-    const opened = await openSession({
-      projectPath,
-      modelId: exactDraftModelId || state.model || undefined,
-      reasoningEffort: reasoningPreference(
-        state.catalog.models.find((model) => model.key === (exactDraftModelId || state.model)),
-        state.reasoningPreferences
-      ),
-      permissionMode: openingPermissionMode,
-    })
     if (
-      !opened ||
-      !('session_id' in opened) ||
-      !opened.session_id ||
-      opened.runtime_id !== 'codex' ||
-      !opened.readiness.ready
-    ) {
-      set({
-        foregroundError:
-          opened && 'readiness' in opened
-            ? opened.readiness.message || feedback('components', 'composer.runtimeUnavailable')
-            : feedback('components', 'composer.attachmentSession'),
-      })
-      return null
-    }
-    if (
-      exactDraftModelId &&
-      (opened.runtime.model_id !== exactDraftModelId ||
-        getSnapshot().draftModelId !== exactDraftModelId ||
-        getSnapshot().draftGeneration !== state.draftGeneration ||
-        getSnapshot().modelSelectionGeneration !== state.modelSelectionGeneration ||
-        !getSnapshot().catalog.models.some(
-          (model) => model.key === exactDraftModelId && !model.disabled
-        ))
-    ) {
-      set({ foregroundError: feedback('conversation', 'continuation.modelUnavailable') })
-      return null
-    }
-    const runtimeRoot = opened.runtime_workdir || opened.workdir
-    if (runtimeRoot) await window.scholarseed.addAuthorizedRoot('session', runtimeRoot)
-    // Persist the assistant draft before activating the attachment session:
-    // activation loads its saved context and would otherwise replace the draft.
-    if (surface === 'assistant' && (await act.prepareAiContext(opened.session_id)) === null) {
-      set({ foregroundError: feedback('components', 'composer.contextNotSaved') })
-      return null
-    }
-    const attachmentTitle = draftSessionTitle(opened)
-    openedModeProjection.current = {
-      sessionId: opened.session_id,
-      mode: openingPermissionMode,
-    }
-    act.openDraftSession(
-      opened.session_id,
-      attachmentTitle.title,
-      runtimeRoot || targetWorkdir,
-      opened.project_path ?? projectPath,
-      {
-        runtimeId: opened.runtime_id,
-        runtime: opened.runtime,
-        readiness: opened.readiness,
-        capabilities: opened.capabilities,
-      },
-      surface,
-      attachmentTitle.title_fallback
+      !shortcut ||
+      editing ||
+      thread.readOnly ||
+      (nonConversationSurfaceOpen && document.activeElement !== composerInputRef.current) ||
+      plusMenuOpen
     )
-    if (pendingMode !== null) setPendingMode(null)
-    return opened.session_id
+      return
+    const skills = shortcut.query.startsWith(COMPOSER_SKILL_KIND + ':')
+    const query = skills ? shortcut.query.slice(COMPOSER_SKILL_KIND.length + 1) : ''
+    shortcutOpeningRef.current = true
+    clearAtTrigger()
+    setMenuEntry(skills ? 'skills' : 'plus')
+    setSkillPanelOpen(skills)
+    if (skills) setSkillQuery(query)
+    composerDropZoneRef.current
+      ?.querySelector<HTMLButtonElement>('[data-testid="composer-plus"]')
+      ?.click()
+  }, [
+    shortcut?.start,
+    shortcut?.query,
+    editing,
+    thread.readOnly,
+    nonConversationSurfaceOpen,
+    plusMenuOpen,
+    clearAtTrigger,
+  ])
+  const resolveAttachmentSources = async (
+    attachmentSessionId: string,
+    selected: Array<{ file?: File; path: string }>
+  ): Promise<{ refs: ComposerReference[]; failed: boolean }> => {
+    const localPaths = selected.map((item) => item.path).filter(Boolean)
+    const registered = localPaths.length
+      ? await registerLocalPaths(attachmentSessionId, localPaths)
+      : []
+    // Browser mode and Playwright's synthetic in-memory File have no OS path.
+    // Keep the existing upload as an honest fallback; real Electron files never copy.
+    const fallbackFiles = selected
+      .filter((item): item is { file: File; path: string } => !item.path && Boolean(item.file))
+      .map((item) => item.file)
+    const uploaded = await Promise.all(
+      fallbackFiles.map((file) => uploadAttachmentFile(attachmentSessionId, file))
+    )
+    const uploadedRefs = uploaded.filter((item): item is UploadedAttachment => Boolean(item?.path))
+    const directRefs: ComposerReference[] = (registered ?? []).map((item): ComposerReference =>
+      item.kind === 'directory'
+        ? {
+            type: 'directory',
+            id: item.reference_id,
+            referenceId: item.reference_id,
+            path: item.path,
+            title: item.name || item.path,
+          }
+        : {
+            type: 'file',
+            id: item.reference_id,
+            referenceId: item.reference_id,
+            path: item.path,
+            title: item.name || item.path,
+            mediaType: item.media_type,
+            size: item.size,
+          }
+    )
+    const fallbackRefs: ComposerReference[] = uploadedRefs.map((item) => ({
+      type: 'file',
+      id: item.path,
+      path: item.path,
+      title: item.name || item.path,
+      mediaType: item.media_type,
+      sha256: item.sha256,
+      size: item.size,
+      previewSource: item.relative_path
+        ? {
+            kind: 'session-file',
+            sessionId: attachmentSessionId,
+            path: item.relative_path,
+            mediaType: item.media_type,
+          }
+        : undefined,
+    }))
+    const refs = [...directRefs, ...fallbackRefs]
+    const failed =
+      (localPaths.length > 0 && registered === null) || uploadedRefs.length !== fallbackFiles.length
+    return { refs, failed }
   }
   const attachLocalSources = async (
-    selected: Array<{ file?: File; path: string }>
+    selected: Array<{ file?: File; path: string; directory?: boolean; imagePreview?: Blob | null }>
   ): Promise<void> => {
     if (!selected.length || attaching) return
+    const addReferences = (refs: ComposerReference[]): void => {
+      setPendingRefs((prev) => {
+        const next = [...prev]
+        for (const item of refs) {
+          const index = next.findIndex(
+            (reference) => reference.type === item.type && reference.id === item.id
+          )
+          if (index < 0) next.push(item)
+          else {
+            const previous = next[index]
+            if (
+              previous.type === 'file' &&
+              previous.localSource &&
+              !previous.localSource.file &&
+              !previous.localSource.imagePreview &&
+              item.type === 'file' &&
+              item.localSource?.imagePreview
+            ) {
+              next[index] = {
+                ...previous,
+                localSource: {
+                  ...previous.localSource,
+                  imagePreview: item.localSource.imagePreview,
+                },
+              }
+            }
+          }
+        }
+        return next
+      })
+    }
+    if (!sidNow) {
+      addReferences(
+        selected.flatMap(({ file, path, directory, imagePreview }): ComposerReference[] => {
+          if (!path && !file) return []
+          const source = {
+            id: path || crypto.randomUUID(),
+            path,
+            title:
+              file?.name ||
+              path
+                .split(/[/\\\\]/)
+                .filter(Boolean)
+                .at(-1) ||
+              path,
+            localSource: { file, imagePreview },
+          }
+          return directory
+            ? [{ ...source, type: 'directory' }]
+            : [{ ...source, type: 'file', mediaType: file?.type, size: file?.size }]
+        })
+      )
+      if (attachmentInputRef.current) attachmentInputRef.current.value = ''
+      return
+    }
     setAttaching(true)
     try {
-      const attachmentSessionId = await ensureAttachmentSession()
-      if (!attachmentSessionId) return
-      const localPaths = selected.map((item) => item.path).filter(Boolean)
-      const registered = localPaths.length
-        ? await registerLocalPaths(attachmentSessionId, localPaths)
-        : []
-      // Browser mode and Playwright's synthetic in-memory File have no OS path.
-      // Keep the existing upload as an honest fallback; real Electron files never copy.
-      const fallbackFiles = selected
-        .filter((item): item is { file: File; path: string } => !item.path && Boolean(item.file))
-        .map((item) => item.file)
-      const uploaded = await Promise.all(
-        fallbackFiles.map((file) => uploadAttachmentFile(attachmentSessionId, file))
-      )
-      const uploadedRefs = uploaded.filter((item): item is UploadedAttachment =>
-        Boolean(item?.path)
-      )
-      const directRefs: ComposerReference[] = (registered ?? []).map((item): ComposerReference =>
-        item.kind === 'directory'
-          ? {
-              type: 'directory',
-              id: item.reference_id,
-              referenceId: item.reference_id,
-              path: item.path,
-              title: item.name || item.path,
-            }
-          : {
-              type: 'file',
-              id: item.reference_id,
-              referenceId: item.reference_id,
-              path: item.path,
-              title: item.name || item.path,
-              mediaType: item.media_type,
-              size: item.size,
-            }
-      )
-      const fallbackRefs: ComposerReference[] = uploadedRefs.map((item) => ({
-        type: 'file',
-        id: item.path,
-        path: item.path,
-        title: item.name || item.path,
-        mediaType: item.media_type,
-        sha256: item.sha256,
-        size: item.size,
-        previewSource: item.relative_path
-          ? {
-              kind: 'session-file',
-              sessionId: attachmentSessionId,
-              path: item.relative_path,
-              mediaType: item.media_type,
-            }
-          : undefined,
-      }))
-      const refs = [...directRefs, ...fallbackRefs]
-      const failed =
-        (localPaths.length > 0 && registered === null) ||
-        uploadedRefs.length !== fallbackFiles.length
+      const { refs, failed } = await resolveAttachmentSources(sidNow, selected)
       if (failed) {
         set({
           foregroundError: refs.length
@@ -1144,15 +1481,7 @@ export function Composer({
             : feedback('components', 'composer.filesFailed'),
         })
       }
-      if (!refs.length) return
-      setPendingRefs((prev) => {
-        const next = [...prev]
-        for (const item of refs) {
-          if (!next.some((reference) => reference.type === item.type && reference.id === item.id))
-            next.push(item)
-        }
-        return next
-      })
+      if (refs.length) addReferences(refs)
     } finally {
       setAttaching(false)
       if (attachmentInputRef.current) attachmentInputRef.current.value = ''
@@ -1169,6 +1498,7 @@ export function Composer({
       })
     )
   const composerPaste = (event: React.ClipboardEvent<HTMLTextAreaElement>): void => {
+    prediction.dismiss()
     const files = clipboardImageFiles(event.clipboardData.items)
     if (!files.length) return
     event.preventDefault()
@@ -1191,7 +1521,22 @@ export function Composer({
       if (target === IMPORT_PICKER_TARGET.FILE) attachmentInputRef.current?.click()
       return
     }
-    await attachLocalSources((await pick(target)).map((path) => ({ path })))
+    const previewPick = window.scholarseed?.pickImportPreview
+    const selected = previewPick
+      ? await previewPick(target)
+      : (await pick(target)).map((path) => ({ path, imagePreview: undefined }))
+    await attachLocalSources(
+      selected.map(({ path, imagePreview }) => ({
+        path,
+        directory: target === IMPORT_PICKER_TARGET.DIRECTORY,
+        imagePreview:
+          imagePreview === undefined
+            ? undefined
+            : imagePreview.status === 'image'
+              ? new Blob([new Uint8Array(imagePreview.bytes)], { type: OFFICE_IMAGE_MEDIA_TYPE })
+              : null,
+      }))
+    )
   }
   const onComposerDragEnter = (event: React.DragEvent<HTMLDivElement>): void => {
     if (thread.readOnly) return
@@ -1232,7 +1577,7 @@ export function Composer({
     if (dragDepthRef.current === 0) setDraggingFiles(false)
   }
   const onComposerDrop = (event: React.DragEvent<HTMLDivElement>): void => {
-    if (thread.readOnly) {
+    if (thread.readOnly || editing) {
       event.preventDefault()
       event.stopPropagation()
       return
@@ -1289,64 +1634,9 @@ export function Composer({
     }
     void attachLocalFiles(event.dataTransfer.files)
   }
-  const atRootRows = [
-    AT_LOCAL_FILE_ROOT_ROW,
-    ...(!unifiedLocalPicker && typeof window.scholarseed?.pickImport === 'function'
-      ? [AT_LOCAL_DIRECTORY_ROOT_ROW]
-      : []),
-    ...availableContextSources.map((source) => ({
-      kind: source.id,
-      label: source.label,
-      description: t('composer.sourceDescription', { source: source.label }),
-      icon: source.icon,
-    })),
-    AT_SKILL_ROOT_ROW,
-  ]
-  const rootCandidates = atRoot
-    ? fuzzyFilter(atRootRows, atTerm, (row) => [row.label, row.kind, row.description])
-    : []
-  const matchedSkills = atSkill
-    ? fuzzyFilter(skillRows ?? [], atTerm, (skill) => [
-        skill.name,
-        skillName(skill),
-        skillDescription(skill, i18n.resolvedLanguage || i18n.language),
-      ])
-    : []
-  const skillCandidates = matchedSkills.slice(0, AT_CANDIDATE_LIMIT)
-  const atActive = !thread.readOnly && atQuery !== null && !dismissed && !nonConversationSurfaceOpen
-  const contextCandidatesReady = Boolean(
-    atContextSourceId &&
-    state.aiPanel.contextPickerOpen &&
-    state.aiPanel.contextPickerSource === atContextSourceId
-  )
-  const contextFilter = atResourceContext ? resourceContextSearchTerm(atTerm) : atTerm
-  const matchedContextCandidates =
-    atContext && contextCandidatesReady
-      ? fuzzyFilter(state.aiPanel.contextCandidates, contextFilter, (candidate) => [
-          candidateLabel(candidate, assistantText),
-          candidateHint(candidate, assistantText),
-          candidate.source_id,
-        ])
-      : []
-  const contextCandidates = matchedContextCandidates.slice(0, AT_CANDIDATE_LIMIT)
-  const contextCandidatesLoading =
-    atContext && (!contextCandidatesReady || state.aiPanel.contextCandidatesLoading)
-  // `act` intentionally excluded from deps — its reference is unstable
-  // (useMemo depends on `state`), and openAiContextPicker reads
-  // stateRef.current so staleness is safe. `atContextSourceId` is stable
-  // even when mapping sources creates fresh objects on every render.
-  // Including either unstable reference causes an infinite fetch loop:
-  //   openAiContextPicker → state change → new refs → effect re-fires.
+
   React.useEffect(() => {
-    if (!atActive || !atContextSourceId) return undefined
-    const timer = window.setTimeout(() => {
-      act.openAiContextPicker(atContextSourceId, atTerm)
-    }, AT_CONTEXT_SEARCH_DELAY_MS)
-    return () => window.clearTimeout(timer)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [atActive, atContextSourceId, atTerm])
-  React.useEffect(() => {
-    if (!plusMenuOpen || !state.aiPanel.contextPickerOpen) {
+    if ((!plusMenuOpen && !referenceDialogSource) || !state.aiPanel.contextPickerOpen) {
       referenceSearchSourceRef.current = null
       openingReferenceSourceRef.current = null
       return undefined
@@ -1362,19 +1652,24 @@ export function Composer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     plusMenuOpen,
+    referenceDialogSource,
     referenceQuery,
     state.aiPanel.contextPickerOpen,
     state.aiPanel.contextPickerSource,
   ])
-  React.useEffect(() => {
-    if (!atRoot || !state.aiPanel.contextPickerOpen || plusMenuOpen) return
-    act.closeAiContextPicker()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [atRoot, plusMenuOpen, state.aiPanel.contextPickerOpen])
   const skillPickerOpen =
-    !nonConversationSurfaceOpen &&
-    state.accountSettingsPage === null &&
-    ((plusMenuOpen && skillPanelOpen) || (atActive && atSkill))
+    state.accountSettingsPage === null && plusMenuOpen && (skillPanelOpen || menuEntry === 'skills')
+  React.useEffect(() => {
+    if (!skillPickerOpen) return
+    const frame = window.requestAnimationFrame(() => {
+      const first = skillPanelRef.current?.querySelector<HTMLButtonElement>(
+        '[data-composer-skill-option]'
+      )
+      ;(first ?? skillSearchRef.current)?.focus()
+      first?.scrollIntoView({ block: 'nearest' })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [skillPickerOpen, skillRowsLoading])
   // Composer stays mounted behind the skill library. Each picker opening must
   // observe installs/removals/activation changes, not its initial inventory.
   // Closing a picker invalidates its request so a slow response cannot replace
@@ -1405,118 +1700,8 @@ export function Composer({
   // 跳到任一非对话 surface 后把引用候选栏视为已取消；下一次真实输入会由 onChange 复位。
   React.useEffect(() => {
     if (!nonConversationSurfaceOpen) return
-    setDismissed(true)
     setModeOpen(false)
   }, [nonConversationSurfaceOpen])
-
-  // 面板打开时键盘事件必须先由当前层处理，即使二级数据仍在加载。
-  const candCount = atActive
-    ? atRoot
-      ? rootCandidates.length
-      : atSkill
-        ? skillCandidates.length
-        : atContext
-          ? contextCandidates.length
-          : 0
-    : 0
-  const sel = Math.min(selIdx, Math.max(0, candCount - 1))
-  const chooseSkill = (i: number): void => {
-    const skill = skillCandidates[i]
-    if (!atActive || skillRowsLoading || !skill) return
-    const dependenciesReady = !skill.dependency_status || skill.dependency_status === 'ready'
-    const enabled = skill.enabled !== false && skill.active !== false
-    if (!enabled || !dependenciesReady || !isAbsoluteInputPath(skill.path)) {
-      set({
-        foregroundError:
-          skill.unavailable_reason ||
-          (!isAbsoluteInputPath(skill.path)
-            ? feedback('components', 'composer.skillPath', { name: skill.name })
-            : !enabled
-              ? feedback('components', 'composer.skillDisabled', { name: skill.name })
-              : feedback('components', 'composer.skillDependencies', { name: skill.name })),
-      })
-      return
-    }
-    const skillPath = skill.path
-    setPendingRefs((items) =>
-      items.some((item) => item.type === 'skill' && item.id === skill.name)
-        ? items
-        : [
-            ...items,
-            {
-              type: 'skill',
-              id: skill.name,
-              title: skillName(skill),
-              path: skillPath,
-              version: skill.version,
-            },
-          ]
-    )
-    clearAtTrigger()
-    setDismissed(true)
-    setSelIdx(0)
-    window.requestAnimationFrame(() => composerInputRef.current?.focus())
-  }
-  const chooseContext = (i: number): void => {
-    const candidate: AssistantContextCandidate | undefined = contextCandidates[i]
-    if (!atActive || !candidate || candidate.unavailable_reason) return
-    if (atResourceContext && candidate.kind === 'dir') {
-      replaceAtTrigger(
-        `@${RESOURCE_CONTEXT_KIND}:${resourceContextTriggerPath(candidate.source_id)}/`
-      )
-      setSelIdx(0)
-      return
-    }
-    void act.addContext(candidate).then((result) => {
-      if (result.rejected.length > 0) {
-        set({
-          foregroundError: result.rejected[0]?.message
-            ? contextFailureFeedback(result.rejected[0].message)
-            : feedback('components', 'composer.contextFailed'),
-        })
-        return
-      }
-      clearAtTrigger()
-      act.closeAiContextPicker()
-      setDismissed(true)
-      setSelIdx(0)
-      window.requestAnimationFrame(() => composerInputRef.current?.focus())
-    })
-  }
-  const chooseAt = (i: number): void => {
-    if (atRoot) {
-      const row = rootCandidates[i]
-      if (!row) return
-      if (row.kind === AT_LOCAL_FILE_KIND) {
-        clearAtTrigger()
-        setDismissed(true)
-        setSelIdx(0)
-        void pickLocalSources(
-          unifiedLocalPicker ? IMPORT_PICKER_TARGET.RESOURCE : IMPORT_PICKER_TARGET.FILE
-        )
-        return
-      }
-      if (row.kind === AT_LOCAL_DIRECTORY_KIND) {
-        clearAtTrigger()
-        setDismissed(true)
-        setSelIdx(0)
-        void pickLocalSources(IMPORT_PICKER_TARGET.DIRECTORY)
-        return
-      }
-      replaceAtTrigger(`@${row.kind}:`)
-      setSelIdx(0)
-      return
-    }
-    if (atSkill) chooseSkill(i)
-    if (atContext) chooseContext(i)
-  }
-
-  // 长列表键盘导航: 选中项滚动跟随。
-  React.useEffect(() => {
-    document
-      .querySelector('[data-testid="composer-at-panel"] [data-atsel="1"]')
-      ?.scrollIntoView({ block: 'nearest' })
-  }, [selIdx])
 
   const submitOnce = async (
     message: string,
@@ -1526,10 +1711,13 @@ export function Composer({
     // Fail closed at the action boundary as well as through disabled UI.  This
     // also covers Enter and the desktop driver during a live/authorization turn.
     if (
+      confirmation.pending ||
+      (running && (followUp.loading || followUp.saving || followUp.error)) ||
       thread.readOnly ||
       state.turnLaunch ||
       getSnapshot().modelSelectionPending > 0 ||
       getSnapshot().modelSelectionGeneration !== state.modelSelectionGeneration ||
+      Boolean(sidNow && modelSelectionBlocked(getSnapshot().serviceInstanceId, sidNow)) ||
       interrupting ||
       creditBlocked ||
       !modelAvailable ||
@@ -1538,6 +1726,9 @@ export function Composer({
     )
       return false
     const v = message.trim()
+    const submittedFollowUpMode: FollowUpMode =
+      running && thread.activeTurnId ? followUp.mode : 'queue'
+    const submittedExpectedTurnId = thread.activeTurnId ?? undefined
     if (!composerHasContent(v, references, pendingContextRefs)) return false
     const submittedDraftRevision = composerDraft.getRevision()
     const submittedReferenceSet = new Set(references)
@@ -1558,6 +1749,77 @@ export function Composer({
     }
     const activeThreadId = state.activeSession
     const sid = activeThread(state).sessionId
+    const pendingQuestions = pendingQuestionItems(thread.conversation)
+    if (sid && pendingQuestions.length) {
+      const focus = state.aiPanel.messageFocus
+      const target = directQuestionTarget(
+        thread.conversation,
+        focus?.sessionId === sid ? focus.requestId : null
+      )
+      if (
+        !target ||
+        interactionPolicies.some(
+          (policy) => policy.directDecision && policy.matches(target.questions ?? [])
+        ) ||
+        references.length
+      ) {
+        set({ foregroundError: feedback('conversation', 'clarification.useCard') })
+        return false
+      }
+      const question = target.questions?.[0]
+      const key = question && (question.id || question.header || question.question)
+      patchThread(activeThreadId, (current) => ({
+        conversation: current.conversation.map((item) =>
+          item.kind === 'hil' && item.requestId === target.requestId
+            ? { ...item, hilState: 'submitting' }
+            : item
+        ),
+      }))
+      const response = await respondHil(
+        sid,
+        target.requestId,
+        {
+          free_text: v,
+          ...(key ? { answers: { [key]: v } } : {}),
+        },
+        hasHostQuestions(target.questions)
+      )
+      patchThread(activeThreadId, (current) =>
+        !response.ok &&
+        current.conversation.some(
+          (item) =>
+            item.kind === 'hil' && item.requestId === target.requestId && isTerminalHil(item)
+        )
+          ? {}
+          : {
+              conversation: resolveHilItem(
+                current.conversation,
+                target.requestId,
+                response.ok
+                  ? {
+                      ...hilEventResolution(undefined, 'resolved'),
+                      hilState: 'resolved',
+                      answers: response.interaction?.answers ?? {},
+                      freeText: response.interaction?.free_text || v,
+                    }
+                  : response.outcome
+                    ? {
+                        hilState: response.outcome,
+                        ...hilSubmissionFailure(
+                          response.outcome === 'unknown' ? 'outcomeUnknown' : 'answerUnconfirmed'
+                        ),
+                      }
+                    : {
+                        hilState: 'failed',
+                        ...hilSubmissionFailure('answerUnconfirmed', response.error),
+                      }
+              ),
+            }
+      )
+      if (response.ok && !preserveDraft)
+        composerDraft.set((current) => (current.trim() === v ? '' : current))
+      return response.ok
+    }
     const presentAsUserMessage = shouldOptimisticallyPresentUserMessage(
       Boolean(activeThread(state).running),
       activeThread(state).queuedMessages ?? []
@@ -1672,6 +1934,11 @@ export function Composer({
         current.draftGeneration === state.draftGeneration &&
         current.modelSelectionGeneration === state.modelSelectionGeneration &&
         current.modelSelectionPending === 0 &&
+        !(
+          sessionId &&
+          current.threads[sessionId]?.sessionId &&
+          modelSelectionBlocked(current.serviceInstanceId, current.threads[sessionId].sessionId!)
+        ) &&
         (!exactDraftModelId ||
           current.catalog.models.some(
             (model) => model.key === exactDraftModelId && !model.disabled
@@ -1702,7 +1969,17 @@ export function Composer({
       const controller = new AbortController()
       preparationController = controller
       preparationWait.current = controller
-      set({ turnLaunch: { phase: 'preparing', optimisticUserMessage } })
+      if (presentAsUserMessage && activeThreadId) {
+        patchThread(activeThreadId, (current) => ({
+          conversation: appendOptimisticUserMessage(current.conversation, optimisticUserMessage),
+        }))
+      }
+      set((current) => ({
+        turnLaunch: { phase: 'preparing', optimisticUserMessage },
+        ...(isRuntimePreparationBusyFeedback(current.foregroundError)
+          ? { foregroundError: null }
+          : {}),
+      }))
       try {
         const prepared = await waitForPreparation(prepareModel(selectedModelKey), controller.signal)
         const current = getSnapshot()
@@ -1729,18 +2006,26 @@ export function Composer({
         )
           return false
         if (prepared.state !== 'applied') {
-          set({ foregroundError: feedback('components', 'runtimePreparation.failed') })
+          const failure = runtimePreparationForegroundFailure(prepared)
+          if (failure) set({ foregroundError: failure })
           return false
         }
         preparationInstanceId = prepared.service_instance_id
+        if (sid && activeThreadId && current.threads[activeThreadId]?.resumeState === 'failed')
+          requestSessionResume(sid)
       } catch (error) {
         if (!(error instanceof Error) || error.message !== PREPARATION_SUPERSEDED_ERROR) {
-          set({ foregroundError: feedback('components', 'runtimePreparation.failed') })
+          set({ foregroundError: runtimePreparationRequestFailure(error) })
         }
         return false
       } finally {
         if (!preparationInstanceId && preparationWait.current === controller)
           preparationWait.current = null
+        if (!preparationInstanceId && presentAsUserMessage && activeThreadId) {
+          patchThread(activeThreadId, (current) => ({
+            conversation: removeOptimisticUserMessage(current.conversation, clientUserMessageId),
+          }))
+        }
         set((current) =>
           current.turnLaunch?.optimisticUserMessage.itemId === clientUserMessageId &&
           current.turnLaunch.phase === 'preparing'
@@ -1754,11 +2039,6 @@ export function Composer({
         ...(sid ? { composerTaskType: '' } : {}),
         turnLaunch: { phase: 'admitting', optimisticUserMessage },
       })
-      if (activeThreadId) {
-        patchThread(activeThreadId, (current) => ({
-          conversation: appendOptimisticUserMessage(current.conversation, optimisticUserMessage),
-        }))
-      }
     }
     let targetSessionId = sid
     let targetThreadId = activeThreadId
@@ -1783,9 +2063,10 @@ export function Composer({
       if (!opened?.session_id || opened.runtime_id !== 'codex' || !opened.readiness.ready) {
         const failure =
           opened && 'error' in opened
-            ? opened.applicationFailure
-              ? requestFailureFeedback(opened.applicationFailure)
-              : opened.error || opened.detail
+            ? (runtimePreparationBusyFeedback(opened.code) ??
+              (opened.applicationFailure
+                ? requestFailureFeedback(opened.applicationFailure)
+                : opened.error || opened.detail))
             : opened && 'readiness' in opened
               ? opened.readiness.message
               : feedback('components', 'composer.createFailed')
@@ -1872,7 +2153,22 @@ export function Composer({
           : {}
       )
     }
-    let submittedReferences = references
+    const submittedReferences = await Promise.all(
+      references.map(async (reference): Promise<ComposerReference | null> => {
+        if (reference.type === 'skill' || !reference.localSource) return reference
+        const { refs, failed } = await resolveAttachmentSources(targetSessionId, [
+          { path: reference.path, file: reference.localSource.file },
+        ])
+        return failed ? null : (refs[0] ?? null)
+      })
+    )
+    if (submittedReferences.some((reference) => reference === null)) {
+      if (presentAsUserMessage) rollbackImmediatePresentation()
+      else restoreDraft()
+      set({ foregroundError: feedback('components', 'composer.filesFailed') })
+      return false
+    }
+    let resolvedReferences = submittedReferences.filter((reference) => reference !== null)
     const registrations = references.filter(
       (reference) =>
         (reference.type === 'file' || reference.type === 'directory') &&
@@ -1895,7 +2191,7 @@ export function Composer({
         set({ foregroundError: feedback('components', 'composer.filesFailed') })
         return false
       }
-      submittedReferences = references.map((reference) => {
+      resolvedReferences = resolvedReferences.map((reference) => {
         if (
           (reference.type !== 'file' && reference.type !== 'directory') ||
           !reference.registrationRequired
@@ -1921,7 +2217,7 @@ export function Composer({
     }
     let input: TurnInputItem[]
     try {
-      input = buildTurnInput(v, submittedReferences)
+      input = buildTurnInput(v, resolvedReferences)
     } catch (error) {
       if (presentAsUserMessage) rollbackImmediatePresentation()
       else restoreDraft()
@@ -2011,9 +2307,15 @@ export function Composer({
       ...targetAdmission,
       expectedModelId: selectedModelKey,
       serviceInstanceId: preparationInstanceId,
+      followUpMode: submittedFollowUpMode,
+      expectedTurnId: submittedExpectedTurnId,
     })
     if (!isComposerSubmissionAccepted(delivered)) {
-      if (delivered?.preparation_error) {
+      if (
+        delivered &&
+        (delivered.code === MODEL_SELECTION_UNCONFIRMED ||
+          isComposerSubmissionRejectedBeforeEnqueue(delivered))
+      ) {
         releaseQueuedOutbox(targetSessionId, clientUserMessageId)
         patchThread(targetThreadId, (current) => ({
           queuedMessages: (current.queuedMessages ?? []).filter(
@@ -2024,7 +2326,14 @@ export function Composer({
         restoreDraft()
         set({
           turnLaunch: null,
-          foregroundError: feedback('components', 'runtimePreparation.failed'),
+          foregroundError: delivered.preparation_error
+            ? runtimePreparationFailure({
+                state: delivered.preparation_state ?? 'rejected',
+                error: typeof delivered.error === 'string' ? delivered.error : '',
+              })
+            : delivered.code === MODEL_SELECTION_UNCONFIRMED
+              ? feedback('components', 'composer.notSubmitted')
+              : turnAdmissionFeedback(delivered),
         })
         return false
       }
@@ -2110,6 +2419,33 @@ export function Composer({
     preserveDraft = false
   ): Promise<boolean> => {
     if (submissionInFlight.current) return Promise.resolve(false)
+    if (editing) {
+      if (!text.trim()) return Promise.resolve(false)
+      const target = editing
+      submissionInFlight.current = true
+      setSubmittingMessage(true)
+      setQueueEditError(false)
+      return updateQueuedMessage(target.sessionId, target.message.queuedMessageId, text)
+        .then((updated) => {
+          if (!updated) {
+            setQueueEditError(true)
+            return false
+          }
+          patchThread(target.sessionId, (current) => ({
+            queuedMessages: (current.queuedMessages ?? []).map((item) =>
+              item.queuedMessageId === updated.queued_message_id
+                ? queuedMessageFromPayload(updated)
+                : item
+            ),
+          }))
+          setQueueEdit((current) => (current === target ? null : current))
+          return true
+        })
+        .finally(() => {
+          submissionInFlight.current = false
+          setSubmittingMessage(false)
+        })
+    }
     submissionInFlight.current = true
     setSubmittingMessage(true)
     return submitOnce(message, references, preserveDraft).finally(() => {
@@ -2121,6 +2457,7 @@ export function Composer({
 
   const draftSubmissionConsumed = React.useRef(false)
   React.useEffect(() => {
+    if (editing) return
     if (!state.composerSubmitRequested) {
       draftSubmissionConsumed.current = false
       return
@@ -2141,29 +2478,48 @@ export function Composer({
   })
 
   const composerKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>): void => {
-    if (atActive) {
-      if (event.key === 'ArrowDown') {
+    if (
+      !editing &&
+      !thread.readOnly &&
+      !event.nativeEvent.isComposing &&
+      event.key === 'Backspace' &&
+      event.currentTarget.selectionStart === 0 &&
+      event.currentTarget.selectionEnd === 0
+    ) {
+      if (pendingRefs.length > 0) {
         event.preventDefault()
-        if (candCount) setSelIdx((index) => (index + 1) % candCount)
+        setPendingRefs((items) => items.slice(0, -1))
         return
       }
-      if (event.key === 'ArrowUp') {
+      const reference = pendingContextRefs.at(-1)
+      if (reference) {
         event.preventDefault()
-        if (candCount) setSelIdx((index) => (index - 1 + candCount) % candCount)
-        return
-      }
-      if (event.key === 'Enter' || event.key === 'Tab') {
-        event.preventDefault()
-        event.stopPropagation()
-        if (candCount) chooseAt(sel)
-        return
-      }
-      if (event.key === 'Escape') {
-        event.preventDefault()
-        setDismissed(true)
+        void act.detachAiContext(reference.ref_id)
         return
       }
     }
+    if (
+      !editing &&
+      event.key === 'Enter' &&
+      !event.shiftKey &&
+      !contextReady &&
+      pendingQuestionItems(thread.conversation).length === 0
+    ) {
+      event.preventDefault()
+      return
+    }
+    if (editing) {
+      if (event.key === 'Escape' && !submittingMessage) {
+        event.preventDefault()
+        setQueueEdit(null)
+        setQueueEditError(false)
+      } else if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault()
+        void submit()
+      }
+      return
+    }
+
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
       void submit()
@@ -2181,9 +2537,48 @@ export function Composer({
   )
   const handleComposerChange = React.useCallback(() => {
     syncComposerSelection()
-    setSelIdx(0)
-    setDismissed(false)
-  }, [syncComposerSelection])
+    if (editing || !composerDraft.getSnapshot().trim()) return
+    const sid = thread.sessionId
+    const target = directQuestionTarget(
+      thread.conversation,
+      state.aiPanel.messageFocus?.sessionId === sid ? state.aiPanel.messageFocus.requestId : null
+    )
+    if (
+      !sid ||
+      !target?.cancelTimeoutOnEdit ||
+      target.timeoutCancelled ||
+      editingHilRequest.current === target.requestId
+    )
+      return
+    const threadId = state.activeSession
+    editingHilRequest.current = target.requestId
+    void respondHil(sid, target.requestId, { editing: true }, hasHostQuestions(target.questions))
+      .then((response) => {
+        if (response.ok && response.interaction?.timeout_cancelled) {
+          patchThread(threadId, (current) => ({
+            conversation: current.conversation.map((item) =>
+              item.kind === 'hil' && item.requestId === target.requestId
+                ? { ...item, timeoutCancelled: true }
+                : item
+            ),
+          }))
+        } else {
+          set({ foregroundError: feedback('conversation', 'clarification.editingFailed') })
+        }
+      })
+      .finally(() => {
+        editingHilRequest.current = null
+      })
+  }, [
+    syncComposerSelection,
+    editing,
+    composerDraft,
+    thread,
+    state.aiPanel.messageFocus,
+    state.activeSession,
+    patchThread,
+    set,
+  ])
 
   React.useEffect(() => {
     window.__scholarseedSubmitMessage = (message: string) => submit(message, [])
@@ -2211,16 +2606,14 @@ export function Composer({
       }
       if (!result.ok) {
         patchThread(threadId, { interrupting: false })
+        const displayMessage = stopFailureFeedback(
+          result.error,
+          result.applicationFailure && requestFailureFeedback(result.applicationFailure)
+        )
         appendThread(threadId, {
           kind: 'notice',
-          displayMessage: feedback('components', 'composer.stopFailed', {
-            error: result.applicationFailure
-              ? requestFailureFeedback(result.applicationFailure)
-              : (result.error ?? feedback('components', 'composer.unknownError')),
-          }),
-          text: t('composer.stopFailed', {
-            error: result.error ?? t('composer.unknownError'),
-          }),
+          displayMessage,
+          text: renderFeedback(i18n, displayMessage),
         })
       }
     })
@@ -2233,6 +2626,46 @@ export function Composer({
       queuedMessages: mergeQueuedOutbox(sessionId, authoritative.map(queuedMessageFromPayload)),
     })
     return true
+  }
+
+  const steerQueued = async (message: QueuedMessage): Promise<void> => {
+    const targetTurnId = thread.activeTurnId
+    if (
+      !sidNow ||
+      !targetTurnId ||
+      queuedActionId ||
+      modelSelectionBlocked(getSnapshot().serviceInstanceId, sidNow)
+    )
+      return
+    const sessionId = sidNow
+    setQueuedActionId(message.queuedMessageId)
+    try {
+      const result = await postSide(
+        sessionId,
+        message.queuedMessageId,
+        targetTurnId,
+        getSnapshot().serviceInstanceId
+      )
+      await refreshQueuedMessages(sessionId)
+      if (!result?.ok) {
+        set({
+          foregroundError: feedback(
+            'components',
+            result?.unknownOutcome ? 'composer.queueUnknown' : 'composer.steerFailed'
+          ),
+        })
+      }
+    } finally {
+      setQueuedActionId(null)
+    }
+  }
+
+  const editQueued = (message: QueuedMessage): void => {
+    if (!sidNow || editing || !canEditQueuedMessage(message)) return
+    setQueueEditError(false)
+    setQueueEdit({ sessionId: sidNow, message, draft: createComposerDraftStore(message.text) })
+    pendingCaretRef.current = message.text.length
+    setPlusMenuOpen(false)
   }
 
   const resolveNotSendable = async (sessionId: string, queuedMessageId: string): Promise<void> => {
@@ -2324,11 +2757,23 @@ export function Composer({
 
   const sendQueued = async (queuedMessageId: string): Promise<void> => {
     const sessionId = sidNow ?? ''
-    if (!sessionId || queuedActionId || creditBlocked) return
+    if (
+      !sessionId ||
+      queuedActionId ||
+      creditBlocked ||
+      modelSelectionBlocked(getSnapshot().serviceInstanceId, sessionId)
+    )
+      return
     const queued = (activeThread(state).queuedMessages ?? []).find(
       (message) => message.queuedMessageId === queuedMessageId
     )
-    if (!queued || queued.state !== 'failed' || !recoveryAvailable) return
+    if (
+      !queued ||
+      queued.state !== 'failed' ||
+      queuedMessageNeedsStatusCheck(queued) ||
+      !recoveryAvailable
+    )
+      return
     setQueuedActionId(queuedMessageId)
     if (queued.serverPresent === false) {
       const result = await postTurn(sessionId, queued.input, state.collaborationMode, {
@@ -2336,6 +2781,7 @@ export function Composer({
         assistantContextRevision: queued.assistantContextRevision,
         activeDocument: queued.activeDocument,
         selectedLiteratureIds: queued.selectedLiteratureIds,
+        serviceInstanceId: getSnapshot().serviceInstanceId ?? undefined,
       })
       if (!isComposerSubmissionAccepted(result)) {
         set({ foregroundError: feedback('components', 'composer.resendFailed') })
@@ -2344,7 +2790,11 @@ export function Composer({
       }
       releaseQueuedOutbox(sessionId, queuedMessageId)
     } else {
-      const result = await sendQueuedMessage(sessionId, queuedMessageId)
+      const result = await sendQueuedMessage(
+        sessionId,
+        queuedMessageId,
+        getSnapshot().serviceInstanceId
+      )
       if (!result?.ok) {
         if (isQueuedMessageNotSendable(result?.error)) {
           await resolveNotSendable(sessionId, queuedMessageId)
@@ -2418,14 +2868,26 @@ export function Composer({
         ),
       }))
     } else {
+      const localMessage = (activeThread(state).queuedMessages ?? []).find(
+        (message) => message.queuedMessageId === queuedMessageId
+      )
+      const reconciled = result.message
+        ? queuedMessageFromPayload(result.message)
+        : localMessage
+          ? {
+              ...localMessage,
+              ...(result.reason === QUEUED_MESSAGE_SAFE_ERRORS.SESSION_OPEN_UNKNOWN
+                ? { retryBlockedErrorCode: result.reason }
+                : {
+                    safeErrorCode:
+                      result.reason || QUEUED_MESSAGE_SAFE_ERRORS.TURN_OUTCOME_UNCONFIRMED,
+                  }),
+            }
+          : null
+      if (reconciled?.serverPresent === false) retainQueuedOutbox(sessionId, reconciled)
       patchThread(sessionId, (thread) => ({
         queuedMessages: (thread.queuedMessages ?? []).map((message) =>
-          message.queuedMessageId === queuedMessageId
-            ? {
-                ...message,
-                safeErrorCode: result.reason || QUEUED_MESSAGE_SAFE_ERRORS.TURN_OUTCOME_UNCONFIRMED,
-              }
-            : message
+          message.queuedMessageId === queuedMessageId && reconciled ? reconciled : message
         ),
       }))
     }
@@ -2436,7 +2898,7 @@ export function Composer({
 
   const confirmQueuedUnknown = async (queued: QueuedMessage): Promise<void> => {
     const sessionId = sidNow ?? ''
-    if (!sessionId || queuedActionId) return
+    if (!sessionId || queuedActionId || queuedMessageHasUnknownOpen(queued)) return
     setQueuedActionId(queued.queuedMessageId)
     try {
       const error = await confirmQueuedOutcome({
@@ -2464,6 +2926,8 @@ export function Composer({
   }
 
   const continueDisabled =
+    confirmation.pending ||
+    Boolean(editing) ||
     thread.readOnly ||
     canStop ||
     launching ||
@@ -2473,6 +2937,7 @@ export function Composer({
     creditBlocked ||
     Boolean(thread.terminated) ||
     Boolean(thread.recoveryPending) ||
+    selectionBlocked ||
     queuedMessages.length > 0
 
   // Suggested follow-ups are ordinary new messages, only after the current turn ends.
@@ -2498,6 +2963,235 @@ export function Composer({
     [composerSubmission, thread.sessionId, nextTurnDisabled]
   )
 
+  const selectFirstMenuItem = (event: React.KeyboardEvent<HTMLDivElement>): void => {
+    if (event.key !== 'Enter' || !(event.target instanceof HTMLInputElement)) return
+    const first = event.currentTarget.querySelector<HTMLButtonElement>(
+      '[role="menuitem"]:not(:disabled)'
+    )
+    if (!first) return
+    event.preventDefault()
+    event.stopPropagation()
+    first.click()
+  }
+  const skillMenuContent = (
+    <div
+      ref={skillPanelRef}
+      className={skillPanelClass}
+      onKeyDown={(event) => {
+        if (
+          event.target instanceof Element &&
+          Boolean(event.target.closest('[data-composer-skill-option]')) &&
+          !event.metaKey &&
+          !event.ctrlKey &&
+          !event.altKey &&
+          ((event.key.length === 1 && event.key !== ' ') || event.key === 'Backspace')
+        ) {
+          event.preventDefault()
+          event.stopPropagation()
+          setSkillQuery((current) =>
+            event.key === 'Backspace' ? current.slice(0, -1) : current + event.key
+          )
+          setSkillVisibleCount(PLUS_MENU_PAGE_SIZE)
+          skillSearchRef.current?.focus()
+          return
+        }
+        if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+        if (
+          (event.key === 'Home' || event.key === 'End') &&
+          event.target instanceof HTMLInputElement
+        )
+          return
+        const rows = [
+          ...event.currentTarget.querySelectorAll<HTMLButtonElement>(
+            '[data-composer-skill-option]'
+          ),
+        ]
+        if (!rows.length) return
+        event.preventDefault()
+        event.stopPropagation()
+        const current = rows.indexOf(document.activeElement as HTMLButtonElement)
+        const index =
+          event.key === 'Home'
+            ? 0
+            : event.key === 'End'
+              ? rows.length - 1
+              : event.key === 'ArrowDown'
+                ? (current + 1) % rows.length
+                : (current - 1 + rows.length) % rows.length
+        rows[index].focus()
+        rows[index].scrollIntoView({ block: 'nearest' })
+      }}
+    >
+      <div className={skillPanelHeadClass}>
+        <div className="relative">
+          <SearchBox
+            ref={skillSearchRef}
+            value={skillQuery}
+            onChange={(event) => {
+              setSkillQuery(event.target.value)
+              setSkillVisibleCount(PLUS_MENU_PAGE_SIZE)
+            }}
+            placeholder={t('composer.searchSkills')}
+            aria-label={t('composer.searchSkillsLabel')}
+            size="sm"
+          />
+          {skillQuery && (
+            <IconButton
+              className="absolute right-[var(--vds-space-1)] top-1/2 -translate-y-1/2"
+              icon={<X size={13} />}
+              label={t('composer.clearSearch')}
+              onClick={() => {
+                setSkillQuery('')
+                setSkillVisibleCount(PLUS_MENU_PAGE_SIZE)
+              }}
+              size="xs"
+              variant="ghost"
+            />
+          )}
+        </div>
+      </div>
+      <div className="min-h-0 overflow-y-auto overscroll-contain" data-testid="composer-skill-list">
+        {skillRowsLoading || skillRows === null ? (
+          <p className="m-[var(--vds-space-0)] px-[var(--vds-space-3)] py-[var(--vds-space-3)] text-[length:var(--vds-font-body-lv2)] text-[var(--text-3)]">
+            {t('composer.loadSkills')}
+          </p>
+        ) : (
+          (() => {
+            const q = skillQuery.trim().toLowerCase()
+            const language = i18n.resolvedLanguage || i18n.language
+            const rows = skillRows
+              .filter(
+                (s): s is SkillInfo & { path: string } =>
+                  s.enabled !== false &&
+                  s.active !== false &&
+                  (!s.dependency_status || s.dependency_status === 'ready') &&
+                  isAbsoluteInputPath(s.path)
+              )
+              .filter(
+                (s) =>
+                  !q ||
+                  s.name.toLowerCase().includes(q) ||
+                  skillName(s, language).toLowerCase().includes(q) ||
+                  skillDescription(s, language).toLowerCase().includes(q)
+              )
+            if (!rows.length) {
+              return (
+                <EmptyState
+                  variant="compact"
+                  icon={<Icon name="search" />}
+                  title={t('composer.emptySkills')}
+                />
+              )
+            }
+            const visibleRows = rows.slice(0, skillVisibleCount)
+            return [
+              ...visibleRows.map((s) => {
+                const description = skillDescription(s, language)
+                return (
+                  <Tooltip
+                    key={s.name}
+                    className="!w-full"
+                    content={description}
+                    disabled={!description}
+                    portalled
+                    side="right"
+                  >
+                    <span className="block w-full">
+                      <Button
+                        type="button"
+                        data-testid={`composer-skill-${s.name}`}
+                        data-composer-skill-option
+                        role="menuitem"
+                        variant="ghost"
+                        size="content"
+                        unstyled
+                        className={`block ${skillMenuRowClass}`}
+                        onClick={() => {
+                          setPendingRefs((prev) =>
+                            prev.some((r) => r.type === 'skill' && r.id === s.name)
+                              ? prev
+                              : [
+                                  ...prev,
+                                  {
+                                    type: 'skill',
+                                    id: s.name,
+                                    title: skillName(s, language),
+                                    path: s.path,
+                                    version: s.version,
+                                  },
+                                ]
+                          )
+                          clearAtTrigger()
+                          setSkillPanelOpen(false)
+                          setPlusMenuOpen(false)
+                          setSkillQuery('')
+                          restoreComposerFocus()
+                        }}
+                      >
+                        <span className="flex min-w-0 items-center justify-between gap-[var(--vds-space-2)]">
+                          <span className="min-w-0 truncate text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] text-[var(--vds-text-primary)]">
+                            {skillName(s, language)}
+                          </span>
+                          {s.category ? (
+                            <span className="flex-none whitespace-nowrap rounded-[var(--vds-radius-2)] bg-[var(--bg-3)] px-[var(--vds-space-2)] py-[var(--vds-space-half)] text-[length:var(--vds-font-caption)] text-[var(--text-3)]">
+                              {skillCategory(s, skillText)}
+                            </span>
+                          ) : null}
+                        </span>
+                      </Button>
+                    </span>
+                  </Tooltip>
+                )
+              }),
+              rows.length > visibleRows.length ? (
+                <Button
+                  type="button"
+                  key="composer-skill-more"
+                  data-testid="composer-skill-more"
+                  variant="ghost"
+                  size="content"
+                  unstyled
+                  className="flex w-full items-center justify-center border-0 px-[var(--vds-space-3)] py-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv2)] text-[var(--text-3)] hover:bg-[var(--vds-bg-white-hover-transparent)] hover:text-[var(--text)]"
+                  onClick={() => setSkillVisibleCount((count) => count + PLUS_MENU_PAGE_SIZE)}
+                >
+                  {t('composer.viewMore')} ({rows.length - visibleRows.length})
+                </Button>
+              ) : null,
+            ]
+          })()
+        )}
+      </div>
+      <div className="shrink-0 border-t border-[var(--border-soft)] bg-[var(--bg-2)] p-[calc(var(--vds-space-1)+var(--vds-border-width-1))] [&_button]:!font-[var(--vds-fw-regular)]">
+        <Button
+          data-testid="composer-skill-upload"
+          variant="ghost"
+          size="content"
+          unstyled
+          className={`flex items-center justify-start gap-[var(--vds-space-2)] ${skillMenuRowClass}`}
+          icon={<Upload aria-hidden className="size-[var(--vds-icon-7)]" />}
+          onClick={() => {
+            clearAtTrigger()
+            setSkillPanelOpen(false)
+            setPlusMenuOpen(false)
+            set({ skillUploadOpen: true })
+          }}
+        >
+          {t('composer.uploadSkill')}
+        </Button>
+        <Button
+          data-testid="composer-skill-market"
+          variant="ghost"
+          size="content"
+          unstyled
+          className={`flex items-center justify-start gap-[var(--vds-space-2)] ${skillMenuRowClass}`}
+          icon={<Hammer aria-hidden className="size-[var(--vds-icon-7)]" />}
+          onClick={openSkillCenter}
+        >
+          {t('composer.skillMarket')}
+        </Button>
+      </div>
+    </div>
+  )
   return (
     <>
       {header?.({
@@ -2507,14 +3201,19 @@ export function Composer({
             : submit(t('stream.continueTaskPrompt'), [], true),
         continueDisabled: continueDisabled || hasCurrentTurnCapabilityFailure(thread),
       })}
+      {notice}
       <div
-        className={`relative z-20 isolate flex-none border-t-0 bg-transparent ${inline ? 'p-0' : composerRootPaddingClass(home, surface)}`}
+        className={cx(
+          'relative z-20 isolate flex-none border-t-0 bg-transparent',
+          inline ? 'p-0' : composerRootPaddingClass(home, surface),
+          confirmation.pending && '!pt-[var(--vds-space-2)]'
+        )}
       >
         <LoginPrompt open={loginPromptOpen} onOpenChange={setLoginPromptOpen} />
         <div
           ref={inputBoxRef}
           data-ob={state.homeSelectedProjectId ? PROJECT_GUIDE_ANCHORS.composer : undefined}
-          className={readingColumnClass(home, inline)}
+          className={cx(readingColumnClass(home, inline), 'pointer-events-auto')}
         >
           {/* Live Status Strip (proposal 65 v10): 真实 live 态 (运行 / 记忆命中 / 约束 / 成本) */}
           <StatusStrip />
@@ -2527,10 +3226,9 @@ export function Composer({
               className="mb-[var(--vds-space-3)]"
               data-testid="runtime-preparation"
               tone="error"
-              description={t(
-                state.runtimePreparation.state === 'restart_required'
-                  ? 'runtimeSwitch.restartRequired'
-                  : 'runtimePreparation.failed'
+              description={renderFeedback(
+                i18n,
+                runtimePreparationFailure(state.runtimePreparation)
               )}
             />
           ) : null}
@@ -2551,75 +3249,60 @@ export function Composer({
           ) : null}
 
           {creditBlocked && (
-            <Card
-              className="@container mb-[var(--vds-space-3)] flex flex-wrap items-center gap-x-[var(--vds-space-3)] gap-y-[var(--vds-space-2)] !rounded-[var(--vds-radius-6)] px-[var(--vds-space-4)] py-[var(--vds-space-3)] shadow-[var(--vds-shadow-1-center)]"
+            <div
+              className="mb-[var(--vds-space-3)]"
               data-testid="composer-credits-exhausted"
               id={CREDITS_EXHAUSTED_NOTICE_ID}
-              padding="none"
               role="alert"
             >
-              <span
-                className="grid size-8 flex-none place-items-center rounded-[var(--vds-radius-circle)] bg-[var(--vds-surface-muted)] text-[var(--vds-text-secondary)]"
-                aria-hidden="true"
-              >
-                <Gauge size={16} />
-              </span>
-              <span className="grid min-w-0 flex-1 gap-[var(--vds-space-1)]">
-                <strong className="text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-semibold)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-primary)]">
-                  {t('composer.creditsExhaustedTitle')}
-                </strong>
-                <span className="text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-secondary)]">
-                  {t('composer.creditsExhaustedDescription')}
-                </span>
-              </span>
-              <Button
-                className="flex-none rounded-[var(--vds-radius-pill)] @max-[20rem]:basis-full"
-                data-testid="composer-credits-more"
-                onClick={() => void openCreditsPage()}
-                size="md"
-                variant="primary"
-              >
-                {t('composer.creditsMore')}
-              </Button>
-            </Card>
-          )}
-
-          {!modelAvailable && showModelHint && (
-            <div className={NO_MODEL_HINT_CLASS} data-testid="composer-no-model-hint">
-              <span
-                className="size-[var(--vds-space-1)] flex-none rounded-full bg-[var(--vds-warning-bg-default)]"
-                aria-hidden="true"
+              <ConfirmationCard
+                icon={<Database strokeWidth={1.5} className="size-[var(--vds-icon-8)]" />}
+                title={t('composer.creditsExhaustedTitle')}
+                description={t('composer.creditsExhaustedDescription')}
+                allowLabel={t('composer.creditsMore')}
+                allowAttributes={{ 'data-testid': 'composer-credits-more' }}
+                onAllow={() => void openCreditsPage()}
               />
-              <span>{t('composer.noModelLead')}</span>
-              <Button
-                type="button"
-                size="content"
-                unstyled
-                className={NO_MODEL_HINT_LINK_CLASS}
-                data-testid="composer-no-model-configure"
-                onClick={() => act.openSettings('models')}
-              >
-                {t('composer.noModelConfigure')}
-              </Button>
-              {!authenticated && (
-                <>
-                  <span>{t('composer.noModelOr')}</span>
-                  <Button
-                    type="button"
-                    size="content"
-                    unstyled
-                    className={NO_MODEL_HINT_LINK_CLASS}
-                    data-testid="composer-no-model-login"
-                    onClick={() => setLoginPromptOpen(true)}
-                  >
-                    {t('composer.noModelLogin')}
-                  </Button>
-                </>
-              )}
             </div>
           )}
 
-          {!selectedSkillsReady && (
+          {!modelAvailable && showModelHint && (
+            <div
+              role="status"
+              className="mb-[var(--vds-space-3)]"
+              data-testid="composer-no-model-hint"
+            >
+              <ConfirmationCard
+                icon={
+                  <LogIn className="size-[var(--vds-icon-8)] text-[var(--vds-text-secondary)]" />
+                }
+                title={t(
+                  authenticated ? 'composer.noModelAuthenticatedTitle' : 'composer.noModelTitle'
+                )}
+                description={t(
+                  authenticated
+                    ? 'composer.noModelAuthenticatedSendTitle'
+                    : 'composer.noModelDescription'
+                )}
+                allowLabel={t(
+                  authenticated ? 'composer.noModelConfigure' : 'composer.noModelLogin'
+                )}
+                allowAttributes={{
+                  'data-testid': authenticated
+                    ? 'composer-no-model-configure'
+                    : 'composer-no-model-login',
+                }}
+                onAllow={() =>
+                  authenticated ? act.openSettings('models') : setLoginPromptOpen(true)
+                }
+                denyLabel={authenticated ? undefined : t('composer.noModelConfigure')}
+                denyAttributes={{ 'data-testid': 'composer-no-model-configure' }}
+                onDeny={authenticated ? undefined : () => act.openSettings('models')}
+              />
+            </div>
+          )}
+
+          {!selectedSkillsReady && !selectedSkillsChecking && (
             <div
               role="status"
               className={NO_MODEL_HINT_CLASS}
@@ -2637,542 +3320,112 @@ export function Composer({
             </div>
           )}
           <div className={inline ? 'relative' : composerInputShellClass(surface)}>
-            {visibleQueuedMessages.length > 0 && (
-              <div className={queuedMessageClass} data-testid="composer-message-queue">
-                {visibleQueuedMessages.map((queued) => {
-                  const referenceSummary = queuedReferenceSummary(
-                    queued.input,
-                    queued.assistantReferences,
-                    assistantText
-                  )
-                  const expanded = expandedQueuedMessages.has(queued.queuedMessageId)
-                  const annotations = queued.assistantReferences.filter(
-                    (reference) => reference.kind === 'note'
-                  )
-                  const otherAssistantReferences = queued.assistantReferences.filter(
-                    (reference) => reference.kind !== 'note'
-                  )
-                  const typedReferences = queued.input.filter((item) => item.type !== 'text')
-                  const blockedByUnknown =
-                    queued.state === 'queued' && queueBlockedByUnconfirmed(visibleQueuedMessages)
-                  const showQueuedSendAction =
-                    (queued.state === 'failed' &&
-                      recoveryAvailable &&
-                      queued.purpose !== 'crash_recovery') ||
-                    queued.state === 'outcome_unknown'
-                  const actionDisabled =
-                    creditBlocked ||
-                    queuedActionId !== null ||
-                    (queued.state === 'failed' && !recoveryAvailable)
-                  const cancelAction = (
-                    <Button
-                      data-testid={`queued-delete-${queued.queuedMessageId}`}
-                      size="sm"
-                      variant="outline"
-                      disabled={queuedActionId !== null || !canCancelQueuedMessage(queued)}
-                      onClick={() => void retractQueuedMessage(queued.queuedMessageId)}
-                    >
-                      {t('composer.delete')}
-                    </Button>
-                  )
-                  const confirmUnknownAction = (
-                    <Button
-                      data-testid={`queued-confirm-${queued.queuedMessageId}`}
-                      size="sm"
-                      variant="primary"
-                      disabled={queuedActionId !== null}
-                      onClick={() => void confirmQueuedUnknown(queued)}
-                    >
-                      {queuedActionId === queued.queuedMessageId
-                        ? t('composer.confirmingOutcome')
-                        : t('composer.confirmContinue')}
-                    </Button>
-                  )
-                  return (
-                    <Collapsible
-                      key={queued.queuedMessageId}
-                      open={expanded}
-                      onOpenChange={(open) => {
-                        setExpandedQueuedMessages((current) => {
-                          const next = new Set(current)
-                          if (open) next.add(queued.queuedMessageId)
-                          else next.delete(queued.queuedMessageId)
-                          return next
-                        })
-                      }}
-                    >
-                      <div
-                        className={queuedMessageRowClass}
-                        data-testid={`queued-message-${queued.queuedMessageId}`}
-                      >
-                        <CollapsibleTrigger
-                          asChild
-                          className="!border-0 !bg-transparent !shadow-none"
-                        >
-                          <Button
-                            unstyled
-                            variant="ghost"
-                            className="min-w-0 flex-1 basis-1/2 text-left"
-                            data-testid={`queued-expand-${queued.queuedMessageId}`}
-                          >
-                            {/* CollapsibleTrigger 会把 inline-flex 合入按钮, 这里用内层栅格竖排标题与引用, 避免引用被挤成窄列裁成 "引" */}
-                            <span className="grid min-w-0 flex-1 gap-[var(--vds-space-1)]">
-                              <span className="block overflow-hidden text-ellipsis whitespace-nowrap text-[var(--text)]">
-                                {queued.purpose === 'crash_recovery'
-                                  ? t('stream.automaticRecovery')
-                                  : queued.text || t('composer.referenceMessage')}
-                              </span>
-                              {referenceSummary ? (
-                                <span
-                                  className="block overflow-hidden text-ellipsis whitespace-nowrap text-[length:var(--vds-font-body-lv1)] text-[var(--text-2)]"
-                                  title={referenceSummary}
-                                >
-                                  {t('composer.referenceSummary', {
-                                    summary: referenceSummary,
-                                  })}
-                                </span>
-                              ) : null}
-                            </span>
-                          </Button>
-                        </CollapsibleTrigger>
-                        <div className="ml-auto flex shrink-0 flex-nowrap items-center gap-[var(--vds-space-2)]">
-                          <span className="whitespace-nowrap rounded-[var(--vds-radius-3)] bg-[var(--vds-surface-raised)] px-[var(--vds-space-2)] py-[var(--vds-space-1)] text-[length:var(--vds-font-caption)] text-[var(--vds-text-secondary)]">
-                            {blockedByUnknown
-                              ? t('composer.waitingUnknown')
-                              : t(QUEUE_PRESENTATION_MESSAGE_KEYS[queued.state])}
-                          </span>
-                          {showQueuedSendAction ? (
-                            <Button
-                              data-testid={`queued-send-${queued.queuedMessageId}`}
-                              size="sm"
-                              variant="outline"
-                              disabled={actionDisabled}
-                              loading={queuedActionId === queued.queuedMessageId}
-                              onClick={() =>
-                                void (queued.state === 'outcome_unknown'
-                                  ? reconcileQueued(queued.queuedMessageId)
-                                  : sendQueued(queued.queuedMessageId))
-                              }
-                            >
-                              {queued.state === 'outcome_unknown'
-                                ? t('composer.checkOutcome')
-                                : t('composer.resend')}
-                            </Button>
-                          ) : null}
-                          {queued.state === 'outcome_unknown' ? confirmUnknownAction : cancelAction}
-                        </div>
-                        <CollapsibleContent className="w-full min-w-0 basis-full !border-0 !bg-transparent p-[var(--vds-space-3)] text-[length:var(--vds-font-body-lv1)] leading-relaxed text-[var(--vds-text-secondary)]">
-                          {queued.state === 'outcome_unknown' ? (
-                            <Alert
-                              className="mb-[var(--vds-space-3)]"
-                              tone="warning"
-                              title={t('composer.unconfirmed')}
-                              description={t('composer.unconfirmedHint')}
-                            />
-                          ) : null}
-                          {blockedByUnknown ? (
-                            <Alert
-                              className="mb-[var(--vds-space-3)]"
-                              data-testid={`queued-blocked-${queued.queuedMessageId}`}
-                              tone="info"
-                              title={t('composer.waitingUnknown')}
-                              description={t('composer.blockedByUnknownHint')}
-                            />
-                          ) : null}
-                          <section>
-                            <div className="font-medium text-[var(--text)]">
-                              {t('composer.body')}
-                            </div>
-                            <div className="mt-[var(--vds-space-1)] whitespace-pre-wrap break-words text-[var(--text)]">
-                              {queued.purpose === 'crash_recovery'
-                                ? t('stream.automaticRecovery')
-                                : queued.text || t('composer.referenceOnly')}
-                            </div>
-                          </section>
-                          {annotations.length > 0 ? (
-                            <section
-                              className="mt-[var(--vds-space-3)]"
-                              data-testid={`queued-annotations-${queued.queuedMessageId}`}
-                            >
-                              <div className="font-medium text-[var(--text)]">
-                                {t('composer.annotations')}
-                              </div>
-                              {annotations.map((reference, index) => (
-                                <div
-                                  className="mt-[var(--vds-space-2)] rounded-md border border-[var(--border-soft)] p-[var(--vds-space-2)]"
-                                  key={
-                                    reference.ref_id ??
-                                    `${queued.queuedMessageId}-annotation-${index}`
-                                  }
-                                >
-                                  <div className="whitespace-pre-wrap break-words text-[var(--text)]">
-                                    {reference.surface?.selected_text ||
-                                      reference.surface?.preview_text ||
-                                      reference.label ||
-                                      t('composer.selectionMissing')}
-                                  </div>
-                                  <div className="mt-[var(--vds-space-2)] whitespace-pre-wrap break-words">
-                                    {t('composer.annotation', {
-                                      comment:
-                                        reference.surface?.comment || t('composer.noComment'),
-                                    })}
-                                  </div>
-                                </div>
-                              ))}
-                            </section>
-                          ) : null}
-                          {typedReferences.length > 0 || otherAssistantReferences.length > 0 ? (
-                            <section
-                              className="mt-[var(--vds-space-3)]"
-                              data-testid={`queued-references-${queued.queuedMessageId}`}
-                            >
-                              <div className="font-medium text-[var(--text)]">
-                                {t('composer.otherReferences')}
-                              </div>
-                              {[
-                                ...typedReferences.map((item) => ({
-                                  key: `${item.type}:${'name' in item ? (item.name ?? '') : ''}:${'reference_id' in item ? (item.reference_id ?? '') : ''}`,
-                                  label:
-                                    item.type === 'skill'
-                                      ? t('composer.skillNamed', {
-                                          name: item.name,
-                                        })
-                                      : t('composer.itemNamed', {
-                                          kind:
-                                            item.type === 'local_image'
-                                              ? t('composer.image')
-                                              : item.type === 'directory'
-                                                ? t('composer.folder')
-                                                : t('composer.file'),
-                                          name: item.name || t('composer.unnamed'),
-                                        }),
-                                })),
-                                ...otherAssistantReferences.map((reference, index) => ({
-                                  key:
-                                    reference.ref_id ??
-                                    `${queued.queuedMessageId}-reference-${index}`,
-                                  label: queuedReferenceLabel(reference, assistantText),
-                                })),
-                              ].map((reference) => (
-                                <div
-                                  className="mt-[var(--vds-space-1)] break-words"
-                                  key={reference.key}
-                                >
-                                  {reference.label}
-                                </div>
-                              ))}
-                            </section>
-                          ) : null}
-                        </CollapsibleContent>
-                        {queued.safeErrorCode ? (
-                          <div
-                            className="w-full min-w-0 basis-full whitespace-pre-wrap break-words text-[var(--vds-error-text-primary)]"
-                            data-error-code={queued.safeErrorCode}
-                          >
-                            {queuedMessageErrorText(
-                              queued.safeErrorCode,
-                              queued.state,
-                              t,
-                              queued.safeErrorDetails
-                            )}
-                          </div>
-                        ) : null}
-                      </div>
-                    </Collapsible>
-                  )
-                })}
-              </div>
-            )}
-            {atActive && (
-              <div
-                className={atPanelClass}
-                data-testid="composer-at-panel"
-                role="listbox"
-                aria-label={t('composer.chooseReferences')}
-                aria-busy={(atSkill && skillRowsLoading) || contextCandidatesLoading}
-              >
-                <div className={atHeadClass}>
-                  <span className={atTitleClass}>
-                    {!atRoot && (
-                      <Button
-                        type="button"
-                        className={atBackClass}
-                        unstyled
-                        variant="ghostIcon"
-                        size="content"
-                        aria-label={t('composer.backReferences')}
-                        onMouseDown={(event) => event.preventDefault()}
-                        onClick={() => {
-                          replaceAtTrigger('@')
-                          setSelIdx(0)
-                        }}
-                      >
-                        <span className="grid rotate-180">
-                          <Icon name="chevron-right" size={13} />
-                        </span>
-                      </Button>
-                    )}
-                    {atSkill
-                      ? AT_SKILL_PANEL_LABEL
-                      : atContextSource
-                        ? atContextSource.label
-                        : AT_ROOT_LABEL}
-                    {!atRoot && !skillRowsLoading && !contextCandidatesLoading && (
-                      <span className="min-w-[18px] rounded-full bg-[var(--bg-3)] px-[6px] py-px text-center text-[9px] text-[var(--text-3)]">
-                        {atSkill
-                          ? `${skillCandidates.length}${matchedSkills.length > AT_CANDIDATE_LIMIT ? '+' : ''}`
-                          : `${contextCandidates.length}${matchedContextCandidates.length > AT_CANDIDATE_LIMIT ? '+' : ''}`}
-                      </span>
-                    )}
-                  </span>
-                  <span className="whitespace-nowrap text-[9.5px]">{t('composer.filterHint')}</span>
-                </div>
-                {atRoot ? (
-                  <div className={atListClass}>
-                    {rootCandidates.map((row, index) => (
-                      <Button
-                        key={row.kind}
-                        type="button"
-                        role="option"
-                        variant="ghost"
-                        size="content"
-                        unstyled
-                        aria-selected={index === sel}
-                        data-testid={`composer-at-kind-${row.kind}`}
-                        data-atsel={index === sel ? '1' : undefined}
-                        className={atRowClass(index === sel, false, true)}
-                        onMouseEnter={() => setSelIdx(index)}
-                        onMouseDown={(event) => event.preventDefault()}
-                        onClick={() => chooseAt(index)}
-                      >
-                        <span className="grid size-[27px] flex-[0_0_27px] place-items-center rounded-[9px] border border-[var(--border-soft)] bg-[var(--bg-3)] text-[var(--text-2)] group-aria-selected:border-[color-mix(in_srgb,var(--brand-ink)_42%,var(--border-soft))] group-aria-selected:bg-[color-mix(in_srgb,var(--accent-soft)_72%,var(--bg-2))] group-aria-selected:text-[var(--brand-ink)]">
-                          <Icon name={row.icon} size={14} />
-                        </span>
-                        <span className="flex min-w-0 flex-1 flex-col">
-                          <span className="overflow-hidden text-ellipsis whitespace-nowrap text-[12.5px] font-[620]">
-                            {row.label}
-                          </span>
-                          <span className="overflow-hidden text-ellipsis whitespace-nowrap text-[10.5px] leading-[1.35] text-[var(--text-3)]">
-                            {row.description}
-                          </span>
-                        </span>
-                        <Icon name="chevron-right" size={13} />
-                      </Button>
-                    ))}
-                  </div>
-                ) : atSkill && skillRowsLoading ? (
-                  <div className={atLoadingClass} role="status" aria-live="polite">
-                    <div className={atLoadingCopyClass}>
-                      <Spinner imageSrc={aiThinking} size="sm" aria-hidden="true" />
-                      <span>{AT_SKILL_LOADING_LABEL}</span>
-                    </div>
-                    <div className="grid gap-[7px]" aria-hidden="true">
-                      {[0, 1, 2].map((row) => (
-                        <span key={row} className={atSkeletonRowClass}>
-                          <i className="block size-[27px] rounded-[9px] bg-[color-mix(in_srgb,var(--text-3)_15%,var(--bg-2))]" />
-                          <b className="block h-[9px] w-[min(72%,240px)] rounded-[var(--vds-radius-2)] bg-[color-mix(in_srgb,var(--text-3)_15%,var(--bg-2))]" />
-                          <em className="block h-[15px] w-[42px] justify-self-end rounded-[var(--vds-radius-2)] bg-[color-mix(in_srgb,var(--text-3)_15%,var(--bg-2))]" />
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                ) : atContext && contextCandidatesLoading ? (
-                  <div className={atLoadingClass} role="status" aria-live="polite">
-                    <div className={atLoadingCopyClass}>
-                      <Spinner imageSrc={aiThinking} size="sm" aria-hidden="true" />
-                      <span>
-                        {t('composer.loadingSource', {
-                          source: atContextSource?.label ?? '',
-                        })}
-                      </span>
-                    </div>
-                  </div>
-                ) : atSkill && skillCandidates.length ? (
-                  <div className={atListClass}>
-                    {skillCandidates.map((skill, index) => {
-                      const dependenciesReady =
-                        !skill.dependency_status || skill.dependency_status === 'ready'
-                      const selectable =
-                        skill.enabled !== false &&
-                        skill.active !== false &&
-                        dependenciesReady &&
-                        isAbsoluteInputPath(skill.path)
-                      const loaded = pendingRefs.some(
-                        (item) => item.type === 'skill' && item.id === skill.name
-                      )
-                      const description = skillDescription(
-                        skill,
-                        i18n.resolvedLanguage || i18n.language
-                      )
-                      return (
-                        <Tooltip
-                          key={`${skill.group}:${skill.name}`}
-                          className="!w-full"
-                          content={description}
-                          disabled={!description}
-                          portalled
-                          side="left"
-                        >
-                          <span className="block w-full">
-                            <Button
-                              type="button"
-                              role="option"
-                              variant="ghost"
-                              size="content"
-                              unstyled
-                              aria-selected={index === sel}
-                              aria-disabled={!selectable}
-                              data-testid={`composer-at-skill-${skill.name}`}
-                              data-atsel={index === sel ? '1' : undefined}
-                              className={atRowClass(index === sel, !selectable)}
-                              onMouseEnter={() => setSelIdx(index)}
-                              onMouseDown={(event) => event.preventDefault()}
-                              onClick={() => chooseSkill(index)}
-                            >
-                              <span className="grid size-[27px] flex-[0_0_27px] place-items-center rounded-[9px] border border-[var(--border-soft)] bg-[var(--bg-3)] text-[var(--text-2)] group-aria-selected:border-[color-mix(in_srgb,var(--brand-ink)_42%,var(--border-soft))] group-aria-selected:bg-[color-mix(in_srgb,var(--accent-soft)_72%,var(--bg-2))] group-aria-selected:text-[var(--brand-ink)]">
-                                <Icon name="skills" size={14} />
-                              </span>
-                              <span className="flex min-w-0 flex-1 flex-col">
-                                <span className="overflow-hidden text-ellipsis whitespace-nowrap text-[12.5px] font-[620]">
-                                  {skillName(skill)}
-                                </span>
-                              </span>
-                              <span className="flex-none rounded-full bg-[var(--bg-3)] px-[7px] py-[2px] text-[9.5px] text-[var(--text-3)]">
-                                {loaded
-                                  ? t('composer.loaded')
-                                  : skill.group === 'scholarseed'
-                                    ? AT_SKILL_BUILTIN_LABEL
-                                    : AT_SKILL_USER_LABEL}
-                              </span>
-                            </Button>
-                          </span>
-                        </Tooltip>
-                      )
-                    })}
-                  </div>
-                ) : atContext && contextCandidates.length ? (
-                  <div className={atListClass}>
-                    {contextCandidates.map((candidate, index) => {
-                      const unavailable = Boolean(candidate.unavailable_reason)
-                      const loaded = state.aiPanel.refs.some(
-                        (ref) =>
-                          ref.kind === candidate.kind && ref.source_id === candidate.source_id
-                      )
-                      return (
-                        <Button
-                          key={`${candidate.kind}:${candidate.source_id}`}
-                          type="button"
-                          role="option"
-                          variant="ghost"
-                          size="content"
-                          unstyled
-                          aria-selected={index === sel}
-                          aria-disabled={unavailable}
-                          data-testid={`composer-at-context-${candidate.kind}-${candidate.source_id}`}
-                          data-atsel={index === sel ? '1' : undefined}
-                          className={atRowClass(index === sel, unavailable)}
-                          onMouseEnter={() => setSelIdx(index)}
-                          onMouseDown={(event) => event.preventDefault()}
-                          onClick={() => chooseContext(index)}
-                          title={
-                            candidate.unavailable_reason
-                              ? contextText(candidate.unavailable_reason)
-                              : undefined
-                          }
-                        >
-                          <span className="grid size-[27px] flex-[0_0_27px] place-items-center rounded-[9px] border border-[var(--border-soft)] bg-[var(--bg-3)] text-[var(--text-2)] group-aria-selected:border-[color-mix(in_srgb,var(--brand-ink)_42%,var(--border-soft))] group-aria-selected:bg-[color-mix(in_srgb,var(--accent-soft)_72%,var(--bg-2))] group-aria-selected:text-[var(--brand-ink)]">
-                            <Icon
-                              name={
-                                candidate.kind === 'dir'
-                                  ? 'folder'
-                                  : candidate.kind === 'literature'
-                                    ? 'books'
-                                    : candidate.kind === 'session'
-                                      ? 'quote'
-                                      : 'doc'
-                              }
-                              size={14}
-                            />
-                          </span>
-                          <span className="flex min-w-0 flex-1 flex-col">
-                            <span className="overflow-hidden text-ellipsis whitespace-nowrap text-[12.5px] font-[620]">
-                              {candidateLabel(candidate, assistantText)}
-                            </span>
-                            {(candidate.hint ||
-                              candidate.hintKey ||
-                              candidate.unavailable_reason) && (
-                              <span className="overflow-hidden text-ellipsis whitespace-nowrap text-[10.5px] leading-[1.35] text-[var(--text-3)]">
-                                {candidate.unavailable_reason
-                                  ? contextText(candidate.unavailable_reason)
-                                  : candidateHint(candidate, assistantText)}
-                              </span>
-                            )}
-                          </span>
-                          <span className="flex-none rounded-full bg-[var(--bg-3)] px-[7px] py-[2px] text-[9.5px] text-[var(--text-3)]">
-                            {candidate.kind === 'dir' && atResourceContext
-                              ? t('composer.enter')
-                              : loaded
-                                ? t('composer.referenced')
-                                : t('composer.referenceAction')}
-                          </span>
-                        </Button>
-                      )
-                    })}
-                  </div>
-                ) : (
-                  <EmptyState
-                    variant="compact"
-                    icon={<Icon name="search" />}
-                    title={
-                      atSkill
-                        ? AT_SKILL_EMPTY_LABEL
-                        : (atContextSource?.emptyLabel ?? t('composer.emptyContents'))
-                    }
-                  />
-                )}
-              </div>
-            )}
+            <ComposerQueue
+              followUpMode={followUp.mode}
+              followUpPending={followUp.loading || followUp.saving || followUp.error}
+              toggleFollowUp={async () => {
+                const saved = await saveFollowUpPreference(
+                  followUp.mode === 'queue' ? 'steer' : 'queue'
+                )
+                if (!saved) set({ foregroundError: feedback('components', 'followUp.failed', {}) })
+              }}
+              messages={visibleQueuedMessages}
+              skillTitle={(name) => {
+                const skill = skillRows?.find((item) => item.name === name)
+                return skill ? skillName(skill, language) : undefined
+              }}
+              queuedActionId={queuedActionId}
+              editing={Boolean(editing)}
+              running={running}
+              interrupting={interrupting}
+              waiting={thread.status === 'waiting'}
+              activeTurnId={thread.activeTurnId}
+              creditBlocked={creditBlocked}
+              recoveryAvailable={recoveryAvailable}
+              retractQueuedMessage={retractQueuedMessage}
+              confirmQueuedUnknown={confirmQueuedUnknown}
+              steerQueued={confirmation.pending || selectionBlocked ? undefined : steerQueued}
+              reconcileQueued={reconcileQueued}
+              sendQueued={confirmation.pending ? undefined : sendQueued}
+              editQueued={editQueued}
+            />
+
             <div
               data-testid="composer-drop-zone"
               ref={composerDropZoneRef}
+              onBlurCapture={(event) => {
+                if (inline && !event.currentTarget.contains(event.relatedTarget as Node | null))
+                  setInlineReferencesExpanded(false)
+              }}
               onDragEnter={onComposerDragEnter}
               onDragOver={onComposerDragOver}
               onDragLeave={onComposerDragLeave}
               onDrop={onComposerDrop}
-              className={`${composerDropZoneClass(home, draggingFiles, surface)}${inline ? ' !min-h-[var(--vds-floating-composer-height)] !flex-row flex-wrap items-center gap-[var(--vds-space-1)] !rounded-[var(--vds-radius-6)] !px-[var(--vds-space-3)] !pt-[var(--vds-space-2)] !pb-[var(--vds-space-3)]' : ''}`}
+              className={cx(
+                composerDropZoneClass(home, draggingFiles, surface),
+                inline &&
+                  '!min-h-[var(--vds-floating-composer-height)] !flex-row flex-wrap items-center gap-[var(--vds-space-1)] !rounded-[var(--vds-radius-6)] !px-[var(--vds-space-3)] !pt-[var(--vds-space-2)] !pb-[var(--vds-space-3)]'
+              )}
             >
               {draggingFiles && (
                 <div className="pointer-events-none absolute inset-[var(--vds-space-2)] z-[var(--vds-z-local-control)] grid place-items-center rounded-[var(--vds-radius-3)] border border-dashed border-[var(--vds-border-brand)] bg-[var(--vds-surface-active)] text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-medium)] text-[var(--vds-text-primary)]">
                   {COMPOSER_DROP_LABEL}
                 </div>
               )}
-              <div className={inline ? '-order-1 w-full empty:hidden' : 'contents'}>
-                {contextTray}
-                {hasComposerReferenceCards && (
+              <div
+                data-testid="composer-reference-region"
+                hidden={inline && !inlineReferencesExpanded}
+                className={inline ? '-order-1 w-full empty:hidden' : 'contents'}
+              >
+                {editing && (
+                  <div className="text-[length:var(--vds-font-caption)] text-[var(--vds-text-secondary)]">
+                    {queuedReferenceSummary(
+                      editing.message.input.filter((item) => item.type !== 'skill'),
+                      editing.message.assistantReferences,
+                      assistantText
+                    )}
+                  </div>
+                )}
+                {queueEditError && editing && (
+                  <Alert tone="warning" description={t('composer.queueEditFailed')} />
+                )}
+                {(referenceGroups.attachments.length > 0 || (!editing && contextTray)) && (
                   <div
-                    className={`${referenceTrayClass} ${surface === 'assistant' ? '!mt-0' : ''}`}
+                    className={`${referenceTrayClass} ${surface === 'assistant' ? '!mt-0' : !home && !inline ? '!mt-[var(--vds-space-3)]' : ''}`}
                   >
-                    <div
-                      className={`${referenceTrayScrollerClass} ${surface === 'assistant' ? '!pt-0 !flex-wrap max-h-36 !overflow-y-auto !overflow-x-hidden ![scrollbar-width:thin] [&::-webkit-scrollbar]:!block' : ''}`}
+                    <ScrollArea
+                      className="[--vds-scroll-area-horizontal-fade:var(--vds-bg-white-default)]"
+                      orientation="horizontal"
+                      horizontalControls={{
+                        previous: assistantText('attachments.scrollPrevious'),
+                        next: assistantText('attachments.scrollNext'),
+                      }}
+                      viewportClassName="![scrollbar-width:none] [&::-webkit-scrollbar]:!hidden"
                     >
-                      <ComposerSkillRefs
-                        refs={pendingRefs}
-                        onRemove={(index) =>
-                          setPendingRefs((items) =>
-                            items.filter((_, itemIndex) => itemIndex !== index)
-                          )
-                        }
-                      />
-                      <ComposerAttachments
-                        refs={pendingRefs}
-                        onRemove={(index) =>
-                          setPendingRefs((items) =>
-                            items.filter((_, itemIndex) => itemIndex !== index)
-                          )
-                        }
-                        onOpen={act.openFilePreview}
-                      />
-                    </div>
+                      <div
+                        data-testid="composer-reference-tray"
+                        className={`${referenceTrayScrollerClass} ${!home && !inline ? '[&_[data-testid=attachment-images]]:!py-[var(--vds-space-0)] [&_[data-slot=attachment-list]]:!py-[var(--vds-space-0)]' : ''}`}
+                      >
+                        {!editing && contextTray}
+                        <AttachmentImages
+                          refs={galleryAttachments}
+                          sessionId={thread.sessionId ?? undefined}
+                          onOpen={act.openFilePreview}
+                          onRemove={
+                            editing ? undefined : (index) => galleryReferences[index].onRemove?.()
+                          }
+                          renderThumbnails={(thumbnails) =>
+                            referenceGroups.attachments.map((reference) => (
+                              <React.Fragment key={reference.key}>
+                                {reference.attachment && isImageAttachment(reference.attachment)
+                                  ? thumbnails.get(reference.key)
+                                  : reference.content}
+                              </React.Fragment>
+                            ))
+                          }
+                        />
+                      </div>
+                    </ScrollArea>
                   </div>
                 )}
               </div>
@@ -3185,13 +3438,37 @@ export function Composer({
                 }
               >
                 <ComposerEditor
+                  typographyClassName={`font-[var(--font-serif)] text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] ${inline ? 'leading-[var(--vds-space-6)]' : 'leading-[var(--vds-lh-body-lv2)]'}`}
+                  references={referenceGroups.inline}
+                  onRemoveAllReferences={
+                    editing || thread.readOnly
+                      ? undefined
+                      : async () => {
+                          const scope = composerDraft.getScope()
+                          const references = pendingRefs
+                          const removed = pendingContextRefs.length
+                            ? await act.detachAiContext(
+                                pendingContextRefs.map((reference) => reference.ref_id)
+                              )
+                            : true
+                          if (!removed || composerDraft.getScope() !== scope) return false
+                          setPendingRefs((items) =>
+                            items.filter((reference) => !references.includes(reference))
+                          )
+                          return true
+                        }
+                  }
+                  prediction={prediction.text}
+                  onDismissPrediction={prediction.dismiss}
+                  predictionLabel={t('composer.predictionHint')}
                   inputRef={composerInputRef}
-                  draft={thread.readOnly ? readOnlyDraft : composerDraft}
+                  draft={thread.readOnly ? readOnlyDraft : activeDraft}
                   maxHeight={home && !inline ? HOME_COMPOSER_MAX_HEIGHT_PX : COMPOSER_MAX_HEIGHT_PX}
                   maxRows={inline ? INLINE_COMPOSER_MAX_ROWS : undefined}
                   compactContainerRef={inline ? composerDropZoneRef : undefined}
                   onLayoutChange={inline ? setInlineEditorLayout : undefined}
                   data-testid="composer-input"
+                  onClick={inline ? () => setInlineReferencesExpanded(true) : undefined}
                   aria-label={t('composer.inputLabel')}
                   rows={1}
                   wrap="soft"
@@ -3200,26 +3477,31 @@ export function Composer({
                   onChange={handleComposerChange}
                   onSelect={syncComposerSelection}
                   onKeyDown={handleComposerKeyDown}
-                  onPaste={handleComposerPaste}
+                  onPaste={editing ? undefined : handleComposerPaste}
                   placeholder={
-                    creditBlocked
-                      ? t('composer.creditsPlaceholder')
-                      : interrupting
-                        ? INTERRUPTING_INPUT_PLACEHOLDER
-                        : running
-                          ? RUNNING_INPUT_PLACEHOLDER
-                          : surface === 'assistant'
-                            ? t(
-                                inline
-                                  ? 'composer.floatingPlaceholder'
-                                  : 'composer.assistantPlaceholder'
-                              )
-                            : t('composer.ask')
+                    !modelAvailable && !authenticated
+                      ? t('composer.noModelTitle')
+                      : creditBlocked
+                        ? t('composer.creditsPlaceholder')
+                        : interrupting
+                          ? INTERRUPTING_INPUT_PLACEHOLDER
+                          : running && !confirmation.pending
+                            ? RUNNING_INPUT_PLACEHOLDER
+                            : surface === 'assistant'
+                              ? t(
+                                  inline
+                                    ? 'composer.floatingPlaceholder'
+                                    : 'composer.assistantPlaceholder'
+                                )
+                              : t('composer.ask')
                   }
-                  disabled={thread.readOnly || launching || creditBlocked}
+                  disabled={thread.readOnly || (!editing && creditBlocked)}
                   aria-describedby={creditBlocked ? CREDITS_EXHAUSTED_NOTICE_ID : undefined}
                   aria-busy={launching}
-                  className={`${composerTextareaClass(home, surface, launching)}${inline ? ' !min-h-0 min-w-0 !py-[var(--vds-space-1)] !text-[length:var(--vds-font-body-lv2)] !leading-[var(--vds-space-6)]' : ''}`}
+                  className={cx(
+                    composerTextareaClass(home, surface, launching),
+                    inline && '!min-h-0 min-w-0 py-[var(--vds-space-1)]'
+                  )}
                 />
                 {inline && inlineEditorLayout.above && (
                   <span
@@ -3238,11 +3520,12 @@ export function Composer({
               </div>
               <div
                 data-testid="composer-toolbar"
+                key={inline ? 'floating' : 'conversation'}
                 className={
                   inline
                     ? inlineEditorLayout.multiline
                       ? 'order-2 flex w-full items-center gap-[var(--vds-space-1)] pt-[var(--vds-space-2)]'
-                      : 'contents'
+                      : 'order-2 contents'
                     : composerToolbarClass(home, surface)
                 }
               >
@@ -3252,9 +3535,15 @@ export function Composer({
                   onOpenChange={(open) => {
                     setPlusMenuOpen(open)
                     if (!open) {
+                      setMenuEntry('plus')
+                      if (
+                        openingReferenceSourceRef.current === RESOURCE_CONTEXT_KIND ||
+                        openingReferenceSourceRef.current === 'literature'
+                      )
+                        return
                       openingReferenceSourceRef.current = null
                       setSkillPanelOpen(false)
-                      act.closeAiContextPicker()
+                      if (!referenceDialogSource) act.closeAiContextPicker()
                     }
                   }}
                 >
@@ -3265,7 +3554,7 @@ export function Composer({
                       label={t('composer.addMenu')}
                       title={undefined}
                       data-testid="composer-plus"
-                      disabled={attaching || creditBlocked}
+                      disabled={Boolean(editing) || attaching || creditBlocked}
                       aria-haspopup="menu"
                       aria-expanded={plusMenuOpen}
                       icon={
@@ -3281,320 +3570,151 @@ export function Composer({
                     />
                   </DropdownMenuTrigger>
                   <DropdownMenuContent
+                    key={menuEntry}
+                    coordinateNavigation
                     className="no-drag"
                     data-testid="composer-plus-menu"
                     side="top"
+                    onKeyDown={selectFirstMenuItem}
                   >
-                    <DropdownMenuSub
-                      open={skillPanelOpen}
-                      onOpenChange={(open) => {
-                        if (open) openSkillSubmenu()
-                        else setSkillPanelOpen(false)
-                      }}
-                    >
-                      <DropdownMenuSubTrigger data-testid="composer-skills-menu" openOnHover>
-                        <Plug size={15} />
-                        <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-left">
-                          {t('composer.skill')}
-                        </span>
-                      </DropdownMenuSubTrigger>
-                      <DropdownMenuSubContent data-testid="composer-plus-submenu">
-                        <div className={skillPanelClass}>
-                          <div className={skillPanelHeadClass}>
-                            <div className="relative">
-                              <SearchBox
-                                value={skillQuery}
-                                onChange={(event) => {
-                                  setSkillQuery(event.target.value)
-                                  setSkillVisibleCount(PLUS_MENU_PAGE_SIZE)
-                                }}
-                                placeholder={t('composer.searchSkills')}
-                                aria-label={t('composer.searchSkillsLabel')}
-                                size="sm"
-                              />
-                              {skillQuery && (
-                                <IconButton
-                                  className="absolute right-[var(--vds-space-1)] top-1/2 -translate-y-1/2"
-                                  icon={<X size={13} />}
-                                  label={t('composer.clearSearch')}
-                                  onClick={() => {
-                                    setSkillQuery('')
-                                    setSkillVisibleCount(PLUS_MENU_PAGE_SIZE)
-                                  }}
-                                  size="xs"
-                                  variant="ghost"
-                                />
-                              )}
-                            </div>
-                          </div>
-                          <div
-                            className="min-h-0 overflow-y-auto overscroll-contain"
-                            data-testid="composer-skill-list"
-                          >
-                            {skillRowsLoading || skillRows === null ? (
-                              <p className="m-[var(--vds-space-0)] px-[14px] py-[var(--vds-space-3)] text-[length:var(--vds-font-body-lv2)] text-[var(--text-3)]">
-                                {t('composer.loadSkills')}
-                              </p>
-                            ) : (
-                              (() => {
-                                const q = skillQuery.trim().toLowerCase()
-                                const language = i18n.resolvedLanguage || i18n.language
-                                const rows = skillRows
-                                  .filter(
-                                    (s): s is SkillInfo & { path: string } =>
-                                      s.enabled !== false &&
-                                      s.active !== false &&
-                                      (!s.dependency_status || s.dependency_status === 'ready') &&
-                                      isAbsoluteInputPath(s.path)
-                                  )
-                                  .filter(
-                                    (s) =>
-                                      !q ||
-                                      s.name.toLowerCase().includes(q) ||
-                                      skillName(s).toLowerCase().includes(q) ||
-                                      skillDescription(s, language).toLowerCase().includes(q)
-                                  )
-                                if (!rows.length) {
-                                  return (
-                                    <EmptyState
-                                      variant="compact"
-                                      icon={<Icon name="search" />}
-                                      title={t('composer.emptySkills')}
-                                    />
-                                  )
-                                }
-                                const visibleRows = rows.slice(0, skillVisibleCount)
-                                return [
-                                  ...visibleRows.map((s) => {
-                                    const loaded = pendingRefs.some(
-                                      (r) => r.type === 'skill' && r.id === s.name
-                                    )
-                                    const description = skillDescription(s, language)
-                                    return (
-                                      <Tooltip
-                                        key={s.name}
-                                        className="!w-full"
-                                        content={description}
-                                        disabled={!description}
-                                        portalled
-                                        side="right"
-                                      >
-                                        <span className="block w-full">
-                                          <Button
-                                            type="button"
-                                            disabled={loaded}
-                                            data-testid={`composer-skill-${s.name}`}
-                                            variant="ghost"
-                                            size="content"
-                                            unstyled
-                                            className={[
-                                              'block w-full rounded-[var(--vds-radius-3)] border-0 px-[var(--vds-space-3)] py-[9px] text-left',
-                                              loaded
-                                                ? 'cursor-default bg-[var(--vds-bg-white-active)]'
-                                                : 'hover:bg-[var(--vds-bg-white-hover-transparent)]',
-                                            ].join(' ')}
-                                            onClick={() => {
-                                              setPendingRefs((prev) =>
-                                                prev.some(
-                                                  (r) => r.type === 'skill' && r.id === s.name
-                                                )
-                                                  ? prev
-                                                  : [
-                                                      ...prev,
-                                                      {
-                                                        type: 'skill',
-                                                        id: s.name,
-                                                        title: skillName(s),
-                                                        path: s.path,
-                                                        version: s.version,
-                                                      },
-                                                    ]
-                                              )
-                                              clearAtTrigger()
-                                              setSkillPanelOpen(false)
-                                              setPlusMenuOpen(false)
-                                              setSkillQuery('')
-                                            }}
-                                          >
-                                            <span className="flex min-w-0 items-center justify-between gap-[var(--vds-space-2)]">
-                                              <span className="min-w-0 flex-1 truncate text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-medium)] text-[var(--vds-text-primary)]">
-                                                {skillName(s)}
-                                              </span>
-                                              {loaded ? (
-                                                <span className="flex-none whitespace-nowrap text-[10px] text-[var(--brand-ink)]">
-                                                  {t('composer.loaded')}
-                                                </span>
-                                              ) : s.category ? (
-                                                <span className="flex-none whitespace-nowrap rounded-[var(--vds-radius-2)] bg-[var(--bg-3)] px-[7px] py-[2px] text-[10px] text-[var(--text-3)]">
-                                                  {skillCategory(s, skillText)}
-                                                </span>
-                                              ) : null}
-                                            </span>
-                                          </Button>
-                                        </span>
-                                      </Tooltip>
-                                    )
-                                  }),
-                                  rows.length > visibleRows.length ? (
-                                    <Button
-                                      type="button"
-                                      key="composer-skill-more"
-                                      data-testid="composer-skill-more"
-                                      variant="ghost"
-                                      size="content"
-                                      unstyled
-                                      className="flex w-full items-center justify-center border-0 px-[var(--vds-space-3)] py-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv2)] text-[var(--text-3)] hover:bg-[var(--vds-bg-white-hover-transparent)] hover:text-[var(--text)]"
-                                      onClick={() =>
-                                        setSkillVisibleCount((count) => count + PLUS_MENU_PAGE_SIZE)
-                                      }
-                                    >
-                                      {t('composer.viewMore')} ({rows.length - visibleRows.length})
-                                    </Button>
-                                  ) : null,
-                                ]
-                              })()
-                            )}
-                          </div>
-                          <div className="shrink-0 border-t border-[var(--border-soft)] bg-[var(--bg-2)] p-[5px]">
-                            <DropdownMenuSub>
-                              <DropdownMenuSubTrigger
-                                data-testid="composer-skill-add"
-                                className="flex w-full items-center gap-[var(--vds-space-2)] rounded-[var(--vds-radius-3)] border-0 px-[10px] py-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv2)] text-[var(--text-2)] hover:bg-[var(--vds-bg-white-hover-transparent)]"
-                                openOnHover
-                              >
-                                <IconFont
-                                  type="icon-line-operation-add"
-                                  className="inline-flex size-[var(--vds-icon-7)] shrink-0 items-center justify-center !text-[length:var(--vds-icon-7)] !leading-none"
-                                />
-                                <span className="flex-1 text-left">{t('composer.addSkills')}</span>
-                              </DropdownMenuSubTrigger>
-                              <DropdownMenuSubContent>
-                                <DropdownMenuItem
-                                  data-testid="composer-skill-upload"
-                                  onSelect={() => {
-                                    clearAtTrigger()
-                                    setSkillPanelOpen(false)
-                                    setPlusMenuOpen(false)
-                                    set({ skillUploadOpen: true })
-                                  }}
-                                >
-                                  <Upload aria-hidden="true" />
-                                  {t('composer.uploadSkill')}
-                                </DropdownMenuItem>
-                                <DropdownMenuItem
-                                  data-testid="composer-skill-market"
-                                  onSelect={openSkillCenter}
-                                >
-                                  <Plug aria-hidden="true" />
-                                  {t('composer.skillMarket')}
-                                </DropdownMenuItem>
-                              </DropdownMenuSubContent>
-                            </DropdownMenuSub>
-                            <Button
-                              type="button"
-                              data-testid="composer-skill-manage"
-                              variant="ghost"
-                              size="content"
-                              unstyled
-                              className="flex w-full items-center gap-[var(--vds-space-2)] rounded-[var(--vds-radius-3)] border-0 px-[10px] py-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv2)] text-[var(--text-2)] hover:bg-[var(--vds-bg-white-hover-transparent)]"
-                              onClick={openSkillCenter}
-                            >
-                              <Settings
-                                aria-hidden="true"
-                                className="size-[var(--vds-icon-7)] shrink-0"
-                              />
-                              {t('composer.manageSkills')}
-                            </Button>
-                          </div>
-                        </div>
-                      </DropdownMenuSubContent>
-                    </DropdownMenuSub>
-                    <DropdownMenuItem
-                      data-testid="composer-add-file"
-                      onSelect={() => {
-                        clearAtTrigger()
-                        act.closeAiContextPicker()
-                        void pickLocalSources(
-                          unifiedLocalPicker
-                            ? IMPORT_PICKER_TARGET.RESOURCE
-                            : IMPORT_PICKER_TARGET.FILE
-                        )
-                      }}
-                    >
-                      <Paperclip size={15} />
-                      <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-left">
-                        {t('composer.addLocal')}
-                      </span>
-                    </DropdownMenuItem>
-                    {!unifiedLocalPicker &&
-                      typeof window.scholarseed?.pickImport === 'function' && (
-                        <DropdownMenuItem
-                          data-testid="composer-add-folder"
-                          onSelect={() => {
-                            void pickLocalSources(IMPORT_PICKER_TARGET.DIRECTORY)
-                          }}
-                        >
-                          <Folder size={15} />
-                          <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-left">
-                            {t('composer.addLocalFolder')}
-                          </span>
-                        </DropdownMenuItem>
-                      )}
-                    {/* 资料引用进入 Session 上下文队列；上面的“添加本地文件”仍是
-                        本轮 typed attachment，两种语义不能合并成一套假状态。 */}
-                    {availableContextSources.map((source) => {
-                      const sourceOpen =
-                        state.aiPanel.contextPickerOpen &&
-                        state.aiPanel.contextPickerSource === source.id
-                      return (
+                    {menuEntry === 'skills' ? (
+                      skillMenuContent
+                    ) : (
+                      <>
                         <DropdownMenuSub
-                          key={source.id}
-                          open={sourceOpen}
+                          open={skillPanelOpen}
                           onOpenChange={(open) => {
-                            if (open) openSourceSubmenu(source)
-                            else if (sourceOpen) {
-                              if (openingReferenceSourceRef.current === source.id)
-                                openingReferenceSourceRef.current = null
-                              act.closeAiContextPicker()
-                            }
+                            if (open) openSkillSubmenu()
+                            else setSkillPanelOpen(false)
                           }}
                         >
-                          <DropdownMenuSubTrigger
-                            data-testid={`composer-add-${source.id}-context`}
-                            openOnHover
-                          >
-                            {plusMenuSourceIcon(source.icon)}
+                          <DropdownMenuSubTrigger data-testid="composer-skills-menu" openOnHover>
+                            <Hammer size={15} />
                             <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-left">
-                              {t('composer.referenceSource', {
-                                source: source.label,
-                              })}
+                              {t('composer.skill')}
                             </span>
                           </DropdownMenuSubTrigger>
-                          <DropdownMenuSubContent data-testid="composer-plus-submenu">
-                            <div className={contextPaneClass} data-testid="ai-context-picker">
-                              <ReferencePicker
-                                browse={source.browse}
-                                candidates={state.aiPanel.contextCandidates}
-                                emptyLabel={renderFeedback(i18n, source.emptyLabel)}
-                                loading={state.aiPanel.contextCandidatesLoading}
-                                key={source.id}
-                                onQueryChange={setReferenceQuery}
-                                onConfirm={async (candidates) => {
-                                  const result = await act.addContexts(candidates)
-                                  if (result.accepted_ref_ids.length === 0) return
-                                  setPlusMenuOpen(false)
-                                  act.closeAiContextPicker()
-                                }}
-                                projectId={assistantProject(state).projectId}
-                                query={referenceQuery}
-                                sourceId={source.id}
-                                sourceLabel={source.label}
-                              />
-                            </div>
+                          <DropdownMenuSubContent
+                            coordinateNavigation
+                            data-testid="composer-plus-submenu"
+                            onKeyDown={selectFirstMenuItem}
+                          >
+                            {skillMenuContent}
                           </DropdownMenuSubContent>
                         </DropdownMenuSub>
-                      )
-                    })}
+                        <DropdownMenuItem
+                          data-testid="composer-add-file"
+                          onFocus={closePlusSubmenus}
+                          onSelect={() => {
+                            clearAtTrigger()
+                            act.closeAiContextPicker()
+                            void pickLocalSources(
+                              unifiedLocalPicker
+                                ? IMPORT_PICKER_TARGET.RESOURCE
+                                : IMPORT_PICKER_TARGET.FILE
+                            )
+                          }}
+                        >
+                          <Paperclip size={15} />
+                          <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-left">
+                            {t('composer.addLocal')}
+                          </span>
+                        </DropdownMenuItem>
+                        {!unifiedLocalPicker &&
+                          typeof window.scholarseed?.pickImport === 'function' && (
+                            <DropdownMenuItem
+                              data-testid="composer-add-folder"
+                              onFocus={closePlusSubmenus}
+                              onSelect={() => {
+                                void pickLocalSources(IMPORT_PICKER_TARGET.DIRECTORY)
+                              }}
+                            >
+                              <Folder size={15} />
+                              <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-left">
+                                {t('composer.addLocalFolder')}
+                              </span>
+                            </DropdownMenuItem>
+                          )}
+                        {/* 资料引用进入 Session 上下文队列；上面的“添加本地文件”仍是
+                        本轮 typed attachment，两种语义不能合并成一套假状态。 */}
+                        {availableContextSources.map((source) => {
+                          if (source.id === RESOURCE_CONTEXT_KIND || source.id === 'literature')
+                            return (
+                              <DropdownMenuItem
+                                key={source.id}
+                                data-testid={`composer-add-${source.id}-context`}
+                                onFocus={closePlusSubmenus}
+                                onSelect={() => {
+                                  setReferenceDialogSource(source.id)
+                                  setPlusMenuOpen(false)
+                                  openSourceSubmenu(source)
+                                }}
+                              >
+                                {plusMenuSourceIcon(source.icon)}
+                                <span>
+                                  {t('composer.referenceSource', { source: source.label })}
+                                </span>
+                              </DropdownMenuItem>
+                            )
+                          const sourceOpen =
+                            state.aiPanel.contextPickerOpen &&
+                            state.aiPanel.contextPickerSource === source.id
+                          return (
+                            <DropdownMenuSub
+                              key={source.id}
+                              open={sourceOpen}
+                              onOpenChange={(open) => {
+                                if (open) openSourceSubmenu(source)
+                                else if (sourceOpen) {
+                                  if (openingReferenceSourceRef.current === source.id)
+                                    openingReferenceSourceRef.current = null
+                                  act.closeAiContextPicker()
+                                }
+                              }}
+                            >
+                              <DropdownMenuSubTrigger
+                                data-testid={`composer-add-${source.id}-context`}
+                                openOnHover
+                              >
+                                {plusMenuSourceIcon(source.icon)}
+                                <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-left">
+                                  {t('composer.referenceSource', {
+                                    source: source.label,
+                                  })}
+                                </span>
+                              </DropdownMenuSubTrigger>
+                              <DropdownMenuSubContent
+                                coordinateNavigation
+                                data-testid="composer-plus-submenu"
+                                onKeyDown={selectFirstMenuItem}
+                              >
+                                <div className={contextPaneClass} data-testid="ai-context-picker">
+                                  <ReferencePicker
+                                    browse={source.browse}
+                                    candidates={state.aiPanel.contextCandidates}
+                                    emptyLabel={renderFeedback(i18n, source.emptyLabel)}
+                                    loading={state.aiPanel.contextCandidatesLoading}
+                                    key={source.id}
+                                    onQueryChange={setReferenceQuery}
+                                    onConfirm={async (candidates) => {
+                                      const result = await act.addContexts(candidates)
+                                      if (result.accepted_ref_ids.length === 0) return
+                                      setPlusMenuOpen(false)
+                                      act.closeAiContextPicker()
+                                      restoreComposerFocus()
+                                    }}
+                                    projectId={assistantProject(state).projectId}
+                                    query={referenceQuery}
+                                    sourceId={source.id}
+                                    sourceLabel={source.label}
+                                  />
+                                </div>
+                              </DropdownMenuSubContent>
+                            </DropdownMenuSub>
+                          )
+                        })}
+                      </>
+                    )}
                   </DropdownMenuContent>
                 </DropdownMenu>
                 <Popover
@@ -3641,14 +3761,14 @@ export function Composer({
                   </PopoverTrigger>
                   {/* 权限模式菜单: 内容照设计稿, 图标 + 档位名 + 描述; 位置由 Popover 自动上翻。 */}
                   <PopoverContent
-                    className="no-drag z-[var(--vds-z-popover)] !w-[320px] max-w-[calc(100vw-32px)] gap-0 rounded-[var(--vds-radius-4)]"
+                    className="no-drag z-[var(--vds-z-popover)] !max-w-[var(--vds-composer-mode-menu-viewport-max-width)] gap-0 rounded-[var(--vds-radius-4)]"
                     data-testid="mode-menu"
                   >
                     <div className="mb-[var(--vds-space-2)] pt-[10px] px-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-6)]">
                       {t('composer.modeMenuTitle')}
                     </div>
                     {currentModeInfo?.switch_warning && (
-                      <p className="px-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-warning-text-primary)]">
+                      <p className="px-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-warning-text-primary)] [contain:inline-size]">
                         {t('composer.modeUnconfirmed')}
                       </p>
                     )}
@@ -3705,7 +3825,7 @@ export function Composer({
                     })}
                     {fullAccessConfirmOpen && (
                       /* 上边框去掉: 确认区仅靠警告底色与圆角与菜单项区分, 不再加分割线。 */
-                      <div className="mx-[var(--vds-space-1)] mb-[var(--vds-space-1)] mt-[var(--vds-space-2)] rounded-[var(--vds-radius-3)] bg-[var(--vds-warning-light-bg-default)] px-[var(--vds-space-3)] py-[var(--vds-space-2)]">
+                      <div className="mx-[var(--vds-space-1)] mb-[var(--vds-space-1)] mt-[var(--vds-space-2)] rounded-[var(--vds-radius-3)] bg-[var(--vds-warning-light-bg-default)] px-[var(--vds-space-3)] py-[var(--vds-space-2)] [contain:inline-size]">
                         {/* 标题前不再加 shield icon; 按钮统一用 Button 组件 variant/size, 不手写样式。 */}
                         <div className="text-[length:var(--vds-font-body-lv1)] font-[var(--vds-fw-medium)] text-[var(--vds-warning-text-primary)]">
                           <span>{MODE_FULL_ACCESS_CONFIRM_TITLE}</span>
@@ -3713,11 +3833,11 @@ export function Composer({
                         <p className="mb-[var(--vds-space-2)] mt-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-tertiary)]">
                           {MODE_FULL_ACCESS_CONFIRM_BODY}
                         </p>
-                        <div className="flex justify-end gap-[var(--vds-space-1)]">
+                        <div className="flex flex-wrap justify-end gap-[var(--vds-space-1)]">
                           <Button
                             type="button"
                             variant="ghost"
-                            size="sm"
+                            size="md"
                             onClick={() => setFullAccessConfirmOpen(false)}
                           >
                             {t('composer.cancel')}
@@ -3726,7 +3846,7 @@ export function Composer({
                             type="button"
                             data-testid="mode-bypassPermissions-confirm"
                             variant="warning"
-                            size="sm"
+                            size="md"
                             onClick={() => requestMode('bypassPermissions')}
                           >
                             {t('composer.enable')}
@@ -3872,6 +3992,7 @@ export function Composer({
                     data-testid="composer-send"
                     data-admission-blockers={
                       [
+                        confirmation.pending && 'confirmation',
                         !runtimeReady && 'runtime',
                         !contextReady && 'context',
                         !selectedSkillsReady && 'skills',
@@ -3898,7 +4019,11 @@ export function Composer({
                     }
                     aria-busy={launching || submittingMessage}
                     aria-label={
-                      running || interrupting ? RUNNING_SEND_HINT_TITLE : t('composer.sendMessage')
+                      editing
+                        ? t('composer.editQueued')
+                        : running || interrupting
+                          ? RUNNING_SEND_HINT_TITLE
+                          : t('composer.sendMessage')
                     }
                     onClick={() => void submit()}
                     disabled={!canSend || submittingMessage}
@@ -3907,21 +4032,23 @@ export function Composer({
                     unstyled
                     className={`${sendButtonClass(surface, canSend, launching || submittingMessage)}${inline ? ' order-4' : ''}`}
                     title={
-                      running || interrupting
-                        ? RUNNING_SEND_HINT_TITLE
-                        : creditBlocked
-                          ? t('composer.creditsExhaustedTitle')
-                          : !modelAvailable
-                            ? t(
-                                authenticated
-                                  ? 'composer.noModelAuthenticatedSendTitle'
-                                  : 'composer.noModelSendTitle'
-                              )
-                            : !runtimeReady
-                              ? t('composer.runtimeNotReady')
-                              : launching
-                                ? t('composer.creating')
-                                : t('composer.sendMessage')
+                      editing
+                        ? t('composer.editQueued')
+                        : running || interrupting
+                          ? RUNNING_SEND_HINT_TITLE
+                          : creditBlocked
+                            ? t('composer.creditsExhaustedTitle')
+                            : !modelAvailable
+                              ? t(
+                                  authenticated
+                                    ? 'composer.noModelAuthenticatedSendTitle'
+                                    : 'composer.noModelSendTitle'
+                                )
+                              : !runtimeReady
+                                ? t('composer.runtimeNotReady')
+                                : launching
+                                  ? t('composer.creating')
+                                  : t('composer.sendMessage')
                     }
                   >
                     {launching || submittingMessage ? (
@@ -3961,6 +4088,56 @@ export function Composer({
         >
           {t('composer.aiGeneratedDisclaimer')}
         </p>
+        <Dialog
+          open={Boolean(dialogSource)}
+          onOpenChange={(open) => {
+            if (!open) closeReferenceDialog()
+          }}
+        >
+          <DialogPortal>
+            {dialogSource && (
+              <DialogContent
+                headerLayout="aligned"
+                aria-label={assistantText(
+                  dialogSource.id === RESOURCE_CONTEXT_KIND
+                    ? 'referencePicker.resourcesTitle'
+                    : 'referencePicker.literatureTitle'
+                )}
+                className="!flex h-[var(--vds-feedback-dialog-height)] !w-[var(--vds-feedback-dialog-width)] min-h-0 flex-col"
+                data-testid="reference-library-dialog"
+              >
+                <DialogHeader>
+                  <DialogTitle>
+                    {assistantText(
+                      dialogSource.id === RESOURCE_CONTEXT_KIND
+                        ? 'referencePicker.resourcesTitle'
+                        : 'referencePicker.literatureTitle'
+                    )}
+                  </DialogTitle>
+                </DialogHeader>
+                <ReferencePicker
+                  key={`${dialogSource.id}:${assistantProject(state).projectId}`}
+                  candidates={state.aiPanel.contextCandidates}
+                  emptyLabel={dialogSource.emptyLabel}
+                  loading={state.aiPanel.contextCandidatesLoading}
+                  onQueryChange={setReferenceQuery}
+                  onCancel={closeReferenceDialog}
+                  onConfirm={async (candidates) => {
+                    const result = await act.addContexts(candidates)
+                    if (result.accepted_ref_ids.length > 0) {
+                      closeReferenceDialog()
+                      restoreComposerFocus()
+                    }
+                  }}
+                  projectId={assistantProject(state).projectId}
+                  query={referenceQuery}
+                  sourceId={dialogSource.id}
+                  sourceLabel={dialogSource.label}
+                />
+              </DialogContent>
+            )}
+          </DialogPortal>
+        </Dialog>
         {state.skillUploadOpen && (
           <SkillAdd
             onClose={() => set({ skillUploadOpen: false })}

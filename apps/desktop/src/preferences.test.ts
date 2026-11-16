@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { defaultSelectionPrompts } from './prompts.ts'
-
 import {
   DEFAULT_RENDERER_PREFERENCES,
   MAX_TRACKED_RECENT_FILES,
@@ -24,6 +23,26 @@ import {
   touchRecentLiterature,
   touchRecentSession,
 } from './preferences.ts'
+import { SETTINGS_PAGES } from './navigation.ts'
+import { SELECTION_PROMPT_ACTIONS } from './prompts.ts'
+
+test('composer draft metadata survives the existing host preference round trip', () => {
+  const composerDrafts = '[["scope",{"text":"unsent","refs":[]}]]'
+  const preferences = sanitizeRendererPreferences({ composerDrafts })
+  assert.equal(Reflect.get(preferences, 'composerDrafts'), composerDrafts)
+  assert.equal(
+    Reflect.get(
+      sanitizeRendererPreferences(JSON.parse(JSON.stringify(preferences))),
+      'composerDrafts'
+    ),
+    composerDrafts
+  )
+  assert.equal(rendererPreferencesEqual(preferences, sanitizeRendererPreferences({})), false)
+  assert.equal(
+    Reflect.get(sanitizeRendererPreferences({ composerDrafts: {} }), 'composerDrafts'),
+    ''
+  )
+})
 
 test('cleared task message versions survive preference round trips and participate in equality', () => {
   const key = JSON.stringify(['imports', 'completed-task'])
@@ -403,5 +422,62 @@ test('automatic update download defaults on and persists an explicit opt out', (
   assert.equal(
     sanitizeRendererPreferences({ autoDownloadUpdates: 'false' }).autoDownloadUpdates,
     true
+  )
+})
+
+test('legacy translation preferences are removed while the translation settings entry and PDF prompt remain', () => {
+  const value = sanitizeRendererPreferences({
+    pdfSelectionAutoTranslate: true,
+    pdfSelectionToolbarEnabled: false,
+    literatureTranslationPreferences: {
+      paper: { modelKey: 'model', targetLanguage: 'en' },
+    },
+    selectionPrompts: { translate: 'Keep the existing translation prompt.' },
+  })
+  const restored = sanitizeRendererPreferences(JSON.parse(JSON.stringify(value)))
+  assert.equal('pdfSelectionAutoTranslate' in restored, false)
+  assert.equal('literatureTranslationPreferences' in restored, false)
+  assert.equal(restored.pdfSelectionToolbarEnabled, false)
+  assert.equal(restored.selectionPrompts.translate, 'Keep the existing translation prompt.')
+  assert.equal(
+    SETTINGS_PAGES.some((page: string) => page === 'translation'),
+    true
+  )
+  assert.ok(SELECTION_PROMPT_ACTIONS.includes('translate'))
+})
+
+test('PDF selection toolbar defaults on and persists a global explicit choice', () => {
+  assert.equal(defaultRendererPreferences().pdfSelectionToolbarEnabled, true)
+  assert.equal(sanitizeRendererPreferences({}).pdfSelectionToolbarEnabled, true)
+  for (const enabled of [true, false]) {
+    const preferences = sanitizeRendererPreferences({ pdfSelectionToolbarEnabled: enabled })
+    assert.equal(preferences.pdfSelectionToolbarEnabled, enabled)
+    assert.equal(
+      sanitizeRendererPreferences(JSON.parse(JSON.stringify(preferences)))
+        .pdfSelectionToolbarEnabled,
+      enabled
+    )
+    assert.equal(
+      rendererPreferencesEqual(preferences, {
+        ...preferences,
+        pdfSelectionToolbarEnabled: !enabled,
+      }),
+      false
+    )
+  }
+})
+
+test('message predictions persist an explicit opt out and participate in preference equality', () => {
+  const enabled = defaultRendererPreferences()
+  assert.equal(enabled.composerPredictionsEnabled, true)
+  const disabled = sanitizeRendererPreferences({ composerPredictionsEnabled: false })
+  assert.equal(disabled.composerPredictionsEnabled, false)
+  assert.equal(
+    sanitizeRendererPreferences(JSON.parse(JSON.stringify(disabled))).composerPredictionsEnabled,
+    false
+  )
+  assert.equal(
+    rendererPreferencesEqual(enabled, { ...enabled, composerPredictionsEnabled: false }),
+    false
   )
 })

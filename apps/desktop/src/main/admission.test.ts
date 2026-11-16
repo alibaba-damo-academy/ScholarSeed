@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 import ts from 'typescript'
 import { squirrelLaunchSuperseded, settleSquirrelStartup } from './squirrelstartup.ts'
+import { updateRepairMode, updateRepairTarget } from './repair.ts'
 
 const source = readFileSync(new URL('./index.ts', import.meta.url), 'utf8')
 const parsed = ts.createSourceFile('index.ts', source, ts.ScriptTarget.Latest, true)
@@ -45,6 +46,8 @@ async function launch(
     if (options.error === stage) throw new Error(stage)
   }
   const scope = {
+    updateRepairMode,
+    updateRepairTarget,
     process: {
       platform,
       resourcesPath: '/fixture.app/Contents/Resources',
@@ -77,7 +80,6 @@ async function launch(
     headless: false,
     UPDATE_REPAIR_WIZARD_ARGUMENT: '--repair-update',
     offerStartupRepair: async () => false,
-    updateRepairTarget: () => null,
     recoverStartupAdmission: async (error: { status?: string }) => {
       scope.recoveryErrors.push(error)
       actions.push('recovery-surface')

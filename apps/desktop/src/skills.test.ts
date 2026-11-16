@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFileSync } from 'node:fs'
 import ts from 'typescript'
+import { validatePluginBinding } from './main/skills.ts'
 
 import {
   SKILLS_PATH,
@@ -178,7 +179,7 @@ test('marketplace operations stay inside the device skill route with encoded ide
   )
 })
 
-test('native skill handler preserves JSON content type and adds only the host capability', async () => {
+function nativeSkillHandler(overrides: Record<string, unknown> = {}) {
   const source = ts.createSourceFile(
     'index.ts',
     readFileSync(new URL('./main/index.ts', import.meta.url), 'utf8'),
@@ -203,16 +204,22 @@ test('native skill handler preserves JSON content type and adds only the host ca
   }).outputText
   const dependencies = {
     skillRequest,
+    validatePluginBinding,
     URL,
     Headers,
     apiBase: 'http://127.0.0.1:9000',
     isMainWindowSender: () => true,
     HOST_PROCESS_HEADER: 'X-Test-Host-Key',
     backendHostProcessKey: () => 'test-key',
+    ...overrides,
   }
-  const handler = new Function(...Object.keys(dependencies), compiled + '\nreturn handler;')(
+  return new Function(...Object.keys(dependencies), compiled + '\nreturn handler;')(
     ...Object.values(dependencies)
   )
+}
+
+test('native skill handler preserves JSON content type and adds only the host capability', async () => {
+  const handler = nativeSkillHandler()
   let captured: RequestInit | undefined
   const event = {
     sender: {
@@ -230,4 +237,57 @@ test('native skill handler preserves JSON content type and adds only the host ca
   assert.equal(headers.get('X-Test-Host-Key'), 'test-key')
   assert.equal(headers.get('authorization'), null)
   assert.equal(captured?.redirect, 'error')
+})
+
+test('lease validation aborts status-only requests before checking current ownership', async () => {
+  for (const status of [200, 403]) {
+    for (const revoked of [false, true]) {
+      let current = true
+      let aborted = false
+      const response = new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new Uint8Array(1024))
+            controller.close()
+          },
+        }),
+        { status }
+      )
+      const handler = nativeSkillHandler({
+        plugins: {
+          valid: () => current,
+          reference: () => ({
+            plugin: 'review',
+            component: 'card',
+            fingerprint: 'fixed',
+            binding: 'bound',
+          }),
+        },
+      })
+      const result = await handler(
+        {
+          sender: {
+            session: {
+              fetch: async (_url: string, init: RequestInit) => {
+                assert.ok(init.signal)
+                assert.equal(init.signal.aborted, false)
+                init.signal.addEventListener('abort', () => {
+                  aborted = true
+                  if (revoked) current = false
+                })
+                return response
+              },
+            },
+          },
+        },
+        {
+          operation: 'plugin-valid',
+          lease: 'active-lease',
+        }
+      )
+      assert.equal(aborted, true, `binding request leaked for status ${status}`)
+      assert.equal(response.bodyUsed, true)
+      assert.deepEqual(result, { status: revoked ? 410 : status, body: '{}' })
+    }
+  }
 })

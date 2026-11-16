@@ -1,13 +1,14 @@
 import React from 'react'
 import { useTranslation } from 'react-i18next'
-import { AppWindow, Ellipsis } from 'lucide-react'
+import { AppWindow, Folder } from 'lucide-react'
 import type { SessionArtifact } from '../../model'
 import { uniqueApplications, type ApplicationCandidate } from '../../applications'
-import { FileFormatIcon } from '../primitive/FileIcon'
+import { FileFormatIcon, hasFileFormatAsset } from '../primitive/FileIcon'
+import { Receipt } from '../primitive/Receipt'
+import { Images, type ConversationImage } from '../primitive/Images'
 import { PRODUCT_MENU_CONTENT_CLASS } from '../primitive/menu'
 import {
   Button,
-  Card,
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
@@ -16,27 +17,25 @@ import {
   ContextMenuSubContent,
   ContextMenuSubTrigger,
   ContextMenuTrigger,
-  DropdownMenu,
-  DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuSub,
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
-  DropdownMenuTrigger,
-  EllipsisText,
-  IconButton,
 } from '../ui'
 
 export const MENU_CLASS_NAME = `${PRODUCT_MENU_CONTENT_CLASS} text-[length:var(--vds-font-body-lv2)]`
 const SUBMENU_CLASS_NAME = `${PRODUCT_MENU_CONTENT_CLASS} max-w-[var(--vds-model-menu-max-width)] overflow-y-auto text-[length:var(--vds-font-body-lv2)]`
 const MENU_HINT_CLASS_NAME =
   'px-[var(--vds-space-2)] py-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-tertiary)]'
+export const ARTIFACT_ROWS_CLASS =
+  'my-[var(--vds-space-3)] grid min-w-0 items-start gap-[var(--vds-space-2)] grid-cols-[repeat(auto-fill,minmax(min(100%,max(var(--vds-artifact-card-min-width),calc((100%_-_var(--vds-space-2))_/_2))),1fr))]'
+export const ARTIFACT_ROW_ITEM_CLASS = 'min-w-0'
 
 type OpenWithApp = ApplicationCandidate & { icon?: string }
 type ArtifactMenuKind = 'context' | 'dropdown'
 
-export interface ArtifactMenuItemsProps {
+export interface FileMenuItemsProps {
   apps: OpenWithApp[] | null
   appsLoading: boolean
   canSaveAs: boolean
@@ -47,15 +46,82 @@ export interface ArtifactMenuItemsProps {
   onCopyPath: () => void
   onOpenWith: (app: OpenWithApp) => void
   onReveal: () => void
-  onSaveAs: () => void
+  onSaveAs?: () => void
   revealLabel: string
   revealIcon?: React.ReactNode
   overview?: boolean
   onImport?: () => void
   canImport?: boolean
+  directory?: boolean
+  onOpen?: () => void
+  showSaveAs?: boolean
+  showOpenWith?: boolean
+  emptyApps?: React.ReactNode
+  imagePreview?: boolean
 }
 
-export function ArtifactMenuItems({
+export type ArtifactMenuItemsProps = FileMenuItemsProps
+
+export function OpenWithApplications({
+  apps,
+  appsLoading,
+  emptyApps,
+  kind,
+  onOpenWith,
+}: Pick<
+  FileMenuItemsProps,
+  'apps' | 'appsLoading' | 'emptyApps' | 'kind' | 'onOpenWith'
+>): React.JSX.Element {
+  const { t: assistantText } = useTranslation('assistant')
+  const Item = kind === 'context' ? ContextMenuItem : DropdownMenuItem
+  const applications = uniqueApplications(apps ?? [])
+  return (
+    <>
+      {appsLoading && (
+        <div className={MENU_HINT_CLASS_NAME}>{assistantText('artifactEntry.loadingApps')}</div>
+      )}
+      {!appsLoading &&
+        apps !== null &&
+        apps.length === 0 &&
+        (emptyApps ?? (
+          <div className={MENU_HINT_CLASS_NAME}>{assistantText('artifactEntry.noApps')}</div>
+        ))}
+      {!appsLoading &&
+        applications.map((app) => (
+          <Item
+            key={app.path}
+            className="!h-auto max-w-[var(--vds-model-menu-max-width)] py-[var(--vds-space-2)]"
+            onSelect={() => onOpenWith(app)}
+          >
+            {app.icon ? (
+              <img src={app.icon} alt="" className="size-[var(--vds-icon-8)] shrink-0" />
+            ) : (
+              <AppWindow aria-hidden />
+            )}
+            <span className="min-w-0 flex-1">
+              <span className="block">{app.name}</span>
+              {applications.some(
+                (candidate) =>
+                  candidate.path !== app.path &&
+                  candidate.name.trim().toLocaleLowerCase() === app.name.trim().toLocaleLowerCase()
+              ) && (
+                <span className="block whitespace-normal break-all text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-tertiary)]">
+                  {app.path}
+                </span>
+              )}
+            </span>
+            {app.isDefault && (
+              <span className="ml-auto text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-tertiary)]">
+                {assistantText('artifactEntry.defaultApp')}
+              </span>
+            )}
+          </Item>
+        ))}
+    </>
+  )
+}
+
+export function FileMenuItems({
   apps,
   appsLoading,
   canSaveAs,
@@ -72,7 +138,13 @@ export function ArtifactMenuItems({
   overview = false,
   onImport,
   canImport,
-}: ArtifactMenuItemsProps): React.JSX.Element {
+  directory = false,
+  onOpen,
+  showSaveAs = true,
+  showOpenWith = true,
+  emptyApps,
+  imagePreview = false,
+}: FileMenuItemsProps): React.JSX.Element {
   const { t: assistantText } = useTranslation('assistant')
   const Item = kind === 'context' ? ContextMenuItem : DropdownMenuItem
   const Separator = kind === 'context' ? ContextMenuSeparator : DropdownMenuSeparator
@@ -80,81 +152,87 @@ export function ArtifactMenuItems({
   const SubContent = kind === 'context' ? ContextMenuSubContent : DropdownMenuSubContent
   const SubTrigger = kind === 'context' ? ContextMenuSubTrigger : DropdownMenuSubTrigger
 
+  if (directory)
+    return (
+      <>
+        {onOpen && <Item onSelect={onOpen}>{assistantText('artifactEntry.open')}</Item>}
+        {canUsePath && (
+          <>
+            <Item data-testid={`artifact-${kind}-copy-path`} onSelect={onCopyPath}>
+              {assistantText('artifactEntry.copyPath')}
+            </Item>
+            <Item data-testid={`artifact-${kind}-reveal`} onSelect={onReveal}>
+              {revealLabel}
+            </Item>
+          </>
+        )}
+      </>
+    )
+
   return (
     <>
+      {onOpen && <Item onSelect={onOpen}>{assistantText('artifactEntry.open')}</Item>}
+      {!overview && canImport && onImport && (
+        <Item onSelect={onImport}>{assistantText('artifactEntry.import')}</Item>
+      )}
       {overview && (
         <>
-          <Item disabled={!canImport} onSelect={onImport}>
-            {assistantText('artifactEntry.import')}
-          </Item>
+          {canImport && onImport && (
+            <Item onSelect={onImport}>{assistantText('artifactEntry.import')}</Item>
+          )}
           <Item disabled={!canUsePath} onSelect={onCopyPath}>
             {assistantText('artifactEntry.copyPath')}
           </Item>
           <Separator />
         </>
       )}
-      <Sub>
-        <SubTrigger
-          openOnHover={overview}
-          data-testid={`artifact-${kind}-open-with`}
-          disabled={!canUsePath}
-          onClick={loadApps}
-          onMouseEnter={loadApps}
-          onFocus={loadApps}
-        >
-          {assistantText('artifactEntry.openWith')}
-        </SubTrigger>
-        <SubContent
-          className={`${SUBMENU_CLASS_NAME} ${overview ? '!z-[var(--vds-z-inline-flyout)]' : ''}`}
-          side={overview ? 'left' : undefined}
-        >
-          {appsLoading && (
-            <div className={MENU_HINT_CLASS_NAME}>{assistantText('artifactEntry.loadingApps')}</div>
-          )}
-          {!appsLoading && apps !== null && apps.length === 0 && (
-            <div className={MENU_HINT_CLASS_NAME}>{assistantText('artifactEntry.noApps')}</div>
-          )}
-          {!appsLoading &&
-            uniqueApplications(apps ?? []).map((app) => (
-              <Item key={app.path} onSelect={() => onOpenWith(app)}>
-                {app.icon ? (
-                  <img src={app.icon} alt="" className="size-[var(--vds-icon-8)] shrink-0" />
-                ) : (
-                  <AppWindow aria-hidden />
-                )}
-                <span className="min-w-0 flex-1 truncate">{app.name}</span>
-                {app.isDefault && (
-                  <span className="ml-auto text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-tertiary)]">
-                    {assistantText('artifactEntry.defaultApp')}
-                  </span>
-                )}
+      {showOpenWith && (
+        <Sub>
+          <SubTrigger
+            openOnHover={overview}
+            data-testid={`artifact-${kind}-open-with`}
+            disabled={!canUsePath}
+            onClick={loadApps}
+            onMouseEnter={loadApps}
+            onFocus={loadApps}
+          >
+            {assistantText('artifactEntry.openWith')}
+          </SubTrigger>
+          <SubContent
+            className={`${SUBMENU_CLASS_NAME} ${imagePreview ? '!z-[var(--vds-z-modal-nested-flyout)]' : overview ? '!z-[var(--vds-z-inline-flyout)]' : ''}`}
+            side={overview || imagePreview ? 'left' : undefined}
+          >
+            <OpenWithApplications {...{ apps, appsLoading, emptyApps, kind, onOpenWith }} />
+            {overview && (
+              <Item disabled={!canUsePath} onSelect={onReveal}>
+                {revealIcon ?? <Folder aria-hidden />}
+                {revealLabel}
               </Item>
-            ))}
-          {overview && (
-            <Item disabled={!canUsePath} onSelect={onReveal}>
-              {revealIcon}
-              {revealLabel}
-            </Item>
-          )}
-        </SubContent>
-      </Sub>
+            )}
+          </SubContent>
+        </Sub>
+      )}
       {!overview && (
         <>
-          <Separator />
-          <Item
-            data-testid={`artifact-${kind}-save-as`}
-            disabled={!canSaveAs || downloading}
-            onSelect={onSaveAs}
-          >
-            {assistantText('artifactEntry.saveAs')}
-          </Item>
-          <Item
-            data-testid={`artifact-${kind}-copy-path`}
-            disabled={!canUsePath}
-            onSelect={onCopyPath}
-          >
-            {assistantText('artifactEntry.copyPath')}
-          </Item>
+          {showOpenWith && <Separator />}
+          {showSaveAs && (
+            <Item
+              data-testid={`artifact-${kind}-save-as`}
+              disabled={!canSaveAs || downloading || !onSaveAs}
+              onSelect={onSaveAs}
+            >
+              {assistantText('artifactEntry.saveAs')}
+            </Item>
+          )}
+          {!imagePreview && (
+            <Item
+              data-testid={`artifact-${kind}-copy-path`}
+              disabled={!canUsePath}
+              onSelect={onCopyPath}
+            >
+              {assistantText('artifactEntry.copyPath')}
+            </Item>
+          )}
           <Item data-testid={`artifact-${kind}-reveal`} disabled={!canUsePath} onSelect={onReveal}>
             {revealLabel}
           </Item>
@@ -164,19 +242,42 @@ export function ArtifactMenuItems({
   )
 }
 
+export { FileMenuItems as ArtifactMenuItems }
+
 export function ArtifactGroup({
   children,
-  stacked = false,
+  images,
+  renderImageActions,
 }: {
-  children: React.ReactNode
-  stacked?: boolean
+  children?: React.ReactNode
+  /** @deprecated File cards use the same layout in every group. */
+  fileLayout?: boolean
+  images?: readonly ConversationImage[]
+  renderImageActions?: (
+    image: ConversationImage,
+    preview?: boolean,
+    onClose?: () => void
+  ) => React.ReactNode
 }): React.JSX.Element | null {
+  if (images?.length)
+    return (
+      <div data-testid="artifact-image-group">
+        <Images
+          items={images}
+          captions={false}
+          hoverActions
+          renderActions={renderImageActions}
+          renderPreviewActions={(image, onClose) => renderImageActions?.(image, true, onClose)}
+        />
+      </div>
+    )
   const cards = React.Children.toArray(children)
   if (!cards.length) return null
   return (
     <div
+      data-artifact-list
       data-testid="artifact-group"
-      className={`grid items-start gap-[var(--vds-space-2)] [&>[data-artifact-card]]:mt-0 ${stacked || cards.length === 1 ? 'max-w-[var(--vds-artifact-card-max-width)] grid-cols-1' : 'grid-cols-[repeat(auto-fill,minmax(min(100%,var(--vds-artifact-card-min-width)),1fr))]'}`}
+      className={`${ARTIFACT_ROWS_CLASS} [&>:only-child]:col-span-full`}
     >
       {cards}
     </div>
@@ -188,7 +289,8 @@ export interface ArtifactProps {
   versions: SessionArtifact[]
   primaryMeta: string
   canImport: boolean
-  menuProps: Omit<ArtifactMenuItemsProps, 'kind'>
+  menuProps: Omit<ArtifactMenuItemsProps, 'kind'> & { onSaveAs: () => void }
+  onMenuOpen?: () => void
   preview: (artifact: SessionArtifact) => void
   previewVersion: (artifact: SessionArtifact) => void
   openImport: () => void
@@ -201,6 +303,7 @@ export function Artifact({
   primaryMeta,
   canImport,
   menuProps: suppliedMenuProps,
+  onMenuOpen,
   preview,
   previewVersion,
   openImport,
@@ -208,146 +311,94 @@ export function Artifact({
 }: ArtifactProps): React.JSX.Element {
   const { t: assistantText } = useTranslation('assistant')
   const [contextMenuOpen, setContextMenuOpen] = React.useState(false)
-  const [dropdownMenuOpen, setDropdownMenuOpen] = React.useState(false)
   const selectAction = (action: () => void): void => {
     setContextMenuOpen(false)
-    setDropdownMenuOpen(false)
     action()
   }
   const menuProps = {
     ...suppliedMenuProps,
+    canImport,
+    onImport: () => selectAction(openImport),
+    onOpen: () => selectAction(() => preview(primary)),
     onCopyPath: () => selectAction(suppliedMenuProps.onCopyPath),
     onReveal: () => selectAction(suppliedMenuProps.onReveal),
     onSaveAs: () => selectAction(suppliedMenuProps.onSaveAs),
     onOpenWith: (app: OpenWithApp) => selectAction(() => suppliedMenuProps.onOpenWith(app)),
   }
+  const kind = menuProps.directory ? 'dir' : 'file'
+  const coloredIcon = hasFileFormatAsset(primary.name, kind)
   return (
-    <ContextMenu open={contextMenuOpen} onOpenChange={setContextMenuOpen}>
+    <ContextMenu
+      open={contextMenuOpen}
+      onOpenChange={(open) => {
+        setContextMenuOpen(open)
+        if (open) onMenuOpen?.()
+      }}
+    >
       <ContextMenuTrigger asChild>
-        <Card
+        <div
           data-artifact-card
-          className="@container/artifact mt-[var(--vds-space-3)] grid min-w-0 grid-cols-1 gap-[var(--vds-space-3)] !shadow-none [--vds-card-radius:var(--vds-radius-6)]"
-          padding="sm"
+          className={ARTIFACT_ROW_ITEM_CLASS}
+          data-artifact-kind={menuProps.directory ? 'directory' : 'file'}
           data-artifact-role={primary.role}
+          data-testid={`turn-artifact-${primary.artifact_id}`}
         >
-          <div
-            className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-[var(--vds-space-2)] @max-[16.5rem]/artifact:grid-cols-[auto_minmax(0,1fr)]"
-            data-testid={`turn-artifact-${primary.artifact_id}`}
-          >
-            <span className="grid size-[var(--vds-space-8)] shrink-0 place-items-center rounded-[var(--vds-radius-3)] bg-[var(--vds-surface-muted)] text-[var(--vds-text-secondary)]">
-              <FileFormatIcon name={primary.name} size={20} />
-            </span>
-            <span className="flex min-w-0 flex-col gap-[var(--vds-space-half)]">
-              <EllipsisText
-                className="text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-medium)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-primary)]"
-                tooltip={primary.name}
-                tooltipContentClassName="whitespace-pre-wrap"
-                tooltipPortalled
-              >
-                {primary.title || primary.name}
-              </EllipsisText>
-              <span className="flex flex-wrap items-center gap-[var(--vds-space-1)]">
-                <EllipsisText
-                  className="text-[length:var(--vds-font-body-lv3)] font-[var(--vds-fw-regular)] text-[var(--vds-text-secondary)]"
-                  tooltipPortalled
+          <Receipt
+            className="!border-[var(--vds-divider-default)]"
+            title={primary.title || primary.name}
+            description={primaryMeta}
+            titleTooltip={primary.name}
+            iconAppearance={coloredIcon ? 'asset' : menuProps.directory ? 'outline' : 'bordered'}
+            icon={
+              <FileFormatIcon
+                name={primary.name}
+                kind={kind}
+                size={coloredIcon ? 'var(--vds-artifact-card-icon-size)' : 'var(--vds-icon-10)'}
+              />
+            }
+            onOpen={() => preview(primary)}
+            openLabel={primary.name}
+            showOpenButton={false}
+            action={
+              !menuProps.directory &&
+              canImport && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  data-testid="artifact-import-resources"
+                  onClick={() => selectAction(openImport)}
                 >
-                  {primaryMeta}
-                </EllipsisText>
-                {versions.length > 1 && (
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        data-testid="artifact-versions"
-                        aria-label={assistantText('artifactEntry.versionsFor', {
-                          name: primary.name,
-                          count: versions.length,
-                        })}
-                      >
-                        {assistantText('artifactEntry.versions', { count: versions.length })}
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent
-                      align="end"
-                      className={SUBMENU_CLASS_NAME}
-                      data-testid="artifact-versions-menu"
-                    >
-                      {versions.map((version, index) => (
-                        <DropdownMenuItem
-                          key={version.artifact_id}
-                          data-testid={`artifact-version-${version.artifact_id}`}
-                          onSelect={() => previewVersion(version)}
-                        >
-                          {assistantText(
-                            index === 0
-                              ? 'artifactEntry.latestVersion'
-                              : 'artifactEntry.previousVersion',
-                            { version: versions.length - index }
-                          )}
-                        </DropdownMenuItem>
-                      ))}
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                )}
-              </span>
-            </span>
-            <div className="ml-auto flex shrink-0 items-center gap-[var(--vds-space-1)] @max-[16.5rem]/artifact:col-span-2 @max-[16.5rem]/artifact:ml-0 @max-[16.5rem]/artifact:w-full @max-[16.5rem]/artifact:border-t @max-[16.5rem]/artifact:border-[var(--vds-divider-default)] @max-[16.5rem]/artifact:pt-[var(--vds-space-2)]">
-              <div>
-                <DropdownMenu open={dropdownMenuOpen} onOpenChange={setDropdownMenuOpen}>
-                  <DropdownMenuTrigger asChild>
-                    <IconButton
-                      data-testid="artifact-more-actions"
-                      icon={<Ellipsis size={16} />}
-                      label={assistantText('artifactEntry.moreActions', {
-                        name: primary.title || primary.name,
-                      })}
-                      size="sm"
-                      variant="ghostIcon"
-                    />
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent
-                    align="end"
-                    className={MENU_CLASS_NAME}
-                    data-testid="artifact-dropdown-menu"
-                  >
-                    <ArtifactMenuItems {...menuProps} kind="dropdown" />
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
-              <Button
-                aria-label={assistantText('artifactEntry.import')}
-                data-testid="artifact-import-resources"
-                disabled={!canImport}
-                onClick={openImport}
-                title={assistantText('artifactEntry.import')}
-                size="sm"
-                variant="outline"
-              >
-                <span className="@max-[20rem]/artifact:hidden">
-                  {assistantText('artifactEntry.import')}
-                </span>
-                <span className="hidden @max-[20rem]/artifact:inline">
                   {assistantText('artifactEntry.importShort')}
-                </span>
-              </Button>
-              <Button
-                aria-label={assistantText('artifactEntry.openName', { name: primary.name })}
-                data-testid="artifact-open"
-                onClick={() => void preview(primary)}
-                title={assistantText('artifactEntry.openName', { name: primary.name })}
-                size="sm"
-                variant="outline"
-              >
-                {assistantText('artifactEntry.open')}
-              </Button>
-            </div>
-          </div>
+                </Button>
+              )
+            }
+          />
           {children}
-        </Card>
+        </div>
       </ContextMenuTrigger>
       <ContextMenuContent className={MENU_CLASS_NAME} data-testid="artifact-context-menu">
-        <ArtifactMenuItems {...menuProps} kind="context" />
+        <FileMenuItems {...menuProps} kind="context" />
+        {versions.length > 1 && (
+          <ContextMenuSub>
+            <ContextMenuSubTrigger data-testid="artifact-versions">
+              {assistantText('artifactEntry.versions', { count: versions.length })}
+            </ContextMenuSubTrigger>
+            <ContextMenuSubContent className={SUBMENU_CLASS_NAME}>
+              {versions.map((version, index) => (
+                <ContextMenuItem
+                  key={version.artifact_id}
+                  data-testid={`artifact-version-${version.artifact_id}`}
+                  onSelect={() => previewVersion(version)}
+                >
+                  {assistantText(
+                    index === 0 ? 'artifactEntry.latestVersion' : 'artifactEntry.previousVersion',
+                    { version: versions.length - index }
+                  )}
+                </ContextMenuItem>
+              ))}
+            </ContextMenuSubContent>
+          </ContextMenuSub>
+        )}
       </ContextMenuContent>
     </ContextMenu>
   )

@@ -60,6 +60,17 @@ export interface TaskSource {
   tools?: SourceTool[]
 }
 
+export function projectSourceName(
+  source: NonNullable<ReturnType<typeof projectSource>>,
+  sources: readonly TaskSource[]
+): string | undefined {
+  if (source.kind === 'resource') return source.path.split('/').at(-1)
+  return sources.find((candidate) => {
+    const reference = candidate.reference
+    return reference?.kind === 'literature' && (reference.sourceId ?? reference.id) === source.id
+  })?.title
+}
+
 const toolPayloads = new WeakMap<
   SourceTool,
   { result: SourceTool['result']; payload: Record<string, unknown> | null }

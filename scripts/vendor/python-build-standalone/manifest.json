@@ -1,34 +1,34 @@
 {
-  "python": "3.12.13",
-  "release": "20260623",
+  "python": "3.14.10",
+  "release": "20261026",
   "sqlite": "3.53.1",
   "targets": {
     "darwin-arm64": {
       "triple": "aarch64-apple-darwin",
-      "archive": "cpython-3.12.13+20260623-aarch64-apple-darwin-install_only.tar.gz",
-      "url": "https://deep-rd.oss-cn-hangzhou.aliyuncs.com/scholarseed-vendor/vendor/python-build-standalone/cpython-3.12.13%2B20260623-aarch64-apple-darwin-install_only.tar.gz",
-      "sha256": "3724aa4dafb5f7b6c2cf98e89914e4248dc6bd2fe40407df4a2d73de99615f16",
-      "bytes": 25159977,
+      "archive": "cpython-3.14.10+20261026-aarch64-apple-darwin-install_only.tar.gz",
+      "url": "https://deep-rd.oss-cn-hangzhou.aliyuncs.com/scholarseed-vendor/vendor/python-build-standalone/cpython-3.14.10%2B20261026-aarch64-apple-darwin-install_only.tar.gz",
+      "sha256": "30a18bcb9ab75e485b4bf4e5d783dde165571e7e42c56dff47a2d2c5345183a4",
+      "bytes": 26891793,
       "executable": "python/bin/python3",
       "venvExecutable": "bin/python",
       "machine": "arm64"
     },
     "darwin-x64": {
       "triple": "x86_64-apple-darwin",
-      "archive": "cpython-3.12.13+20260623-x86_64-apple-darwin-install_only.tar.gz",
-      "url": "https://deep-rd.oss-cn-hangzhou.aliyuncs.com/scholarseed-vendor/vendor/python-build-standalone/cpython-3.12.13%2B20260623-x86_64-apple-darwin-install_only.tar.gz",
-      "sha256": "7c57fdd1fa675190093700eb0d8e7117e1f9eae7c30a46dea5f8d5266bcfc791",
-      "bytes": 24829196,
+      "archive": "cpython-3.14.10+20261026-x86_64-apple-darwin-install_only.tar.gz",
+      "url": "https://deep-rd.oss-cn-hangzhou.aliyuncs.com/scholarseed-vendor/vendor/python-build-standalone/cpython-3.14.10%2B20261026-x86_64-apple-darwin-install_only.tar.gz",
+      "sha256": "01cedae5d4a66ac570e13cb35fa570d0e79ba8e9affd4518a5d85b6c2b98ff10",
+      "bytes": 27054861,
       "executable": "python/bin/python3",
       "venvExecutable": "bin/python",
       "machine": "x86_64"
     },
     "win32-x64": {
       "triple": "x86_64-pc-windows-msvc",
-      "archive": "cpython-3.12.13+20260623-x86_64-pc-windows-msvc-install_only.tar.gz",
-      "url": "https://deep-rd.oss-cn-hangzhou.aliyuncs.com/scholarseed-vendor/vendor/python-build-standalone/cpython-3.12.13%2B20260623-x86_64-pc-windows-msvc-install_only.tar.gz",
-      "sha256": "c6af85bb83d5158c9ff71f50dfad467853d1cd236f932b144e87e26e2ea2a83e",
-      "bytes": 46013305,
+      "archive": "cpython-3.14.10+20261026-x86_64-pc-windows-msvc-install_only.tar.gz",
+      "url": "https://deep-rd.oss-cn-hangzhou.aliyuncs.com/scholarseed-vendor/vendor/python-build-standalone/cpython-3.14.10%2B20261026-x86_64-pc-windows-msvc-install_only.tar.gz",
+      "sha256": "98bbe6a0d798bcbad142e96e5930a330e4dc407638e898b515c51eb73a27580d",
+      "bytes": 51031912,
       "executable": "python/python.exe",
       "venvExecutable": "Scripts/python.exe",
       "machine": "AMD64"

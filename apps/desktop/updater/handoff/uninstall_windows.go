@@ -25,7 +25,10 @@ func cleanBeforeUninstall() error {
 	if err != nil {
 		return err
 	}
-	return errors.Join(cleanInstalledRuntime(filepath.Dir(self)), cleanLegacyCache())
+	if err = errors.Join(cleanInstalledRuntime(filepath.Dir(self)), cleanLegacyCache()); err != nil {
+		return err
+	}
+	return prepareRetirement(filepath.Dir(self))
 }
 
 func cleanInstalledRuntime(current string) (err error) {

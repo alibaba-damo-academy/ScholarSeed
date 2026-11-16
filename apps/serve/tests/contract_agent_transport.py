@@ -169,6 +169,19 @@ class BrowserHostTransportContracts(unittest.TestCase):
             self.assertEqual(received[0]["action_request_id"], "original-action")
             self.assertEqual(received[0]["grant_request_id"], "fresh-read")
             self.assertEqual(received[0]["proof_id"], "fresh-proof")
+            asyncio.run(
+                client.prepare_history(
+                    **SCOPE,
+                    request_id="history",
+                    search="keyword",
+                    offset=0,
+                    limit=1,
+                    intent="Find the visited page",
+                )
+            )
+            self.assertEqual(received[1]["action"], "history/prepare")
+            self.assertEqual(received[1]["intent"], "Find the visited page")
+            self.assertNotIn("tab_id", received[1])
         finally:
             server.shutdown()
             server.server_close()

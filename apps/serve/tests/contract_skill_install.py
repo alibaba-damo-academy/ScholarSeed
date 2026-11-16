@@ -120,7 +120,9 @@ def main() -> int:
         side_effect=lambda **_kwargs: app.state.skill_catalog.installed_inventory(workspace)
     )
     with TestClient(app) as client:
-        assert listed(client)["legacy-skill"]["installationSource"] == "unknown"
+        legacy_row = listed(client)["legacy-skill"]
+        assert legacy_row["installationSource"] == "unknown"
+        assert legacy_row["hub"]["slug"] == "old-skill"
 
         preview = client.post(
             f"{UPLOAD_URL}/preview",
@@ -224,7 +226,9 @@ def main() -> int:
             ),
         )
         assert forged.status_code == 200, forged.text
-        assert listed(client)["contract-forged"]["installationSource"] == "upload"
+        forged_row = listed(client)["contract-forged"]
+        assert forged_row["installationSource"] == "upload"
+        assert forged_row["hub"] is None
         assert load_skill_state().installation_sources["contract-forged"] == "upload"
         with patch("service.capabilities.service.management.ClawHub") as marketplace:
             marketplace.return_value.base = "https://marketplace.example"
@@ -234,13 +238,21 @@ def main() -> int:
             marketplace.return_value.download = AsyncMock(
                 return_value=zip_bytes({MANIFEST_NAME: manifest("contract-marketplace")})
             )
+            marketplace.return_value.localized_copy = AsyncMock(
+                return_value={"display_names": {}, "descriptions": {}}
+            )
             installed = client.post(
                 "/api/capabilities/skills/marketplace/items/contract-marketplace/install",
                 json={"version": "1.0", "enabled": False},
             )
+            marketplace.return_value.localized_copy.assert_awaited_once_with(
+                "global", "contract-marketplace"
+            )
         assert installed.status_code == 200, installed.text
-        assert listed(client)["contract-marketplace"]["installationSource"] == "marketplace"
-        assert listed(client)["contract-marketplace"]["enabled"] is False
+        marketplace_row = listed(client)["contract-marketplace"]
+        assert marketplace_row["installationSource"] == "marketplace"
+        assert marketplace_row["hub"]["source"] == "clawhub"
+        assert marketplace_row["enabled"] is False
 
         # 3 .zip 缺 SKILL.md → 报错不安装
         bad = upload(client, "test.zip", zip_bytes({"test/readme.txt": "no manifest"}))

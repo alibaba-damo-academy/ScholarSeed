@@ -5,7 +5,7 @@ import remarkParse from 'remark-parse'
 import { unified, type Processor } from 'unified'
 
 import { createMarkdownParseCache } from './parser.ts'
-import { remarkAnswerMath } from './math.ts'
+import { remarkAnswerMath } from '../../../../markdown/math.ts'
 
 test('unchanged Markdown reuses parsing across processors without reusing mutated trees', () => {
   let parses = 0

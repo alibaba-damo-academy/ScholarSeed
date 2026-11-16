@@ -1,13 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
+import { encodedBoundaries, sourceLeaf } from './source.ts'
 import {
-  encodedBoundaries,
   prepareMathSource,
   prepareMarkdownSource,
-  sourceLeaf,
-  visibleMarkdownText
-} from './source.ts'
+  visibleMarkdownText,
+} from '../../../../markdown/source.ts'
 
 test('TeX delimiters become offset-stable math markers outside code', () => {
   const source = '公式 \\(x^2\\) 与 \\[a+b\\]。`\\(code\\)`\n```tex\n\\[code\\]\n```'

@@ -20,7 +20,7 @@ DEFAULT_SPEC: dict = {
     "word_budget": None,
 }
 
-_VALID_FORMATS = ("latex_pdf", "markdown")
+_VALID_FORMATS = ("latex_pdf", "markdown", "docx")
 _VALID_CITATION_STYLES = style_ids()
 
 

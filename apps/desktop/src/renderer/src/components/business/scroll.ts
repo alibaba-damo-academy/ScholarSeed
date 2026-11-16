@@ -1,5 +1,18 @@
 export const SCROLLBAR_IDLE_DELAY_MS = 800
 
+export function messageFocusSpacerHeight(
+  viewport: Pick<HTMLElement, 'clientHeight' | 'clientTop' | 'scrollTop' | 'getBoundingClientRect'>,
+  spacer: Pick<HTMLElement, 'getBoundingClientRect'>,
+  targetTop: number
+): number {
+  const contentBottom =
+    spacer.getBoundingClientRect().top -
+    viewport.getBoundingClientRect().top +
+    viewport.scrollTop -
+    viewport.clientTop
+  return Math.max(0, targetTop + viewport.clientHeight - contentBottom)
+}
+
 export function conversationInlinePadding(viewport: {
   offsetWidth: number
   clientWidth: number

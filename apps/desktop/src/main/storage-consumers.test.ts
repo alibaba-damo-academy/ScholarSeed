@@ -5,6 +5,7 @@ import * as path from 'node:path'
 import test from 'node:test'
 import { runInNewContext } from 'node:vm'
 import ts from 'typescript'
+import * as registry from '../../native/registry.cjs'
 import * as journal from './journal.ts'
 import * as resources from './resources.ts'
 import * as storageRecord from './storage-record.ts'
@@ -35,6 +36,7 @@ function fixture(t: test.TestContext, overrides: Record<string, unknown> = {}) {
         throw new Error('storage consumers must not execute system commands')
       },
     },
+    '../../native/registry.cjs': registry,
     './journal.ts': journal,
     './resources.ts': resources,
     './storage-record.ts': storageRecord,
@@ -42,7 +44,7 @@ function fixture(t: test.TestContext, overrides: Record<string, unknown> = {}) {
     './window-record.ts': windowRecord,
     './writer': { desktopDirectoryWriter: () => ({ close() {} }) },
     path,
-    os: { homedir: () => root },
+    os: { homedir: () => root, userInfo: () => ({ homedir: root }) },
     electron: {
       app: {
         getName: () => 'ScholarSeed',

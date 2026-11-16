@@ -54,6 +54,34 @@ class ContentDrainContract(unittest.IsolatedAsyncioTestCase):
         await eventually(lambda: not self.gate.snapshot().counts)
         self.temporary.cleanup()
 
+    async def test_read_only_asset_status_holds_an_observer_without_execution_admission(self):
+        binding = self.content.identify(self.project.id, "resources/note.md")
+        generation = self.gate.begin()
+        original = identity.status
+
+        def observed(*args, **kwargs):
+            self.assertTrue(kwargs["read_only"])
+            self.assertEqual(self.gate.snapshot().counts, {ActivityDomain.REQUEST.value: 1})
+            with self.assertRaises(MaintenanceActive):
+                self.gate.enter(ActivityDomain.MODEL)
+            self.assertFalse(self.gate.seal(generation))
+            return original(*args, **kwargs)
+
+        try:
+            with patch.object(identity, "status", observed):
+                current = self.content.asset_status(
+                    self.project.id, binding.asset.asset_id, read_only=True
+                )
+            self.assertEqual(current, binding)
+            self.assertEqual(self.gate.snapshot().counts, {})
+            with self.assertRaises(MaintenanceActive):
+                self.content.asset_status(self.project.id, binding.asset.asset_id)
+            self.assertTrue(self.gate.seal(generation))
+            with self.assertRaises(MaintenanceActive):
+                self.content.asset_status(self.project.id, binding.asset.asset_id, read_only=True)
+        finally:
+            self.gate.resume(generation)
+
     async def test_native_watcher_pauses_publication_and_rescans_after_resume(self):
         self.assertTrue(events.WATCHFILES_AVAILABLE)
         # Closing native handles necessarily drops events during maintenance;

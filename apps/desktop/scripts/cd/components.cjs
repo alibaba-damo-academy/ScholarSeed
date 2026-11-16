@@ -5,9 +5,9 @@ const ROOT = path.resolve(__dirname, '../..')
 const ENTRY = '../../packages/ui/review.tsx'
 const FORBIDDEN_INPUTS = [/\/store\//, /\/store\.tsx?$/, /\/api\.tsx?$/, /\/literature\/catalog\.ts$/, /\/fileOpen\.ts$/]
 
-async function buildComponents(output) {
+async function buildComponents(output, entry = ENTRY) {
   const result = await build({
-    absWorkingDir: ROOT, entryPoints: { cards: ENTRY }, outdir: output,
+    absWorkingDir: ROOT, entryPoints: { cards: entry }, outdir: output,
     bundle: true, minify: true, format: 'iife', platform: 'browser', jsx: 'transform',
     tsconfigRaw: { compilerOptions: { jsx: 'react' } },
     define: { 'process.env.NODE_ENV': '"production"', 'import.meta.env.DEV': 'false' }, metafile: true,

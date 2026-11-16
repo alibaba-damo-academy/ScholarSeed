@@ -1,5 +1,6 @@
 import type { TFunction } from 'i18next'
 import type { ActivityRunState } from '../../activity'
+import type { TurnTiming } from '../../model'
 
 const MILLISECONDS_PER_SECOND = 1000
 const SECONDS_PER_MINUTE = 60
@@ -20,6 +21,18 @@ export function planDurationLabel(milliseconds: number, rounding: 'down' | 'up' 
   return remainder ? `${days}d ${turnDurationLabel(0, remainder)}` : `${days}d`
 }
 
+export function answerCountdownLabel(
+  deadline: number,
+  now: number,
+  t: TFunction<'components'>
+): string {
+  const seconds = Math.max(0, Math.ceil((deadline - now) / MILLISECONDS_PER_SECOND))
+  return t('stream.hil.waitingAnswerCountdown', {
+    minutes: Math.floor(seconds / SECONDS_PER_MINUTE),
+    seconds: String(seconds % SECONDS_PER_MINUTE).padStart(2, '0'),
+  })
+}
+
 export function elapsedLabel(startedAt: number, now: number, t: TFunction<'components'>): string {
   const seconds = Math.max(0, Math.floor((now - startedAt) / MILLISECONDS_PER_SECOND))
   if (seconds < SECONDS_PER_MINUTE) return t('stream.seconds', { count: seconds })
@@ -30,12 +43,21 @@ export function elapsedLabel(startedAt: number, now: number, t: TFunction<'compo
     : t('stream.minutes', { count: minutes })
 }
 
-export function activityDurationLabel(startedAt: number, endedAt: number): string {
+export function activityDurationLabel(
+  startedAt: number,
+  endedAt: number,
+  t?: TFunction<'components'>
+): string {
   const seconds = Math.max(
     MINIMUM_ACTIVITY_SECONDS,
     Math.floor((endedAt - startedAt) / MILLISECONDS_PER_SECOND)
   )
-  return turnDurationLabel(0, seconds * MILLISECONDS_PER_SECOND)
+  return t
+    ? t('todo.elapsedMinutes', {
+        minutes: Math.floor(seconds / SECONDS_PER_MINUTE),
+        seconds: seconds % SECONDS_PER_MINUTE,
+      })
+    : turnDurationLabel(0, seconds * MILLISECONDS_PER_SECOND)
 }
 
 export function activitySummaryState(
@@ -70,4 +92,29 @@ export function turnDurationLabel(startedAt: number, endedAt: number): string {
   ]
     .filter(Boolean)
     .join(' ')
+}
+
+export function processDurationLabel(
+  timing: TurnTiming | undefined,
+  t: TFunction<'conversation'>
+): string | null {
+  if (timing?.completedAt === undefined) return null
+  const seconds = Math.max(
+    0,
+    Math.floor((timing.completedAt - timing.startedAt) / MILLISECONDS_PER_SECOND)
+  )
+  return t('process.duration', {
+    minutes: Math.floor(seconds / SECONDS_PER_MINUTE),
+    seconds: seconds % SECONDS_PER_MINUTE,
+  })
+}
+
+export function planElapsedLabel(milliseconds: number, t: TFunction<'components'>): string {
+  const seconds = Math.max(0, Math.floor(milliseconds / MILLISECONDS_PER_SECOND))
+  return seconds < SECONDS_PER_MINUTE
+    ? t('todo.elapsedSeconds', { seconds })
+    : t('todo.elapsedMinutes', {
+        minutes: Math.floor(seconds / SECONDS_PER_MINUTE),
+        seconds: seconds % SECONDS_PER_MINUTE,
+      })
 }

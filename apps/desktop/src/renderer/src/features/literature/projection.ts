@@ -1,6 +1,12 @@
 import type { TFunction } from 'i18next'
 import type { createFormatters } from '../../../../localization/format'
-import type { LiteratureReview, LiteratureSummary } from '../../contracts/literature'
+import type {
+  LiteratureReview,
+  LiteratureSummary,
+  ReviewCitation,
+  ReviewEvidence,
+} from '../../contracts/literature'
+import { CITATIONS_ORIGIN } from './result.ts'
 
 export function literatureCollections(
   item: LiteratureSummary,
@@ -32,9 +38,25 @@ const GENERATION_LABELS = {
 const GENERATION_STATUSES = new Set(Object.keys(GENERATION_LABELS))
 const REVIEW_CHECKPOINTS = new Set<string>(['outline', 'result'])
 const PRECISE_SEARCH_ORIGIN = 'precise-search'
-const OUTPUT_FORMATS = new Set(['latex_pdf', 'markdown', null])
+const SUPERSEDED_SEARCH_ORIGINS = new Set([PRECISE_SEARCH_ORIGIN, CITATIONS_ORIGIN])
+export const REVIEW_FORMAT_LABELS = {
+  latex_pdf: 'PDF',
+  markdown: 'Markdown',
+  docx: 'DOCX',
+} as const satisfies Record<NonNullable<LiteratureReview['output']['format']>, string>
+const OUTPUT_FORMATS = new Set<string | null>([...Object.keys(REVIEW_FORMAT_LABELS), null])
 const CITATION_STYLES = new Set(['numeric', 'author_year', 'ieee', 'acm', 'gbt7714_2025', null])
 const DECISION_SOURCES = new Set(['user', 'default', null])
+
+export const REVIEW_EVIDENCE_BASIS_LABELS = {
+  fulltext: 'review.evidenceBasisLabel.fulltext',
+  abstract: 'review.evidenceBasisLabel.abstract',
+  unknown: 'review.evidenceBasisLabel.unknown',
+} as const
+
+export function reviewCitationTitle(citation: ReviewCitation): string {
+  return citation.number ? `${citation.number}. ${citation.title}` : citation.title
+}
 
 const FULLTEXT_LIMITATIONS = [
   {
@@ -74,10 +96,7 @@ const FULLTEXT_LIMITATIONS = [
   },
 ] as const
 
-export function reviewEvidenceReason(
-  evidence: LiteratureReview['abstract_evidence'][number],
-  t: TFunction<'literature'>
-): string {
+export function reviewEvidenceReason(evidence: ReviewEvidence, t: TFunction<'literature'>): string {
   const limitation = evidence.reason_code
     ? FULLTEXT_LIMITATIONS.find((item) => item.code === evidence.reason_code)
     : FULLTEXT_LIMITATIONS.find((item) => item.reason === evidence.reason)
@@ -116,11 +135,16 @@ export function replaceLiteratureSummary(
 
 export function mergeLiteratureSummaries(
   fetched: LiteratureSummary[],
-  local: ReadonlyMap<string, LiteratureSummary>
+  local: ReadonlyMap<string, LiteratureSummary>,
+  preferLocalOnEqual = true
 ): LiteratureSummary[] {
   return fetched.map((item) => {
     const candidate = local.get(item.id)
-    return candidate && candidate.version >= item.version ? candidate : item
+    return candidate &&
+      (candidate.version > item.version ||
+        (preferLocalOnEqual && candidate.version === item.version))
+      ? candidate
+      : item
   })
 }
 
@@ -138,16 +162,24 @@ export function reviewNotice(review: LiteratureReview): 'incomplete' | 'verifica
     ? review.generation_status === 'SUCCESS'
     : review.status === 'generated'
   if (!generated) return 'incomplete'
-  return !review.checks.length ||
-    review.checks.some((check) => check.verdict !== 'PASS' && check.verdict !== 'NOT_APPLICABLE') ||
-    reviewIssueSummary(review).total > 0
+  return !review.verification.rows.some((row) => row.check) ||
+    review.verification.rows.some(
+      ({ check, issue }) =>
+        issue !== null || (check && check.verdict !== 'PASS' && check.verdict !== 'NOT_APPLICABLE')
+    ) ||
+    (review.verification.issue_count ?? 0) > 0
     ? 'verification'
     : null
 }
 
-export function reviewIssueSummary(review: LiteratureReview): { total: number; hidden: number } {
-  const total = review.issue_count ?? review.issues.length
-  return { total, hidden: Math.max(0, total - review.issues.length) }
+export function reviewIssueSummary(review: LiteratureReview): {
+  total: number | null
+  shown: number
+  hidden: number
+} {
+  const shown = review.verification.rows.filter((row) => row.issue !== null).length
+  const total = review.verification.issue_count
+  return { total, shown, hidden: Math.max(0, (total ?? shown) - shown) }
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -169,7 +201,8 @@ export function reviewSupersessionKey(value: Record<string, unknown>): string | 
 
 export function searchSupersessionKey(value: Record<string, unknown>): string | null {
   if (
-    value.origin !== PRECISE_SEARCH_ORIGIN ||
+    typeof value.origin !== 'string' ||
+    !SUPERSEDED_SEARCH_ORIGINS.has(value.origin) ||
     typeof value.session_id !== 'string' ||
     !value.session_id.trim() ||
     typeof value.run_id !== 'string' ||
@@ -181,9 +214,76 @@ export function searchSupersessionKey(value: Record<string, unknown>): string | 
   return JSON.stringify([value.session_id, value.origin, value.run_id, value.round])
 }
 
+const isNullableCount = (value: unknown): boolean => value === null || isCount(value)
+
+function isReviewReference(value: unknown): boolean {
+  if (
+    !isRecord(value) ||
+    typeof value.citation_key !== 'string' ||
+    !value.citation_key ||
+    !(value.paper_id === null || typeof value.paper_id === 'string') ||
+    !isRecord(value.citation)
+  )
+    return false
+  const { citation, evidence, target } = value
+  return (
+    (citation.number === null || (isCount(citation.number) && citation.number !== 0)) &&
+    typeof citation.title === 'string' &&
+    typeof citation.authors === 'string' &&
+    (citation.year === null || typeof citation.year === 'number') &&
+    typeof citation.venue === 'string' &&
+    (evidence === null ||
+      (isRecord(evidence) &&
+        typeof evidence.reason === 'string' &&
+        (evidence.reason_code === undefined || typeof evidence.reason_code === 'string') &&
+        typeof evidence.basis === 'string' &&
+        Object.prototype.hasOwnProperty.call(REVIEW_EVIDENCE_BASIS_LABELS, evidence.basis) &&
+        isNullableCount(evidence.extracted_chars))) &&
+    (target === null ||
+      (isRecord(target) &&
+        (target.kind === 'library'
+          ? typeof target.item_id === 'string' && Boolean(target.item_id.trim())
+          : target.kind === 'web' && isReviewWebUrl(target.url))))
+  )
+}
+
+function isReviewWebUrl(value: unknown): boolean {
+  if (typeof value !== 'string') return false
+  try {
+    const url = new URL(value)
+    return (url.protocol === 'https:' || url.protocol === 'http:') && !url.username && !url.password
+  } catch {
+    return false
+  }
+}
+
+function isVerificationRow(value: unknown): boolean {
+  if (!isRecord(value) || (value.check === null && value.issue === null)) return false
+  const { check, issue } = value
+  return (
+    (check === null ||
+      (isRecord(check) &&
+        typeof check.id === 'string' &&
+        typeof check.title === 'string' &&
+        typeof check.reason === 'string' &&
+        typeof check.verdict === 'string' &&
+        Object.prototype.hasOwnProperty.call(REVIEW_VERDICTS, check.verdict))) &&
+    (issue === null ||
+      (isRecord(issue) &&
+        typeof issue.title === 'string' &&
+        typeof issue.detail === 'string' &&
+        isStrings(issue.paper_ids) &&
+        typeof issue.affected_content === 'string' &&
+        (issue.priority === null ||
+          issue.priority === 'urgent' ||
+          issue.priority === 'attention' ||
+          issue.priority === 'low')))
+  )
+}
+
 export function parseReview(value: Record<string, unknown>): LiteratureReview | null {
   if (
-    value.schema_version !== '1.1' ||
+    value.schema_version !== '1.2' ||
     typeof value.session_id !== 'string' ||
     !value.session_id ||
     typeof value.workspace !== 'string' ||
@@ -196,14 +296,12 @@ export function parseReview(value: Record<string, unknown>): LiteratureReview | 
     (value.generation_status != null &&
       (typeof value.generation_status !== 'string' ||
         !GENERATION_STATUSES.has(value.generation_status))) ||
-    ![value.included, value.fulltext, value.abstract_only, value.pending_checks, value.cited].every(
-      isOptionalCount
-    ) ||
+    ![value.included, value.fulltext, value.abstract_only].every(isOptionalCount) ||
     !isCount(value.section_count) ||
     !isStrings(value.warnings) ||
     !isRecord(value.source_hashes) ||
     !isRecord(value.scope) ||
-    typeof value.scope.topic !== 'string' ||
+    !(value.scope.topic === null || typeof value.scope.topic === 'string') ||
     typeof value.scope.time_range !== 'string' ||
     !isStrings(value.scope.focus) ||
     !isStrings(value.scope.requested_materials) ||
@@ -224,44 +322,21 @@ export function parseReview(value: Record<string, unknown>): LiteratureReview | 
         isStrings(section.children) &&
         isStrings(section.comparison_tables)
     ) ||
-    !Array.isArray(value.citations) ||
-    !value.citations.every(
-      (citation) =>
-        isRecord(citation) &&
-        typeof citation.title === 'string' &&
-        typeof citation.authors === 'string' &&
-        (citation.year === null || typeof citation.year === 'number') &&
-        typeof citation.venue === 'string'
-    ) ||
-    !Array.isArray(value.abstract_evidence) ||
-    !value.abstract_evidence.every(
-      (evidence) =>
-        isRecord(evidence) &&
-        typeof evidence.paper_id === 'string' &&
-        typeof evidence.title === 'string' &&
-        typeof evidence.reason === 'string' &&
-        (evidence.reason_code === undefined || typeof evidence.reason_code === 'string')
-    ) ||
-    !Array.isArray(value.checks) ||
-    !value.checks.every(
-      (check) =>
-        isRecord(check) &&
-        typeof check.title === 'string' &&
-        typeof check.reason === 'string' &&
-        typeof check.verdict === 'string' &&
-        Object.prototype.hasOwnProperty.call(REVIEW_VERDICTS, check.verdict)
-    ) ||
-    !Array.isArray(value.issues) ||
-    !value.issues.every(
-      (issue) =>
-        isRecord(issue) &&
-        typeof issue.title === 'string' &&
-        typeof issue.detail === 'string' &&
-        isStrings(issue.paper_ids) &&
-        typeof issue.affected_content === 'string'
-    ) ||
-    (value.issue_count != null &&
-      (!isCount(value.issue_count) || (value.issue_count as number) < value.issues.length)) ||
+    !isRecord(value.references) ||
+    ![
+      value.references.cited_count,
+      value.references.fulltext_cited_count,
+      value.references.abstract_cited_count,
+    ].every(isNullableCount) ||
+    !Array.isArray(value.references.rows) ||
+    !value.references.rows.every(isReviewReference) ||
+    !isRecord(value.verification) ||
+    !isNullableCount(value.verification.issue_count) ||
+    !Array.isArray(value.verification.rows) ||
+    !value.verification.rows.every(isVerificationRow) ||
+    (typeof value.verification.issue_count === 'number' &&
+      value.verification.issue_count <
+        value.verification.rows.filter((row) => row.issue !== null).length) ||
     !Array.isArray(value.artifacts) ||
     !value.artifacts.every(
       (artifact) =>

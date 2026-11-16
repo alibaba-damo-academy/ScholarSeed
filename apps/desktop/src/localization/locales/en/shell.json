@@ -19,7 +19,7 @@
     "projectOverview": "Home",
     "literatureOverview": "Literature Center",
     "selectProject": "Select project",
-    "globalSearch": "Search project files, tasks, literature, and materials (⌘K)",
+    "globalSearch": "Search project files, tasks, literature, and resources (⌘K)",
     "search": "Search",
     "collapseSidebar": "Collapse sidebar",
     "expandSidebar": "Expand sidebar",
@@ -119,7 +119,8 @@
     "syncing": "Syncing projects and recent tasks…",
     "connecting": "Connecting to the local service…",
     "signIn": "Sign in",
-    "reload": "Reload"
+    "reload": "Reload",
+    "upgradeTitle": "Upgrade ScholarSeed"
   },
   "notifications": {
     "title": "ScholarSeed task",
@@ -130,8 +131,11 @@
     "openFailed": "Could not open the project or task for this notification. Reopen it from the project list."
   },
   "delete": {
+    "children_one": "Its {{count}} child session will be kept and shown as an independent session.",
+    "children_other": "Its {{count}} child sessions will be kept and shown as independent sessions.",
+    "childrenFailed": "Could not load child sessions. Reopen this dialog to try again.",
     "title": "Delete task",
-    "filesRetained": "Active and queued work will be stopped automatically before the task and all intermediate and output artifacts are permanently deleted. Original imported or referenced materials, literature, and independent library copies will be kept.",
+    "filesRetained": "Active and queued work will be stopped automatically before the task and all intermediate and output artifacts are permanently deleted. Original imported or referenced resources, literature, and independent library copies will be kept.",
     "irreversible": "Are you sure you want to delete “<name/>”? The task and all its artifacts will be deleted. This cannot be undone.",
     "stopFailed": "Could not confirm that all work has stopped. The task has not been deleted. Please try again later.",
     "failed": "Deletion failed: the backend did not confirm it. Check the serve logs.",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import ntpath
 import os
@@ -10,18 +11,6 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
-import httpx
-
-from service.capabilities.domain import SKILL_ADMISSION_ROUTE, SkillAdmission
-from service.capabilities.service.source import verify_compiled_skill
-from service.cli.task import main as task_main
-from service.paths import SERVICE_BUNDLED_SKILLS_DIR
-from service.platform.channel import decode, request
-from service.platform.python import TASK_OPTION
-from service.platform.storage import filesystem_path
-from service.platform.vocabulary import BRIDGE_SESSION_ENV
-
-EXIT_FAILURE = 1
 EXIT_USAGE = 2
 DIAGNOSTIC_ARGUMENT = "--diagnostic-v1"
 DIAGNOSTIC_EVENT = "launcher_ready"
@@ -29,34 +18,11 @@ UTF8_ARGUMENTS = ("-X", "utf8")
 UTF8_ENVIRONMENT = {"PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
 
 VERSION_ARGUMENTS = (["--version"], ["-V"])
-PRODUCT_PYTHON_RESERVED = "product_python_reserved_for_bundled_skills"
 MODULE_ARGUMENT = "-m"
-PRODUCT_COMMANDS = frozenset({"service.cli.plugins"})
+PRODUCT_COMMANDS = {"service.cli.plugins": ("describe", "prepare", "validate", "check", "pack")}
 
 
-def admit_script(arguments: Sequence[str]) -> None:
-    if list(arguments) in VERSION_ARGUMENTS:
-        return
-    if arguments[0].startswith("-"):
-        raise ValueError(PRODUCT_PYTHON_RESERVED)
-    script = filesystem_path(Path(arguments[0]).expanduser()).resolve(strict=True)
-    bundled = filesystem_path(SERVICE_BUNDLED_SKILLS_DIR).resolve(strict=True)
-    relative = script.relative_to(bundled)
-    if len(relative.parts) < 2:
-        raise ValueError(PRODUCT_PYTHON_RESERVED)
-    inventory = verify_compiled_skill(bundled / relative.parts[0])
-    if Path(*relative.parts[1:]).as_posix() not in {item["path"] for item in inventory["files"]}:
-        raise ValueError(PRODUCT_PYTHON_RESERVED)
-    if not os.environ.get(BRIDGE_SESSION_ENV):
-        return
-    result = request(
-        SKILL_ADMISSION_ROUTE,
-        decode(json.dumps({"path": str(script)}), SkillAdmission),
-    )
-    if result.get("ok") is not True:
-        raise ValueError("skill_admission_denied")
-    if result.get("builtin") is not True:
-        raise ValueError(PRODUCT_PYTHON_RESERVED)
+EXECUTION_MODULE = "service.cli.skill"
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -78,24 +44,38 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         )
         return 0
-    if arguments and arguments[0] == TASK_OPTION:
-        return task_main(arguments[1:])
+    if len(arguments) >= 2 and arguments[0] == MODULE_ARGUMENT:
+        if arguments[1] in PRODUCT_COMMANDS:
+            if not any(argument in {"--help", "-h"} for argument in arguments[2:]):
+                parser = argparse.ArgumentParser(prog=arguments[1], add_help=False)
+                parser.add_argument("--host-version")
+                parser.add_argument("operation", choices=PRODUCT_COMMANDS[arguments[1]])
+                parser.parse_known_args(arguments[2:])
+            result = subprocess.run(
+                [sys.executable, "-B", *arguments],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            sys.stdout.write(result.stdout)
+            sys.stderr.write(result.stderr)
+            return result.returncode
+    if arguments in VERSION_ARGUMENTS:
+        print(f"Python {sys.version.split()[0]}")
+        return 0
     if not arguments:
         print("usage: scholarseed-skill-python <bundled-skill-script> [args ...]", file=sys.stderr)
         return EXIT_USAGE
-    try:
-        if not (
-            len(arguments) >= 2
-            and arguments[0] == MODULE_ARGUMENT
-            and arguments[1] in PRODUCT_COMMANDS
-        ):
-            admit_script(arguments)
-    except (ValueError, OSError, httpx.HTTPError) as error:
-        print(f"Skill unavailable: {error}", file=sys.stderr)
-        return EXIT_FAILURE
-    # These scripts exchange UTF-8 product data. Interpreter flags do not
-    # survive re-exec; the environment also protects their Python descendants.
-    command = [sys.executable, "-B", *UTF8_ARGUMENTS, *arguments]
+    isolation = ["-I"] if sys.flags.isolated else []
+    command = [
+        sys.executable,
+        *isolation,
+        "-B",
+        *UTF8_ARGUMENTS,
+        "-m",
+        EXECUTION_MODULE,
+        *arguments,
+    ]
     environment = {**os.environ, **UTF8_ENVIRONMENT}
     if sys.platform == "win32":
         # CRT exec does not preserve argv quoting or POSIX process replacement.

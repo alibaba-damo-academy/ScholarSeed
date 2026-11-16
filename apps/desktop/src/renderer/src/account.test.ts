@@ -20,6 +20,7 @@ import {
   dropSession,
   listApiKeys,
   markCreditsExhausted,
+  reconcileCreditsSummary,
   resetPassword,
   revokeApiKey,
   rotateApiKey,
@@ -657,6 +658,52 @@ test('a runtime exhaustion signal preserves known ledger fields while closing th
       },
     }
   )
+})
+
+test('an older balance response cannot reopen a gate closed by runtime exhaustion', () => {
+  const before = {
+    phase: 'ready' as const,
+    summary: parseCreditsSummary({ balance_credits: 7, enforcing: true }),
+  }
+  const exhausted = markCreditsExhausted(before)
+  const stale = parseCreditsSummary({ balance_credits: 3, enforcing: true })
+  assert.equal(reconcileCreditsSummary(exhausted, before.summary, stale), exhausted)
+  assert.equal(creditsBlockBuiltInModel(exhausted, { source: 'builtin' }), true)
+  const recharged = parseCreditsSummary({ balance_credits: 10, enforcing: true })
+  const refreshed = reconcileCreditsSummary(exhausted, exhausted.summary, recharged)
+  assert.equal(refreshed.summary, recharged)
+  assert.equal(creditsBlockBuiltInModel(refreshed, { source: 'builtin' }), false)
+})
+
+test('an initial balance request cannot overwrite exhaustion but ordinary refreshes still apply', () => {
+  const exhausted = markCreditsExhausted({ phase: 'loading', summary: null })
+  const positive = parseCreditsSummary({ balance_credits: 5, enforcing: true })
+  assert.equal(reconcileCreditsSummary(exhausted, null, positive), exhausted)
+  const loading = { phase: 'loading' as const, summary: null }
+  assert.deepEqual(reconcileCreditsSummary(loading, null, positive), {
+    phase: 'ready',
+    summary: positive,
+  })
+  assert.equal(
+    reconcileCreditsSummary({ phase: 'error', summary: positive }, positive, exhausted.summary!)
+      .summary,
+    exhausted.summary
+  )
+})
+
+test('post-exhaustion queries cannot reopen the gate with the unchanged pre-settlement ledger', () => {
+  const ledger = parseCreditsSummary({
+    balance_credits: 9,
+    granted_credits: 20,
+    used_credits: 11,
+    enforcing: true,
+  })
+  const exhausted = markCreditsExhausted({ phase: 'ready', summary: ledger })
+  assert.equal(reconcileCreditsSummary(exhausted, exhausted.summary, ledger), exhausted)
+  const funded = { ...ledger, granted_credits: 30, balance_credits: 19 }
+  assert.equal(reconcileCreditsSummary(exhausted, exhausted.summary, funded).summary, funded)
+  const settled = { ...ledger, used_credits: 21, balance_credits: 0 }
+  assert.equal(reconcileCreditsSummary(exhausted, exhausted.summary, settled).summary, settled)
 })
 
 test('a long-lived grant keeps a null expiry instead of an invented date', () => {

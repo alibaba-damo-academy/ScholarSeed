@@ -1,5 +1,7 @@
 /** User-initiated Office image acquisition; never accepts a filesystem path. */
 export const OFFICE_IMAGE_CHANNEL = 'scholarseed:office-image'
+export const REMOTE_IMAGE_CHANNEL = 'scholarseed:remote-image'
+export type RemoteImageResult = Extract<OfficeImageResult, { status: 'image' | 'error' }>
 export const OFFICE_IMAGE_BYTES_PER_MIB = 1024 * 1024
 export const OFFICE_IMAGE_MAX_BYTES = 32 * OFFICE_IMAGE_BYTES_PER_MIB
 export const OFFICE_IMAGE_MAX_PIXELS = 40_000_000
@@ -11,7 +13,15 @@ export type OfficeImageResult =
   | { status: 'empty' | 'cancelled' }
   | ({ status: 'error' } & OfficeImageFailure)
 
-export type OfficeImageErrorCode = 'pixel_limit' | 'byte_limit' | 'invalid_file' | 'unreadable' | 'unsupported_source' | 'clipboard_limit' | 'invalid_sender' | 'read_failed'
+export type OfficeImageErrorCode =
+  | 'pixel_limit'
+  | 'byte_limit'
+  | 'invalid_file'
+  | 'unreadable'
+  | 'unsupported_source'
+  | 'clipboard_limit'
+  | 'invalid_sender'
+  | 'read_failed'
 export interface OfficeImageFailure {
   code: OfficeImageErrorCode
   message?: string

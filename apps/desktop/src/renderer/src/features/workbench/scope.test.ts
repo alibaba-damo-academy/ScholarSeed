@@ -190,6 +190,10 @@ test('module splitter panels preserve the workbench height chain', () => {
 })
 
 test('project center stays above global navigation and preserves existing scope transitions', () => {
+  assert.ok(
+    railSource.includes("'grid content-start justify-items-center gap-[var(--vds-space-1)]'")
+  )
+  assert.ok(railSource.includes("'mt-auto grid justify-items-center gap-[var(--vds-space-1)]'"))
   assert.match(railSource, /const items = \[HOME_ACTIVITY_ITEM, \.\.\.contributed\]\s*\.sort/)
   assert.match(railSource, /const HOME_SPACE_KEYS = \['home', 'literature', 'skills'\]/)
   assert.match(railSource, /HOME_SPACE_KEYS\.includes\(view\.key\)/)
@@ -221,6 +225,17 @@ test('module and docked assistant panels collapse without remounting the workben
   assert.match(resizableSource, /element\.inert = isLeftCollapsed/)
   assert.match(resizableSource, /width: isLeftCollapsed\s*\? '0%'/)
   assert.match(resizableSource, /isLeftCollapsed\s*\? '100%'/)
+})
+
+test('the collapsed workbench visually hides its mounted content, including fixed overlays', () => {
+  assert.match(
+    projectWorkspaceSource,
+    /data-testid="workspace-content"\s+data-workbench-motion="workspace"\s+style=\{workspaceVisible \? undefined : \{ visibility: 'hidden' \}\}/
+  )
+  assert.match(
+    projectWorkspaceSource,
+    /const workspaceVisible = workspaceOpen && !conversationFull/
+  )
 })
 
 test('renderer selects one real document workspace controller per project without a global facade', () => {

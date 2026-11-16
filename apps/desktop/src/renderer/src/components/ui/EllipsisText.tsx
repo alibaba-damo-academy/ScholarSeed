@@ -68,7 +68,13 @@ export const EllipsisText = forwardRef<HTMLSpanElement, EllipsisTextProps>(
         portalled={tooltipPortalled}
         side={tooltipSide}
       >
-        <span className={cx('block min-w-0 truncate', className)} data-slot="ellipsis-text" ref={setTextRef} {...props}>
+        <span
+          className={cx('block min-w-0 truncate', className)}
+          data-slot="ellipsis-text"
+          data-overflowing={overflowing || undefined}
+          ref={setTextRef}
+          {...props}
+        >
           {children}
         </span>
       </Tooltip>

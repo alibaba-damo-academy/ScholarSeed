@@ -9,6 +9,7 @@ import type {
 } from './api'
 import {
   isTurnBoundary,
+  USER_INTERRUPT_REASON,
   type ConvItem,
   type ModelRun,
   type DisplayCardData,
@@ -26,6 +27,7 @@ import {
   browserApprovalResolution,
   browserHistoryApprovalResolution,
   projectHilCard,
+  reviseHilCard,
   hilEventResolution,
   hilTimestamp,
   isQuestionHil,
@@ -35,15 +37,21 @@ import {
 const LEGACY_PREVIEW_DELIVERY_ID_PREFIX = 'legacy-preview'
 const STREAM_IDENTITY_SEPARATOR = '::'
 const EVENT_SECONDS_TO_MILLISECONDS = 1000
+const FALLBACK_TOOL_NAME = 'tool'
 const USER_INTERRUPTED_PRESENTATION = {
   tone: 'experience' as const,
   hideIcon: true,
   displayMessage: feedback('components', 'stream.stopped'),
+  interruptionReason: USER_INTERRUPT_REASON,
 }
 const TURN_INTERRUPTED_PRESENTATIONS: Record<
   string,
-  Pick<Extract<ConvItem, { kind: 'status' }>, 'tone' | 'hideIcon' | 'displayMessage'>
+  Pick<
+    Extract<ConvItem, { kind: 'status' }>,
+    'tone' | 'hideIcon' | 'displayMessage' | 'interruptionReason'
+  >
 > = {
+  user_requested: USER_INTERRUPTED_PRESENTATION,
   process_exit: {
     tone: 'tension',
     hideIcon: false,
@@ -55,6 +63,69 @@ const ARTIFACT_FAILURE_KEYS = {
   artifact_snapshot_source_changed: 'artifactFailure.changed',
   artifact_declaration_conflict: 'artifactFailure.conflict',
 } as const
+const GENERATION_PREVIEW_STATUSES = new Set([
+  'streaming',
+  'generated',
+  'unavailable',
+  'failed',
+  'cancelled',
+  'timeout',
+])
+const GENERATION_PREVIEW_BLOCK_KINDS = new Set(['heading1', 'heading2', 'paragraph'])
+
+/** Preview snapshots are display-only prose, never an answer or a published file. */
+export function projectGenerationPreview(
+  items: ConvItem[],
+  event: Extract<ProductEvent, { type: 'generation_preview' }>
+): ConvItem[] {
+  const data = event.data
+  if (
+    !event.turn_id ||
+    !data ||
+    typeof data.preview_id !== 'string' ||
+    !data.preview_id ||
+    event.item_id !== data.preview_id ||
+    data.verified !== false ||
+    !Number.isSafeInteger(data.revision) ||
+    data.revision < 1 ||
+    !GENERATION_PREVIEW_STATUSES.has(data.status) ||
+    !Array.isArray(data.blocks) ||
+    data.blocks.some(
+      (block) =>
+        !block ||
+        typeof block.id !== 'string' ||
+        !block.id ||
+        !GENERATION_PREVIEW_BLOCK_KINDS.has(block.kind) ||
+        typeof block.text !== 'string'
+    ) ||
+    new Set(data.blocks.map((block) => block.id)).size !== data.blocks.length
+  )
+    return items
+  const index = items.findIndex(
+    (item) => item.kind === 'generation_preview' && item.preview.preview_id === data.preview_id
+  )
+  const current = items[index]
+  if (
+    current?.kind === 'generation_preview' &&
+    (current.turnId !== event.turn_id ||
+      current.preview.revision >= data.revision ||
+      (current.preview.status !== 'streaming' && data.status === 'streaming') ||
+      (['failed', 'cancelled', 'timeout'].includes(current.preview.status) &&
+        data.status !== current.preview.status))
+  )
+    return items
+  const preview: ConvItem = {
+    kind: 'generation_preview',
+    preview: { ...data, blocks: data.blocks.map((block) => ({ ...block })) },
+    turnId: event.turn_id,
+    itemId: data.preview_id,
+    eventSeq: current?.eventSeq ?? event.seq,
+  }
+  if (index < 0) return insertTurnRuntimeItem(items, preview)
+  const next = [...items]
+  next[index] = preview
+  return next
+}
 
 export function projectArtifactFailure(
   items: ConvItem[],
@@ -75,20 +146,32 @@ export function projectArtifactFailure(
   })
 }
 const STEER_MESSAGE_LABEL = '已用于当前任务'
+const REAUTHORIZATION_DISPLAY = '已重新授权，继续原任务。'
 
-function recoveryStatus(
+function reauthorizationMessage(origin: string | undefined, text: string, cancelled: boolean) {
+  return origin === 'authorization' && text === REAUTHORIZATION_DISPLAY && !cancelled
+    ? feedback('conversation', 'authorization.renewed')
+    : undefined
+}
+
+function continuationStatus(
   identity: TurnOwned,
-  cancelled: boolean
+  cancelled: boolean,
+  origin: 'recovery' | 'authorization' = 'recovery'
 ): Extract<ConvItem, { kind: 'status' }> {
   return {
     kind: 'status',
     turnBoundary: true,
     text: '',
     tone: 'experience',
-    displayMessage: feedback(
-      'components',
-      cancelled ? 'stream.automaticRecoveryCancelled' : 'stream.automaticRecovery'
-    ),
+    ...(origin === 'recovery'
+      ? {
+          displayMessage: feedback(
+            'components',
+            cancelled ? 'stream.automaticRecoveryCancelled' : 'stream.automaticRecovery'
+          ),
+        }
+      : {}),
     retainOnHistoryRefresh: true,
     ...identity,
   }
@@ -267,6 +350,7 @@ export function projectStreamDelta(
           ...(modelRun ? { modelRun } : {}),
           ...(eventSeq !== undefined ? { eventSeq } : {}),
         }
+  if (eventSeq !== undefined) return insertTurnRuntimeItem(conversation, item)
   const artifactIndex =
     kind === 'agent'
       ? conversation.findIndex((row) => row.kind === 'artifact' && row.turnId === turnId)
@@ -396,6 +480,9 @@ function projectMessageReferences(
           anchor: {
             ...(reference.anchor.document_id ? { documentId: reference.anchor.document_id } : {}),
             previewText: reference.anchor.preview_text,
+            ...(typeof reference.anchor.snapshot_text === 'string'
+              ? { snapshotText: reference.anchor.snapshot_text }
+              : {}),
             locator: reference.anchor.locator,
           },
         }
@@ -424,6 +511,9 @@ export function projectAssistantContextRefs(
           anchor: {
             ...(ref.anchor.document_id ? { documentId: ref.anchor.document_id } : {}),
             previewText: ref.anchor.preview_text,
+            ...(typeof ref.anchor.snapshot_text === 'string'
+              ? { snapshotText: ref.anchor.snapshot_text }
+              : {}),
             locator: ref.anchor.locator,
           },
         }
@@ -433,6 +523,10 @@ export function projectAssistantContextRefs(
 
 export function isUserHistoryTurn(turn: Pick<HistoryTurn, 'kind' | 'role'>): boolean {
   return turn.kind === 'user' || (turn.kind === 'text' && turn.role === 'user')
+}
+
+export function normalizeToolName(name: unknown, fallback = FALLBACK_TOOL_NAME): string {
+  return typeof name === 'string' && name.trim() ? name : fallback
 }
 
 /** Rebuild server transcript turns into Desktop conversation items. */
@@ -454,10 +548,11 @@ export function projectHistory(turns: HistoryTurn[]): ConvItem[] {
     } else if (turn.kind === 'delivery' && turn.delivery) {
       out.push({ ...projectDelivery(turn.delivery), ...identity })
     } else if (turn.kind === 'tool') {
+      const name = normalizeToolName(turn.tool)
       out.push({
         kind: 'tool',
-        toolId: turn.item_id || `hist-${toolIndex++}-${turn.tool ?? 'tool'}`,
-        name: turn.tool ?? 'tool',
+        toolId: turn.item_id || `hist-${toolIndex++}-${name}`,
+        name,
         status: historyToolStatus(turn),
         input: turn.input,
         result: turn.output ?? undefined,
@@ -465,13 +560,18 @@ export function projectHistory(turns: HistoryTurn[]): ConvItem[] {
         ...identity,
       })
     } else if (isUserHistoryTurn(turn)) {
-      if (turn.origin === 'recovery') {
-        out.push(recoveryStatus(identity, turn.status === 'cancelled'))
+      const displayMessage = reauthorizationMessage(turn.origin, text, turn.status === 'cancelled')
+      if (turn.origin === 'recovery' || (turn.origin === 'authorization' && !displayMessage)) {
+        out.push(continuationStatus(identity, turn.status === 'cancelled', turn.origin))
         continue
       }
       out.push({
         kind: 'user',
         text,
+        ...(displayMessage ? { displayMessage } : {}),
+        ...(turn.sent_at !== undefined && Number.isFinite(turn.sent_at)
+          ? { startedAt: turn.sent_at * EVENT_SECONDS_TO_MILLISECONDS }
+          : {}),
         ...(turn.status === 'cancelled' ? { cancelled: true as const } : {}),
         rewindAnchor: turn.rewind_anchor,
         refs: projectMessageReferences(turn.refs),
@@ -544,21 +644,42 @@ export function upsertUserMessageEvent(
   items: ConvItem[],
   event: Extract<ProductEvent, { type: 'user_message' }>
 ): ConvItem[] {
-  if (event.data.origin === 'recovery') {
+  const displayMessage = reauthorizationMessage(
+    event.data.origin,
+    event.data.text,
+    event.data.binding === 'cancelled'
+  )
+  if (event.data.origin === 'authorization') {
+    const previous = items.find(
+      (item) => item.itemId === (event.item_id || event.data.client_turn_id)
+    )
+    const previousSeq =
+      previous?.kind === 'status' ? (previous.bindingSeq ?? previous.eventSeq) : previous?.eventSeq
+    if ((previousSeq ?? -1) > event.seq) return items
+  }
+  if (
+    event.data.origin === 'recovery' ||
+    (event.data.origin === 'authorization' && !displayMessage)
+  ) {
     const itemId = event.item_id || event.data.client_turn_id
-    const status = recoveryStatus(
+    const status = continuationStatus(
       {
         itemId,
         turnId: event.turn_id || event.data.client_turn_id,
         eventSeq: event.seq,
       },
-      event.data.binding === 'cancelled'
+      event.data.binding === 'cancelled',
+      event.data.origin
     )
     const index = items.findIndex((item) => item.itemId === itemId)
     if (index < 0) return insertTurnRuntimeItem(items, { ...status, bindingSeq: event.seq })
     const previous = items[index]
-    if (previous.kind !== 'status') return items
-    if ((previous.bindingSeq ?? previous.eventSeq ?? -1) > event.seq) return items
+    if (previous.kind !== 'status' && previous.kind !== 'user') return items
+    if (
+      ((previous.kind === 'status' ? previous.bindingSeq : undefined) ?? previous.eventSeq ?? -1) >
+      event.seq
+    )
+      return items
     return items.map((item, position) =>
       position === index
         ? { ...status, eventSeq: previous.eventSeq ?? event.seq, bindingSeq: event.seq }
@@ -590,6 +711,8 @@ export function upsertUserMessageEvent(
     const reconciled = {
       ...current,
       text: event.data.text,
+      ...(displayMessage ? { displayMessage, eventSeq: event.seq } : {}),
+      startedAt: current.startedAt ?? eventTimestampMs(event),
       refs,
       ...(event.data.binding === 'cancelled' ? { cancelled: true as const } : {}),
       ...(event.data.origin === 'steer'
@@ -611,6 +734,8 @@ export function upsertUserMessageEvent(
     {
       kind: 'user',
       text: event.data.text,
+      ...(displayMessage ? { displayMessage, eventSeq: event.seq } : {}),
+      startedAt: eventTimestampMs(event),
       refs,
       ...(event.data.binding === 'cancelled' ? { cancelled: true as const } : {}),
       ...(event.data.origin === 'steer'
@@ -659,11 +784,10 @@ export function resolveHilItem(
     (item): item is HilItem => item.kind === 'hil' && item.requestId === requestId
   )
   if (!previous) return items
+  if (eventSeq === undefined && previous.hilState === 'resolved' && patch.hilState !== 'resolved')
+    return items
   const resolved = { ...previous, ...patch }
-  const hasAnswer =
-    isQuestionHil(resolved) &&
-    resolved.hilState === 'resolved' &&
-    Object.keys(resolved.answers ?? {}).length > 0
+  const hasAnswer = isQuestionHil(resolved) && resolved.hilState === 'resolved'
   if (!hasAnswer || (eventSeq === undefined && previous.hilState === 'resolved')) {
     return items.map((item) => (item === previous ? resolved : item))
   }
@@ -747,7 +871,7 @@ export function insertTurnRuntimeItem(items: ConvItem[], runtimeItem: ConvItem):
 type WebSearchEvent = Extract<
   ProductEvent,
   {
-    type: 'web_search_started' | 'web_search_completed'
+    type: 'web_search_started' | 'web_search_completed' | 'source_candidates'
   }
 >
 type WebSearchPlacement = 'history' | 'live'
@@ -818,6 +942,21 @@ export function projectWebSearchEvent(
   event: WebSearchEvent,
   placement: WebSearchPlacement = 'history'
 ): ConvItem[] {
+  if (event.type === 'source_candidates') {
+    return projectWebSearchEvent(
+      items,
+      {
+        ...event,
+        type: 'web_search_completed',
+        data: {
+          ...event.data,
+          search_id: `source:${event.data.search_id}:${event.seq}`,
+          action: { type: 'search', query: event.data.query, purpose: event.data.purpose },
+        },
+      },
+      placement
+    )
+  }
   const index = items.findIndex(
     (item) =>
       item.kind === 'web_search' &&
@@ -1321,6 +1460,12 @@ function replayedActivityIdentities(events: ProductEvent[]): ReplayedActivityIde
       event.type === 'tool_completed'
     ) {
       identities.push({ kind: 'tool', turnId: event.turn_id, id: event.data.tool_id })
+    } else if (event.type === 'source_candidates') {
+      identities.push({
+        kind: 'web_search',
+        turnId: event.turn_id,
+        id: `source:${event.data.search_id}:${event.seq}`,
+      })
     } else if (event.type === 'web_search_started' || event.type === 'web_search_completed') {
       identities.push({ kind: 'web_search', turnId: event.turn_id, id: event.data.search_id })
     } else if (event.type === 'paper_search_started' || event.type === 'paper_search_completed') {
@@ -1366,10 +1511,18 @@ function activityIdentity(item: ConvItem): string | undefined {
 export function settleInterruptedActivities(
   items: ConvItem[],
   turnId: string | undefined,
-  completedAt: number
+  completedAt: number,
+  previewStatus: 'cancelled' | 'failed' = 'cancelled'
 ): ConvItem[] {
   if (!turnId) return items
   return items.map((item) => {
+    if (
+      item.kind === 'generation_preview' &&
+      item.turnId === turnId &&
+      item.preview.status === 'streaming'
+    ) {
+      return { ...item, preview: { ...item.preview, status: previewStatus } }
+    }
     if (item.turnId !== turnId) return item
     if (item.kind !== 'tool' && item.kind !== 'native_activity') return item
     if (item.status !== 'running') return item
@@ -1384,25 +1537,67 @@ export function projectTurnInterruption(
   event: Extract<ProductEvent, { type: 'turn_interrupted' }>
 ): ConvItem[] {
   const settled = settleInterruptedActivities(items, event.turn_id, eventTimestampMs(event))
-  if (
-    settled.some(
-      (item) =>
-        item.kind === 'status' && item.turnId === event.turn_id && item.eventSeq === event.seq
-    )
+  const existing = settled.find(
+    (item) => item.kind === 'status' && item.turnId === event.turn_id && item.eventSeq === event.seq
   )
-    return settled
   const reason = event.data.reason ?? ''
   const presentation = Object.prototype.hasOwnProperty.call(TURN_INTERRUPTED_PRESENTATIONS, reason)
     ? TURN_INTERRUPTED_PRESENTATIONS[reason]
-    : USER_INTERRUPTED_PRESENTATION
-  return insertTurnRuntimeItem(settled, {
+    : {
+        tone: 'experience' as const,
+        hideIcon: true,
+        displayMessage: feedback('components', 'stream.interrupted'),
+        interruptionReason: reason || USER_INTERRUPT_REASON,
+      }
+  const notice: ConvItem = existing ?? {
     kind: 'status',
     text: '',
     ...presentation,
+    interruptionReason: presentation.interruptionReason ?? (reason || USER_INTERRUPT_REASON),
     retainOnHistoryRefresh: true,
     turnId: event.turn_id,
     itemId: event.item_id,
     eventSeq: event.seq,
+  }
+  const remaining = settled.filter((item) => item !== existing)
+  let insertionIndex = remaining.length
+  for (let index = remaining.length - 1; index >= 0; index -= 1) {
+    if (remaining[index].turnId !== event.turn_id) continue
+    insertionIndex = index + 1
+    break
+  }
+  return [...remaining.slice(0, insertionIndex), notice, ...remaining.slice(insertionIndex)]
+}
+
+export function projectToolCompletion(
+  items: ConvItem[],
+  event: Extract<ProductEvent, { type: 'tool_completed' }>,
+  completedAt: number | undefined
+): ConvItem[] {
+  const acknowledged =
+    event.data.success &&
+    items.some(
+      (item) =>
+        item.kind === 'tool' && item.toolId === event.data.tool_id && item.turnId === event.turn_id
+    )
+  return items.map((item) => {
+    if (item.kind !== 'tool' || item.turnId !== event.turn_id) return item
+    if (item.toolId === event.data.tool_id)
+      return {
+        ...item,
+        name: normalizeToolName(event.data.name, normalizeToolName(item.name)),
+        result: event.data.output ?? item.result,
+        exitCode: event.data.exit_code ?? item.exitCode,
+        status: event.data.success ? 'done' : 'error',
+        completedAt,
+      }
+    if (
+      item.status === 'error' &&
+      acknowledged &&
+      event.data.resolved_tool_ids?.includes(item.toolId)
+    )
+      return { ...item, recoveredBy: event.data.tool_id }
+    return item
   })
 }
 
@@ -1410,7 +1605,18 @@ export function projectTurnInterruption(
 export function projectActivityEvents(items: ConvItem[], events: ProductEvent[]): ConvItem[] {
   const ordered = [...events].sort((left, right) => left.seq - right.seq)
   const replayed = replayedActivityIdentities(ordered)
+  const interruptionNotices = items.filter(
+    (item) =>
+      item.kind === 'status' &&
+      ordered.some(
+        (event) =>
+          event.type === 'turn_interrupted' &&
+          event.turn_id === item.turnId &&
+          event.seq === item.eventSeq
+      )
+  )
   const durableItems = items.filter((item) => {
+    if (interruptionNotices.includes(item)) return false
     const id = activityIdentity(item)
     if (!id) return true
     return !replayed.some(
@@ -1420,6 +1626,7 @@ export function projectActivityEvents(items: ConvItem[], events: ProductEvent[])
   })
   return ordered.reduce<ConvItem[]>(
     (conversation, event) => {
+      if (event.type === 'generation_preview') return projectGenerationPreview(conversation, event)
       if (event.type === 'hil_requested') {
         if (!event.data.request_id) return conversation
         const existing = conversation.find(
@@ -1429,11 +1636,14 @@ export function projectActivityEvents(items: ConvItem[], events: ProductEvent[])
           conversation.filter((item) => item !== existing),
           existing?.kind === 'hil'
             ? {
-                ...existing,
+                ...reviseHilCard(existing, event.data),
                 turnId: existing.turnId ?? event.turn_id,
                 itemId: existing.itemId ?? event.item_id,
-                eventSeq: event.seq,
-                requestedAt: hilTimestamp(event.data.requested_at ?? event.ts),
+                eventSeq: existing.eventSeq ?? event.seq,
+                requestedAt: Math.min(
+                  existing.requestedAt ?? Infinity,
+                  hilTimestamp(event.data.requested_at ?? event.ts)
+                ),
               }
             : projectHilCard(event.data, event.ts, event.turn_id, event.item_id, event.seq)
         )
@@ -1464,6 +1674,11 @@ export function projectActivityEvents(items: ConvItem[], events: ProductEvent[])
                   }
                 : {}),
             answers: event.data.answers,
+            answerDetails: event.data.answer_details,
+            selectedPaperIds: event.data.selected_paper_ids,
+            decisionSource: event.data.decision_source,
+            freeText: event.data.free_text,
+            timedOut: event.data.timed_out,
             decisionScope: event.data.decision_scope,
             hilState: event.data.state,
           },
@@ -1471,7 +1686,18 @@ export function projectActivityEvents(items: ConvItem[], events: ProductEvent[])
         )
       }
       if (event.type === 'turn_interrupted') {
-        return projectTurnInterruption(conversation, event)
+        return projectTurnInterruption(
+          [
+            ...conversation,
+            ...interruptionNotices.filter(
+              (item) =>
+                item.turnId === event.turn_id &&
+                item.eventSeq === event.seq &&
+                !conversation.includes(item)
+            ),
+          ],
+          event
+        )
       }
       if (event.type === 'turn_unknown' || event.type === 'turn_reconciled') {
         return settleInterruptedActivities(
@@ -1485,7 +1711,8 @@ export function projectActivityEvents(items: ConvItem[], events: ProductEvent[])
         const settled = settleInterruptedActivities(
           conversation,
           event.turn_id,
-          eventTimestampMs(event)
+          eventTimestampMs(event),
+          'failed'
         )
         const existingIndex = settled.findIndex(
           (item) =>
@@ -1531,8 +1758,10 @@ export function projectActivityEvents(items: ConvItem[], events: ProductEvent[])
         return insertTurnRuntimeItem(conversation, {
           kind: 'tool',
           toolId: event.data.tool_id,
-          name: event.data.name,
+          name: normalizeToolName(event.data.name),
           input: event.data.input,
+          batchId: event.data.batch_id,
+          retryOf: event.data.retry_of,
           status: 'running',
           turnId: event.turn_id,
           itemId: event.item_id,
@@ -1550,22 +1779,13 @@ export function projectActivityEvents(items: ConvItem[], events: ProductEvent[])
         )
       }
       if (event.type === 'tool_completed') {
-        return conversation.map((item) =>
-          item.kind === 'tool' &&
-          item.toolId === event.data.tool_id &&
-          item.turnId === event.turn_id
-            ? {
-                ...item,
-                name: event.data.name || item.name,
-                result: event.data.output ?? item.result,
-                exitCode: event.data.exit_code ?? item.exitCode,
-                status: event.data.success ? 'done' : 'error',
-                completedAt: eventTimestampMs(event),
-              }
-            : item
-        )
+        return projectToolCompletion(conversation, event, eventTimestampMs(event))
       }
-      if (event.type === 'web_search_started' || event.type === 'web_search_completed') {
+      if (
+        event.type === 'web_search_started' ||
+        event.type === 'web_search_completed' ||
+        event.type === 'source_candidates'
+      ) {
         return projectWebSearchEvent(conversation, event)
       }
       if (event.type === 'paper_search_started' || event.type === 'paper_search_completed') {
@@ -1597,12 +1817,14 @@ export function projectActivityEvents(items: ConvItem[], events: ProductEvent[])
 }
 
 type DisplayCardEvent = Extract<ProductEvent, { type: 'display_card' }>
+const RETIRED_DISPLAY_CARDS = new Set(['literature-downloads', 'literature-delivery'])
 
 export function projectDisplayCardEvent(
   items: ConvItem[],
   event: DisplayCardEvent,
   presentationSource: 'live' | 'history' = 'history'
 ): ConvItem[] {
+  if (RETIRED_DISPLAY_CARDS.has(event.data.type)) return items
   const projected: ConvItem = {
     kind: 'display_card',
     card: {
@@ -1688,6 +1910,7 @@ function isRuntimeTranscriptItem(item: ConvItem): boolean {
     item.kind === 'artifact' ||
     item.kind === 'review' ||
     item.kind === 'display_card' ||
+    item.kind === 'generation_preview' ||
     item.kind === 'error' ||
     item.kind === 'hil' ||
     (item.kind === 'status' && item.retainOnHistoryRefresh === true)
@@ -1705,6 +1928,7 @@ function sameDurableAnchor(left: ConvItem, right: ConvItem): boolean {
   if (left.kind === 'review' && right.kind === 'review') {
     return left.review.batchId === right.review.batchId
   }
+  if (left.itemId && left.itemId === right.itemId) return true
   if (
     left.kind === 'thinking' &&
     right.kind === 'thinking' &&
@@ -1775,8 +1999,16 @@ export function projectHistoryWithRuntime(turns: HistoryTurn[], current: ConvIte
     return [{ item, nextDurable }]
   })
   const projected = projectHistory(turns).map((item) => {
-    if (item.kind !== 'status' || !item.turnBoundary) return item
-    const previous = current.find((candidate) => sameDurableAnchor(candidate, item))
+    const assistant = item.kind === 'agent' || item.kind === 'thinking'
+    if (!assistant && (item.kind !== 'status' || !item.turnBoundary)) return item
+    const previous = current.find((candidate) =>
+      assistant
+        ? Boolean(item.itemId) &&
+          candidate.itemId === item.itemId &&
+          candidate.turnId === item.turnId &&
+          (candidate.kind === 'agent' || candidate.kind === 'thinking')
+        : sameDurableAnchor(candidate, item)
+    )
     return previous?.eventSeq === undefined
       ? item
       : {
@@ -1857,7 +2089,8 @@ export function projectHistorySnapshot(history: HistoryResult, current: ConvItem
         ? settleInterruptedActivities(
             items,
             turn.turn_id,
-            (turn.completed_at ?? turn.started_at) * EVENT_SECONDS_TO_MILLISECONDS
+            (turn.completed_at ?? turn.started_at) * EVENT_SECONDS_TO_MILLISECONDS,
+            turn.outcome === 'failed' ? 'failed' : 'cancelled'
           )
         : items,
     activities

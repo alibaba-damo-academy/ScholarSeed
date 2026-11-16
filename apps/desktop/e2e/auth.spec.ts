@@ -1,6 +1,6 @@
 import { readFileSync, readdirSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import { expect, test, type Page, type TestInfo } from '@playwright/test'
+import { expect, test, type Page } from '@playwright/test'
 import { ONBOARDING_GROUPS } from '../src/onboarding'
 import { WORKSPACE_WINDOW_MINIMUM, WORKSPACE_WINDOW_SIZE } from '../src/window'
 import { DesktopSession, enterWorkbenchShell } from './fixtures/electron'
@@ -177,10 +177,10 @@ test.describe('authenticated', () => {
    * launch 返回即还原），登出时的整族吊销等 best-effort 外呼不会触达真实服务。
    */
   async function launchAuthenticated(
-    testInfo: TestInfo,
+    desktop: DesktopSession,
     config: Partial<MockAccountConfig> = {}
-  ): Promise<{ desktop: DesktopSession; page: Page; account: MockAccountConfig }> {
-    const runtime = createRuntime(testInfo)
+  ): Promise<{ page: Page; account: MockAccountConfig }> {
+    const runtime = desktop.runtime
     const preferences = join(runtime.userData, PREFERENCES_FILE)
     writeFileSync(preferences, JSON.stringify({
       ...JSON.parse(readFileSync(preferences, 'utf8')),
@@ -189,7 +189,6 @@ test.describe('authenticated', () => {
     await seedAuthTokens(runtime, config)
     const previousAccountBase = process.env[ACCOUNT_BASE_ENV]
     process.env[ACCOUNT_BASE_ENV] = UNREACHABLE_ACCOUNT_BASE
-    const desktop = new DesktopSession(runtime, testInfo)
     let page: Page
     try {
       page = await desktop.launch()
@@ -203,12 +202,14 @@ test.describe('authenticated', () => {
       json: { ...authStatusPayload('authenticated'), account_base_url: accountBase }
     }))
     await adoptSeededAuth(page, runtime)
-    return { desktop, page, account }
+    return { page, account }
   }
 
   test('landing page auto-dismisses', async ({}, testInfo) => {
-    const { desktop, page, account } = await launchAuthenticated(testInfo)
+    const desktop = new DesktopSession(createRuntime(testInfo), testInfo)
+    let failure: { error: unknown } | undefined
     try {
+      const { page, account } = await launchAuthenticated(desktop)
       // 已登录：登录层 / 首页任何变体都不出现，外壳直达工作台。
       await expect(page.getByRole('dialog', { name: LANDING_ARIA_LABEL })).toHaveCount(0)
       await expect(page.getByTestId(ACCOUNT_LOGIN_TEST_ID)).toHaveCount(0)
@@ -224,14 +225,19 @@ test.describe('authenticated', () => {
       await expect(page.getByTestId(MENU_NAME_TEST_ID)).toHaveText(account.displayName)
       await page.screenshot({ path: join(desktop.runtime.artifacts, 'auth-no-landing.png') })
       desktop.assertNoPageErrors()
+    } catch (error) {
+      failure = { error }
+      throw error
     } finally {
-      await desktop.attachArtifacts()
+      await desktop.attachArtifacts(failure)
     }
   })
 
   test('account menu shows identity and credits', async ({}, testInfo) => {
-    const { desktop, page, account } = await launchAuthenticated(testInfo)
+    const desktop = new DesktopSession(createRuntime(testInfo), testInfo)
+    let failure: { error: unknown } | undefined
     try {
+      const { page, account } = await launchAuthenticated(desktop)
       await expect(page.getByTestId(ACTIVITY_ACCOUNT_TEST_ID)).toHaveAttribute(
         'aria-label',
         avatarLabel(account.displayName)
@@ -247,8 +253,11 @@ test.describe('authenticated', () => {
       await expect(page.getByTestId(MENU_LOGOUT_TEST_ID)).toBeVisible()
       await page.screenshot({ path: join(desktop.runtime.artifacts, 'auth-menu-identity.png') })
       desktop.assertNoPageErrors()
+    } catch (error) {
+      failure = { error }
+      throw error
     } finally {
-      await desktop.attachArtifacts()
+      await desktop.attachArtifacts(failure)
     }
   })
 
@@ -258,8 +267,10 @@ test.describe('authenticated', () => {
     { name: 'long English account', language: 'en', credits: 999999999999999, displayName: 'A long account name that must stay inside the account menu' }
   ]) {
     test(`account menu contains ${scenario.name} content within its width bounds`, async ({}, testInfo) => {
-      const { desktop, page } = await launchAuthenticated(testInfo, scenario)
+      const desktop = new DesktopSession(createRuntime(testInfo), testInfo)
+      let failure: { error: unknown } | undefined
       try {
+        const { page } = await launchAuthenticated(desktop, scenario)
         await openAccountMenu(page)
         if (scenario.language === 'en') {
           await page.getByTestId('account-menu-language').click()
@@ -313,15 +324,20 @@ test.describe('authenticated', () => {
         await page.keyboard.press('Escape')
         await expect(menu).toBeHidden()
         await expect(page.getByTestId(ACTIVITY_ACCOUNT_TEST_ID)).toBeFocused()
+      } catch (error) {
+        failure = { error }
+        throw error
       } finally {
-        await desktop.attachArtifacts()
+        await desktop.attachArtifacts(failure)
       }
     })
   }
 
   test('logout returns to unauthenticated state', async ({}, testInfo) => {
-    const { desktop, page } = await launchAuthenticated(testInfo)
+    const desktop = new DesktopSession(createRuntime(testInfo), testInfo)
+    let failure: { error: unknown } | undefined
     try {
+      const { page } = await launchAuthenticated(desktop)
       // 采纳时 refresh 已按生产路径加密落盘（个别无密钥环的 Linux 上 safeStorage
       // 不可用，生产语义即「不落盘」，此时跳过存在性断言、保留清除断言）。
       const encryptionAvailable = await desktop.app!.evaluate(({ safeStorage }) =>
@@ -358,8 +374,11 @@ test.describe('authenticated', () => {
       expect(refreshFileNames(desktop.runtime.home)).toHaveLength(0)
       await page.screenshot({ path: join(desktop.runtime.artifacts, 'auth-logged-out.png') })
       desktop.assertNoPageErrors()
+    } catch (error) {
+      failure = { error }
+      throw error
     } finally {
-      await desktop.attachArtifacts()
+      await desktop.attachArtifacts(failure)
     }
   })
 })

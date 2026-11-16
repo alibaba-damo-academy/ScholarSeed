@@ -1,4 +1,6 @@
 export { navigationRailButtonClassName } from './classes'
+export { Link, type LinkProps } from './Link'
+export { ImageStrip, type ImageStripItem, type ImageStripProps } from './ImageStrip'
 export {
   Accordion,
   AccordionContent,
@@ -81,6 +83,15 @@ export {
   type ButtonVariantsOptions,
 } from './Button'
 export { NavigationButton, type NavigationButtonProps } from './NavigationButton'
+export {
+  captureChartSVG,
+  prepareChartExport,
+  rasterizeChartSVG,
+  type ChartExportRequest,
+  type ChartExportResult,
+  type ChartExporter,
+} from './charting'
+export { renderLegacyChartSVG, validateLegacyChartExport } from './legacychart'
 export {
   Calendar,
   CalendarDayButton,
@@ -182,6 +193,7 @@ export {
   DialogPortal,
   DialogTitle,
   type DialogContentProps,
+  type DialogTone,
   DialogTrigger,
   type DialogProps,
 } from './Dialog'
@@ -281,7 +293,7 @@ export {
   type InputOTPSeparatorProps,
   type InputOTPSlotProps,
 } from './InputOTP'
-export { Label, type LabelProps } from './Label'
+export { Label, type LabelProps, type LabelVariant } from './Label'
 export { LoadingOverlay, type LoadingOverlayProps } from './LoadingOverlay'
 export {
   Menubar,
@@ -405,6 +417,7 @@ export {
 export {
   Skeleton,
   type SkeletonProps,
+  LoadingFallback,
   Spinner,
   type SpinnerProps,
   type SpinnerSize,
@@ -494,3 +507,4 @@ export {
 export { cx } from './utils'
 export { Page, PageHeader, PageBody, PageSection } from './Page'
 export type { PageProps, PageHeaderProps, PageBodyProps, PageSectionProps } from './Page'
+export { PortalProvider, usePortalDocument } from './portal'

@@ -32,6 +32,7 @@ from service.chat.service.streams import (
     RESPONSE_FAILED,
     StreamEnd,
 )
+from service.chat.service.transport import TransportFailureCategory
 
 
 class RejectionMessage(Enum):
@@ -90,6 +91,39 @@ RATE_LIMIT_POLICY = RejectionPolicy(
 )
 TRANSIENT_PROVIDER_FAILURE_CODE = "service_unavailable"
 TRANSIENT_PROVIDER_FAILURE_MESSAGE = "The model provider is temporarily unavailable."
+TRANSPORT_TIMEOUT_CODE = "timeout"
+TRANSPORT_CONNECTION_CODE = "connection_error"
+TRANSPORT_FAILURE_CODES = {
+    **dict.fromkeys(
+        (
+            TransportFailureCategory.CONNECT_TIMEOUT,
+            TransportFailureCategory.READ_TIMEOUT,
+            TransportFailureCategory.WRITE_TIMEOUT,
+            TransportFailureCategory.POOL_TIMEOUT,
+        ),
+        TRANSPORT_TIMEOUT_CODE,
+    ),
+    **dict.fromkeys(
+        (
+            TransportFailureCategory.CONNECTION_REFUSED,
+            TransportFailureCategory.CONNECTION_RESET,
+            TransportFailureCategory.CONNECTION_ABORTED,
+            TransportFailureCategory.NETWORK_UNREACHABLE,
+            TransportFailureCategory.CONNECT_ERROR,
+            TransportFailureCategory.READ_ERROR,
+            TransportFailureCategory.WRITE_ERROR,
+            TransportFailureCategory.PROTOCOL_ERROR,
+            TransportFailureCategory.DNS,
+            TransportFailureCategory.PROXY,
+            TransportFailureCategory.TLS,
+        ),
+        TRANSPORT_CONNECTION_CODE,
+    ),
+}
+TRANSPORT_FAILURE_MESSAGES = {
+    TRANSPORT_TIMEOUT_CODE: "The model response timed out.",
+    TRANSPORT_CONNECTION_CODE: "The model connection was interrupted.",
+}
 PROVIDER_HTTP_ERROR_MAX_STATUS = 599
 TRANSIENT_PROVIDER_HTTP_STATUSES = frozenset(
     (
@@ -244,8 +278,28 @@ def terminal_provider_failure(fields: Mapping[str, Any]) -> dict[str, Any]:
     terminal events or retry exhaustion. Explicit quota and credential errors take
     precedence over the status fallback. Stream lookup is by ``error_code``, then by the Codex-normalized
     ``(error_code, error_type)`` pair; a hit may remap to a stable ``product_code``.
+    An unparseable terminal frame leaves ``terminal_event`` empty, but a bridge
+    ``provider_error`` end with a structured ``error_code`` still releases the whitelist.
     """
 
+    try:
+        transportCategory = TransportFailureCategory(fields.get("transport_category"))
+    except (TypeError, ValueError):
+        transport_code = None
+    else:
+        transport_code = TRANSPORT_FAILURE_CODES.get(transportCategory)
+    if (
+        fields.get("phase") == "finished"
+        and fields.get("upstream_end") == StreamEnd.TRANSPORT_ERROR.value
+        and transport_code is not None
+    ):
+        message = TRANSPORT_FAILURE_MESSAGES[transport_code]
+        return {
+            "error": message,
+            "error_code": transport_code,
+            "safe_error": message,
+            "retryability": RuntimeRetryability.USER_RETRYABLE.value,
+        }
     status = fields.get("status_code")
     attempt = fields.get("attempt")
     max_attempts = fields.get("max_attempts")
@@ -318,6 +372,9 @@ def terminal_provider_failure(fields: Mapping[str, Any]) -> dict[str, Any]:
     downstream = fields.get("downstream")
     if fields.get("phase") != "finished" or not isinstance(downstream, Mapping):
         return {}
+    # 终态帧不可解析时 terminal 为空，但 bridge 观测到结构化上游错误后已升格
+    # PROVIDER_ERROR（completions 的 settle / 合成终态分支）；此时仍须放行白名单码，
+    # 否则订阅额度耗尽这类确定性拒绝会塌进通用失败文案。
     if downstream.get("terminal_event") != RESPONSE_FAILED and not (
         fields.get("upstream_end") == StreamEnd.PROVIDER_ERROR.value
         and downstream.get("error_code")

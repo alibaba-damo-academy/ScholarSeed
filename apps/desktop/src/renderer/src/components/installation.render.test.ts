@@ -13,6 +13,94 @@ const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const FIXTURE_URL = '/components/update.render.fixture.html'
 const SCREENSHOT_DIRECTORY = process.env.UPDATE_MESSAGE_SCREENSHOTS
 
+test('installation moves into an independent native modal and releases it on cancellation', async () => {
+  await withFixture(async (page) => {
+    await page.evaluate(() => {
+      const calls: string[] = []
+      Reflect.set(window, 'portalCalls', calls)
+      window.scholarseed.updatePortal = {
+        reserve: async () => {
+          calls.push('reserve')
+          return { ok: true, sessionId: 'update-regression' }
+        },
+        paint: async () => {
+          calls.push('paint')
+          return { ok: true }
+        },
+        close: async () => {
+          calls.push('close')
+          return { ok: true }
+        },
+        subscribeRevoked: () => () => undefined,
+      }
+    })
+    const popupReady = page.waitForEvent('popup', { timeout: 5000 })
+    await page.evaluate(() => Reflect.get(window, 'updateFixture').publish({ phase: 'installing' }))
+    const popup = await popupReady
+    await expect(popup.getByTestId('update-overlay')).toBeVisible()
+    await expect.poll(() => popup.evaluate(() => document.body.inert)).toBe(false)
+    await expect(page.getByTestId('update-overlay')).toHaveCount(0)
+    await page.evaluate(() => Reflect.get(window, 'updateFixture').publish({ phase: 'restarting' }))
+    await expect(popup.getByTestId('update-overlay-cancel')).toHaveCount(0)
+    await expect(popup.getByTestId('update-overlay')).toBeVisible()
+    await page.evaluate(() => Reflect.get(window, 'updateFixture').publish({ phase: 'installing' }))
+    await popup.getByTestId('update-overlay-cancel').click()
+    await page.evaluate(() => Reflect.get(window, 'updateFixture').publish({ phase: 'ready' }))
+    await expect
+      .poll(() => page.evaluate(() => Reflect.get(window, 'portalCalls')))
+      .toEqual(['reserve', 'paint', 'close'])
+  })
+})
+
+test('a cancelled pending update reservation cannot open a late native modal', async () => {
+  await withFixture(async (page) => {
+    await page.evaluate(() => {
+      Reflect.set(window, 'portalCalls', [])
+      window.scholarseed.updatePortal = {
+        reserve: () => new Promise((resolve) => Reflect.set(window, 'finishReservation', resolve)),
+        paint: async () => ({ ok: true }),
+        close: async (sessionId) => {
+          Reflect.get(window, 'portalCalls').push(sessionId)
+          return { ok: true }
+        },
+        subscribeRevoked: () => () => undefined,
+      }
+      Reflect.get(window, 'updateFixture').publish({ phase: 'downloading', restartPending: true })
+    })
+    await expect
+      .poll(() => page.evaluate(() => typeof Reflect.get(window, 'finishReservation')))
+      .toBe('function')
+    await page.evaluate(() =>
+      Reflect.get(window, 'updateFixture').publish({ restartPending: false })
+    )
+    await expect(page.getByTestId('update-overlay')).toHaveCount(0)
+    await page.evaluate(() =>
+      Reflect.get(window, 'finishReservation')({ ok: true, sessionId: 'stale-update' })
+    )
+    await expect
+      .poll(() => page.evaluate(() => Reflect.get(window, 'portalCalls')))
+      .toEqual(['stale-update'])
+    expect(page.context().pages()).toHaveLength(1)
+  })
+})
+
+test('native update presentation rejection is explicit and does not change the update state', async () => {
+  await withFixture(async (page) => {
+    await page.evaluate(() => {
+      window.scholarseed.updatePortal = {
+        reserve: async () => ({ ok: false }),
+        paint: async () => ({ ok: false }),
+        close: async () => ({ ok: false }),
+        subscribeRevoked: () => () => undefined,
+      }
+      Reflect.get(window, 'updateFixture').publish({ phase: 'installing' })
+    })
+    await expect(page.getByRole('alert')).toContainText('更新进度可能被遮挡')
+    await expect(page.getByTestId('update-overlay-cancel')).toBeEnabled()
+    expect(page.context().pages()).toHaveLength(1)
+  })
+})
+
 test('open update panel and installation overlay react to language and retain Chinese fallback and empty states', async () => {
   await withFixture(async (page) => {
     const chinese = '中文一\n中文二\n中文三\n中文四'

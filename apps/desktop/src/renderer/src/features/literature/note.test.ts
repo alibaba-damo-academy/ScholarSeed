@@ -8,7 +8,7 @@ import {
   literatureIdFromDocument,
   literatureNoteTitle,
   markdownNoteExport,
-  exportNoteAsMarkdown
+  exportNoteAsMarkdown,
 } from './note.ts'
 
 const notesSource = readFileSync(new URL('./Notes.tsx', import.meta.url), 'utf8')
@@ -20,38 +20,27 @@ const context = (
   path: 'paper.pdf',
   viewer,
   sourceKind: owner === 'literature_attachment' ? 'literature' : 'project',
-  recordTarget: owner
-    ? { owner, scope_id: 'scope-1', subject_id: 'attachment-1' }
-    : null,
+  recordTarget: owner ? { owner, scope_id: 'scope-1', subject_id: 'attachment-1' } : null,
   documentSessionId: 'session-1',
-  tabId: 'tab-1'
+  tabId: 'tab-1',
 })
 
 test('literature notes panel matches only exact literature attachment ownership', () => {
   assert.equal(LITERATURE_NOTES_PANEL_ID, 'literature-notes')
-  assert.equal(
-    literatureIdFromDocument(context('literature_attachment')),
-    'scope-1'
-  )
-  assert.equal(
-    literatureIdFromDocument(context('literature_attachment', 'image')),
-    'scope-1'
-  )
+  assert.equal(literatureIdFromDocument(context('literature_attachment')), 'scope-1')
+  assert.equal(literatureIdFromDocument(context('literature_attachment', 'image')), 'scope-1')
   assert.equal(literatureIdFromDocument(context('project_asset')), null)
   assert.equal(literatureIdFromDocument(context(null)), null)
 })
 
 test('reader note titles prefer persisted titles and use a stable positional fallback', () => {
   const fallback = (position: number): string => `Note ${position}`
-  assert.equal(
-    literatureNoteTitle({ title: ' Findings ' }, 0, fallback),
-    'Findings'
-  )
+  assert.equal(literatureNoteTitle({ title: ' Findings ' }, 0, fallback), 'Findings')
   assert.equal(literatureNoteTitle({ title: '' }, 1, fallback), 'Note 2')
 })
 
-test('note editor back discards the draft when an error is visible', () => {
-  assert.match(
+test('note editor back never discards a draft because saving or exporting failed', () => {
+  assert.doesNotMatch(
     notesSource,
     /const requestClose = \(\): void => \{\s+if \(error \|\| exportError\) \{\s+setExportError\(''\)\s+close\(\)\s+return/
   )
@@ -66,11 +55,7 @@ test('Markdown export preserves headings, lists, links, code and Unicode exactly
 })
 
 test('Markdown export sanitizes every filename separator on both platforms', () => {
-  const result = markdownNoteExport(
-    { title: 'A/B\\C:D*E?F"G<H>I|J', text: 'body' },
-    1,
-    String
-  )
+  const result = markdownNoteExport({ title: 'A/B\\C:D*E?F"G<H>I|J', text: 'body' }, 1, String)
   assert.equal(result.suggestedName, 'A-B-C-D-E-F-G-H-I-J.md')
 })
 
@@ -90,19 +75,19 @@ test('Markdown export uses the real save-copy contract and handles cancellation'
     saveFileCopy: async (payload) => {
       calls.push(payload)
       return { ok: true, path: '/tmp/Note.md' }
-    }
+    },
   })
   assert.equal(calls.length, 1)
   assert.equal(new TextDecoder().decode(calls[0].bytes), '# Note\n\n- item')
   await exportNoteAsMarkdown({ title: 'Note', text: '- item' }, 1, String, {
-    saveFileCopy: async () => ({ ok: false, canceled: true })
+    saveFileCopy: async () => ({ ok: false, canceled: true }),
   })
 })
 
 test('Markdown export propagates write failures rather than silently succeeding', async () => {
   await assert.rejects(
     exportNoteAsMarkdown({ title: 'Note', text: 'body' }, 1, String, {
-      saveFileCopy: async () => ({ ok: false, error: 'disk full' })
+      saveFileCopy: async () => ({ ok: false, error: 'disk full' }),
     }),
     /disk full/
   )

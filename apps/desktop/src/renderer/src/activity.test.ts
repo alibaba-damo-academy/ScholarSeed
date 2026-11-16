@@ -21,7 +21,54 @@ import {
   cardArtifactIds,
   hasVisibleTurnProgress,
   workingIndicatorVisible,
+  webSearchPresentation,
+  executionProcesses,
+  executionDisclosureOpen,
+  executionFailures,
+  fallbackDurationRows,
 } from './activity.ts'
+
+test('web search preserves submitted queries and previews without changing recorded results', () => {
+  const item = {
+    query: '',
+    action: { queries: ['first query', 'second query'] },
+    results: [
+      { title: 'First', url: 'https://example.com/one' },
+      { url: 'https://example.org/two' },
+      {},
+    ],
+  }
+  const before = structuredClone(item)
+  const preview = webSearchPresentation(item, false, 1)
+  assert.deepEqual(preview.queries, ['first query', 'second query'])
+  assert.equal(preview.results.length, 1)
+  assert.equal(preview.hiddenCount, 1)
+  const expanded = webSearchPresentation(item, true, 1)
+  assert.equal(expanded.results.length, 2)
+  assert.equal(expanded.hiddenCount, 0)
+  assert.equal(webSearchPresentation(item, false, 4).hiddenCount, 0)
+  assert.deepEqual(item, before)
+})
+
+test('web search keeps actual query lists ahead of a flattened display query and handles no results', () => {
+  const presentation = webSearchPresentation(
+    {
+      query: 'flattened display',
+      action: { queries: ['actual one', 'actual two'] },
+      results: [],
+    },
+    false,
+    2
+  )
+  assert.deepEqual(presentation.queries, ['actual one', 'actual two'])
+  assert.deepEqual(presentation.results, [])
+  assert.equal(presentation.hiddenCount, 0)
+  assert.deepEqual(
+    webSearchPresentation({ query: '', action: { query: 'single' }, results: [] }, false, 2)
+      .queries,
+    ['single']
+  )
+})
 
 test('web record projection preserves submitted query order and rejects non-web destinations', () => {
   const item: Extract<ConvItem, { kind: 'web_search' }> = {
@@ -37,6 +84,13 @@ test('web record projection preserves submitted query order and rejects non-web 
     },
     results: [
       { title: 'Paper', url: 'https://SOURCE.test/paper#section' },
+      {
+        title: 'With metadata',
+        url: 'https://journal.test/article',
+        site_name: 'Journal',
+        published_date: '2026-11-01',
+        content_type: 'Article',
+      },
       { title: 'Denied', url: 'file:///private/paper' },
       { title: 'Script', url: 'javascript:alert(1)' },
     ],
@@ -46,12 +100,16 @@ test('web record projection preserves submitted query order and rejects non-web 
   assert.deepEqual(result.queries, ['first', 'second'])
   assert.equal(result.page, 'https://page.test/source')
   assert.equal(result.pattern, 'literal <pattern>')
-  assert.equal(result.results.length, 3)
+  assert.equal(result.results.length, 4)
   assert.equal(result.results[0].url, 'https://source.test/paper#section')
   assert.equal(result.results[0].site, 'source.test')
-  assert.equal(result.results[1].url, undefined)
+  assert.equal(result.results[0].publishedDate, undefined)
+  assert.equal(result.results[1].site, 'Journal')
+  assert.equal(result.results[1].publishedDate, '2026-11-01')
+  assert.equal(result.results[1].contentType, 'Article')
   assert.equal(result.results[2].url, undefined)
-  assert.notEqual(result.results[1].id, result.results[2].id)
+  assert.equal(result.results[3].url, undefined)
+  assert.notEqual(result.results[2].id, result.results[3].id)
   assert.deepEqual(item, snapshot)
   assert.equal(externalResultUrl('data:text/html,unsafe'), null)
   assert.equal(externalResultUrl('not a URL'), null)
@@ -68,6 +126,176 @@ const childActivity: Extract<ConvItem, { kind: 'native_activity' }> = {
   details: {},
   turnId: 'parent-turn',
 }
+test('separate recovery responses for the same file have stable distinct row identities', () => {
+  const replies: ConvItem[] = ['first', 'retry'].map((requestId) => ({
+    kind: 'interaction_reply',
+    requestId,
+    itemId: 'same-file.pdf',
+    questions: [],
+    answers: {},
+    turnId: 'turn',
+  }))
+  const keys = activityRows(replies).map((row) => row.key)
+  assert.equal(new Set(keys).size, 2)
+  assert.equal(activityRows([replies[1]])[0].key, keys[1])
+})
+
+test('execution processes collect a turn across public stage descriptions without absorbing answers', () => {
+  const items: ConvItem[] = [
+    { kind: 'thinking', text: 'First stage', commentary: true, turnId: 'turn' },
+    { kind: 'tool', toolId: 'one', name: 'Read', status: 'done', turnId: 'turn' },
+    { kind: 'thinking', text: 'Next stage', commentary: true, turnId: 'turn' },
+    { kind: 'tool', toolId: 'two', name: 'Search', status: 'error', turnId: 'turn' },
+    { kind: 'agent', text: 'Final answer', turnId: 'turn' },
+  ]
+  const rows = activityRows(items, { turn: 'completed' })
+  const processes = executionProcesses(rows)
+  assert.equal(processes.length, 1)
+  assert.equal(processes[0].indices.length, 4)
+  assert.equal(processes[0].rows.length, 4)
+  assert.equal(items.at(-1)?.kind, 'agent')
+})
+
+test('execution disclosure cannot hide a live process and terminal state defaults closed', () => {
+  assert.equal(executionDisclosureOpen(false, true), true)
+  assert.equal(executionDisclosureOpen(null, false), false)
+  assert.equal(executionDisclosureOpen(true, false), true)
+})
+
+test('terminal duration fallback follows the last turn row only when no answer owns its footer', () => {
+  const rows = activityRows([
+    { kind: 'tool', toolId: 'stopped', name: 'Read', status: 'cancelled', turnId: 'stopped' },
+    { kind: 'status', text: 'Stopped', turnId: 'stopped' },
+    { kind: 'agent', text: 'Partial answer', turnId: 'answered' },
+    { kind: 'status', text: 'Interrupted', turnId: 'answered' },
+    { kind: 'agent', text: '', turnId: 'empty' },
+    { kind: 'status', text: 'No answer', turnId: 'empty' },
+  ])
+  assert.deepEqual([...fallbackDurationRows(rows)], [1, 5])
+  assert.deepEqual([...fallbackDurationRows([])], [])
+})
+
+test('execution failure prompts are scoped to the requested turn and preserve original records', () => {
+  const items: ConvItem[] = [
+    { kind: 'tool', toolId: 'old', name: 'Old', status: 'error', turnId: 'old-turn' },
+    { kind: 'tool', toolId: 'failed', name: 'Read', status: 'error', turnId: 'turn' },
+    { kind: 'tool', toolId: 'passed', name: 'Search', status: 'done', turnId: 'turn' },
+  ]
+  assert.deepEqual(
+    executionFailures(items, 'turn').map((item) => item.toolId),
+    ['failed']
+  )
+  assert.deepEqual(executionFailures(items, undefined), [])
+  assert.equal(items.length, 3)
+})
+
+test('a neutral empty local search does not make a completed process incomplete', () => {
+  const items: ConvItem[] = [
+    {
+      kind: 'tool',
+      toolId: 'empty-search',
+      name: 'bash',
+      status: 'error',
+      turnId: 'turn',
+      input: { command: 'rg absent notes.md' },
+      result: '',
+      exitCode: 1,
+    },
+  ]
+  assert.deepEqual(executionFailures(items, 'turn'), [])
+  assert.equal(items[0].kind === 'tool' && items[0].status, 'error')
+})
+
+test('successful source recovery resolves its failure without deleting earlier attempts', () => {
+  const items: ConvItem[] = [
+    { kind: 'tool', toolId: 'failed', name: 'Search', status: 'error', turnId: 'turn' },
+    {
+      kind: 'tool',
+      toolId: 'retry-failed',
+      retryOf: 'failed',
+      name: 'Search',
+      status: 'error',
+      turnId: 'turn',
+    },
+    {
+      kind: 'tool',
+      toolId: 'retry-done',
+      retryOf: 'failed',
+      name: 'Search',
+      status: 'done',
+      turnId: 'turn',
+    },
+  ]
+  assert.deepEqual(executionFailures(items, 'turn'), [])
+  assert.equal(executionFailures(items.slice(0, 2), 'turn').length, 1)
+  assert.equal(items[0].kind === 'tool' && items[0].status, 'error')
+  assert.equal(items.length, 3)
+})
+
+test('an authoritative plan recovery clears the aggregate failure but preserves the failed attempt', () => {
+  const items: ConvItem[] = [
+    {
+      kind: 'tool',
+      toolId: 'failed-plan',
+      name: 'update_plan',
+      status: 'error',
+      turnId: 'turn',
+      recoveredBy: 'verified-completion',
+    } as ConvItem,
+    {
+      kind: 'tool',
+      toolId: 'verified-completion',
+      name: 'update_plan',
+      status: 'done',
+      turnId: 'turn',
+    },
+  ]
+  assert.deepEqual(executionFailures(items, 'turn'), [])
+  assert.equal(items[0].kind === 'tool' && items[0].status, 'error')
+  const unresolved: ConvItem = {
+    kind: 'tool',
+    toolId: 'unresolved',
+    name: 'Search',
+    status: 'error',
+    turnId: 'turn',
+  }
+  assert.equal(executionFailures([...items, unresolved], 'turn').length, 1)
+})
+
+test('activity groups respect persisted execution batch identities', () => {
+  const items: ConvItem[] = [
+    {
+      kind: 'tool',
+      toolId: 'first',
+      name: 'Read',
+      status: 'done',
+      turnId: 'turn',
+      batchId: 'batch-one',
+    },
+    {
+      kind: 'tool',
+      toolId: 'second',
+      name: 'Read',
+      status: 'done',
+      turnId: 'turn',
+      batchId: 'batch-one',
+    },
+    {
+      kind: 'tool',
+      toolId: 'third',
+      name: 'Search',
+      status: 'running',
+      turnId: 'turn',
+      batchId: 'batch-two',
+    },
+  ]
+  const groups = activityRows(items).filter((row) => row.kind === 'activity')
+  assert.deepEqual(
+    groups.map((row) => row.items.length),
+    [2, 1]
+  )
+  assert.equal(executionProcesses(activityRows(items)).length, 1)
+})
 test('collaboration call labels never describe child completion', () => {
   const call = { ...childActivity, activityType: 'agent_collaboration', status: 'done' as const }
   assert.equal(
@@ -213,6 +441,13 @@ test('answered HIL restores working until a live activity or answer arrives', ()
   )
   assert.equal(visible([...history, { kind: 'agent', text: 'Answer', turnId }]), true)
   assert.equal(visible([...history, { kind: 'agent', text: '', turnId }]), false)
+  assert.equal(
+    visible([
+      ...history,
+      { kind: 'thinking', commentary: true, completed: true, text: '准备完成', turnId },
+    ]),
+    false
+  )
   assert.equal(
     visible([...history, { kind: 'thinking', text: 'Another turn', turnId: 'old-turn' }]),
     false
@@ -415,7 +650,7 @@ test('next-step placement preserves the upstream file version groups', () => {
   assert.equal(last?.kind === 'item' && last.item, card)
 })
 
-test('hides session forks while preserving answer selection and settled citations', () => {
+test('enables session forks only for completed replies', () => {
   assert.deepEqual(answerInteractionCapabilities(undefined), {
     citationEnabled: true,
     forkEnabled: false,
@@ -423,7 +658,7 @@ test('hides session forks while preserving answer selection and settled citation
   })
   assert.deepEqual(answerInteractionCapabilities('completed'), {
     citationEnabled: true,
-    forkEnabled: false,
+    forkEnabled: true,
     selectionEnabled: true,
   })
   for (const outcome of ['failed', 'interrupted', 'unknown'] as const) {
@@ -530,6 +765,10 @@ test('process projection groups explicit commentary and batches without swallowi
     ['row', 'process', 'row', 'process', 'row', 'row', 'row']
   )
   const groups = projected.filter((row) => row.kind === 'process')
+  assert.deepEqual(
+    groups.map((group) => group.statusOwner),
+    [false, true]
+  )
   assert.equal(groups[0].entries.length, 4)
   assert.equal(groups[1].entries.length, 1)
   assert.equal(groups[0].turnId, 'turn-a')
@@ -556,6 +795,27 @@ test('process projection groups explicit commentary and batches without swallowi
       .kind,
     'row'
   )
+})
+
+test('only the last process segment owns each turn status across cards and replies', () => {
+  const items: ConvItem[] = [
+    { kind: 'tool', toolId: 'first', name: 'read', status: 'done', turnId: 'first' },
+    { kind: 'agent', text: 'Confirmation receipt', turnId: 'first' },
+    { kind: 'tool', toolId: 'second', name: 'read', status: 'done', turnId: 'first' },
+    { kind: 'tool', toolId: 'other', name: 'read', status: 'done', turnId: 'other' },
+    { kind: 'thinking', commentary: true, text: 'Continuing', turnId: 'first' },
+  ]
+  const projected = processRows(activityRows(items))
+  const groups = projected.filter((row) => row.kind === 'process')
+  assert.deepEqual(
+    groups.map(({ turnId, statusOwner }) => ({ turnId, statusOwner })),
+    [
+      { turnId: 'first', statusOwner: false },
+      { turnId: 'first', statusOwner: true },
+      { turnId: 'other', statusOwner: true },
+    ]
+  )
+  assert.equal(projected.at(-1)?.kind, 'row')
 })
 
 test('process boundaries preserve cards, deliveries, errors and mixed turn ownership', () => {
@@ -594,6 +854,40 @@ test('process boundaries preserve cards, deliveries, errors and mixed turn owner
     result.filter((section) => section.kind === 'row').map((section) => section.row.key),
     ['card', 'files', 'error', 'narration-a']
   )
+})
+
+test('every display card type stays outside execution process groups in chronological order', () => {
+  for (const type of [
+    'literature-search',
+    'literature-review',
+    'rich-content',
+    'custom-component',
+  ]) {
+    const rows: ActivityRow[] = [
+      { kind: 'activity', key: 'before', turnId: 'turn', tail: false, items: [] },
+      {
+        kind: 'item',
+        key: 'card',
+        item: { kind: 'display_card', turnId: 'turn', card: { cardId: 'card', type, content: {} } },
+      },
+      { kind: 'activity', key: 'after', turnId: 'turn', tail: true, items: [] },
+    ]
+    const projected = processRows(rows)
+    assert.deepEqual(
+      projected.map((section) => section.kind),
+      ['process', 'row', 'process'],
+      type
+    )
+    assert.equal(projected[1].kind === 'row' && projected[1].row, rows[1], type)
+    const grouped = projected.flatMap((section) =>
+      section.kind === 'process' ? section.entries.map((entry) => entry.row) : []
+    )
+    assert.deepEqual(
+      grouped.map((row) => row.key),
+      ['before', 'after'],
+      type
+    )
+  }
 })
 
 test('groups internal thinking with tools while preserving user-facing commentary', () => {

@@ -5,17 +5,21 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import uuid
 from collections.abc import Callable, Coroutine
 from functools import partial
 from typing import Any, Mapping
 
 from service.assistant.service.authorization import (
+    AUTHORIZATION_REQUIRED,
     AuthorizationDisposition,
     FulltextAuthorization,
     FulltextAuthorizer,
     authorization_policy,
+    authorization_question,
     authorize_sources,
+    decision_disposition,
 )
 from service.chat.constants import (
     PRODUCT_EVENT_SESSION_STATE,
@@ -24,7 +28,7 @@ from service.chat.constants import (
     PRODUCT_TURN_OUTCOME_INTERRUPTED,
     PRODUCT_TURN_OUTCOME_UNKNOWN,
 )
-from service.chat.persistence.catalog import SessionStatus
+from service.chat.persistence.catalog import QUEUE_PURPOSE_AUTHORIZATION, SessionStatus
 from service.chat.runtime.live import LiveSession
 from service.chat.service.cards import DisplayCardError
 from service.chat.service.tasks import authorization_context_current, verified_authorization_context
@@ -52,19 +56,25 @@ GATE_ARTIFACT_ROLE = "supporting"
 # One tool call can run several skill stages; files are also rescanned while it runs.
 GATE_POLL_SECONDS = 2.0
 GATE_DECISION_CANCELLED = "cancelled"
+REAUTHORIZATION_DISPLAY = "已重新授权，继续原任务。"
+REAUTHORIZATION_STALE = "fulltext_reauthorization_stale"
 NANOSECONDS_PER_SECOND = 1_000_000_000
 SCOPE_SEPARATOR = "\n"
-CONTINUATION_PLAN = (
-    "若已有执行计划，先 `scholarseed-bridge plan get` 取得当前轮次与 revision，"
-    "再对同一 plan_id 执行 update 继续，不要新建计划。"
+CONTINUATION_PLAN = "沿用已有任务和执行进度，不要重新创建任务、不要重新检索或重复请求同范围授权。"
+CONTINUATION_LIMITS = (
+    "本消息仅通知授权结果，不是新的任务指令；继续遵守原用户任务的目标、范围、禁止事项和停止条件。"
+    "若用户只要求确认授权，或要求授权决定后停止，请仅确认本次授权结果，不要执行后续任务。"
 )
 CONTINUATION_AUTHORIZED = (
-    "书深：已获得一键授权，可在本任务内下载、读取并使用刚才展示的 {count} 篇文献全文。"
-    "请从中断处继续原任务，直接进入下载或全文阶段；不要重新检索、重新选择文献或再次询问授权。"
+    "[书深内部授权通知] 已授权 {count} 篇文献。"
+    + CONTINUATION_LIMITS
+    + "仅当原任务要求且允许获取全文时继续，授权不代表已下载或入库。"
     + CONTINUATION_PLAN
 )
 CONTINUATION_REJECTED = (
-    "书深：用户拒绝了全文授权。请不要读取任何文献全文，仅基于标题和摘要从中断处继续原任务；"
+    "[书深内部授权通知] 用户拒绝全文授权，不得读取未授权全文。"
+    + CONTINUATION_LIMITS
+    + "仅当原任务允许基于标题和摘要继续时，才从中断处继续原任务；"
     "结果需标注“未读取原文”，不要生成页码引用。" + CONTINUATION_PLAN
 )
 
@@ -95,9 +105,176 @@ class FulltextGate:
         self._dirty: set[str] = set()
         self._asked: set[tuple[str, str, str, str]] = set()
         self._bridge_tasks: set[asyncio.Task[Any]] = set()
+        self._resumed: set[tuple[str, str]] = set()
         self._bridge_inflight: dict[
             BridgeAuthorizationKey, asyncio.Task[BridgeAuthorizationResult]
         ] = {}
+
+    async def retry(
+        self, live: LiveSession, question_id: str, *, context_revision: int
+    ) -> dict[str, Any]:
+        async with live.activation_lock:
+            if live.running or live.terminating or live.terminated:
+                raise ValueError(REAUTHORIZATION_STALE)
+            original = self._authorizer.challenge(live.id, question_id)
+            task_type = authorization_policy(original.authorization_type).task_type
+            if task_type is None:
+                raise ValueError(REAUTHORIZATION_STALE)
+            renewed_question_id = (
+                authorization_policy(original.authorization_type).question_prefix
+                + uuid.uuid5(uuid.NAMESPACE_URL, question_id).hex
+            )
+            if any(
+                record.product_request_id != renewed_question_id
+                for record in live.catalog.pending_hil(live.id)
+            ):
+                raise ValueError(REAUTHORIZATION_STALE)
+            await self._activities.to_thread(
+                ActivityDomain.BRIDGE, self._retry_context, live, original
+            )
+            renewed = self._authorizer.reopen(live.id, question_id)
+            previous = live.catalog.hil(question_id)
+            question = previous.payload.get("questions", [{}])[0]
+            papers = tuple(question.get("papers", ()))
+            key = (
+                live.id,
+                renewed.turn_id,
+                renewed.snapshot_id,
+                renewed.authorization_type,
+                renewed.task_key,
+                renewed.refs,
+                len(renewed.refs),
+            )
+            if (
+                key not in self._bridge_inflight
+                and (live.id, renewed.question_id) not in self._resumed
+            ):
+                lease = self._activities.enter(ActivityDomain.BRIDGE, root=True)
+                task = self._spawn(
+                    lease,
+                    partial(
+                        self._retry,
+                        live,
+                        renewed,
+                        papers,
+                        task_type.value,
+                        live.last_submission_id,
+                        live.interrupt_generation,
+                        lease,
+                        str(question.get("result_card_id") or ""),
+                        context_revision,
+                    ),
+                )
+                self._bridge_inflight[key] = task
+                self._bridge_tasks.add(task)
+
+                def clear(completed: asyncio.Task[Any]) -> None:
+                    self._bridge_tasks.discard(completed)
+                    if self._bridge_inflight.get(key) is completed:
+                        del self._bridge_inflight[key]
+
+                task.add_done_callback(clear)
+            return {"ok": True, "request_id": renewed.question_id}
+
+    def _retry_context(
+        self, live: LiveSession, original: FulltextAuthorization
+    ) -> FulltextTaskContext | None:
+        policy = authorization_policy(original.authorization_type)
+        if policy.task_type is None:
+            raise ValueError(REAUTHORIZATION_STALE)
+        binding = live.catalog.task_binding(live.id)
+        command = binding.get("command", {}) if binding else {}
+        if original.task_key and (
+            not binding
+            or binding.get("owner_id") != live.user_id
+            or command.get("task_type") != policy.task_type.value
+        ):
+            raise ValueError(REAUTHORIZATION_STALE)
+        for checkpoint_policy, trigger, modified_ns in discover_triggers(
+            live.runtime_workdir,
+            policy.task_type.value,
+            (
+                command.get("workspace")
+                if command.get("task_type") == policy.task_type.value
+                else None
+            ),
+        ):
+            checkpoint = read_checkpoint(
+                live.runtime_workdir, checkpoint_policy, trigger, modified_ns
+            )
+            if checkpoint is None or not set(original.refs) <= set(checkpoint.content.refs):
+                continue
+            context = None
+            if original.task_key:
+                if (
+                    command.get("workspace") != checkpoint.content.workspace
+                    or command.get("run_id") != checkpoint.content.card.run_id
+                ):
+                    continue
+                context = FulltextTaskContext(
+                    owner_id=live.user_id,
+                    project_id=live.project_id or "",
+                    session_id=live.id,
+                    workdir=os.path.normcase(str(live.runtime_workdir.resolve())),
+                    task_type=policy.task_type,
+                    workspace=checkpoint.content.workspace,
+                    run_id=checkpoint.content.card.run_id,
+                )
+            else:
+                record = live.catalog.get(live.id)
+                if record is None or record.last_turn_id != original.turn_id:
+                    continue
+            if (
+                self._authorizer.task_key(live.id, original.authorization_type, context)
+                == original.task_key
+            ):
+                return context
+        raise ValueError(REAUTHORIZATION_STALE)
+
+    async def _retry(
+        self,
+        live: LiveSession,
+        renewed: FulltextAuthorization,
+        papers: tuple[Mapping[str, str], ...],
+        task_type: str,
+        submission_id: str,
+        interrupt_generation: int,
+        activity: ActivityLease,
+        result_card_id: str,
+        context_revision: int,
+    ) -> BridgeAuthorizationResult:
+        if (
+            live.last_submission_id != submission_id
+            or live.interrupt_generation != interrupt_generation
+            or live.terminating
+            or live.terminated
+        ):
+            return renewed, AuthorizationDisposition.REJECTED, None
+        decision = await live.interactions.request_product_input(
+            authorization_question(renewed, papers, result_card_id=result_card_id),
+            turn_id=renewed.turn_id,
+            activity=activity,
+        )
+        disposition = decision_disposition(renewed, decision)
+        if not self._authorizer.granted_refs(renewed):
+            disposition = AuthorizationDisposition.REJECTED
+        if not decision.get(GATE_DECISION_CANCELLED):
+            resumed = await self._continue(
+                live,
+                renewed,
+                disposition,
+                task_type=task_type,
+                context_revision=context_revision,
+                count=len(self._authorizer.granted_refs(renewed)),
+                continue_on_reject=False,
+                display_text=REAUTHORIZATION_DISPLAY,
+                expected_submission_id=submission_id,
+                expected_interrupt_generation=interrupt_generation,
+                activity=activity,
+            )
+            if resumed:
+                self._resumed.add((live.id, renewed.question_id))
+        return renewed, disposition, decision
 
     async def authorize_sources(
         self,
@@ -110,11 +287,13 @@ class FulltextGate:
         source_count: int,
         papers: tuple[Mapping[str, str], ...] = (),
         task_context: FulltextTaskContext | None = None,
+        result_card_id: str = "",
     ) -> BridgeAuthorizationResult:
         if task_context is None:
-            task_context = verified_authorization_context(
-                live, authorization_policy(authorization_type).task_type
-            )
+            task_type = authorization_policy(authorization_type).task_type
+            if task_type is None:
+                raise ValueError(AUTHORIZATION_REQUIRED)
+            task_context = verified_authorization_context(live, task_type)
         task_key = self._authorizer.task_key(live.id, authorization_type, task_context)
         key = (live.id, turn_id, snapshot_id, authorization_type, task_key, refs, source_count)
         task = self._bridge_inflight.get(key)
@@ -138,6 +317,7 @@ class FulltextGate:
                     origin_task=live.current_task,
                     interrupt_generation=live.interrupt_generation,
                     activity=lease,
+                    result_card_id=result_card_id,
                 ),
             )
             self._bridge_inflight[key] = task
@@ -150,6 +330,25 @@ class FulltextGate:
 
             task.add_done_callback(clear)
         return await asyncio.shield(task)
+
+    def granted_refs(
+        self,
+        live: LiveSession,
+        *,
+        turn_id: str,
+        authorization_type: str,
+        refs: tuple[str, ...],
+        task_context: FulltextTaskContext | None,
+    ) -> tuple[str, ...]:
+        return self._authorizer.effective_scope(
+            session_id=live.id,
+            snapshot_id=live.active_assistant_snapshot_id,
+            turn_id=turn_id,
+            authorization_type=authorization_type,
+            refs=refs,
+            client_turn_id=getattr(live, "active_product_turn_id", ""),
+            task_context=task_context,
+        ).allowed
 
     async def _authorize_bridge(
         self,
@@ -168,6 +367,7 @@ class FulltextGate:
         origin_task: asyncio.Task[Any] | None,
         interrupt_generation: int,
         activity: ActivityLease,
+        result_card_id: str,
     ) -> tuple[FulltextAuthorization, AuthorizationDisposition, Mapping[str, Any] | None]:
         challenge, disposition, decision = await authorize_sources(
             live,
@@ -179,10 +379,14 @@ class FulltextGate:
             papers=papers,
             task_context=task_context,
             activity=activity,
+            result_card_id=result_card_id,
         )
         result = (challenge, disposition, decision)
         if decision is None or decision.get(GATE_DECISION_CANCELLED):
             return result
+        self._asked.add(
+            self._scope_key(live.id, submission_id, authorization_type, refs, task_context)
+        )
         if live.ledger.active_turn_id == turn_id:
             return result
         record = live.catalog.get(live.id)
@@ -318,20 +522,34 @@ class FulltextGate:
                 self._tasks.pop(live.id, None)
 
     @staticmethod
+    def _scope_key(
+        session_id: str,
+        submission_id: str,
+        authorization_type: str,
+        refs: tuple[str, ...],
+        task_context: FulltextTaskContext | None = None,
+    ) -> tuple[str, str, str, str]:
+        task_key = FulltextAuthorizer.task_key(session_id, authorization_type, task_context)
+        scope = SCOPE_SEPARATOR.join((task_key, *sorted(refs))).encode("utf-8")
+        return (
+            session_id,
+            submission_id,
+            authorization_type,
+            hashlib.sha256(scope).hexdigest(),
+        )
+
+    @staticmethod
     def _ask_key(
         live: LiveSession,
         checkpoint: PreparedCheckpoint,
         task_context: FulltextTaskContext | None = None,
     ) -> tuple[str, str, str, str]:
-        task_key = FulltextAuthorizer.task_key(
-            live.id, checkpoint.policy.authorization_type, task_context
-        )
-        scope = SCOPE_SEPARATOR.join((task_key, *sorted(checkpoint.content.refs))).encode("utf-8")
-        return (
+        return FulltextGate._scope_key(
             live.id,
             live.last_submission_id,
             checkpoint.policy.authorization_type,
-            hashlib.sha256(scope).hexdigest(),
+            checkpoint.content.refs,
+            task_context,
         )
 
     def _pending(self, live: LiveSession) -> PreparedCheckpoint | None:
@@ -342,8 +560,12 @@ class FulltextGate:
         if live.terminating or live.terminated or not live.last_submission_id:
             return None
         started_ns = int(live.active_turn_started_at * NANOSECONDS_PER_SECOND)
+        lease = getattr(live, "active_task_lease", None)
+        workspace = (
+            lease.workspace if lease and lease.task_type.value == live.active_task_type else None
+        )
         for policy, trigger, modified_ns in discover_triggers(
-            live.runtime_workdir, live.active_task_type
+            live.runtime_workdir, live.active_task_type, workspace
         ):
             checkpoint = read_checkpoint(live.runtime_workdir, policy, trigger, modified_ns)
             if checkpoint is None:
@@ -429,7 +651,7 @@ class FulltextGate:
         ):
             return
         self._asked.add(self._ask_key(live, checkpoint, task_context))
-        await self._publish_card(live, checkpoint, turn_id)
+        result_card_id = await self._publish_card(live, checkpoint, turn_id)
         challenge, disposition, decision = await authorize_sources(
             live,
             self._authorizer,
@@ -438,9 +660,10 @@ class FulltextGate:
             authorization_type=checkpoint.policy.authorization_type,
             refs=checkpoint.content.refs,
             papers=tuple(
-                {"id": source.ref_id, "label": source.title}
+                {"id": source.ref_id, "label": source.title, "description": ""}
                 for source in checkpoint.content.sources
             ),
+            result_card_id=result_card_id,
             task_context=task_context,
             activity=activity,
         )
@@ -485,19 +708,20 @@ class FulltextGate:
         expected_submission_id: str,
         expected_interrupt_generation: int,
         activity: ActivityLease,
-    ) -> None:
+        display_text: str | None = None,
+    ) -> bool:
         if (
             live.terminating
             or live.terminated
             or live.interrupt_generation != expected_interrupt_generation
         ):
-            return
+            return False
         if disposition is AuthorizationDisposition.AUTHORIZED:
             text = CONTINUATION_AUTHORIZED.format(count=count)
         elif continue_on_reject:
             text = CONTINUATION_REJECTED
         else:
-            return
+            return False
         continuation_id = uuid.uuid5(uuid.NAMESPACE_URL, challenge.question_id).hex
         if disposition is AuthorizationDisposition.AUTHORIZED and not challenge.task_key:
             for authorization in self._authorizer.turn_scope(
@@ -522,6 +746,8 @@ class FulltextGate:
             expected_submission_id=expected_submission_id,
             expected_interrupt_generation=expected_interrupt_generation,
             continuation_activity=activity,
+            purpose=QUEUE_PURPOSE_AUTHORIZATION,
+            display_text=display_text,
         )
         if not payload.get("ok"):
             logger.warning(
@@ -529,6 +755,7 @@ class FulltextGate:
                 live.id,
                 payload.get("error"),
             )
+        return bool(payload.get("ok"))
 
     async def _settle(self, live: LiveSession, turn_id: str, terminal_outcome: str | None) -> None:
         """The paused turn has already ended; resolving its product question must not look live."""
@@ -554,9 +781,10 @@ class FulltextGate:
 
     async def _publish_card(
         self, live: LiveSession, checkpoint: PreparedCheckpoint, turn_id: str
-    ) -> None:
+    ) -> str:
         try:
-            await publish_checkpoint_card(live, checkpoint.content, turn_id)
+            card = await publish_checkpoint_card(live, checkpoint.content, turn_id)
+            return str(card.get("card_id") or "")
         except (ValueError, OSError, DisplayCardError, ArtifactPublishFailure):
             # The authorization question still names the exact scope; a missing card is not a grant.
             logger.warning(
@@ -565,6 +793,7 @@ class FulltextGate:
                 checkpoint.content.trigger,
                 exc_info=True,
             )
+            return ""
 
 
 async def publish_checkpoint_card(

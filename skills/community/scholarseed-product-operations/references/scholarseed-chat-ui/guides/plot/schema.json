@@ -1,0 +1,164 @@
+{
+  "type": "object",
+  "properties": {
+    "title": {
+      "type": "string",
+      "maxLength": 65536
+    },
+    "model": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "bar",
+            "grouped-bar",
+            "stacked-bar",
+            "line",
+            "scatter",
+            "pie",
+            "donut",
+            "histogram",
+            "boxplot",
+            "heatmap"
+          ]
+        },
+        "dataset": {
+          "type": "object",
+          "properties": {
+            "columns": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "key": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "unit": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "key",
+                  "label"
+                ],
+                "additionalProperties": false
+              },
+              "minItems": 1
+            },
+            "rows": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "values": {
+                    "type": "array",
+                    "items": {
+                      "type": [
+                        "string",
+                        "number",
+                        "null"
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "id",
+                  "values"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "columns",
+            "rows"
+          ],
+          "additionalProperties": false
+        },
+        "x": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "y": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "bins": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "kind",
+        "dataset",
+        "x",
+        "y"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "heatmap"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "value"
+            ],
+            "properties": {
+              "y": {
+                "minItems": 1,
+                "maxItems": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "notes": {
+      "type": "string",
+      "maxLength": 65536
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "maxLength": 65536
+      },
+      "maxItems": 64
+    },
+    "script": {
+      "type": "string",
+      "maxLength": 65536
+    },
+    "version": {
+      "type": "string",
+      "maxLength": 65536
+    }
+  },
+  "required": [
+    "model"
+  ],
+  "additionalProperties": false
+}

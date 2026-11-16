@@ -80,7 +80,10 @@ import { writeClipboard } from '../../components/primitive/clipboard'
 import { useApp } from '../../store'
 import { useSelectionActionContribution, type SelectionReplacement } from './actions'
 import type { CitationResolution } from '../../contracts/citations'
+import { WebNavigationContext } from '../../contracts/navigation'
 import { configureCitationLinks, editDocumentLink, numericCitationPlugin } from './citations'
+import { BibliographyCard } from './ReferencePreview'
+import { bibliographyPreview } from './bibliography'
 import {
   DOCUMENT_LINK_ATTRIBUTE,
   DOCUMENT_LINK_SELECTOR,
@@ -104,6 +107,7 @@ import {
   persistMarkdownImage,
   resolveSavedCitation,
   resolveArtifactCitation,
+  resolveDocumentReference,
 } from './api'
 import {
   resolveMarkdownShortcut,
@@ -112,12 +116,21 @@ import {
 } from '../../shortcuts'
 import {
   codeLanguageLabel,
+  configureMathClipboard,
   installMathBlockInteraction,
+  INLINE_MATH_NODE,
   literalLatexSchema,
   mathCompatibilityPlugin,
 } from './mathematics'
 import { MonacoDocument } from './MonacoDocument'
-import { markdownSourceRange, whitespaceSelection, type MarkdownSyntaxNode } from './mapping'
+import { documentSelectionReveal } from './workspace'
+import { flashSelection } from './reveal'
+import {
+  markdownSourceRange,
+  markdownRenderedRange,
+  whitespaceSelection,
+  type MarkdownSyntaxNode,
+} from './mapping'
 import { tableColumnInheritancePlugin } from './table'
 import { createMarkdownFindPlugin, markdownFindKey } from './highlight'
 import {
@@ -129,6 +142,9 @@ import {
 } from './workspace'
 
 const EDITOR_CONTENT_SELECTOR = '.ProseMirror'
+const MARKDOWN_CITATION_MARKER_CLASS =
+  'cursor-pointer text-[var(--vds-brand-text-primary)]! no-underline! focus-visible:outline focus-visible:outline-[var(--vds-brand-text-primary)]'
+const REFERENCE_PREVIEW_CLOSE_MS = 180
 const FRAGMENT_HIGHLIGHT_DURATION_MS = 1
 const MARKDOWN_PAPER_CLASS =
   '!mx-auto !my-[var(--vds-space-6)] flex min-h-[calc(100%_-_var(--vds-space-6)*2)] w-[calc(100%_-_var(--vds-space-6)*2)] max-w-none flex-col rounded-[var(--vds-radius-2)] border border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] !px-[calc(var(--vds-space-8)*2)] !py-[calc(var(--vds-space-8)*2)] shadow-[var(--vds-shadow-1-center)] [--crepe-font-default:var(--vds-font-main)] [--crepe-font-title:var(--vds-font-main)] [@container(max-width:760px)]:!mx-[var(--vds-space-3)] [@container(max-width:760px)]:!my-[var(--vds-space-3)] [@container(max-width:760px)]:w-[calc(100%_-_var(--vds-space-3)*2)] [@container(max-width:760px)]:!px-[var(--vds-space-8)] [@container(max-width:760px)]:!py-[var(--vds-space-8)] [&>.ProseMirror]:!m-0 [&>.ProseMirror]:!w-full [&>.ProseMirror]:!min-h-0 [&>.ProseMirror]:!flex-1 [&>.ProseMirror]:!border-0 [&>.ProseMirror]:!p-0 [&>.ProseMirror]:!outline-none [&>.ProseMirror]:!shadow-none [&>.ProseMirror]:!bg-transparent [&>.ProseMirror]:text-[var(--vds-text-primary)] [&>.ProseMirror]:text-[length:var(--vds-font-body-lv2)] [&>.ProseMirror]:leading-[var(--vds-lh-body-lv2)] [&>.ProseMirror]:![font-family:var(--vds-font-main)] [&>.ProseMirror]:![font-weight:var(--vds-fw-regular)] [&>.ProseMirror_:is(h1,h2,h3,h4,h5,h6)]:![font-weight:var(--vds-fw-semibold)] [&>.ProseMirror>:nth-child(1_of_:not(.ProseMirror-widget,.prosemirror-virtual-cursor))]:!mt-0'
@@ -184,7 +200,6 @@ const SLASH_MENU_SELECTOR = '.milkdown-slash-menu'
 const MARKDOWN_SLASH_MENU_CLASS =
   '[&_.milkdown-slash-menu]:!z-[var(--vds-z-markdown-slash-menu)] [&_.milkdown-slash-menu]:!w-[var(--vds-markdown-slash-menu-width)] [&_.milkdown-slash-menu]:!max-h-[var(--vds-markdown-slash-menu-max-height)] [&_.milkdown-slash-menu]:!overflow-y-auto [&_.milkdown-slash-menu]:!border [&_.milkdown-slash-menu]:!border-[var(--vds-divider-default)] [&_.milkdown-slash-menu]:!rounded-[var(--vds-radius-5)] [&_.milkdown-slash-menu]:!bg-[var(--vds-bg-page)] [&_.milkdown-slash-menu]:!px-[calc(var(--vds-space-1)+var(--vds-space-half))] [&_.milkdown-slash-menu]:!py-[var(--vds-space-2)] [&_.milkdown-slash-menu]:!text-[var(--vds-text-primary)] [&_.milkdown-slash-menu]:!shadow-[var(--vds-markdown-slash-menu-shadow)] [&_.milkdown-slash-menu]:[scrollbar-width:thin] [&_.milkdown-slash-menu]:[scrollbar-color:var(--vds-markdown-slash-menu-scrollbar-color)_transparent] [&_.milkdown-slash-menu_.tab-group]:!hidden [&_.milkdown-slash-menu_.menu-groups]:!p-0 [&_.milkdown-slash-menu_.menu-group+.menu-group]:!mt-[var(--vds-markdown-slash-menu-group-gap)] [&_.milkdown-slash-menu_.menu-group+.menu-group]:!border-t [&_.milkdown-slash-menu_.menu-group+.menu-group]:!border-[var(--vds-divider-default)] [&_.milkdown-slash-menu_.menu-group+.menu-group]:!pt-[var(--vds-markdown-slash-menu-group-gap)] [&_.milkdown-slash-menu_.menu-groups_.menu-group_h6]:!block [&_.milkdown-slash-menu_.menu-groups_.menu-group_h6]:!px-[calc(var(--vds-space-2)+var(--vds-space-half))] [&_.milkdown-slash-menu_.menu-groups_.menu-group_h6]:!pb-[var(--vds-space-1)] [&_.milkdown-slash-menu_.menu-groups_.menu-group_h6]:!pt-[calc(var(--vds-space-1)+var(--vds-space-half))] [&_.milkdown-slash-menu_.menu-groups_.menu-group_h6]:!text-[var(--vds-text-tertiary)] [&_.milkdown-slash-menu_.menu-groups_.menu-group_h6]:!text-[length:var(--vds-markdown-slash-menu-heading-font-size)] [&_.milkdown-slash-menu_.menu-groups_.menu-group_h6]:!font-[var(--vds-fw-semibold)] [&_.milkdown-slash-menu_.menu-groups_.menu-group_h6]:!leading-[var(--vds-space-5)] [&_.milkdown-slash-menu_.menu-groups_.menu-group_h6]:!normal-case [&_.milkdown-slash-menu_li]:!relative [&_.milkdown-slash-menu_li]:!flex [&_.milkdown-slash-menu_li]:!h-[var(--vds-markdown-slash-menu-item-height)] [&_.milkdown-slash-menu_li]:!box-border [&_.milkdown-slash-menu_li]:!items-center [&_.milkdown-slash-menu_li]:!rounded-[var(--vds-radius-3)] [&_.milkdown-slash-menu_li]:!px-[calc(var(--vds-space-2)+var(--vds-space-half))] [&_.milkdown-slash-menu_li]:!text-[length:var(--vds-font-body-lv1)] [&_.milkdown-slash-menu_li:is(:hover,.hover)]:!bg-[var(--vds-bg-white-default)]'
 const EDITOR_ACTION_SELECTOR = 'button,[role="button"],[role="menuitem"]'
-const INLINE_MATH_NODE = 'math_inline'
 const TOGGLE_INLINE_MATH_COMMAND = 'ToggleLatex'
 const MARKDOWN_DELETION_KEYS = new Set(['Backspace', 'Delete'])
 const MARKDOWN_FORMAT_SHORTCUTS: Partial<Record<ShortcutCommandId, string>> = {
@@ -530,7 +545,11 @@ function MarkdownVisualEditor({
   onToolbarChange: (toolbar: ReactNode) => void
 }): React.JSX.Element {
   const state = useDocumentWorkspace()
+  const selectionReveal = documentSelectionReveal(state.tabs[tabId])
+  const handledSelectionReveal = useRef<typeof selectionReveal>(undefined)
+  const [selectionRevealReady, setSelectionRevealReady] = useState(false)
   const workspace = useWorkspaceController()
+  const openWebSource = React.useContext(WebNavigationContext)
   const session = state.sessions[sessionId]
   const [uploadError, setUploadError] = useState<{ cause: unknown } | null>(null)
   const { toast } = useToast()
@@ -543,6 +562,7 @@ function MarkdownVisualEditor({
   const [citationError, setCitationError] = useState(false)
   const [hoveredLink, setHoveredLink] = useState<DocumentLinkTarget | null>(null)
   const linkAnchorRef = useRef<HTMLElement | null>(null)
+  const linkCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const linkOpeningRef = useRef(false)
   const [fragmentReturnAvailable, setFragmentReturnAvailable] = useState(false)
   const [findOpen, setFindOpen] = useState(false)
@@ -624,6 +644,25 @@ function MarkdownVisualEditor({
     [clearFragmentTarget]
   )
 
+  const resolveDocumentCitation = useCallback(
+    async (handle: string): Promise<CitationResolution> => {
+      if (session.source.kind === 'session-artifact')
+        return resolveArtifactCitation(session.source, session.revision, handle)
+      if (session.source.kind !== 'project') throw new Error('saved_citation_unavailable')
+      return resolveSavedCitation(session.source, handle)
+    },
+    [session.source, session.revision]
+  )
+  const resolveRelativeReference = useCallback(
+    async (href: string) => {
+      const result = await resolveDocumentReference(session.source, session.revision, href)
+      const preview = bibliographyPreview(result.text, result.fragment)
+      if (!preview) throw new Error('document_reference_unavailable')
+      return preview
+    },
+    [session.source, session.revision]
+  )
+
   const openDocumentLink = useCallback(
     (target: DocumentLinkTarget): void => {
       if (linkOpeningRef.current) return
@@ -631,15 +670,9 @@ function MarkdownVisualEditor({
       setHoveredLink(null)
       setCitationError(false)
       void navigateDocumentLink(target, {
-        openExternal: (href) => window.scholarseed.openExternal(href),
+        openExternal: async (href) => openWebSource(href),
         navigateFragment,
-        resolveCitation: async (handle) => {
-          if (session.source.kind === 'session-artifact') {
-            return resolveArtifactCitation(session.source, session.revision, handle)
-          }
-          if (session.source.kind !== 'project') throw new Error('saved_citation_unavailable')
-          return resolveSavedCitation(session.source, handle)
-        },
+        resolveCitation: resolveDocumentCitation,
         revealCitation: async (resolved) => {
           await workspace.revealCitation(resolved, resolved.matches[0])
         },
@@ -656,18 +689,46 @@ function MarkdownVisualEditor({
           linkOpeningRef.current = false
         })
     },
-    [navigateFragment, session.source, session.revision, t, toast, workspace]
+    [navigateFragment, openWebSource, resolveDocumentCitation, t, toast, workspace]
   )
 
-  const showDocumentLink = useCallback((target: EventTarget | null): void => {
-    const anchor =
-      target instanceof Element ? target.closest<HTMLElement>(DOCUMENT_LINK_SELECTOR) : null
-    if (anchor === linkAnchorRef.current) return
-    linkAnchorRef.current = anchor
-    setHoveredLink(
-      anchor ? documentLinkTarget(anchor.getAttribute(DOCUMENT_LINK_ATTRIBUTE) ?? '') : null
-    )
+  const retainDocumentLink = useCallback((): void => {
+    if (linkCloseTimerRef.current !== null) clearTimeout(linkCloseTimerRef.current)
+    linkCloseTimerRef.current = null
   }, [])
+  const leaveDocumentLink = useCallback((): void => {
+    retainDocumentLink()
+    linkCloseTimerRef.current = setTimeout(() => {
+      linkAnchorRef.current = null
+      setHoveredLink(null)
+    }, REFERENCE_PREVIEW_CLOSE_MS)
+  }, [retainDocumentLink])
+  useEffect(() => retainDocumentLink, [retainDocumentLink])
+  const referencePreview = useMemo(
+    () =>
+      hoveredLink?.kind === 'fragment'
+        ? bibliographyPreview(session.text ?? '', hoveredLink.href)
+        : null,
+    [session.text, hoveredLink]
+  )
+
+  const showDocumentLink = useCallback(
+    (target: EventTarget | null): void => {
+      const anchor =
+        target instanceof Element ? target.closest<HTMLElement>(DOCUMENT_LINK_SELECTOR) : null
+      if (!anchor) {
+        leaveDocumentLink()
+        return
+      }
+      retainDocumentLink()
+      if (anchor === linkAnchorRef.current) return
+      linkAnchorRef.current = anchor
+      setHoveredLink(
+        anchor ? documentLinkTarget(anchor.getAttribute(DOCUMENT_LINK_ATTRIBUTE) ?? '') : null
+      )
+    },
+    [leaveDocumentLink, retainDocumentLink]
+  )
 
   const returnToFragmentSource = useCallback((): void => {
     const scroller = hostRef.current?.querySelector<HTMLElement>(':scope > .milkdown')
@@ -816,6 +877,100 @@ function MarkdownVisualEditor({
     return () => onToolbarChange(null)
   }, [onToolbarChange, readOnly, runFormat, t, toolbarItems, toolbarPressed])
 
+  useEffect(() => {
+    const crepe = crepeRef.current
+    const locator = selectionReveal?.locator
+    if (
+      !crepe ||
+      !selectionRevealReady ||
+      !selectionReveal ||
+      locator?.kind !== 'markdown' ||
+      !session?.text ||
+      state.focusedTabId !== tabId
+    )
+      return
+    if (handledSelectionReveal.current === selectionReveal) return
+    handledSelectionReveal.current = selectionReveal
+    let cancelFlash: (() => void) | undefined
+    let frame = 0
+    crepe.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx)
+      const doc = view.state.doc
+      const tree = ctx.get(remarkCtx).parse(session.text!) as MarkdownSyntaxNode
+      const rendered = doc.textBetween(
+        0,
+        doc.content.size,
+        RENDERED_BLOCK_SEPARATOR,
+        renderedLeafText
+      )
+      const mapped = markdownRenderedRange(
+        session.text!,
+        tree,
+        rendered,
+        locator.start,
+        locator.end
+      )
+      let match: { from: number; to: number } | undefined
+      if (mapped) {
+        let from: number | undefined
+        let to: number | undefined
+        doc.descendants((node, position) => {
+          if (!node.isText) return true
+          const offset = doc.textBetween(
+            0,
+            position,
+            RENDERED_BLOCK_SEPARATOR,
+            renderedLeafText
+          ).length
+          if (mapped.from >= offset && mapped.from < offset + node.nodeSize)
+            from = position + mapped.from - offset
+          if (mapped.to > offset && mapped.to <= offset + node.nodeSize)
+            to = position + mapped.to - offset
+          return false
+        })
+        if (from !== undefined && to !== undefined) match = { from, to }
+      }
+      const selectedSource = locator.segments?.length
+        ? locator.segments
+            .map((segment) => session.text!.slice(segment.start, segment.end))
+            .join('')
+        : session.text!.slice(locator.start, locator.end)
+      console.info('[selection-reveal]', {
+        viewer: 'markdown',
+        sequence: selectionReveal.sequence,
+        mapped: Boolean(mapped),
+        matched: Boolean(match),
+        exactText: selectedSource.replace(/\s/gu, '') === selectionReveal.text.replace(/\s/gu, ''),
+      })
+      if (
+        !match ||
+        selectedSource.replace(/\s/gu, '') !== selectionReveal.text.replace(/\s/gu, '')
+      ) {
+        toast({ title: t('officeError.reveal_missing'), tone: 'error' })
+        return
+      }
+      view.dispatch(
+        view.state.tr.setSelection(TextSelection.create(doc, match.from, match.to)).scrollIntoView()
+      )
+      frame = requestAnimationFrame(() => {
+        const start = view.domAtPos(match.from)
+        const end = view.domAtPos(match.to)
+        const range = view.dom.ownerDocument.createRange()
+        range.setStart(start.node, start.offset)
+        range.setEnd(end.node, end.offset)
+        const element =
+          range.startContainer.nodeType === Node.ELEMENT_NODE
+            ? (range.startContainer as HTMLElement)
+            : range.startContainer.parentElement
+        element?.scrollIntoView({ block: 'center', inline: 'nearest' })
+        cancelFlash = flashSelection(view.dom.ownerDocument, Array.from(range.getClientRects()))
+      })
+    })
+    return () => {
+      cancelAnimationFrame(frame)
+      cancelFlash?.()
+    }
+  }, [selectionReveal, selectionRevealReady, session?.text, state.focusedTabId, tabId])
   const clearFindMatch = useCallback((): void => {
     if (!crepeReadyRef.current) return
     crepeRef.current?.editor.action((ctx) => {
@@ -1210,7 +1365,8 @@ function MarkdownVisualEditor({
       .use(tableColumnInheritancePlugin)
       .use($prose(createMarkdownFindPlugin))
     crepe.editor.config((ctx) => {
-      configureCitationLinks(ctx)
+      configureCitationLinks(ctx, MARKDOWN_CITATION_MARKER_CLASS)
+      configureMathClipboard(ctx)
       ctx.update(uploadConfig.key, (config) => ({
         ...config,
         uploader: async (...args) => {
@@ -1308,6 +1464,7 @@ function MarkdownVisualEditor({
       projectedMarkdownRef.current = markdown
       userEditPendingRef.current = false
       crepeReadyRef.current = true
+      setSelectionRevealReady(true)
       crepe.editor.action((ctx) => {
         const scroller = hostRef.current?.querySelector<HTMLElement>(':scope > .milkdown')
         if (scroller)
@@ -1322,6 +1479,7 @@ function MarkdownVisualEditor({
       imageResolver.dispose()
       crepeRef.current = null
       crepeReadyRef.current = false
+      setSelectionRevealReady(false)
       userEditPendingRef.current = false
       projectedMarkdownRef.current = ''
       fragmentReturnRef.current = null
@@ -1679,7 +1837,7 @@ function MarkdownVisualEditor({
 
       <div
         ref={hostRef}
-        className={`vds-markdown-crepe h-full min-h-0 w-full [&>.milkdown]:block [&>.milkdown]:h-full [&>.milkdown]:min-h-0 [&>.milkdown]:w-full [&>.milkdown]:overflow-auto [&>.milkdown]:[scrollbar-gutter:stable] [&>.milkdown]:bg-[var(--vds-bg-gray-default)] [&>.milkdown::-webkit-scrollbar]:w-[var(--vds-space-3)] [&>.milkdown::-webkit-scrollbar]:h-[var(--vds-space-3)] [&>.milkdown::-webkit-scrollbar-thumb]:min-h-[var(--vds-space-8)] [&>.milkdown::-webkit-scrollbar-thumb]:border-[length:var(--vds-border-width-3)] [&>.milkdown::-webkit-scrollbar-thumb]:border-solid [&>.milkdown::-webkit-scrollbar-thumb]:border-transparent [&>.milkdown::-webkit-scrollbar-thumb]:rounded-[var(--vds-radius-4)] [&>.milkdown::-webkit-scrollbar-thumb]:bg-[var(--vds-scrollbar-thumb)] [&>.milkdown::-webkit-scrollbar-thumb]:bg-clip-padding [&_.milkdown-top-bar]:!hidden [&_.milkdown-link-preview]:!hidden [&_.ProseMirror_a]:!text-[var(--vds-link)] [&_.ProseMirror_a:hover]:!text-[var(--vds-link-hover)] [&_.ProseMirror_a:active]:!text-[var(--vds-link-active)] [&_.ProseMirror_a]:cursor-pointer [&_.ProseMirror_a:focus-visible]:outline [&_.ProseMirror_a:focus-visible]:outline-[var(--vds-link)] [&_.ProseMirror_code:not(pre_code)]:!inline [&_.ProseMirror_code:not(pre_code)]:[overflow-wrap:anywhere] [&_.ProseMirror]:select-text ${MARKDOWN_SLASH_MENU_CLASS}`}
+        className={`vds-markdown-crepe h-full min-h-0 w-full [&>.milkdown]:block [&>.milkdown]:h-full [&>.milkdown]:min-h-0 [&>.milkdown]:w-full [&>.milkdown]:overflow-auto [&>.milkdown]:[scrollbar-gutter:stable] [&>.milkdown]:bg-[var(--vds-bg-gray-default)] [&>.milkdown::-webkit-scrollbar]:w-[var(--vds-space-3)] [&>.milkdown::-webkit-scrollbar]:h-[var(--vds-space-3)] [&>.milkdown::-webkit-scrollbar-thumb]:min-h-[var(--vds-space-8)] [&>.milkdown::-webkit-scrollbar-thumb]:border-[length:var(--vds-border-width-3)] [&>.milkdown::-webkit-scrollbar-thumb]:border-solid [&>.milkdown::-webkit-scrollbar-thumb]:border-transparent [&>.milkdown::-webkit-scrollbar-thumb]:rounded-[var(--vds-radius-4)] [&>.milkdown::-webkit-scrollbar-thumb]:bg-[var(--vds-scrollbar-thumb)] [&>.milkdown::-webkit-scrollbar-thumb]:bg-clip-padding [&_.milkdown-top-bar]:!hidden [&_.milkdown-link-preview]:!hidden [&_.ProseMirror_a:not([data-citation-marker])]:!text-[var(--vds-link)] [&_.ProseMirror_a:not([data-citation-marker]):hover]:!text-[var(--vds-link-hover)] [&_.ProseMirror_a:not([data-citation-marker]):active]:!text-[var(--vds-link-active)] [&_.ProseMirror_a:not([data-citation-marker])]:cursor-pointer [&_.ProseMirror_a:not([data-citation-marker]):focus-visible]:outline [&_.ProseMirror_a:not([data-citation-marker]):focus-visible]:outline-[var(--vds-link)] [&_.ProseMirror_code:not(pre_code)]:!inline [&_.ProseMirror_code:not(pre_code)]:[overflow-wrap:anywhere] [&_.ProseMirror]:select-text ${MARKDOWN_SLASH_MENU_CLASS}`}
         data-shortcut-scope="markdown"
         data-testid={readOnly ? 'markdown-preview' : 'markdown-visual-editor'}
         onBeforeInputCapture={markUserEdit}
@@ -1711,15 +1869,9 @@ function MarkdownVisualEditor({
           openDocumentLink(documentLinkTarget(link.getAttribute(DOCUMENT_LINK_ATTRIBUTE) ?? ''))
         }}
         onMouseOverCapture={(event) => showDocumentLink(event.target)}
-        onMouseLeave={() => {
-          linkAnchorRef.current = null
-          setHoveredLink(null)
-        }}
+        onMouseLeave={leaveDocumentLink}
         onFocusCapture={(event) => showDocumentLink(event.target)}
-        onBlurCapture={() => {
-          linkAnchorRef.current = null
-          setHoveredLink(null)
-        }}
+        onBlurCapture={leaveDocumentLink}
         onPointerDownCapture={(event) => {
           if (copyButtonFromTarget(event.target)) return
           if (event.target instanceof Element && event.target.closest(EDITOR_ACTION_SELECTOR))
@@ -1779,27 +1931,48 @@ function MarkdownVisualEditor({
           if (shortcut) runMarkdownShortcut(shortcut.id)
         }}
       />
-      {hoveredLink && (
-        <Tooltip
-          open
-          portalled
+      {hoveredLink &&
+      (referencePreview || hoveredLink.kind === 'citation' || hoveredLink.kind === 'reference') ? (
+        <BibliographyCard
+          key={`${session.id}:${hoveredLink.href}`}
           anchorRef={linkAnchorRef}
-          side="bottom"
-          onOpenChange={(open) => {
-            if (!open) setHoveredLink(null)
+          preview={referencePreview}
+          handle={hoveredLink.kind === 'citation' ? hoveredLink.handle : undefined}
+          referenceHref={hoveredLink.kind === 'reference' ? hoveredLink.href : undefined}
+          resolveReference={resolveRelativeReference}
+          resolve={resolveDocumentCitation}
+          onClose={() => {
+            retainDocumentLink()
+            linkAnchorRef.current = null
+            setHoveredLink(null)
           }}
-        >
-          <TooltipContent data-testid="markdown-link-tooltip">
-            {t(
-              hoveredLink.kind === 'external'
-                ? 'markdown.linkOpenExternal'
-                : hoveredLink.kind === 'unavailable'
-                  ? 'markdown.linkUnavailable'
-                  : 'markdown.linkOpenInternal',
-              { url: hoveredLink.href }
-            )}
-          </TooltipContent>
-        </Tooltip>
+          onEnter={retainDocumentLink}
+          onLeave={leaveDocumentLink}
+          onOpen={(href) => openDocumentLink({ kind: 'external', href })}
+        />
+      ) : (
+        hoveredLink && (
+          <Tooltip
+            open
+            portalled
+            anchorRef={linkAnchorRef}
+            side="bottom"
+            onOpenChange={(open) => {
+              if (!open) setHoveredLink(null)
+            }}
+          >
+            <TooltipContent data-testid="markdown-link-tooltip">
+              {t(
+                hoveredLink.kind === 'external'
+                  ? 'markdown.linkOpenExternal'
+                  : hoveredLink.kind === 'unavailable'
+                    ? 'markdown.linkUnavailable'
+                    : 'markdown.linkOpenInternal',
+                { url: hoveredLink.href }
+              )}
+            </TooltipContent>
+          </Tooltip>
+        )
       )}
     </>
   )

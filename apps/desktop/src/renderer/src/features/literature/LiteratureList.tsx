@@ -5,6 +5,7 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import {
   LibraryAction,
   LIBRARY_HEADER_ACTION_CLASS,
+  LibraryLoading,
   LibrarySelectionChange,
   LibraryToolbar,
   LibraryToolbarTarget,
@@ -68,6 +69,7 @@ import {
   useToast,
 } from '../../components/ui'
 import emptyImage from '../../assets/empty_img.webp'
+import { setFileDragPreview } from '../../components/business/DragPreview'
 import { hasDraggedFiles, writeLiteratureDrag } from '../../drag'
 import { Icon } from '../../icons'
 import { useApp } from '../../store'
@@ -78,6 +80,7 @@ import {
   Link,
   MonitorDown,
   Plus,
+  Sparkles,
   Trash,
 } from 'lucide-react'
 import { fileIconForName, FileFormatIcon, IconFont } from '../../components/primitive'
@@ -318,6 +321,7 @@ type PdfImportRecord = {
 /** 摊平后的一维列表条目: 文献行, 或它展开后的一个附件行。虚拟化按条目计量与开窗。 */
 type ListEntry =
   | { kind: 'item'; item: LiteratureSummary; index: number }
+  | { kind: 'reading'; item: LiteratureSummary; index: number }
   | {
       kind: 'attachment'
       item: LiteratureSummary
@@ -415,41 +419,32 @@ function Row({
         {timestampLabel(item[key], format) || EMPTY_CELL}
       </EllipsisText>
     ) : key === 'projects' ? (
-      // 一篇文献可归属多个项目: 列内只画第一个项目, 其余折叠成 +N 芯片。
-      // 折叠后单元格通常不再溢出, 所以完整名单由 +N 自己的 tooltip 承担; 单元格 tooltip 仍是全量兜底。
-      // 无归属项目时与作者/出版物/标签列保持一致: 只留空单元格占位, 不画品牌色芯片。
-      <EllipsisText key={key} tooltip={facetNames(item.projects)} tooltipPortalled>
-        <span className={CHIP_CELL_CLASS}>
-          {item.projects.length === 0 ? (
-            EMPTY_CELL
-          ) : (
-            <>
-              <Badge className={CHIP_CLASS} tone="brand">
-                {item.projects[0].name}
-              </Badge>
-              {item.projects.length > 1 ? (
-                <Tooltip
-                  className="shrink-0"
-                  content={facetNames(item.projects.slice(1))}
-                  portalled
+      <span key={key} className={CHIP_CELL_CLASS}>
+        {item.projects.length === 0 ? (
+          EMPTY_CELL
+        ) : (
+          <>
+            <Badge className="min-w-0" tone="brand">
+              <EllipsisText tooltipPortalled>{item.projects[0].name}</EllipsisText>
+            </Badge>
+            {item.projects.length > 1 ? (
+              <Tooltip className="shrink-0" content={facetNames(item.projects.slice(1))} portalled>
+                <Badge
+                  aria-label={literature('list.moreProjects', {
+                    count: item.projects.length - 1,
+                    names: facetNames(item.projects.slice(1)),
+                  })}
+                  className={MORE_CHIP_CLASS}
+                  size="sm"
+                  tone="neutral"
                 >
-                  <Badge
-                    aria-label={literature('list.moreProjects', {
-                      count: item.projects.length - 1,
-                      names: facetNames(item.projects.slice(1)),
-                    })}
-                    className={MORE_CHIP_CLASS}
-                    size="sm"
-                    tone="neutral"
-                  >
-                    +{item.projects.length - 1}
-                  </Badge>
-                </Tooltip>
-              ) : null}
-            </>
-          )}
-        </span>
-      </EllipsisText>
+                  +{item.projects.length - 1}
+                </Badge>
+              </Tooltip>
+            ) : null}
+          </>
+        )}
+      </span>
     ) : key === 'tags' ? (
       <RowTags
         key={`${projectId ?? ''}:${item.id}`}
@@ -910,7 +905,12 @@ export function LiteratureList({
               .filter(([, update]) => update.projectId === projectId && update.request === request)
               .map(([itemId, update]) => [itemId, update.item])
           )
-          const next = mergeLiteratureSummaries(value, currentUpdates)
+          const cached = mergeLiteratureSummaries(
+            value,
+            new Map(catalogue.getSnapshot().items.map((item) => [item.id, item])),
+            false
+          )
+          const next = mergeLiteratureSummaries(cached, currentUpdates)
           for (const itemId of currentUpdates.keys()) localUpdates.current.delete(itemId)
           setItems(next)
           catalogue.items(next)
@@ -1117,6 +1117,12 @@ export function LiteratureList({
       if (!expanded.has(item.id)) return
       for (const attachment of item.attachments)
         flat.push({ kind: 'attachment', item, index, attachment })
+      if (
+        item.has_reading &&
+        isAttachmentAvailable(item.primary_attachment) &&
+        item.primary_attachment?.media_type === 'application/pdf'
+      )
+        flat.push({ kind: 'reading', item, index })
     })
     return flat
   }, [items, expanded])
@@ -1131,7 +1137,7 @@ export function LiteratureList({
   const rowVirtualizer = useVirtualizer({
     count: entries.length,
     estimateSize: (entryIndex) =>
-      entries[entryIndex]?.kind === 'attachment' ? LIST_ATTACHMENT_ROW_HEIGHT : LIST_ROW_HEIGHT,
+      entries[entryIndex]?.kind === 'item' ? LIST_ROW_HEIGHT : LIST_ATTACHMENT_ROW_HEIGHT,
     getScrollElement: () => tableScroll.current,
     overscan: LIST_OVERSCAN,
   })
@@ -1356,7 +1362,7 @@ export function LiteratureList({
     // 成功提示的条数以后端实际写入的条目为准: 选中的 id 可能已在别处被删除, 拿请求数会虚报。
     const exported = result.count ?? ids.length
     // 必须等用户在原生保存对话框里选完位置并真的落盘才算成功; 取消保存不提示, 也不报错。
-    const saved = await saveBibtex(result.bibtex)
+    const saved = await saveBibtex(result.bibtex, window.scholarseed)
     if (saved.kind === 'saved') {
       toast({
         title: literature('batch.exportSucceeded', { count: exported }),
@@ -1375,6 +1381,7 @@ export function LiteratureList({
    */
   const revealImported = (): void => {
     setSearch('')
+    tableScroll.current?.scrollTo({ left: 0, behavior: 'instant' })
     catalogue.imported({ q: undefined, tag_id: undefined })
   }
   /**
@@ -2105,17 +2112,6 @@ export function LiteratureList({
           ) : null}
         </div>
       ) : null}
-      {query.download_session_id ? (
-        <Alert
-          data-testid="literature-download-scope"
-          description={literature('downloads.scope')}
-          action={
-            <Button size="sm" variant="ghost" onClick={() => catalogue.navigate()}>
-              {literature('downloads.exitScope')}
-            </Button>
-          }
-        />
-      ) : null}
       {collectionsFailed ? (
         <div
           className="lit-error m-[var(--vds-library-list-error-margin)] flex items-center justify-between gap-[var(--vds-library-list-gap)] p-[var(--vds-library-list-error-padding)]"
@@ -2271,9 +2267,13 @@ export function LiteratureList({
               ))}
             </div>
             {loading ? (
-              <div className="grid min-h-[var(--vds-library-loading-min-height)] place-items-center">
-                <Spinner aria-label={literature('list.loading')} />
-              </div>
+              projectPresentation ? (
+                <LibraryLoading />
+              ) : (
+                <div className="grid min-h-[var(--vds-library-loading-min-height)] place-items-center">
+                  <Spinner aria-label={literature('list.loading')} />
+                </div>
+              )
             ) : items.length === 0 ? (
               libraryEmpty ? (
                 <EmptyState
@@ -2294,6 +2294,21 @@ export function LiteratureList({
                 {virtualRows.map((virtual) => {
                   const entry = entries[virtual.index]
                   if (!entry) return null
+                  if (entry.kind === 'reading')
+                    return (
+                      <Button
+                        key={`${entry.item.id}-reading`}
+                        unstyled
+                        data-index={virtual.index}
+                        ref={rowVirtualizer.measureElement}
+                        data-testid={`literature-reading-${entry.item.id}`}
+                        className={`${ATTACHMENT_ROW_CLASS} w-full text-left focus-visible:ring-2 focus-visible:ring-[var(--vds-brand-border-default)]`}
+                        onClick={() => openDetail(entry.item, 'reading')}
+                      >
+                        <Sparkles aria-hidden="true" className="size-[var(--vds-icon-8)]" />
+                        <span>{literature('reading.title')}</span>
+                      </Button>
+                    )
                   if (entry.kind === 'attachment') {
                     const { attachment, item } = entry
                     return (
@@ -2344,13 +2359,20 @@ export function LiteratureList({
                       projectId={projectId}
                       onDragStart={
                         projectPresentation && scopeProjectId
-                          ? (event) =>
+                          ? (event) => {
                               writeLiteratureDrag(
                                 event.dataTransfer,
                                 scopeProjectId,
                                 item,
                                 items.filter((entry) => selected.includes(entry.id))
                               )
+                              setFileDragPreview(
+                                event.dataTransfer,
+                                item.title,
+                                'file',
+                                'paper.pdf'
+                              )
+                            }
                           : undefined
                       }
                       menu={{
@@ -2358,6 +2380,7 @@ export function LiteratureList({
                           act.openLiteratureAttachment(item.id, attachmentId),
                         copyTitle: () => void copyItemTitle(item),
                         viewInfo: () => openDetail(item),
+                        readAi: () => openDetail(item, 'reading'),
                         addNote: () => openDetail(item, 'note'),
                         addAttachment: () => openDetail(item, 'attachment'),
                         remove: () => setRemoveTarget(item),

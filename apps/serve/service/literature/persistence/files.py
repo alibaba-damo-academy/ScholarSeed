@@ -1,4 +1,4 @@
-"""Stage global literature attachments and roll back unpublished imports."""
+"""Own literature attachments and scoped task-file persistence."""
 
 from __future__ import annotations
 
@@ -32,6 +32,10 @@ BATCH_NOT_OPEN = "literature_file_batch_not_open"
 INVALID_NAME = "literature_attachment_name_invalid"
 INVALID_RELATIVE_PATH = "literature_relative_path_invalid"
 ROOT_WORKSPACE = "."
+READING_FILE_MODE = 0o600
+READING_TARGET_INVALID = "review_reading_target_invalid"
+READING_TEMP_PREFIX = ".reading-"
+READING_TEMP_SUFFIX = ".tmp"
 # 修订号词法的唯一属主: 附件行、CAS 的 If-Match 与全文索引缓存的键都用它。
 REVISION_PREFIX = "sha256:"
 MAX_OWNER_TOKEN_CHARS = 64
@@ -155,6 +159,11 @@ def scoped_parent(value: str) -> str:
     return str(Path(scoped_relative(value)).parent)
 
 
+def read_source_file(location: str | os.PathLike[str]) -> bytes:
+    """Read caller-selected local input, not a catalogue attachment lookup."""
+    return Path(location).read_bytes()
+
+
 def read_attachment(location: str) -> bytes:
     """Only a catalogue-owned managed attachment can cross this storage boundary."""
     root = SERVICE_LITERATURE_FILES_DIR.resolve()
@@ -166,12 +175,12 @@ def read_attachment(location: str) -> bytes:
     return read_scoped_file(root, path.name, MAX_IMPORT_BYTES)
 
 
-def scoped_modified(root: Path, relative: str, *, regular: bool = False) -> int | None:
+def scoped_modified(root: str | Path, relative: str, *, regular: bool = False) -> int | None:
     """Observe a scoped entry without following a linked leaf or ancestor."""
     directory = None
     try:
         parts = Path(scoped_relative(relative)).parts
-        directory = open_directory(canonical_root(root.expanduser().absolute()), parts[:-1])
+        directory = open_directory(canonical_root(Path(root).expanduser().absolute()), parts[:-1])
         metadata = directory.stat(parts[-1])
         if getattr(metadata, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
             return None
@@ -185,11 +194,11 @@ def scoped_modified(root: Path, relative: str, *, regular: bool = False) -> int 
             directory.close()
 
 
-def scoped_files(root: Path, patterns: tuple[str, ...]) -> tuple[tuple[str, int], ...]:
+def scoped_files(root: str | Path, patterns: tuple[str, ...]) -> tuple[tuple[str, int], ...]:
     """Discover regular candidates; glob output itself carries no access authority."""
     directory = None
     try:
-        root = canonical_root(root.expanduser().absolute())
+        root = canonical_root(Path(root).expanduser().absolute())
         directory = open_directory(root, ())
         found: dict[str, int] = {}
         for pattern in patterns:
@@ -206,14 +215,14 @@ def scoped_files(root: Path, patterns: tuple[str, ...]) -> tuple[tuple[str, int]
             directory.close()
 
 
-def read_scoped_file(root: Path, relative: str, limit: int) -> bytes:
+def read_scoped_file(root: str | Path, relative: str, limit: int) -> bytes:
     """Read an explicitly named regular file without traversing symlinks."""
     path = Path(relative)
     if path.is_absolute() or not path.parts or ".." in path.parts:
         raise ValueError(INVALID_NAME)
     directory = None
     try:
-        directory = open_directory(canonical_root(root), tuple(path.parts[:-1]))
+        directory = open_directory(canonical_root(Path(root)), tuple(path.parts[:-1]))
         descriptor = directory.open(path.name, os.O_RDONLY | NOFOLLOW | NONBLOCK)
         with os.fdopen(descriptor, "rb") as handle:
             metadata = os.fstat(handle.fileno())
@@ -226,6 +235,33 @@ def read_scoped_file(root: Path, relative: str, limit: int) -> bytes:
     finally:
         if directory is not None:
             directory.close()
+
+
+def write_reading_bundle(root: Path, relative: str, payload: bytes) -> None:
+    path = Path(scoped_relative(relative))
+    directory = open_directory(canonical_root(root), tuple(path.parts[:-1]))
+    temporary = READING_TEMP_PREFIX + uuid4().hex + READING_TEMP_SUFFIX
+    try:
+        try:
+            current = directory.stat(path.name)
+            if not stat.S_ISREG(current.st_mode):
+                raise ValueError(READING_TARGET_INVALID)
+        except FileNotFoundError:
+            pass
+        descriptor = directory.open(
+            temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | NOFOLLOW, READING_FILE_MODE
+        )
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        directory.replace_private(temporary, path.name)
+    finally:
+        try:
+            directory.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        directory.close()
 
 
 def scoped_modified_ns(root: Path, relative: str, *, regular_only: bool = False) -> int | None:

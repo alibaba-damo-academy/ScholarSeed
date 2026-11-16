@@ -15,8 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 class ReviewOptionCopyTest(unittest.TestCase):
     def test_options_in_both_languages(self):
         templates = [
-            {"id": "ctexart", "language": "CHINESE", "status": "installed"},
-            {"id": "neurips", "language": "ENGLISH", "status": "installed"},
+            {"id": "standard_chinese", "title": "标准中文模板", "language": "CHINESE", "status": "installed"},
+            {"id": "neurips", "title": "NeurIPS 2026 preprint", "language": "ENGLISH", "status": "installed"},
         ]
         styles = {
             sid: {"minimum_ready": 2, "entries": 2, "metadata_risk": "PaperHub internal detail"}
@@ -41,7 +41,7 @@ class ReviewOptionCopyTest(unittest.TestCase):
                     options = publication_options(ws)
                 self.assertEqual(len(options["templates"]), 1)
                 self.assertEqual(
-                    options["templates"][0]["title"], options["format_labels"]["latex_pdf"]
+                    options["templates"][0]["title"], next(row["title"] for row in templates if row["language"] == language)
                 )
                 self.assertEqual(len(options["citation_styles"]), len(style_ids()))
                 visible = [options["format_labels"][key] for key in options["formats"]]

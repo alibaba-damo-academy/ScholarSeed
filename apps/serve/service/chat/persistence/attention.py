@@ -178,6 +178,29 @@ def _initialize_tables(connection: sqlite3.Connection) -> None:
     connection.execute(ATTENTION_INDEX_SQL.replace("CREATE INDEX", "CREATE INDEX IF NOT EXISTS", 1))
 
 
+def preview_triggers() -> tuple[tuple[str, str, str], ...]:
+    title, deleted = ATTENTION_PROJECTION_TRIGGERS
+    title_sql = (
+        f"CREATE TRIGGER {title} "
+        f"AFTER UPDATE OF title,title_fallback ON {SESSION_CATALOG_TABLE} "
+        "WHEN (NEW.title IS NOT OLD.title OR NEW.title_fallback IS NOT OLD.title_fallback) "
+        f"AND EXISTS (SELECT 1 FROM {ATTENTION_TABLE} WHERE session_id=NEW.session_id AND read_at IS NULL) "
+        f"BEGIN UPDATE {ATTENTION_CLOCK_TABLE} SET revision=revision+1 "
+        f"WHERE singleton={ATTENTION_CLOCK_ID}; END"
+    )
+    deleted_sql = (
+        f"CREATE TRIGGER {deleted} "
+        f"BEFORE DELETE ON {SESSION_CATALOG_TABLE} "
+        f"WHEN EXISTS (SELECT 1 FROM {ATTENTION_TABLE} WHERE session_id=OLD.session_id AND read_at IS NULL) "
+        f"BEGIN UPDATE {ATTENTION_CLOCK_TABLE} SET revision=revision+1 "
+        f"WHERE singleton={ATTENTION_CLOCK_ID}; END"
+    )
+    return (
+        (title, SESSION_CATALOG_TABLE, title_sql),
+        (deleted, SESSION_CATALOG_TABLE, deleted_sql),
+    )
+
+
 def initialize(connection: sqlite3.Connection) -> None:
     _initialize_tables(connection)
     if (
@@ -187,21 +210,8 @@ def initialize(connection: sqlite3.Connection) -> None:
         is None
     ):
         return
-    connection.execute(
-        f"CREATE TRIGGER IF NOT EXISTS {ATTENTION_PROJECTION_TRIGGERS[0]} "
-        f"AFTER UPDATE OF title,title_fallback ON {SESSION_CATALOG_TABLE} "
-        "WHEN (NEW.title IS NOT OLD.title OR NEW.title_fallback IS NOT OLD.title_fallback) "
-        f"AND EXISTS (SELECT 1 FROM {ATTENTION_TABLE} WHERE session_id=NEW.session_id AND read_at IS NULL) "
-        f"BEGIN UPDATE {ATTENTION_CLOCK_TABLE} SET revision=revision+1 "
-        f"WHERE singleton={ATTENTION_CLOCK_ID}; END"
-    )
-    connection.execute(
-        f"CREATE TRIGGER IF NOT EXISTS {ATTENTION_PROJECTION_TRIGGERS[1]} "
-        f"BEFORE DELETE ON {SESSION_CATALOG_TABLE} "
-        f"WHEN EXISTS (SELECT 1 FROM {ATTENTION_TABLE} WHERE session_id=OLD.session_id AND read_at IS NULL) "
-        f"BEGIN UPDATE {ATTENTION_CLOCK_TABLE} SET revision=revision+1 "
-        f"WHERE singleton={ATTENTION_CLOCK_ID}; END"
-    )
+    for _, _, sql in preview_triggers():
+        connection.execute(sql.replace("CREATE TRIGGER", "CREATE TRIGGER IF NOT EXISTS", 1))
 
 
 def safe_text(value: object, limit: int = ATTENTION_BODY_LIMIT) -> str:

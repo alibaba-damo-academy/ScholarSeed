@@ -50,9 +50,12 @@ function staticDeclaration(value) {
 }
 
 function executable(name, environment = process.env, cwd = process.cwd()) {
+  const searchPath = process.platform === WINDOWS_PLATFORM
+    ? Object.entries(environment).find(([key]) => key.toLowerCase() === 'path')?.[1]
+    : environment.PATH
   const candidates = path.isAbsolute(name) || name.includes('/') || name.includes('\\')
     ? [path.resolve(cwd, name)]
-    : (environment.PATH || '').split(path.delimiter).map(directory => path.resolve(cwd, directory || '.', name))
+    : (searchPath || '').split(path.delimiter).map(directory => path.resolve(cwd, directory || '.', name))
   const suffixes = process.platform === WINDOWS_PLATFORM ? NATIVE_EXECUTABLE_SUFFIXES : ['']
   for (const candidate of candidates) {
     for (const suffix of suffixes) {

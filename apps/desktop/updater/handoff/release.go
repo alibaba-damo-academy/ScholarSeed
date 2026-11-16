@@ -41,24 +41,40 @@ func versionNumbers(value string) ([4]uint64, error) {
 	}
 	return numbers, nil
 }
-func newer(candidate, current string) error {
+
+// ComparePackVersions compares product version first, then the frozen build number.
+// Setup may reinstall an equal version; online update admission still requires newer.
+func ComparePackVersions(candidate, current string) (int, error) {
 	a, err := versionNumbers(candidate)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	b, err := versionNumbers(current)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	for i := range a {
 		if a[i] > b[i] {
-			return nil
+			return 1, nil
 		}
 		if a[i] < b[i] {
-			return errors.New("package downgrade rejected")
+			return -1, nil
 		}
 	}
-	return errors.New("package already installed")
+	return 0, nil
+}
+func newer(candidate, current string) error {
+	comparison, err := ComparePackVersions(candidate, current)
+	if err != nil {
+		return err
+	}
+	if comparison < 0 {
+		return errors.New("package downgrade rejected")
+	}
+	if comparison == 0 {
+		return errors.New("package already installed")
+	}
+	return nil
 }
 func installedVersion(root string) (string, error) {
 	raw, err := readBounded(joinPath(root, "current/sq.version"), 1024*1024)

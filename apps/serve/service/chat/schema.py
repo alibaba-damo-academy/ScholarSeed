@@ -5,9 +5,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from pydantic import BaseModel, StrictBool
+from pydantic import BaseModel, Field, StrictBool, StrictInt
 
 from scholarseed_runtime.contract import ModelThinking
+from service.chat.constants import FollowUpMode
 from service.settings.connections import ModelAuthentication
 
 
@@ -16,6 +17,11 @@ class ModelDefaultRequest(BaseModel):
 
     model_key: str
     persist: bool = True
+
+
+class FollowUpRequest(BaseModel):
+    mode: FollowUpMode
+    expected_revision: StrictInt = Field(ge=0)
 
 
 class RuntimePreparationRequest(BaseModel):
@@ -107,6 +113,7 @@ class SessionRenameRequest(BaseModel):
 
 class SessionArchiveRequest(BaseModel):
     archived: StrictBool
+    stop_running: StrictBool = True
 
 
 class SessionPinRequest(BaseModel):
@@ -119,6 +126,7 @@ class SessionModelRequest(BaseModel):
     """Persist owned model intent and optionally the default for future sessions."""
 
     model_id: str
+    service_instance_id: str | None = None
     reasoning_effort: str = ""
     remember_default: StrictBool = False
     # 开关/预算形态的思考选择，与 ``reasoning_effort`` 互斥：一条坐标到底是哪种形态由能力

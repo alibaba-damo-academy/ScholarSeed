@@ -3,10 +3,13 @@ import { copyFile, mkdir, mkdtemp, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
 import { build } from 'esbuild'
 import { _electron } from '@playwright/test'
 import type { RendererPreferences } from '../preferences.ts'
 import { PREFERENCE_DIAGNOSTIC_PREFIX } from '../preference-diagnostics.ts'
+
+const DESKTOP = fileURLToPath(new URL('../../', import.meta.url))
 
 interface PreferenceFixture {
   ready: Promise<void>
@@ -24,7 +27,7 @@ test(
     const temporary = await realpath(await mkdtemp(join(tmpdir(), 'browser-preferences-')))
     await mkdir(join(temporary, 'profile'))
     const entry = join(temporary, 'main.cjs')
-    await copyFile(resolve('out/main/lease.node'), join(temporary, 'lease.node'))
+    await copyFile(resolve(DESKTOP, 'out/main/lease.node'), join(temporary, 'lease.node'))
     await build({
       stdin: {
         contents: `
@@ -46,13 +49,28 @@ test(
       globalThis.automation = saveBrowserAutomationPreference
       globalThis.corrupt = () => writeFileSync(join(app.getPath('userData'), 'renderer-preferences.json'), '{invalid')
     `,
-        resolveDir: resolve('.'),
+        resolveDir: DESKTOP,
       },
       outfile: entry,
       platform: 'node',
       format: 'cjs',
       bundle: true,
       external: ['electron', './lease.node'],
+      plugins: [
+        {
+          name: 'isolated-writer-account',
+          setup(bundle) {
+            bundle.onResolve({ filter: /^node:os$/ }, (args) =>
+              args.importer === join(DESKTOP, 'src/main/writer.ts')
+                ? { path: 'writer-account', namespace: 'fixture' }
+                : undefined
+            )
+            bundle.onLoad({ filter: /^writer-account$/, namespace: 'fixture' }, () => ({
+              contents: `export const userInfo = () => ({ homedir: ${JSON.stringify(temporary)} })`,
+            }))
+          },
+        },
+      ],
     })
     const environment = Object.fromEntries(
       Object.entries(process.env).filter(

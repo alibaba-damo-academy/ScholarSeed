@@ -42,12 +42,26 @@ RPC_THREAD_ERRORS = (
 PIPE_TIMEOUT = re.compile(r"timed out after ([0-9]{1,8})ms connecting runner pipe-(in|out)\b")
 OS_ERROR = re.compile(r"\bos error ([0-9]{1,10})(?!\w|\.[0-9])", re.IGNORECASE)
 RUNNER_LOGON_ERROR = re.compile(r"CreateProcessWithLogonW failed: ([0-9]{1,10})")
+RUNNER_DESKTOP_ERROR_STAGES = {
+    "CreateDesktopW failed for shared private desktop": "runner_desktop_create",
+    "SetEntriesInAclW failed for private desktop": "runner_desktop_acl",
+    "SetSecurityInfo failed for private desktop": "runner_desktop_acl",
+}
+DECIMAL_SYSTEM_CODE = re.compile(r"([0-9]{1,10})")
+RUNNER_PIPE_WIN32_CAUSE = re.compile(r"[^\r\n]+ \(os error ([0-9]{1,10})\)")
 RUNNER_STAGE_PREFIX = "runner failed during "
 RUNNER_STAGES = {
     "ReadSpawnRequest": "runner_read_spawn_request",
     "SpawnChild": "runner_spawn_child",
     "WriteSpawnReady": "runner_write_spawn_ready",
 }
+# Fixed anyhow contexts from the pinned native runner; never export their causes.
+RUNNER_CONTEXT_STAGES = {
+    "connect pipe-in": "runner_pipe_connect",
+    "connect pipe-out": "runner_pipe_connect",
+    "wait for runner spawn_ready": "runner_spawn_ready",
+}
+RUNNER_CAPTURE_CLOSED = "runner pipe closed before exit"
 RUNNER_READY_ERRORS = frozenset(
     {"wait for runner spawn_ready", "runner pipe closed before spawn_ready"}
 )
@@ -59,9 +73,17 @@ RUNNER_CHILD_ERROR = re.compile(
 WIN32_CODE_TYPE = "win32"
 SETUP_LAUNCH_ERROR = re.compile(r"ShellExecuteExW failed to launch setup helper: ([0-9]{1,10})")
 SETUP_COMPLETION_ERROR = "orchestrator_helper_incomplete"
+SETUP_READ_ACL_HELPER_ERROR = "helper_read_acl_helper_spawn_failed"
 SETUP_LAUNCH_FAILED = "orchestrator_helper_launch_failed"
 NATIVE_SETUP_CANCELLED = "orchestrator_helper_launch_canceled"
 WINDOWS_ERROR_CANCELLED = 1223
+WINDOWS_PASSWORD_POLICY_REJECTED = 2245
+SETUP_ACCOUNT_STAGE = "setup_account_update"
+SETUP_ACCOUNT_ERROR = "helper_user_create_or_update_failed"
+SETUP_ACCOUNT_FAILURE = re.compile(
+    r"helper_user_create_or_update_failed: failed to create/update user "
+    r"CodexSandbox(?:Online|Offline), code ([0-9]{1,10})/([0-9]{1,10})"
+)
 # Reviewed native codes only; never print an arbitrary prefix from the native error.
 NATIVE_SETUP_CODES = frozenset(
     {
@@ -79,7 +101,7 @@ NATIVE_SETUP_CODES = frozenset(
         "helper_log_failed",
         "helper_user_provision_failed",
         "helper_users_group_create_failed",
-        "helper_user_create_or_update_failed",
+        SETUP_ACCOUNT_ERROR,
         "helper_dpapi_protect_failed",
         "helper_users_file_write_failed",
         "helper_setup_marker_write_failed",
@@ -90,7 +112,7 @@ NATIVE_SETUP_CODES = frozenset(
         "helper_firewall_policy_ineffective",
         "helper_firewall_rule_create_or_add_failed",
         "helper_firewall_rule_verify_failed",
-        "helper_read_acl_helper_spawn_failed",
+        SETUP_READ_ACL_HELPER_ERROR,
         "helper_sandbox_lock_failed",
         "helper_unknown_error",
     }
@@ -112,6 +134,40 @@ class NativeDiagnostic:
     code: int | None = None
 
 
+def sandbox_account_error(message: str) -> int | None:
+    """Read only the final NetUserSetInfo result from the reviewed helper format."""
+    if len(message) > DIAGNOSTIC_SCAN_LIMIT:
+        return None
+    match = SETUP_ACCOUNT_FAILURE.fullmatch(message)
+    if match is None or any(int(code) > SYSTEM_CODE_LIMIT for code in match.groups()):
+        return None
+    return int(match[2])
+
+
+def sandbox_setup_metadata(detail: str) -> tuple[str | None, str | None, int | None]:
+    if len(detail) > DIAGNOSTIC_SCAN_LIMIT:
+        return None, None, None
+    name, separator, description = detail.partition(": ")
+    if not separator or name not in NATIVE_SETUP_CODES:
+        return None, None, None
+    account_error = sandbox_account_error(detail)
+    if account_error is not None:
+        return SETUP_ACCOUNT_STAGE, WIN32_CODE_TYPE, account_error
+    if name == SETUP_COMPLETION_ERROR:
+        return "setup_completion_check", None, None
+    if name == SETUP_READ_ACL_HELPER_ERROR:
+        return "setup_read_acl_helper", None, None
+    if name in (SETUP_LAUNCH_FAILED, NATIVE_SETUP_CANCELLED):
+        match = SETUP_LAUNCH_ERROR.fullmatch(description)
+        if match:
+            code = int(match[1])
+            if code <= SYSTEM_CODE_LIMIT and (code == WINDOWS_ERROR_CANCELLED) == (
+                name == NATIVE_SETUP_CANCELLED
+            ):
+                return "setup", WIN32_CODE_TYPE, code
+    return "setup", None, None
+
+
 def _sandbox_rpc_metadata(message: str) -> tuple[str | None, str | None, int | None]:
     if len(message) > DIAGNOSTIC_SCAN_LIMIT or not message.startswith(SANDBOX_RPC_PREFIX):
         return None, None, None
@@ -122,6 +178,9 @@ def _sandbox_rpc_metadata(message: str) -> tuple[str | None, str | None, int | N
     if separator and name == "CreateProcessWithLogonW failed":
         stage = "runner_logon"
         codeMatch = RUNNER_LOGON_ERROR.fullmatch(detail)
+    elif separator and name in RUNNER_DESKTOP_ERROR_STAGES:
+        stage = RUNNER_DESKTOP_ERROR_STAGES[name]
+        codeMatch = DECIMAL_SYSTEM_CODE.fullmatch(description)
     elif separator and name.startswith(RUNNER_STAGE_PREFIX):
         stage = RUNNER_STAGES.get(name.removeprefix(RUNNER_STAGE_PREFIX))
         if stage == RUNNER_STAGES["SpawnChild"]:
@@ -130,14 +189,16 @@ def _sandbox_rpc_metadata(message: str) -> tuple[str | None, str | None, int | N
         stage = "runner_pipe_connect"
     elif detail in RUNNER_READY_ERRORS:
         stage = "runner_spawn_ready"
+    elif detail == RUNNER_CAPTURE_CLOSED:
+        stage = "runner_capture"
+    elif name in RUNNER_CONTEXT_STAGES and (
+        not separator or description and "\n" not in description and "\r" not in description
+    ):
+        stage = RUNNER_CONTEXT_STAGES[name]
+        if separator and stage == "runner_pipe_connect":
+            codeMatch = RUNNER_PIPE_WIN32_CAUSE.fullmatch(description)
     elif separator and name in NATIVE_SETUP_CODES:
-        stage = "setup_completion_check" if name == SETUP_COMPLETION_ERROR else "setup"
-        if name in (SETUP_LAUNCH_FAILED, NATIVE_SETUP_CANCELLED):
-            codeMatch = SETUP_LAUNCH_ERROR.fullmatch(description)
-            if codeMatch and (int(codeMatch[1]) == WINDOWS_ERROR_CANCELLED) != (
-                name == NATIVE_SETUP_CANCELLED
-            ):
-                codeMatch = None
+        return sandbox_setup_metadata(detail)
     code = int(codeMatch[1]) if codeMatch is not None else None
     if code is None or code > SYSTEM_CODE_LIMIT:
         return stage, None, None
@@ -156,7 +217,11 @@ def enable_mcp_diagnostics(environment: dict[str, str]) -> None:
 
 
 def rpc_failure(method: str, thread_id: str, code: object, message: object) -> str:
-    if type(code) is int and code == RPC_INVALID_REQUEST_CODE and thread_id:
+    if (
+        (isinstance(code, int) and not isinstance(code, bool))
+        and code == RPC_INVALID_REQUEST_CODE
+        and thread_id
+    ):
         for expected_method, prefix, safe_error in RPC_THREAD_ERRORS:
             if method == expected_method and message == prefix + thread_id:
                 return safe_error
@@ -187,18 +252,25 @@ def native_diagnostic(
             event = json.loads(forwarded[position:DIAGNOSTIC_SCAN_LIMIT].strip())
         except (ValueError, RecursionError):
             event = None
+        schemaVersion = event.get("schema_version") if isinstance(event, dict) else None
         if (
             isinstance(event, dict)
             and set(event) == MCP_DIAGNOSTIC_FIELDS
             and event.get("event") == MCP_LAUNCH_EVENT
-            and type(event.get("schema_version")) is int
-            and event["schema_version"] == 1
+            and isinstance(schemaVersion, int)
+            and not isinstance(schemaVersion, bool)
+            and schemaVersion == 1
             and event.get("stage") in ("bindings", "containment", "exec")
             and event.get("error_type") in ("os_error", "invalid_bindings")
             and isinstance(event.get("correlation_id"), str)
             and MCP_DIAGNOSTIC_ID.fullmatch(event["correlation_id"])
             and all(
-                value is None or type(value) is int and 0 <= value <= SYSTEM_CODE_LIMIT
+                value is None
+                or (
+                    isinstance(value, int)
+                    and not isinstance(value, bool)
+                    and 0 <= value <= SYSTEM_CODE_LIMIT
+                )
                 for value in (event.get("errno"), event.get("winerror"))
             )
         ):

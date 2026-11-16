@@ -6,7 +6,7 @@ import json
 import logging
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from starlette.status import (
     HTTP_404_NOT_FOUND,
     HTTP_422_UNPROCESSABLE_CONTENT,
@@ -143,7 +143,7 @@ def mount_feedback_routes(
         images: list[UploadFile] = File(default_factory=list),
         recording_report: UploadFile | None = File(None),
         renderer_diagnostics: UploadFile | None = File(None),
-    ) -> dict:
+    ) -> Response:
         if len(images) > MAX_IMAGES:
             raise HTTPException(422, f"at most {MAX_IMAGES} images")
         # 归属身份 (谁能引用这个 session_id) 与真实账号身份 (拿谁的凭据、上报给谁) 是两件
@@ -321,7 +321,9 @@ def mount_feedback_routes(
             len(attachments),
             result.bundle_bytes,
         )
-        return {"ok": True, "id": result.feedback_id, "bundle_bytes": result.bundle_bytes}
+        return JSONResponse(
+            {"ok": True, "id": result.feedback_id, "bundle_bytes": result.bundle_bytes}
+        )
 
 
 __all__ = ["mount_feedback_routes"]

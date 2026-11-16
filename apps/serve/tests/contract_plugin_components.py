@@ -13,27 +13,54 @@ from unittest.mock import AsyncMock, Mock
 
 from scholarseed_runtime.contract.input import InputItem, InputKind, TurnInput
 from service.capabilities.service.components import ComponentRegistry
+from service.capabilities.service.declarative import CANVAS_REVISION, CANVAS_SLOT, OPENUI_SLOT
 from service.capabilities.service.descriptor import (
+    HOST_COMPONENT_FINGERPRINT,
     HOST_COMPONENT_PLUGIN,
-    HOST_COMPONENT_REVISION,
     PLUGIN_DESCRIPTOR,
     PUBLIC_COMPONENT_PROVIDERS,
     PUBLIC_COMPONENT_SLOTS,
     inspect_plugin,
 )
+from service.capabilities.service.package import digest
 from service.capabilities.service.plugins import (
-    PLUGIN_CAPABILITIES,
+    PLUGIN_BUILTIN_SOURCE,
     component_action,
-    installed_snapshot,
+    identity_snapshot,
 )
 from service.capabilities.service.presentation import TurnSkillBinding, component_reference
 from service.capabilities.service.source import COMMUNITY_SKILLS_DIR, compile_source_skills
 from service.capabilities.service.ui import read_ui, resolve_ui
 from service.chat.runtime.live import LiveSession
-from service.literature.service.cards import LiteratureReferences
 from service.literature.service.result import SearchResult
 from service.literature.service.review import ReviewSnapshot
 from tests.contract_ui_dependency import ui_payload
+
+
+def bundled_identity(pack: Path, name: str):
+    return identity_snapshot(
+        {
+            "active": True,
+            "source": PLUGIN_BUILTIN_SOURCE,
+            "path": str(pack / name / "SKILL.md"),
+        }
+    )
+
+
+def bundled_ui(exports: set[str]):
+    manifest = json.loads(
+        (COMMUNITY_SKILLS_DIR.parents[1] / "packages/ui/manifest.json").read_text()
+    )
+    return read_ui(
+        ui_payload(
+            exports=[name for name in manifest["exports"] if name in exports],
+            components=[
+                {**item, "entry": "selection.js"}
+                for item in manifest["components"]
+                if PUBLIC_COMPONENT_PROVIDERS[item["slot"]] != HOST_COMPONENT_PLUGIN
+            ],
+        )
+    )
 
 
 class ComponentContract(unittest.TestCase):
@@ -163,7 +190,7 @@ class ComponentContract(unittest.TestCase):
             ("agentic-search", "results", SearchResult),
             ("literature-review", "outline", ReviewSnapshot),
             ("literature-review", "review", ReviewSnapshot),
-            ("research-idea-partner", "references", LiteratureReferences),
+            ("research-idea-partner", "results", SearchResult),
         )
         for name, component, schema in cases:
             data = json.loads((source / name / "components" / f"{component}.json").read_text())[
@@ -190,7 +217,13 @@ class ComponentContract(unittest.TestCase):
                     key: value for key, value in scenario["data"].items() if key != "context"
                 }
                 self.assertEqual(
-                    SearchResult.model_validate(payload).model_dump(mode="json"), payload
+                    SearchResult.model_validate(payload).model_dump(mode="json"),
+                    {
+                        "criteria_details": [],
+                        "fulltext_authorization": None,
+                        **payload,
+                        "papers": [{"arxiv_id": None, **paper} for paper in payload["papers"]],
+                    },
                 )
 
     def test_remaining_bundled_packages_have_verified_components_and_scenarios(self):
@@ -204,50 +237,66 @@ class ComponentContract(unittest.TestCase):
             "precise-literature-search": {
                 "preview.literature-results",
                 "display.literature-search",
-                "display.literature-downloads",
-                "display.literature-delivery",
                 "interaction.question",
                 "literature.selection",
             },
             "literature-review": {
                 "preview.literature-results",
                 "literature.authorization",
-                "literature.outline",
                 "display.literature-search",
-                "display.literature-downloads",
-                "display.literature-delivery",
                 "display.literature-review",
                 "interaction.question",
             },
             "research-idea-partner": {
                 "preview.literature-results",
                 "literature.authorization",
-                "display.literature-references",
                 "display.literature-search",
-                "display.literature-downloads",
-                "display.literature-delivery",
                 "interaction.question",
             },
+            "scholarseed-product-operations": {
+                "plot.view",
+                "table.view",
+                "formula.view",
+                "markdown.view",
+                "display.literature-search",
+                "preview.literature-results",
+            },
         }
-        custom_slots = {"literature.outline", "display.literature-review"}
-        self.assertEqual(set().union(*expected.values()) - custom_slots, PUBLIC_COMPONENT_SLOTS)
+        custom_slots = {
+            "display.literature-review",
+            "plot.view",
+            "table.view",
+            "formula.view",
+            "markdown.view",
+        }
+        self.assertEqual(
+            (set().union(*expected.values()) - custom_slots)
+            | {CANVAS_SLOT, OPENUI_SLOT, "literature.outline"},
+            PUBLIC_COMPONENT_SLOTS,
+        )
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         pack = Path(temporary.name).resolve() / "skills"
         compile_source_skills(pack)
         registry = ComponentRegistry(Path(temporary.name) / "components.sqlite3")
-        official_ui = read_ui(ui_payload(exports=["Button", "React", "mount", "Conversation"]))
+        snapshots = {name: bundled_identity(pack, name) for name in expected}
+        official_ui = bundled_ui(
+            {
+                export
+                for snapshot in snapshots.values()
+                for export in snapshot["descriptor"]["ui"]["exports"]
+            }
+        )
         registry.install_ui(official_ui)
-        snapshots = {
-            name: installed_snapshot(
-                pack / name,
-                host_version="0.2.0",
-                capabilities=PLUGIN_CAPABILITIES,
-                bundled=True,
-            )
-            for name in expected
-        }
         registry.publish(list(snapshots.values()))
+        canvas = registry.resolve(
+            CANVAS_SLOT, session_id="canvas", turn_id="preview-and-runtime", user_id="developer"
+        )
+        self.assertEqual(canvas["fingerprint"], CANVAS_REVISION)
+        canvas_snapshot = registry.snapshot(canvas, user_id="developer")
+        self.assertEqual(
+            {item["slot"] for item in canvas_snapshot["descriptor"]["components"]}, {CANVAS_SLOT}
+        )
         for name, slots in expected.items():
             with self.subTest(name=name):
                 snapshot = snapshots[name]
@@ -271,10 +320,10 @@ class ComponentContract(unittest.TestCase):
                         self.assertEqual(reference["component"], component["slot"])
                         self.assertEqual(resolved["files"], {})
                         if PUBLIC_COMPONENT_PROVIDERS[component["slot"]] == HOST_COMPONENT_PLUGIN:
-                            self.assertEqual(reference["fingerprint"], HOST_COMPONENT_REVISION)
+                            self.assertEqual(reference["fingerprint"], HOST_COMPONENT_FINGERPRINT)
                             self.assertEqual(
                                 {item["slot"] for item in resolved["descriptor"]["components"]},
-                                PUBLIC_COMPONENT_SLOTS,
+                                PUBLIC_COMPONENT_SLOTS - {CANVAS_SLOT},
                             )
                         else:
                             self.assertEqual(reference["fingerprint"], official_ui["fingerprint"])
@@ -284,7 +333,7 @@ class ComponentContract(unittest.TestCase):
                                 "__ui__/selection.js",
                             )
                     else:
-                        self.assertEqual(name, "literature-review")
+                        self.assertIn(name, {"literature-review", "scholarseed-product-operations"})
                         self.assertIn(component["slot"], custom_slots)
                         self.assertIs(component["public"], False)
                         self.assertEqual(reference["plugin"], name)
@@ -295,7 +344,7 @@ class ComponentContract(unittest.TestCase):
                         )
                         self.assertTrue(component["entry"] in resolved["files"])
                         self.assertEqual(resolved["ui"], official_ui)
-                        for asset in (source / name / "components").iterdir():
+                        for asset in (source / name / "components").rglob("*"):
                             if asset.is_file():
                                 asset_path = asset.relative_to(source / name).as_posix()
                                 self.assertTrue(asset_path in resolved["files"], asset_path)
@@ -309,6 +358,73 @@ class ComponentContract(unittest.TestCase):
                         set(snapshot["scenarios"][component["id"]]["responses"]),
                         {action["id"] for action in component["actions"]},
                     )
+
+    def test_composition_owner_change_keeps_bound_revision_and_routes_new_turns_to_operations(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        pack = Path(temporary.name).resolve() / "skills"
+        compile_source_skills(pack)
+        current = bundled_identity(pack, "scholarseed-product-operations")
+        for slot in ("markdown.view", "rich-content.compose"):
+            with self.subTest(slot=slot):
+                self.assert_composition_migration(slot, current)
+
+    def assert_composition_migration(self, historical_slot, current):
+        self.component["slot"] = historical_slot
+        report = self.inspect()
+        self.assertTrue(report["valid"], report)
+        files = {name: base64.b64encode(body).decode() for name, body in self.files.items()}
+        previous = {
+            "descriptor": report["descriptor"],
+            "scenarios": report["scenarios"],
+            "files": files,
+            "fingerprint": digest(json.dumps(files, sort_keys=True).encode()),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            registry = ComponentRegistry(Path(directory) / "components.sqlite3")
+            registry.publish([previous])
+            original = registry.resolve(
+                historical_slot,
+                session_id="migration",
+                turn_id="original-turn",
+                user_id="developer",
+                interaction_id="original-interaction",
+            )
+            frozen = registry.snapshot(original, user_id="developer")
+            registry = ComponentRegistry(registry.path)
+            registry.install_ui(bundled_ui(set(current["descriptor"]["ui"]["exports"])))
+            registry.publish([current])
+            restored = registry.resolve(
+                historical_slot,
+                session_id="migration",
+                turn_id="original-turn",
+                user_id="developer",
+                interaction_id="original-interaction",
+            )
+            self.assertEqual(restored, original)
+            self.assertEqual(registry.snapshot(restored, user_id="developer"), frozen)
+            reference = registry.resolve(
+                "markdown.view",
+                session_id="migration",
+                turn_id="new-turn",
+                user_id="developer",
+            )
+            self.assertEqual(reference["plugin"], "scholarseed-product-operations")
+            for slot in (
+                "rich-content.compose",
+                "research-evidence.select",
+                "artifacts-workbench.preview",
+            ):
+                self.assertIsNone(
+                    registry.resolve(
+                        slot, session_id="migration", turn_id=slot, user_id="developer"
+                    )
+                )
+            canvas = registry.resolve(
+                CANVAS_SLOT, session_id="migration", turn_id="new-turn", user_id="developer"
+            )
+            self.assertIsNotNone(canvas)
+            self.assertEqual(canvas["plugin"], HOST_COMPONENT_PLUGIN)
 
 
 class PresentationBindingContract(unittest.IsolatedAsyncioTestCase):

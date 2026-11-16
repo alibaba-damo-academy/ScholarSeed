@@ -1,10 +1,18 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
 import { build } from 'esbuild'
 import { _electron, expect } from '@playwright/test'
+
+const DESKTOP = fileURLToPath(new URL('../../', import.meta.url))
+
+const electronEnvironment = Object.fromEntries(
+  Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)
+)
+delete electronEnvironment.ELECTRON_RUN_AS_NODE
 
 const PEER_PROBE = `async () => {
   const first = new RTCPeerConnection()
@@ -47,6 +55,110 @@ const PEER_PROBE = `async () => {
 }`
 
 test(
+  'copy gestures consume trusted frame clicks and reject ancestor activation, script events and old leases',
+  { timeout: 30_000 },
+  async () => {
+    const work = resolve(DESKTOP, '../../work/ui-runtime-repair')
+    await mkdir(work, { recursive: true })
+    const directory = await mkdtemp(join(work, 'copy-gesture-'))
+    const fixture = join(directory, 'main.cjs')
+    await build({
+      stdin: {
+        contents: `
+      import {app, BrowserWindow, protocol} from 'electron';
+      import {createPluginHost} from ${JSON.stringify(resolve(DESKTOP, 'src/main/plugins.ts'))};
+      import {PLUGIN_SCHEME, PLUGIN_SCHEME_PRIVILEGES,createComponentGesture} from ${JSON.stringify(resolve(DESKTOP, 'src/plugins.ts'))};
+      protocol.registerSchemesAsPrivileged([{scheme:PLUGIN_SCHEME,privileges:PLUGIN_SCHEME_PRIVILEGES}]);
+      app.whenReady().then(async () => {
+        const owner = new BrowserWindow({show:true,webPreferences:{sandbox:true,contextIsolation:true,nodeIntegration:false}});
+        await owner.loadURL('data:text/html,<html><body><button>Main action</button></body></html>');
+        const host = createPluginHost();
+        const snapshot = {descriptor:{id:'copy-gesture',version:'1.0.0',capabilities:[],components:[{id:'card',entry:'card.js',actions:[]}]},fingerprint:'fixed',scenarios:{},files:{'card.js':Buffer.from('document.body.innerHTML="<button>Copy source</button>"').toString('base64')}};
+        const mount = await host.open(owner.webContents,snapshot,true);
+        const lease = mount.frames.card.lease;
+        const gestures=createComponentGesture();
+        await owner.webContents.executeJavaScript('window.proofs=[];addEventListener("message",event=>{if(event.source===document.querySelector("iframe")?.contentWindow)window.proofs.push(event.data)})',false);
+        const check=async()=>{for(const message of await owner.webContents.executeJavaScript('window.proofs.splice(0)',false))gestures.receive(message,lease,0);return gestures.consume(0)};
+        await owner.webContents.executeJavaScript('new Promise(resolve => { const frame=document.createElement("iframe");frame.sandbox="allow-scripts";frame.src='+JSON.stringify(mount.frames.card.url)+';frame.onload=resolve;document.body.append(frame) })', false);
+        owner.focus();
+        globalThis.fixture = {
+          check: async () => ({allowed: await check(),again:await check(),wrongLease:gestures.receive({channel:'scholarseed:component',lease:'old',gesture:'proof',secret:'f'.repeat(64),sequence:9},lease,0)}),
+          spoof: async () => {const child=owner.webContents.mainFrame.frames.find(frame=>frame.url.startsWith('scholarseed-plugin://'+lease+'/'));await child.executeJavaScript('Object.defineProperty(navigator,"userActivation",{value:{isActive:true}, configurable:true});window.focus();document.querySelector("button").focus()', false);return check()},
+          synthetic: async () => {const child=owner.webContents.mainFrame.frames.find(frame=>frame.url.startsWith('scholarseed-plugin://'+lease+'/'));await child.executeJavaScript('document.querySelector("button").dispatchEvent(new MouseEvent("click",{bubbles:true}))',false);return check()},
+          release: async () => {host.release(owner.webContents,[lease]);return host.valid(owner.webContents,lease)}
+        };
+      });`,
+        resolveDir: DESKTOP,
+        sourcefile: 'copy-gesture.ts',
+      },
+      outfile: fixture,
+      bundle: true,
+      platform: 'node',
+      format: 'cjs',
+      external: ['electron'],
+    })
+    const application = await _electron.launch({
+      args: [fixture, `--user-data-dir=${join(directory, 'profile')}`],
+      env: electronEnvironment,
+    })
+    try {
+      const page = await application.firstWindow()
+      await expect
+        .poll(() =>
+          application.evaluate(() =>
+            Boolean((globalThis as unknown as { fixture?: unknown }).fixture)
+          )
+        )
+        .toBe(true)
+      type Fixture = {
+        check: () => Promise<{ allowed: boolean; again: boolean; wrongLease: boolean }>
+        spoof: () => Promise<boolean>
+        synthetic: () => Promise<boolean>
+        release: () => Promise<boolean>
+      }
+      await page.getByRole('button', { name: 'Main action', exact: true }).click()
+      assert.equal(
+        await application.evaluate(() =>
+          (globalThis as unknown as { fixture: Fixture }).fixture.spoof()
+        ),
+        false
+      )
+      await page.frameLocator('iframe').getByRole('button', { name: 'Copy source' }).click()
+      assert.deepEqual(
+        await application.evaluate(() =>
+          (globalThis as unknown as { fixture: Fixture }).fixture.check()
+        ),
+        { allowed: true, again: false, wrongLease: false }
+      )
+      assert.equal(
+        await application.evaluate(() =>
+          (globalThis as unknown as { fixture: Fixture }).fixture.synthetic()
+        ),
+        false
+      )
+      for (const key of ['Enter', 'Space']) {
+        await page.frameLocator('iframe').getByRole('button', { name: 'Copy source' }).press(key)
+        assert.deepEqual(
+          await application.evaluate(() =>
+            (globalThis as unknown as { fixture: Fixture }).fixture.check()
+          ),
+          { allowed: true, again: false, wrongLease: false }
+        )
+      }
+      assert.equal(
+        await application.evaluate(() =>
+          (globalThis as unknown as { fixture: Fixture }).fixture.release()
+        ),
+        false
+      )
+    } finally {
+      await application.close()
+      await rm(directory, { recursive: true, force: true })
+    }
+  }
+)
+
+test(
   'repeated lease validation drains large snapshots and retains revocation checks',
   { timeout: 30_000 },
   async () => {
@@ -57,8 +169,8 @@ test(
         contents: `
       import { app, BrowserWindow, protocol, session } from 'electron';
       import { createServer } from 'node:http';
-      import { createPluginHost } from ${JSON.stringify(resolve('src/main/plugins.ts'))};
-      import { PLUGIN_SCHEME, PLUGIN_SCHEME_PRIVILEGES } from ${JSON.stringify(resolve('src/plugins.ts'))};
+      import { createPluginHost } from ${JSON.stringify(resolve(DESKTOP, 'src/main/plugins.ts'))};
+      import { PLUGIN_SCHEME, PLUGIN_SCHEME_PRIVILEGES } from ${JSON.stringify(resolve(DESKTOP, 'src/plugins.ts'))};
       protocol.registerSchemesAsPrivileged([{scheme:PLUGIN_SCHEME,privileges:PLUGIN_SCHEME_PRIVILEGES}]);
       app.whenReady().then(() => {
         const owner = new BrowserWindow({show:false,webPreferences:{sandbox:true,contextIsolation:true,nodeIntegration:false}});
@@ -85,7 +197,7 @@ test(
           } finally {server.closeAllConnections();server.close();}
         }};
       });`,
-        resolveDir: process.cwd(),
+        resolveDir: DESKTOP,
         sourcefile: 'validation.ts',
       },
       outfile: fixture,
@@ -96,7 +208,7 @@ test(
     })
     const application = await _electron.launch({
       args: [fixture, `--user-data-dir=${join(directory, 'profile')}`],
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '' },
+      env: electronEnvironment,
     })
     try {
       await application.firstWindow()
@@ -127,11 +239,12 @@ test(
       stdin: {
         contents: `
       import { app, BrowserWindow, protocol } from 'electron';
-      import { createPluginHost } from ${JSON.stringify(resolve('src/main/plugins.ts'))};
-      import { PLUGIN_SCHEME, PLUGIN_SCHEME_PRIVILEGES } from ${JSON.stringify(resolve('src/plugins.ts'))};
+      import { createPluginHost } from ${JSON.stringify(resolve(DESKTOP, 'src/main/plugins.ts'))};
+      import { PLUGIN_SCHEME, PLUGIN_SCHEME_PRIVILEGES, PLUGIN_MAX_FRAMES } from ${JSON.stringify(resolve(DESKTOP, 'src/plugins.ts'))};
       protocol.registerSchemesAsPrivileged([{scheme:PLUGIN_SCHEME,privileges:PLUGIN_SCHEME_PRIVILEGES}]);
       app.whenReady().then(async () => {
         const owner = new BrowserWindow({show:false,webPreferences:{sandbox:true,contextIsolation:true,nodeIntegration:false}});
+        await owner.loadURL('data:text/html,<html><body></body></html>');
         const host = createPluginHost();
         const encode = value => Buffer.from(value).toString('base64');
         const entry = "document.body.dataset.version=window.scholarseedUI.version;document.body.dataset.kind='shared';";
@@ -144,7 +257,7 @@ test(
             '__ui__/ui.js':encode("window.scholarseedUI={version:'spoof'}")
           },
           ui:{fingerprint:'ui-first',version:'1.0.1',compatibility:'1.0',runtime:'ui.js',exports:['Button'],files:{
-            'ui.js':encode("window.scholarseedUI={version:'first'}"),
+            'ui.js':encode("document.body.dataset.phase=document.readyState;window.scholarseedUI={version:'first'}"),
             'selection.js':encode(entry),
             'nested/../private.js':encode("document.body.dataset.escaped='yes'"),
             'nested\\\\private.js':encode("document.body.dataset.escaped='yes'")
@@ -152,17 +265,18 @@ test(
         };
         const oldMount = await host.open(owner.webContents,snapshot,true);
         snapshot.ui.fingerprint='ui-second'; snapshot.ui.version='1.0.2';
-        snapshot.ui.files['ui.js']=encode("window.scholarseedUI={version:'second'}");
+        snapshot.ui.files['ui.js']=encode("document.body.dataset.phase=document.readyState;window.scholarseedUI={version:'second'}");
         const newMount = await host.open(owner.webContents,snapshot,true);
-        globalThis.fixture = {host,owner,oldMount,newMount};
-        await owner.loadURL('data:text/html,<html><body></body></html>');
+        globalThis.fixture = {host,owner,oldMount,newMount,fill:async()=>{
+          for(let index=0;index<PLUGIN_MAX_FRAMES/snapshot.descriptor.components.length;index++) await host.open(owner.webContents,snapshot,true);
+        }};
         for (const [label,mount] of Object.entries({old:oldMount,new:newMount})) {
           for (const [component,frame] of Object.entries(mount.frames)) {
-            await owner.webContents.executeJavaScript('(() => {const frame=document.createElement("iframe");frame.id='+JSON.stringify(label+'-'+component)+';frame.sandbox="allow-scripts";frame.src='+JSON.stringify(frame.url)+';document.body.append(frame)})()');
+            await owner.webContents.executeJavaScript('(() => {const frame=document.createElement("iframe");frame.id='+JSON.stringify(label+'-'+component)+';frame.sandbox="allow-scripts";frame.referrerPolicy="no-referrer";frame.src='+JSON.stringify(frame.url)+';document.body.append(frame)})()');
           }
         }
       });`,
-        resolveDir: process.cwd(),
+        resolveDir: DESKTOP,
         sourcefile: 'ui-contract.ts',
       },
       outfile: fixture,
@@ -173,7 +287,7 @@ test(
     })
     const application = await _electron.launch({
       args: [fixture],
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '' },
+      env: electronEnvironment,
     })
     try {
       const page = await application.firstWindow()
@@ -181,6 +295,7 @@ test(
       const oldShared = page.frameLocator('#old-selection')
       await expect(oldShared.locator('body')).toHaveAttribute('data-version', 'first')
       await expect(oldShared.locator('body')).toHaveAttribute('data-kind', 'shared')
+      await expect(oldShared.locator('body')).toHaveAttribute('data-phase', /interactive|complete/)
       await expect(page.frameLocator('#old-custom').locator('body')).toHaveAttribute(
         'data-version',
         'first'
@@ -263,6 +378,31 @@ test(
       }
       await expect(oldShared.locator('body')).toHaveAttribute('data-version', 'first')
       assert.equal(await oldShared.locator('body').getAttribute('data-escaped'), null)
+      await page.evaluate('location.hash = "same-document"')
+      const oldValid = () =>
+        application.evaluate(() => {
+          const fixture = (
+            globalThis as unknown as {
+              fixture: {
+                host: { valid: (owner: unknown, lease: string) => boolean }
+                owner: { webContents: unknown }
+                oldMount: { frames: { selection: { lease: string } } }
+              }
+            }
+          ).fixture
+          return fixture.host.valid(
+            fixture.owner.webContents,
+            fixture.oldMount.frames.selection.lease
+          )
+        })
+      assert.equal(await oldValid(), true)
+      for (let round = 0; round < 2; round++) {
+        await page.reload()
+        assert.equal(await oldValid(), false)
+        await application.evaluate(async () => {
+          await (globalThis as unknown as { fixture: { fill: () => Promise<void> } }).fixture.fill()
+        })
+      }
     } finally {
       await application.close()
       await rm(directory, { recursive: true, force: true })
@@ -278,18 +418,19 @@ test(
     const fixture = join(directory, 'main.cjs')
     const font = (
       await readFile(
-        resolve('src/renderer/src/components/primitive/Iconfont/download/iconfont.woff2')
+        resolve(DESKTOP, 'src/renderer/src/components/primitive/Iconfont/download/iconfont.woff2')
       )
     ).toString('base64')
     await build({
       stdin: {
         contents: `
       import { app, BrowserWindow, protocol } from 'electron';
-      import { createPluginHost } from ${JSON.stringify(resolve('src/main/plugins.ts'))};
-      import { PLUGIN_SCHEME, PLUGIN_SCHEME_PRIVILEGES } from ${JSON.stringify(resolve('src/plugins.ts'))};
+      import { createPluginHost } from ${JSON.stringify(resolve(DESKTOP, 'src/main/plugins.ts'))};
+      import { PLUGIN_SCHEME, PLUGIN_SCHEME_PRIVILEGES } from ${JSON.stringify(resolve(DESKTOP, 'src/plugins.ts'))};
       protocol.registerSchemesAsPrivileged([{scheme:PLUGIN_SCHEME,privileges:PLUGIN_SCHEME_PRIVILEGES}]);
       app.whenReady().then(async () => {
         const owner = new BrowserWindow({show:false,webPreferences:{sandbox:true,contextIsolation:true,nodeIntegration:false}});
+        await owner.loadURL('data:text/html,<html><body></body></html>');
         const host = createPluginHost();
         const code = "document.body.dataset.node=typeof require;document.body.dataset.host=typeof window.scholarseed;fetch('https://example.com').then(()=>document.body.dataset.network='allowed').catch(()=>document.body.dataset.network='blocked');const connection=new RTCPeerConnection({iceServers:[{urls:'stun:127.0.0.1:9'}]});document.body.dataset.rtc=String(connection.getConfiguration().iceServers.length);connection.close();window.plugin.onState(state=>document.body.dataset.state=state.status);";
         const fontProbe = "new FontFace('PluginIcons','url(/icons.woff2)').load().then(font=>{document.fonts.add(font);document.body.dataset.font=font.status}).catch(()=>document.body.dataset.font='failed');";
@@ -299,10 +440,9 @@ test(
         const mount = await host.open(owner.webContents,snapshot,false,()=>true,reference);
         const other = await host.open(owner.webContents,snapshot,true);
         globalThis.fixture = {host,owner,mount,other};
-        await owner.loadURL('data:text/html,<html><body></body></html>');
         await owner.webContents.executeJavaScript('const frame=document.createElement("iframe");frame.sandbox="allow-scripts";frame.src='+JSON.stringify(mount.frames.card.url)+';document.body.append(frame);');
       });`,
-        resolveDir: process.cwd(),
+        resolveDir: DESKTOP,
         sourcefile: 'component-contract.ts',
       },
       outfile: fixture,
@@ -313,10 +453,17 @@ test(
     })
     const application = await _electron.launch({
       args: [fixture],
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '' },
+      env: electronEnvironment,
     })
     try {
       const page = await application.firstWindow()
+      await expect
+        .poll(() =>
+          application.evaluate(() =>
+            Boolean((globalThis as unknown as { fixture?: unknown }).fixture)
+          )
+        )
+        .toBe(true)
       assert.deepEqual(
         await application.evaluate(() => {
           const fixture = (

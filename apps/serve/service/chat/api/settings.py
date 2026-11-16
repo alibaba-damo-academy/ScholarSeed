@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 
 from service.chat.constants import (
     AUTO_REVIEW_CAPABILITY_UNAVAILABLE_ERROR,
+    FOLLOW_UP_CONFLICT,
     GLOBAL_PERMISSION_MODES,
     INVALID_GLOBAL_PERMISSION_MODE_ERROR,
     RUNTIME_CAPABILITY_UNAVAILABLE,
@@ -24,6 +25,7 @@ from service.chat.runtime.projection import (
 )
 from service.chat.schema import (
     AutoReviewDefaultRequest,
+    FollowUpRequest,
     ModelApiProbeRequest,
     ModelDefaultRequest,
     ModelVisibilityRequest,
@@ -264,6 +266,24 @@ def mount_setting_routes(
             raise HTTPException(503, "oauth_service_unavailable")
         return subscriptions
 
+    @app.get("/api/settings/model-connections/{connection_id}/registrations")
+    def subscription_registrations(connection_id: str, request: Request) -> dict:
+        try:
+            return subscription_service().registrations(request_owner_id(request), connection_id)
+        except ValueError as error:
+            raise HTTPException(_profile_error_status(error), str(error)) from error
+
+    @app.post("/api/settings/model-connections/{connection_id}/registrations/{source_id}")
+    def subscription_claim_registration(
+        connection_id: str, source_id: str, request: Request
+    ) -> dict:
+        try:
+            return subscription_service().claim_registration(
+                request_owner_id(request), connection_id, source_id
+            )
+        except ValueError as error:
+            raise HTTPException(_profile_error_status(error), str(error)) from error
+
     @app.post("/api/settings/model-connections/{connection_id}/login")
     async def subscription_login(connection_id: str, request: Request) -> dict:
         require_host_process(request)
@@ -337,6 +357,22 @@ def mount_setting_routes(
                 status_code=400,
             )
         return {"ok": True, "mode": mode, "modes": list(GLOBAL_PERMISSION_MODES)}
+
+    @app.get("/api/serve/settings/follow-up")
+    def follow_up() -> dict:
+        return settings.follow_up()
+
+    @app.post("/api/serve/settings/follow-up", response_model=None)
+    def set_follow_up(request: FollowUpRequest) -> dict | JSONResponse:
+        try:
+            return settings.set_follow_up(request.mode, expected_revision=request.expected_revision)
+        except ValueError as error:
+            if str(error) != FOLLOW_UP_CONFLICT:
+                raise
+            return JSONResponse(
+                {"ok": False, "error": FOLLOW_UP_CONFLICT, **settings.follow_up()},
+                status_code=409,
+            )
 
     @app.get("/api/serve/settings/workflow")
     def workflow_default() -> dict:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import json
 import os
 import subprocess
@@ -11,6 +12,7 @@ import tempfile
 import threading
 import unittest
 from contextlib import ExitStack, closing
+from ctypes import wintypes
 from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
@@ -25,7 +27,7 @@ from reportlab.pdfgen.canvas import Canvas
 
 from scholarseed_runtime.contract.sandbox import SandboxProbe
 from service.platform import access, windows
-from service.platform.storage import open_directory, remove_tree
+from service.platform.storage import DirectoryHandle, open_directory, remove_tree
 from service.platform.toolchain import (
     PROBE_LIBRARIES_CODE,
     PROBE_OUTPUT_LIMIT,
@@ -45,6 +47,8 @@ RESOURCES = [
 ]
 PRINCIPAL = "S-1-5-21-1-2-3-1001"
 OWNER = "S-1-5-21-1-2-3-1000"
+TEST_DACL_PROTECTED = 0x1000
+TEST_INHERITED_ACE = 0x10
 
 
 class ToolResourceContracts(unittest.TestCase):
@@ -200,6 +204,21 @@ class ToolResourceContracts(unittest.TestCase):
             self.assertTrue((Path(environment["XDG_CACHE_HOME"]) / "fontconfig").is_dir())
             self.assertEqual(resources.prepare_environment(workdir), environment)
             self.assertEqual(workdir.stat().st_mode, before)
+
+    def test_compiler_cache_requests_host_access_with_inherited_acl(self) -> None:
+        resources = CompilerResources((str(Path(tempfile.gettempdir()).resolve() / "fonts"),))
+        original = DirectoryHandle.mkdir
+        calls = []
+
+        def mkdir(directory, name, *arguments, **keywords):
+            calls.append(keywords)
+            return original(directory, name, *arguments, **keywords)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            with patch.object(DirectoryHandle, "mkdir", mkdir):
+                resources.prepare_environment(Path(temporary).resolve())
+        self.assertTrue(calls)
+        self.assertTrue(all(call.get("inherit_acl") is True for call in calls))
 
     def test_compiler_description_preserves_fonts_and_is_an_immutable_snapshot(self) -> None:
         fonts = [str(Path(tempfile.gettempdir()).resolve() / "fonts & <字体>")]
@@ -673,6 +692,204 @@ class ToolResourceCancellation(unittest.IsolatedAsyncioTestCase):
                 await task
 
 
+@unittest.skipUnless(os.name == "nt", "requires native Windows ACL inheritance")
+class NativeCompilerCache(unittest.TestCase):
+    def test_compiler_cache_keeps_host_access_when_only_sandbox_is_inheritable(self) -> None:
+        assert (
+            windows.SECURITY is not None and windows.NT is not None and windows.KERNEL is not None
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            workdir = root / "session"
+            sibling = root / "unrelated"
+            workdir.mkdir()
+            sibling.mkdir()
+            user = windows.current_sid()
+            self.assertNotEqual(user, PRINCIPAL)
+            with ExitStack() as stack:
+                pins = {}
+                for path in (root, workdir, sibling):
+                    pinned = stack.enter_context(
+                        closing(
+                            open_directory(
+                                path,
+                                (),
+                                final_access=windows.READ
+                                | windows.READ_CONTROL
+                                | windows.WRITE_DAC
+                                | windows.WRITE_OWNER
+                                | windows.SYNCHRONIZE,
+                            )
+                        )
+                    )
+                    pins[path] = pinned.native_handles[-1]
+                descriptor = wintypes.LPVOID()
+                windows.check(
+                    windows.SECURITY.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                        f"O:{user}D:P(A;;FA;;;{user})(A;OICI;FA;;;{PRINCIPAL})",
+                        windows.SDDL_REVISION,
+                        ctypes.byref(descriptor),
+                        None,
+                    )
+                )
+                try:
+                    status = windows.NT.NtSetSecurityObject(
+                        pins[workdir],
+                        windows.DACL_INFORMATION | windows.PROTECTED_DACL_INFORMATION,
+                        descriptor,
+                    )
+                    self.assertEqual(status, 0)
+                finally:
+                    windows.KERNEL.LocalFree(descriptor)
+                try:
+                    before = {}
+                    for path, handle in pins.items():
+                        with access.security_snapshot(handle) as (snapshot, _):
+                            before[path] = snapshot
+                    tools = ToolResources(
+                        tuple(
+                            ToolResource(kind, root / kind)
+                            for kind in ("python", "libraries", "launchers", "texlive")
+                        )
+                    )
+
+                    async def verify_first():
+                        async with tools.verification(workdir, writable=True) as probes:
+                            artifact = next(
+                                probe.artifact for probe in probes if probe.artifact is not None
+                            )
+                            assert artifact is not None
+                            for path in (
+                                workdir / ".tool-cache",
+                                artifact.parent.parent,
+                                artifact.parent,
+                            ):
+                                with closing(open_directory(path, ())) as directory:
+                                    with access.security_snapshot(directory.native_handles[-1]) as (
+                                        snapshot,
+                                        _,
+                                    ):
+                                        self.assertTrue(
+                                            snapshot.control & access.DACL_AUTO_INHERITED
+                                        )
+                                        for principal in (user, PRINCIPAL):
+                                            self.assertTrue(
+                                                any(
+                                                    kind == windows.ALLOW_ACE
+                                                    and sid == principal
+                                                    and not flags & access.INHERIT_ONLY
+                                                    and mask & access.FILE_ALL_ACCESS
+                                                    == access.FILE_ALL_ACCESS
+                                                    and (
+                                                        principal != PRINCIPAL
+                                                        or flags & TEST_INHERITED_ACE
+                                                    )
+                                                    for kind, flags, sid, mask in snapshot.entries
+                                                ),
+                                                f"missing effective cache grant: {path.name}",
+                                            )
+                            host_probe = artifact.parent / "host-write.log"
+                            host_probe.write_bytes(b"host write")
+                            self.assertEqual(host_probe.read_bytes(), b"host write")
+
+                    asyncio.run(verify_first())
+                    resources = CompilerResources.from_tool_resources(tools)
+                    assert resources is not None
+                    environment = resources.prepare_environment(workdir)
+                    configuration = Path(environment["FONTCONFIG_FILE"])
+                    self.assertEqual(configuration.read_bytes(), resources.configuration)
+                    cache = workdir / ".tool-cache"
+                    paths = {
+                        cache,
+                        configuration.parent,
+                        *(
+                            path
+                            for path in configuration.parent.parents
+                            if path.is_relative_to(cache)
+                        ),
+                        *(
+                            Path(environment[key])
+                            for key in ("TEXMFVAR", "TEXMFCONFIG", "XE_FC_CACHEDIR")
+                        ),
+                    }
+                    cache_security = {}
+                    for path in paths:
+                        with closing(
+                            open_directory(
+                                path,
+                                (),
+                                final_access=windows.READ
+                                | windows.READ_CONTROL
+                                | windows.SYNCHRONIZE,
+                            )
+                        ) as directory:
+                            with access.security_snapshot(directory.native_handles[-1]) as (
+                                snapshot,
+                                _,
+                            ):
+                                self.assertTrue(
+                                    all(entry[2] in {user, PRINCIPAL} for entry in snapshot.entries)
+                                )
+                                for principal in (user, PRINCIPAL):
+                                    self.assertTrue(
+                                        any(
+                                            kind == windows.ALLOW_ACE
+                                            and sid == principal
+                                            and not flags & access.INHERIT_ONLY
+                                            and mask & access.FILE_ALL_ACCESS
+                                            == access.FILE_ALL_ACCESS
+                                            and (
+                                                principal != PRINCIPAL or flags & TEST_INHERITED_ACE
+                                            )
+                                            for kind, flags, sid, mask in snapshot.entries
+                                        )
+                                    )
+                                self.assertFalse(snapshot.control & TEST_DACL_PROTECTED)
+                                cache_security[path] = snapshot
+                    with closing(open_directory(configuration.parent, ())) as directory:
+                        handle = windows.open_relative(
+                            directory.native_handles[-1],
+                            configuration.name,
+                            directory=False,
+                            access=windows.READ | windows.READ_CONTROL | windows.SYNCHRONIZE,
+                        )
+                        try:
+                            with access.security_snapshot(handle) as (snapshot, _):
+                                self.assertEqual(
+                                    {entry[2] for entry in snapshot.entries}, {user, PRINCIPAL}
+                                )
+                                self.assertTrue(
+                                    all(entry[1] & TEST_INHERITED_ACE for entry in snapshot.entries)
+                                )
+                        finally:
+                            windows.close(handle)
+                    self.assertEqual(resources.prepare_environment(workdir), environment)
+                    for path, expected in cache_security.items():
+                        with closing(
+                            open_directory(
+                                path,
+                                (),
+                                final_access=windows.READ
+                                | windows.READ_CONTROL
+                                | windows.SYNCHRONIZE,
+                            )
+                        ) as directory:
+                            with access.security_snapshot(directory.native_handles[-1]) as (
+                                snapshot,
+                                _,
+                            ):
+                                self.assertEqual(snapshot, expected)
+                    probe = configuration.parent / "host-write.txt"
+                    probe.write_bytes(b"host access")
+                    self.assertEqual(probe.read_bytes(), b"host access")
+                    probe.unlink()
+                    for path, handle in pins.items():
+                        with access.security_snapshot(handle) as (snapshot, _):
+                            self.assertEqual(snapshot, before[path])
+                finally:
+                    windows.protect_private(pins[workdir])
+
+
 @unittest.skipUnless(os.name == "nt", "requires native Windows and initialized Codex sandbox group")
 class NativeToolAccess(unittest.TestCase):
     def test_unc_cwd_and_account_are_never_repaired(self) -> None:
@@ -1001,6 +1218,39 @@ class ToolProbePdfContracts(unittest.TestCase):
 
 
 class ToolVerificationContracts(unittest.IsolatedAsyncioTestCase):
+    async def test_verification_cache_preserves_host_access_before_compiler_preparation(self):
+        resources = ToolResources(
+            parse_tool_resources(
+                json.dumps(
+                    RESOURCES
+                    + [{"kind": "texlive", "path": r"C:\Runtime\texlive\reviewed\texlive"}]
+                )
+            )
+        )
+        original = DirectoryHandle.mkdir
+        creations = []
+
+        def mkdir(directory, name, *arguments, **keywords):
+            creations.append((directory.child(name), keywords.get("inherit_acl")))
+            return original(directory, name, *arguments, **keywords)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            with patch.object(DirectoryHandle, "mkdir", mkdir):
+                async with resources.verification(root, writable=True) as probes:
+                    verification = root / ".tool-cache" / "verification"
+                    self.assertEqual(
+                        creations[:2], [(root / ".tool-cache", True), (verification, True)]
+                    )
+                    self.assertTrue(all(inherit_acl is True for _, inherit_acl in creations))
+                    artifact = next(
+                        probe.artifact for probe in probes if probe.artifact is not None
+                    )
+                    assert artifact is not None
+                    self.assertEqual(artifact.parent.parent, verification)
+                    self.assertTrue(artifact.parent.is_dir())
+            self.assertFalse(artifact.parent.exists())
+
     async def test_compiler_exit_is_not_a_permission_diagnosis_and_retains_output(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

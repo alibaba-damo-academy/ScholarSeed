@@ -2,7 +2,12 @@ import { requestFailureFeedback } from './api.ts'
 import { formatApplicationRequestFailure } from './runtime.ts'
 import { referenceLabel } from './features/assistant/text.ts'
 import { contextLabelFallback, type ContextLabelFallback } from './contracts/assistant.ts'
-import { feedback, turnAdmissionMessageKey, type FeedbackDescriptor } from './contracts/feedback.ts'
+import {
+  feedback,
+  SESSION_OPEN_UNKNOWN,
+  turnAdmissionMessageKey,
+  type FeedbackDescriptor,
+} from './contracts/feedback.ts'
 import type { TFunction } from 'i18next'
 
 import type {
@@ -130,6 +135,15 @@ export function composerSubmissionOutcome(
   return response?.submissionOutcome === 'rejected' ? 'rejected' : 'unknown'
 }
 
+/** Only explicit pre-enqueue refusals can discard the local optimistic submission. */
+export function isComposerSubmissionRejectedBeforeEnqueue(response: TurnResponse | null): boolean {
+  return (
+    response?.submissionOutcome === 'rejected' &&
+    (response.preparation_error === true ||
+      (response.code ?? response.error) === SESSION_OPEN_UNKNOWN)
+  )
+}
+
 type TurnAdmissionFailure = {
   preparation_error?: TurnResponse['preparation_error']
   applicationFailure?: TurnResponse['applicationFailure']
@@ -196,6 +210,9 @@ function contextAdmissionFeedback(failure: TurnAdmissionFailure): TurnAdmissionF
   const code = failure.code ?? failure.error
   if (code === RESOURCE_REVIEW_REQUIRED) {
     return resourceReviewRequiredFeedback()
+  }
+  if (code === SESSION_OPEN_UNKNOWN) {
+    return feedback('conversation', 'queue.sessionOpenUnknown')
   }
   const admissionKey = turnAdmissionMessageKey(code)
   if (admissionKey) {
@@ -301,25 +318,58 @@ export function queuedReferenceLabel(
   return t('queue.referenceState', { title, state: label })
 }
 
+function queuedInputLabel(
+  item: Exclude<TurnInputItem, { type: 'text' }>,
+  t: TFunction<'assistant'>
+): string {
+  if (item.name) return item.name
+  if (item.type === 'skill') return t('queue.skill')
+  if (item.type === 'local_image') return t('queue.image')
+  return item.type === 'directory' ? t('queue.kinds.dir') : t('queue.kinds.file')
+}
+
 export function queuedReferenceSummary(
   input: TurnInputItem[],
   assistantReferences: QueuedReference[],
   t: TFunction<'assistant'>
 ): string {
-  const typedLabels = input.flatMap((item) => {
-    if (item.type === 'text') return []
-    if (item.type === 'skill') return [item.name || t('queue.skill')]
-    return [
-      item.name ||
-        (item.type === 'local_image'
-          ? t('queue.image')
-          : item.type === 'directory'
-            ? t('queue.kinds.dir')
-            : t('queue.kinds.file')),
-    ]
-  })
+  const typedLabels = input.flatMap((item) =>
+    item.type === 'text' ? [] : [queuedInputLabel(item, t)]
+  )
   const assistantLabels = assistantReferences.map((reference) => queuedReferenceTitle(reference, t))
   return [...typedLabels, ...assistantLabels].join(t('queue.separator'))
+}
+
+export function queuedContextSummary(
+  input: TurnInputItem[],
+  assistantReferences: QueuedReference[],
+  t: TFunction<'assistant'>,
+  skillTitle?: (name: string) => string | undefined
+): string {
+  const references: string[] = []
+  const skillsAndTasks: string[] = []
+  let annotations = 0
+  let selections = 0
+
+  for (const item of input) {
+    if (item.type === 'skill') {
+      skillsAndTasks.push(skillTitle?.(item.name) || queuedInputLabel(item, t))
+    } else if (item.type !== 'text') {
+      references.push(queuedInputLabel(item, t))
+    }
+  }
+  for (const reference of assistantReferences) {
+    if (reference.kind === 'session') skillsAndTasks.push(queuedReferenceTitle(reference, t))
+    else if (reference.kind === 'note' || reference.kind === 'pdf_comment') annotations++
+    else if (reference.anchor || reference.kind === 'selection') selections++
+    else references.push(queuedReferenceTitle(reference, t))
+  }
+  if (annotations) references.push(t('contextGroups.annotations', { count: annotations }))
+  if (selections) references.push(t('contextGroups.selections', { count: selections }))
+
+  const referenceSummary = references.map((label) => `[${label}]`).join(t('queue.separator'))
+  const skillAndTaskSummary = skillsAndTasks.map((label) => `[${label}]`).join('')
+  return [referenceSummary, skillAndTaskSummary].filter(Boolean).join(' ')
 }
 
 /** Build the one typed turn-input contract used by visible sends and desktop harness sends. */

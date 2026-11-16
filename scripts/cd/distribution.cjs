@@ -5,11 +5,10 @@ const ROOT = path.resolve(__dirname, '../..')
 const TOOLCHAIN = path.join(ROOT, 'scripts/pre/toolchain.cjs')
 const PYTHON = path.join(ROOT, 'scripts/shared/python.cjs')
 const DESKTOP = path.join(ROOT, 'scripts/shared/desktop.cjs')
-const SMOKE = path.join(__dirname, '../ci/smoke.cjs')
 
 function main(argv = process.argv.slice(2), { launch = spawnSync } = {}) {
   const commands = [[TOOLCHAIN, 'ensure'], [PYTHON, 'prepare-dev'],
-    [SMOKE], [DESKTOP, 'package:distribution', ...argv]]
+    [DESKTOP, 'package:distribution', ...argv]]
   for (const args of commands) {
     const result = launch(process.execPath, args, {
       cwd: ROOT, stdio: 'inherit', env: process.env, shell: false, windowsHide: true

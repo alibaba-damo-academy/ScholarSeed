@@ -5,7 +5,8 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import { build as bundle } from 'esbuild'
-import { _electron, expect, type ElectronApplication } from '@playwright/test'
+import { _electron, expect } from '@playwright/test'
+import { nativeFixture } from '../test-helpers/native.ts'
 import type { BrowserWindow, WebContentsView } from 'electron'
 import react from '@vitejs/plugin-react'
 import { build as buildRenderer } from 'vite'
@@ -31,13 +32,9 @@ test(
   async (context) => {
     const directory = fileURLToPath(new URL('../../', import.meta.url))
     const temporary = mkdtempSync(join(tmpdir(), 'menu-react-'))
-    const runtime: { application?: ElectronApplication; closing?: Promise<void> } = {}
-    const closeFixture = (): Promise<void> =>
-      runtime.application ? (runtime.closing ??= runtime.application.close()) : Promise.resolve()
-    context.after(async () => {
-      await closeFixture()
+    const fixture = nativeFixture(context, () =>
       rmSync(temporary, { recursive: true, force: true })
-    })
+    )
     const entry = join(temporary, 'main.cjs')
     const renderer = join(temporary, 'renderer')
     const preload = join(temporary, 'menu.js')
@@ -47,6 +44,7 @@ test(
       base: './',
       plugins: [react(), supportedFontSources()],
       build: {
+        minify: false,
         outDir: renderer,
         rollupOptions: { input: join(directory, 'src/renderer/menu.html') },
       },
@@ -116,8 +114,9 @@ test(
     )
     delete environment.ELECTRON_RUN_AS_NODE
     context.signal.throwIfAborted()
-    runtime.application = await _electron.launch({ args: [entry], env: environment })
-    const application = runtime.application
+    const application = await fixture.launch(() =>
+      _electron.launch({ args: [entry], env: environment })
+    )
     try {
       context.signal.throwIfAborted()
       await application.evaluate(async () => {
@@ -130,18 +129,22 @@ test(
           )
         )
         .toBe(true)
-      const revoked = await application.evaluate(() => {
+      const revoked = await application.evaluate(async () => {
         const fixture = globalThis as unknown as CompiledMenuFixture
         const pending = fixture.publish(1)
+        const blurred = new Promise<void>((resolve) => fixture.window.once('blur', () => resolve()))
         fixture.window.hide()
-        return pending
+        const [reply] = await Promise.all([pending, blurred])
+        return reply
       })
       assert.deepEqual(revoked, { ok: false, error: MENU_ERROR.revoked })
       await application.evaluate(({ app }) => {
         const { window } = globalThis as unknown as CompiledMenuFixture
         window.show()
-        app.focus({ steal: true })
+        if (process.platform === 'darwin') app.focus({ steal: true })
+        if (process.platform === 'win32') window.moveTop()
         window.focus()
+        window.webContents.focus()
       })
       await expect
         .poll(() =>
@@ -215,7 +218,7 @@ test(
       assert.equal(state.document.product, 'undefined')
       assert.equal(state.document.menu, 'Developer tools')
     } finally {
-      await closeFixture()
+      await fixture.close()
     }
   }
 )

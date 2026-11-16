@@ -37,12 +37,20 @@ class PdfFailureContracts(unittest.IsolatedAsyncioTestCase):
             client_action_id="action",
             client_attempt_id="attempt",
         )
+        pages = ("First page", "Second page")
         return PreparedAnalysis(
             request,
             "revision",
             "paper",
-            ("First page", "Second page"),
-            CompiledAssistantAction("test", "v1", "test", "test"),
+            pages,
+            CompiledAssistantAction(
+                "test",
+                "v1",
+                "test",
+                json.dumps(
+                    {"document_pages": [{"page": request.page, "text": pages[request.page - 1]}]}
+                ),
+            ),
         )
 
     async def test_preflight_error_descriptors_keep_application_identity_and_raw_diagnostics(self):

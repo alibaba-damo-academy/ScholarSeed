@@ -2,6 +2,7 @@ import { isIP } from 'node:net'
 
 import { BROWSER_ERROR } from '../browser.ts'
 
+export const BLANK_PAGE = 'about:blank'
 const HTTP_PROTOCOL = 'http:'
 const HTTPS_PROTOCOL = 'https:'
 
@@ -10,6 +11,7 @@ const WEB_SCHEME = /^https?:\/\//i
 const DOMAIN_WITH_PORT = /^(?:localhost|[a-z\d-]+(?:\.[a-z\d-]+)+):\d+(?:[/?#]|$)/i
 const HOST_LABEL = /^[a-z\d](?:[a-z\d-]*[a-z\d])?$/i
 const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/
+const LOCAL_HOSTNAME = 'localhost'
 
 export interface BrowserResourceRequest {
   url: URL
@@ -19,8 +21,13 @@ export interface BrowserResourceRequest {
 }
 
 function validWebUrl(url: URL): boolean {
-  if ((url.protocol !== HTTP_PROTOCOL && url.protocol !== HTTPS_PROTOCOL)
-    || !url.hostname || url.username || url.password) return false
+  if (
+    (url.protocol !== HTTP_PROTOCOL && url.protocol !== HTTPS_PROTOCOL) ||
+    !url.hostname ||
+    url.username ||
+    url.password
+  )
+    return false
   const hostname = url.hostname.replace(/^\[|\]$/g, '')
   if (isIP(hostname)) return true
   return hostname.split('.').every((label) => HOST_LABEL.test(label))
@@ -34,6 +41,14 @@ export function normalizeBrowserInput(input: string): URL {
   }
   try {
     const url = new URL(WEB_SCHEME.test(trimmed) ? trimmed : `https://${trimmed}`)
+    if (
+      !WEB_SCHEME.test(trimmed) &&
+      !url.hostname.includes('.') &&
+      url.hostname !== LOCAL_HOSTNAME &&
+      !isIP(url.hostname.replace(/^\[|\]$/g, ''))
+    ) {
+      throw new Error(BROWSER_ERROR.invalidUrl)
+    }
     if (validWebUrl(url)) return url
   } catch {
     throw new Error(BROWSER_ERROR.invalidUrl)
@@ -44,12 +59,17 @@ export function normalizeBrowserInput(input: string): URL {
 function privateIPv4(hostname: string): boolean {
   const octets = hostname.split('.').map(Number)
   const [first, second] = octets
-  return first === 0 || first === 10 || first === 127 || first >= 224
-    || (first === 100 && second >= 64 && second <= 127)
-    || (first === 169 && second === 254)
-    || (first === 172 && second >= 16 && second <= 31)
-    || (first === 192 && second === 168)
-    || (first === 198 && (second === 18 || second === 19))
+  return (
+    first === 0 ||
+    first === 10 ||
+    first === 127 ||
+    first >= 224 ||
+    (first === 100 && second >= 64 && second <= 127) ||
+    (first === 169 && second === 254) ||
+    (first === 172 && second >= 16 && second <= 31) ||
+    (first === 192 && second === 168) ||
+    (first === 198 && (second === 18 || second === 19))
+  )
 }
 
 export function mappedIPv4(hostname: string): string | null {
@@ -93,9 +113,12 @@ export function browserResourceAllowed(request: BrowserResourceRequest): boolean
   const { url, topOrigin, approvedLocalOrigin, apiOrigin } = request
   if (!validWebUrl(url)) return false
   if (!privateHost(url.hostname)) return true
-  return approvedLocalOrigin !== null && apiOrigin !== null
-    && approvedLocalOrigin === apiOrigin
-    && topOrigin === approvedLocalOrigin
-    && url.origin === approvedLocalOrigin
-    && browserLoopbackHost(url.hostname)
+  return (
+    approvedLocalOrigin !== null &&
+    apiOrigin !== null &&
+    approvedLocalOrigin === apiOrigin &&
+    topOrigin === approvedLocalOrigin &&
+    url.origin === approvedLocalOrigin &&
+    browserLoopbackHost(url.hostname)
+  )
 }

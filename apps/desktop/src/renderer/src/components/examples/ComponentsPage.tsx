@@ -1,14 +1,42 @@
+import type * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import { type ReactNode, useEffect, useLayoutEffect, useState } from 'react'
-import { Copy, File } from 'lucide-react'
+import { ImageStrip, PortalProvider, usePortalDocument } from '../ui'
+import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import {
+  Copy,
+  EllipsisVertical,
+  File,
+  Hammer,
+  Link2,
+  MessageCircle,
+  TextSelect,
+} from 'lucide-react'
+import { Icon } from '../../icons'
 
 import componentsPageSource from './ComponentsPage.tsx?raw'
+import confirmationExampleSource from './Confirmation.tsx?raw'
+import inlineAlertExampleSource from './Alert.tsx?raw'
+import { ConversationAlertExamples, InlineAlertExamples } from './Alert'
+import { ConfirmationExample } from './Confirmation'
+import { AnnotationDetails, type AnnotationDisplay } from '../../features/assistant/Notes'
+import { ConversationDirectory } from './Directory'
+import { conversationEntries } from './navigation'
+import {
+  ConversationPreview,
+  OfficialPreview,
+  conversationPreviewKind,
+  officialEntries,
+} from './Official'
+import { OpenUIPreview, openUIEntries } from './OpenUI'
+import { exampleSectionCode, materialSessionRead } from './utils'
 import aiThinking from '../../assets/ai-thinking.gif'
 import { accountBase, setAccountBase } from '../../account'
-import type { ConvItem, SessionNode, Theme, Thread } from '../../model'
+import type { ConvItem, MessageReference, SessionNode, Theme, Thread } from '../../model'
+import { NextSteps } from '../../features/assistant/NextSteps'
 import { FILE_REF_KIND } from '../../reference'
 import {
   StoreProvider,
+  activeThread,
   useApp,
   type AccountSettingsPage,
   type ComposerReference,
@@ -17,23 +45,40 @@ import { applyTheme } from '../../theme'
 import { AccountPanel } from '../business/AccountPanel'
 import { Chrome } from '../business/Chrome'
 import { Composer } from '../business/Composer'
+import { Message } from '../primitive/Message'
+import {
+  ReferenceAttachment,
+  SentReferenceAttachment,
+  SelectionPreview,
+  SelectionQuote,
+} from '../primitive'
 import { Feedback } from '../business/Feedback'
 import { FileContextMenu } from '../business/FileContextMenu'
 import { ModelMenu } from '../business/ModelMenu'
 import { ProjectForm } from '../business/ProjectForm'
 import { ResearchContext } from '../business/ResearchContext'
 import { SessionArtifacts } from '../business/SessionArtifacts'
-import { SessionContextMenu } from '../business/SessionContextMenu'
+import { SessionContextMenu, SessionDropdownMenu } from '../business/SessionContextMenu'
 import { SessionTitleEditor } from '../business/SessionTitle'
 import { Sidebar } from '../business/Sidebar'
+import { PluginInstallationCard } from '../business/Skills'
 import { ComposerSkillRefs } from '../business/SkillRefs'
 import { StatusStrip } from '../business/StatusStrip'
-import { Stream } from '../business/Stream'
+import { ConversationControls, PendingHilDock, Stream } from '../business/Stream'
+import { TOOL_MATERIAL_STATES, toolMaterial } from './tools'
 import { TaskMonitor } from '../business/TaskMonitor'
 import { TodoPanel } from '../business/TodoPanel'
 import { WorkspaceFiles } from '../business/WorkspaceFiles'
 import { ComposerAttachments } from '../primitive/Attachments'
-import { IconFont, Markdown, Progress as TransitionProgress } from '../primitive'
+import {
+  IconFont,
+  ImageAttachments,
+  ImagePreview,
+  Markdown,
+  Progress as TransitionProgress,
+} from '../primitive'
+import previewFirst from '../../assets/banner2.webp'
+import previewSecond from '../../assets/banner3.webp'
 import {
   Accordion,
   AccordionContent,
@@ -152,6 +197,8 @@ import {
   InputOTPSeparator,
   InputOTPSlot,
   Label,
+  Link,
+  LoadingFallback,
   LoadingOverlay,
   Menubar,
   MenubarCheckboxItem,
@@ -316,7 +363,7 @@ function NavigationListItem({
   children: ReactNode
   href: string
   title: string
-}): JSX.Element {
+}): React.JSX.Element {
   return (
     <NavigationMenuLink asChild>
       <a
@@ -343,6 +390,7 @@ const navigationTabSeedItems = [
 ]
 
 const alertExampleItems = [
+  { id: 'neutral', titleKey: 'alert.neutral', tone: 'neutral' },
   { id: 'info', titleKey: 'alert.info', tone: 'info' },
   { id: 'warning', titleKey: 'alert.warning', tone: 'warning' },
   { id: 'error', titleKey: 'alert.error', tone: 'error' },
@@ -406,6 +454,7 @@ const exampleMenuItems = [
   { id: 'carousel', labelKey: 'menu.carousel' },
   { id: 'chart', labelKey: 'menu.chart' },
   { id: 'empty-copy', labelKey: 'menu.empty-copy' },
+  { id: 'link', labelKey: 'menu.link' },
   { id: 'ellipsis-text', labelKey: 'menu.ellipsis-text' },
   { id: 'floating-toolbar', labelKey: 'menu.floating-toolbar' },
   { id: 'loading-overlay', labelKey: 'menu.loading-overlay' },
@@ -449,7 +498,43 @@ const exampleMenuItems = [
   { id: 'token-swatches', labelKey: 'menu.token-swatches' },
 ] as const
 
+function ImagePreviewExample(): React.JSX.Element {
+  const { t } = useTranslation('examples')
+  const [open, setOpen] = useState(false)
+  const [index, setIndex] = useState(0)
+  return (
+    <div className="grid gap-[var(--vds-space-3)]">
+      <h2 className="m-0 text-[length:var(--vds-font-subhead)] font-[var(--vds-fw-medium)]">
+        {t('imagePreview.title')}
+      </h2>
+      <p className="text-[var(--vds-text-secondary)]">{t('imagePreview.description')}</p>
+      <div>
+        <Button
+          onClick={() => {
+            setIndex(0)
+            setOpen(true)
+          }}
+        >
+          {t('imagePreview.open')}
+        </Button>
+      </div>
+      <ImagePreview
+        images={[
+          { id: 'first', name: 'banner2.webp', src: previewFirst },
+          { id: 'second', name: 'banner3.webp', src: previewSecond },
+          { id: 'failed', name: 'unavailable.webp', error: true },
+        ]}
+        open={open}
+        index={index}
+        onOpenChange={setOpen}
+        onIndexChange={setIndex}
+      />
+    </div>
+  )
+}
+
 const primitiveMenuItems = [
+  { id: 'image-preview', labelKey: 'menu.image-preview' },
   { id: 'attachments', labelKey: 'menu.attachments' },
   { id: 'icon-font', labelKey: 'menu.icon-font' },
   { id: 'markdown', labelKey: 'menu.markdown' },
@@ -478,6 +563,11 @@ const businessMenuItems = [
 ] as const
 
 const componentMenuGroups = [
+  {
+    id: 'conversation',
+    titleKey: 'groups.conversation',
+    subtitle: 'Stream / ComposerAttachments / TodoPanel',
+  },
   {
     id: 'ui',
     items: exampleMenuItems,
@@ -529,10 +619,27 @@ function ComponentMenuGroup({
   group: (typeof componentMenuGroups)[number]
   onOpenChange: (open: boolean) => void
   onSelect: (id: string) => void
-}): JSX.Element {
+}): React.JSX.Element {
   const { t } = useTranslation('examples')
+  const renderMenuItem = (
+    item: (typeof exampleMenuItems | typeof primitiveMenuItems | typeof businessMenuItems)[number]
+  ): React.JSX.Element => (
+    <button
+      aria-current={item.id === activeExample ? 'page' : undefined}
+      className={exampleMenuItemClass(item.id, activeExample)}
+      key={item.id}
+      onClick={() => onSelect(item.id)}
+      type="button"
+    >
+      {t(item.labelKey)}
+    </button>
+  )
   return (
-    <Collapsible className="grid gap-[var(--vds-space-1)]" onOpenChange={onOpenChange} open={open}>
+    <Collapsible
+      className={`grid gap-[var(--vds-space-1)] ${group.id === 'conversation' ? 'max-[860px]:min-h-0 max-[860px]:grid-rows-[auto_minmax(0,1fr)]' : ''}`}
+      onOpenChange={onOpenChange}
+      open={open}
+    >
       <CollapsibleTrigger className="group flex min-h-0 w-full items-center justify-between gap-[var(--vds-space-2)] rounded-[var(--vds-radius-3)] border-0 bg-transparent !px-[var(--vds-space-3)] !py-[var(--vds-space-2)] text-left shadow-none hover:bg-[var(--vds-surface-muted)] focus-visible:bg-[var(--vds-surface-muted)] focus-visible:outline-none">
         <span className="grid min-w-0 gap-0.5">
           <span className="text-[13px] font-[var(--vds-fw-medium)] leading-[var(--vds-lh-caption)] text-[var(--vds-text-primary)]">
@@ -549,18 +656,14 @@ function ComponentMenuGroup({
           ›
         </span>
       </CollapsibleTrigger>
-      <CollapsibleContent className="grid min-h-0 gap-[var(--vds-space-1)] border-0 bg-transparent p-0 pl-[var(--vds-space-1)] shadow-none">
-        {group.items.map((item) => (
-          <button
-            aria-current={item.id === activeExample ? 'page' : undefined}
-            className={exampleMenuItemClass(item.id, activeExample)}
-            key={item.id}
-            onClick={() => onSelect(item.id)}
-            type="button"
-          >
-            {t(item.labelKey)}
-          </button>
-        ))}
+      <CollapsibleContent
+        className={`grid min-h-0 gap-[var(--vds-space-1)] border-0 bg-transparent p-0 pl-[var(--vds-space-1)] shadow-none ${group.id === 'conversation' ? 'max-[860px]:overflow-y-auto' : ''}`}
+      >
+        {group.id === 'conversation' ? (
+          <ConversationDirectory activeId={activeExample} onSelect={onSelect} />
+        ) : (
+          group.items.map(renderMenuItem)
+        )}
       </CollapsibleContent>
     </Collapsible>
   )
@@ -577,36 +680,43 @@ function carouselContentCardClass(tone: keyof typeof carouselContentCardClassNam
   return `h-full min-h-[180px] w-full ${carouselContentCardClassNames[tone]}`
 }
 
-function trimSectionIndent(source: string): string {
-  const lines = source.replace(/\n\s*<CodePreview[^>]*\/>/g, '').split('\n')
-  const nonEmptyLines = lines.filter((line) => line.trim())
-  const minIndent = nonEmptyLines.reduce((minimum, line) => {
-    const indent = line.match(/^\s*/)?.[0].length ?? 0
-    return Math.min(minimum, indent)
-  }, Number.POSITIVE_INFINITY)
-
-  return lines
-    .map((line) => line.slice(Number.isFinite(minIndent) ? minIndent : 0))
-    .join('\n')
-    .trim()
-}
-
 function extractSectionCode(source: string, id: string): string {
-  const sectionStart = source.indexOf(
-    `<section className={exampleSectionClass('${id}', activeExample)} id="${id}">`
-  )
-  if (sectionStart < 0) return ''
-
-  const afterStart = source.indexOf('\n', sectionStart)
-  const sectionEnd = source.indexOf('\n        </section>', sectionStart)
-  if (afterStart < 0 || sectionEnd < 0) return ''
-
-  const sectionBody = source.slice(afterStart + 1, sectionEnd)
-  const titleEnd = sectionBody.indexOf('\n')
-  return trimSectionIndent(titleEnd < 0 ? sectionBody : sectionBody.slice(titleEnd + 1))
+  if (id === 'conversation-plugin-installation') {
+    const start = source.lastIndexOf(
+      "            {activeExample === 'conversation-plugin-installation' && ("
+    )
+    const end = source.indexOf(
+      "\n            {(activeExample === 'conversation-approval' || activeExample === 'conversation-confirmation') && (",
+      start
+    )
+    return start >= 0 && end > start ? source.slice(start, end).trim() : ''
+  }
+  if (id === 'conversation-suggestions') {
+    const start = source.indexOf('\nfunction NextStepsMaterialContent(')
+    const end = source.indexOf('\nfunction ConversationMaterialExample(', start)
+    return start >= 0 && end > start ? source.slice(start, end).trim() : ''
+  }
+  if (id === 'conversation-context') {
+    const start = source.lastIndexOf("            {activeExample === 'conversation-context' && (")
+    const end = source.indexOf('\n            {(Object.keys(conversationStates)', start)
+    return start >= 0 && end > start ? source.slice(start, end).trim() : ''
+  }
+  if (id === 'conversation-processing') {
+    const start = source.lastIndexOf(
+      "            {activeExample === 'conversation-processing' && ("
+    )
+    const end = source.indexOf("\n            {activeExample === 'conversation-context'", start)
+    return start >= 0 && end > start ? source.slice(start, end).trim() : ''
+  }
+  if (id.startsWith('conversation-')) {
+    const start = source.indexOf('\nfunction ConversationMaterialExample(')
+    const end = source.indexOf('\nfunction TaskMonitorExample(', start)
+    return start >= 0 && end > start ? source.slice(start, end).trim() : ''
+  }
+  return exampleSectionCode(source, id)
 }
 
-function CodePreview({ code }: { code: string }): JSX.Element {
+function CodePreview({ code }: { code: string }): React.JSX.Element {
   const { t } = useTranslation('examples')
   return (
     <details className="min-w-0 pt-[var(--vds-space-1)]" open>
@@ -655,9 +765,79 @@ const attachmentExampleRefs: ComposerReference[] = [
   },
 ]
 
-function AttachmentsExample(): JSX.Element {
-  const [refs, setRefs] = useState<ComposerReference[]>(attachmentExampleRefs)
+const IMAGE_SOURCE_SAMPLES = ['local', 'resource', 'resource', 'literature', 'local'] as const
+
+function AttachmentsExample({
+  initialRefs = attachmentExampleRefs,
+  imagesOnly = false,
+  filesOnly = false,
+  referencesOnly = false,
+}: {
+  initialRefs?: ComposerReference[]
+  imagesOnly?: boolean
+  filesOnly?: boolean
+  referencesOnly?: boolean
+}): React.JSX.Element {
+  const [refs, setRefs] = useState<ComposerReference[]>(initialRefs)
+  const initialImages = Array.from({ length: 10 }, (_, index) => ({
+    id: String(index),
+    name: `banner${(index % 2) + 2}.webp`,
+    src: index % 2 ? previewSecond : previewFirst,
+    source: IMAGE_SOURCE_SAMPLES[index % IMAGE_SOURCE_SAMPLES.length],
+  }))
+  const [images, setImages] = useState(initialImages)
+  const referenceKinds = ['annotation', 'selection', 'skill', 'session'] as const
+  const [referenceTypes, setReferenceTypes] =
+    useState<readonly (typeof referenceKinds)[number][]>(referenceKinds)
+  const [selectedImage, setSelectedImage] = useState<number | null>(null)
   const { t } = useTranslation('examples')
+  const { t: assistantText } = useTranslation('assistant')
+  const [selectionSampleIds, setSelectionSampleIds] = useState([0, 1, 2])
+  const [sentSelectionSampleIds, setSentSelectionSampleIds] = useState([0, 1, 2])
+  const [annotationSampleIds, setAnnotationSampleIds] = useState([0, 1])
+  const [annotationComments, setAnnotationComments] = useState<Record<string, string>>({})
+  const annotationSamples: AnnotationDisplay[] = [0, 1].map((index) => ({
+    id: String(index),
+    previewText: t('attachments.annotationQuote'),
+    comment: t('attachments.annotationComment'),
+  }))
+  const draftAnnotations = annotationSamples
+    .filter((annotation) => annotationSampleIds.includes(Number(annotation.id)))
+    .map((annotation) => ({
+      ...annotation,
+      comment: annotationComments[annotation.id] ?? annotation.comment,
+    }))
+  const selectionSample = {
+    count: selectionSampleIds.length,
+    source: attachmentExampleRefs[0].title,
+  }
+  const sentAttachmentExampleRefs: ComposerReference[] = [
+    ...attachmentExampleRefs,
+    {
+      type: 'directory',
+      id: 'experiment-folder',
+      title: t('attachments.samples.experimentFolder'),
+      path: '/tmp/scholarseed-preview/实验资料',
+    },
+    {
+      type: 'directory',
+      id: 'literature-folder',
+      title: t('attachments.samples.literatureFolder'),
+      path: '/tmp/scholarseed-preview/参考文献',
+    },
+    {
+      type: FILE_REF_KIND,
+      id: 'interview-notes',
+      title: t('attachments.samples.interviewNotes'),
+      path: '/tmp/scholarseed-preview/访谈记录.txt',
+    },
+    {
+      type: FILE_REF_KIND,
+      id: 'references-bib',
+      title: t('attachments.samples.bibliography'),
+      path: '/tmp/scholarseed-preview/references.bib',
+    },
+  ]
   const [message, setMessage] = useState<{
     kind: 'initial' | 'opened' | 'removed' | 'reset'
     title?: string
@@ -668,20 +848,329 @@ function AttachmentsExample(): JSX.Element {
       : message.kind === 'removed'
         ? t('attachments.removed', { title: message.title ?? t('attachments.file') })
         : t(message.kind === 'reset' ? 'attachments.resetDone' : 'attachments.help')
+  const referenceLabels = {
+    annotation: t('attachments.referenceSamples.annotation'),
+    selection: t('attachments.referenceSamples.selection'),
+    skill: t('attachments.referenceSamples.skill'),
+    session: t('attachments.referenceSamples.session'),
+  }
+  const referenceDetails = {
+    selection: t('attachments.sentDetails.selection'),
+  }
 
   return (
     <div className="grid min-w-0 gap-[var(--vds-space-3)] rounded-[var(--vds-radius-4)] border border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] p-[var(--vds-space-4)]">
-      <div className="mb-[9px] flex flex-nowrap gap-[2px] overflow-x-auto overflow-y-hidden py-[6px] pl-0 pr-[2px] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        <ComposerAttachments
-          refs={refs}
-          onOpen={(target) => setMessage({ kind: 'opened', title: target.title })}
-          onRemove={(index) => {
-            const removed = refs[index]
-            setRefs((current) => current.filter((_, itemIndex) => itemIndex !== index))
-            setMessage({ kind: 'removed', title: removed?.title })
-          }}
-        />
-      </div>
+      {!filesOnly && !referencesOnly && (
+        <>
+          <h3 className="m-0 text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-medium)]">
+            {t(imagesOnly ? 'attachments.beforeSend' : 'attachments.imagesDraft')}
+          </h3>
+          <ImageAttachments
+            images={images}
+            onOpen={setSelectedImage}
+            onRemove={(index) => {
+              setImages((current) => current.filter((_, itemIndex) => itemIndex !== index))
+              setMessage({ kind: 'removed', title: images[index].name })
+            }}
+          />
+          <p className="m-0 text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]">
+            {t('attachments.imagesHelp')}
+          </p>
+          <h3 className="m-0 text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-medium)]">
+            {t(imagesOnly ? 'attachments.afterSend' : 'attachments.imagesSent')}
+          </h3>
+          <ImageStrip
+            images={images.map((image) => ({
+              ...image,
+              sourceLabel:
+                image.source === 'resource'
+                  ? assistantText('queue.kinds.resource')
+                  : image.source === 'literature'
+                    ? assistantText('queue.kinds.literature')
+                    : undefined,
+            }))}
+            onOpen={setSelectedImage}
+          />
+          <ImagePreview
+            images={images}
+            open={selectedImage !== null}
+            index={selectedImage ?? 0}
+            onOpenChange={(open) => {
+              if (!open) setSelectedImage(null)
+            }}
+            onIndexChange={setSelectedImage}
+          />
+        </>
+      )}
+      {!imagesOnly && (
+        <>
+          {!referencesOnly && (
+            <>
+              <h3 className="m-0 text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-medium)]">
+                {t(filesOnly ? 'attachments.beforeSend' : 'attachments.filesTitle')}
+              </h3>
+              <ScrollArea
+                orientation="horizontal"
+                className="min-w-0 max-w-full"
+                viewportClassName="![scrollbar-width:none] [&::-webkit-scrollbar]:!hidden"
+              >
+                <ComposerAttachments
+                  refs={refs}
+                  layout="row"
+                  onOpen={(target) => setMessage({ kind: 'opened', title: target.title })}
+                  onRemove={(index) => {
+                    const removed = refs[index]
+                    setRefs((current) => current.filter((_, itemIndex) => itemIndex !== index))
+                    setMessage({ kind: 'removed', title: removed?.title })
+                  }}
+                />
+              </ScrollArea>
+              <h3 className="m-0 text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-medium)]">
+                {t(filesOnly ? 'attachments.afterSend' : 'attachments.filesSent')}
+              </h3>
+              <ScrollArea
+                orientation="horizontal"
+                className="min-w-0 max-w-full"
+                viewportClassName="![scrollbar-width:none] [&::-webkit-scrollbar]:!hidden"
+                viewportProps={{
+                  'aria-label': t('attachments.filesSent'),
+                  'data-testid': 'sent-attachments-preview',
+                }}
+                horizontalControls={{
+                  previous: assistantText('attachments.scrollPrevious'),
+                  next: assistantText('attachments.scrollNext'),
+                  hoverOnly: true,
+                }}
+              >
+                <ComposerAttachments
+                  refs={sentAttachmentExampleRefs}
+                  presentation="card"
+                  layout="row"
+                  renderActions={(ref) => (
+                    <IconButton
+                      size="xs"
+                      variant="ghost"
+                      className="!rounded-[var(--vds-radius-2)] hover:!bg-[var(--vds-bg-white-hover-transparent)]"
+                      label={assistantText('attachments.actions', { title: ref.title })}
+                      icon={<EllipsisVertical size={12} strokeWidth={1.5} />}
+                      onClick={() => setMessage({ kind: 'opened', title: ref.title })}
+                    />
+                  )}
+                  onOpen={(target) => setMessage({ kind: 'opened', title: target.title })}
+                  onOpenDirectory={(ref) => setMessage({ kind: 'opened', title: ref.title })}
+                />
+              </ScrollArea>
+              <p className="m-0 text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]">
+                {t('attachments.filesSentHelp')}
+              </p>
+            </>
+          )}
+          {!filesOnly && (
+            <>
+              <h3 className="m-0 text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-medium)]">
+                {t(referencesOnly ? 'attachments.beforeSend' : 'attachments.referencesTitle')}
+              </h3>
+              <div className="flex min-w-0 flex-nowrap gap-[var(--vds-space-2)] overflow-x-auto p-[var(--vds-space-1)]">
+                {referenceTypes.map((kind) => {
+                  const label = referenceLabels[kind]
+                  const ReferencePreview =
+                    kind === 'annotation' ? HoverCardContent : SelectionPreview
+                  const attachment = (
+                    <ReferenceAttachment
+                      key={kind}
+                      variant={
+                        kind === 'annotation'
+                          ? 'annotation'
+                          : kind === 'session' || kind === 'skill'
+                            ? 'text'
+                            : 'default'
+                      }
+                      data-testid={`reference-attachment-example-${kind}`}
+                      previewTrigger={kind === 'annotation' || kind === 'selection'}
+                      icon={
+                        kind === 'selection' ? (
+                          <TextSelect />
+                        ) : kind === 'session' ? (
+                          <MessageCircle size={12} strokeWidth={1.5} />
+                        ) : kind === 'skill' ? (
+                          <Hammer size={12} strokeWidth={1.5} />
+                        ) : (
+                          <Icon name="quote" size={12} />
+                        )
+                      }
+                      description={
+                        kind === 'selection'
+                          ? selectionSample.source
+                          : kind === 'annotation'
+                            ? draftAnnotations[0]?.previewText
+                            : undefined
+                      }
+                      label={
+                        kind === 'annotation' ? (
+                          assistantText('contextGroups.annotations', {
+                            count: draftAnnotations.length,
+                          })
+                        ) : kind === 'selection' ? (
+                          assistantText('contextGroups.selections', {
+                            count: selectionSample.count,
+                          })
+                        ) : kind === 'skill' ? (
+                          label
+                        ) : (
+                          <Button
+                            unstyled
+                            onClick={() => setMessage({ kind: 'opened', title: label })}
+                          >
+                            {label}
+                          </Button>
+                        )
+                      }
+                      closeLabel={t('conversation.contextRemove', { name: label })}
+                      onClose={() => {
+                        setReferenceTypes((current) =>
+                          current.filter((reference) => reference !== kind)
+                        )
+                        setMessage({ kind: 'removed', title: label })
+                      }}
+                    />
+                  )
+                  return kind === 'selection' || kind === 'annotation' ? (
+                    <HoverCard key={kind}>
+                      {attachment}
+                      <ReferencePreview
+                        side="top"
+                        className={
+                          kind === 'annotation'
+                            ? '!w-[var(--vds-assistant-notes-width)] !max-w-[var(--vds-assistant-notes-max-width)] overflow-hidden !rounded-[var(--vds-radius-6)] !border-0 !bg-[var(--vds-surface-raised)] !p-0 !shadow-[var(--vds-shadow-2-center)]'
+                            : undefined
+                        }
+                      >
+                        {kind === 'annotation' ? (
+                          <AnnotationDetails
+                            annotations={draftAnnotations}
+                            onEdit={async (annotationId, comment) => {
+                              setAnnotationComments((current) => ({
+                                ...current,
+                                [annotationId]: comment,
+                              }))
+                              return true
+                            }}
+                            onRemove={(annotationId) => {
+                              setAnnotationSampleIds((current) =>
+                                current.filter((id) => String(id) !== annotationId)
+                              )
+                              if (draftAnnotations.length === 1)
+                                setReferenceTypes((current) =>
+                                  current.filter((item) => item !== kind)
+                                )
+                            }}
+                          />
+                        ) : (
+                          <div className="grid gap-[var(--vds-space-1)]">
+                            {selectionSampleIds.map((id) => (
+                              <SelectionQuote
+                                key={id}
+                                label={t('conversation.contextPreviewSample')}
+                                text={referenceDetails.selection}
+                                onOpen={() => setMessage({ kind: 'opened', title: label })}
+                                removeLabel={t('conversation.contextRemove', { name: label })}
+                                onRemove={() => {
+                                  setSelectionSampleIds((current) =>
+                                    current.filter((item) => item !== id)
+                                  )
+                                  if (selectionSampleIds.length === 1)
+                                    setReferenceTypes((current) =>
+                                      current.filter((item) => item !== kind)
+                                    )
+                                }}
+                              />
+                            ))}
+                          </div>
+                        )}
+                      </ReferencePreview>
+                    </HoverCard>
+                  ) : (
+                    attachment
+                  )
+                })}
+              </div>
+              <h3 className="m-0 text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-medium)]">
+                {t(referencesOnly ? 'attachments.afterSend' : 'attachments.referencesSent')}
+              </h3>
+              <div className="flex min-w-0 flex-nowrap gap-[var(--vds-space-2)] overflow-x-auto p-[var(--vds-space-1)]">
+                {referenceKinds.map((kind) => (
+                  <SentReferenceAttachment
+                    key={kind}
+                    variant={
+                      kind === 'annotation'
+                        ? 'annotation'
+                        : kind === 'session' || kind === 'skill'
+                          ? 'text'
+                          : 'default'
+                    }
+                    data-testid={`sent-reference-attachment-example-${kind}`}
+                    icon={
+                      kind === 'selection' ? (
+                        <TextSelect />
+                      ) : kind === 'session' ? (
+                        <MessageCircle size={12} strokeWidth={1.5} />
+                      ) : kind === 'skill' ? (
+                        <Hammer size={12} strokeWidth={1.5} />
+                      ) : (
+                        <Icon name="quote" size={12} />
+                      )
+                    }
+                    label={
+                      kind === 'selection'
+                        ? assistantText('contextGroups.selections', {
+                            count: sentSelectionSampleIds.length,
+                          })
+                        : kind === 'annotation'
+                          ? assistantText('contextGroups.annotations', {
+                              count: annotationSamples.length,
+                            })
+                          : referenceLabels[kind]
+                    }
+                    description={
+                      kind === 'selection'
+                        ? selectionSample.source
+                        : kind === 'annotation'
+                          ? annotationSamples[0].previewText
+                          : undefined
+                    }
+                    onOpen={
+                      kind === 'session'
+                        ? () => setMessage({ kind: 'opened', title: referenceLabels[kind] })
+                        : undefined
+                    }
+                    details={
+                      kind === 'selection' ? (
+                        <div
+                          data-testid="sent-reference-attachment-details-selection"
+                          className="grid gap-[var(--vds-space-1)]"
+                        >
+                          {sentSelectionSampleIds.map((id) => (
+                            <SelectionQuote
+                              key={id}
+                              text={referenceDetails.selection}
+                              label={t('conversation.contextPreviewSample')}
+                              onOpen={() =>
+                                setMessage({ kind: 'opened', title: referenceLabels.selection })
+                              }
+                            />
+                          ))}
+                        </div>
+                      ) : kind === 'annotation' ? (
+                        <AnnotationDetails annotations={annotationSamples} />
+                      ) : undefined
+                    }
+                  />
+                ))}
+              </div>
+            </>
+          )}
+        </>
+      )}
       <div className="flex min-w-0 items-center justify-between gap-[var(--vds-space-3)] text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-secondary)]">
         <span className="min-w-0 truncate">{messageText}</span>
         <Button
@@ -689,7 +1178,14 @@ function AttachmentsExample(): JSX.Element {
           type="button"
           variant="outline"
           onClick={() => {
-            setRefs(attachmentExampleRefs)
+            setRefs(initialRefs)
+            setReferenceTypes(referenceKinds)
+            setSelectionSampleIds([0, 1, 2])
+            setSentSelectionSampleIds([0, 1, 2])
+            setAnnotationSampleIds([0, 1])
+            setAnnotationComments({})
+            setImages(initialImages)
+            setSelectedImage(null)
             setMessage({ kind: 'reset' })
           }}
         >
@@ -700,7 +1196,7 @@ function AttachmentsExample(): JSX.Element {
   )
 }
 
-function AccountPanelExample(): JSX.Element {
+function AccountPanelExample(): React.JSX.Element {
   const { t, i18n } = useTranslation('examples')
   const [page, setPage] = useState<AccountSettingsPage>('account')
 
@@ -792,7 +1288,7 @@ function AccountPanelExample(): JSX.Element {
   )
 }
 
-function ChromeExample(): JSX.Element {
+function ChromeExample(): React.JSX.Element {
   return (
     <div className="grid min-w-0 gap-[var(--vds-space-3)] rounded-[var(--vds-radius-4)] border border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] p-[var(--vds-space-4)]">
       <div className="mt-[var(--vds-space-6)] flex min-h-[480px] w-[260px] min-w-0 flex-col justify-end rounded-[var(--vds-radius-3)] border border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)]">
@@ -833,7 +1329,7 @@ const conversationPreviewItems: ConvItem[] = [
   },
 ]
 
-function ComposerPreviewSeed(): JSX.Element {
+function ComposerPreviewSeed(): React.JSX.Element {
   const { t, i18n } = useTranslation('examples')
   const { set } = useApp()
 
@@ -916,7 +1412,7 @@ function ComposerPreviewSeed(): JSX.Element {
   return <Composer />
 }
 
-function ComposerExample(): JSX.Element {
+function ComposerExample(): React.JSX.Element {
   return (
     <div className="grid min-w-0 gap-[var(--vds-space-3)] rounded-[var(--vds-radius-4)] border border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] p-[var(--vds-space-4)]">
       <div className="flex min-h-[520px] min-w-0 flex-col justify-end rounded-[var(--vds-radius-4)] border border-[var(--vds-border-default)] bg-[var(--paper)]">
@@ -1161,21 +1657,83 @@ const businessPreviewThread: Thread = {
   },
 }
 
-function useBusinessPreviewFetch(): void {
+type InteractionPreview = 'success' | 'failure'
+const MATERIAL_NEXT_STEP_CARD = 'material-next-step'
+const CONVERSATION_INTERACTION_DELAY_MS = 500
+const CONVERSATION_INTERACTION_REQUESTS = {
+  clarification: 'material-clarification',
+} as const
+
+function useBusinessPreviewFetch(
+  isolatedConversation = false,
+  interaction?: InteractionPreview,
+  guardMaterialWrites = false
+): void {
   const { t, i18n } = useTranslation('examples')
   useLayoutEffect(() => {
     const previousFetch = window.fetch
-    const json = (payload: unknown): Response =>
+    const json = (payload: unknown, status = 200): Response =>
       new Response(JSON.stringify(payload), {
         headers: { 'content-type': 'application/json' },
-        status: 200,
+        status,
       })
 
     window.fetch = async (input, init) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
       const parsedUrl = new URL(url, window.location.origin)
       const { pathname, searchParams } = parsedUrl
-      const method = (init?.method ?? 'GET').toUpperCase()
+      const method = (
+        init?.method ?? (input instanceof Request ? input.method : 'GET')
+      ).toUpperCase()
+      if (isolatedConversation) {
+        const response = materialSessionRead(
+          parsedUrl,
+          method,
+          businessPreviewProject,
+          businessPreviewThread.sessionId ?? ''
+        )
+        if (response) return response
+      }
+      if (guardMaterialWrites && pathname.startsWith('/api/') && method !== 'GET')
+        return json({ ok: false }, 403)
+      if (interaction && pathname === '/api/serve/attention') {
+        return method === 'GET'
+          ? json({
+              epoch: 'material-interactions',
+              revision: 0,
+              unread_count: 0,
+              by_session: {},
+              items: [],
+            })
+          : json({ ok: false }, 403)
+      }
+      if (interaction && pathname.startsWith('/api/serve/attention/'))
+        return json({ ok: false }, 403)
+      if (
+        interaction &&
+        method !== 'GET' &&
+        pathname.startsWith('/api/serve/sessions/business-preview/')
+      ) {
+        const requestId = Object.values(CONVERSATION_INTERACTION_REQUESTS).find(
+          (id) => pathname === `/api/serve/sessions/business-preview/hil/${id}`
+        )
+        if (method !== 'POST' || !requestId) return json({ ok: false }, 403)
+        await new Promise((resolve) =>
+          window.setTimeout(resolve, CONVERSATION_INTERACTION_DELAY_MS)
+        )
+        return interaction === 'failure'
+          ? json(
+              {
+                ok: false,
+                error: {
+                  code: 'preview_interaction_failed',
+                  message: t('conversation.interactionFailure'),
+                },
+              },
+              503
+            )
+          : json({ ok: true, request_id: requestId })
+      }
       if (
         pathname === '/api/serve/skills' &&
         (!searchParams.has('force_reload') || searchParams.get('force_reload') === 'true')
@@ -1288,13 +1846,25 @@ function useBusinessPreviewFetch(): void {
     return () => {
       window.fetch = previousFetch
     }
-  }, [i18n.language, t])
+  }, [i18n.language, t, isolatedConversation, interaction, guardMaterialWrites])
 }
 
-function BusinessPreviewSeed({ children }: { children: ReactNode }): JSX.Element {
+function BusinessPreviewSeed({
+  children,
+  initialComposerText = '继续补充扩散模型方向的代表论文',
+  preview,
+  interaction,
+  guardMaterialWrites,
+}: {
+  children: ReactNode
+  initialComposerText?: string
+  preview?: Partial<Thread>
+  interaction?: InteractionPreview
+  guardMaterialWrites?: boolean
+}): React.JSX.Element {
   const { t, i18n } = useTranslation('examples')
   const { set } = useApp()
-  useBusinessPreviewFetch()
+  useBusinessPreviewFetch(Boolean(preview), interaction, guardMaterialWrites)
 
   useEffect(() => {
     set({
@@ -1346,16 +1916,16 @@ function BusinessPreviewSeed({ children }: { children: ReactNode }): JSX.Element
         },
       ],
       threads: {
-        'business-preview': businessPreviewThread,
+        'business-preview': { ...businessPreviewThread, contextChannels: {} },
       },
       workspacePath: businessPreviewProject.path,
       defaultWorkspacePath: businessPreviewProject.path,
       workspaceFilesOpen: true,
       workspaceFilesSessionId: null,
-      composerText: '继续补充扩散模型方向的代表论文',
+      composerText: initialComposerText,
       composerRefs: attachmentExampleRefs.slice(0, 2),
     })
-  }, [set])
+  }, [initialComposerText, set])
 
   useEffect(() => {
     const project = localizedBusinessPreviewProject(t)
@@ -1427,90 +1997,12 @@ function BusinessPreviewSeed({ children }: { children: ReactNode }): JSX.Element
               ts: Date.now() - 12_000,
             },
           },
-          contextChannels: {
-            research: {
-              ...businessPreviewThread.contextChannels?.research,
-              name: 'research',
-              surface: {
-                kind: 'list',
-                label: t('business.seed.context.research'),
-                editable: false,
-                command: 'research',
-                render_hint: 'research',
-                priority: 1,
-              },
-              entries: [
-                {
-                  id: 'research-1',
-                  text: t('business.seed.context.researchText'),
-                  cls: 'fact',
-                  confidence: 0.92,
-                  provenance: 'preview',
-                  why: t('business.seed.context.researchWhy'),
-                  entities: [],
-                  status: 'active',
-                },
-              ],
-              lastDelta: null,
-              changedAt: Date.now(),
-            },
-            memory: {
-              ...businessPreviewThread.contextChannels?.memory,
-              name: 'memory',
-              surface: {
-                kind: 'list',
-                label: t('business.seed.context.memory'),
-                editable: false,
-                command: 'recall',
-                render_hint: 'memory',
-                priority: 2,
-              },
-              entries: [
-                {
-                  id: 'memory-1',
-                  text: t('business.seed.context.memoryText'),
-                  cls: 'fact',
-                  confidence: 0.86,
-                  provenance: 'preview',
-                  why: t('business.seed.context.memoryWhy'),
-                  entities: [],
-                  status: 'active',
-                },
-              ],
-              lastDelta: { added: ['memory-1'], superseded: [], evicted: [] },
-              changedAt: Date.now(),
-            },
-            constraints: {
-              ...businessPreviewThread.contextChannels?.constraints,
-              name: 'constraints',
-              surface: {
-                kind: 'list',
-                label: t('business.seed.context.constraints'),
-                editable: false,
-                command: 'constraints',
-                render_hint: 'constraints',
-                priority: 3,
-              },
-              entries: [
-                {
-                  id: 'constraint-1',
-                  text: t('business.seed.context.constraintText'),
-                  cls: 'fact',
-                  confidence: 0.9,
-                  provenance: 'preview',
-                  why: t('business.seed.context.constraintWhy'),
-                  entities: [],
-                  status: 'active',
-                },
-              ],
-              lastDelta: null,
-              changedAt: Date.now(),
-            },
-          },
+          contextChannels: {},
+          ...preview,
         },
       },
     })
-  }, [i18n.language, set, t])
+  }, [i18n.language, set, t, preview])
 
   return <>{children}</>
 }
@@ -1518,22 +2010,37 @@ function BusinessPreviewSeed({ children }: { children: ReactNode }): JSX.Element
 function BusinessPreviewFrame({
   children,
   className = '',
+  initialComposerText,
+  preview,
+  interaction,
+  guardMaterialWrites,
 }: {
   children: ReactNode
   className?: string
-}): JSX.Element {
+  initialComposerText?: string
+  preview?: Partial<Thread>
+  interaction?: InteractionPreview
+  guardMaterialWrites?: boolean
+}): React.JSX.Element {
   return (
     <div
       className={`relative min-h-[360px] min-w-0 overflow-hidden rounded-[var(--vds-radius-4)] border border-[var(--vds-border-default)] bg-[var(--paper)] [&_.auth-legal-scrim]:absolute [&_.feedback-scrim]:absolute [&_.project-form-dialog]:absolute [&_.project-form-scrim]:absolute ${className}`}
     >
       <StoreProvider assistantSources={[]}>
-        <BusinessPreviewSeed>{children}</BusinessPreviewSeed>
+        <BusinessPreviewSeed
+          initialComposerText={initialComposerText}
+          preview={preview}
+          interaction={interaction}
+          guardMaterialWrites={guardMaterialWrites}
+        >
+          {children}
+        </BusinessPreviewSeed>
       </StoreProvider>
     </div>
   )
 }
 
-function FeedbackExample(): JSX.Element {
+function FeedbackExample(): React.JSX.Element {
   return (
     <BusinessPreviewFrame className="min-h-[620px]">
       <Feedback phone="13800008001" sessionId="business-preview" onClose={() => undefined} />
@@ -1541,7 +2048,7 @@ function FeedbackExample(): JSX.Element {
   )
 }
 
-function FileContextMenuExample(): JSX.Element {
+function FileContextMenuExample(): React.JSX.Element {
   const { t } = useTranslation('examples')
   return (
     <BusinessPreviewFrame>
@@ -1566,7 +2073,7 @@ function FileContextMenuExample(): JSX.Element {
   )
 }
 
-function ModelMenuExample(): JSX.Element {
+function ModelMenuExample(): React.JSX.Element {
   return (
     <BusinessPreviewFrame>
       <div className="absolute left-[var(--vds-space-5)] top-[var(--vds-space-5)]">
@@ -1576,7 +2083,7 @@ function ModelMenuExample(): JSX.Element {
   )
 }
 
-function ProjectFormExample(): JSX.Element {
+function ProjectFormExample(): React.JSX.Element {
   const { t } = useTranslation('examples')
   return (
     <BusinessPreviewFrame className="min-h-[520px]">
@@ -1589,7 +2096,7 @@ function ProjectFormExample(): JSX.Element {
   )
 }
 
-function ResearchContextExample(): JSX.Element {
+function ResearchContextExample(): React.JSX.Element {
   return (
     <BusinessPreviewFrame>
       <div className="w-[360px] p-[var(--vds-space-4)]">
@@ -1599,7 +2106,7 @@ function ResearchContextExample(): JSX.Element {
   )
 }
 
-function SessionArtifactsExample(): JSX.Element {
+function SessionArtifactsExample(): React.JSX.Element {
   return (
     <BusinessPreviewFrame>
       <div className="w-[360px] p-[var(--vds-space-4)]">
@@ -1609,7 +2116,7 @@ function SessionArtifactsExample(): JSX.Element {
   )
 }
 
-function SessionContextMenuExample(): JSX.Element {
+function SessionContextMenuExample(): React.JSX.Element {
   const { t } = useTranslation('examples')
   const title = t('business.seed.recentTitle')
   return (
@@ -1634,7 +2141,7 @@ function SessionContextMenuExample(): JSX.Element {
   )
 }
 
-function SessionTitleExample(): JSX.Element {
+function SessionTitleExample(): React.JSX.Element {
   const { t } = useTranslation('examples')
   return (
     <BusinessPreviewFrame>
@@ -1651,7 +2158,7 @@ function SessionTitleExample(): JSX.Element {
   )
 }
 
-function SidebarExample(): JSX.Element {
+function SidebarExample(): React.JSX.Element {
   return (
     <BusinessPreviewFrame className="min-h-[640px]">
       <Sidebar />
@@ -1659,7 +2166,7 @@ function SidebarExample(): JSX.Element {
   )
 }
 
-function SkillRefsExample(): JSX.Element {
+function SkillRefsExample(): React.JSX.Element {
   return (
     <BusinessPreviewFrame>
       <div className="p-[var(--vds-space-4)]">
@@ -1681,7 +2188,7 @@ function SkillRefsExample(): JSX.Element {
   )
 }
 
-function StatusStripExample(): JSX.Element {
+function StatusStripExample(): React.JSX.Element {
   return (
     <BusinessPreviewFrame>
       <div className="flex min-h-[360px] flex-col justify-end p-[var(--vds-space-4)]">
@@ -1691,7 +2198,7 @@ function StatusStripExample(): JSX.Element {
   )
 }
 
-function StreamExample(): JSX.Element {
+function StreamExample(): React.JSX.Element {
   return (
     <BusinessPreviewFrame className="min-h-[640px]">
       <Stream />
@@ -1699,7 +2206,416 @@ function StreamExample(): JSX.Element {
   )
 }
 
-function TaskMonitorExample(): JSX.Element {
+const conversationStates = {
+  messages: ['short', 'long', 'history'],
+  tools: TOOL_MATERIAL_STATES,
+  plan: ['running', 'completed', 'failed'],
+  clarification: ['pending', 'answered', 'skipped', 'submitting', 'failed', 'unknown', 'stale'],
+  context: ['draft', 'sent', 'unavailable'],
+  suggestions: ['actionable', 'rejected', 'expired'],
+} as const
+type ConversationMaterial = keyof typeof conversationStates
+const conversationMaterialAliases: Partial<Record<ConversationMaterial, string>> = {
+  clarification: 'conversation-clarify',
+}
+type ConversationSampleState = (typeof conversationStates)[ConversationMaterial][number]
+const conversationLabels = {
+  messages: 'conversation.messages',
+  tools: 'conversation.tools',
+  plan: 'conversation.plan',
+  clarification: 'conversation.clarification',
+  context: 'conversation.context',
+  suggestions: 'conversation.suggestions',
+} as const
+const conversationStateLabels = {
+  short: 'conversation.statesLabel.short',
+  long: 'conversation.statesLabel.long',
+  history: 'conversation.statesLabel.history',
+  running: 'conversation.statesLabel.running',
+  completed: 'conversation.statesLabel.completed',
+  failed: 'conversation.statesLabel.failed',
+  streaming: 'conversation.statesLabel.streaming',
+  paused: 'conversation.statesLabel.paused',
+  search: 'conversation.statesLabel.search',
+  answered: 'conversation.statesLabel.answered',
+  skipped: 'conversation.statesLabel.skipped',
+  pending: 'conversation.statesLabel.pending',
+  submitting: 'conversation.statesLabel.submitting',
+  unknown: 'conversation.statesLabel.unknown',
+  stale: 'conversation.statesLabel.stale',
+  draft: 'conversation.statesLabel.draft',
+  sent: 'conversation.statesLabel.sent',
+  unavailable: 'conversation.statesLabel.unavailable',
+  actionable: 'conversation.statesLabel.actionable',
+  rejected: 'conversation.statesLabel.rejected',
+  expired: 'conversation.statesLabel.expired',
+} as const
+const CONVERSATION_SAMPLE_TURN = 'preview-turn-1'
+const CONVERSATION_LONG_PARAGRAPHS = 12
+const CONVERSATION_SAMPLE_SENT_AT = Date.parse('2026-10-30T06:30:00Z')
+
+function NextStepsMaterialContent({
+  mode,
+}: {
+  mode: 'actionable' | 'rejected' | 'expired'
+}): React.JSX.Element {
+  const { t } = useTranslation('examples')
+  const { composerSubmission } = useApp()
+  const [submitted, setSubmitted] = useState('')
+  useEffect(() => {
+    let current = true
+    const unregister = composerSubmission.register({
+      sessionId: 'business-preview',
+      disabled: mode === 'expired',
+      submit: async (message) => {
+        await new Promise((resolve) =>
+          window.setTimeout(resolve, CONVERSATION_INTERACTION_DELAY_MS)
+        )
+        if (!current || mode === 'rejected') return false
+        setSubmitted(message)
+        return true
+      },
+    })
+    return () => {
+      current = false
+      unregister()
+    }
+  }, [composerSubmission, mode])
+  return (
+    <div className="grid gap-[var(--vds-space-3)] p-[var(--vds-space-3)]">
+      <NextSteps
+        cardId={MATERIAL_NEXT_STEP_CARD}
+        turnId={CONVERSATION_SAMPLE_TURN}
+        content={{
+          title: t('conversation.nextTitle'),
+          options: [
+            {
+              label: t('conversation.nextLiterature'),
+              description: t('conversation.nextLiteratureDescription'),
+            },
+            {
+              label: t('conversation.nextValidation'),
+              description: t('conversation.nextValidationDescription'),
+            },
+          ],
+          free_text_label: t('conversation.nextFreeText'),
+          submit_label: t('conversation.nextSubmit'),
+        }}
+      />
+      {submitted && (
+        <div data-testid="next-step-local-result" className="flex justify-end">
+          <Message text={submitted} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+function NextStepsMaterialExample({
+  mode,
+}: {
+  mode: 'actionable' | 'rejected' | 'expired'
+}): React.JSX.Element {
+  const preview = useMemo<Partial<Thread>>(
+    () => ({
+      readOnly: false,
+      running: false,
+      status: 'done',
+      projectPath: null,
+      turnOutcomes: { [CONVERSATION_SAMPLE_TURN]: 'completed' },
+      conversation: [
+        {
+          kind: 'display_card',
+          turnId: CONVERSATION_SAMPLE_TURN,
+          card: { cardId: MATERIAL_NEXT_STEP_CARD, type: 'next-steps', content: {} },
+        },
+        ...(mode === 'expired'
+          ? [{ kind: 'user' as const, text: '…', turnId: 'material-followup' }]
+          : []),
+      ],
+      artifacts: [],
+      backgroundTasks: {},
+      queuedMessages: [],
+    }),
+    [mode]
+  )
+  return (
+    <BusinessPreviewFrame initialComposerText="" preview={preview} guardMaterialWrites>
+      <NextStepsMaterialContent mode={mode} />
+    </BusinessPreviewFrame>
+  )
+}
+
+function ConversationMaterialExample({
+  material,
+}: {
+  material: ConversationMaterial
+}): React.JSX.Element {
+  const { t, i18n } = useTranslation('examples')
+  const [sampleState, setSampleState] = useState<ConversationSampleState>(
+    conversationStates[material][0]
+  )
+  const [generation, setGeneration] = useState(0)
+  const interactive = material === 'clarification'
+  const resetInteraction = (): void => {
+    setSampleState('pending')
+    setGeneration((value) => value + 1)
+  }
+  const preview = useMemo<Partial<Thread>>(() => {
+    if (material === 'tools')
+      return toolMaterial(
+        TOOL_MATERIAL_STATES.find((value) => value === sampleState) ?? TOOL_MATERIAL_STATES[0],
+        t,
+        Date.now()
+      )
+    const running = sampleState === 'running'
+    const outcome = running ? 'running' : sampleState === 'failed' ? 'failed' : 'completed'
+    const user: ConvItem = {
+      kind: 'user',
+      turnId: CONVERSATION_SAMPLE_TURN,
+      itemId: 'material-user',
+      ...(material === 'messages' ? { startedAt: CONVERSATION_SAMPLE_SENT_AT } : {}),
+      text:
+        sampleState === 'long'
+          ? Array.from({ length: CONVERSATION_LONG_PARAGRAPHS }, () =>
+              t(material === 'messages' ? 'conversation.messageText' : 'conversation.sampleText')
+            ).join('\n\n')
+          : t(material === 'messages' ? 'conversation.messageText' : 'conversation.sampleText'),
+    }
+    const answer: ConvItem = {
+      kind: 'agent',
+      turnId: CONVERSATION_SAMPLE_TURN,
+      itemId: 'material-answer',
+      text: t(material === 'messages' ? 'conversation.messageAnswer' : 'conversation.sampleAnswer'),
+    }
+    let conversation: ConvItem[] = [user, answer]
+    if (sampleState === 'history')
+      conversation = [
+        ...conversation,
+        {
+          ...user,
+          turnId: 'material-followup',
+          itemId: 'material-followup-user',
+          text: t('conversation.messageFollowup'),
+        },
+        {
+          ...answer,
+          turnId: 'material-followup',
+          itemId: 'material-followup-answer',
+          text: t('conversation.messageLatestAnswer'),
+        },
+      ]
+    if (material === 'clarification') {
+      const hilState =
+        sampleState === 'submitting' ||
+        sampleState === 'failed' ||
+        sampleState === 'unknown' ||
+        sampleState === 'stale'
+          ? sampleState
+          : 'pending'
+      conversation = [
+        user,
+        {
+          kind: 'hil',
+          hilKind: 'question',
+          requestId: CONVERSATION_INTERACTION_REQUESTS[material],
+          turnId: CONVERSATION_SAMPLE_TURN,
+          itemId: `material-${material}`,
+          hilState,
+          ...(hilState === 'stale'
+            ? {
+                resolvedMessage: { kind: 'stale' as const },
+                resolved: t('conversation.statesLabel.stale'),
+              }
+            : {}),
+          requestedAt: Date.now(),
+          ...(hilState === 'failed'
+            ? { submissionErrorMessage: 'answerUnconfirmed' as const }
+            : {}),
+          questions: [
+            {
+              id: 'priority',
+              header: t('conversation.priorityHeader'),
+              question: t('conversation.priorityQuestion'),
+              options: [{ label: t('conversation.quality') }, { label: t('conversation.speed') }],
+            },
+            {
+              id: 'output',
+              header: t('conversation.outputHeader'),
+              question: t('conversation.outputQuestion'),
+              multiSelect: true,
+              options: [
+                { label: t('conversation.papers') },
+                { label: t('conversation.comparison') },
+              ],
+            },
+            {
+              id: 'notes',
+              header: t('conversation.notesHeader'),
+              question: t('conversation.notesQuestion'),
+              options: [],
+            },
+          ],
+        },
+      ]
+    }
+    if (material === 'clarification' && (sampleState === 'answered' || sampleState === 'skipped')) {
+      const clarification = conversation.find((item) => item.kind === 'hil')
+      if (clarification?.kind === 'hil')
+        conversation = [
+          user,
+          {
+            kind: 'interaction_reply',
+            turnId: CONVERSATION_SAMPLE_TURN,
+            itemId: 'material-clarification-reply',
+            requestId: clarification.requestId ?? 'material-clarification',
+            questions: clarification.questions ?? [],
+            answers:
+              sampleState === 'skipped'
+                ? {}
+                : {
+                    priority: t('conversation.quality'),
+                    output: t('conversation.papers'),
+                    notes: t('conversation.answer'),
+                  },
+          },
+        ]
+    }
+    const terminalInteraction =
+      material === 'clarification' && (sampleState === 'answered' || sampleState === 'skipped')
+    return {
+      conversation,
+      readOnly: !interactive,
+      running: !terminalInteraction && (interactive || running),
+      status:
+        interactive && !terminalInteraction
+          ? 'waiting'
+          : running
+            ? 'running'
+            : sampleState === 'failed'
+              ? 'failed'
+              : 'done',
+      turnOutcomes: {
+        [CONVERSATION_SAMPLE_TURN]: interactive && !terminalInteraction ? 'running' : outcome,
+        'material-followup': 'completed',
+      },
+      todoTurnId: CONVERSATION_SAMPLE_TURN,
+      todos: [
+        { id: 'scope', content: t('business.seed.todo.scope'), status: 'completed' },
+        {
+          id: 'search',
+          content: t('business.seed.todo.search'),
+          status: running ? 'in_progress' : sampleState === 'failed' ? 'failed' : 'completed',
+        },
+        {
+          id: 'write',
+          content: t('business.seed.todo.write'),
+          status: sampleState === 'completed' ? 'completed' : 'pending',
+        },
+      ],
+      backgroundTasks: {},
+      artifacts: [],
+    }
+  }, [material, sampleState, t, interactive, generation])
+  return (
+    <div className="grid min-w-0 gap-[var(--vds-space-4)]" data-testid="conversation-material">
+      {material !== 'context' && (
+        <div
+          role="group"
+          aria-label={t('conversation.states')}
+          className="flex flex-wrap gap-[var(--vds-space-2)]"
+        >
+          {conversationStates[material].map((value) => (
+            <Button
+              key={value}
+              size="sm"
+              variant={sampleState === value ? 'primary' : 'outline'}
+              aria-pressed={sampleState === value}
+              onClick={() => setSampleState(value)}
+            >
+              {t(
+                material === 'clarification' && value === 'pending'
+                  ? 'conversation.clarificationPending'
+                  : material === 'tools' && value === 'failed'
+                    ? 'conversation.statesLabel.toolFailed'
+                    : conversationStateLabels[value]
+              )}
+            </Button>
+          ))}
+          {interactive && (
+            <Button
+              className="ml-auto w-fit shrink-0"
+              size="sm"
+              variant="outline"
+              onClick={resetInteraction}
+            >
+              {t('conversation.resetInteraction')}
+            </Button>
+          )}
+        </div>
+      )}
+      <div data-testid="conversation-preview" key={`${sampleState}:${generation}:${i18n.language}`}>
+        {material === 'suggestions' ? (
+          <NextStepsMaterialExample
+            mode={
+              sampleState === 'rejected'
+                ? 'rejected'
+                : sampleState === 'expired'
+                  ? 'expired'
+                  : 'actionable'
+            }
+          />
+        ) : material === 'context' ? (
+          <div
+            className="grid min-w-0 gap-[var(--vds-space-3)]"
+            data-testid="context-reference-examples"
+          >
+            <AttachmentsExample referencesOnly />
+          </div>
+        ) : (
+          <BusinessPreviewFrame
+            preview={preview}
+            guardMaterialWrites={material === 'tools'}
+            interaction={
+              interactive ? (sampleState === 'failed' ? 'failure' : 'success') : undefined
+            }
+            className={
+              material === 'clarification'
+                ? '!min-h-0 [&_[data-testid=hil-dock]]:flex-none [&_[data-testid=hil-card]]:!flex-none [&_[data-testid=hil-question-scroll-area]]:!h-auto [&_[data-testid=hil-question-scroll-area]]:max-h-[var(--vds-reference-picker-max-height)]'
+                : 'h-[560px]'
+            }
+          >
+            {interactive ? (
+              <div className="flex min-h-0 flex-col">
+                <div className="min-h-0">
+                  <Stream />
+                </div>
+                <PendingHilDock />
+              </div>
+            ) : material === 'tools' ? (
+              <div className="flex h-full min-h-0 flex-col">
+                <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                  <Stream />
+                </div>
+                <ConversationControls>
+                  <Composer />
+                </ConversationControls>
+              </div>
+            ) : material === 'plan' ? (
+              <TodoPanel continueDisabled />
+            ) : (
+              <div className="flex h-full min-h-0 flex-col">
+                <Stream />
+              </div>
+            )}
+          </BusinessPreviewFrame>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function TaskMonitorExample(): React.JSX.Element {
   return (
     <BusinessPreviewFrame>
       <div className="w-[380px] p-[var(--vds-space-4)]">
@@ -1709,7 +2625,7 @@ function TaskMonitorExample(): JSX.Element {
   )
 }
 
-function TodoPanelExample(): JSX.Element {
+function TodoPanelExample(): React.JSX.Element {
   return (
     <BusinessPreviewFrame>
       <div className="w-[380px] p-[var(--vds-space-4)]">
@@ -1719,7 +2635,7 @@ function TodoPanelExample(): JSX.Element {
   )
 }
 
-function WorkspaceFilesExample(): JSX.Element {
+function WorkspaceFilesExample(): React.JSX.Element {
   return (
     <BusinessPreviewFrame className="min-h-[620px]">
       <WorkspaceFiles />
@@ -1737,7 +2653,7 @@ function chartPoints(key: 'expenses' | 'profit' | 'revenue', max: number): strin
     .join(' ')
 }
 
-function ChartGrid({ ticks, max }: { max: number; ticks: readonly number[] }): JSX.Element {
+function ChartGrid({ ticks, max }: { max: number; ticks: readonly number[] }): React.JSX.Element {
   return (
     <g>
       {ticks.map((tick) => {
@@ -1776,7 +2692,7 @@ function ExampleChartLegend({
   items,
 }: {
   items: ReadonlyArray<{ color: string; label: string }>
-}): JSX.Element {
+}): React.JSX.Element {
   return (
     <div className="mt-[var(--vds-space-3)] flex justify-center gap-[var(--vds-space-4)] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-secondary)]">
       {items.map((item) => (
@@ -1789,7 +2705,7 @@ function ExampleChartLegend({
   )
 }
 
-function ExampleBarChart(): JSX.Element {
+function ExampleBarChart(): React.JSX.Element {
   const { t } = useTranslation('examples')
   return (
     <svg
@@ -1828,7 +2744,7 @@ function ExampleBarChart(): JSX.Element {
   )
 }
 
-function ExampleLineChart(): JSX.Element {
+function ExampleLineChart(): React.JSX.Element {
   const { t } = useTranslation('examples')
   return (
     <svg
@@ -1850,7 +2766,7 @@ function ExampleLineChart(): JSX.Element {
   )
 }
 
-function ExampleAreaChart(): JSX.Element {
+function ExampleAreaChart(): React.JSX.Element {
   const { t } = useTranslation('examples')
   const expensesPoints = chartPoints('expenses', 12000)
   const revenuePoints = monthlyChartData
@@ -1903,7 +2819,7 @@ function ToastExampleMessage({
   kind,
 }: {
   kind: 'description' | 'longDescription' | 'title' | 'success' | 'error' | 'warning' | 'action'
-}): JSX.Element {
+}): React.JSX.Element {
   const { t } = useTranslation('examples')
   const messages = {
     description: { messageKey: 'toast.description' },
@@ -1917,7 +2833,7 @@ function ToastExampleMessage({
   return <>{t(messages[kind].messageKey)}</>
 }
 
-function ToastExampleAction(): JSX.Element {
+function ToastExampleAction(): React.JSX.Element {
   const { t } = useTranslation('examples')
   return (
     <Button size="sm" variant="secondary">
@@ -1926,7 +2842,7 @@ function ToastExampleAction(): JSX.Element {
   )
 }
 
-function ToastExampleControls(): JSX.Element {
+function ToastExampleControls(): React.JSX.Element {
   const { t } = useTranslation('examples')
   const { toast } = useToast()
   const showDefaultToast = (): void => {
@@ -2005,7 +2921,7 @@ function ToastExampleControls(): JSX.Element {
   )
 }
 
-function SheetDrawerExample(): JSX.Element {
+function SheetDrawerExample(): React.JSX.Element {
   const { t } = useTranslation('examples')
   return (
     <div className="grid gap-[var(--vds-space-3)]">
@@ -2040,8 +2956,11 @@ function SheetDrawerExample(): JSX.Element {
   )
 }
 
-export function ComponentsPage(): JSX.Element {
+export function ComponentsPage({
+  onExitPreview,
+}: { onExitPreview?: () => void } = {}): React.JSX.Element {
   const [resizeOffset, setResizeOffset] = useState(0)
+  const portalDocument = usePortalDocument()
   const { state, act } = useApp()
   const { t } = useTranslation('examples')
   const chartExampleConfig = {
@@ -2062,8 +2981,19 @@ export function ComponentsPage(): JSX.Element {
       label: t('chart.revenue'),
     },
   }
-  const [activeExample, setActiveExample] = useState<string>(exampleMenuItems[0].id)
-  const [openMenuGroup, setOpenMenuGroup] = useState<ComponentMenuGroupId | null>('ui')
+  const [activeExample, setActiveExample] = useState<string>('conversation-messages')
+  const selectedConversationEntry = conversationEntries.find((item) => item.id === activeExample)
+  const officialPreview =
+    selectedConversationEntry && 'preview' in selectedConversationEntry
+      ? selectedConversationEntry.preview
+      : undefined
+  const selectedOfficialEntry = officialEntries.find(
+    (item) => item.id === activeExample || item.name === officialPreview
+  )
+  const selectedOpenUIEntry = openUIEntries.find((item) => item.id === activeExample)
+  const selectedConversationPreview = conversationPreviewKind(activeExample)
+  const [floatingToolbarOffset, setFloatingToolbarOffset] = useState({ x: 0, y: 0 })
+  const [openMenuGroup, setOpenMenuGroup] = useState<ComponentMenuGroupId | null>('conversation')
   const [closedAlertIds, setClosedAlertIds] = useState<ReadonlySet<string>>(new Set())
   const [badgeVisible, setBadgeVisible] = useState(true)
   const [tagVisible, setTagVisible] = useState(true)
@@ -2087,7 +3017,12 @@ export function ComponentsPage(): JSX.Element {
   const [sliderVolume, setSliderVolume] = useState([34])
   const [sliderPrice, setSliderPrice] = useState([21, 75])
   const [themePreview, setThemePreview] = useState<Exclude<Theme, 'system'>>('light')
-  const activeExampleCode = extractSectionCode(componentsPageSource, activeExample)
+  const activeExampleCode =
+    activeExample === 'conversation-approval' || activeExample === 'conversation-confirmation'
+      ? confirmationExampleSource
+      : activeExample === 'alert'
+        ? `${inlineAlertExampleSource}\n\n${extractSectionCode(componentsPageSource, activeExample)}`
+        : extractSectionCode(componentsPageSource, activeExample)
   const closeNavigationTab = (id: string): void => {
     setNavigationTabsItems((items) => items.filter((item) => item.id !== id))
     if (navigationTabsValue === id) {
@@ -2143,15 +3078,15 @@ export function ComponentsPage(): JSX.Element {
         </div>
       </header>
 
-      <div className="grid h-full min-h-0 grid-cols-[260px_minmax(0,1fr)] items-start gap-[var(--vds-space-5)] max-[860px]:grid-cols-[minmax(0,1fr)] max-[860px]:grid-rows-[auto_minmax(0,1fr)]">
+      <div className="grid h-full min-h-0 grid-cols-[minmax(0,1fr)_minmax(0,3fr)] items-start gap-[var(--vds-space-5)]">
         <aside
-          className="sticky top-[var(--vds-space-6)] grid max-h-full min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)] gap-[var(--vds-space-3)] self-stretch overflow-hidden rounded-[var(--vds-radius-4)] border border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] p-[var(--vds-space-3)] shadow-[var(--vds-shadow-1-center)] max-[860px]:top-[var(--vds-space-4)] max-[860px]:z-[2] max-[860px]:max-h-[min(40vh,320px)] max-[860px]:self-start"
+          className="sticky top-[var(--vds-space-6)] grid max-h-full min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)] gap-[var(--vds-space-3)] self-stretch overflow-hidden rounded-[var(--vds-radius-4)] border border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] p-[var(--vds-space-3)] shadow-[var(--vds-shadow-1-center)]"
           aria-label={t('shell.menu')}
         >
           <div className="px-[var(--vds-space-2)] text-[13px] font-[var(--vds-fw-medium)] uppercase leading-[var(--vds-lh-caption)] text-[var(--vds-text-secondary)]">
             Components
           </div>
-          <nav className="grid min-h-0 content-start gap-[var(--vds-space-2)] overflow-auto pr-[var(--vds-space-1)] max-[860px]:flex max-[860px]:overflow-x-auto max-[860px]:overflow-y-hidden max-[860px]:pb-[var(--vds-space-1)] max-[860px]:pr-0">
+          <nav className="grid min-h-0 content-start gap-[var(--vds-space-2)] overflow-auto pr-[var(--vds-space-1)]">
             {componentMenuGroups.map((group) => (
               <ComponentMenuGroup
                 activeExample={activeExample}
@@ -2166,10 +3101,156 @@ export function ComponentsPage(): JSX.Element {
         </aside>
 
         <div
-          className="h-full min-h-0 min-w-0 overflow-y-auto pr-[var(--vds-space-1)]"
+          className={
+            selectedOfficialEntry || selectedOpenUIEntry || selectedConversationPreview
+              ? 'h-full min-h-0 min-w-0 overflow-hidden'
+              : 'h-full min-h-0 min-w-0 overflow-y-auto pr-[var(--vds-space-1)]'
+          }
           aria-label={t('shell.preview')}
         >
-          <div className="mb-[var(--vds-space-4)] grid min-h-0 grid-cols-[minmax(0,1fr)] gap-[var(--vds-space-4)]">
+          <div
+            className={
+              selectedOfficialEntry || selectedOpenUIEntry || selectedConversationPreview
+                ? 'flex h-full min-h-0 min-w-0 flex-col'
+                : 'mb-[var(--vds-space-4)] grid min-h-0 grid-cols-[minmax(0,1fr)] gap-[var(--vds-space-4)]'
+            }
+          >
+            {selectedConversationPreview && (
+              <ConversationPreview kind={selectedConversationPreview} />
+            )}
+            {selectedOfficialEntry && (
+              <OfficialPreview name={selectedOfficialEntry.name} onOpened={onExitPreview} />
+            )}
+            {selectedOpenUIEntry && (
+              <OpenUIPreview key={selectedOpenUIEntry.name} name={selectedOpenUIEntry.name} />
+            )}
+            {selectedConversationEntry?.status === 'unbuilt' && (
+              <section
+                className={exampleSectionClass(activeExample, activeExample)}
+                data-testid="conversation-unbuilt"
+              >
+                <h2 className="m-0 text-[length:var(--vds-font-subhead)] font-[var(--vds-fw-medium)] text-[var(--vds-text-primary)]">
+                  {t(selectedConversationEntry.labelKey)}
+                </h2>
+                <EmptyState
+                  title={t('prototype.unbuilt')}
+                  description={t('prototype.unbuiltDescription')}
+                />
+              </section>
+            )}
+            {activeExample === 'conversation-plugin-installation' && (
+              <section
+                id="conversation-plugin-installation"
+                className={exampleSectionClass('conversation-plugin-installation', activeExample)}
+              >
+                <h2>{t('conversation.pluginInstallation')}</h2>
+                <p>{t('conversation.pluginInstallationDescription')}</p>
+                <PluginInstallationCard
+                  report={{
+                    valid: true,
+                    sha256: '',
+                    descriptor: {
+                      id: 'example-plugin',
+                      version: '1.0.0',
+                      capabilities: [],
+                      components: [{ id: 'example', preview: 'preview.json', actions: [] }],
+                    },
+                    issues: [],
+                    dependencies: {},
+                  }}
+                  status="pending"
+                  done={false}
+                  busy={false}
+                  working={false}
+                  onAction={() => undefined}
+                />
+              </section>
+            )}
+            {(activeExample === 'conversation-approval' ||
+              activeExample === 'conversation-confirmation') && (
+              <section
+                id={activeExample}
+                className={exampleSectionClass(activeExample, activeExample)}
+              >
+                <h2 className="m-0 text-[length:var(--vds-font-subhead)] font-[var(--vds-fw-medium)] text-[var(--vds-text-primary)]">
+                  {t('conversation.approval')}
+                </h2>
+                <ConfirmationExample />
+              </section>
+            )}
+            {activeExample === 'conversation-processing' && (
+              <section
+                id="conversation-processing"
+                className={exampleSectionClass('conversation-processing', activeExample)}
+              >
+                <h2 className="m-0 text-[length:var(--vds-font-subhead)] font-[var(--vds-fw-medium)] text-[var(--vds-text-primary)]">
+                  {t('processingPreview.title')}
+                </h2>
+                <Tabs defaultValue="tools">
+                  <TabsList aria-label={t('processingPreview.title')}>
+                    <TabsTrigger value="tools">{t('conversation.tools')}</TabsTrigger>
+                    <TabsTrigger value="plan">{t('conversation.plan')}</TabsTrigger>
+                    <TabsTrigger value="exceptions">
+                      {t('processingPreview.exceptions')}
+                    </TabsTrigger>
+                  </TabsList>
+                  <TabsContent value="tools" className="mt-[var(--vds-space-4)]">
+                    <ConversationMaterialExample material="tools" />
+                  </TabsContent>
+                  <TabsContent value="plan" className="mt-[var(--vds-space-4)]">
+                    <ConversationMaterialExample material="plan" />
+                  </TabsContent>
+                  <TabsContent value="exceptions" className="mt-[var(--vds-space-4)]">
+                    <div className="grid gap-[var(--vds-space-3)]">
+                      <ConversationAlertExamples />
+                    </div>
+                  </TabsContent>
+                </Tabs>
+              </section>
+            )}
+            {activeExample === 'conversation-context' && (
+              <section
+                id="conversation-context"
+                className={exampleSectionClass('conversation-context', activeExample)}
+              >
+                <h2 className="m-0 text-[length:var(--vds-font-subhead)] font-[var(--vds-fw-medium)] text-[var(--vds-text-primary)]">
+                  {t('conversation.context')}
+                </h2>
+                <Tabs defaultValue="images">
+                  <TabsList aria-label={t('conversation.context')}>
+                    <TabsTrigger value="images">{t('prototype.images')}</TabsTrigger>
+                    <TabsTrigger value="files">{t('prototype.files')}</TabsTrigger>
+                    <TabsTrigger value="context">{t('conversation.context')}</TabsTrigger>
+                  </TabsList>
+                  <TabsContent value="images" className="mt-[var(--vds-space-4)]">
+                    <AttachmentsExample imagesOnly />
+                  </TabsContent>
+                  <TabsContent value="files" className="mt-[var(--vds-space-4)]">
+                    <AttachmentsExample filesOnly />
+                  </TabsContent>
+                  <TabsContent value="context" className="mt-[var(--vds-space-4)]">
+                    <ConversationMaterialExample material="context" />
+                  </TabsContent>
+                </Tabs>
+              </section>
+            )}
+            {(Object.keys(conversationStates) as ConversationMaterial[]).map((material) => {
+              const id = `conversation-${material}`
+              const selected =
+                activeExample === id || activeExample === conversationMaterialAliases[material]
+              return material !== 'context' && selected ? (
+                <section
+                  key={activeExample}
+                  id={activeExample}
+                  className={exampleSectionClass(activeExample, activeExample)}
+                >
+                  <h2 className="m-0 text-[length:var(--vds-font-subhead)] font-[var(--vds-fw-medium)] text-[var(--vds-text-primary)]">
+                    {t(selectedConversationEntry?.labelKey ?? conversationLabels[material])}
+                  </h2>
+                  <ConversationMaterialExample material={material} />
+                </section>
+              ) : null
+            })}
             <section
               className={exampleSectionClass('account-panel', activeExample)}
               id="account-panel"
@@ -2386,6 +3467,13 @@ export function ComponentsPage(): JSX.Element {
               </div>
             </section>
 
+            <section
+              className={exampleSectionClass('image-preview', activeExample)}
+              id="image-preview"
+            >
+              <ImagePreviewExample />
+            </section>
+
             <section className={exampleSectionClass('markdown', activeExample)} id="markdown">
               <h2 className="m-0 text-[length:var(--vds-font-subhead)] font-[var(--vds-fw-medium)] leading-[var(--vds-lh-subhead)] text-[var(--vds-text-primary)]">
                 Markdown
@@ -2452,6 +3540,17 @@ export function ComponentsPage(): JSX.Element {
                   {t('form.optionalDisabled')}
                 </Label>
                 <FormField>
+                  <FormLabel variant="display">{t('form.displayLabel')}</FormLabel>
+                  <FormControl>
+                    <Input defaultValue={t('form.displayValue')} readOnly />
+                  </FormControl>
+                </FormField>
+                <Input
+                  label={t('form.simpleLabel')}
+                  labelVariant="display"
+                  placeholder={t('form.placeholder')}
+                />
+                <FormField>
                   <FormLabel required>{t('form.name')}</FormLabel>
                   <FormControl invalid>
                     <Input placeholder={t('form.placeholder')} />
@@ -2467,6 +3566,7 @@ export function ComponentsPage(): JSX.Element {
                 Alert
               </h2>
               <div className="grid gap-[var(--vds-space-3)]">
+                <InlineAlertExamples />
                 {alertExampleItems.map((item) =>
                   closedAlertIds.has(item.id) ? null : (
                     <Alert
@@ -2479,40 +3579,14 @@ export function ComponentsPage(): JSX.Element {
                     />
                   )
                 )}
-                <Alert
-                  action={
-                    <Button size="sm" variant="outline">
-                      {t('alerts.continue')}
-                    </Button>
-                  }
-                  description={t('alerts.interruptedDescription')}
-                  layout="stacked"
-                  title={t('alerts.interruptedTitle')}
-                  tone="warning"
-                />
+                <ConversationAlertExamples />
                 <Alert
                   action={
                     <div className="flex gap-[var(--vds-space-2)]">
-                      <Button size="sm" variant="primary">
-                        {t('alerts.restore')}
-                      </Button>
-                      <Button size="sm" variant="secondary">
-                        {t('alerts.ignore')}
-                      </Button>
-                    </div>
-                  }
-                  description={t('alerts.recoverDescription')}
-                  layout="stacked"
-                  title={t('alerts.recoverTitle')}
-                  tone="info"
-                />
-                <Alert
-                  action={
-                    <div className="flex gap-[var(--vds-space-2)]">
-                      <Button size="sm" variant="primary">
+                      <Button size="sm" variant="ghost">
                         {t('alerts.keepMine')}
                       </Button>
-                      <Button size="sm" variant="secondary">
+                      <Button size="sm" variant="outline">
                         {t('alerts.reload')}
                       </Button>
                     </div>
@@ -2525,10 +3599,10 @@ export function ComponentsPage(): JSX.Element {
                 <Alert
                   action={
                     <div className="flex gap-[var(--vds-space-2)]">
-                      <Button size="sm" variant="primary">
+                      <Button size="sm" variant="ghost">
                         {t('alerts.approve')}
                       </Button>
-                      <Button size="sm" variant="secondary">
+                      <Button size="sm" variant="outline">
                         {t('alerts.reject')}
                       </Button>
                     </div>
@@ -2541,10 +3615,10 @@ export function ComponentsPage(): JSX.Element {
                 <Alert
                   action={
                     <div className="flex gap-[var(--vds-space-2)]">
-                      <Button size="sm" variant="danger">
+                      <Button size="sm" variant="ghost">
                         {t('alerts.overwrite')}
                       </Button>
-                      <Button size="sm" variant="secondary">
+                      <Button size="sm" variant="outline">
                         {t('alerts.skip')}
                       </Button>
                     </div>
@@ -2553,17 +3627,6 @@ export function ComponentsPage(): JSX.Element {
                   layout="stacked"
                   title={t('alerts.importTitle')}
                   tone="error"
-                />
-                <Alert
-                  action={
-                    <Button disabled loading size="sm" variant="secondary">
-                      {t('alerts.retrying')}
-                    </Button>
-                  }
-                  description={t('alerts.retryDescription')}
-                  layout="stacked"
-                  title={t('alerts.retryTitle')}
-                  tone="warning"
                 />
               </div>
             </section>
@@ -2813,6 +3876,38 @@ export function ComponentsPage(): JSX.Element {
               </div>
             </section>
 
+            <section className={exampleSectionClass('link', activeExample)} id="link">
+              <h2 className="m-0 text-[length:var(--vds-font-subhead)] font-[var(--vds-fw-medium)] leading-[var(--vds-lh-subhead)] text-[var(--vds-text-primary)]">
+                {t('link.title')}
+              </h2>
+              <p className="text-[var(--vds-text-secondary)]">{t('link.description')}</p>
+              <div className="grid min-w-0 gap-[var(--vds-space-4)]" data-testid="link-examples">
+                <div>
+                  <Link href="#link">{t('link.default')}</Link>
+                </div>
+                <div>
+                  <Link href="#link" icon={<Link2 />}>
+                    {t('link.icon')}
+                  </Link>
+                </div>
+                <div>
+                  <Link href="https://example.com/" target="_blank">
+                    {t('link.newTab')}
+                  </Link>
+                </div>
+                <div>
+                  <Link href="#link" disabled>
+                    {t('link.disabled')}
+                  </Link>
+                </div>
+                <div className="min-w-0 max-w-[var(--vds-layout-reading-width)]">
+                  <Link href="https://example.com/research?query=long-address-without-spaces-and-with-original-query-parameters&source=component-preview#result">
+                    https://example.com/research?query=long-address-without-spaces-and-with-original-query-parameters&amp;source=component-preview#result
+                  </Link>
+                </div>
+              </div>
+            </section>
+
             <section className={exampleSectionClass('empty-copy', activeExample)} id="empty-copy">
               <h2 className="m-0 text-[length:var(--vds-font-subhead)] font-[var(--vds-fw-medium)] leading-[var(--vds-lh-subhead)] text-[var(--vds-text-primary)]">
                 EmptyState and CopyButton
@@ -2826,6 +3921,7 @@ export function ComponentsPage(): JSX.Element {
               <EmptyState variant="compact" icon={<Copy />} title={t('empty.title')} />
               <EmptyState
                 variant="panel"
+                iconTone="subtle"
                 icon={<File />}
                 title={t('empty.openFile')}
                 description={t('empty.chooseTreeFile')}
@@ -3110,6 +4206,12 @@ export function ComponentsPage(): JSX.Element {
                 orientation="both"
                 overlay
                 shadow="auto"
+                horizontalControls={{
+                  previous: t('controls.scrollPrevious'),
+                  next: t('controls.scrollNext'),
+                  variant: 'image',
+                  hoverOnly: true,
+                }}
               >
                 <div className="w-[var(--vds-example-scroll-content-width)] p-[var(--vds-space-4)] text-[var(--vds-text-secondary)]">
                   {t('controls.scroll')}
@@ -3406,6 +4508,7 @@ export function ComponentsPage(): JSX.Element {
                         </ContextMenuItem>
                         <ContextMenuSeparator />
                         <ContextMenuCheckboxItem
+                          indicatorAlign="end"
                           checked={contextBookmarked}
                           onCheckedChange={setContextBookmarked}
                         >
@@ -3485,65 +4588,83 @@ export function ComponentsPage(): JSX.Element {
               </div>
             </section>
 
-            <section className={exampleSectionClass('dialog', activeExample)} id="dialog">
-              <h2 className="m-0 text-[length:var(--vds-font-subhead)] font-[var(--vds-fw-medium)] leading-[var(--vds-lh-subhead)] text-[var(--vds-text-primary)]">
-                Dialog
-              </h2>
-              <div className="flex min-w-0 flex-wrap items-center gap-[var(--vds-space-2)]">
-                <Dialog>
-                  <DialogTrigger asChild>
-                    <Button>{t('menus.openDialog')}</Button>
-                  </DialogTrigger>
-                  <DialogContent
-                    aria-label={t('menus.projectSettings')}
-                    headerLayout="aligned"
-                    portalClassName="z-[var(--vds-z-modal-interaction)]"
-                  >
-                    <DialogHeader>
-                      <DialogTitle>{t('menus.projectSettings')}</DialogTitle>
-                      <DialogDescription>{t('menus.dialogDescription')}</DialogDescription>
-                    </DialogHeader>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="secondary">{t('menus.openDialog')}</Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent>
-                        <DropdownMenuItem>{t('menus.confirm')}</DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                    <DialogFooter>
-                      <DialogClose asChild>
-                        <Button variant="outline">{t('delete.cancel')}</Button>
-                      </DialogClose>
-                      <DialogClose asChild>
-                        <Button>{t('menus.confirm')}</Button>
-                      </DialogClose>
-                    </DialogFooter>
-                  </DialogContent>
-                </Dialog>
-                <Dialog>
-                  <DialogTrigger asChild>
-                    <Button variant="outline">{t('menus.hideClose')}</Button>
-                  </DialogTrigger>
-                  <DialogContent
-                    hideCloseButton
-                    overlayClassName="bg-black/40"
-                    aria-label={t('menus.compatibility')}
-                  >
-                    <DialogHeader>
-                      <DialogTitle>{t('menus.compatibilityTitle')}</DialogTitle>
-                      <DialogDescription>{t('menus.compatibilityDescription')}</DialogDescription>
-                    </DialogHeader>
-                    <DialogFooter>
-                      <DialogClose asChild>
-                        <Button variant="secondary">{t('menus.customClose')}</Button>
-                      </DialogClose>
-                    </DialogFooter>
-                  </DialogContent>
-                </Dialog>
-              </div>
-            </section>
-
+            <PortalProvider document={portalDocument}>
+              <section className={exampleSectionClass('dialog', activeExample)} id="dialog">
+                <h2 className="m-0 text-[length:var(--vds-font-subhead)] font-[var(--vds-fw-medium)] leading-[var(--vds-lh-subhead)] text-[var(--vds-text-primary)]">
+                  Dialog
+                </h2>
+                <div className="flex min-w-0 flex-wrap items-center gap-[var(--vds-space-2)]">
+                  <Dialog>
+                    <DialogTrigger asChild>
+                      <Button>{t('menus.openDialog')}</Button>
+                    </DialogTrigger>
+                    <DialogContent headerLayout="aligned" aria-label={t('menus.projectSettings')}>
+                      <DialogHeader>
+                        <DialogTitle>{t('menus.projectSettings')}</DialogTitle>
+                        <DialogDescription>{t('menus.dialogDescription')}</DialogDescription>
+                      </DialogHeader>
+                      <DialogFooter>
+                        <DialogClose asChild>
+                          <Button variant="outline">{t('delete.cancel')}</Button>
+                        </DialogClose>
+                        <DialogClose asChild>
+                          <Button>{t('menus.confirm')}</Button>
+                        </DialogClose>
+                      </DialogFooter>
+                    </DialogContent>
+                  </Dialog>
+                  {(
+                    [
+                      { tone: 'info', labelKey: 'menus.feedbackInfo' },
+                      { tone: 'danger', labelKey: 'menus.feedbackDanger' },
+                      { tone: 'warning', labelKey: 'menus.feedbackWarning' },
+                    ] as const
+                  ).map(({ tone, labelKey }) => (
+                    <Dialog key={tone}>
+                      <DialogTrigger asChild>
+                        <Button variant="outline">{t(labelKey)}</Button>
+                      </DialogTrigger>
+                      <DialogContent tone={tone} hideCloseButton aria-label={t(labelKey)}>
+                        <DialogHeader>
+                          <DialogTitle>{t(labelKey)}</DialogTitle>
+                          <DialogDescription>{t('menus.feedbackDescription')}</DialogDescription>
+                        </DialogHeader>
+                        <DialogFooter>
+                          <DialogClose asChild>
+                            <Button variant="outline">{t('delete.cancel')}</Button>
+                          </DialogClose>
+                          <DialogClose asChild>
+                            <Button variant={tone === 'danger' ? 'danger' : 'primary'}>
+                              {tone === 'danger' ? t('delete.confirm') : t('menus.confirm')}
+                            </Button>
+                          </DialogClose>
+                        </DialogFooter>
+                      </DialogContent>
+                    </Dialog>
+                  ))}
+                  <Dialog>
+                    <DialogTrigger asChild>
+                      <Button variant="outline">{t('menus.hideClose')}</Button>
+                    </DialogTrigger>
+                    <DialogContent
+                      hideCloseButton
+                      overlayClassName="bg-black/40"
+                      aria-label={t('menus.compatibility')}
+                    >
+                      <DialogHeader>
+                        <DialogTitle>{t('menus.compatibilityTitle')}</DialogTitle>
+                        <DialogDescription>{t('menus.compatibilityDescription')}</DialogDescription>
+                      </DialogHeader>
+                      <DialogFooter>
+                        <DialogClose asChild>
+                          <Button variant="secondary">{t('menus.customClose')}</Button>
+                        </DialogClose>
+                      </DialogFooter>
+                    </DialogContent>
+                  </Dialog>
+                </div>
+              </section>
+            </PortalProvider>
             <section
               className={exampleSectionClass('dropdown-menu', activeExample)}
               id="dropdown-menu"
@@ -4238,7 +5359,7 @@ export function ComponentsPage(): JSX.Element {
               </h2>
               <TooltipProvider>
                 <div className="flex flex-wrap items-center gap-[var(--vds-space-4)] [&_.vds-tooltip__content_p]:m-0 [&_.iconfont]:text-base [&_.iconfont]:leading-none">
-                  <Tooltip>
+                  <Tooltip consumeEscape={false}>
                     <TooltipTrigger asChild>
                       <Button variant="outline">{t('interaction.hover')}</Button>
                     </TooltipTrigger>
@@ -4623,6 +5744,16 @@ export function ComponentsPage(): JSX.Element {
               </h2>
               <div className="grid min-h-32 place-items-center bg-[var(--vds-surface-muted)] p-[var(--vds-space-4)]">
                 <FloatingToolbar
+                  moveHandle="surface"
+                  style={{
+                    transform: `translate(${floatingToolbarOffset.x}px, ${floatingToolbarOffset.y}px)`,
+                  }}
+                  onMove={(delta) =>
+                    setFloatingToolbarOffset((previous) => ({
+                      x: previous.x + delta.x,
+                      y: previous.y + delta.y,
+                    }))
+                  }
                   actions={
                     <>
                       <Button size="sm" variant="ghost">
@@ -4702,32 +5833,19 @@ export function ComponentsPage(): JSX.Element {
               <div className="grid gap-[var(--vds-space-4)]">
                 <div className="flex items-center gap-[var(--vds-space-2)]">
                   <Checkbox id="terms1" />
-                  <label
-                    className="text-[length:var(--vds-font-body-lv1)] leading-none text-[var(--vds-text-primary)] font-[var(--vds-fw-medium)]"
-                    htmlFor="terms1"
-                  >
-                    {t('elements.terms')}
-                  </label>
+                  <Label htmlFor="terms1">{t('elements.terms')}</Label>
                 </div>
 
                 <div className="flex items-center gap-[var(--vds-space-2)]">
                   <Checkbox defaultChecked id="marketing1" />
-                  <label
-                    className="text-[length:var(--vds-font-body-lv1)] leading-none text-[var(--vds-text-primary)]"
-                    htmlFor="marketing1"
-                  >
-                    {t('elements.marketing')}
-                  </label>
+                  <Label htmlFor="marketing1">{t('elements.marketing')}</Label>
                 </div>
 
                 <div className="flex items-center gap-[var(--vds-space-2)]">
                   <Checkbox disabled id="disabled1" />
-                  <label
-                    className="text-[length:var(--vds-font-body-lv1)] leading-none text-[var(--vds-text-primary)] text-[var(--vds-text-secondary)]"
-                    htmlFor="disabled1"
-                  >
+                  <Label disabled htmlFor="disabled1">
                     {t('elements.disabledOption')}
-                  </label>
+                  </Label>
                 </div>
                 <Checkbox align="first-line" checked="mixed" label="部分子项已选" />
               </div>
@@ -4886,6 +6004,7 @@ export function ComponentsPage(): JSX.Element {
               <h2 className="m-0 text-[length:var(--vds-font-subhead)] font-[var(--vds-fw-medium)] leading-[var(--vds-lh-subhead)] text-[var(--vds-text-primary)]">
                 Loading
               </h2>
+              <LoadingFallback className="py-[var(--vds-space-4)]" />
               <div className="flex min-w-0 flex-wrap items-center gap-[var(--vds-space-2)]">
                 <Spinner size="sm" />
                 <Spinner />
@@ -5013,7 +6132,12 @@ export function ComponentsPage(): JSX.Element {
               </div>
             </section>
           </div>
-          <CodePreview code={activeExampleCode} />
+          {!selectedOfficialEntry &&
+            !selectedOpenUIEntry &&
+            !selectedConversationPreview &&
+            selectedConversationEntry?.status !== 'unbuilt' && (
+              <CodePreview code={activeExampleCode} />
+            )}
         </div>
       </div>
     </main>

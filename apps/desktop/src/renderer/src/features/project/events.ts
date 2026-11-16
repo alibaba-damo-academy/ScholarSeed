@@ -26,13 +26,20 @@ export interface FileEventCursor {
 export async function loadEventCursor(projectId: string): Promise<FileEventCursor | null> {
   try {
     const query = projectId ? `?project=${encodeURIComponent(projectId)}` : ''
-    const response = await fetch(`${base()}/api/content/cursor${query}`, { credentials: 'include' })
+    const response = await fetch(`${base()}/api/content/cursor${query}`, {
+      credentials: 'include',
+    })
     if (!response.ok) return null
     return (await response.json()) as FileEventCursor
   } catch {
     return null
   }
 }
+
+const subscriptions = new Map<
+  string,
+  { listeners: Set<{ onEvent: (event: FileEvent) => void }>; dispose: () => void }
+>()
 
 /**
  * 订阅某个项目的文件事件。返回取消订阅函数。
@@ -43,6 +50,34 @@ export function subscribeFileEvents(
   projectId: string,
   onEvent: (event: FileEvent) => void
 ): () => void {
+  let shared = subscriptions.get(projectId)
+  if (!shared) {
+    const listeners = new Set<{ onEvent: (event: FileEvent) => void }>()
+    shared = {
+      listeners,
+      dispose: connectFileEvents(projectId, (event) => {
+        for (const listener of [...listeners]) {
+          if (!listeners.has(listener)) continue
+          try {
+            listener.onEvent(event)
+          } catch {
+            continue
+          }
+        }
+      }),
+    }
+    subscriptions.set(projectId, shared)
+  }
+  const subscription = { onEvent }
+  shared.listeners.add(subscription)
+  return () => {
+    if (!shared.listeners.delete(subscription) || shared.listeners.size) return
+    subscriptions.delete(projectId)
+    shared.dispose()
+  }
+}
+
+function connectFileEvents(projectId: string, onEvent: (event: FileEvent) => void): () => void {
   let closed = false
   let epoch = ''
   let lastSeq = 0
@@ -55,7 +90,7 @@ export function subscribeFileEvents(
     const query = new URLSearchParams({ project: projectId, epoch, from_seq: String(lastSeq) })
     const connection = new EventSource(`${base()}/api/content/events?${query.toString()}`, {
       // SSE 不能带 Authorization 头，只能靠 cookie；跨源开发期必须显式开凭据。
-      withCredentials: true
+      withCredentials: true,
     })
     stream = connection
     connection.onopen = () => {
@@ -77,7 +112,10 @@ export function subscribeFileEvents(
       stream = null
       if (closed || retryTimer !== null) return
       attempt += 1
-      const delay = Math.min(RECONNECT_MAX_DELAY_MS, RECONNECT_INITIAL_DELAY_MS * 2 ** (attempt - 1))
+      const delay = Math.min(
+        RECONNECT_MAX_DELAY_MS,
+        RECONNECT_INITIAL_DELAY_MS * 2 ** (attempt - 1)
+      )
       retryTimer = window.setTimeout(() => {
         retryTimer = null
         open()

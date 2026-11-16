@@ -16,11 +16,8 @@ from uuid import uuid4
 from fastapi import FastAPI, Header, HTTPException, Query, Request
 from starlette.datastructures import UploadFile
 from starlette.responses import JSONResponse
-from starlette.status import HTTP_400_BAD_REQUEST, HTTP_404_NOT_FOUND, HTTP_503_SERVICE_UNAVAILABLE
 
-from service.chat.persistence.catalog import SessionAccessError, SessionPrincipal
 from service.content.domain.model import ContentError
-from service.identity.utils import request_owner_id
 from service.literature.api.papermeta import resolve_timeout_seconds
 from service.literature.domain.cards import CARD_MAX_BYTES
 from service.literature.domain.model import (
@@ -35,12 +32,8 @@ from service.literature.domain.model import (
     NOTE_VERSION_CONFLICT,
     LiteratureError,
 )
+from service.literature.persistence.analysis import reading_attachments
 from service.literature.persistence.cards import PaperCards
-from service.literature.persistence.downloads import (
-    DOWNLOAD_ADMISSION_UNAVAILABLE,
-    DOWNLOAD_RECEIPT_INVALID,
-    download_literature_ids,
-)
 from service.literature.persistence.files import (
     LiteratureFileBatch,
     attachment_size,
@@ -70,6 +63,7 @@ from service.literature.service.attachment import (
     ATTACHMENT_TYPE_MISMATCH,
     AttachmentConflictError,
     AttachmentFormatError,
+    LiteratureAttachmentContent,
     attach_primary_pdf,
     forget_removed_indexes,
     has_usable_primary,
@@ -493,15 +487,22 @@ def project_names(content: Any) -> dict[str, str]:
     }
 
 
-def projects_payload(content: Any, repository: LiteratureRepository) -> dict[str, Any]:
+def projects_payload(
+    content: Any,
+    repository: LiteratureRepository,
+    *,
+    current_project: str | None = None,
+) -> dict[str, Any]:
     if content is None:
         raise HTTPException(status_code=503, detail="content_unavailable")
     names = project_names(content)
     navigation = repository.project_navigation(tuple(names))
-    try:
-        current = content.project().id
-    except ContentError:
-        current = ""
+    current = current_project
+    if current is None:
+        try:
+            current = content.project().id
+        except ContentError:
+            current = ""
     return {
         "projects": [
             {
@@ -662,10 +663,14 @@ def _summaries(
     annotation_counts = AttachmentRecordCatalog(repository.database).annotation_counts_for(
         identifiers
     )
-    return [
+    summaries = [
         _project_summary(item, projection, annotation_counts.get(item.id, {}), project_names)
         for item in entries
     ]
+    saved = reading_attachments(repository.database, identifiers)
+    for summary in summaries:
+        summary["has_reading"] = (summary.get("primary_attachment") or {}).get("id") in saved
+    return summaries
 
 
 def _summary(
@@ -726,6 +731,7 @@ def _note_payload(note: Any) -> dict[str, Any]:
         "updated_at": note.updated_at,
         "version": note.version,
         "position": note.position,
+        "provenance": note.provenance,
     }
 
 
@@ -739,7 +745,9 @@ def _note_error(error: LiteratureError) -> HTTPException:
     return HTTPException(status_code=400, detail={"code": error.code})
 
 
-def fetch_arxiv_fulltext(item_id: str, pdf_indexes: Any = None) -> LiteratureItem:
+def fetch_arxiv_fulltext(
+    item_id: str, pdf_indexes: Any = None, repository: LiteratureRepository | None = None
+) -> LiteratureItem:
     """Download the identifier's primary PDF and attach it; product and bridge share this.
 
     只有主附件才是全文: 补充材料 (role=supplementary) 不算, 主附件行还在但字节
@@ -749,7 +757,7 @@ def fetch_arxiv_fulltext(item_id: str, pdf_indexes: Any = None) -> LiteratureIte
     ``pdf_indexes`` 用于补挂时连带忘掉那条不可用旧行派生的全文索引。
     """
 
-    repository = LiteratureRepository()
+    repository = repository or LiteratureRepository()
     item = repository.get(item_id)
     if item is None:
         raise HTTPException(status_code=404, detail={"code": LITERATURE_NOT_FOUND})
@@ -790,13 +798,16 @@ def fetch_arxiv_fulltext(item_id: str, pdf_indexes: Any = None) -> LiteratureIte
     except AttachmentConflictError as error:
         # 下载期间另一个入口挂上了主附件: 与提前判据同一个码, 只是晚了一步。
         raise _primary_conflict(error.code) from error
+    LiteratureAttachmentContent(repository).prewarm(pdf_indexes, item_id, attached.attachment["id"])
     return attached.item
 
 
-def purge_literatures(identifiers: tuple[str, ...], pdf_indexes: Any) -> list[str]:
+def purge_literatures(
+    identifiers: tuple[str, ...], pdf_indexes: Any, repository: LiteratureRepository | None = None
+) -> list[str]:
     """Delete items with their exclusive bytes and derived indexes; one entry point."""
 
-    repository = LiteratureRepository()
+    repository = repository or LiteratureRepository()
     deleted: list[str] = []
     for identifier in identifiers:
         files = repository.attachment_files(identifier)
@@ -850,7 +861,9 @@ def _export_payload(
     }
 
 
-def register_global_routes(app: FastAPI) -> None:
+def register_global_routes(
+    app: FastAPI, *, catalogue_repository: LiteratureRepository | None = None
+) -> None:
     """Register the catalogue API consumed by the refactored Desktop feature."""
 
     # 仓储层用领域异常表达「库文件不可用」, 不由每个路由各自转 HTTP; 在这里统一
@@ -913,25 +926,8 @@ def register_global_routes(app: FastAPI) -> None:
         order: str = "desc",
         page: int = DEFAULT_PAGE,
         page_size: int = DEFAULT_PAGE_SIZE,
-        download_session_id: str = "",
-        download_run: str = "",
-        exclude_paper_id: list[str] = Query(default=[]),
     ) -> dict[str, Any]:
         project_id = _project_scope(request, project_id)
-        batch_ids = None
-        if download_session_id or download_run or exclude_paper_id:
-            if not download_session_id or not download_run:
-                raise HTTPException(HTTP_400_BAD_REQUEST, DOWNLOAD_RECEIPT_INVALID)
-            catalog = getattr(request.app.state, "session_catalog", None)
-            if catalog is None:
-                raise HTTPException(HTTP_503_SERVICE_UNAVAILABLE, DOWNLOAD_ADMISSION_UNAVAILABLE)
-            try:
-                catalog.require(download_session_id, SessionPrincipal(request_owner_id(request)))
-            except SessionAccessError as exc:
-                raise HTTPException(HTTP_404_NOT_FOUND, DOWNLOAD_RECEIPT_INVALID) from exc
-            batch_ids = download_literature_ids(
-                download_session_id, download_run, project_id, tuple(exclude_paper_id)
-            )
         repository = LiteratureRepository()
         size = min(max(page_size, 1), MAX_PAGE_SIZE)
         current = max(page, DEFAULT_PAGE)
@@ -949,7 +945,6 @@ def register_global_routes(app: FastAPI) -> None:
             order=order,
             limit=size,
             offset=(current - 1) * size,
-            ids=batch_ids,
         )
         project_names = _project_names(request)
         return {
@@ -957,7 +952,6 @@ def register_global_routes(app: FastAPI) -> None:
             "page": current,
             "page_size": size,
             "total": repository.filtered_total(
-                ids=batch_ids,
                 q=q.strip(),
                 project_id=project_id,
                 collection_ids=collection_ids,
@@ -1036,7 +1030,7 @@ def register_global_routes(app: FastAPI) -> None:
             year = fields["year"]
             if year in ("", None):
                 fields["year"] = None
-            elif type(year) is not int:
+            elif not isinstance(year, int) or isinstance(year, bool):
                 raise HTTPException(status_code=400, detail={"code": LIBRARY_INVALID})
         for key, value in fields.items():
             if key != "year" and not isinstance(value, str):
@@ -1056,7 +1050,7 @@ def register_global_routes(app: FastAPI) -> None:
                 or any(not isinstance(value, str) for value in identifiers)
             ):
                 raise HTTPException(status_code=400, detail={"code": LIBRARY_INVALID})
-        repository = LiteratureRepository()
+        repository = catalogue_repository or LiteratureRepository()
         try:
             if project_ids is not None:
                 valid_projects = set(_project_names(request))
@@ -1081,7 +1075,7 @@ def register_global_routes(app: FastAPI) -> None:
 
     @app.post(f"{API_PREFIX}/literatures/{{item_id}}/attachments/arxiv")
     def download_arxiv_attachment(item_id: str, request: Request) -> dict[str, Any]:
-        saved = fetch_arxiv_fulltext(item_id, _pdf_indexes(request))
+        saved = fetch_arxiv_fulltext(item_id, _pdf_indexes(request), catalogue_repository)
         return _detail(saved, LiteratureRepository(), _project_names(request))
 
     @app.post(f"{API_PREFIX}/literatures/{{item_id}}/attachments", status_code=201)
@@ -1127,6 +1121,9 @@ def register_global_routes(app: FastAPI) -> None:
                 raise _primary_conflict(error.code) from error
             except AttachmentFormatError as error:
                 raise _attachment_error(422, error.code) from error
+            LiteratureAttachmentContent(repository).prewarm(
+                _pdf_indexes(request), item_id, attached.attachment["id"]
+            )
             return attached.attachment
         suffix = PurePath(upload.filename or "").suffix[:16]
         published = managed_object(item_id, content, suffix)
@@ -1143,6 +1140,9 @@ def register_global_routes(app: FastAPI) -> None:
                     media_type=attachment_format.media_type,
                 )
             )
+        LiteratureAttachmentContent(repository).prewarm(
+            _pdf_indexes(request), item_id, attachment["id"]
+        )
         return attachment
 
     @app.get(f"{API_PREFIX}/collections")
@@ -1214,7 +1214,7 @@ def register_global_routes(app: FastAPI) -> None:
         identifiers = tuple(str(value) for value in payload.get("literature_ids", ()))
         operation = str(payload.get("operation", ""))
         parameters = payload.get("parameters") or {}
-        repository = LiteratureRepository()
+        repository = catalogue_repository or LiteratureRepository()
         failed: tuple[str, ...] = ()
         if operation in {BULK_ADD_TAGS, BULK_REMOVE_TAGS}:
             tags = tuple(str(tag) for tag in parameters.get("tags", ()))
@@ -1258,7 +1258,9 @@ def register_global_routes(app: FastAPI) -> None:
     @app.post(f"{API_PREFIX}/literatures/bulk-delete")
     def bulk_delete(payload: dict[str, Any], request: Request) -> dict[str, Any]:
         identifiers = tuple(str(value) for value in payload.get("literature_ids", ()))
-        return {"deleted": purge_literatures(identifiers, _pdf_indexes(request))}
+        return {
+            "deleted": purge_literatures(identifiers, _pdf_indexes(request), catalogue_repository)
+        }
 
     @app.get(f"{API_PREFIX}/literatures/{{item_id}}/notes")
     def list_notes(item_id: str) -> dict[str, Any]:
@@ -1283,13 +1285,17 @@ def register_global_routes(app: FastAPI) -> None:
     @app.patch(f"{API_PREFIX}/literatures/{{item_id}}/notes/{{note_id}}")
     def update_note(item_id: str, note_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         expected_version = payload.get("version")
-        if type(expected_version) is not int or expected_version < 1:
+        if (
+            not isinstance(expected_version, int)
+            or isinstance(expected_version, bool)
+            or expected_version < 1
+        ):
             raise HTTPException(status_code=NOTE_INVALID_STATUS, detail={"code": LIBRARY_INVALID})
         try:
             note = LiteratureRepository().update_note(
                 item_id,
                 note_id,
-                title=str(payload.get("title", "")),
+                title=str(payload["title"]) if "title" in payload else None,
                 text=str(payload.get("text", "")),
                 expected_version=expected_version,
             )
@@ -1381,6 +1387,7 @@ def register_global_routes(app: FastAPI) -> None:
                     selected_keys = options.get("selected_collection_keys")
                     result = import_zotero(
                         progress,
+                        repository=catalogue_repository,
                         project_id=str(options.get("project_id") or ""),
                         target_collection_id=str(options.get("collection_id") or ""),
                         selected_collection_keys=(
@@ -1393,6 +1400,9 @@ def register_global_routes(app: FastAPI) -> None:
                         import_collections=bool(options.get("import_collections", True)),
                         preview_revision=str(options.get("preview_revision") or ""),
                     )
+                    attachments = LiteratureAttachmentContent()
+                    for item in result.items:
+                        attachments.prewarm(_pdf_indexes(request), item.id)
                     task.update(
                         status=TERMINAL_COMPLETED,
                         progress=1.0,
@@ -1461,7 +1471,7 @@ def register_global_routes(app: FastAPI) -> None:
         published = managed_object(admitted.id, bytes(content), PDF_SUFFIX)
         with LiteratureFileBatch(SERVICE_LITERATURE_FILES_DIR) as batch:
             path = batch.stage(published.name, bytes(content))
-            repository = LiteratureRepository()
+            repository = catalogue_repository or LiteratureRepository()
 
             def attach(values: tuple[LiteratureItem, ...]) -> tuple[LiteratureItem, ...]:
                 try:
@@ -1486,6 +1496,7 @@ def register_global_routes(app: FastAPI) -> None:
                 return saved
 
             item = batch.commit((admitted,), attach)[0]
+        LiteratureAttachmentContent(repository).prewarm(_pdf_indexes(request), item.id)
         return _summary(item, LiteratureRepository(), {})
 
     @app.post(f"{API_PREFIX}/imports/bibliography", status_code=201)
@@ -1517,7 +1528,7 @@ def register_global_routes(app: FastAPI) -> None:
         finally:
             for upload in uploads:
                 await upload.close()
-        repository = LiteratureRepository()
+        repository = catalogue_repository or LiteratureRepository()
         # 每次导入都是追加：不探测既存条目、不合并（proposal 91）。
         try:
             imported = repository.save_all(
@@ -1530,6 +1541,9 @@ def register_global_routes(app: FastAPI) -> None:
                 status_code=400,
                 detail={"code": error.code, "message": IMPORT_COLLECTION_MESSAGE},
             ) from error
+        attachments = LiteratureAttachmentContent(repository)
+        for item in imported:
+            attachments.prewarm(_pdf_indexes(request), item.id)
         return {
             "items": _summaries(imported, repository, {}),
             "count": len(imported),
@@ -1561,7 +1575,7 @@ def register_global_routes(app: FastAPI) -> None:
             outcome = parse_import(IDENTIFIER_BIBLIOGRAPHY_NAME, text.encode("utf-8"))
         except LiteratureImportError as error:
             raise _identifier_error(422, IDENTIFIER_ENTRY_INCOMPLETE) from error
-        repository = LiteratureRepository()
+        repository = catalogue_repository or LiteratureRepository()
         try:
             imported = repository.save_all(
                 outcome.items, collection_id=collection_id, project_id=project_id
@@ -1571,6 +1585,7 @@ def register_global_routes(app: FastAPI) -> None:
                 status_code=400,
                 detail={"code": error.code, "message": IMPORT_COLLECTION_MESSAGE},
             ) from error
+        LiteratureAttachmentContent(repository).prewarm(_pdf_indexes(request), imported[0].id)
         return _summary(imported[0], repository, {})
 
     @app.get(f"{API_PREFIX}/tasks/{{task_id}}")

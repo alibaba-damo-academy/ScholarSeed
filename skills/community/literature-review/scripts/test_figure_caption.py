@@ -43,12 +43,14 @@ class CaptionTest(unittest.TestCase):
         out=prepare_planned(self.ws,{'figures':[{'figure_id':'F1','section_id':'1','caption':'Explain the mechanism','paper_ids':['p1']},
                                         {'figure_id':'F2','section_id':'2','caption':'Explain the evidence boundaries'}]})
         brief=m.read(self.ws/'05_generation/_internal/figure_brief.json')
-        evidence=m.read(Path(brief['evidence_path']))['papers']
-        self.assertEqual(evidence['p1']['card']['experiments'],cards['p1']['card']['experiments'])
-        first=m.read(Path(brief['figures'][0]['authoring_packet']))
-        second=m.read(Path(brief['figures'][1]['authoring_packet']))
-        self.assertEqual(first['evidence']['paper_ids'],['p1'])
-        self.assertEqual(second['evidence']['paper_ids'],['p1','p2'])
+        evidence=m.read(self.ws/brief['evidence_path'])['papers']
+        self.assertEqual(evidence['First2024']['card']['experiments'],cards['p1']['card']['experiments'])
+        first=m.read(self.ws/brief['figures'][0]['authoring_packet'])
+        second=m.read(self.ws/brief['figures'][1]['authoring_packet'])
+        self.assertEqual(first['evidence']['cite_keys'],['First2024'])
+        self.assertEqual(second['evidence']['cite_keys'],['First2024','Second2024'])
+        self.assertNotIn('paper_id',json.dumps(first)+json.dumps(second)+json.dumps(evidence))
+        self.assertFalse(Path(brief['evidence_path']).is_absolute())
         self.assertEqual(second['figure']['evidence_scope'],'corpus')
         self.assertIn('Compare mechanisms',first['figure']['section_description'])
         self.assertNotIn('STALE MANUSCRIPT BODY',json.dumps(first)+json.dumps(brief)+json.dumps(evidence))

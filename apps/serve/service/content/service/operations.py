@@ -341,6 +341,8 @@ class ContentOperations:
             if admission is not None and project != admission.project_id:
                 raise RuntimeError("project recovery ownership changed")
             if admission is not None:
+                if project is None:
+                    raise RuntimeError("project recovery ownership changed")
                 reason = self._blocked_recovery_projects.get(project) or admission.blocked_reason
                 if reason is not None:
                     self._defer_recovery(identity, project, reason)

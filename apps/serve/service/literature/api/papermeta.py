@@ -1,9 +1,15 @@
 """单条论文元数据查询 (POST /api/literature/papermeta)。
 
-按 doi > arxiv > title 选唯一维度, 三条腿全部匿名, 任何分支失败都不切换来源:
+按 doi > arxiv > title 选唯一维度, 三条腿全部匿名, **题录腿**失败不切换来源:
 
 - ``doi`` / ``arxiv`` 是标识符解析, 取公开 BibTeX (``service/literature/service/bibliography.py``);
 - ``title`` 是模糊检索, 走 OpenAlex (``service/literature/service/openalex.py``)。
+
+未被选中的标识符并不作废: 请求里同时带 doi 与 arxiv 时, 题录腿仍只按优先级打一个来源,
+而**可选的摘要补充腿**会沿 ``identity_chain`` 依次尝试「题录维度自己 → 该标识折叠出的
+arXiv (``10.48550/arXiv.*``) → 记录上另一个标识」。出版商没向 Crossref 存摘要、但论文
+在 arXiv 上有预印本时, 摘要因此仍能补上。补充腿只填空, 不覆盖题录腿或 BibTeX 原文已经
+给出的摘要; 它拿到的可能是预印本版摘要而非出版本版, 这一点在 network.md 里明写。
 
 三腿同形返回 ``{success, fields, bib_type?}``, ``fields`` 的键恒落在
 ``api/catalogue.py:EDITABLE_FIELDS`` 内且只带真的有值的键, 所以渲染层不必认识任何
@@ -49,6 +55,7 @@ from service.literature.service.bibliography import (
     BibliographyError,
     fetch_bibliography,
 )
+from service.literature.service.identity import identity_chain
 from service.literature.service.openalex import (
     ENDPOINT_INVALID,
     TITLE,
@@ -94,7 +101,11 @@ class PaperMetaError(RuntimeError):
 
 
 class PaperMetaRequest(BaseModel):
-    """单条元数据查询: 三个维度按 doi > arxiv > title 取第一个非空值。"""
+    """单条元数据查询: 题录腿按 doi > arxiv > title 取第一个非空值。
+
+    未选中的标识符仍然有意义 —— 它们作为摘要补充腿的备用来源一起送进
+    ``identity_chain``。只送一个维度的旧调用方行为完全不变。
+    """
 
     doi: str = ""
     arxiv: str = ""
@@ -126,6 +137,17 @@ def select_query(doi: str, arxiv: str, title: str) -> tuple[str, str]:
     raise PaperMetaError(QUERY_REQUIRED, 400, "no doi/arxiv/title provided")
 
 
+def abstract_alternates(payload: PaperMetaRequest, dimension: str) -> dict[str, str]:
+    """同一篇论文的其他已知**标识符**; title 不是标识符, 不参与摘要补充腿。"""
+
+    known = {DOI: payload.doi, ARXIV: payload.arxiv}
+    return {
+        kind: text
+        for kind, raw in known.items()
+        if kind != dimension and (text := str(raw or "").strip())
+    }
+
+
 def register_papermeta_routes(
     app: FastAPI,
     *,
@@ -141,7 +163,13 @@ def register_papermeta_routes(
             timeout = resolve_timeout_seconds(environ)
             if dimension in ENDPOINTS:
                 return await fetch_bibliography(
-                    dimension, value, timeout=timeout, transport=transport
+                    dimension,
+                    value,
+                    timeout=timeout,
+                    transport=transport,
+                    abstract_chain=identity_chain(
+                        dimension, value, abstract_alternates(payload, dimension)
+                    ),
                 )
             return await search_by_title(
                 value, timeout=timeout, transport=transport, environ=environ
@@ -162,6 +190,7 @@ __all__ = [
     "PREFIX",
     "PaperMetaError",
     "PaperMetaRequest",
+    "abstract_alternates",
     "register_papermeta_routes",
     "resolve_timeout_seconds",
     "select_query",

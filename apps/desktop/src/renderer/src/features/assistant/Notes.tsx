@@ -1,9 +1,15 @@
-import React, { useState, type ButtonHTMLAttributes } from 'react'
+import React, {
+  useCallback,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ButtonHTMLAttributes,
+} from 'react'
 import { useTranslation } from 'react-i18next'
+import { PencilLine, Trash, Trash2 } from 'lucide-react'
 
 import type { AnswerAnnotation } from '../../contracts/assistant'
-import { Icon } from '../../icons'
-import { ComposerRefChip } from '../../components/business/RefChip'
+import { ReferenceAttachment, SentReferenceAttachment } from '../../components/primitive'
 import {
   Alert,
   AlertDialog,
@@ -18,30 +24,23 @@ import {
   Button,
   HoverCard,
   HoverCardContent,
-  HoverCardTrigger,
   IconButton,
   Input,
   Popover,
   PopoverContent,
   PopoverTrigger,
   Textarea,
+  Tooltip,
 } from '../../components/ui'
 import { ANSWER_ANNOTATION_LOCATION, type AnswerAnnotationLocation } from './anchors'
 
 const COMMENT_MAX_LENGTH = 600
 
-// 设计稿: 注释标识为蓝色圆形气泡 + 白色序号, 左下角带小尾巴;
 const ANNOTATION_BADGE_CLASS =
-  'relative inline-grid size-[var(--vds-badge-height-sm)] place-items-center rounded-[var(--vds-radius-circle)] border-0 bg-transparent p-0 text-[length:var(--vds-font-caption)] font-[var(--vds-fw-semibold)] text-[var(--vds-static-white)] shadow-none focus-visible:shadow-[var(--vds-focus-brand)]'
+  'inline-grid size-[var(--vds-badge-height-sm)] shrink-0 place-items-center rounded-[var(--vds-radius-8)] rounded-bl-[var(--vds-radius-1)] border-0 bg-[var(--vds-text-primary)] p-0 text-[length:var(--vds-font-body-lv1)] font-[var(--vds-fw-semibold)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-surface-raised)] shadow-none focus-visible:shadow-[var(--vds-focus-brand)]'
 
-// 设计稿: hover 标识时为白色圆角气泡仅展示备注文本; 点击标识为可编辑弹窗,
-// 两者共用 raised 卡片外壳, 编辑弹窗点击外部区域由 Popover 默认行为关闭。
-const NOTE_TOOLTIP_CLASS =
-  '!gap-0 !max-w-[var(--vds-assistant-floating-panel-width)] !rounded-[var(--vds-radius-3)] !border !border-solid !border-[var(--vds-border-default)] !bg-[var(--vds-surface-raised)] !p-0 shadow-[var(--vds-shadow-md)]'
-const NOTE_TOOLTIP_CONTENT_CLASS =
-  'whitespace-pre-wrap px-[calc(var(--vds-space-1)+var(--vds-space-half))] py-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-primary)]'
 const NOTE_EDITOR_POPOVER_CLASS =
-  '!w-[var(--vds-assistant-floating-panel-width)] !max-w-none !gap-0 overflow-hidden !rounded-[var(--vds-radius-6)] !border !border-solid !border-[var(--vds-border-default)] !bg-[var(--vds-surface-raised)] !p-0 !shadow-[var(--vds-shadow-2-down)]'
+  '!w-[var(--vds-answer-annotation-editor-width)] !max-w-[var(--vds-answer-annotation-editor-max-width)] !gap-0 overflow-hidden !rounded-[var(--vds-radius-6)] !border !border-solid !border-[var(--vds-border-default)] !bg-[var(--vds-surface-raised)] !p-0 !shadow-[var(--vds-shadow-aidialog-2)]'
 
 export function AnnotationBadge({
   className,
@@ -54,15 +53,7 @@ export function AnnotationBadge({
       unstyled
       {...props}
     >
-      {/* 设计稿角标为带左下弯尾的对话气泡: 圆形主体 + 同色弯尾路径拼合, 数字按圆心微调居中 */}
-      <svg aria-hidden="true" className="absolute inset-0 h-full w-full" viewBox="0 0 20 20">
-        <circle cx="11" cy="9" r="8" fill="var(--vds-notice-5)" />
-        <path
-          d="M5.6 14.2C5.1 15.4 4.3 16.5 3.1 17.5c2.8-.4 5.1-1.3 6.8-2.7z"
-          fill="var(--vds-notice-5)"
-        />
-      </svg>
-      <span className="relative translate-x-[1px] -translate-y-[1px]">{number}</span>
+      {number}
     </Button>
   )
 }
@@ -83,6 +74,24 @@ function AnnotationCommentEditor({
   const { t } = useTranslation('assistant')
   const [draft, setDraft] = useState(annotation.comment)
   const [saving, setSaving] = useState(false)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const [moreBelow, setMoreBelow] = useState(false)
+  const updateOverflow = useCallback((): void => {
+    const textarea = textareaRef.current
+    if (textarea) {
+      setMoreBelow(textarea.scrollHeight > Math.ceil(textarea.clientHeight + textarea.scrollTop))
+    }
+  }, [])
+  useLayoutEffect(updateOverflow, [draft, updateOverflow])
+  useLayoutEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      const textarea = textareaRef.current
+      if (!textarea) return
+      textarea.focus({ preventScroll: true })
+      textarea.setSelectionRange(textarea.value.length, textarea.value.length)
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [])
   const save = async (): Promise<void> => {
     setSaving(true)
     const ok = await onSave(annotation.id, draft)
@@ -90,35 +99,55 @@ function AnnotationCommentEditor({
     if (ok) onClose()
   }
   return (
-    <div className="flex flex-col gap-[var(--vds-space-3)] p-[var(--vds-space-4)]">
-      <Textarea
-        aria-label={inputLabel}
-        autoFocus
-        className="w-full resize-none border border-solid border-transparent !bg-transparent p-0 text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] !shadow-none focus:outline-none focus-visible:border-[var(--vds-border-brand)] focus-visible:!shadow-none"
-        disabled={saving}
-        maxLength={COMMENT_MAX_LENGTH}
-        onChange={(event) => setDraft(event.target.value)}
-        rows={3}
-        unstyled
-        value={draft}
-      />
+    <div className="flex min-w-0 flex-col gap-[var(--vds-space-2)] p-[calc(var(--vds-space-3)_-_var(--vds-border-width-1))] font-[var(--vds-fw-regular)]">
+      <div className="relative min-w-0">
+        <Textarea
+          aria-label={inputLabel}
+          autoFocus
+          className="block min-h-[var(--vds-answer-annotation-editor-min-height)] max-h-[var(--vds-answer-annotation-editor-max-height)] w-full resize-none overflow-y-auto border-0 bg-transparent p-0 text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-answer-annotation-text)] shadow-none [field-sizing:content] [scrollbar-width:none] focus:outline-none"
+          disabled={saving}
+          maxLength={COMMENT_MAX_LENGTH}
+          placeholder={t('remaining.optionalComment')}
+          onChange={(event) => setDraft(event.target.value)}
+          onScroll={updateOverflow}
+          ref={textareaRef}
+          rows={2}
+          unstyled
+          value={draft}
+        />
+        {moreBelow ? (
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-x-0 bottom-0 h-[var(--vds-lh-body-lv2)] bg-[linear-gradient(to_bottom,transparent,var(--vds-surface-raised))]"
+            data-testid="annotation-editor-fade"
+          />
+        ) : null}
+      </div>
       <div className="flex items-center justify-between">
         {onRemove ? (
           <IconButton
             className="text-[var(--vds-text-secondary)]"
-            icon={<Icon name="trash" size={14} />}
+            icon={<Trash2 size={14} />}
             label={t('remaining.deleteAnnotation')}
             onClick={onRemove}
+            size="sm"
             variant="ghost"
           />
         ) : (
           <span />
         )}
         <div className="flex items-center gap-[var(--vds-space-2)]">
-          <Button disabled={saving} onClick={onClose} size="sm" variant="outline">
+          <Button
+            className="!border-0 !px-[var(--vds-space-3)] !text-[length:var(--vds-font-body-lv1)] !leading-[var(--vds-lh-body-lv1)]"
+            disabled={saving}
+            onClick={onClose}
+            size="sm"
+            variant="tertiary"
+          >
             {t('remaining.cancel')}
           </Button>
           <Button
+            className="min-w-[var(--vds-answer-annotation-save-min-width)] !border-0 !px-[var(--vds-space-3)] !text-[length:var(--vds-font-body-lv1)] !leading-[var(--vds-lh-body-lv1)]"
             disabled={saving}
             loading={saving}
             onClick={() => void save()}
@@ -142,6 +171,8 @@ export function AnnotationBadgeNote({
   number,
   onRemove,
   onSave,
+  onOpenChange,
+  open,
 }: {
   annotation: AnnotationDisplay | null
   ariaLabel: string
@@ -149,9 +180,16 @@ export function AnnotationBadgeNote({
   number: number
   onRemove?: (annotationId: string) => Promise<boolean> | boolean
   onSave?: (annotationId: string, comment: string) => Promise<boolean>
+  onOpenChange?: (open: boolean) => void
+  open?: boolean
 }): React.JSX.Element {
   const { t } = useTranslation('assistant')
-  const [editOpen, setEditOpen] = useState(false)
+  const [internalEditOpen, setInternalEditOpen] = useState(false)
+  const editOpen = open ?? internalEditOpen
+  const changeEditOpen = (open: boolean): void => {
+    setInternalEditOpen(open)
+    onOpenChange?.(open)
+  }
   const [pendingRemove, setPendingRemove] = useState(false)
   const [removing, setRemoving] = useState(false)
   const [removeError, setRemoveError] = useState(false)
@@ -164,34 +202,32 @@ export function AnnotationBadgeNote({
     if (ok) setPendingRemove(false)
     else setRemoveError(true)
   }
-  const hoverCard = (
-    <HoverCard>
-      <HoverCardTrigger asChild>
-        <AnnotationBadge aria-label={ariaLabel} number={number} />
-      </HoverCardTrigger>
-      {editOpen ? null : (
-        <HoverCardContent className={NOTE_TOOLTIP_CLASS} side="top">
-          <div className={NOTE_TOOLTIP_CONTENT_CLASS}>{noteText}</div>
-        </HoverCardContent>
-      )}
-    </HoverCard>
+  const tooltip = (
+    <Tooltip
+      content={noteText}
+      contentClassName="whitespace-pre-wrap"
+      disabled={editOpen}
+      side="top"
+    >
+      <AnnotationBadge aria-label={ariaLabel} number={number} />
+    </Tooltip>
   )
-  if (!annotation || !onSave) return hoverCard
+  if (!annotation || !onSave) return tooltip
   return (
     <>
-      <Popover open={editOpen} onOpenChange={setEditOpen}>
+      <Popover open={editOpen} onOpenChange={changeEditOpen}>
         <PopoverTrigger asChild>
-          <span className="inline-flex">{hoverCard}</span>
+          <span className="inline-flex">{tooltip}</span>
         </PopoverTrigger>
         <PopoverContent className={NOTE_EDITOR_POPOVER_CLASS}>
           <AnnotationCommentEditor
             annotation={annotation}
             inputLabel={t('remaining.editNote', { number })}
-            onClose={() => setEditOpen(false)}
+            onClose={() => changeEditOpen(false)}
             onRemove={
               onRemove
                 ? () => {
-                    setEditOpen(false)
+                    changeEditOpen(false)
                     setPendingRemove(true)
                   }
                 : undefined
@@ -298,43 +334,44 @@ export function AnnotationDetails({
   }
 
   return (
-    <div className="max-h-[var(--vds-assistant-notes-max-height)] overflow-auto px-[var(--vds-space-4)] py-[var(--vds-space-3)]">
+    <div className="flex max-h-[min(var(--vds-assistant-notes-max-height),var(--floating-available-height,var(--vds-assistant-notes-max-height)))] flex-col gap-[var(--vds-space-1)] overflow-x-hidden overflow-y-auto overscroll-contain p-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv1)] font-[var(--vds-fw-regular)] leading-[var(--vds-lh-body-lv1)]">
       {annotations.map((annotation, index) => {
         const number = numberForAnnotation?.(annotation.id, index) ?? index + 1
         const statusLabel = locationLabel(annotation.id)
         return (
           <div
-            className="grid grid-cols-[24px_minmax(0,1fr)_auto] items-start gap-[var(--vds-space-2)] border-0 border-b border-solid border-[var(--vds-divider-color)] py-[var(--vds-space-3)] first:pt-0 last:border-b-0 last:pb-0"
+            className="grid shrink-0 grid-cols-[var(--vds-assistant-notes-number-width)_minmax(0,1fr)_auto] items-start gap-[var(--vds-space-2)] rounded-[var(--vds-radius-4)] p-[var(--vds-space-2)] hover:bg-[var(--vds-bg-white-hover-transparent)] focus-within:bg-[var(--vds-bg-white-hover-transparent)]"
             data-testid={`answer-annotation-details-${annotation.id}`}
             key={annotation.id}
           >
-            <span className="pt-[var(--vds-border-width-1)] text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-medium)] text-[var(--vds-text-secondary)]">
-              {number}.
-            </span>
-            <div className="min-w-0">
-              <div className="text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-control-label-line-height)] text-[var(--vds-text-tertiary)]">
-                {t('annotation.selectedText')}
-              </div>
-              {onOpenOriginal ? (
-                <Button
-                  className="h-auto min-h-0 w-full justify-start whitespace-pre-wrap p-0 text-left text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-subhead)] !text-[var(--vds-text-primary)] hover:underline"
-                  data-testid={`answer-annotation-open-${annotation.id}`}
-                  onClick={() => onOpenOriginal(annotation.id)}
-                  unstyled
-                >
-                  {annotation.previewText}
-                </Button>
-              ) : (
-                <div className="whitespace-pre-wrap text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-subhead)] font-[var(--vds-fw-medium)] text-[var(--vds-text-primary)]">
-                  {annotation.previewText}
+            <span className="text-center text-[var(--vds-text-tertiary)]">{number}.</span>
+            <div className="flex min-w-0 flex-col gap-[var(--vds-assistant-notes-content-gap)] [overflow-wrap:anywhere]">
+              {annotation.previewText ? (
+                <div className="text-[var(--vds-text-tertiary)]">
+                  {t('annotation.selectedText')}
                 </div>
-              )}
+              ) : null}
+              {annotation.previewText &&
+                (onOpenOriginal ? (
+                  <Button
+                    className="h-auto min-h-0 w-full justify-start whitespace-pre-wrap p-0 text-left text-[length:var(--vds-font-body-lv1)] font-[var(--vds-fw-regular)] leading-[var(--vds-lh-body-lv1)] !text-[var(--vds-text-primary)] hover:underline"
+                    data-testid={`answer-annotation-open-${annotation.id}`}
+                    onClick={() => onOpenOriginal(annotation.id)}
+                    unstyled
+                  >
+                    {annotation.previewText}
+                  </Button>
+                ) : (
+                  <div className="whitespace-pre-wrap text-[var(--vds-text-primary)]">
+                    {annotation.previewText}
+                  </div>
+                ))}
               {annotation.comment ? (
-                <div className="mt-[var(--vds-space-2)]">
-                  <div className="text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-control-label-line-height)] text-[var(--vds-text-tertiary)]">
+                <div className="flex flex-col gap-[var(--vds-assistant-notes-content-gap)]">
+                  <div className="text-[var(--vds-text-tertiary)]">
                     {t('annotation.userComment')}
                   </div>
-                  <div className="whitespace-pre-wrap text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-subhead)] text-[var(--vds-text-primary)]">
+                  <div className="whitespace-pre-wrap text-[var(--vds-text-primary)]">
                     {annotation.comment}
                   </div>
                 </div>
@@ -356,6 +393,7 @@ export function AnnotationDetails({
                   />
                   <div className="flex justify-end gap-[var(--vds-space-2)]">
                     <Button
+                      className="!text-[length:var(--vds-font-body-lv1)]"
                       disabled={saving}
                       onClick={() => setEditingId(null)}
                       size="sm"
@@ -364,6 +402,7 @@ export function AnnotationDetails({
                       {t('remaining.cancel')}
                     </Button>
                     <Button
+                      className="!text-[length:var(--vds-font-body-lv1)]"
                       disabled={saving}
                       onClick={() => void saveEdit()}
                       size="sm"
@@ -380,26 +419,32 @@ export function AnnotationDetails({
                 </Badge>
               ) : null}
             </div>
-            <div className="flex items-center gap-[var(--vds-space-1)]">
+            <div className="flex items-center gap-[var(--vds-space-half)]">
               {onEdit && editingId !== annotation.id ? (
-                <IconButton
-                  className="text-[var(--vds-text-placeholder)]"
-                  icon={<Icon name="edit-square" size={12} />}
-                  label={t('remaining.editNote', { number })}
-                  onClick={() => beginEdit(annotation)}
-                  size="sm"
-                  variant="ghost"
-                />
+                <Tooltip content={t('remaining.editNoteTooltip')}>
+                  <IconButton
+                    className="!size-[var(--vds-space-5)] !min-h-0 !min-w-0 !p-0 !text-[var(--vds-icon-outline-default)]"
+                    icon={<PencilLine size={12} strokeWidth={1.5} />}
+                    label={t('remaining.editNote', { number })}
+                    title={undefined}
+                    onClick={() => beginEdit(annotation)}
+                    size="xs"
+                    variant="ghost"
+                  />
+                </Tooltip>
               ) : null}
               {onRemove ? (
-                <IconButton
-                  className="text-[var(--vds-text-placeholder)]"
-                  icon={<Icon name="trash" size={12} />}
-                  label={removeLabel ?? t('remaining.removeNote', { number })}
-                  onClick={() => onRemove(annotation.id)}
-                  size="sm"
-                  variant="ghost"
-                />
+                <Tooltip content={t('remaining.deleteNoteTooltip')}>
+                  <IconButton
+                    className="!size-[var(--vds-space-5)] !min-h-0 !min-w-0 !p-0 !text-[var(--vds-icon-outline-default)]"
+                    icon={<Trash size={12} strokeWidth={1.5} />}
+                    label={removeLabel ?? t('remaining.removeNote', { number })}
+                    title={undefined}
+                    onClick={() => onRemove(annotation.id)}
+                    size="xs"
+                    variant="ghost"
+                  />
+                </Tooltip>
               ) : null}
             </div>
           </div>
@@ -410,7 +455,11 @@ export function AnnotationDetails({
 }
 
 export function AnnotationSummary({
-  annotations,
+  presentation = 'draft',
+  annotations = [],
+  count = annotations.length,
+  description = annotations[0]?.previewText,
+  details,
   className,
   onClear,
   onEdit,
@@ -420,7 +469,11 @@ export function AnnotationSummary({
   numberForAnnotation,
   testId = 'answer-annotation-summary',
 }: {
-  annotations: AnnotationDisplay[]
+  presentation?: 'draft' | 'sent'
+  annotations?: AnnotationDisplay[]
+  count?: number
+  description?: string
+  details?: React.ReactNode
   className?: string
   onClear?: () => void
   onEdit?: (annotationId: string, comment: string) => Promise<boolean>
@@ -431,44 +484,56 @@ export function AnnotationSummary({
   testId?: string
 }): React.JSX.Element | null {
   const { t } = useTranslation('assistant')
-  if (annotations.length === 0) return null
+  if (count === 0) return null
 
-  const summaryLabel = `${annotations.length} ${t('annotation.count')}`
-  return (
-    <ComposerRefChip
-      className={`w-fit${className ? ` ${className}` : ''}`}
-      closeLabel={t('remaining.removeAll')}
-      data-testid={testId}
-      icon={<Icon name="quote" size={12} />}
-      label={
-        <HoverCard>
-          <HoverCardTrigger asChild>
-            <Button
-              className="inline-flex min-w-0 max-w-full items-center text-left focus-visible:shadow-[var(--vds-focus-brand)]"
-              unstyled
-            >
-              <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
-                {summaryLabel}
-              </span>
-            </Button>
-          </HoverCardTrigger>
-          <HoverCardContent
-            className="!w-[380px] !max-w-[calc(100vw-32px)] overflow-hidden !rounded-[var(--vds-radius-6)] !border !border-solid !border-[var(--vds-border-default)] !bg-[var(--vds-surface-raised)] p-0 shadow-[var(--vds-shadow-lg)] ml-[calc(var(--vds-space-1)*-1)] mt-[calc(var(--vds-space-1)*-1)]"
-            side="top"
-          >
+  const summaryLabel = t('contextGroups.annotations', { count })
+  if (presentation === 'sent')
+    return (
+      <SentReferenceAttachment
+        data-testid={testId}
+        className={className}
+        variant="annotation"
+        description={description}
+        label={summaryLabel}
+        details={
+          details ?? (
             <AnnotationDetails
               annotations={annotations}
               location={location}
               numberForAnnotation={numberForAnnotation}
-              onEdit={onEdit}
               onOpenOriginal={onOpenOriginal}
-              onRemove={onRemove}
             />
-          </HoverCardContent>
-        </HoverCard>
-      }
-      onClose={onClear}
-      title={summaryLabel}
-    />
+          )
+        }
+      />
+    )
+  return (
+    <HoverCard>
+      <ReferenceAttachment
+        className={className}
+        closeLabel={t('remaining.removeAll')}
+        data-testid={testId}
+        variant="annotation"
+        description={description}
+        label={summaryLabel}
+        previewTrigger
+        onClose={onClear}
+      />
+      <HoverCardContent
+        className="!w-[var(--vds-assistant-notes-width)] !max-w-[var(--vds-assistant-notes-max-width)] overflow-hidden !rounded-[var(--vds-radius-6)] !border-0 !bg-[var(--vds-surface-raised)] !p-0 !shadow-[var(--vds-shadow-2-center)]"
+        side="top"
+      >
+        {details ?? (
+          <AnnotationDetails
+            annotations={annotations}
+            location={location}
+            numberForAnnotation={numberForAnnotation}
+            onEdit={onEdit}
+            onOpenOriginal={onOpenOriginal}
+            onRemove={onRemove}
+          />
+        )}
+      </HoverCardContent>
+    </HoverCard>
   )
 }

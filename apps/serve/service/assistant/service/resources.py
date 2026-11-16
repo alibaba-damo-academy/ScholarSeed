@@ -32,6 +32,11 @@ from service.assistant.service.citations import (
     citation_handles,
 )
 from service.assistant.service.links import LibraryLinkProjection
+from service.chat.persistence.catalog import (
+    SessionAccessError,
+    SessionCatalogStore,
+    SessionPrincipal,
+)
 from service.chat.persistence.events import ProductEventRecord, ProductEventStore
 from service.chat.service.artifacts import (
     ARTIFACT_REVISION_CONFLICT,
@@ -42,6 +47,11 @@ from service.chat.service.artifacts import (
 from service.chat.service.attachments import AttachmentService
 from service.content.domain.model import ContentError
 from service.platform.bridge import ResourceImport, ResourceImportResult
+from service.platform.citations import (
+    AnswerCitationReference,
+    PdfCitationSource,
+    SavedCitationReference,
+)
 from service.platform.content import ContentPort, FileAssetRef, ProjectRef
 from service.platform.context import (
     AssistantAnswer,
@@ -150,6 +160,33 @@ class AssistantResourceService:
         self._imports = imports
         self._citations = citations
 
+    def read_pdf_citation(
+        self, source: PdfCitationSource, principal: str, *, catalog: SessionCatalogStore
+    ) -> tuple[bytes, str]:
+        if not isinstance(source, SavedCitationReference):
+            try:
+                catalog.require(source.session_id, SessionPrincipal(principal))
+            except SessionAccessError as error:
+                raise ContentError("source_forbidden") from error
+        if isinstance(source, AnswerCitationReference):
+            result = self._citation_service().resolve(
+                source.session_id, source.answer_id, source.answer_revision, 0, 0, source.handle
+            )
+            payload = self._citation_service().raw(
+                source.session_id, source.answer_id, source.answer_revision, source.handle
+            )
+        elif isinstance(source, SavedCitationReference):
+            result = self.resolve_saved_citation(source.project_id, source.path, source.handle)
+            payload = self.saved_citation_raw(source.project_id, source.path, source.handle)
+        else:
+            result = self.resolve_artifact_citation(
+                source.session_id, source.artifact_id, source.revision, source.handle
+            )
+            payload = self.artifact_citation_raw(
+                source.session_id, source.artifact_id, source.revision, source.handle
+            )
+        return payload, result["title"]
+
     def resolve_saved_citation(self, project_id: str, path: str, handle: str) -> dict:
         """Only resolve handles retained in this resource's import receipt."""
         citation = self._saved_citation(project_id, path, handle)
@@ -169,6 +206,11 @@ class AssistantResourceService:
         if self._citations is None:
             raise AssistantResourceError(CITATION_EVIDENCE_UNAVAILABLE)
         return self._citations
+
+    def resolve_artifact_reference(
+        self, session_id: str, artifact_id: str, revision: str, relative: str
+    ) -> tuple[bytes, str]:
+        return self._artifacts.read_relative_document(session_id, artifact_id, revision, relative)
 
     def resolve_artifact_citation(
         self, session_id: str, artifact_id: str, revision: str, handle: str
@@ -266,7 +308,9 @@ class AssistantResourceService:
             raise AssistantResourceError(ASSISTANT_ATTACHMENTS_UNAVAILABLE)
         try:
             source = self._attachments.source_path(session_id, reference_id)
-            return self._writer.import_file(project.id, source, location)
+            return self._writer.import_file(
+                project.id, source, location, directory=Path(source).is_dir()
+            )
         except (ArtifactReadError, ResourceWriterError) as error:
             raise AssistantResourceError(error.code) from error
 
@@ -704,7 +748,8 @@ class AssistantResourceService:
                 records = self._links.list_session(project.id, session_id)
             except (ArtifactLinkError, ContentError) as error:
                 raise AssistantResourceError(error.code) from error
-            for record in records:
+            for sourceRecord in records:
+                record = sourceRecord
                 if record.destination is not LibraryDestination.RESOURCES:
                     continue
                 try:

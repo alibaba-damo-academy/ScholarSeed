@@ -33,7 +33,11 @@ import {
 import IconFont from '../primitive'
 import { useEffort } from './Effort'
 import { HOST_CONFIGURATION_CONFLICT } from '../../../../reconfiguration'
-import { PREPARATION_SUPERSEDED_ERROR } from '../../preparation'
+import {
+  PREPARATION_SUPERSEDED_ERROR,
+  runtimePreparationForegroundFailure,
+  runtimePreparationRequestFailure,
+} from '../../preparation'
 
 // ModelMenu.tsx — the model picker, anchored under the composer control row
 // (PRD 2.1.2 modification 1). It keeps the three catalogue groups the product
@@ -66,7 +70,7 @@ const MODEL_CHIP_FRAME_CLASS = 'relative min-w-0 flex-[0_1_auto]'
 // 单弹窗卡片携带圆角抬升表面; 思考强度展开时左侧再并排一张二级卡片 —— 二级卡在左,
 // 弹窗行右缘恒为主菜单(锚定触发器), 展开/收起不会把主菜单推得左右移动。
 const MENU_SHEET_CLASS = [
-  'flex shrink-0 flex-col items-end overflow-hidden rounded-[var(--vds-radius-4)] bg-[var(--vds-surface-raised)]',
+  'flex shrink-0 flex-col items-end overflow-hidden rounded-[var(--vds-radius-4)] bg-[var(--vds-surface-raised)] font-[var(--vds-fw-regular)]',
   'w-[var(--model-menu-measured-width)] shadow-[var(--vds-shadow-2-center)]',
   'transition-[width,opacity,visibility] duration-[var(--vds-duration-normal)] ease-[var(--vds-ease-standard)] motion-reduce:transition-none',
 ].join(' ')
@@ -143,7 +147,7 @@ function modelGroupLabel(
 const MENU_ENTRY_CLASS = (active: boolean, disabled: boolean): string =>
   [
     'flex min-h-[var(--vds-control-height-md)] w-full items-center gap-[var(--vds-space-2)] rounded-[var(--vds-radius-3)] border-0 px-[var(--vds-space-3)] py-[var(--vds-space-2)] text-left',
-    'text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-primary)]',
+    'text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-medium)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-primary)]',
     active
       ? 'bg-[var(--vds-bg-white-active-transparent)]'
       : 'bg-transparent hover:bg-[var(--vds-bg-white-hover-transparent)]',
@@ -159,7 +163,7 @@ const MODEL_MENU_TOOLTIP_CONTENT_CLASS = '!z-[var(--vds-z-modal-nested-flyout)]'
 const MODEL_MENU_MANAGE_CLASS = [
   'flex w-full items-center gap-[var(--vds-space-2)] rounded-[var(--vds-radius-3)] border-0 bg-transparent',
   'px-[var(--vds-space-3)] py-[var(--vds-space-2)] text-left',
-  'text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-secondary)]',
+  'text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-medium)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-secondary)]',
   'hover:bg-[var(--vds-bg-white-hover-transparent)] focus-visible:bg-[var(--vds-bg-white-hover-transparent)]',
   'transition-[background,color] duration-[120ms]',
 ].join(' ')
@@ -190,7 +194,7 @@ function ModelRow({
     >
       <EllipsisText
         wrapperClassName="flex-1"
-        className={`text-[length:var(--vds-font-body-lv2)] font-medium leading-[var(--vds-model-menu-line-height)] ${selected ? 'text-[var(--vds-brand-bg-default)]' : 'text-[var(--vds-text-primary)]'}`}
+        className={`text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-medium)] leading-[var(--vds-model-menu-line-height)] ${selected ? 'text-[var(--vds-brand-bg-default)]' : 'text-[var(--vds-text-primary)]'}`}
         tooltipContentClassName={MODEL_MENU_TOOLTIP_CONTENT_CLASS}
         tooltipPortalled
       >
@@ -220,6 +224,7 @@ export function ModelMenu({
   onModelSelect,
   modelFilter,
   showEffort = true,
+  variant = 'ghost',
 }: {
   compact?: boolean
   iconOnly?: boolean
@@ -229,6 +234,7 @@ export function ModelMenu({
   onModelSelect?: (model: ModelInfo) => void
   modelFilter?: (model: ModelInfo) => boolean
   showEffort?: boolean
+  variant?: 'ghost' | 'outline'
 }): React.JSX.Element {
   const {
     state,
@@ -368,14 +374,26 @@ export function ModelMenu({
         )
       }
       void preparation
-        .then(async (operation) => {
-          if (!selectionCurrent()) return
-          if (operation.state !== 'applied') throw new Error(operation.error)
-          if (declaredEffortValues(model).includes(effort)) {
-            await rememberEffort(model.key, effort)
+        .then(
+          async (operation) => {
             if (!selectionCurrent()) return
+            if (operation.state !== 'applied') {
+              const failure = runtimePreparationForegroundFailure(operation)
+              if (failure) set({ foregroundError: failure })
+              return
+            }
+            if (declaredEffortValues(model).includes(effort)) {
+              await rememberEffort(model.key, effort)
+            }
+          },
+          (error: unknown) => {
+            if (
+              selectionCurrent() &&
+              !(error instanceof Error && error.message === PREPARATION_SUPERSEDED_ERROR)
+            )
+              set({ foregroundError: runtimePreparationRequestFailure(error) })
           }
-        })
+        )
         .catch((error) => {
           if (
             !selectionCurrent() ||
@@ -405,7 +423,13 @@ export function ModelMenu({
         )
         if (model.key !== currentModelKey) {
           const effort = reasoningPreference(target, current.reasoningPreferences)
-          const result = await setSessionModel(sessionId, model.key, effort, true)
+          const result = await setSessionModel(
+            sessionId,
+            model.key,
+            effort,
+            true,
+            current.serviceInstanceId
+          )
           if (!selectionCurrent()) return
           if (
             result?.session_id === sessionId &&
@@ -454,9 +478,7 @@ export function ModelMenu({
             set({
               foregroundError:
                 result?.detail || result?.error || feedback('components', 'models.failed'),
-              foregroundNotice: result?.deferred
-                ? feedback('conversation', 'models.deferred')
-                : null,
+              foregroundNotice: null,
             })
             return
           }
@@ -506,9 +528,14 @@ export function ModelMenu({
           <Button
             type="button"
             data-testid={`${testIdPrefix}-selector-toggle`}
-            className={`${MODEL_CHIP_CLASS} w-full overflow-hidden ${compact ? 'min-h-8 !border-transparent !bg-transparent hover:!bg-[var(--vds-other-overlay-1)]' : ''} ${iconOnly ? '!size-[var(--vds-space-8)] !justify-center !p-0' : ''}`}
-            size="content"
-            unstyled
+            className={
+              variant === 'outline'
+                ? 'w-full justify-between overflow-hidden !px-[var(--vds-space-2)]'
+                : `${MODEL_CHIP_CLASS} w-full overflow-hidden ${compact ? 'min-h-8 !border-transparent !bg-transparent hover:!bg-[var(--vds-other-overlay-1)]' : ''} ${iconOnly ? '!size-[var(--vds-space-8)] !justify-center !p-0' : ''}`
+            }
+            variant={variant}
+            size={variant === 'outline' ? 'sm' : 'content'}
+            unstyled={variant !== 'outline'}
             disabled={Boolean(pendingHere)}
             aria-busy={Boolean(pendingHere) || effort.pending}
             title={

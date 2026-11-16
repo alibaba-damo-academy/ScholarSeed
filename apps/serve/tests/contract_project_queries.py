@@ -31,7 +31,7 @@ from . import contract_resource_bridge, run_all
 from .contract_resource_versions import VersionSettings
 
 
-class ProjectQueryContracts(contract_resource_bridge.ResourceBridgeContracts):
+class ProjectQueryContracts(contract_resource_bridge.ResourceBridgeFixture):
     def setUp(self):
         super().setUp()
         self.live.attachment_generation = 1
@@ -202,6 +202,7 @@ class ProjectQueryContracts(contract_resource_bridge.ResourceBridgeContracts):
         )
 
     def test_explicit_version_diff_and_paging(self):
+        self.content.write_text(self.project.id, "resources/a.md", "original\n")
         first = self.versions.seal(self.project.id, "resources/a.md", VersionOrigin.USER).version
         self.content.write_text(self.project.id, "resources/a.md", "changed\n")
         second = self.versions.seal(self.project.id, "resources/a.md", VersionOrigin.USER).version
@@ -209,18 +210,38 @@ class ProjectQueryContracts(contract_resource_bridge.ResourceBridgeContracts):
         self.assertEqual(page.status_code, 200, page.text)
         self.assertEqual(page.json()["versions"][0]["id"], second.id)
         self.assertIsNotNone(page.json()["next_sequence"])
-        result = self.query(
-            "resource", "diff", {"version_id": first.id, "base_version_id": second.id, "limit": 5}
-        )
+        forward = {"version_id": second.id, "base_version_id": first.id}
+        result = self.query("resource", "diff", {**forward, "limit": 5})
         self.assertEqual(result.status_code, 200, result.text)
-        self.assertEqual(len(result.json()["diff"]), 5)
-        self.assertEqual(result.json()["next_offset"], 5)
+        page = result.json()
+        self.assertEqual(page["diff"], "--- v")
+        self.assertEqual(page["next_offset"], 5)
+        rest = self.query("resource", "diff", {**forward, "offset": page["next_offset"]})
+        self.assertEqual(rest.status_code, 200, rest.text)
+        self.assertEqual(
+            page["diff"] + rest.json()["diff"], "--- v1\n+++ v2\n@@ -1 +1 @@\n-original\n+changed\n"
+        )
+        self.assertIsNone(rest.json()["next_offset"])
         self.content.rename(self.project.id, "resources/a.md", "renamed.md")
         self.versions.record_moves(self.project.id, (("resources/a.md", "resources/renamed.md"),))
         renamed = self.query(
             "resource", "diff", {"version_id": first.id, "base_version_id": second.id}
         )
         self.assertEqual(renamed.status_code, 200, renamed.text)
+        self.assertEqual(
+            renamed.json()["diff"], "--- v2\n+++ v1\n@@ -1 +1 @@\n-changed\n+original\n"
+        )
+        self.assertEqual(renamed.json()["version_id"], first.id)
+        self.assertEqual(renamed.json()["base_version_id"], second.id)
+        self.content.write_text(self.project.id, "resources/separate.md", "separate\n")
+        separate = self.versions.seal(
+            self.project.id, "resources/separate.md", VersionOrigin.USER
+        ).version
+        mismatch = self.query(
+            "resource", "diff", {"version_id": second.id, "base_version_id": separate.id}
+        )
+        self.assertEqual(mismatch.status_code, 400)
+        self.assertEqual(mismatch.json()["error"], "diff_file_mismatch")
         other = self.versions.seal(
             self.other_project.id, "resources/foreign.md", VersionOrigin.USER
         ).version
@@ -233,20 +254,6 @@ class ProjectQueryContracts(contract_resource_bridge.ResourceBridgeContracts):
 
 
 QUERY_CASES = (
-    "test_schema_is_cursor_based_and_excludes_scope_inputs",
-    "test_cli_and_transport_map_expose_resource_list",
-    "test_cli_and_transport_map_expose_resource_read",
-    "test_route_reads_project_and_linked_files_without_exposing_absolute_paths",
-    "test_route_reads_bounded_base64_chunks",
-    "test_route_rejects_unavailable_and_missing_files",
-    "test_route_requires_active_private_session_scope",
-    "test_route_requires_a_session_bound_project",
-    "test_route_lists_flat_project_relative_pages_without_cross_project_leakage",
-    "test_route_warns_when_an_authorized_root_is_unavailable",
-    "test_route_rejects_invalid_parameters",
-    "test_foreign_read_requires_the_active_frozen_explicit_file",
-    "test_read_accepts_optional_project_without_expanding_listing",
-    "test_route_discards_a_listing_if_the_turn_changes_during_scan",
     "test_directory_is_bounded_and_same_registry",
     "test_new_response_contracts_match_real_queries",
     "test_query_rejects_no_project_extra_scope_and_anonymous",

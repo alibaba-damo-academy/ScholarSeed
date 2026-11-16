@@ -163,6 +163,8 @@
     "loadFailed": "无法打开 {{title}}。",
     "loadFailureDetail": "{{message}}（{{code}}）",
     "loadFailureUnknown": "文档加载失败，请重试。",
+    "readPermissionDenied": "没有权限读取此文件，请恢复文件读取权限后重试。",
+    "readFailed": "无法读取此文件，请检查文件是否可访问后重试。",
     "artifactTooLarge": "文件超过内置预览上限，请在系统中打开，或从任务产物卡片下载。",
     "missingTitle": "{{title}} 已不存在或已被移动。",
     "missingDescription": "文件可能已在书深之外被删除或重命名。",
@@ -537,11 +539,23 @@
     "newTab": "新标签页",
     "projectFiles": "项目文件",
     "projectExplorer": "项目资源管理器",
+    "browser": "内置浏览器",
     "projects": "项目",
     "review": "审阅修改 · {{count}}",
     "versionDiff": "版本对比 · v{{sequence}} · {{name}}"
   },
   "monaco": {
     "frameTitle": "代码编辑器"
+  },
+  "bibliography": {
+    "preview": "参考文献详情",
+    "loading": "正在读取参考文献详情",
+    "failed": "无法读取参考文献详情，请重新悬停重试。",
+    "unavailable": "参考文献不可用",
+    "authors": "作者",
+    "year": "年份",
+    "publication": "期刊／出版物",
+    "missing": "未提供",
+    "unstructured": "此处为原始参考文献文本，暂无结构化题录。"
   }
 }

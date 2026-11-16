@@ -67,6 +67,7 @@ class RuntimeTest(unittest.TestCase):
         self.assertEqual(metrics['model_calls'],1);self.assertEqual(len(closed),1)
         self.assertEqual(metrics['usage'][0]['completion_tokens'],5)
 
+
     def test_context_import_failure_after_module_load_never_falls_back(self):
         class Client:
             @classmethod

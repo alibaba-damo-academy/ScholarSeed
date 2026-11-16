@@ -5,6 +5,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Awaitable, Callable
 
+from scholarseed_runtime.contract.event import RuntimeValue
+
 TURN_ADMISSION_STALE = "runtime_turn_admission_stale"
 
 
@@ -59,3 +61,4 @@ class TurnInput:
     submission_deadline: float | None = None
     submission_attempts: int = 0
     retry_observer: Callable[[SubmissionRetry], Awaitable[Callable[[], bool]]] | None = None
+    output_schema: dict[str, RuntimeValue] | None = None

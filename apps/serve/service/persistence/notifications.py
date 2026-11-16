@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from service.platform.notifications import Change, ChangeTopic
 
@@ -71,7 +71,7 @@ class NotificationConnection(sqlite3.Connection):
         if changes and self._notify is not None:
             self._notify(changes)
 
-    def __exit__(self, kind: Any, value: Any, traceback: Any) -> bool:
+    def __exit__(self, kind: Any, value: Any, traceback: Any) -> Literal[False]:
         if kind is not None:
             self.rollback()
             return False

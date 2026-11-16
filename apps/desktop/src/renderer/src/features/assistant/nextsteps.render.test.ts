@@ -42,8 +42,11 @@ const plugin: Plugin = {
         {kind: 'display_card', turnId: 'turn', card: {cardId: 'card'}}
       ]}
       export const activeThread = () => thread
-      export const useApp = () => ({state: {}, composerSubmission: {
+      export const useApp = () => ({state: {},
+      composerDraft: {subscribe: () => () => {}, getSnapshot: () => ''},
+      composerSubmission: {
         subscribe: () => () => {}, getSnapshot: () => 'session', consumed: () => false,
+        dismissed: () => false, dismiss: () => {},
         submit: async (...args) => {window.submissions.push(args); return true}
       }})
     `
@@ -87,13 +90,13 @@ const plugin: Plugin = {
   },
 }
 
-test('next-step options wrap complete text inside their buttons and preserve submission', async () => {
+test('compact next-step options wrap complete labels, expose descriptions and preserve submission', async () => {
   const server = await servers.create({
     configFile: false,
     root: ROOT,
     plugins: [plugin, react()],
     cacheKey: 'nextsteps',
-    optimizeDeps: { noDiscovery: true, include: ['react', 'react-dom/client', 'lucide-react'] },
+    optimizeDeps: { include: ['react', 'react-dom/client', 'lucide-react'] },
     server: { host: '127.0.0.1', port: 0 },
   })
   await server.listen()
@@ -111,30 +114,42 @@ test('next-step options wrap complete text inside their buttons and preserve sub
           { waitUntil: 'domcontentloaded' }
         )
         const card = page.getByTestId('next-steps-card')
-        const button = card.getByRole('button').first()
+        const button = card.getByRole('button', { name: option.label, exact: true })
         await expect(button).toBeEnabled()
-        const geometry = await button.evaluate((element) => ({
-          whiteSpace: getComputedStyle(element).whiteSpace,
-          client: element.clientWidth,
-          scroll: element.scrollWidth,
-          children: Array.from(element.children).map((child) => {
-            const rect = child.getBoundingClientRect()
-            const parent = element.getBoundingClientRect()
-            return {
-              inside: rect.left >= parent.left && rect.right <= parent.right,
-              client: child.clientWidth,
-              scroll: child.scrollWidth,
-            }
-          }),
-        }))
+        const geometry = await button.evaluate((element) => {
+          const parent = element.getBoundingClientRect()
+          const range = document.createRange()
+          range.selectNodeContents(element)
+          const label = range.getBoundingClientRect()
+          return {
+            whiteSpace: getComputedStyle(element).whiteSpace,
+            client: element.clientWidth,
+            scroll: element.scrollWidth,
+            labelInside:
+              label.left >= parent.left &&
+              label.right <= parent.right &&
+              label.top >= parent.top &&
+              label.bottom <= parent.bottom,
+            children: Array.from(element.children).map((child) => {
+              const rect = child.getBoundingClientRect()
+              const parent = element.getBoundingClientRect()
+              return {
+                inside: rect.left >= parent.left && rect.right <= parent.right,
+                client: child.clientWidth,
+                scroll: child.scrollWidth,
+              }
+            }),
+          }
+        })
         assert.equal(geometry.whiteSpace, 'normal', JSON.stringify({ width, sample, geometry }))
         assert.ok(geometry.scroll <= geometry.client, JSON.stringify({ width, sample, geometry }))
+        assert.ok(geometry.labelInside, JSON.stringify({ width, sample, geometry }))
         assert.ok(
           geometry.children.every((child) => child.inside && child.scroll <= child.client),
           JSON.stringify({ width, sample, geometry })
         )
-        await expect(button.locator('span').first()).toHaveText(option.label)
-        await expect(button.locator('span').last()).toHaveText(option.description)
+        await expect(button).toHaveText(option.label)
+        await expect(button).toHaveAttribute('title', option.description)
         await button.focus()
         await page.keyboard.press('Enter')
         assert.deepEqual(

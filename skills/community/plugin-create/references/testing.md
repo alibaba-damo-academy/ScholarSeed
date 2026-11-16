@@ -1,28 +1,44 @@
-# 可编辑测试模板
+# Verify a generated plugin
 
-这份清单与 scaffold 的 responses/cases/submissions 配套，非独立演示页面，也不是实际使用通过声明。
+## Before implementation: define expected results
 
-| 操作 | 必须核对 |
+For each decisive requirement, record the input, user action if applicable, expected value and failure condition. Derive expectations independently from user criteria or source material, not actual component output. Keep small JSON fixtures and rerunnable assertions under the session's `work/` directory. Use standard-library `unittest` in the product Python runtime or the available JavaScript runner. Failures should report the scenario, item ID, expected and actual values, and source.
+
+Use representative data and only the boundaries that matter to this workflow:
+
+| Risk | Cases and assertions |
 | --- | --- |
-| 首次打开 | 完整真实映射的预填；缺失字段与空数组、false、空字符串分开 |
-| 连续选择后立即确认 | 宿主收到最后一次编辑，不是上次 render 的副本 |
-| 空初值输入 | 空数组/缺省值下首个可见输入行接受文字，清空后能重新输入；显示、草稿与提交值一致 |
-| 取消预选 | 真实取消选中后保持未选，保存/重新渲染不回退到 data 的默认选择 |
-| 保存期间再编辑 | 旧回执不覆盖新编辑；提示仍有未保存修改 |
-| 保存失败再确认 | 编辑保留；不虚报已保存；提交仍经宿主校验 |
-| 确认失败再重试 | 仅一个有效操作入口，保留选择，重试可结算 |
-| 确认成功 | pending→submitting→resolved，AI 消费返回值推进下一步 |
-| 取消／未知 | 取消不推进，未知先核对而非重发业务 |
-| 翻页、重置、重开 | 预览恢复场景初值；真实已保存交互恢复其固定版本草稿 |
-| 多阶段修订 | 完整材料与约束仍在，新 request_id，未修改步骤不重复确认 |
+| Evidence mapped to the wrong item | Match the label, details and export to the same ID, quotation, value, unit and source; use a nearby value from a different item as a negative case. |
+| Comparison missing a source | Run with both sources and with the revision alone. Preserve an explicitly restated earlier value and its qualification; mark original verification as pending. |
+| Stale decisions or deadlines | Switch between branches, clear selection and switch back. Check effective dates and current tasks in the card, actual answer and export; exclude inactive branches. |
+| Misaligned interval charts | Assert the shared mapping at the reference value, on both sides and for an interval crossing it. Check ticks and labels in the narrow host. |
 
-发布前把完整调用载荷写到会话持久目录，执行：
+## Before packing: validate the actual payloads
+
+Update every component's invocation payload and its generated Skill reference when schemas, actions or domain fields change. Use descriptor action IDs, not button objects. Run `validate` on each file in `requests/` and on any actual first-card payload saved in the session:
 
 ```sh
 scholarseed-skill-python -m service.cli.plugins validate ./plugin-source/.scholarseed-plugin.json ./work/request.json
 ```
 
-它只验证声明、request/display 信封及 input_schema，不调用模型、不安装、不授予权限。遇到缺字段，按 detail.path/missing 修正实际引用；保留原文件，产出修订版并比对所有输入字段。不能靠删除材料、清空选择、换成样例或占位引用使检查通过。
-检查真实发布的 values 和输出；预览样例通过不证明真实业务、模型分析和权限通过。测试报告逐项标记通过、失败或未验证，不隐藏失败录像。
+This checks the descriptor, invocation envelope and `input_schema`; it does not invoke the model, install or grant permission. Use `detail.path` and `missing` to fix the actual reference, retaining a copy of the original payload to check that source materials, selections and references survived the correction.
 
-scaffold 的 requests/ 保存各组件对应的调用载荷。对每个文件执行 validate；修改组件 schema、actions 或业务字段后同时更新载荷及生成 Skill 的引用。actions 使用描述符中的动作 ID 字符串，不使用按钮对象。结构检查通过不代表控件可编辑：仍须正常输入/取消选择、回读可见值，再保存或确认并核回传，不能用手工拼装提交值代替这一步。
+## Packaged preview: inspect the first view and operate the component
+
+Follow the [scenario contract](interaction.md#preview-the-same-component) for `responses` and `submissions`. Include the expected initial result, a representative long title or value, and missing or empty data where relevant. Use two inputs with different expected results when a branch changes the outcome. Cover applicable normal, failed, cancelled and read-only states. Check that resetting or paging through a preview restores the scenario's inputs.
+
+Load the exact candidate in the host. Use the [design guide](DESIGN.md#visual-and-interaction-checks) to inspect the initial view before scrolling, in both themes and at regular and narrow widths (about 590 px of **workbench content** for narrow workbench cases). Capture the first view and a key action. Check that the result, comparison and action read in order; inspect long values, evidence disclosure, dialog copy, focus and keyboard/pointer access. A failed action should preserve input and offer retry for that operation. If preview is unavailable, keep the scenarios and mark the checks pending until authorized installation. Preview responses prove component behavior only.
+
+## Installed workflow: verify the actual outcome
+
+Use a real task and host replies, not hand-built submissions. Open actual exports and check both values and [presentation](DESIGN.md#copy-and-exported-results). Select the relevant cases:
+
+| Flow | What to verify in the host |
+| --- | --- |
+| Display and workbench | Run the same plugin with two inputs; only data changes. Check one display call per result in tool receipts. Filter, select, inspect evidence and move to the workbench and back: keep state and focus without save errors. |
+| Edit and save | Prefill real values, distinguishing missing from empty, `false` and empty strings. Type into an initially empty row, clear it and type again. Deselect a default. Check real saved values, no restored defaults, and no older receipt overwriting a newer edit. |
+| Confirm and recover | Make consecutive edits or insert/remove a row, then confirm without blurring. Check the actual submitted values, `pending` → `submitting` → `resolved` and the next model action. On save or submit failure retain edits, report the right failure and test retry. On cancellation stop; on unknown outcome inspect the existing request before retrying. |
+| Review and revise | Keep the workbench open during confirmation and verify the same view and artifact link. Reopen the conversation and check pinned package/data, final values, accessible details and disabled edit/save/submit. Verify each revision separately: new ID, unchanged materials and carried-forward confirmations. |
+| Copy the turn | Use the host copy control to check text/card order, complete collapsed content, raw chart data, sources and current selection. Test save revision updates, registration retry and copy after unmount. Check automatic and custom content do not overwrite one another. |
+
+Record package, preview and live results separately as passed, failed or unverified. Keep failed-run recordings. If the workbench reports that the plugin page did not load after submission, capture before/after, host logs and recovery without discarding the original card or resubmitting. Fix source failures, rebuild, and rerun the affected scenario on the new digest. Record the scenario, width where relevant, observation, fix and result.

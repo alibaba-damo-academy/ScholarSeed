@@ -18,6 +18,7 @@ test('independent resources publish a discoverable catalog matching the exact de
     assert.deepEqual(catalog.exports, manifest.exports)
     const exports = catalog.families.flatMap(family => family.exports)
     assert.equal(new Set(exports).size, exports.length)
+    assert.deepEqual([...exports].sort(), [...manifest.exports].sort())
     for (const name of ['Card', 'Textarea', 'Dialog', 'DropdownMenuSub', 'Table', 'Select']) {
       assert.ok(exports.includes(name), `${name} is discoverable`)
     }
@@ -28,10 +29,13 @@ test('independent resources publish a discoverable catalog matching the exact de
       assert.ok(family.exports.every(name => manifest.exports.includes(name)))
     }
     assert.deepEqual(catalog.components, manifest.components)
-    assert.deepEqual(Object.keys(catalog.composition.Conversation).sort(), ['Artifact', 'ArtifactDestination', 'ArtifactGroup', 'ArtifactMenuItems', 'Attachments', 'Choices', 'CitationLink', 'CitationSources', 'Code', 'ComposerRefChip', 'ConversationReference', 'Delivery', 'Details', 'Downloads', 'ExecutionBatch', 'ExecutionIO', 'ExecutionProcess', 'ExecutionStatus', 'Failure', 'FileFormatIcon', 'Formula', 'ImageThumbnail', 'ImageView', 'Images', 'Markdown', 'Message', 'Plan', 'References', 'Results', 'Review', 'Suggestions', 'Tabulation', 'ToolExecution', 'WebCitationLink', 'WebSearchRecord'])
-    assert.deepEqual(catalog.composition.Conversation.Markdown.inputs, ['text', 'onOpenExternal', 'onCopy'])
+    assert.deepEqual(Object.keys(catalog.composition.Conversation).sort(), ['Artifact', 'ArtifactDestination', 'ArtifactGroup', 'ArtifactMenuItems', 'Canvas', 'CitationLink', 'CitationSources', 'Delivery', 'Details', 'Downloads', 'FileFormatIcon', 'FileMenuItems', 'Formula', 'Markdown', 'Results', 'Review', 'Tabulation', 'Plot', 'BarChart', 'GroupedBarChart', 'StackedBarChart', 'LineChart', 'ScatterChart', 'PieChart', 'DonutChart', 'Histogram', 'BoxPlot', 'Heatmap', 'DataTable'].sort())
+    assert.ok(Buffer.byteLength(JSON.stringify(catalog)) <= 64 * 1024)
+    assert.ok(catalog.schemas.$defs.chart)
+    assert.deepEqual(catalog.composition.Conversation.Markdown.inputs, ['text', 'onOpenExternal', 'onCopy', 'citationGroupKeys', 'renderCitationGroup'])
+    assert.ok(catalog.composition.Conversation.CitationLink.inputs.includes('references'))
     for (const slot of ['interaction.question', 'literature.authorization']) {
-      assert.equal(catalog.components.find(component => component.slot === slot)?.entry, 'choices.js')
+      assert.equal(catalog.components.find(component => component.slot === slot), undefined)
     }
     assert.equal(catalog.bridge.submit.completion, 'onState')
     assert.equal(catalog.bridge.save.advancesWorkflow, false)

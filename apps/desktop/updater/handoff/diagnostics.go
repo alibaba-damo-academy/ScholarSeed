@@ -24,6 +24,7 @@ const (
 	sandboxStageWorker        = "worker"
 	sandboxStagePrivilege     = "worker_privilege"
 	sandboxStageVerification  = "verification"
+	sandboxStageMetadata      = "metadata"
 	sandboxReasonPolicy       = "policy_rejected"
 	sandboxReasonAccess       = "access_denied"
 	sandboxReasonPrivilege    = "privilege_missing"
@@ -41,7 +42,7 @@ var sandboxDiagnosticStages = [...]string{
 	sandboxStageInstallation, sandboxStageRuntime, sandboxStageIdentity, sandboxStageLocation,
 	sandboxStageProfile, sandboxStageProduct, sandboxStageHome, sandboxStageTarget,
 	sandboxStageOwner, sandboxStageElevation, sandboxStageWorker, sandboxStagePrivilege,
-	sandboxStageVerification,
+	sandboxStageVerification, sandboxStageMetadata,
 }
 
 var sandboxDiagnosticReasons = [...]string{

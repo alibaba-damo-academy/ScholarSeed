@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import sqlite3
-from contextlib import ExitStack, closing
+from contextlib import closing
 from dataclasses import asdict, dataclass, replace
 from enum import Enum
 from pathlib import Path, PurePath
@@ -14,11 +16,12 @@ from service.literature.domain.model import (
     IMPORT_CONFLICT,
     LIBRARY_INVALID,
     LIBRARY_UNAVAILABLE,
+    MAX_IMPORT_BYTES,
     LiteratureError,
 )
+from service.literature.persistence.assets import MaterialAssets
 from service.literature.persistence.files import (
     LiteratureFileBatch,
-    ManagedObject,
     managed_object,
 )
 from service.literature.persistence.store import (
@@ -30,6 +33,7 @@ from service.literature.persistence.store import (
     load_library,
 )
 from service.literature.schema import (
+    BINARY_MEDIA_TYPE,
     PDF_MEDIA_TYPE,
     AttachmentFile,
     AttachmentRole,
@@ -39,7 +43,7 @@ from service.literature.schema import (
 )
 from service.literature.service.catalog import append_items
 from service.paths import SERVICE_LITERATURE_FILES_DIR
-from service.platform.content import ContentPort, ImportSourceContent, PreparedContent, RootKind
+from service.platform.content import ContentPort, ImportSourceContent, PreparedContent
 
 IMPORT_TABLE = "literature_import_operation"
 
@@ -142,22 +146,32 @@ class LiteratureImports:
     def _decode_receipt(operation_id: str, payload: str) -> ImportReceipt:
         try:
             result = json.loads(payload)
-            if not isinstance(result, dict) or set(result) != {
-                "items",
-                "asset_ids",
-                "added",
-                "skipped",
-                "total",
-            }:
+            if not isinstance(result, dict) or set(result) not in (
+                {
+                    "items",
+                    "asset_ids",
+                    "added",
+                    "skipped",
+                    "total",
+                },
+                {"items", "added", "skipped", "total"},
+            ):
                 raise ValueError("invalid receipt")
             counts = tuple(result[key] for key in ("added", "skipped", "total"))
-            if any(type(value) is not int or value < 0 for value in counts):
+            if any(
+                not isinstance(value, int) or isinstance(value, bool) or value < 0
+                for value in counts
+            ):
                 raise ValueError("invalid counts")
-            assets = result["asset_ids"]
+            assets = result.get("asset_ids", [])
             if not isinstance(assets, list) or any(not isinstance(x, str) or not x for x in assets):
                 raise ValueError("invalid assets")
             items = decode(result["items"]).items
-            if not items or not assets or len(set(assets)) != len(assets):
+            if (
+                not items
+                or ("asset_ids" in result and not assets)
+                or len(set(assets)) != len(assets)
+            ):
                 raise ValueError("empty or duplicate receipt")
             return ImportReceipt(operation_id, items, tuple(assets), *counts)
         except (TypeError, ValueError, KeyError) as error:
@@ -169,7 +183,8 @@ class LiteratureImports:
 
     def _prepared(self, project_id: str, row: sqlite3.Row):
         try:
-            if type(row["skipped"]) is not int or row["skipped"] < 0:
+            skipped = row["skipped"]
+            if not isinstance(skipped, int) or isinstance(skipped, bool) or skipped < 0:
                 raise ValueError("invalid skipped count")
             raw_candidates = json.loads(row["candidates"])
             raw_prepared = json.loads(row["prepared"])
@@ -183,16 +198,41 @@ class LiteratureImports:
             candidates = tuple(
                 item for encoded_view in raw_candidates for item in decode(encoded_view).items
             )
-            prepared = tuple(PreparedContent(**item) for item in raw_prepared)
+            prepared = tuple(
+                (
+                    PreparedContent(**item)
+                    if "project_id" in item
+                    else ImportSourceContent(
+                        item["name"],
+                        base64.b64decode(item["content"], validate=True),
+                        BINARY_MEDIA_TYPE,
+                    )
+                )
+                for item in raw_prepared
+            )
             if not candidates or not prepared:
                 raise ValueError("empty preparation")
-            paths = {item.path for item in prepared}
+            paths = {
+                item.path if isinstance(item, PreparedContent) else str(index)
+                for index, item in enumerate(prepared)
+            }
             if len(paths) != len(prepared):
                 raise ValueError("duplicate prepared target")
             for item in prepared:
-                self._content.validate_prepared(item)
-                if item.project_id != project_id:
-                    raise LiteratureError(IMPORT_CONFLICT)
+                if isinstance(item, PreparedContent):
+                    self._content.validate_prepared(item)
+                    if item.project_id != project_id:
+                        raise LiteratureError(IMPORT_CONFLICT)
+                elif not isinstance(item.name, str) or not item.name:
+                    raise ValueError("invalid source name")
+            if (
+                sum(
+                    item.size if isinstance(item, PreparedContent) else len(item.content)
+                    for item in prepared
+                )
+                > MAX_IMPORT_BYTES
+            ):
+                raise ValueError("import too large")
             attachments = tuple(
                 (str(entry["literature_id"]), str(entry["prepared_path"]))
                 for entry in raw_attachments
@@ -203,7 +243,7 @@ class LiteratureImports:
             ):
                 raise ValueError("invalid PDF mapping")
             return candidates, prepared, attachments
-        except (TypeError, ValueError) as error:
+        except (TypeError, ValueError, KeyError, binascii.Error) as error:
             raise LiteratureError(LIBRARY_INVALID) from error
 
     def resume(
@@ -240,52 +280,47 @@ class LiteratureImports:
         # Bad existing libraries must fail before preparing or publishing any files.
         view = load_library(project_id, self._database)
         self.validate_collections(view, tuple(item for _, items in admitted for item in items))
-        root = self._content.root(project_id, RootKind.LITERATURE).path
-        with ExitStack() as cleanup:
-            with closing(connect(self._database)) as connection, connection:
-                connection.execute("BEGIN IMMEDIATE")
-                self._schema(connection)
-                self._validate_collection_target(connection, project_id, collection_id)
-                if self._row(connection, project_id, operation_id, fingerprint) is not None:
-                    return
-                reserved: list[str] = []
-                for row in connection.execute(
-                    f"SELECT prepared FROM {IMPORT_TABLE} WHERE project_id = ?", (project_id,)
-                ):
-                    reserved.extend(entry["path"] for entry in json.loads(row["prepared"]))
-                preparations: list[PreparedContent] = []
-                candidates: list[LiteratureItem] = []
-                attachments: list[dict[str, str]] = []
-                for source, items in admitted:
-                    prepared = self._content.prepare_bytes(
-                        project_id, root, source.name, source.content, tuple(reserved)
-                    )
-                    cleanup.callback(self._content.release_prepared, prepared)
-                    preparations.append(prepared)
-                    reserved.append(prepared.path)
-                    candidates.extend(items)
-                    attachments.extend(
-                        {"literature_id": item.id, "prepared_path": prepared.path}
-                        for item in items
-                        if item.fulltext is FulltextStatus.READY
-                    )
-                connection.execute(
-                    f"INSERT INTO {IMPORT_TABLE} "
-                    "(project_id, operation_id, fingerprint, prepared, candidates, attachments, "
-                    "skipped, state, result, collection_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)",
-                    (
-                        project_id,
-                        operation_id,
-                        fingerprint,
-                        json.dumps([asdict(item) for item in preparations], ensure_ascii=False),
-                        json.dumps([encode(LiteratureView(items=(item,))) for item in candidates]),
-                        json.dumps(attachments, ensure_ascii=False),
-                        skipped,
-                        ImportState.PREPARED.value,
-                        collection_id,
-                    ),
+        if not admitted or sum(len(source.content) for source, _ in admitted) > MAX_IMPORT_BYTES:
+            raise LiteratureError(LIBRARY_INVALID)
+        self._content.project(project_id)
+        with closing(connect(self._database)) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._schema(connection)
+            self._validate_collection_target(connection, project_id, collection_id)
+            if self._row(connection, project_id, operation_id, fingerprint) is not None:
+                return
+            preparations: list[dict[str, str]] = []
+            candidates: list[LiteratureItem] = []
+            attachments: list[dict[str, str]] = []
+            for index, (source, items) in enumerate(admitted):
+                preparations.append(
+                    {
+                        "name": source.name,
+                        "content": base64.b64encode(source.content).decode("ascii"),
+                    }
                 )
-            cleanup.pop_all()
+                candidates.extend(items)
+                attachments.extend(
+                    {"literature_id": item.id, "prepared_path": str(index)}
+                    for item in items
+                    if item.fulltext is FulltextStatus.READY
+                )
+            connection.execute(
+                f"INSERT INTO {IMPORT_TABLE} "
+                "(project_id, operation_id, fingerprint, prepared, candidates, attachments, "
+                "skipped, state, result, collection_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)",
+                (
+                    project_id,
+                    operation_id,
+                    fingerprint,
+                    json.dumps(preparations, ensure_ascii=False),
+                    json.dumps([encode(LiteratureView(items=(item,))) for item in candidates]),
+                    json.dumps(attachments, ensure_ascii=False),
+                    skipped,
+                    ImportState.PREPARED.value,
+                    collection_id,
+                ),
+            )
 
     def finish(self, project_id: str, operation_id: str, fingerprint: str) -> ImportReceipt:
         with closing(connect(self._database)) as connection, connection:
@@ -298,48 +333,75 @@ class LiteratureImports:
             if row["state"] != ImportState.PREPARED.value:
                 raise LiteratureError(LIBRARY_INVALID)
             candidates, prepared, attachments = self._prepared(project_id, row)
-        # Content owns its own project transaction. Never nest it under our write lock.
-        assets = tuple(self._content.materialize(item) for item in prepared)
-        if any(not asset.asset_id for asset in assets):
-            raise LiteratureError(LIBRARY_INVALID)
-        published = {item.path: asset.path for item, asset in zip(prepared, assets, strict=True)}
+        sources = {
+            item.path if isinstance(item, PreparedContent) else str(index): (
+                ImportSourceContent(
+                    Path(item.path).name,
+                    self._content.read_prepared(item),
+                    BINARY_MEDIA_TYPE,
+                )
+                if isinstance(item, PreparedContent)
+                else item
+            )
+            for index, item in enumerate(prepared)
+        }
         with LiteratureFileBatch(SERVICE_LITERATURE_FILES_DIR) as batch:
             owned = tuple(
-                self._own_copy(batch, project_id, literature_id, published[prepared_path])
+                self._own_copy(batch, literature_id, sources[prepared_path])
                 for literature_id, prepared_path in attachments
             )
+            attached = {item.literature_id for item in owned}
+            cached = []
+            for item in candidates:
+                if item.id in attached:
+                    continue
+                payload = MaterialAssets(self._database).source_for(asdict(item))
+                if payload is not None:
+                    document = managed_object(item.id, payload, ".pdf")
+                    cached.append(
+                        AttachmentFile(
+                            literature_id=item.id,
+                            path=batch.stage(document.name, payload),
+                            name="source.pdf",
+                            revision=document.revision,
+                        )
+                    )
+            owned = (*owned, *cached)
             try:
-                return batch.commit_operation(
+                receipt = batch.commit_operation(
                     lambda: self._commit(
-                        project_id, operation_id, fingerprint, row, candidates, owned, assets
+                        project_id, operation_id, fingerprint, row, candidates, owned
                     )
                 )
+            except LiteratureError as error:
+                if error.code != IMPORT_CONFLICT:
+                    raise
+                with closing(connect(self._database)) as connection:
+                    current = self._row(connection, project_id, operation_id, fingerprint)
+                    if current is None or current["state"] != ImportState.COMPLETED.value:
+                        raise
+                    return self._receipt(current)
             except (sqlite3.Error, OSError) as error:
                 raise LiteratureError(LIBRARY_UNAVAILABLE) from error
+        for item in prepared:
+            if isinstance(item, PreparedContent):
+                self._content.release_prepared(item)
+        return receipt
 
     def _own_copy(
         self,
         batch: LiteratureFileBatch,
-        project_id: str,
         literature_id: str,
-        project_path: str,
+        source: ImportSourceContent,
     ) -> AttachmentFile:
-        """Give one imported item its own copy of the file published into the project.
-
-        项目里那份照旧发布 (资料库视图与导入台账都指着它), 但文献附件不再指向它:
-        附件是文献库托管目录里独占的一份, 于是删文献只删这份副本, 用户在项目里改
-        那份文件也不会悄悄换掉文献的全文。代价是同一个 PDF 存两份, 这是"附件随
-        文献走"的必然结果。
-        """
-
-        payload, _media_type = self._content.read_bytes(project_id, project_path)
-        published: ManagedObject = managed_object(
-            literature_id, payload, PurePath(project_path).suffix.lower()
+        """Give each literature item its own global attachment, not a project copy."""
+        published = managed_object(
+            literature_id, source.content, PurePath(source.name).suffix.lower()
         )
         return AttachmentFile(
             literature_id=literature_id,
-            path=batch.stage(published.name, payload),
-            name=Path(project_path).name,
+            path=batch.stage(published.name, source.content),
+            name=source.name,
             revision=published.revision,
         )
 
@@ -351,7 +413,6 @@ class LiteratureImports:
         row: sqlite3.Row,
         candidates: tuple[LiteratureItem, ...],
         owned: tuple[AttachmentFile, ...],
-        assets: tuple,
     ) -> ImportReceipt:
         """Bind the already published copies to their items inside one library write."""
 
@@ -361,7 +422,7 @@ class LiteratureImports:
             if current is None:
                 raise LiteratureError(IMPORT_CONFLICT)
             if current["state"] == ImportState.COMPLETED.value:
-                return self._receipt(current)
+                raise LiteratureError(IMPORT_CONFLICT)
             if any(
                 current[key] != row[key]
                 for key in (
@@ -405,7 +466,6 @@ class LiteratureImports:
             )
             result = {
                 "items": encode(LiteratureView(items=committed)),
-                "asset_ids": [asset.asset_id for asset in assets],
                 "added": added,
                 "skipped": row["skipped"],
                 "total": len(view.items),
@@ -413,7 +473,7 @@ class LiteratureImports:
             encoded_result = json.dumps(result, ensure_ascii=False)
             receipt = self._decode_receipt(operation_id, encoded_result)
             connection.execute(
-                f"UPDATE {IMPORT_TABLE} SET state = ?, result = ? "
+                f"UPDATE {IMPORT_TABLE} SET state = ?, result = ?, prepared = '[]', attachments = '[]' "
                 "WHERE project_id = ? AND operation_id = ?",
                 (ImportState.COMPLETED.value, encoded_result, project_id, operation_id),
             )

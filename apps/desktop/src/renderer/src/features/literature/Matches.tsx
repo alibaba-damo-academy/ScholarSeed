@@ -1,10 +1,11 @@
-import { JoinedLabel, type Joining } from './Joining'
+import { type Joining } from './Joining'
+import type { HeldFulltextSource } from './join'
 import { paperJoinKey, type JoinDestination } from './hierarchy'
 import { searchFailureMessageKey } from './error'
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react'
-import { Trans, useTranslation } from 'react-i18next'
+import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
-import { Link } from 'lucide-react'
+import { Link, Upload } from 'lucide-react'
 
 import type {
   LiteratureSearchPaper,
@@ -16,35 +17,42 @@ import {
   Badge,
   Button,
   Checkbox,
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
   EllipsisText,
   IconButton,
   EmptyState,
+  ScrollArea,
   Spinner,
   Tag,
   Tooltip,
+  useToast,
 } from '../../components/ui'
 import { Icon } from '../../icons'
 import {
   reviewEvidence,
+  searchPapersBibtex,
   visibleSearchPapers,
   type AccessFilter,
   type DecisionFilter,
   type ResultSort,
   type ReviewEvidence,
 } from './result'
+import type { BibtexSave } from './export'
 
 export interface SearchActions {
   projectId?: string
   receipts: ReadonlyMap<string, JoinDestination>
   Join: React.ComponentType<Omit<React.ComponentProps<typeof Joining>, 'ports'>>
+  Batch?: React.ComponentType<{
+    papers: LiteratureSearchPaper[]
+    source?: HeldFulltextSource
+    selection?: { count: number; total: number }
+    onJoined?: (papers: LiteratureSearchPaper[], destination: JoinDestination) => void
+  }>
   openSource: (paper: LiteratureSearchPaper, url: string) => Promise<unknown>
+  saveBibtex?: (bibtex: string) => Promise<BibtexSave>
 }
 const SearchContext = createContext<SearchActions | null>(null)
 const VISIBLE_SEARCH_AUTHORS = 2
-const visitedSearchTasks = new Set<string>()
 
 export function SearchSurface({
   actions,
@@ -61,21 +69,17 @@ const SEARCH_RESULTS_TABLE_MIN_WIDTH_PX = 852
 const SEARCH_RESULTS_NO_ACCESS_MIN_WIDTH_PX = 730
 const SEARCH_RESULTS_ASIDE_WIDTH = 'var(--vds-literature-results-detail-width)'
 const RESULT_BODY_CELL_CLASS =
-  'm-0 min-h-0 min-w-0 max-h-full overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden break-words text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-library-search-line-height)] text-[var(--vds-text-secondary)]'
+  'm-0 min-h-0 min-w-0 self-stretch overflow-y-auto [contain:size] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden break-words text-[length:var(--vds-font-body-lv2)] font-[number:var(--vds-fw-regular)] leading-[var(--vds-library-search-line-height)] text-[var(--vds-text-primary)]'
 
-/**
- * 结果表列集。两个入口的正文列都是推荐理由，差异只在 AI 检索页没有全文获取列、
- * 且完全不读摘要。新增一种结果表在这里登记即可。
- */
-export type ResultColumnSet = 'search' | 'conversation'
+export type ResultColumnSet = 'search' | 'conversation' | 'candidates' | 'authorized'
 
 interface ResultColumnLayout {
   grid: string
   minWidth: number
   /** 全文获取 / 综述依据列。 */
   access: boolean
-  /** 详情面板是否展示摘要；AI 检索页的摘要在投影里就已丢弃。 */
   detailAbstract: boolean
+  abstract?: boolean
 }
 
 const RESULT_COLUMN_SETS: Record<ResultColumnSet, ResultColumnLayout> = {
@@ -90,6 +94,19 @@ const RESULT_COLUMN_SETS: Record<ResultColumnSet, ResultColumnLayout> = {
     minWidth: SEARCH_RESULTS_TABLE_MIN_WIDTH_PX,
     access: true,
     detailAbstract: true,
+  },
+  candidates: {
+    grid: 'grid-cols-[42px_minmax(360px,2fr)_minmax(280px,1.35fr)]',
+    minWidth: SEARCH_RESULTS_NO_ACCESS_MIN_WIDTH_PX,
+    access: false,
+    detailAbstract: false,
+  },
+  authorized: {
+    grid: 'grid-cols-[42px_minmax(0,2fr)_minmax(0,1.35fr)_minmax(0,1.35fr)]',
+    minWidth: SEARCH_RESULTS_TABLE_MIN_WIDTH_PX,
+    access: false,
+    detailAbstract: true,
+    abstract: true,
   },
 }
 const PAPER_LINK_PROTOCOLS = new Set(['https:', 'http:'])
@@ -146,8 +163,8 @@ function PaperIdentifierLink({
 function PaperMetadata({ paper }: { paper: LiteratureSearchPaper }): React.JSX.Element {
   const { t } = useTranslation('literature')
   const authors = paper.authors.map(knownMetadata).filter(Boolean)
-  const visibleAuthors = authors.slice(0, VISIBLE_SEARCH_AUTHORS).join(', ')
-  const remainingAuthors = authors.length - VISIBLE_SEARCH_AUTHORS
+  const abbreviated = authors.length > VISIBLE_SEARCH_AUTHORS
+  const visibleAuthors = abbreviated ? authors[0] : authors.join(', ')
   const venue = knownMetadata(paper.venue)
   const doi = knownMetadata(paper.doi)
   const arxiv = knownMetadata(paper.arxiv_id)
@@ -157,8 +174,9 @@ function PaperMetadata({ paper }: { paper: LiteratureSearchPaper }): React.JSX.E
     metadata.push(t('search.metadataCitations', { count: paper.citation_count }))
   }
   if (venue) metadata.push(venue)
+  const identifiers: React.ReactNode[] = []
   if (doi)
-    metadata.push(
+    identifiers.push(
       <PaperIdentifierLink
         paper={paper}
         value={doi}
@@ -167,7 +185,7 @@ function PaperMetadata({ paper }: { paper: LiteratureSearchPaper }): React.JSX.E
       />
     )
   if (arxiv)
-    metadata.push(
+    identifiers.push(
       <PaperIdentifierLink
         paper={paper}
         value={arxiv}
@@ -180,28 +198,37 @@ function PaperMetadata({ paper }: { paper: LiteratureSearchPaper }): React.JSX.E
       {authors.length ? (
         <Tooltip
           content={authors.join(', ')}
-          disabled={remainingAuthors <= 0}
+          disabled={!abbreviated}
           side="bottom"
           align="start"
           portalled
-          className="mt-[var(--vds-space-1)] block min-w-0 text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]"
+          className="mt-[var(--vds-space-1)] block min-w-0 text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-tertiary)]"
         >
           <span
-            tabIndex={remainingAuthors > 0 ? 0 : undefined}
+            tabIndex={abbreviated ? 0 : undefined}
             className="flex min-w-0 items-center gap-[var(--vds-space-1)]"
           >
             <span className="min-w-0 truncate">{visibleAuthors}</span>
-            {remainingAuthors > 0 ? (
-              <span className="shrink-0">
-                {t('search.remainingAuthors', { count: remainingAuthors })}
-              </span>
-            ) : null}
+            {abbreviated ? <span className="shrink-0">{t('search.authorsEtAl')}</span> : null}
           </span>
         </Tooltip>
       ) : null}
       {metadata.length ? (
         <span className="mt-[var(--vds-space-1)] block text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-tertiary)]">
           {metadata.map((item, index) => (
+            <React.Fragment key={index}>
+              {index > 0 ? ' · ' : null}
+              {item}
+            </React.Fragment>
+          ))}
+        </span>
+      ) : null}
+      {identifiers.length ? (
+        <span
+          data-testid="search-paper-identifiers"
+          className="mt-[var(--vds-space-1)] block text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-tertiary)]"
+        >
+          {identifiers.map((item, index) => (
             <React.Fragment key={index}>
               {index > 0 ? ' · ' : null}
               {item}
@@ -223,6 +250,8 @@ function PaperSourceLink({
   sourceUrl?: string
 }): React.JSX.Element {
   const actions = useContext(SearchContext)!
+  const { t } = useTranslation('literature')
+  const { toast } = useToast()
   const candidates = sourceUrl
     ? [sourceUrl]
     : [
@@ -248,7 +277,9 @@ function PaperSourceLink({
       onClick={(event) => {
         event.stopPropagation()
         event.preventDefault()
-        void actions.openSource(paper, href)
+        void actions.openSource(paper, href).catch(() => {
+          toast({ tone: 'error', description: t('result.openFailed') })
+        })
       }}
     >
       {children}
@@ -256,16 +287,6 @@ function PaperSourceLink({
   )
 }
 
-const SEARCH_STATUS_KEYS = {
-  pending: 'search.status.pending',
-  running: 'search.status.running',
-  completed: 'search.status.completed',
-  failed: 'search.status.failed',
-  interrupted: 'search.status.interrupted',
-  unknown: 'search.status.unknown',
-  empty: 'search.status.empty',
-  search_interrupted: 'search.status.search_interrupted',
-} as const
 const REVIEW_EVIDENCE_KEYS = {
   fulltext: 'searchResult.fulltext',
   abstract: 'searchResult.abstractOnly',
@@ -327,6 +348,8 @@ export interface LiteratureSearchViewProps {
   libraryStatuses?: Readonly<Record<string, ResultLibraryState>>
   /** 结果表列集；缺省是对话卡片打开的结果页（保留全文获取列）。 */
   columnSet?: ResultColumnSet
+  /** 精确检索卡片带来的已下载全文来源; 只有它能让「元信息和全文」出现。 */
+  heldSource?: HeldFulltextSource
 }
 
 function LibraryStatusNotice({
@@ -337,7 +360,12 @@ function LibraryStatusNotice({
   const { t } = useTranslation('literature')
   if (status !== 'ambiguous' && status !== 'unavailable') return null
   return (
-    <Tag tone="warning" size="small" data-testid="literature-library-status">
+    <Tag
+      tone="warning"
+      size="small"
+      className="!font-[var(--vds-fw-regular)]"
+      data-testid="literature-library-status"
+    >
       {t(status === 'ambiguous' ? 'result.libraryAmbiguous' : 'result.libraryUnavailable')}
     </Tag>
   )
@@ -345,79 +373,79 @@ function LibraryStatusNotice({
 
 /** Shared result presentation for a running search task or a saved conversation result. */
 function SearchContents({
-  taskId,
-  query,
   papers,
   status,
-  output,
   error,
   warning,
   streamError,
-  elapsed,
   savedPaperIds,
   libraryStatuses,
   columnSet = 'conversation',
+  heldSource,
 }: LiteratureSearchViewProps): React.JSX.Element {
   const { t } = useTranslation('literature')
   const columns = RESULT_COLUMN_SETS[columnSet]
+  const { toast } = useToast()
+  const [exporting, setExporting] = useState(false)
   const actions = useContext(SearchContext)!
   const projectId = actions.projectId
   const JoinLibraryMenu = actions.Join
-  const [selected, setSelected] = useState<Set<string>>(new Set())
-  const [saved, setSaved] = useState<Set<string>>(() => new Set(savedPaperIds))
+  const JoinBatch = actions.Batch
+  const [selected, setSelected] = useState<Set<string>>(
+    () => new Set(papers.map((paper) => paper.paper_id))
+  )
+  const selectionInitialized = useRef(papers.length > 0)
   useEffect(() => {
-    if (!savedPaperIds?.length) return
-    setSaved((current) => {
-      let changed = false
-      const next = new Set(current)
-      for (const id of savedPaperIds)
-        if (!next.has(id)) {
-          next.add(id)
-          changed = true
-        }
-      return changed ? next : current
-    })
-  }, [savedPaperIds])
+    if (selectionInitialized.current || papers.length === 0) return
+    selectionInitialized.current = true
+    setSelected(new Set(papers.map((paper) => paper.paper_id)))
+  }, [papers])
+  const saved = useMemo(() => new Set(savedPaperIds), [savedPaperIds])
   const receipts = actions.receipts
   const isSaved = (paper: LiteratureSearchPaper): boolean =>
-    saved.has(paper.paper_id) || receipts.has(paperJoinKey(paper, projectId))
+    libraryStatuses
+      ? libraryStatuses[paper.paper_id] === 'matched'
+      : saved.has(paper.paper_id) || receipts.has(paperJoinKey(paper, projectId))
+  const canJoin = (paper: LiteratureSearchPaper): boolean =>
+    libraryStatuses ? libraryStatuses[paper.paper_id] === 'absent' : !isSaved(paper)
   const [focusedId, setFocusedId] = useState('')
+  const [detailOpen, setDetailOpen] = useState(false)
   const [sort] = useState<ResultSort>('relevance')
   const [access] = useState<AccessFilter>('all')
   const [decision] = useState<DecisionFilter>('all')
   const running = status === 'pending' || status === 'running'
   const failureKey = searchFailureMessageKey(error)
   const failureMessage = failureKey ? t(failureKey) : undefined
-  // 进度信息栏 = 模型可见输出 + 已知失败码折算出的用户文案, 失败原因因此和过程同处一栏。
-  const processText = [output, failureMessage].filter(Boolean).join('\n')
-  const [processOpen, setProcessOpen] = useState(
-    () => running && (!taskId || !visitedSearchTasks.has(taskId))
-  )
-  const previousRunning = useRef(running)
-  useEffect(() => {
-    if (taskId) visitedSearchTasks.add(taskId)
-  }, [taskId])
-  useEffect(() => {
-    if (previousRunning.current !== running) {
-      setProcessOpen(running)
-      previousRunning.current = running
-    }
-  }, [running])
   const reviewResults = papers.some((paper) => paper.decision && paper.decision !== 'candidate')
-  const statusTone =
-    status === 'completed' || status === 'empty' ? 'success' : running ? 'brand' : 'danger'
   const shown = useMemo(
     () => visibleSearchPapers(papers, access, sort, decision),
     [access, decision, papers, sort]
   )
   const focused = papers.find((paper) => paper.paper_id === focusedId) ?? null
-  const selectable = shown.filter((paper) => !isSaved(paper))
+  const selectableShown = shown.filter((paper) => !isSaved(paper))
   const allShownSelected =
-    selectable.length > 0 && selectable.every((paper) => selected.has(paper.paper_id))
-  const picked = papers.filter((paper) => selected.has(paper.paper_id) && !isSaved(paper))
-  const onJoined = (items: LiteratureSearchPaper[], _destination: JoinDestination): void => {
+    selectableShown.length > 0 && selectableShown.every((paper) => selected.has(paper.paper_id))
+  const picked = papers.filter((paper) => !isSaved(paper) && selected.has(paper.paper_id))
+  const joinable = picked.filter(canJoin)
+  const selection = {
+    count: papers.filter((paper) => isSaved(paper) || selected.has(paper.paper_id)).length,
+    total: papers.length,
+  }
+  const exportPapers = async (items: LiteratureSearchPaper[]): Promise<void> => {
+    if (exporting || !items.length || !actions.saveBibtex) return
+    setExporting(true)
+    try {
+      const result = await actions.saveBibtex(searchPapersBibtex(items))
+      if (result.kind === 'saved')
+        toast({ title: t('batch.exportSucceeded', { count: items.length }), tone: 'success' })
+      else if (result.kind === 'failed')
+        toast({ title: t('relations.exportFailed'), tone: 'error' })
+    } finally {
+      setExporting(false)
+    }
+  }
+  const onJoined = (items: LiteratureSearchPaper[]): void => {
     const ids = items.map((paper) => paper.paper_id)
-    setSaved((current) => new Set([...current, ...ids]))
     setSelected((current) => new Set([...current].filter((id) => !ids.includes(id))))
   }
 
@@ -426,54 +454,45 @@ function SearchContents({
       className="relative flex h-full min-h-0 overflow-hidden bg-[var(--vds-bg-gray-default)]"
       data-testid="literature-search-tab"
     >
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <header className="flex min-w-0 shrink-0 flex-wrap items-center justify-between gap-[var(--vds-space-3)] border-b border-[var(--vds-border-default)] px-[var(--vds-space-5)] py-[var(--vds-space-2)]">
-          <div className="flex min-w-0 flex-auto items-center gap-[var(--vds-space-1)]">
-            <h1 className="!m-0 min-w-0 truncate !text-[length:var(--vds-font-body-lv2)] !font-[var(--vds-fw-regular)] !leading-[var(--vds-library-search-line-height)] !text-[var(--vds-text-tertiary)]">
-              {query ? (
-                <Trans
-                  t={t}
-                  ns="literature"
-                  i18nKey="search.summary"
-                  values={{ query }}
-                  components={{
-                    keyword: (
-                      <EllipsisText
-                        className="max-w-[var(--vds-literature-search-query-max-width)] text-[var(--vds-text-primary)]"
-                        wrapperClassName="!max-w-[min(100%,var(--vds-literature-search-query-max-width))] align-middle"
-                        tooltipPortalled
-                        tooltipSide="bottom"
-                      >
-                        {query}
-                      </EllipsisText>
-                    ),
-                  }}
-                />
-              ) : (
-                t('search.title')
-              )}
-            </h1>
-            <span className="shrink-0 text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] leading-[var(--vds-library-search-line-height)] text-[var(--vds-text-primary)]">
-              {t('search.paperCount', { count: papers.length })}
-            </span>
-            <Tag
-              className="shrink-0"
-              tone={statusTone === 'success' ? 'brand' : statusTone}
-              size="small"
+      <div className="isolate flex min-h-0 min-w-0 flex-1 flex-col">
+        <header className="flex min-w-0 shrink-0 flex-wrap items-center justify-end gap-[var(--vds-space-3)] border-b border-[var(--vds-border-default)] px-[var(--vds-space-5)] py-[var(--vds-space-2)]">
+          <div className="ml-auto flex min-h-[var(--vds-control-height-md)] shrink-0 items-center gap-[var(--vds-space-3)]">
+            <Button
+              variant="secondary"
+              size="md"
+              loading={exporting}
+              disabled={exporting || picked.length === 0 || !actions.saveBibtex}
+              data-testid="search-export-bib"
+              onClick={() => void exportPapers(picked)}
             >
-              {t(SEARCH_STATUS_KEYS[status])}
-            </Tag>
+              <Upload size="1em" aria-hidden="true" />
+              {t('batch.export')}
+            </Button>
+            {JoinBatch ? (
+              <JoinBatch
+                papers={joinable}
+                source={heldSource}
+                selection={selection}
+                onJoined={onJoined}
+              />
+            ) : (
+              <JoinLibraryMenu
+                papers={joinable}
+                selection={selection}
+                size="md"
+                variant="primary"
+                onJoined={onJoined}
+              />
+            )}
           </div>
-          {picked.length > 0 ? (
-            <div className="ml-auto flex min-h-[var(--vds-control-height-md)] shrink-0 items-center gap-[var(--vds-space-3)]">
-              <span className="text-[length:var(--vds-font-body-lv2)] tabular-nums text-[var(--vds-text-secondary)]">
-                {t('batch.selected', { count: picked.length })}
-              </span>
-              <JoinLibraryMenu papers={picked} size="md" variant="primary" onJoined={onJoined} />
-            </div>
-          ) : null}
         </header>
-        <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col gap-[var(--vds-space-4)] overflow-auto px-[var(--vds-space-5)] py-[var(--vds-space-4)]">
+        <ScrollArea
+          overlay
+          overlayScrollOnly
+          className="flex min-h-0 w-full min-w-0 flex-1 flex-col"
+          viewportClassName="min-h-0 flex-1 px-[var(--vds-space-5)] py-[var(--vds-space-4)] [&>div]:flex [&>div]:flex-col [&>div]:gap-[var(--vds-space-4)]"
+          viewportProps={{ 'aria-label': t('result.receipt') }}
+        >
           {streamError ? (
             <Alert tone="error" title={t('search.streamFailed')} description={streamError} />
           ) : null}
@@ -486,42 +505,6 @@ function SearchContents({
           ) : null}
           {warning ? <Alert tone="warning" description={warning} /> : null}
 
-          <Collapsible
-            className="!gap-[var(--vds-space-4)]"
-            open={processOpen}
-            onOpenChange={setProcessOpen}
-          >
-            <CollapsibleTrigger asChild>
-              <Button
-                variant="outline"
-                size="sm"
-                className="!w-fit max-w-full !justify-start gap-[var(--vds-space-2)] !rounded-[var(--vds-radius-4)] !border-[var(--vds-border-default)] !px-[var(--vds-space-3)]"
-              >
-                <span className="flex min-w-0 flex-wrap items-center gap-[var(--vds-space-2)]">
-                  {running ? <Spinner size="sm" /> : <Icon name="sparkle" size={15} />}
-                  <span className="font-[var(--vds-fw-semibold)] text-[var(--vds-text-primary)]">
-                    {t('search.output')}
-                  </span>
-                  {elapsed ? (
-                    <span className="font-[var(--vds-fw-regular)] text-[var(--vds-text-tertiary)]">
-                      {t('search.elapsed', { elapsed })}
-                    </span>
-                  ) : null}
-                </span>
-                <span
-                  aria-hidden="true"
-                  className={`inline-flex shrink-0${processOpen ? ' rotate-180' : ''}`}
-                >
-                  <Icon name="chevron-down" size={14} />
-                </span>
-              </Button>
-            </CollapsibleTrigger>
-            <CollapsibleContent className="[--vds-collapsible-content-padding:var(--vds-space-2)]">
-              <pre className="m-0 max-h-[var(--vds-layout-session-output-max-height)] overflow-y-auto whitespace-pre-wrap break-words font-[family-name:var(--vds-font-code)] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-subhead)] text-[var(--vds-text-secondary)]">
-                {processText || (running ? t('search.starting') : t('search.noOutput'))}
-              </pre>
-            </CollapsibleContent>
-          </Collapsible>
           {!running && papers.length === 0 ? (
             <EmptyState
               title={t('search.noResults')}
@@ -532,21 +515,22 @@ function SearchContents({
               }
             />
           ) : !running ? (
-            <section className="flex shrink-0 flex-col overflow-hidden rounded-[var(--vds-radius-6)] border border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)]">
+            <section className="flex shrink-0 flex-col overflow-hidden rounded-[var(--vds-radius-6)] border border-[var(--vds-border-default)] bg-transparent">
               <div className="relative min-h-0 overflow-hidden">
                 <div className="min-w-0 overflow-x-auto">
                   <div style={{ minWidth: columns.minWidth }}>
                     <div
-                      className={`sticky top-0 z-[var(--vds-z-elevated)] grid ${columns.grid} items-center gap-[var(--vds-space-3)] border-b border-[var(--vds-border-default)] bg-[var(--vds-surface-muted)] px-[var(--vds-space-3)] py-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv1)] font-[var(--vds-fw-semibold)] text-[var(--vds-text-secondary)]`}
+                      data-testid="search-table-header"
+                      className={`sticky top-0 z-[var(--vds-z-elevated)] grid ${columns.grid} items-center gap-[var(--vds-space-3)] border-b border-[var(--vds-border-default)] bg-[var(--vds-fill-4)] px-[var(--vds-space-3)] py-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] text-[var(--vds-text-tertiary)]`}
                     >
                       <Checkbox
                         aria-label={t('search.selectAll')}
                         checked={allShownSelected}
+                        disabled={selectableShown.length === 0}
                         onCheckedChange={(checked) =>
                           setSelected((current) => {
                             const next = new Set(current)
-                            shown.forEach((paper) => {
-                              if (isSaved(paper)) return
+                            selectableShown.forEach((paper) => {
                               if (checked) next.add(paper.paper_id)
                               else next.delete(paper.paper_id)
                             })
@@ -556,6 +540,7 @@ function SearchContents({
                       />
                       <span>{t('search.literature')}</span>
                       <span>{t('search.reason')}</span>
+                      {columns.abstract ? <span>{t('search.abstract')}</span> : null}
                       {columns.access ? (
                         <span>
                           {reviewResults
@@ -569,16 +554,20 @@ function SearchContents({
                         <div
                           key={paper.paper_id}
                           data-testid={`search-paper-${paper.paper_id}`}
-                          data-active={focusedId === paper.paper_id}
-                          className={`grid min-h-[var(--vds-layout-search-row-min-height)] max-h-[var(--vds-layout-search-row-max-height)] cursor-pointer ${columns.grid} grid-rows-[minmax(0,1fr)] items-start gap-[var(--vds-space-3)] border-b border-[var(--vds-divider-default)] px-[var(--vds-space-3)] py-[var(--vds-space-3)] hover:bg-[var(--vds-surface-muted)] data-[active=true]:bg-[var(--vds-surface-muted)]`}
-                          onClick={() => setFocusedId(paper.paper_id)}
+                          data-active={detailOpen && focusedId === paper.paper_id}
+                          className={`grid cursor-pointer ${columns.grid} items-start gap-[var(--vds-space-3)] border-b border-[var(--vds-divider-default)] px-[var(--vds-space-3)] py-[var(--vds-space-3)] hover:bg-[var(--vds-fill-4)] active:bg-[var(--vds-fill-4)] data-[active=true]:bg-[var(--vds-fill-4)]`}
+                          onClick={() => {
+                            setFocusedId(paper.paper_id)
+                            setDetailOpen(true)
+                          }}
                         >
                           <span onClick={(event) => event.stopPropagation()}>
                             <Checkbox
+                              className="disabled:opacity-[var(--vds-opacity-full)] [&:disabled_.vds-checkbox__box]:!border-[var(--vds-brand-bg-disabled)] [&:disabled_.vds-checkbox__box]:!bg-[var(--vds-brand-bg-disabled)]"
                               aria-label={t('list.select', {
                                 title: paper.title,
                               })}
-                              checked={selected.has(paper.paper_id)}
+                              checked={isSaved(paper) || selected.has(paper.paper_id)}
                               disabled={isSaved(paper)}
                               onCheckedChange={(checked) =>
                                 setSelected((current) => {
@@ -590,30 +579,25 @@ function SearchContents({
                               }
                             />
                           </span>
-                          <div className="min-h-0 min-w-0 max-h-full overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-                            <strong className="line-clamp-2 text-[length:var(--vds-font-body-lv2)] text-[var(--vds-text-primary)]">
+                          <div className="min-w-0 font-[var(--vds-fw-regular)]">
+                            <strong className="line-clamp-2 text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-medium)] text-[var(--vds-text-primary)]">
                               <PaperSourceLink paper={paper}>{paper.title}</PaperSourceLink>
                             </strong>
                             <PaperMetadata paper={paper} />
-                            <div className="mt-[var(--vds-space-2)] flex flex-wrap items-center gap-[var(--vds-space-2)]">
+                            <div className="mt-[var(--vds-space-2)] flex flex-wrap items-center gap-[var(--vds-space-2)] empty:hidden">
                               {!isSaved(paper) && (
                                 <LibraryStatusNotice status={libraryStatuses?.[paper.paper_id]} />
-                              )}
-                              {isSaved(paper) ? (
-                                <JoinedLabel />
-                              ) : (
-                                <JoinLibraryMenu
-                                  papers={[paper]}
-                                  size="md"
-                                  variant="outline"
-                                  onJoined={onJoined}
-                                />
                               )}
                             </div>
                           </div>
                           <p tabIndex={0} className={RESULT_BODY_CELL_CLASS}>
                             {paper.reason || t('search.detailUnknown')}
                           </p>
+                          {columns.abstract ? (
+                            <p tabIndex={0} className={RESULT_BODY_CELL_CLASS}>
+                              {paper.abstract || t('search.detailUnknown')}
+                            </p>
+                          ) : null}
                           {columns.access ? (
                             <FulltextAccessBadge
                               access={paper.access}
@@ -634,12 +618,27 @@ function SearchContents({
                 </div>
               </div>
             </section>
-          ) : null}
-        </div>
+          ) : (
+            <div className="flex flex-1 items-center justify-center">
+              <Spinner aria-label={t('search.starting')} />
+            </div>
+          )}
+        </ScrollArea>
       </div>
+      {focused && detailOpen ? (
+        <Button
+          unstyled
+          className="absolute inset-0 z-[var(--vds-z-local-control)]"
+          aria-label={t('search.collapseDetail')}
+          tabIndex={-1}
+          onClick={() => setDetailOpen(false)}
+        />
+      ) : null}
       {focused ? (
         <aside
-          className="relative z-[var(--vds-z-surface-panel)] flex h-full min-h-0 max-w-full shrink-0 flex-col overflow-hidden border-l border-[var(--vds-border-default)] bg-[var(--vds-surface-muted)] shadow-[var(--vds-shadow-3-left)]"
+          className="absolute inset-y-0 right-0 z-[var(--vds-z-surface-panel)] flex min-h-0 max-w-full flex-col overflow-hidden border-l border-[var(--vds-border-default)] bg-[var(--vds-surface-muted)] shadow-[var(--vds-shadow-3-left)] transition-[translate,visibility] duration-[var(--vds-duration-normal)] ease-[var(--vds-ease-standard)] motion-reduce:transition-none data-[open=false]:invisible data-[open=false]:translate-x-full motion-safe:starting:translate-x-full"
+          data-open={detailOpen}
+          inert={!detailOpen}
           style={{
             width: SEARCH_RESULTS_ASIDE_WIDTH,
           }}
@@ -659,7 +658,7 @@ function SearchContents({
                 icon={<Icon name="close" size={16} />}
                 size="sm"
                 variant="ghostIcon"
-                onClick={() => setFocusedId('')}
+                onClick={() => setDetailOpen(false)}
               />
             </div>
             <div className="mt-[var(--vds-space-2)]">
@@ -758,20 +757,24 @@ function SearchContents({
               ) : null}
             </div>
           </div>
-          <footer className="grid shrink-0 gap-[var(--vds-space-2)] border-t border-[var(--vds-border-default)] bg-[var(--vds-surface-muted)] p-[var(--vds-space-4)]">
-            {!isSaved(focused) && (
-              <LibraryStatusNotice status={libraryStatuses?.[focused.paper_id]} />
-            )}
+          <footer className="grid shrink-0 gap-[var(--vds-space-2)] border-t border-[var(--vds-border-default)] bg-[var(--vds-surface-muted)] p-[var(--vds-space-4)] empty:hidden">
             {isSaved(focused) ? (
-              <JoinedLabel />
+              <div className="flex flex-wrap items-center justify-end gap-[var(--vds-space-2)]">
+                {actions.saveBibtex ? (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    loading={exporting}
+                    disabled={exporting}
+                    onClick={() => void exportPapers([focused])}
+                  >
+                    <Upload size="1em" aria-hidden="true" />
+                    {t('batch.export')}
+                  </Button>
+                ) : null}
+              </div>
             ) : (
-              <JoinLibraryMenu
-                className="w-full"
-                papers={[focused]}
-                size="md"
-                variant="outline"
-                onJoined={onJoined}
-              />
+              <LibraryStatusNotice status={libraryStatuses?.[focused.paper_id]} />
             )}
           </footer>
         </aside>

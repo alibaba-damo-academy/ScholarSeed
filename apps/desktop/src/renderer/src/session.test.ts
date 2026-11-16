@@ -7,6 +7,7 @@ import { Trans } from 'react-i18next'
 import { createInstance } from 'i18next'
 import zh from '../../localization/locales/zh/assistant.json' with { type: 'json' }
 import en from '../../localization/locales/en/assistant.json' with { type: 'json' }
+import { expressions, jsxWithAttributes } from '../../test-helpers/syntax.ts'
 import {
   draftSessionTitle,
   mergedSessionTitle,
@@ -226,7 +227,10 @@ test('delete confirmation redraws stored error keys and interpolates original co
   assert.match(dialog, /if \(r.status === 409\) setErr\('delete.stopFailed'\)/)
   assert.match(dialog, /act.removeSession\(cd.sessionId, cd.surface\)/)
   assert.match(dialog, /<AlertDialog\s+open\s+onOpenChange=/)
-  assert.match(dialog, /<AlertDialogAction\s+variant="danger"\s+disabled=\{busy\}/)
+  const content = jsxWithAttributes(source, { 'data-testid': 'session-delete-confirm' })
+  const action = jsxWithAttributes(content, { variant: 'danger' })
+  assert.match(action, /^<AlertDialogAction\b/)
+  expressions(action)('busy || children.count === null', { attribute: 'disabled' })
   assert.match(dialog, /event\.preventDefault\(\);?\s+void onDelete\(\)/)
   assert.doesNotMatch(dialog, /<button/)
   assert.doesNotMatch(dialog, /values=\{\{ name:/)

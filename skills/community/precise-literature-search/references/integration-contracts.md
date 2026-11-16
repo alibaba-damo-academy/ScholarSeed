@@ -134,21 +134,12 @@ with the serve-returned `ref` and `revision` and `file_path: null`. The skill
 never fetches, downloads or unpacks full-text bytes inside the sandbox, and
 never requests sandbox escalation or any elevated permission.
 
-After all acquisition batches finish, `literature delivery` with the same run
-freezes Serve's durable acquisition list and publishes a product save card.
-Its `delivery_id`, `acquired` count and pending state are not file-save receipts.
-Destination selection, saving, optional primary-PDF library admission, cancellation
-and retry are product UI operations independent of the agent turn's read receipt.
-The agent must not provide filesystem destinations or claim saved PDFs without a
-confirmed product save outcome. Original managed PDFs remain outside the run.
+Acquisition provides managed, authorized evidence only. It does not save files to a user directory or add papers to the library. Research results own explicit library and BibTeX actions.
 
 Reading managed full texts uses the `pdf read` tool operation with the entry's
 `ref_id` (`paper:<id>`); serve checks the authorization of every ref on every
-read. Requests page through **evidence fragments**, not PDF pages:
-`{"ref_id":…,"offset":0,"limit":…,"span":…}`, then advancing `offset` to the
-response's `next_offset` until it is `null` (`span` is the consecutive source
-fragments per window and may cross adjacent pages). `pdf list` returns the ref ids this turn
-may read, and `pdf search` (`{"ref_id":…,"query":…}`) jumps to a targeted passage.
+read. Follow the [reader prompt](../modules/pdf-reader/PDF_READER_AGENT.md) for
+tool use and [reading outcomes](reading-outcome.md) for scope and completion.
 The text the reader actually used is cached at
 `work-reading/<paper_id>.txt` and is the run-contained evidence named by
 `reading-outcome.json`; that cache may be regenerated on demand and is never an
@@ -172,11 +163,9 @@ Use `download_recovery.py --help` for explicit manual recovery/retry/skip action
 terminal `skipped` entries are not recovery candidates.
 
 
-Read [reading-outcome.md](reading-outcome.md) before claiming full-text reading.
-The reading outcome binds downloaded IDs/files, the round and manifest hash.
-Unreadable files become exclusions. Zero readable PDFs produce an honest
-limitations answer, not invented summaries. A separate substantive abstract
-alert uses `[A#]` attribution and cannot be cited as readable full text.
+Follow [reading outcomes](reading-outcome.md) for manifest binding, reading
+completion and the no-readable-full-text case. Abstract-level alerts follow the
+[final-report prompt](../modules/final-report/FINAL_REPORT_AGENT.md#abstract-level-alerts).
 
 `read_report.md` records coverage and exclusions; `paper_summary.md` holds source-based
 per-paper findings and three-sentence interaction summaries; `final_report.md`

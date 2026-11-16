@@ -79,6 +79,8 @@ python -m service.cli.plugins check ./paper-reading-notes-0.1.0.zip
 
 桌面命令会下载固定版本 Python 并准备 `.venv`，默认流程无需另外安装 Python。运行时制品从清单中审核过的 HTTPS 地址下载，校验大小与 SHA-256 后缓存到本机，不依赖 Git LFS。首次准备需要联网获取 JavaScript／Python 依赖和运行时制品。
 
+本升级候选冻结 CPython 3.14.10 标准 GIL 版本，库包另外保留 Python >=3.12 的兼容承诺。macOS 依赖选择与原生 wheel 修复按产品 13.0 下限执行；源码构建需要目标平台编译器。构建或静态最低版本检查通过，不替代原生平台和真实 Desktop 验收。
+
 ### macOS
 
 不要求安装 Homebrew。从源码启动时也会编译原生模块，不是只有构建 DMG 才需要这些工具。先安装 [Apple 命令行工具](https://developer.apple.com/documentation/xcode/installing-the-command-line-tools/)，按系统弹窗完成后再继续；已有可用的 Xcode 工具链时无需重复安装：

@@ -100,6 +100,9 @@ class FsNative implements DomainNative {
   createAt(pin: unknown, name: string, bytes: Buffer): void {
     writeFileSync(join((pin as { path: string }).path, name), bytes)
   }
+  replaceAt(pin: unknown, name: string, bytes: Buffer): void {
+    writeFileSync(join((pin as { path: string }).path, name), bytes)
+  }
   createChild(pin: unknown, name: string): string {
     const child = join((pin as { path: string }).path, name)
     mkdirSync(child)

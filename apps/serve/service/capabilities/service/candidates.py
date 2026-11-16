@@ -21,6 +21,7 @@ CANDIDATE_LIMIT = 4
 CANDIDATE_LIFETIME_SECONDS = 900
 CANDIDATE_TOKEN_BYTES = 32
 HOST_VALIDATION_STAGE = "host"
+CANDIDATE_SNAPSHOT_MISSING = "plugin_candidate_snapshot_missing"
 
 
 @dataclass(frozen=True)
@@ -180,4 +181,6 @@ class Candidates:
 
     def preview(self, token: str, sha256: str) -> dict[str, Any]:
         candidate = self.get(token, sha256)
+        if candidate.snapshot is None:
+            raise ValueError(CANDIDATE_SNAPSHOT_MISSING)
         return dict(candidate.snapshot)

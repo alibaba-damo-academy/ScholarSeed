@@ -195,13 +195,15 @@ class PendingRequests:
         error = message.get("error")
         if isinstance(error, Mapping):
             raw_code = error.get("code")
+            rpcCode = (
+                raw_code if isinstance(raw_code, int) and not isinstance(raw_code, bool) else None
+            )
             if (
-                type(raw_code) is int
-                and raw_code == RPC_METHOD_NOT_FOUND
+                rpcCode == RPC_METHOD_NOT_FOUND
                 and pending.submission.state is not RpcSubmissionState.ACCEPTED
             ):
                 pending.submission.state = RpcSubmissionState.NOT_SUBMITTED
-            code = str(raw_code) if type(raw_code) is int else "unknown"
+            code = str(rpcCode) if rpcCode is not None else "unknown"
             raw_message = error.get("message")
             safe_error = rpc_failure(pending.method, pending.thread_id, raw_code, raw_message)
             diagnostic = native_diagnostic(
@@ -210,8 +212,7 @@ class PendingRequests:
                 windows_command_failure=(
                     sys.platform == WINDOWS_PLATFORM
                     and pending.method == SANDBOX_EXECUTION_METHOD
-                    and type(raw_code) is int
-                    and raw_code == RPC_INTERNAL_ERROR
+                    and rpcCode == RPC_INTERNAL_ERROR
                 ),
             )
             latency_ms = max(
@@ -219,13 +220,16 @@ class PendingRequests:
             )
             LOGGER.warning(
                 "codex_rpc_rejected method=%s code=%s request_id=%s generation=%s pid=%s "
-                "latency_ms=%s %s",
+                "latency_ms=%s native_stage=%s native_code_type=%s native_code=%s %s",
                 pending.method,
                 code,
                 request_id,
                 generation,
                 pid,
                 latency_ms,
+                diagnostic.native_stage,
+                diagnostic.code_type,
+                diagnostic.code,
                 diagnostic.summary,
             )
             pending.future.set_exception(
@@ -234,7 +238,7 @@ class PendingRequests:
                     safe_error=safe_error,
                     method=pending.method,
                     generation=generation,
-                    rpc_code=raw_code if type(raw_code) is int else None,
+                    rpc_code=rpcCode,
                     rpc_latency_ms=latency_ms,
                     rpc_request_id=int(str(request_id)),
                     rpc_pid=pid,

@@ -11,23 +11,38 @@ from generation_errors import GenerationError, diagnostic
 from chapter_plan import compile_plan, cards_plain, TERMINAL
 from asset_plan import derive
 from manuscript_delta import apply_delta, REFINE_GUIDANCE
+from writing_contract import digest
 from figure_caption import CAPTION_CONTENT_GUIDANCE
 from native_document import assemble, extension, figure_files, chapter_frame, complete_chapter
 from writing_prompt_guidance import TASK_GUIDANCE, MANUSCRIPT_WRITING_GUIDANCE
-from citation_identity import authoring_view, normalize_citations
+from citation_identity import authoring_view, normalize_citations, require_evidence_references
+from strategy import policy
+from paper_materials import is_quick
+from quick import generate as generate_quick
 from platform_io import file_lock
 from bibliography_contract import inspect_bibliography
 from templates import LATEX_AUTHORING_GUIDANCE
 from manuscript_publication import precompile
+from usage import summarize, accumulate, WRITING_STAGES
 from abstract_contract import (ABSTRACT_GUIDANCE, ABSTRACT_CHAPTER_GUIDANCE,
                                ABSTRACT_REPAIR_GUIDANCE, inspect_abstracts)
+
+PUBLISH_ACTION = (
+    'After inspecting v2 and before workflow publish, read host update_plan/get and finish the actual writing step. '
+    'Read get again, then start the actual publication step using the new revision. '
+    'Call the host tool directly with its declared schema; no saved response file or progress CLI is needed. '
+    'Run workflow publish only after publication is in_progress; inspect and deliver the actual file, '
+    'then read get and finish that step. Preserve original request arguments for an uncertain retry.'
+)
 
 CHAPTER_GUIDANCE = r'''Write the assigned chapter as a raw native continuation: LaTeX for
 latex_pdf, Markdown for markdown. The script records its ID and assembles it.
 
 CHAPTER SCOPE AND OPENING
-Use assigned analytical tasks, all supplied paper-card business content, local
-instructions and confirmed subsection titles. The last message supplies the
+Complete the assigned analytical tasks within the explicit scope and length.
+Select relevant supported evidence: the complete card set supplies context, not
+a requirement to repeat every fact. Preserve local instructions and confirmed
+subsection titles. The last message supplies the
 script-written opening: continue after it. Direct children of \section use
 \subsection with supplied labels; children of ## use ###. Start with prose when
 no subheading is needed. An abstract is prose only; its closing wrapper is scripted.
@@ -37,8 +52,13 @@ wrapper, code fence, repeated opening nor a complete document/template/byline.
 LANGUAGE AND EVIDENCE
 The packet's output_language governs prose, subheadings and table captions/cells. Standard
 technical symbols, terms and proper names may retain their normal form. Use only
-supplied citation keys through \citep or \citet for LaTeX; preserve mathematics and
-escape literal special characters, without JSON-escaping native output.
+supplied citation keys. LaTeX source uses \citep{key} or \citet{key}; Markdown and
+DOCX authoring source uses \cite{key}. Keep these identity-bearing tokens until
+publication. The publisher renders the requested numeric or author-year labels
+and reference entries. Preserve mathematical structure with native math syntax:
+LaTeX math in LaTeX source, dollar-delimited math in Markdown and DOCX authoring
+source, or unambiguous prose. Keep operators, grouping and upper/lower roles;
+escape only literal prose special characters, without JSON-escaping native output.
 
 ASSET OWNERSHIP
 asset_contract is the complete local asset permission list, derived from the
@@ -58,11 +78,10 @@ caption for them. Table references likewise use labels, not guessed print number
 
 ''' + '\n' + CAPTION_CONTENT_GUIDANCE + r'''
 CONCURRENT HANDOFF
-All chapters run concurrently. Resolve notation from the outline/prerequisites;
-do not wait for another chapter. Abstract/synthesis/conclusion receive full
-context for synthesis, but still author only their assigned scope and assets.
-The single refinement reconciles the assembled document; completed responses
-with editorial defects are retained for refinement or main, never regenerated.
+Resolve notation from the outline and prerequisites. Use completed_dependency_sections
+when supplied to ground synthesis in the actual body. Author only this chapter's
+scope and assets. The request states whether whole-document refinement is scheduled.
+Each response must satisfy its contract regardless of that later stage.
 '''
 CHAPTER_SYSTEM = (TASK_GUIDANCE + '\n' + MANUSCRIPT_WRITING_GUIDANCE + '\n' +
                   CHAPTER_GUIDANCE)
@@ -89,8 +108,9 @@ column or a concise table note instead.
 
 Height matters independently of width: table and tabularx cannot break across
 pages. If descriptions make a table too tall for one page, shorten redundant
-wording while preserving evidence, or use a standalone longtable with bounded
-p{...} columns. The template loads longtable. Never nest longtable in table,
+wording while preserving evidence, or, in a single-column portion, use a standalone longtable with bounded
+p{...} columns. In IEEE/ICML/AAAI two-column layouts use table* for full-width
+nonbreaking tables; longtable requires switching to a single-column portion and restoring the layout. The template loads longtable. Never nest longtable in table,
 resizebox or another unbreakable box; X columns require tabularx and do not work
 in plain longtable. Use endfirsthead/endhead to repeat column headers and place
 the planned caption and label once. Preserve every planned row and comparison
@@ -154,6 +174,10 @@ def chapter_system(packet):
     if packet.get('shared_tables') and packet.get('chapter_kind') != 'abstract':
         sections.append(TABLE_AUTHORING_GUIDANCE_LATEX if packet.get('output_format') == 'latex_pdf'
                         else TABLE_AUTHORING_GUIDANCE_MARKDOWN)
+    if packet.get('refinement_scheduled', True):
+        sections.append('One whole-document refinement follows assembly. Produce a complete chapter now.')
+    else:
+        sections.append('This is the final scripted writing pass. Use the supplied completed body for synthesis; no whole-document refinement follows.')
     return '\n'.join(sections)
 
 
@@ -194,6 +218,8 @@ def packet_for(jobs,plan,outline,assets,cards,keys,task,request,completed,format
     paper_ids=list(dict.fromkeys(pid for j in jobs for pid in j['paper_ids']))
     terminal=any(j['role'] in TERMINAL for j in jobs)
     if terminal:paper_ids=list(cards)
+    require_evidence_references(authoring_view([job['plan'] for job in jobs] + [item for job in jobs for item in job['prerequisites']],keys),
+                                [keys[identity] for identity in paper_ids])
     dependency_text=[]
     selected=local_outline(outline,ids);owned=assets_for(assets,ids)
     owned['shared_tables']=[{**table,'allowed_cite_keys':
@@ -205,6 +231,7 @@ def packet_for(jobs,plan,outline,assets,cards,keys,task,request,completed,format
     default_language_value=request.get('language','ENGLISH').lower()
     output_language=section_language(owner,default_language_value)
     packet={'stage':'chapter_generation','chapter_ids':ids,'task':global_task,
+            'section_role':jobs[0]['role'],'refinement_scheduled':policy(request)['refine'],
             'default_language':default_language_value,'output_language':output_language,
             'language_source':'default' if str(owner.get('language','default')).lower()=='default' else 'outline_override',
             'review_thesis':plan['review_thesis'],'organizing_axis':plan['organizing_axis'],
@@ -230,7 +257,7 @@ def prepare_packets(ws,contract,outline,assets,cards,keys,task,spec):
     request=read_request(ws);plan=compile_plan(outline,set(keys))
     cfg=load_stage_config('chapter_generation');entries=[]
     for job in plan['jobs']:
-        packet=packet_for([job],plan,outline,assets,cards,keys,task,request,{},spec['format'])
+        packet=packet_for([job],plan,outline,assets,cards,keys,task,request,{},'markdown' if spec['format']=='docx' else spec['format'])
         path=ws/'05_generation/_internal/chapter_packets'/f"{job['section_id']}.json"
         messages=chapter_messages(packet, keys)
         checked=capacity(messages,cfg) if cfg else None
@@ -240,6 +267,8 @@ def prepare_packets(ws,contract,outline,assets,cards,keys,task,spec):
 
 
 async def generate(workspace,chapter_cfg=None,refine_cfg=None,client=None):
+    if is_quick(workspace):
+        return await generate_quick(workspace,config=chapter_cfg,client=client)
     ws=Path(workspace).resolve();internal=ws/'05_generation/_internal'
     internal.mkdir(parents=True,exist_ok=True)
     with file_lock(internal/'chapter_pipeline.lock'):
@@ -248,17 +277,29 @@ async def generate(workspace,chapter_cfg=None,refine_cfg=None,client=None):
 
 async def _generate(ws,chapter_cfg,refine_cfg,client):
     from manuscript import prepare
-    from scripted_generation import invoke
+    from scripted_generation import invoke, parse_response
     from load_model_config import load_stage_config
     gen=ws/'05_generation'
-    # Once handed off, publication source is independent of all generation data.
     existing=next((gen/f'full_draft_v2.{s}' for s in ('tex','md')
                    if (gen/f'full_draft_v2.{s}').exists()),None)
     if existing:
         from manuscript_publication import publication_source
-        publication_source(ws)  # Refuse an ambiguous historical v2/v3 workspace.
-        return {'status':'SUCCESS','state':'main_editable','artifact':str(existing),
+        publication_source(ws)
+        result={'status':'SUCCESS','state':'main_editable','artifact':str(existing),
                 'model_calls':0,'next_action':'Edit v2 directly and run workflow publish.'}
+        status_path=ws/'_status/writing.json'
+        previous=read(status_path) if status_path.exists() else {}
+        result={**previous,**result}
+        result.pop('error',None);result.pop('code',None)
+        result.update(accumulate(previous,result,0),model_usage=summarize(ws,WRITING_STAGES))
+        result['elapsed_sec']=result['cumulative']['elapsed_sec']
+        result['model_calls']=result['model_usage']['totals']['attempts']
+        save(status_path,result)
+        return result
+    saved_packet=read(gen/'refine.packet.json') if (gen/'refine.packet.json').exists() else {}
+    if ((gen/'_internal/refinement_task.json').exists() or (gen/'refine.commit.json').exists()
+            or 'audit_contract' in saved_packet):
+        raise GenerationError('LEGACY_WORKSPACE','Preserve this historical audit task; use a new workspace for ordinary refinement.')
     contract_path=gen/'_internal/manuscript_contract.json'
     if not contract_path.exists() or not (gen/'_internal/chapter_packets.json').exists():prepare(ws)
     contract=read(contract_path)
@@ -277,9 +318,13 @@ async def _generate(ws,chapter_cfg,refine_cfg,client):
             'jobs':previous.get('jobs',{})}
     def update(state=None):
         if state:status['state']=state
-        status['elapsed_sec']=round(time.monotonic()-started,3)
-        save(status_path,status)
+        report={**status,**accumulate(previous,status,time.monotonic()-started),
+                'model_usage':summarize(ws,WRITING_STAGES)}
+        report['elapsed_sec']=report['cumulative']['elapsed_sec']
+        report['model_calls']=report['model_usage']['totals']['attempts']
+        save(status_path,report)
     update()
+    semaphore=asyncio.Semaphore(read_request(ws)['chapter_concurrency'])
     async def author(packet):
         sid=packet['chapter_ids'][0];path=gen/'chapters'/f'{sid}.{suffix}'
         if status['jobs'].get(sid,{}).get('state')=='complete' and path.exists():
@@ -287,7 +332,8 @@ async def _generate(ws,chapter_cfg,refine_cfg,client):
         status['jobs'][sid]={'state':'running'};update()
         messages=chapter_messages(packet, cite_key_map)
         try:
-            text,metrics=await invoke(ws,'chapter_'+sid,messages,chapter_cfg,client=client,json_output=False)
+            async with semaphore:
+                text,metrics=await invoke(ws,'chapter_'+sid,messages,chapter_cfg,client=client,json_output=False)
             text,repairs=normalize_citations(text,cite_key_map)
             save(path,complete_chapter(packet,text))
             status['model_calls']+=metrics['model_calls']
@@ -299,9 +345,20 @@ async def _generate(ws,chapter_cfg,refine_cfg,client):
         finally:update()
     try:
         # All siblings finish; only failed calls are attempted on a later resume.
-        results=await asyncio.gather(*(author(p) for p in packets),return_exceptions=True)
-        failures=[r for r in results if isinstance(r,BaseException)]
-        if failures:raise failures[0]
+        refinement_scheduled = policy(read_request(ws))['refine']
+        body_packets = [packet for packet in packets if packet.get('section_role') not in TERMINAL]
+        synthesis_packets = [packet for packet in packets if packet.get('section_role') in TERMINAL]
+        groups = [packets] if refinement_scheduled else [body_packets, synthesis_packets]
+        for group in groups:
+            if not refinement_scheduled and group is synthesis_packets:
+                body = [{'section_id': packet['chapter_ids'][0],
+                         'content': (gen/'chapters'/f"{packet['chapter_ids'][0]}.{suffix}").read_text()}
+                        for packet in body_packets]
+                group = [{**packet, 'completed_dependency_sections': body} for packet in group]
+            results = await asyncio.gather(*(author(packet) for packet in group), return_exceptions=True)
+            failures = [result for result in results if isinstance(result, BaseException)]
+            if failures:
+                raise failures[0]
         update('waiting_figures')
         deadline=time.monotonic()+refine_cfg.get('figure_wait_timeout_sec',1800)
         while True:
@@ -322,7 +379,17 @@ async def _generate(ws,chapter_cfg,refine_cfg,client):
             outline=read(gen/'_internal/manuscript_outline.json')['outline']
             assemble(ws,outline,packets,spec,figures)
         normalized,repairs=normalize_citations(v1.read_text(),cite_key_map)
+        if repairs and (gen/'refine.packet.json').exists():
+            raise GenerationError('REFINEMENT_INPUT_CHANGED','Preserved v1 would require citation changes; nothing overwritten')
         if repairs:save(v1,normalized)
+        if not policy(read_request(ws))['refine']:
+            require_evidence_references(normalized, cite_key_map.values())
+            save(v2,normalized)
+            update('main_editable')
+            status.update(status='SUCCESS',artifact=str(v2),refinement='not_scheduled',
+                          next_action=PUBLISH_ACTION+' Repair concrete diagnostics in v2; do not start a full refinement pass.')
+            save(status_path,status)
+            return status
         update('refining')
         # V1 includes actual image wrappers/captions. Included text dependencies
         # are supplied in full as independent delta targets, never just paths.
@@ -330,11 +397,12 @@ async def _generate(ws,chapter_cfg,refine_cfg,client):
         from native_table_layout import inspect_native_tables
         from native_asset_checks import inspect_native_assets, inspect_chapter_figures
         packet_path=gen/'refine.packet.json'
+        sources,paths=source_bundle(v1)
         if packet_path.exists():
-            packet=read(packet_path);sources=packet['sources']
-            paths={key:v1 if key=='main' else gen/key for key in sources}
+            packet=read(packet_path)
+            if packet.get('sources')!=sources:
+                raise GenerationError('REFINEMENT_INPUT_CHANGED','Current source bundle differs from preserved refinement packet; nothing overwritten')
         else:
-            sources,paths=source_bundle(v1)
             packet={'sources':sources,'output_format':spec['format'],
                     'task':packets[0]['task'],'confirmed_outline':read(gen/'_internal/manuscript_outline.json')['outline'],
                     'evidence':contract['evidence'],
@@ -348,6 +416,7 @@ async def _generate(ws,chapter_cfg,refine_cfg,client):
                       if suffix=='tex' else {'status':'SUCCESS','tables_checked':0,'issues':[]})
         save(gen/'_status/table_layout_precheck.json',table_report)
         request_packet=dict(packet);request_packet.pop('table_layout_warnings',None)
+        request_packet['output_format']='markdown' if suffix=='md' else 'latex_pdf'
         request_packet['resolved_section_languages']=contract.get('resolved_section_languages',{})
         asset_plan = derive(request_packet['confirmed_outline'])
         asset_report = inspect_native_assets(sources, asset_plan, spec['format'])
@@ -378,9 +447,9 @@ async def _generate(ws,chapter_cfg,refine_cfg,client):
         if table_report['issues']:
             request_packet['table_layout_warnings']=table_report['issues']
             refine_guidance += '\n' + TABLE_REPAIR_GUIDANCE
-        request_packet.pop('compilation_diagnostics', None)
-        request_packet.pop('publication_requirements', None)
-        if suffix == 'tex' and not (gen/'refine.response.txt').exists():
+        if suffix == 'tex' and not packet_path.exists():
+            request_packet.pop('compilation_diagnostics', None)
+            request_packet.pop('publication_requirements', None)
             compilation = await asyncio.to_thread(precompile, ws, v1)
             save(gen/'_status/compilation_precheck.json', compilation)
             if compilation['status'] == 'FAILED':
@@ -392,27 +461,35 @@ async def _generate(ws,chapter_cfg,refine_cfg,client):
                 request_packet['publication_requirements'] = (
                     LATEX_AUTHORING_GUIDANCE + '\nEnsure the complete document uses these template facilities and repair inconsistent mathematical notation and dependencies.'
                 )
-        save(packet_path,request_packet)
+        request_packet['refinement_protocol']='source-delta/v1'
         response=gen/'refine.response.txt';delta_path=gen/'delta.json'
+        receipt_path=gen/'refine.receipt.json'
+        identity=digest({'packet':authoring_view(request_packet,cite_key_map),
+                         'guidance':refine_guidance,'config':refine_cfg,
+                         'citation_keys':cite_key_map})
+        if packet_path.exists() and read(packet_path)!=request_packet:
+            raise GenerationError('REFINEMENT_INPUT_CHANGED','Preserved refinement inputs differ; nothing overwritten')
         if not response.exists():
+            if receipt_path.exists():
+                raise GenerationError('REFINEMENT_INCOMPLETE','Response is missing from a completed call; preserve its receipt and logs')
+            save(packet_path,request_packet)
             text,metrics=await invoke(ws,'refinement_delta',
                 [{'role':'system','content':refine_guidance},
                  {'role':'user','content':json.dumps(authoring_view(request_packet,cite_key_map),ensure_ascii=False)}],
                 refine_cfg,client=client,json_output=False)
-            status['model_calls']+=metrics['model_calls'];save(response,text)
-        from scripted_generation import parse_response
-        try:
-            delta=parse_response(response.read_text());save(delta_path,delta)
-            result,applied=apply_delta(sources,delta)
-        except GenerationError as exc:
-            result=sources;applied={'applied_edits':0,'issues':[diagnostic(exc)]}
-            save(gen/'refine.error.json',diagnostic(exc))
+            status['model_calls']+=metrics['model_calls']
+            save(receipt_path,{'identity':identity,'response_sha256':digest(text),'metrics':metrics})
+            save(response,text)
+        else:
+            receipt=read(receipt_path) if receipt_path.exists() else {}
+            if receipt.get('identity')!=identity or receipt.get('response_sha256')!=digest(response.read_text()):
+                raise GenerationError('REFINEMENT_INPUT_CHANGED','Response does not match its saved inputs; preserve completed work')
+        delta=parse_response(response.read_text());save(delta_path,delta)
+        result,applied=apply_delta(sources,delta)
         # All validation precedes writes. Retain frozen included files with v1.
         for target,text in result.items():
             text,repairs=normalize_citations(text,cite_key_map)
-            if target!='main':save(paths[target],text)
-            else:result['main']=text
-        save(v2,result['main'])
+            result[target]=text
         post_table_report=(inspect_native_tables(result['main'],planned_tables)
                            if suffix=='tex' else {'status':'SUCCESS','tables_checked':0,'issues':[]})
         save(gen/'_status/table_layout_postcheck.json',post_table_report)
@@ -420,16 +497,22 @@ async def _generate(ws,chapter_cfg,refine_cfg,client):
         save(gen/'_status/asset_contract_postcheck.json', post_asset_report)
         post_abstract_report=inspect_abstracts(result['main'],packets)
         save(gen/'_status/abstract_postcheck.json',post_abstract_report)
+        for target,text in result.items():
+            if target!='main':save(paths[target],text)
+        save(v2,result['main'])
         status.update(status='SUCCESS',artifact=str(v2),**applied,
                       abstract=post_abstract_report,
                       asset_contract=post_asset_report,
                       table_layout=post_table_report,
-                      refinement_applied=not (gen/'refine.error.json').exists(),
-                      next_action='Edit v2 and its dependencies directly; run workflow publish.')
+                      refinement_applied=True,
+                      next_action='Edit v2 and its dependencies directly. '+PUBLISH_ACTION)
         if post_abstract_report['issues']:
-            status['next_action']='Review abstract default deviations against user/template exceptions; repair v2 directly where needed, then run workflow publish.'
+            status['next_action']='Review abstract default deviations against user/template exceptions; repair v2 directly where needed. '+PUBLISH_ACTION
         update('main_editable')
-        return status
+        return read(status_path)
     except BaseException as exc:
+        if status.get('state')=='refining':
+            status['refinement_applied']=False
+            save(gen/'refine.error.json',diagnostic(exc) if isinstance(exc,Exception) else {'code':'CANCELLED'})
         status.update(status='FAILED',error=diagnostic(exc) if isinstance(exc,Exception) else {'code':'CANCELLED'})
         update();raise

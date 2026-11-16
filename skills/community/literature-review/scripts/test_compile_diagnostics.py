@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 import manuscript_publication
+from compilation import layout
 
 path = Path(__file__).resolve().parent / "generation/publish/_fast/phase07_compile_latex.py"
 spec = importlib.util.spec_from_file_location("compile_diagnostics", path)
@@ -16,6 +17,53 @@ spec.loader.exec_module(compiler)
 
 
 class CompileDiagnosticsTest(unittest.TestCase):
+    def test_layout_diagnostics_distinguish_material_overflow_from_other_warnings(self):
+        self.assertEqual(layout('LaTeX Warning: Label may have changed.\n'
+                                'Overfull \\hbox (0.2pt too wide) in paragraph')['status'], 'SUCCESS')
+        value = layout('Overfull \\hbox (12.5pt too wide) in paragraph at lines 7--8\n'
+                       'A formula and its cell.\n'
+                       'LaTeX Warning: Float too large for page by 400.0pt on input line 9.')
+        self.assertEqual(value['status'], 'FAILED')
+        self.assertEqual([item['kind'] for item in value['issues']], ['overfull_hbox', 'float_too_large'])
+        self.assertIn('lines 7--8', value['issues'][0]['context'])
+
+    def test_successful_tex_exit_with_overflow_does_not_publish_a_pdf(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            generation = root / '05_generation'
+            generation.mkdir()
+            source = generation / 'full_draft_v2.tex'
+            source.write_text(r'\documentclass{article}\begin{document}Evidence.\end{document}')
+            source.with_suffix('.pdf').write_bytes(b'%PDF-1.5 layout diagnostic fixture')
+            source.with_suffix('.log').write_text('LaTeX Warning: Float too large for page by 400.0pt on input line 9.')
+            with patch.object(manuscript_publication, 'synchronize', return_value={'format': 'latex_pdf'}), \
+                 patch.object(manuscript_publication, 'content_report', return_value={'blocking': False, 'checks': []}), \
+                 patch.object(manuscript_publication, 'metadata_check', return_value=[]), \
+                 patch.object(manuscript_publication, 'latex_engine', return_value='/tool/pdflatex'), \
+                 patch.object(manuscript_publication, '_run', return_value=subprocess.CompletedProcess([], 0, '', '')), \
+                 patch.object(manuscript_publication, '_export', side_effect=AssertionError('overflow must not be promoted')):
+                result = manuscript_publication.publish(root)
+            self.assertEqual(result['status'], 'FAILED')
+            self.assertEqual(result['code'], 'LATEX_LAYOUT_ERROR')
+            self.assertEqual(result['compile']['verdict'], 'layout_failed')
+            self.assertNotIn('deliverable', result)
+            self.assertFalse((root / '06_output').exists())
+
+    @unittest.skipUnless(shutil.which('pdflatex'), 'TeX engine unavailable')
+    def test_real_overheight_float_reaches_existing_refinement_as_layout_failure(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / 'full_draft_v1.tex'
+            original = (r'\documentclass{article}\begin{document}\begin{table}'
+                        r'\rule{10pt}{2\textheight}\caption{Complete evidence}\end{table}\end{document}')
+            source.write_text(original)
+            result = manuscript_publication.precompile(root, source)
+            self.assertEqual(result['returncode'], 0)
+            self.assertEqual(result['status'], 'FAILED')
+            self.assertEqual(result['layout']['issues'][0]['kind'], 'float_too_large')
+            self.assertIn('longtable', str(result['errors']))
+            self.assertEqual(source.read_text(), original)
+
     def test_precompile_timeout_terminates_at_the_refinement_budget(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

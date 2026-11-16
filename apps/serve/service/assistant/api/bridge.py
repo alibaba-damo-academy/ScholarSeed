@@ -17,6 +17,7 @@ from service.literature.domain.model import LiteratureError
 from service.literature.service.importer import LiteratureImportError
 from service.platform.activity import Activities
 from service.platform.bridge import LiteratureImport, ResourceImport
+from service.resources.service.decisions import import_recovery
 
 IMPORT_ERRORS = (
     ArtifactReadError,
@@ -69,6 +70,7 @@ def register_resource_import_bridge(
                     context.session_id, context.workdir, cast(ResourceImport, query)
                 ),
                 IMPORT_ERRORS,
+                recovery=import_recovery,
             )
         },
         activities=activities,

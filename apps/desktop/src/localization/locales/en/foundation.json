@@ -29,6 +29,7 @@
     "exited": "The local service exited before passing its health check (exit code: {{code}}; signal: {{signal}}).",
     "healthTimeout": "The local service health check timed out.",
     "notReady": "The local service did not become ready.",
-    "recovering": "The local service is recovering. Try again shortly."
+    "recovering": "The local service is recovering. Try again shortly.",
+    "schemaUpgradeRequired": "Your local data uses a newer format than this client supports. Upgrade ScholarSeed and reopen it. No schema migration was performed. Do not delete the database or downgrade the app."
   }
 }

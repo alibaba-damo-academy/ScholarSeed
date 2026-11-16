@@ -1,3 +1,17 @@
+import type { SessionStatusSnapshot } from '../../api'
+
+export function archiveStopRequired(status: SessionStatusSnapshot): boolean {
+  return (
+    status.running !== false ||
+    status.waiting === true ||
+    status.interrupting === true ||
+    status.unknown_outcome === true ||
+    status.pending_hil?.some((item) => item.blocking !== false) !== false ||
+    status.queued_messages.length > 0 ||
+    status.uncertain_operations.length > 0
+  )
+}
+
 export interface ArchiveReader {
   request(): Promise<void>
   dispose(): void

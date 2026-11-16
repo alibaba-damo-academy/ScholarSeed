@@ -53,9 +53,19 @@ class CommandProbeContracts(unittest.TestCase):
 
     def test_timeout_does_not_wait_for_descendant_stderr(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
+            ready = Path(folder) / "ready"
+            release = Path(folder) / "release"
             finished = Path(folder) / "finished"
+            wrapper_process = None
+            started = None
+            popen = subprocess.Popen
             descendant = (
-                "import time; from pathlib import Path; time.sleep(3); "
+                "import sys,time; from pathlib import Path; "
+                "sys.stderr.write('descendant ready\\n'); sys.stderr.flush(); "
+                f"Path({str(ready)!r}).touch(); "
+                f"release = Path({str(release)!r}); "
+                "deadline = time.monotonic() + 5; "
+                "exec('while not release.exists() and time.monotonic() < deadline: time.sleep(0.01)'); "
                 f"Path({str(finished)!r}).touch()"
             )
             wrapper = (
@@ -63,19 +73,42 @@ class CommandProbeContracts(unittest.TestCase):
                 f"subprocess.Popen([sys.executable, '-c', {descendant!r}]); "
                 "time.sleep(30)"
             )
+
+            def ready_process(*args, **kwargs):
+                nonlocal wrapper_process, started
+                wrapper_process = popen(*args, **kwargs)
+                # subprocess.run starts its timeout after Popen returns. Wait
+                # for the real inherited stderr before measuring that timeout.
+                deadline = time.monotonic() + 5
+                while not ready.exists() and time.monotonic() < deadline:
+                    self.assertIsNone(wrapper_process.poll())
+                    time.sleep(0.01)
+                self.assertTrue(ready.exists(), "stderr fixture did not become ready")
+                started = time.monotonic()
+                return wrapper_process
+
             try:
-                with patch.object(executables, "COMMAND_PROBE_TIMEOUT_SECONDS", 1):
-                    started = time.monotonic()
+                with (
+                    patch.object(executables, "COMMAND_PROBE_TIMEOUT_SECONDS", 1),
+                    patch.object(executables.subprocess, "Popen", side_effect=ready_process),
+                ):
                     self.assertFalse(
                         executables.probe_command(Path(sys.executable), ("-c", wrapper))
                     )
+                    self.assertIsNotNone(started)
                     self.assertLess(time.monotonic() - started, 2.5)
+                    self.assertFalse(finished.exists())
             finally:
-                # The fixture's descendant finishes naturally; do not leave it behind.
-                deadline = time.monotonic() + 5
-                while not finished.exists() and time.monotonic() < deadline:
-                    time.sleep(0.05)
-                self.assertTrue(finished.exists())
+                release.touch()
+                if wrapper_process is not None:
+                    if wrapper_process.poll() is None:
+                        wrapper_process.kill()
+                    wrapper_process.wait()
+                if ready.exists():
+                    deadline = time.monotonic() + 5
+                    while not finished.exists() and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                    self.assertTrue(finished.exists(), "stderr fixture did not finish")
 
     def test_exit_status_and_bounded_diagnostics(self) -> None:
         self.assertTrue(executables.probe_command(Path(sys.executable), ("--version",)))

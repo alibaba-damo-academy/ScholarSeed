@@ -1,8 +1,18 @@
 import { randomUUID } from 'node:crypto'
 import { BROWSER_CDP_STATUS, BROWSER_ERROR } from '../browser.ts'
-import type { BrowserPageCommand, BrowserSnapshot, BrowserTabSnapshot } from '../browser.ts'
+import type {
+  BrowserCommandSnapshot,
+  BrowserPageCommand,
+  BrowserSnapshot,
+  BrowserTabSnapshot,
+} from '../browser.ts'
 import { normalizeBrowserInput } from './navigation.ts'
-import type { ChromiumNavigationReceipt, ChromiumTargetEvent, ChromiumTargetInfo, ChromiumTargets } from './chromiumtarget.ts'
+import type {
+  ChromiumNavigationReceipt,
+  ChromiumTargetEvent,
+  ChromiumTargetInfo,
+  ChromiumTargets,
+} from './chromiumtarget.ts'
 import type { ChromiumInspectorHost } from './inspector.ts'
 
 const BLANK_PAGE = 'about:blank'
@@ -17,9 +27,23 @@ const DEFAULT_HISTORY_READY_TIMEOUT_MS = 30_000
 const HTTP_HISTORY_SUCCESS_MIN = 200
 const HTTP_HISTORY_SUCCESS_LIMIT = 400
 
-type TargetOwner = Pick<ChromiumTargets,
-  'onTarget' | 'listTargets' | 'discover' | 'create' | 'activate' | 'deactivate' | 'navigate' |
-  'navigationState' | 'goBack' | 'goForward' | 'reload' | 'closeTarget' | 'close' | 'abort'>
+type TargetOwner = Pick<
+  ChromiumTargets,
+  | 'onTarget'
+  | 'listTargets'
+  | 'discover'
+  | 'create'
+  | 'activate'
+  | 'deactivate'
+  | 'navigate'
+  | 'navigationState'
+  | 'goBack'
+  | 'goForward'
+  | 'reload'
+  | 'closeTarget'
+  | 'close'
+  | 'abort'
+>
 type InspectorOwner = Pick<ChromiumInspectorHost, 'open' | 'close' | 'targetDestroyed'>
 
 interface NavigationAttempt {
@@ -52,7 +76,12 @@ interface TabEntry {
   historyNavigationIdentity: string | null
   historyNavigationUrl: string | null
   historyNavigationEpoch?: number
-  historyReady: { identity: string; url: string; documentEpoch?: number; timer: ReturnType<typeof setTimeout> } | null
+  historyReady: {
+    identity: string
+    url: string
+    documentEpoch?: number
+    timer: ReturnType<typeof setTimeout>
+  } | null
   earlyHistoryReady: Set<string>
   seenHistoryIdentities: Set<string>
   navigationAttempt?: NavigationAttempt
@@ -69,22 +98,33 @@ export interface ChromiumHistoryEvent {
 export interface ChromiumBrowserRegistry {
   initialize(): Promise<void>
   snapshot(): BrowserSnapshot
-  dispatch(command: BrowserPageCommand): Promise<BrowserSnapshot>
+  dispatch(command: BrowserPageCommand): Promise<BrowserCommandSnapshot>
   target(tabId: string): string
   active(): { tabId: string; targetId: string } | null
   onHistoryEvent(listener: (event: ChromiumHistoryEvent) => void): () => void
   dispose(): Promise<void>
 }
 
-export function createChromiumBrowserRegistry(targets: TargetOwner, inspector: InspectorOwner,
+export function createChromiumBrowserRegistry(
+  targets: TargetOwner,
+  inspector: InspectorOwner,
   onSnapshot: (snapshot: BrowserSnapshot) => void = () => undefined,
-  options: { navigationTimeoutMs?: number; historyReadyTimeoutMs?: number } = {}): ChromiumBrowserRegistry {
+  options: { navigationTimeoutMs?: number; historyReadyTimeoutMs?: number } = {}
+): ChromiumBrowserRegistry {
   const navigationTimeoutMs = options.navigationTimeoutMs ?? DEFAULT_NAVIGATION_TIMEOUT_MS
   const historyReadyTimeoutMs = options.historyReadyTimeoutMs ?? DEFAULT_HISTORY_READY_TIMEOUT_MS
-  if (!Number.isSafeInteger(navigationTimeoutMs) || navigationTimeoutMs <= 0 || navigationTimeoutMs > MAX_NAVIGATION_TIMEOUT_MS) {
+  if (
+    !Number.isSafeInteger(navigationTimeoutMs) ||
+    navigationTimeoutMs <= 0 ||
+    navigationTimeoutMs > MAX_NAVIGATION_TIMEOUT_MS
+  ) {
     throw new Error('Invalid sidecar navigation timeout')
   }
-  if (!Number.isSafeInteger(historyReadyTimeoutMs) || historyReadyTimeoutMs <= 0 || historyReadyTimeoutMs > MAX_NAVIGATION_TIMEOUT_MS) {
+  if (
+    !Number.isSafeInteger(historyReadyTimeoutMs) ||
+    historyReadyTimeoutMs <= 0 ||
+    historyReadyTimeoutMs > MAX_NAVIGATION_TIMEOUT_MS
+  ) {
     throw new Error('Invalid sidecar history readiness timeout')
   }
   const byTarget = new Map<string, TabEntry>()
@@ -95,27 +135,38 @@ export function createChromiumBrowserRegistry(targets: TargetOwner, inspector: I
   let initialized = false
   let closed = false
   let transition = Promise.resolve()
-  const readinessKey = (identity: string, documentEpoch?: number): string => JSON.stringify([identity, documentEpoch ?? null])
+  const readinessKey = (identity: string, documentEpoch?: number): string =>
+    JSON.stringify([identity, documentEpoch ?? null])
 
   const snapshot = (): BrowserSnapshot => ({
     engine: 'chromium-sidecar',
     activeTabId,
     automation: { enabled: false, port: null },
-    tabs: [...byTarget.values()].map(entry => ({
-      tabId: entry.tabId, url: entry.info.url || BLANK_PAGE, title: entry.info.title,
-      loading: entry.loading, canGoBack: entry.canGoBack, canGoForward: entry.canGoForward,
-      navigationError: entry.navigationError, devtoolsOpen: entry.devtoolsOpen,
-      cdpStatus: BROWSER_CDP_STATUS.disabled
-    }))
+    tabs: [...byTarget.values()].map((entry) => ({
+      tabId: entry.tabId,
+      url: entry.info.url || BLANK_PAGE,
+      title: entry.info.title,
+      loading: entry.loading,
+      canGoBack: entry.canGoBack,
+      canGoForward: entry.canGoForward,
+      navigationError: entry.navigationError,
+      devtoolsOpen: entry.devtoolsOpen,
+      cdpStatus: BROWSER_CDP_STATUS.disabled,
+    })),
   })
-  const publish = (): void => { onSnapshot(snapshot()) }
+  const publish = (): void => {
+    onSnapshot(snapshot())
+  }
   const emitHistory = (event: ChromiumHistoryEvent): void => {
     if (closed) return
     for (const listener of historyListeners) {
-      try { listener(event) } catch (error) {
+      try {
+        listener(event)
+      } catch (error) {
         console.error('[browser-sidecar] history persistence failed', error)
-        void failClosed(error, true).catch(cleanupError => {
-          if (cleanupError !== error) console.error('[browser-sidecar] history persistence shutdown failed', cleanupError)
+        void failClosed(error, true).catch((cleanupError) => {
+          if (cleanupError !== error)
+            console.error('[browser-sidecar] history persistence shutdown failed', cleanupError)
         })
         return
       }
@@ -125,10 +176,16 @@ export function createChromiumBrowserRegistry(targets: TargetOwner, inspector: I
     if (entry.pendingHistoryCommit?.info.url === info.url) {
       entry.pendingHistoryCommit.info = { ...entry.pendingHistoryCommit.info, title: info.title }
     }
-    if (entry.loading || entry.historyVisitUrl !== info.url || entry.historyTitle === info.title) return
+    if (entry.loading || entry.historyVisitUrl !== info.url || entry.historyTitle === info.title)
+      return
     entry.historyTitle = info.title
-    emitHistory({ kind: 'title', tabId: entry.tabId, visitSequence: entry.historyVisitSequence,
-      url: info.url, title: info.title })
+    emitHistory({
+      kind: 'title',
+      tabId: entry.tabId,
+      visitSequence: entry.historyVisitSequence,
+      url: info.url,
+      title: info.title,
+    })
   }
   const emitVisit = (entry: TabEntry, info: ChromiumTargetInfo): void => {
     if (!/^https?:\/\//.test(info.url)) {
@@ -138,8 +195,13 @@ export function createChromiumBrowserRegistry(targets: TargetOwner, inspector: I
     entry.historyVisitSequence++
     entry.historyVisitUrl = info.url
     entry.historyTitle = info.title
-    emitHistory({ kind: 'visit', tabId: entry.tabId, visitSequence: entry.historyVisitSequence,
-      url: info.url, title: info.title })
+    emitHistory({
+      kind: 'visit',
+      tabId: entry.tabId,
+      visitSequence: entry.historyVisitSequence,
+      url: info.url,
+      title: info.title,
+    })
   }
   const settleHistoryResponse = (entry: TabEntry): void => {
     const commit = entry.pendingHistoryCommit
@@ -148,7 +210,10 @@ export function createChromiumBrowserRegistry(targets: TargetOwner, inspector: I
     if (!response || response.url !== commit.info.url.split('#', 1)[0]) return
     entry.pendingHistoryCommit = null
     entry.historyResponses.delete(commit.identity)
-    if (response.status >= HTTP_HISTORY_SUCCESS_MIN && response.status < HTTP_HISTORY_SUCCESS_LIMIT) {
+    if (
+      response.status >= HTTP_HISTORY_SUCCESS_MIN &&
+      response.status < HTTP_HISTORY_SUCCESS_LIMIT
+    ) {
       entry.successfulHistoryLoads.delete(commit.identity)
       entry.successfulHistoryLoads.add(commit.identity)
       if (entry.successfulHistoryLoads.size > MAX_SUCCESSFUL_HISTORY_LOADS) {
@@ -174,8 +239,11 @@ export function createChromiumBrowserRegistry(targets: TargetOwner, inspector: I
         } else entry.historyVisitUrl = null
         return
       }
-      if (entry.lastCommitIdentity === identity && entry.lastCommitUrl === event.info.url &&
-        entry.lastCommitEpoch === event.documentEpoch) {
+      if (
+        entry.lastCommitIdentity === identity &&
+        entry.lastCommitUrl === event.info.url &&
+        entry.lastCommitEpoch === event.documentEpoch
+      ) {
         updateHistoryTitle(entry, event.info)
         return
       }
@@ -190,7 +258,10 @@ export function createChromiumBrowserRegistry(targets: TargetOwner, inspector: I
   }
   const queue = <T>(action: () => Promise<T>): Promise<T> => {
     const result = transition.then(action)
-    transition = result.then(() => undefined, () => undefined)
+    transition = result.then(
+      () => undefined,
+      () => undefined
+    )
     return result
   }
   const entryFor = (tabId: string): TabEntry => {
@@ -216,15 +287,21 @@ export function createChromiumBrowserRegistry(targets: TargetOwner, inspector: I
     }
     if (!event.frameId || !event.loaderId) {
       const error = new Error('Chromium main-frame commit has no history identity')
-      void failClosed(error, true).catch(cleanupError => {
-        if (cleanupError !== error) console.error('[browser-sidecar] history identity shutdown failed', cleanupError)
+      void failClosed(error, true).catch((cleanupError) => {
+        if (cleanupError !== error)
+          console.error('[browser-sidecar] history identity shutdown failed', cleanupError)
       })
       return
     }
     const identity = `loader:${event.frameId}:${event.loaderId}`
     const restored = event.navigationType === 'BackForwardCacheRestore'
-    if (entry.historyNavigationIdentity === identity && entry.historyNavigationUrl === event.info.url &&
-      entry.historyNavigationEpoch === event.documentEpoch && !restored) return
+    if (
+      entry.historyNavigationIdentity === identity &&
+      entry.historyNavigationUrl === event.info.url &&
+      entry.historyNavigationEpoch === event.documentEpoch &&
+      !restored
+    )
+      return
     const key = readinessKey(identity, event.documentEpoch)
     const previouslySeen = entry.seenHistoryIdentities.has(key)
     entry.seenHistoryIdentities.delete(key)
@@ -242,8 +319,9 @@ export function createChromiumBrowserRegistry(targets: TargetOwner, inspector: I
     publish()
     if (restored) {
       entry.earlyHistoryReady.delete(key)
-      void refreshNavigation(entry, true).catch(error => {
-        if (error instanceof AggregateError) console.error('[browser-sidecar] BFCache history shutdown failed', error)
+      void refreshNavigation(entry, true).catch((error) => {
+        if (error instanceof AggregateError)
+          console.error('[browser-sidecar] BFCache history shutdown failed', error)
       })
       return
     }
@@ -255,16 +333,28 @@ export function createChromiumBrowserRegistry(targets: TargetOwner, inspector: I
     }
     const revision = entry.revision
     const timer = setTimeout(() => {
-      if (closed || byTarget.get(entry.info.targetId) !== entry || entry.historyReady?.identity !== identity ||
-        entry.historyReady.url !== event.info.url || entry.revision !== revision) return
+      if (
+        closed ||
+        byTarget.get(entry.info.targetId) !== entry ||
+        entry.historyReady?.identity !== identity ||
+        entry.historyReady.url !== event.info.url ||
+        entry.revision !== revision
+      )
+        return
       cancelHistoryReady(entry)
       const error = new Error('Chromium main-frame history readiness timed out')
-      void failClosed(error, true).catch(cleanupError => {
-        if (cleanupError !== error) console.error('[browser-sidecar] history readiness shutdown failed', cleanupError)
+      void failClosed(error, true).catch((cleanupError) => {
+        if (cleanupError !== error)
+          console.error('[browser-sidecar] history readiness shutdown failed', cleanupError)
       })
     }, historyReadyTimeoutMs)
     timer.unref?.()
-    entry.historyReady = { identity, url: event.info.url, documentEpoch: event.documentEpoch, timer }
+    entry.historyReady = {
+      identity,
+      url: event.info.url,
+      documentEpoch: event.documentEpoch,
+      timer,
+    }
   }
   const matchesNavigation = (attempt: NavigationAttempt, event: ChromiumTargetEvent): boolean => {
     const receipt = attempt.receipt
@@ -287,16 +377,37 @@ export function createChromiumBrowserRegistry(targets: TargetOwner, inspector: I
     refreshAfterCommit(entry, event)
   }
   const refreshNavigation = async (entry: TabEntry, failOnError = false): Promise<void> => {
-    if (closed || entry.loading || entry.historyReady || activeTabId !== entry.tabId || byTarget.get(entry.info.targetId) !== entry) return
+    if (
+      closed ||
+      entry.loading ||
+      entry.historyReady ||
+      activeTabId !== entry.tabId ||
+      byTarget.get(entry.info.targetId) !== entry
+    )
+      return
     const revision = ++entry.revision
     try {
       const state = await targets.navigationState(entry.info.targetId)
-      if (closed || entry.loading || entry.historyReady || activeTabId !== entry.tabId || byTarget.get(entry.info.targetId) !== entry || entry.revision !== revision) return
+      if (
+        closed ||
+        entry.loading ||
+        entry.historyReady ||
+        activeTabId !== entry.tabId ||
+        byTarget.get(entry.info.targetId) !== entry ||
+        entry.revision !== revision
+      )
+        return
       entry.canGoBack = state.canGoBack
       entry.canGoForward = state.canGoForward
       publish()
     } catch (error) {
-      if (closed || activeTabId !== entry.tabId || byTarget.get(entry.info.targetId) !== entry || entry.revision !== revision) return
+      if (
+        closed ||
+        activeTabId !== entry.tabId ||
+        byTarget.get(entry.info.targetId) !== entry ||
+        entry.revision !== revision
+      )
+        return
       if (failOnError) await failClosed(error, true)
       else console.error('[browser-sidecar] navigation state failed', error)
     }
@@ -335,19 +446,39 @@ export function createChromiumBrowserRegistry(targets: TargetOwner, inspector: I
       }
       return existing
     }
-    const entry: TabEntry = { tabId: randomUUID(), info: { ...info }, committedInfo: { ...info }, navigationError: null, loading: false,
-      canGoBack: false, canGoForward: false, devtoolsOpen: false, revision: 0,
-      historyVisitSequence: 0, historyVisitUrl: null, historyTitle: '', lastCommitIdentity: null,
+    const entry: TabEntry = {
+      tabId: randomUUID(),
+      info: { ...info },
+      committedInfo: { ...info },
+      navigationError: null,
+      loading: false,
+      canGoBack: false,
+      canGoForward: false,
+      devtoolsOpen: false,
+      revision: 0,
+      historyVisitSequence: 0,
+      historyVisitUrl: null,
+      historyTitle: '',
+      lastCommitIdentity: null,
       lastCommitUrl: null,
-      pendingHistoryCommit: null, historyResponses: new Map(), successfulHistoryLoads: new Set(),
-      historyNavigationIdentity: null, historyNavigationUrl: null,
-      historyReady: null, earlyHistoryReady: new Set(), seenHistoryIdentities: new Set() }
+      pendingHistoryCommit: null,
+      historyResponses: new Map(),
+      successfulHistoryLoads: new Set(),
+      historyNavigationIdentity: null,
+      historyNavigationUrl: null,
+      historyReady: null,
+      earlyHistoryReady: new Set(),
+      seenHistoryIdentities: new Set(),
+    }
     byTarget.set(info.targetId, entry)
     byTab.set(entry.tabId, entry)
     publish()
-    if (!activeTabId) void queue(async () => {
-      if (!closed && !activeTabId && byTab.get(entry.tabId) === entry) await activate(entry.tabId)
-    }).catch(error => console.error('[browser-sidecar] initial target activation failed', error))
+    if (!activeTabId)
+      void queue(async () => {
+        if (!closed && !activeTabId && byTab.get(entry.tabId) === entry) await activate(entry.tabId)
+      }).catch((error) =>
+        console.error('[browser-sidecar] initial target activation failed', error)
+      )
     return entry
   }
   const destroyed = (targetId: string): void => {
@@ -359,15 +490,25 @@ export function createChromiumBrowserRegistry(targets: TargetOwner, inspector: I
     byTab.delete(entry.tabId)
     entry.revision++
     if (activeTabId === entry.tabId) activeTabId = null
-    emitHistory({ kind: 'closed', tabId: entry.tabId, visitSequence: entry.historyVisitSequence,
-      url: entry.historyVisitUrl ?? entry.info.url, title: entry.historyTitle })
+    emitHistory({
+      kind: 'closed',
+      tabId: entry.tabId,
+      visitSequence: entry.historyVisitSequence,
+      url: entry.historyVisitUrl ?? entry.info.url,
+      title: entry.historyTitle,
+    })
     publish()
-    void inspector.targetDestroyed(targetId).catch(error => console.error('[browser-sidecar] DevTools cleanup failed', error))
+    void inspector
+      .targetDestroyed(targetId)
+      .catch((error) => console.error('[browser-sidecar] DevTools cleanup failed', error))
     if (!activeTabId) {
       const next = byTarget.values().next().value as TabEntry | undefined
-      if (next) void queue(async () => {
-        if (!closed && !activeTabId && byTab.get(next.tabId) === next) await activate(next.tabId)
-      }).catch(error => console.error('[browser-sidecar] fallback target activation failed', error))
+      if (next)
+        void queue(async () => {
+          if (!closed && !activeTabId && byTab.get(next.tabId) === next) await activate(next.tabId)
+        }).catch((error) =>
+          console.error('[browser-sidecar] fallback target activation failed', error)
+        )
     }
   }
   const onTarget = (event: ChromiumTargetEvent): void => {
@@ -388,11 +529,15 @@ export function createChromiumBrowserRegistry(targets: TargetOwner, inspector: I
       if (!entry || !event.frameId || !event.loaderId) return
       const identity = `loader:${event.frameId}:${event.loaderId}`
       const key = readinessKey(identity, event.documentEpoch)
-      if (entry.historyReady?.identity === identity && entry.historyReady.url === event.info.url &&
-        entry.historyReady.documentEpoch === event.documentEpoch) {
+      if (
+        entry.historyReady?.identity === identity &&
+        entry.historyReady.url === event.info.url &&
+        entry.historyReady.documentEpoch === event.documentEpoch
+      ) {
         cancelHistoryReady(entry)
-        void refreshNavigation(entry, true).catch(error => {
-          if (error instanceof AggregateError) console.error('[browser-sidecar] history readiness shutdown failed', error)
+        void refreshNavigation(entry, true).catch((error) => {
+          if (error instanceof AggregateError)
+            console.error('[browser-sidecar] history readiness shutdown failed', error)
         })
       } else if (event.documentEpoch !== undefined && !entry.seenHistoryIdentities.has(key)) {
         entry.earlyHistoryReady.add(key)
@@ -412,8 +557,7 @@ export function createChromiumBrowserRegistry(targets: TargetOwner, inspector: I
       if (!attempt) {
         recordVisit(register(event.info, true), event)
         refreshAfterCommit(entry, event)
-      }
-      else if (!attempt.receipt) {
+      } else if (!attempt.receipt) {
         if (attempt.earlyEvents.length >= MAX_EARLY_NAVIGATION_EVENTS) attempt.earlyEvents.shift()
         attempt.earlyEvents.push(event)
       } else commitNavigation(entry, event)
@@ -435,64 +579,85 @@ export function createChromiumBrowserRegistry(targets: TargetOwner, inspector: I
     byTab.clear()
     activeTabId = null
     publish()
-    try { if (abort) await targets.abort(reason); else await targets.close() }
-    catch (cleanupError) { throw new AggregateError([reason, cleanupError], 'Sidecar target close and shutdown failed') }
+    try {
+      if (abort) await targets.abort(reason)
+      else await targets.close()
+    } catch (cleanupError) {
+      throw new AggregateError([reason, cleanupError], 'Sidecar target close and shutdown failed')
+    }
     throw reason
   }
-  const dispatch = (command: BrowserPageCommand): Promise<BrowserSnapshot> => queue(async () => {
-    if (!initialized || closed) throw new Error(BROWSER_ERROR.desktopBridgeUnavailable)
-    if (command.kind === 'open') {
-      const targetId = await targets.create()
-      const info = targets.listTargets().find(candidate => candidate.targetId === targetId)
-      const entry = byTarget.get(targetId) ?? (info ? register(info) : null)
-      if (!entry) return failClosed(new Error('Created Chromium target is not registered'))
-      await activate(entry.tabId)
-      if (command.input) await navigate(entry, command.input)
-    } else if (command.kind === 'select') await activate(command.tabId)
-    else if (command.kind === 'close') {
-      const entry = entryFor(command.tabId)
-      try { await targets.closeTarget(entry.info.targetId) }
-      catch (error) {
-        if (byTarget.get(entry.info.targetId) === entry) return failClosed(error)
-      }
-      if (!activeTabId) {
-        const next = byTarget.values().next().value as TabEntry | undefined
-        if (next) await activate(next.tabId)
-      }
-    } else if (command.kind === 'navigate') await navigate(entryFor(command.tabId), command.input)
-    else if (command.kind === 'back' || command.kind === 'forward' || command.kind === 'reload') {
-      const entry = entryFor(command.tabId)
-      if (activeTabId !== entry.tabId) await activate(entry.tabId)
-      if (command.kind === 'back') await targets.goBack(entry.info.targetId)
-      else if (command.kind === 'forward') await targets.goForward(entry.info.targetId)
-      else await targets.reload(entry.info.targetId)
-    } else if (command.kind === 'devtools') {
-      const entry = entryFor(command.tabId)
-      if (command.open) await inspector.open(entry.info.targetId)
-      else await inspector.close(entry.info.targetId)
-      if (closed || byTarget.get(entry.info.targetId) !== entry) throw new Error(BROWSER_ERROR.targetClosed)
-      entry.devtoolsOpen = command.open
-      publish()
-    } else if (command.kind !== 'bounds') throw new Error(BROWSER_ERROR.invalidCommand)
-    return snapshot()
-  })
+  const dispatch = (command: BrowserPageCommand): Promise<BrowserCommandSnapshot> =>
+    queue(async () => {
+      if (!initialized || closed) throw new Error(BROWSER_ERROR.desktopBridgeUnavailable)
+      if (command.kind === 'open') {
+        const targetId = await targets.create()
+        const info = targets.listTargets().find((candidate) => candidate.targetId === targetId)
+        const entry = byTarget.get(targetId) ?? (info ? register(info) : null)
+        if (!entry) return failClosed(new Error('Created Chromium target is not registered'))
+        await activate(entry.tabId)
+        if (command.input) await navigate(entry, command.input)
+        return { ...snapshot(), openedTabId: entry.tabId }
+      } else if (command.kind === 'select') await activate(command.tabId)
+      else if (command.kind === 'close') {
+        const entry = entryFor(command.tabId)
+        try {
+          await targets.closeTarget(entry.info.targetId)
+        } catch (error) {
+          if (byTarget.get(entry.info.targetId) === entry) return failClosed(error)
+        }
+        if (!activeTabId) {
+          const next = byTarget.values().next().value as TabEntry | undefined
+          if (next) await activate(next.tabId)
+        }
+      } else if (command.kind === 'navigate') await navigate(entryFor(command.tabId), command.input)
+      else if (command.kind === 'back' || command.kind === 'forward' || command.kind === 'reload') {
+        const entry = entryFor(command.tabId)
+        if (activeTabId !== entry.tabId) await activate(entry.tabId)
+        if (command.kind === 'back') await targets.goBack(entry.info.targetId)
+        else if (command.kind === 'forward') await targets.goForward(entry.info.targetId)
+        else await targets.reload(entry.info.targetId)
+      } else if (command.kind === 'devtools') {
+        const entry = entryFor(command.tabId)
+        if (command.open) await inspector.open(entry.info.targetId)
+        else await inspector.close(entry.info.targetId)
+        if (closed || byTarget.get(entry.info.targetId) !== entry)
+          throw new Error(BROWSER_ERROR.targetClosed)
+        entry.devtoolsOpen = command.open
+        publish()
+      } else if (command.kind !== 'bounds') throw new Error(BROWSER_ERROR.invalidCommand)
+      return snapshot()
+    })
   const navigate = async (entry: TabEntry, input: string): Promise<void> => {
     const url = normalizeBrowserInput(input).href
     cancelAttempt(entry, new Error(BROWSER_ERROR.navigationFailed))
     cancelHistoryReady(entry)
     entry.earlyHistoryReady.clear()
     let rejectTimeout: (error: Error) => void = () => undefined
-    const deadline = new Promise<never>((_resolve, reject) => { rejectTimeout = reject })
-    const attempt: NavigationAttempt = { requestedUrl: url, receipt: null, earlyEvents: [],
+    const deadline = new Promise<never>((_resolve, reject) => {
+      rejectTimeout = reject
+    })
+    const attempt: NavigationAttempt = {
+      requestedUrl: url,
+      receipt: null,
+      earlyEvents: [],
       timer: setTimeout(() => {
-        if (closed || byTarget.get(entry.info.targetId) !== entry || entry.navigationAttempt !== attempt) return
+        if (
+          closed ||
+          byTarget.get(entry.info.targetId) !== entry ||
+          entry.navigationAttempt !== attempt
+        )
+          return
         entry.navigationAttempt = undefined
         const error = new Error(BROWSER_ERROR.navigationFailed)
-        void failClosed(error, true).catch(cleanupError => {
-          if (cleanupError !== error) console.error('[browser-sidecar] navigation timeout shutdown failed', cleanupError)
+        void failClosed(error, true).catch((cleanupError) => {
+          if (cleanupError !== error)
+            console.error('[browser-sidecar] navigation timeout shutdown failed', cleanupError)
         })
         rejectTimeout(error)
-      }, navigationTimeoutMs), rejectTimeout }
+      }, navigationTimeoutMs),
+      rejectTimeout,
+    }
     attempt.timer.unref?.()
     entry.navigationAttempt = attempt
     entry.navigationError = null
@@ -504,18 +669,28 @@ export function createChromiumBrowserRegistry(targets: TargetOwner, inspector: I
     publish()
     try {
       const receipt = await Promise.race([targets.navigate(entry.info.targetId, url), deadline])
-      if (closed || byTarget.get(entry.info.targetId) !== entry || entry.navigationAttempt !== attempt) throw new Error(BROWSER_ERROR.targetClosed)
+      if (
+        closed ||
+        byTarget.get(entry.info.targetId) !== entry ||
+        entry.navigationAttempt !== attempt
+      )
+        throw new Error(BROWSER_ERROR.targetClosed)
       attempt.receipt = receipt
-      const earlyCommit = attempt.earlyEvents.find(event => matchesNavigation(attempt, event))
+      const earlyCommit = attempt.earlyEvents.find((event) => matchesNavigation(attempt, event))
       if (earlyCommit) commitNavigation(entry, earlyCommit)
-    }
-    catch (error) {
-      if (closed || byTarget.get(entry.info.targetId) !== entry || entry.navigationAttempt !== attempt) throw error
+    } catch (error) {
+      if (
+        closed ||
+        byTarget.get(entry.info.targetId) !== entry ||
+        entry.navigationAttempt !== attempt
+      )
+        throw error
       clearTimeout(attempt.timer)
       entry.navigationAttempt = undefined
       await failClosed(error, true)
     }
-    if (closed || byTarget.get(entry.info.targetId) !== entry) throw new Error(BROWSER_ERROR.targetClosed)
+    if (closed || byTarget.get(entry.info.targetId) !== entry)
+      throw new Error(BROWSER_ERROR.targetClosed)
   }
 
   return {
@@ -527,11 +702,14 @@ export function createChromiumBrowserRegistry(targets: TargetOwner, inspector: I
         if (closed) throw new Error(BROWSER_ERROR.desktopBridgeUnavailable)
         for (const info of targets.listTargets()) register(info)
         initialized = true
-      } catch (error) { if (closed) throw error; await failClosed(error) }
+      } catch (error) {
+        if (closed) throw error
+        await failClosed(error)
+      }
     },
     snapshot,
     dispatch,
-    target: tabId => entryFor(tabId).info.targetId,
+    target: (tabId) => entryFor(tabId).info.targetId,
     active: () => {
       const entry = activeTabId ? byTab.get(activeTabId) : undefined
       return entry ? { tabId: entry.tabId, targetId: entry.info.targetId } : null
@@ -539,7 +717,9 @@ export function createChromiumBrowserRegistry(targets: TargetOwner, inspector: I
     onHistoryEvent(listener) {
       if (closed) throw new Error(BROWSER_ERROR.targetClosed)
       historyListeners.add(listener)
-      return () => { historyListeners.delete(listener) }
+      return () => {
+        historyListeners.delete(listener)
+      }
     },
     async dispose() {
       if (closed) return
@@ -557,6 +737,6 @@ export function createChromiumBrowserRegistry(targets: TargetOwner, inspector: I
       activeTabId = null
       publish()
       await targets.close()
-    }
+    },
   }
 }

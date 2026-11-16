@@ -11,17 +11,15 @@ test('coverage accounts for page-scene pairs, retaining duplicate scene identiti
   const entries = previewCoverage({ suites: [] })
   assert.equal(entries.length, PREVIEW_CATALOG.reduce((count, page) => count + page.scenarios.length, 0))
   assert.equal(entries.filter(entry => entry.sceneId === 'conversation-approval').length, 2)
-  assert.equal(entries.find(entry => entry.pageId === 'viewer-web_search')!.status, 'unmapped')
-  const page = PREVIEW_CATALOG.find(page => page.id === 'viewer-web_search')!
+  assert.equal(entries.find(entry => entry.pageId === 'viewer-markdown')!.status, 'unmapped')
+  const page = PREVIEW_CATALOG.find(page => page.id === 'viewer-markdown')!
   const entry = entries.find(entry => entry.pageId === page.id)!
   assert.equal(entry.owner, page.owner)
   assert.equal(entry.source, page.source)
   assert.deepEqual(entry.expected, page.scenarios[0].expected)
   assert.deepEqual(entry.limitations, page.scenarios[0].limitations)
-  for (const pageId of ['page-writing', 'settings-model-settings']) {
-    const entry = entries.find(entry => entry.pageId === pageId)!
-    assert.equal(entry.status, 'excluded')
-    assert.ok(entry.reason)
+  for (const pageId of ['page-writing', 'settings-model-settings', 'settings-skills']) {
+    assert.equal(entries.find(entry => entry.pageId === pageId), undefined)
   }
 })
 
@@ -42,8 +40,8 @@ test('native-backed renderer controls remain uncovered instead of being excluded
 })
 
 test('only declared consumer annotations count, and claimed states remain distinct from runtime pass evidence', () => {
-  const partial = previewCoverage(report([previewConsumption('viewer-web_search', 'viewer-web_search-states', ['loaded'])]))
-  const entry = partial.find(entry => entry.pageId === 'viewer-web_search')!
+  const partial = previewCoverage(report([previewConsumption('viewer-markdown', 'viewer-markdown-states', ['loaded'])]))
+  const entry = partial.find(entry => entry.pageId === 'viewer-markdown')!
   assert.equal(entry.status, 'partial')
   assert.deepEqual(entry.coveredStates, ['loaded'])
   assert.deepEqual(entry.missingStates, ['loading', 'error'])

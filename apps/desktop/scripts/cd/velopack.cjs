@@ -147,7 +147,7 @@ async function pack(app, frozen, args, python, environment, branding) {
   fs.writeFileSync(feedPath, JSON.stringify({ Assets: selected })+'\n')
   const one = suffix => { const names = fs.readdirSync(output).filter(name => name.endsWith(suffix)); if (names.length !== 1) throw new Error(`expected one Velopack ${suffix}`); return path.join(output, names[0]) }
   const setupPath = one('Setup.exe')
-  const directorySelection = await wrapSetup(setupPath, frozen, args, environment, inventory.files, branding)
+  const directorySelection = await wrapSetup(setupPath, frozen, args, environment, inventory.files, branding, full.path)
   if (frozen.signingRequired) {
     verifySignature(setupPath, product.expected_windows_publisher)
   }

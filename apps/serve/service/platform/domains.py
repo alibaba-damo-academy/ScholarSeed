@@ -13,15 +13,17 @@ import re
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import AbstractContextManager, contextmanager
+from contextlib import AbstractContextManager, ExitStack, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import Enum
-from typing import Never, Protocol, overload
+from pathlib import Path
+from typing import Never, Protocol, cast, overload
 
 from service.platform.guardian import GuardianQualificationError
 from service.platform.guardian import from_environment as directory_guardian
 from service.platform.locator import DirectoryLocator, directory_locator, pin_directory
+from service.platform.registry import REGISTRY_DIRECTORY, RegistryNative
 from service.platform.storage import DirectoryRole
 
 _IDENTITY = re.compile(r"(?:posix:[a-f0-9]{16}:[a-f0-9]{16}|windows:[a-f0-9]{16}:[a-f0-9]{32})")
@@ -628,6 +630,13 @@ def pinned_inspection(
     _release(native, pins)
 
 
+def _coordination_native(native: DomainNative, path: str) -> DomainNative:
+    root = Path(path)
+    if root.name == REGISTRY_DIRECTORY and not isinstance(native, RegistryNative):
+        return cast(DomainNative, RegistryNative(native, root))
+    return native
+
+
 def _acquire(
     native: DomainNative,
     coordinator: object,
@@ -690,6 +699,8 @@ class Domains:
         _created: _CreatedRoot | None = None,
         isolate_qualification: bool = False,
     ) -> None:
+        if isinstance(coordinator_path, str):
+            native = _coordination_native(native, coordinator_path)
         if (
             isinstance(busy_timeout, bool)
             or not isinstance(busy_timeout, (int, float))
@@ -1263,6 +1274,7 @@ def _create_directory(
     expected_parent: str | None = None,
     role: DirectoryRole = DirectoryRole.PRIVATE,
 ) -> Iterator[str]:
+    native = _coordination_native(native, coordinator_path)
     pins: list[object] = []
     coordination: list[object] = []
     admission: list[object] = []
@@ -1442,6 +1454,28 @@ class DomainOwner:
         ):
             raise ValueError("only a new admitted qualification may be retained")
         self._additional.append(domains)
+
+    @contextmanager
+    def runtime_descriptors(self) -> Iterator[tuple[int, ...]]:
+        """Keep occupied Darwin lock descriptions alive in a launched runtime."""
+        if self._domains is None:
+            raise DomainReleaseError("storage qualification is unavailable")
+        with ExitStack() as copies:
+            descriptors = []
+            for domains in (self._domains, *self._additional):
+                with domains._operation():
+                    # Startup can warm the runtime while the shared writer
+                    # still holds admission. Transfer only occupancy leases.
+                    if domains._maintenance or domains._state not in (_State.OCCUPIED, _State.ADMITTED):
+                        raise DomainReleaseError("runtime launch requires shared storage occupancy")
+                    duplicate_lease = getattr(domains._native, "duplicate_lease", None)
+                    if duplicate_lease is None:
+                        raise DomainReleaseError("runtime descriptor transfer requires Darwin storage")
+                    for handle in domains._occupancy:
+                        descriptor = duplicate_lease(handle)
+                        copies.callback(os.close, descriptor)
+                        descriptors.append(descriptor)
+            yield tuple(descriptors)
 
     def release(self, domains: Domains) -> None:
         """Release one unpublished addition; uncertain close retains ownership."""

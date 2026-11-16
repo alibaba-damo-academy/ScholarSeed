@@ -9,20 +9,21 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Literal, Mapping, cast
+from urllib.parse import quote, urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from service.literature.domain.cards import LIBRARY_REF_PREFIX
 from service.literature.persistence.files import (
     read_scoped_file,
     scoped_workspace,
     scoped_workspace_path,
 )
-from service.literature.service.metadata import parse_bibtex
+from service.literature.service.metadata import ParsedRecord, parse_bibtex
 from service.literature.service.result import (
     AUTHORIZATION_ARTIFACT_PREFIX,
     LITERATURE_REVIEW_ORIGIN,
     SEARCH_AUTHORS,
-    SEARCH_CARD_PAPERS,
     SEARCH_MAX_PAPERS,
     AuthorizationSource,
     SearchPaper,
@@ -35,14 +36,16 @@ from service.literature.service.result import (
 logger = logging.getLogger(__name__)
 
 REVIEW_CARD = "literature-review"
-REVIEW_VERSION: Literal["1.1"] = "1.1"
+REVIEW_VERSION: Literal["1.2"] = "1.2"
 REVIEW_RESULT_CHECKPOINT = "result"
 REVIEW_INCOMPLETE_STATUS = "incomplete"
+INVALID_REVIEW_CORPUS = "review_corpus_invalid"
 REVIEW_FILE_BYTES = 16 * 1024 * 1024
 REVIEW_SECTIONS = 8
 REVIEW_CHILDREN = 8
 REVIEW_TEXT = 2000
 REVIEW_TITLE = 256
+PROJECT_MATERIAL_ORIGINS = frozenset(("project", "library", "local"))
 REVIEW_CHECKS = 16
 REVIEW_ISSUES = 32
 REVIEW_CITATIONS = 100
@@ -73,12 +76,28 @@ REVIEW_BINDING_RUN_ID = "run_id"
 # Skill releases without a launcher run id are identified by their workspace path.
 REVIEW_DERIVED_RUN_PREFIX = "slr-"
 REVIEW_DERIVED_RUN_CHARS = 16
+# These attribution/presentation fields cannot change the selected source. Keep
+# every other (including future/unknown) field bound, particularly local paths,
+# source revisions, identifiers, URLs, abstracts and identity fallback metadata.
+AUTHORIZATION_METADATA_FIELDS = frozenset(
+    (
+        "authors",
+        "author_metadata",
+        "venue",
+        "citation_count",
+        "citationCount",
+        "selection_reason",
+        "reason",
+        "tier",
+    )
+)
 RETRIEVAL_CHECKPOINT_ARTIFACTS = {
     "metadata": METADATA,
     "selection": CORPUS,
     "report": RETRIEVAL,
 }
 PAPER_CARDS = "03_process/paper_cards.json"
+CITE_KEYS = "03_process/cite_keys.json"
 SUMMARY = "03_process/corpus_summary.json"
 OUTLINE = "04_outline/outline.json"
 OUTPUT_SPEC = "04_outline/output_spec.json"
@@ -86,6 +105,22 @@ APPROVAL = "04_outline/approval.json"
 GENERATION = "05_generation/generation_report.json"
 QUALITY = "05_generation/quality_report.json"
 CITATIONS = "05_generation/citations.bib"
+MANUSCRIPT = "06_output/survey.md"
+MANUSCRIPT_AUX = "05_generation/full_draft_v2.aux"
+REFERENCE_ANCHOR = re.compile(r'<a\s+id=["\']ref-([^"\']+)["\'][^>]*></a>(?:\s*\[(\d+)\])?')
+REFERENCE_LINK = re.compile(r"\]\(#ref-([^\s)]+)\)")
+AUX_CITATION = re.compile(r"^\\citation\{([^{}]+)\}", re.MULTILINE)
+DOI = re.compile(r"10\.\d{4,9}/\S+", re.IGNORECASE)
+ARXIV = re.compile(r"(?:\d{4}\.\d{4,5}|[a-z.-]+/\d{7})(?:v\d+)?", re.IGNORECASE)
+REVIEW_WEB_SCHEMES = frozenset(("http", "https"))
+ReviewIssuePriority = Literal["urgent", "attention", "low"]
+ISSUE_PRIORITIES: dict[str, ReviewIssuePriority] = {
+    "critical": "urgent",
+    "high": "urgent",
+    "medium": "attention",
+    "low": "low",
+}
+CHECK_PRIORITIES: dict[str, ReviewIssuePriority] = {"FAIL": "urgent", "WARN": "attention"}
 POSTCHECK = "07_verifier/postcheck/report.json"
 FAST_AUDIT = "07_verifier/fast_audit/output/aggregated_issues.json"
 INCOMPLETE_EVIDENCE_WARNINGS = {
@@ -103,6 +138,7 @@ JSON_FILES = (
     RETRIEVAL,
     FULLTEXT,
     PAPER_CARDS,
+    CITE_KEYS,
     SUMMARY,
     OUTLINE,
     OUTPUT_SPEC,
@@ -121,6 +157,8 @@ EVIDENCE_TITLES = {
     RETRIEVAL: "检索筛选报告",
     FULLTEXT: "全文获取报告",
     PAPER_CARDS: "PaperCard",
+    CITE_KEYS: "引用键映射",
+    MANUSCRIPT_AUX: "PDF 引用索引",
     SUMMARY: "材料处理统计",
     OUTLINE: "大纲数据",
     OUTPUT_SPEC: "输出与引用格式",
@@ -135,8 +173,9 @@ DOCUMENT_FILES = {
     "04_outline/outline.md": "完整大纲",
     "04_outline/outline_rationale.md": "结构与证据缺口",
     CITATIONS: "实际引用书目",
-    "06_output/survey.md": "综述正文",
+    MANUSCRIPT: "综述正文",
     "06_output/survey.pdf": "综述 PDF",
+    "06_output/survey.docx": "综述 Word 文档",
     "06_output/survey_fallback.md": "编译降级稿",
     "07_verifier/fast_audit/output/final_report.md": "引用预核对报告",
     "07_verifier/postcheck/summary.md": "引用核对报告",
@@ -198,13 +237,14 @@ class ReviewSection(ReviewRecord):
 
 
 class ReviewCheck(ReviewRecord):
+    id: str
     title: str = Field(max_length=REVIEW_TITLE)
     verdict: Literal["PASS", "WARN", "FAIL", "NOT_CHECKED", "NOT_APPLICABLE"]
     reason: str = Field(max_length=REVIEW_TEXT)
 
 
 class ReviewScope(ReviewRecord):
-    topic: str = Field(max_length=REVIEW_TEXT)
+    topic: str | None = Field(default=None, max_length=REVIEW_TEXT)
     time_range: str = Field(max_length=REVIEW_TITLE)
     focus: list[str] = Field(max_length=REVIEW_CHILDREN)
     requested_materials: list[str] = Field(default_factory=list, max_length=REVIEW_CHILDREN)
@@ -213,6 +253,7 @@ class ReviewScope(ReviewRecord):
 
 
 class ReviewCitation(ReviewRecord):
+    number: int | None = Field(default=None, ge=1)
     title: str = Field(max_length=REVIEW_TEXT)
     authors: str = Field(max_length=REVIEW_TEXT)
     year: int | None = None
@@ -224,23 +265,59 @@ class ReviewIssue(ReviewRecord):
     detail: str = Field(max_length=REVIEW_TEXT)
     paper_ids: list[str] = Field(default_factory=list, max_length=REVIEW_CHILDREN)
     affected_content: str = Field(default="", max_length=REVIEW_TEXT)
+    priority: ReviewIssuePriority | None = None
 
 
-class ReviewEvidenceLimitation(ReviewRecord):
-    paper_id: str = Field(max_length=REVIEW_TITLE)
-    title: str = Field(max_length=REVIEW_TEXT)
+class ReviewEvidence(ReviewRecord):
     reason: str = Field(max_length=REVIEW_TEXT)
     reason_code: str = Field(default="", max_length=REVIEW_TITLE)
+    basis: Literal["fulltext", "abstract", "unknown"]
+    extracted_chars: int | None = Field(default=None, ge=0)
+
+
+class ReviewLibraryTarget(ReviewRecord):
+    kind: Literal["library"] = "library"
+    item_id: str = Field(min_length=1, max_length=REVIEW_TITLE)
+
+
+class ReviewWebTarget(ReviewRecord):
+    kind: Literal["web"] = "web"
+    url: str = Field(min_length=1, max_length=REVIEW_TEXT)
+
+
+class ReviewReference(ReviewRecord):
+    citation_key: str
+    paper_id: str | None
+    citation: ReviewCitation
+    evidence: ReviewEvidence | None
+    target: ReviewLibraryTarget | ReviewWebTarget | None
+
+
+class ReviewReferences(ReviewRecord):
+    cited_count: int | None = Field(default=None, ge=0)
+    fulltext_cited_count: int | None = Field(default=None, ge=0)
+    abstract_cited_count: int | None = Field(default=None, ge=0)
+    rows: list[ReviewReference] = Field(default_factory=list, max_length=REVIEW_CITATIONS)
+
+
+class ReviewVerificationRow(ReviewRecord):
+    check: ReviewCheck | None = None
+    issue: ReviewIssue | None = None
+
+
+class ReviewVerification(ReviewRecord):
+    issue_count: int | None = Field(default=None, ge=0)
+    rows: list[ReviewVerificationRow] = Field(max_length=REVIEW_CHECKS + REVIEW_ISSUES)
 
 
 class ReviewOutput(ReviewRecord):
-    format: Literal["latex_pdf", "markdown"] | None = None
+    format: Literal["latex_pdf", "markdown", "docx"] | None = None
     citation_style: Literal["numeric", "author_year", "ieee", "acm", "gbt7714_2025"] | None = None
     decided_by: Literal["user", "default"] | None = None
 
 
 class ReviewSnapshot(ReviewRecord):
-    schema_version: Literal["1.1"] = REVIEW_VERSION
+    schema_version: Literal["1.2"] = REVIEW_VERSION
     workspace: str
     checkpoint: Literal["outline", "result"]
     intent: str = Field(min_length=1, max_length=REVIEW_TEXT)
@@ -252,15 +329,10 @@ class ReviewSnapshot(ReviewRecord):
     included: int | None = Field(default=None, ge=0)
     fulltext: int | None = Field(default=None, ge=0)
     abstract_only: int | None = Field(default=None, ge=0)
-    pending_checks: int | None = Field(default=None, ge=0)
-    cited: int | None = Field(default=None, ge=0)
     section_count: int = Field(ge=0)
     sections: list[ReviewSection] = Field(max_length=REVIEW_SECTIONS)
-    citations: list[ReviewCitation] = Field(max_length=REVIEW_CITATIONS)
-    abstract_evidence: list[ReviewEvidenceLimitation] = Field(max_length=REVIEW_CITATIONS)
-    checks: list[ReviewCheck] = Field(max_length=REVIEW_CHECKS)
-    issues: list[ReviewIssue] = Field(max_length=REVIEW_ISSUES)
-    issue_count: int | None = Field(default=None, ge=0)
+    references: ReviewReferences
+    verification: ReviewVerification
     warnings: list[str]
     source_hashes: dict[str, str]
     session_id: str = ""
@@ -286,6 +358,8 @@ class PreparedReviewSearch:
     files: tuple[ReviewFile, ...]
     authorization_sources: tuple[AuthorizationSource, ...]
     corpus_sha256: str
+    source_digests: tuple[str, ...]
+    library_refs: tuple[str, ...] = ()
 
     @property
     def authorization_refs(self) -> tuple[str, ...]:
@@ -293,7 +367,8 @@ class PreparedReviewSearch:
             return ()
         return (
             *(source.ref_id for source in self.authorization_sources),
-            f"{AUTHORIZATION_ARTIFACT_PREFIX}{self.corpus_sha256}",
+            *self.library_refs,
+            *(f"{AUTHORIZATION_ARTIFACT_PREFIX}{digest}" for digest in self.source_digests),
         )
 
 
@@ -306,7 +381,9 @@ def _text(value: object, limit: int | None = REVIEW_TEXT) -> str:
 
 
 def _count(value: object) -> int | None:
-    return value if type(value) is int and value >= 0 else None
+    return (
+        value if (isinstance(value, int) and not isinstance(value, bool)) and value >= 0 else None
+    )
 
 
 def _fulltext_limitation_reason(row: Mapping[str, Any]) -> str:
@@ -425,6 +502,23 @@ def _sections(outline: dict, corpus: dict | None) -> tuple[int, list[ReviewSecti
     return len(result), result[:REVIEW_SECTIONS]
 
 
+def _project_material(paper: dict) -> bool:
+    references = paper.get("library_refs")
+    library_identity = isinstance(references, list) and any(
+        isinstance(reference, str)
+        and reference.startswith(LIBRARY_REF_PREFIX)
+        and len(reference) > len(LIBRARY_REF_PREFIX)
+        for reference in references
+    )
+    origin = _text(paper.get("source_kind") or paper.get("origin")).casefold()
+    return bool(
+        paper.get("literature_id")
+        or paper.get("project_id")
+        or library_identity
+        or origin in PROJECT_MATERIAL_ORIGINS
+    )
+
+
 def _scope(query: dict, requirements: dict, corpus: dict | None) -> ReviewScope:
     if "intent" in requirements:
         retrieval = requirements.get("retrieval", {})
@@ -461,18 +555,11 @@ def _scope(query: dict, requirements: dict, corpus: dict | None) -> ReviewScope:
         for paper in (corpus or {}).values():
             if not isinstance(paper, dict):
                 continue
-            origin = _text(paper.get("source_kind") or paper.get("origin")).casefold()
-            if (
-                paper.get("literature_id")
-                or paper.get("project_id")
-                or origin in {"project", "library", "local"}
-            ):
+            if _project_material(paper):
                 project += 1
             else:
                 external += 1
         return ReviewScope(
-            topic=_text(requirements.get("effective_requirements"))
-            or _text(requirements.get("intent")),
             time_range=time_range,
             focus=list(dict.fromkeys(filter(None, focus)))[:REVIEW_CHILDREN],
             requested_materials=list(dict.fromkeys(filter(None, requested_materials)))[
@@ -529,17 +616,11 @@ def _scope(query: dict, requirements: dict, corpus: dict | None) -> ReviewScope:
     for paper in (corpus or {}).values():
         if not isinstance(paper, dict):
             continue
-        origin = _text(paper.get("source_kind") or paper.get("origin")).casefold()
-        if (
-            paper.get("literature_id")
-            or paper.get("project_id")
-            or origin in {"project", "library", "local"}
-        ):
+        if _project_material(paper):
             project += 1
         else:
             external += 1
     return ReviewScope(
-        topic=_text(normal.get("topic")) or _text(query.get("query")),
         time_range=time_range,
         focus=list(dict.fromkeys(focus))[:REVIEW_CHILDREN],
         requested_materials=list(dict.fromkeys(requested_materials))[:REVIEW_CHILDREN],
@@ -548,27 +629,37 @@ def _scope(query: dict, requirements: dict, corpus: dict | None) -> ReviewScope:
     )
 
 
-def _issues(postcheck: dict, retrieval: dict, fast_audit: dict) -> list[ReviewIssue]:
+def _issues(
+    postcheck: dict, retrieval: dict, fast_audit: dict, checks: dict[str, ReviewCheck]
+) -> list[ReviewVerificationRow]:
     issues = []
     for row in retrieval.get("flagged_for_review", []):
         if isinstance(row, dict):
             issues.append(
-                ReviewIssue(
-                    title="检索筛选待核对",
-                    detail=_text(row.get("reason")) or "筛选报告标记为待核对",
-                    paper_ids=_strings([row.get("paper_id")]),
-                    affected_content=_text(row.get("affected_content")),
+                ReviewVerificationRow(
+                    issue=ReviewIssue(
+                        title="检索筛选待核对",
+                        detail=_text(row.get("reason")) or "筛选报告标记为待核对",
+                        paper_ids=_strings([row.get("paper_id")]),
+                        affected_content=_text(row.get("affected_content")),
+                    )
                 )
             )
     for check in postcheck.get("checks", []):
         if isinstance(check, dict) and check.get("verdict") in {"WARN", "FAIL", "NOT_CHECKED"}:
             issues.append(
-                ReviewIssue(
-                    title=_text(check.get("title"))
-                    or CHECK_LABELS.get(_text(check.get("id"), REVIEW_TITLE), "核对问题"),
-                    detail=_text(check.get("reason")),
-                    paper_ids=_strings(check.get("paper_ids")),
-                    affected_content=_text(check.get("affected_content") or check.get("section")),
+                ReviewVerificationRow(
+                    check=checks[check["id"]],
+                    issue=ReviewIssue(
+                        title=_text(check.get("title"))
+                        or CHECK_LABELS.get(_text(check.get("id"), REVIEW_TITLE), "核对问题"),
+                        detail=_text(check.get("reason")),
+                        paper_ids=_strings(check.get("paper_ids")),
+                        affected_content=_text(
+                            check.get("affected_content") or check.get("section")
+                        ),
+                        priority=CHECK_PRIORITIES.get(check["verdict"]),
+                    ),
                 )
             )
             for entry in check.get("incomplete_entries", []) or []:
@@ -581,25 +672,31 @@ def _issues(postcheck: dict, retrieval: dict, fast_audit: dict) -> list[ReviewIs
                         )
                     )
                     issues.append(
-                        ReviewIssue(
-                            title="引用元数据不完整",
-                            detail=(
-                                ("缺少字段：" + "、".join(missing))
-                                if missing
-                                else _text(check.get("reason"))
+                        ReviewVerificationRow(
+                            check=checks[check["id"]],
+                            issue=ReviewIssue(
+                                title="引用元数据不完整",
+                                detail=(
+                                    ("缺少字段：" + "、".join(missing))
+                                    if missing
+                                    else _text(check.get("reason"))
+                                ),
+                                paper_ids=[_text(entry.get("key"), REVIEW_TITLE)],
+                                affected_content="参考文献表",
+                                priority=CHECK_PRIORITIES.get(check["verdict"]),
                             ),
-                            paper_ids=[_text(entry.get("key"), REVIEW_TITLE)],
-                            affected_content="参考文献表",
                         )
                     )
     for key in postcheck.get("hallucinated_keys", []):
         if isinstance(key, str):
             issues.append(
-                ReviewIssue(
-                    title="引用无法对应",
-                    detail=f"引用键 {key} 未在实际书目中找到",
-                    paper_ids=[_text(key, REVIEW_TITLE)],
-                    affected_content="正文引用与参考文献表",
+                ReviewVerificationRow(
+                    issue=ReviewIssue(
+                        title="引用无法对应",
+                        detail=f"引用键 {key} 未在实际书目中找到",
+                        paper_ids=[_text(key, REVIEW_TITLE)],
+                        affected_content="正文引用与参考文献表",
+                    )
                 )
             )
     raw_fast = fast_audit.get("issues", fast_audit.get("items", []))
@@ -607,11 +704,16 @@ def _issues(postcheck: dict, retrieval: dict, fast_audit: dict) -> list[ReviewIs
         for row in raw_fast:
             if isinstance(row, dict):
                 issues.append(
-                    ReviewIssue(
-                        title=_text(row.get("title") or row.get("kind")) or "引用预核对问题",
-                        detail=_text(row.get("details") or row.get("reason")),
-                        paper_ids=_strings(row.get("paper_ids")),
-                        affected_content=_text(row.get("affected_content") or row.get("location")),
+                    ReviewVerificationRow(
+                        issue=ReviewIssue(
+                            title=_text(row.get("title") or row.get("kind")) or "引用预核对问题",
+                            detail=_text(row.get("details") or row.get("reason")),
+                            paper_ids=_strings(row.get("paper_ids")),
+                            affected_content=_text(
+                                row.get("affected_content") or row.get("location")
+                            ),
+                            priority=ISSUE_PRIORITIES.get(_text(row.get("severity")).lower()),
+                        )
                     )
                 )
     return issues
@@ -631,6 +733,125 @@ def _publication_reason(check: dict) -> str:
         if fatal:
             return "；".join(fatal)
     return ""
+
+
+def _reference_target(
+    paper: dict, record: ParsedRecord
+) -> ReviewLibraryTarget | ReviewWebTarget | None:
+    refs = {
+        ref.removeprefix(LIBRARY_REF_PREFIX)
+        for ref in _strings(paper.get("library_refs"), SEARCH_MAX_PAPERS)
+        if ref.startswith(LIBRARY_REF_PREFIX)
+    }
+    refs.discard("")
+    if refs:
+        item_id = next(iter(refs))
+        return (
+            ReviewLibraryTarget(item_id=item_id)
+            if len(refs) == 1 and len(item_id) <= REVIEW_TITLE
+            else None
+        )
+    doi = _text(paper.get("doi") or record.doi, None)
+    arxiv = _text(paper.get("arxiv_id") or record.arxiv, None)
+    candidates = (
+        paper.get("landing_page_url"),
+        paper.get("url"),
+        record.url,
+        f"https://doi.org/{quote(doi, safe='/')}" if DOI.fullmatch(doi) else None,
+        f"https://arxiv.org/abs/{quote(arxiv, safe='/')}" if ARXIV.fullmatch(arxiv) else None,
+    )
+    for url in candidates:
+        if (
+            not isinstance(url, str)
+            or len(url) > REVIEW_TEXT
+            or re.search(r"[\s\x00-\x1f\x7f\\]", url)
+        ):
+            continue
+        try:
+            parsed = urlsplit(url)
+            if (
+                parsed.scheme in REVIEW_WEB_SCHEMES
+                and parsed.hostname
+                and parsed.username is None
+                and parsed.password is None
+            ):
+                return ReviewWebTarget(url=url)
+        except ValueError:
+            continue
+    return None
+
+
+def _references(
+    values: dict, corpus: dict, evidence: dict[str, ReviewEvidence], facts: dict, is_pdf: bool
+) -> ReviewReferences:
+    keys: dict[str, int | None] = {}
+    known = False
+    if is_pdf and isinstance(aux := values.get(MANUSCRIPT_AUX), str):
+        keys = {
+            key.strip(): None
+            for group in AUX_CITATION.findall(aux)
+            for key in group.split(",")
+            if key.strip() and key.strip() != "*"
+        }
+        known = bool(keys)
+    elif not is_pdf and isinstance(manuscript := values.get(MANUSCRIPT), str):
+        used = dict.fromkeys(REFERENCE_LINK.findall(manuscript))
+        keys = {
+            key: int(number) if number else None
+            for key, number in REFERENCE_ANCHOR.findall(manuscript)
+            if key in used
+        }
+        known = bool(keys) and len(keys) == len(used)
+
+    candidates: dict[str, list[str]] = {}
+    for paper_id, key in values.get(CITE_KEYS, {}).items():
+        if isinstance(key, str) and key:
+            candidates.setdefault(key, []).append(paper_id)
+    records = {row.citation_key: row for row in parse_bibtex(values.get(CITATIONS, ""))}
+    rows = []
+    for key, number in keys.items():
+        identities = candidates.get(key, [])
+        paper_id = identities[0] if len(identities) == 1 and identities[0] in corpus else None
+        paper = corpus.get(paper_id, {})
+        record = records.get(key, ParsedRecord())
+        title = _text(record.title or paper.get("title"))
+        if not title:
+            continue
+        rows.append(
+            ReviewReference(
+                citation_key=key,
+                paper_id=paper_id,
+                citation=ReviewCitation(
+                    number=number,
+                    title=title,
+                    authors=record.authors,
+                    year=record.year,
+                    venue=record.journal,
+                ),
+                evidence=evidence.get(paper_id) if paper_id is not None else None,
+                target=_reference_target(paper, record),
+            )
+        )
+    total = len(keys) if known else _count(facts.get("distinct_cited"))
+    coverage_known = (
+        total is not None
+        and total == len(rows)
+        and all(row.evidence and row.evidence.basis != "unknown" for row in rows)
+    )
+    return ReviewReferences(
+        cited_count=total,
+        fulltext_cited_count=(
+            sum(bool(row.evidence and row.evidence.basis == "fulltext") for row in rows)
+            if coverage_known
+            else None
+        ),
+        abstract_cited_count=(
+            sum(bool(row.evidence and row.evidence.basis == "abstract") for row in rows)
+            if coverage_known
+            else None
+        ),
+        rows=rows[:REVIEW_CITATIONS],
+    )
 
 
 def _adapt_publication_postcheck(postcheck: dict, generation: dict) -> tuple[dict, bool]:
@@ -752,7 +973,9 @@ def prepare_review(workdir: Path, workspace: str, checkpoint: str) -> PreparedRe
         raise ValueError("review_checkpoint_invalid")
     normalized_checkpoint = cast(Literal["outline", "result"], checkpoint)
     workspace = scoped_workspace(workspace)
-    values, hashes, files = _load(workdir, workspace, (*JSON_FILES, *DOCUMENT_FILES))
+    values, hashes, files = _load(
+        workdir, workspace, (*JSON_FILES, *DOCUMENT_FILES, MANUSCRIPT_AUX)
+    )
     query = values.get(QUERY, {})
     requirements = values.get(REQUIREMENTS, {})
     writing_request = values.get(WRITING_REQUEST, {})
@@ -779,41 +1002,50 @@ def prepare_review(workdir: Path, workspace: str, checkpoint: str) -> PreparedRe
     if fulltext is not None and (included is None or fulltext > included):
         raise ValueError("review_coverage_invalid")
     abstract_only = included - fulltext if included is not None and fulltext is not None else None
-    abstract_evidence = []
+    reported = {}
     for row in fulltext_report.get("papers", []):
         if not isinstance(row, dict) or row.get("paper_id") not in (corpus or {}):
             continue
-        if (_count(row.get("chars")) or 0) > 0:
-            continue
-        paper_id = _text(row.get("paper_id"), REVIEW_TITLE)
-        paper = (corpus or {}).get(paper_id, {})
-        abstract_evidence.append(
-            ReviewEvidenceLimitation(
-                paper_id=paper_id,
-                title=_text(paper.get("title")) if isinstance(paper, dict) else "",
-                reason=_fulltext_limitation_reason(row),
-                reason_code=_text(row.get("outcome"), REVIEW_TITLE),
+        reported[row["paper_id"]] = row
+    evidence = {}
+    for paper_id, paper in (corpus or {}).items():
+        row = reported.get(paper_id, {})
+        chars = _count(row.get("chars"))
+        basis: Literal["fulltext", "abstract", "unknown"] = (
+            "fulltext"
+            if chars
+            else (
+                "abstract"
+                if (chars == 0 or row or fulltext == 0) and _text(paper.get("abstract"))
+                else "unknown"
             )
+        )
+        evidence[paper_id] = ReviewEvidence(
+            basis=basis,
+            extracted_chars=chars,
+            reason_code=_text(row.get("outcome"), REVIEW_TITLE) if not chars else "",
+            reason=(
+                _text(row.get("detail"))
+                if chars
+                else _fulltext_limitation_reason(row) if row else ""
+            ),
         )
     generation = values.get(GENERATION, {})
     postcheck, adapted_publication = _adapt_publication_postcheck(
         values.get(POSTCHECK, {}), generation
     )
-    checks = []
-    seen_checks = set()
+    checks: dict[str, ReviewCheck] = {}
     for check in postcheck.get("checks", []):
         if not isinstance(check, dict) or check.get("verdict") not in CHECK_VERDICTS:
             raise ValueError("review_check_invalid")
         identity = check.get("id")
-        if not isinstance(identity, str) or identity not in CHECK_LABELS or identity in seen_checks:
+        if not isinstance(identity, str) or identity not in CHECK_LABELS or identity in checks:
             raise ValueError("review_check_identity_invalid")
-        seen_checks.add(identity)
-        checks.append(
-            ReviewCheck(
-                title=_text(check.get("title"), REVIEW_TITLE) or CHECK_LABELS[identity],
-                verdict=check["verdict"],
-                reason=_text(check.get("reason")),
-            )
+        checks[identity] = ReviewCheck(
+            id=identity,
+            title=_text(check.get("title"), REVIEW_TITLE) or CHECK_LABELS[identity],
+            verdict=check["verdict"],
+            reason=_text(check.get("reason")),
         )
     final = generation.get("final_status")
     if final is None and adapted_publication:
@@ -843,18 +1075,29 @@ def prepare_review(workdir: Path, workspace: str, checkpoint: str) -> PreparedRe
         reason = _text(report.get("status_reason") or report.get("reason"))
         if reason:
             warnings.append(f"{label}：{reason}")
-    citations = []
-    if isinstance(values.get(CITATIONS), str):
-        citations = [
-            ReviewCitation(title=row.title, authors=row.authors, year=row.year, venue=row.journal)
-            for row in parse_bibtex(values[CITATIONS])
-            if row.title
-        ][:REVIEW_CITATIONS]
-    issues = _issues(postcheck, values.get(RETRIEVAL, {}), values.get(FAST_AUDIT, {}))
-    pending_checks = (
-        len(issues)
-        if issues or postcheck or values.get(FAST_AUDIT) or values.get(RETRIEVAL)
-        else None
+    issues = _issues(postcheck, values.get(RETRIEVAL, {}), values.get(FAST_AUDIT, {}), checks)
+    issue_count = len(issues) if issues or postcheck else None
+    shown_issues = issues[:REVIEW_ISSUES]
+    verification_rows = []
+    for check in list(checks.values())[:REVIEW_CHECKS]:
+        linked = [row for row in shown_issues if row.check == check]
+        verification_rows.extend(linked or [ReviewVerificationRow(check=check)])
+    verification_rows.extend(row for row in shown_issues if row.check is None)
+    scope = _scope(query, writing_request or requirements, corpus)
+    normalized_requirements = requirements.get("req_normal")
+    requested_topic = (
+        _text(normalized_requirements.get("topic"))
+        if isinstance(normalized_requirements, dict)
+        else ""
+    )
+    excluded_topics = {"", intent, _text(query.get("query"))}
+    scope.topic = next(
+        (
+            topic
+            for topic in (_text(outline.get("topic")), requested_topic)
+            if topic not in excluded_topics
+        ),
+        None,
     )
     output = {
         **values.get(OUTPUT_SPEC, {}),
@@ -867,7 +1110,7 @@ def prepare_review(workdir: Path, workspace: str, checkpoint: str) -> PreparedRe
         title=_text(outline.get("survey_title"), REVIEW_TITLE) or "文献综述",
         status=cast(Literal["outline", "generated", "partial", "incomplete", "failed"], status),
         generation_status=cast(Literal["SUCCESS", "PARTIAL_SUCCESS", "FAILED"] | None, final),
-        scope=_scope(query, writing_request or requirements, corpus),
+        scope=scope,
         output=ReviewOutput(
             format=output.get("format"),
             citation_style=output.get("citation_style"),
@@ -876,23 +1119,52 @@ def prepare_review(workdir: Path, workspace: str, checkpoint: str) -> PreparedRe
         included=included,
         fulltext=fulltext,
         abstract_only=abstract_only,
-        pending_checks=pending_checks,
-        cited=(
-            len(citations)
-            if isinstance(values.get(CITATIONS), str)
-            else _count(facts.get("distinct_cited"))
-        ),
         section_count=total,
         sections=sections,
-        citations=citations,
-        abstract_evidence=abstract_evidence[:REVIEW_CITATIONS],
-        checks=checks,
-        issues=issues[:REVIEW_ISSUES],
-        issue_count=len(issues),
+        references=(
+            _references(values, corpus or {}, evidence, facts, output.get("format") == "latex_pdf")
+            if checkpoint == REVIEW_RESULT_CHECKPOINT
+            else ReviewReferences()
+        ),
+        verification=ReviewVerification(
+            issue_count=issue_count,
+            rows=verification_rows,
+        ),
         warnings=warnings,
         source_hashes=hashes,
     )
     return PreparedReview(card, tuple(files))
+
+
+class ReviewMetadataError(ValueError):
+    """Field-level evidence for repairing metadata without rediscovering papers."""
+
+    def __init__(self, field: str, value: Any, expected: str, code: str = "INVALID_FIELD"):
+        super().__init__("review_metadata_invalid")
+        self.issues = [
+            {
+                "artifact": METADATA,
+                "field": field,
+                "code": code,
+                "actual_type": type(value).__name__,
+                "expected": expected,
+            }
+        ]
+
+
+def _review_paper_id(value: Any, field: str) -> str:
+    # Source services may return integer identifiers. A boolean/float/container
+    # is not an ID, and truncating one would silently change citation identity.
+    identity = str(value) if (isinstance(value, int) and not isinstance(value, bool)) else value
+    if (
+        not isinstance(identity, str)
+        or not identity.strip()
+        or len(identity.strip()) > REVIEW_TITLE
+    ):
+        raise ReviewMetadataError(
+            field, value, f"non-empty string ID up to {REVIEW_TITLE} characters, or integer ID"
+        )
+    return identity.strip()
 
 
 def _slr_papers(
@@ -902,6 +1174,38 @@ def _slr_papers(
     text_limit = None if complete else REVIEW_TEXT
     raw_papers = metadata.get("papers")
     if not isinstance(raw_papers, list) or len(raw_papers) > SEARCH_MAX_PAPERS:
+        raise ReviewMetadataError(
+            "papers", raw_papers, f"array with at most {SEARCH_MAX_PAPERS} records"
+        )
+    if not isinstance(corpus, dict):
+        raise ValueError(INVALID_REVIEW_CORPUS)
+    raw_papers = list(raw_papers)
+    represented = set()
+    for index, raw in enumerate(raw_papers):
+        if not isinstance(raw, dict):
+            raise ReviewMetadataError(f"papers[{index}]", raw, "paper object")
+        field = "paper_id" if "paper_id" in raw else "id"
+        identity = _review_paper_id(raw.get(field), f"papers[{index}].{field}")
+        if identity in represented:
+            raise ReviewMetadataError(
+                f"papers[{index}].{field}", raw.get(field), "unique paper ID", "DUPLICATE_PAPER_ID"
+            )
+        represented.add(identity)
+    for identity, record in corpus.items():
+        if identity in represented:
+            continue
+        if (
+            not isinstance(identity, str)
+            or not identity
+            or _text(identity, REVIEW_TITLE) != identity
+            or not isinstance(record, dict)
+            or record.get("user_supplied") is not True
+            or record.get("paperId") != identity
+            or not _text(record.get("title"))
+        ):
+            raise ValueError(INVALID_REVIEW_CORPUS)
+        raw_papers.append({"paper_id": identity, "title": record["title"]})
+    if len(raw_papers) > SEARCH_MAX_PAPERS:
         raise ValueError("review_metadata_invalid")
     dropped = {
         row.get("paper_id"): row for row in report.get("dropped", []) if isinstance(row, dict)
@@ -911,13 +1215,23 @@ def _slr_papers(
     }
     papers = []
     seen = set()
-    for raw in raw_papers:
+    for index, raw in enumerate(raw_papers):
         if not isinstance(raw, dict):
-            raise ValueError("review_metadata_invalid")
-        identity = _text(raw.get("paper_id") or raw.get("id"), REVIEW_TITLE)
+            raise ReviewMetadataError(f"papers[{index}]", raw, "paper object")
+        identity_field = "paper_id" if "paper_id" in raw else "id"
+        identity = _review_paper_id(raw.get(identity_field), f"papers[{index}].{identity_field}")
         title = _text(raw.get("title"), text_limit)
-        if not identity or not title or identity in seen:
-            raise ValueError("review_metadata_invalid")
+        if not title:
+            raise ReviewMetadataError(
+                f"papers[{index}].title", raw.get("title"), "non-empty title string"
+            )
+        if identity in seen:
+            raise ReviewMetadataError(
+                f"papers[{index}].{identity_field}",
+                raw.get(identity_field),
+                "unique paper ID",
+                "DUPLICATE_PAPER_ID",
+            )
         seen.add(identity)
         selected = corpus.get(identity) if isinstance(corpus, dict) else None
         decision: Literal["included", "excluded", "candidate"] = (
@@ -940,12 +1254,17 @@ def _slr_papers(
         external_ids = (
             record.get("external_ids", {}) if isinstance(record.get("external_ids"), dict) else {}
         )
+        paperYear = record.get("year")
         papers.append(
             paper_type(
                 id=identity,
                 title=title,
                 authors=_authors(record.get("authors"), complete=complete),
-                year=record.get("year") if type(record.get("year")) is int else None,
+                year=(
+                    paperYear
+                    if isinstance(paperYear, int) and not isinstance(paperYear, bool)
+                    else None
+                ),
                 venue=_venue(record.get("venue"), text_limit) or None,
                 doi=_text(
                     record.get("doi") or external_ids.get("DOI"), None if complete else REVIEW_TITLE
@@ -1063,6 +1382,11 @@ def review_retrieval_run(workdir: Path, workspace: str) -> str:
         or stage.get("status") not in RETRIEVAL_USABLE_STATUSES
     ):
         raise ValueError("review_checkpoint_status_invalid")
+    return review_workspace_run(workdir, workspace)
+
+
+def review_workspace_run(workdir: Path, workspace: str) -> str:
+    workspace = scoped_workspace(workspace)
     binding = json.loads(
         read_scoped_file(
             workdir, scoped_workspace_path(workspace, REVIEW_BINDING), CHECKPOINT_FILE_BYTES
@@ -1124,7 +1448,7 @@ def prepare_review_search(workdir: Path, workspace: str, run_id: str) -> Prepare
         candidates=len(papers),
         deduplicated=_count(report.get("input_count")),
         retained=len(corpus),
-        papers=papers[:SEARCH_CARD_PAPERS],
+        papers=papers,
         warnings=warnings,
         origin=LITERATURE_REVIEW_ORIGIN,
     )
@@ -1132,7 +1456,41 @@ def prepare_review_search(workdir: Path, workspace: str, run_id: str) -> Prepare
         authorization_source(paper) for paper in papers if paper.decision == "included"
     )
     corpus_path = scoped_workspace_path(workspace, CORPUS)
-    return PreparedReviewSearch(card, tuple(files), included, hashes[corpus_path])
+    source_digests = []
+    library_refs = set()
+    for identity, record in sorted(corpus.items()):
+        if not isinstance(record, dict):
+            raise ValueError("review_corpus_invalid")
+        references = record.get("library_refs", [])
+        if not isinstance(references, list) or any(
+            not isinstance(ref, str)
+            or not ref.startswith(LIBRARY_REF_PREFIX)
+            or not ref.removeprefix(LIBRARY_REF_PREFIX)
+            for ref in references
+        ):
+            raise ValueError("review_library_references_invalid")
+        library_refs.update(references)
+        source_record = {
+            key: value for key, value in record.items() if key not in AUTHORIZATION_METADATA_FIELDS
+        }
+        source_digests.append(
+            sha256(
+                json.dumps(
+                    {identity: source_record},
+                    sort_keys=True,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest()
+        )
+    return PreparedReviewSearch(
+        card,
+        tuple(files),
+        included,
+        hashes[corpus_path],
+        tuple(source_digests),
+        tuple(sorted(library_refs)),
+    )
 
 
 def project_review_search_artifacts(values: dict[str, bytes]) -> list[SearchPaper]:

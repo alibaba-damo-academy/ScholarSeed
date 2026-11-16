@@ -230,6 +230,9 @@ function createWorkspace(directory = path.resolve(__dirname, '../..'), environme
   }
 
   function serveTests(args) {
+    if (!Array.isArray(args) || args.some(argument => typeof argument !== 'string')) {
+      throw new Error('Serve test arguments must be passed as an array of strings')
+    }
     run(pythonPath(), ['-P', '-m', 'tests.run_all', ...args], {
       cwd: path.join(REPO, 'apps', 'serve'),
       env: { ...environment, PYTHONPATH: [path.join(REPO, 'apps', 'serve'), REPO].join(path.delimiter) }

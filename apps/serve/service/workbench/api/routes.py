@@ -15,16 +15,30 @@ from __future__ import annotations
 
 from dataclasses import asdict, replace
 from hashlib import sha256
+from pathlib import PurePosixPath
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 
-from service.content.domain.model import PREPARED_CONFLICT, PREPARED_UNAVAILABLE, ContentError
+from service.content.domain.model import (
+    PREPARED_CONFLICT,
+    PREPARED_UNAVAILABLE,
+    READ_PERMISSION_DENIED,
+    ContentError,
+    ContentReadPermissionError,
+)
 from service.content.service.port import MAX_BYTES, ContentService
 from service.content.service.spreadsheet import processor_for
 from service.platform.citations import PDF_INDEX_STATE, CitationDocument, PdfIndexPort
 from service.platform.ranges import parse_byte_range
 from service.platform.resources import ResourceAdmissionPolicy, ResourceManagedCopyPort
+from service.platform.workbench import (
+    REFERENCE_DOCUMENT_MAX_BYTES,
+    REFERENCE_INVALID,
+    REFERENCE_SUFFIXES,
+    parse_document_reference,
+)
 from service.resources.service.history import ResourceVersionError, ResourceVersionService
+from service.workbench.api.comments import register_comment_routes
 from service.workbench.domain.model import (
     FILE_TOO_LARGE,
     WORKBENCH_PREVIEW_MAX_BYTES,
@@ -52,6 +66,7 @@ WORKBENCH_ROUTE_PREFIX = "/api/workbench"
 
 #: 领域错误码 → HTTP 状态。与 resources 域同一套码表语义。
 ERROR_STATUS = {
+    READ_PERMISSION_DENIED: 403,
     "path_outside_project": 400,
     "no_project_selected": 400,
     "unknown_project": 404,
@@ -147,11 +162,42 @@ def _managed_copies(request: Request) -> ResourceManagedCopyPort:
 
 
 def _fail(error: ContentError | ResourceVersionError) -> HTTPException:
+    if isinstance(error, ContentReadPermissionError) or error.code == READ_PERMISSION_DENIED:
+        return HTTPException(
+            status_code=ERROR_STATUS[READ_PERMISSION_DENIED],
+            detail={"code": READ_PERMISSION_DENIED, "retryable": True},
+        )
     return HTTPException(status_code=ERROR_STATUS.get(error.code, 400), detail=error.code)
 
 
 def register_workbench_routes(app: FastAPI) -> None:
     """把 Workbench 路由挂到应用上。"""
+    register_comment_routes(app)
+
+    @app.get(f"{WORKBENCH_ROUTE_PREFIX}/reference")
+    def workbench_reference(
+        request: Request, project: str, path: str, revision: str, href: str
+    ) -> dict:
+        try:
+            reference = parse_document_reference(href)
+            if PurePosixPath(path).suffix.lower() not in REFERENCE_SUFFIXES:
+                raise ValueError(REFERENCE_INVALID)
+            target = _content(request).relative_snapshot(
+                project, path, revision, reference.path, REFERENCE_DOCUMENT_MAX_BYTES
+            )
+            text = target.content.decode("utf-8")
+            if "\x00" in text:
+                raise ValueError(REFERENCE_INVALID)
+            return {
+                "text": text,
+                "fragment": reference.fragment,
+                "revision": target.revision,
+                "source_revision": revision,
+            }
+        except ContentError as error:
+            raise _fail(error) from error
+        except (ValueError, UnicodeError) as error:
+            raise HTTPException(status_code=422, detail=REFERENCE_INVALID) from error
 
     @app.get(f"{WORKBENCH_ROUTE_PREFIX}/open")
     async def workbench_open(  # type: ignore[unused-ignore]

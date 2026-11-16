@@ -1,12 +1,16 @@
 import type { DepOptimizationOptions, Plugin } from 'vite'
+import { closedOpenUI, OPENUI_PRIMITIVES } from './scripts/shared/openui.mjs'
 
 // Crepe and every Kit entry must share one prebundle. Discovering a new deep
 // import after an editor has loaded can replace the ProseMirror module graph
 // while selections from the previous graph are still alive. Code block editors
 // are resolved from the same CodeMirror view module Crepe renders with.
 export const RENDERER_OPTIMIZE_DEPS: DepOptimizationOptions = {
-  include: ['@milkdown/crepe', '@milkdown/kit/**', '@codemirror/view']
+  include: ['@milkdown/crepe', '@milkdown/kit/**', '@codemirror/view', '@openuidev/react-lang', '@openuidev/react-ui', '@openuidev/lang-core', ...OPENUI_PRIMITIVES],
+  esbuildOptions: { plugins: [closedOpenUI()] },
 }
+
+export const RENDERER_SHARED_DEPENDENCIES = ['react', 'react-dom', 'react-i18next', 'i18next', '@openuidev/react-lang', '@openuidev/react-ui', '@openuidev/lang-core', 'zod']
 
 const FONTSOURCE_MARKER = '@fontsource'
 const CSS_EXTENSION = '.css'

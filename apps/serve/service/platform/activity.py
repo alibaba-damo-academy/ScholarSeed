@@ -12,6 +12,7 @@ import contextvars
 import inspect
 import logging
 import threading
+import time
 from collections import Counter
 from collections.abc import Callable, Coroutine, Iterator
 from concurrent.futures import Executor, Future
@@ -19,10 +20,15 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from enum import Enum
 from functools import partial
+from itertools import islice
 from typing import Any, TypeVar
 from uuid import uuid4
 
 T = TypeVar("T")
+RESOURCE_DIAGNOSTIC_LIMIT = 32
+RESOURCE_ORIGIN_LIMIT = 160
+RESOURCE_ORIGIN_DEPTH = 8
+RESOURCE_ORIGIN_UNKNOWN = "unknown"
 
 
 class ActivityPhase(str, Enum):
@@ -70,6 +76,14 @@ class ActivitySnapshot:
     maintenance_revision: int = 0
 
 
+@dataclass(frozen=True)
+class ResourceDiagnostic:
+    started: float
+    parent_id: str | None
+    parent_domain: str | None
+    origin: str
+
+
 class ActivityLease:
     def __init__(
         self,
@@ -84,6 +98,10 @@ class ActivityLease:
         self.domain = domain
         self._startup_probe = startup_probe
         self._context_token: contextvars.Token[ActivityLease | None] | None = None
+
+    @property
+    def identity(self) -> str:
+        return self._identity
 
     def __enter__(self) -> ActivityLease:
         with self._owner._lock:
@@ -101,6 +119,18 @@ class ActivityLease:
     def close(self) -> None:
         with self._owner._lock:
             if self._owner._leases.pop(self._identity, None) is not None:
+                detail = self._owner._resources.pop(self._identity, None)
+                if self.domain is ActivityDomain.TURN and detail is not None:
+                    logging.getLogger(__name__).info(
+                        "activity_turn_close instance_id=%s generation=%s lease_id=%s "
+                        "parent_id=%s origin=%s age_seconds=%.3f",
+                        self._owner.instance_id,
+                        self._owner._generation,
+                        self._identity,
+                        detail.parent_id,
+                        detail.origin,
+                        max(0.0, time.monotonic() - detail.started),
+                    )
                 self._owner._notify_drain_waiters()
 
 
@@ -116,6 +146,7 @@ class Activities:
         self.instance_id = uuid4().hex
         self._lock = threading.RLock()
         self._leases: dict[str, ActivityDomain] = {}
+        self._resources: dict[str, ResourceDiagnostic] = {}
         self._current: contextvars.ContextVar[ActivityLease | None] = contextvars.ContextVar(
             "serve_activity", default=None
         )
@@ -222,12 +253,93 @@ class Activities:
                 raise MaintenanceActive("update_maintenance")
             identity = uuid4().hex
             self._leases[identity] = domain
+            self._record_resource(identity, domain, parent if continuing else None)
             return ActivityLease(
                 self,
                 identity,
                 domain,
                 startup_probe=domain is ActivityDomain.STARTUP or startup_probe,
             )
+
+    def _record_resource(
+        self, identity: str, domain: ActivityDomain, parent: ActivityLease | None
+    ) -> None:
+        """Called under the admission lock; retain code identity, never frames/data."""
+        if domain not in (ActivityDomain.RESOURCE, ActivityDomain.TURN):
+            return
+        origin = RESOURCE_ORIGIN_UNKNOWN
+        frame = inspect.currentframe()
+        try:
+            for _ in range(RESOURCE_ORIGIN_DEPTH):
+                frame = frame.f_back if frame is not None else None
+                if frame is None:
+                    break
+                module = frame.f_globals.get("__name__", "")
+                if module == __name__:
+                    continue
+                # Only application code names: no filenames, locals, arguments,
+                # callback reprs or arbitrary third-party module names.
+                if isinstance(module, str) and module.startswith("service."):
+                    name = frame.f_code.co_name
+                    if (
+                        all(part.isidentifier() for part in module.split("."))
+                        and name.isidentifier()
+                    ):
+                        origin = f"{module}.{name}"[:RESOURCE_ORIGIN_LIMIT]
+                break
+        finally:
+            del frame
+        self._resources[identity] = ResourceDiagnostic(
+            time.monotonic(),
+            parent._identity if parent is not None else None,
+            parent.domain.value if parent is not None else None,
+            origin,
+        )
+        if domain is ActivityDomain.TURN:
+            logging.getLogger(__name__).info(
+                "activity_turn_enter instance_id=%s generation=%s lease_id=%s "
+                "parent_id=%s parent_domain=%s origin=%s",
+                self.instance_id,
+                self._generation,
+                identity,
+                parent._identity if parent is not None else None,
+                parent.domain.value if parent is not None else None,
+                origin,
+            )
+
+    def resource_diagnostics(self) -> dict[str, Any]:
+        """Bounded oldest-live sample; observational only, never a drain receipt."""
+        with self._lock:
+            now = time.monotonic()
+            result: dict[str, Any] = {
+                "instance_id": self.instance_id,
+                "generation": self._generation,
+                "phase": self._phase.value,
+            }
+            counts = Counter(self._leases.values())
+            for domain, key, prefix in (
+                (ActivityDomain.RESOURCE, "resources", ""),
+                (ActivityDomain.TURN, "turns", "turn_"),
+            ):
+                entries = (
+                    (identity, detail)
+                    for identity, detail in self._resources.items()
+                    if self._leases[identity] is domain
+                )
+                sample = [
+                    {
+                        "lease_id": identity,
+                        "parent_id": detail.parent_id,
+                        "parent_domain": detail.parent_domain,
+                        "origin": detail.origin,
+                        "age_seconds": round(max(0.0, now - detail.started), 3),
+                    }
+                    for identity, detail in islice(entries, RESOURCE_DIAGNOSTIC_LIMIT)
+                ]
+                result[key] = sample
+                result[f"{prefix}total"] = counts[domain]
+                result[f"{prefix}omitted"] = counts[domain] - len(sample)
+            return result
 
     def run_maintenance(self, generation: str, operation: Callable[[], T]) -> T:
         """Run a synchronous owner mutation only after the whole instance seals."""
@@ -237,6 +349,7 @@ class Activities:
                 raise MaintenanceActive("maintenance requires complete drain")
             identity = uuid4().hex
             self._leases[identity] = ActivityDomain.RESOURCE
+            self._record_resource(identity, ActivityDomain.RESOURCE, None)
             lease = ActivityLease(self, identity, ActivityDomain.RESOURCE)
             self._maintenance_parent = lease
         token = self._current.set(lease)
@@ -276,6 +389,7 @@ class Activities:
                 raise MaintenanceActive("update_maintenance")
             identity = uuid4().hex
             self._leases[identity] = domain
+            self._record_resource(identity, domain, parent)
             return ActivityLease(self, identity, domain)
 
     @contextmanager
@@ -614,10 +728,13 @@ class Activities:
         context = contextvars.copy_context()
 
         def execute() -> T:
-            if lease is not None:
-                with lease:
-                    return operation(*args, **kwargs)
-            return operation(*args, **kwargs)
+            try:
+                if lease is not None:
+                    with lease:
+                        return operation(*args, **kwargs)
+                return operation(*args, **kwargs)
+            finally:
+                close()
 
         def close() -> None:
             if lease is not None:
@@ -636,5 +753,10 @@ class Activities:
             if not done.cancelled():
                 done.exception()
 
-        future.add_done_callback(completed)
+        # shield() returns an already-completed future without yielding. Its
+        # completion receipt must include closing the observation barrier.
+        if future.done():
+            completed(future)
+        else:
+            future.add_done_callback(completed)
         return future

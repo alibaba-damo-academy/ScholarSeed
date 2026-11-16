@@ -6,6 +6,7 @@ import {
   getHistoryWithTodos,
   listAllSessions,
   listProjects,
+  loadSessionStatus,
   setSessionArchived,
   type HistoryResult,
   type Project,
@@ -15,7 +16,8 @@ import { useApp } from '../../store'
 import { documentWorkspaces } from '../../features/workbench/workspace'
 import { sessionDisplayTitle, sessionProjectName } from '../../session'
 import { isUserHistoryTurn } from '../../transcript'
-import { createArchiveReader, type ArchiveReader } from './archives'
+import { archiveStopRequired, createArchiveReader, type ArchiveReader } from './archives'
+import { useSessionChildCount } from './deletion'
 import { Markdown } from '../primitive/Markdown'
 import {
   Alert,
@@ -37,18 +39,64 @@ import {
 } from '../ui'
 import { SettingsPage } from './Settings'
 
+async function readArchiveStopRequired(sessionId: string, signal: AbortSignal): Promise<boolean> {
+  const snapshots = await loadSessionStatus([sessionId], {}, signal)
+  const status = snapshots.find((snapshot) => snapshot.session_id === sessionId)
+  if (!status) throw new Error('Archive target status unavailable')
+  return archiveStopRequired(status)
+}
+
 export function ArchiveDialog(): React.JSX.Element {
   const { state, set, act } = useApp()
-  const { t } = useTranslation('components')
+  const { t } = useTranslation('project')
   const [busy, setBusy] = React.useState(false)
   const [failed, setFailed] = React.useState(false)
   const target = state.sessionArchive!
+  const [status, setStatus] = React.useState<{
+    sessionId: string
+    stopRequired: boolean
+    serverRequired?: boolean
+  } | null>(null)
+  const stopRequired = status?.sessionId === target.sessionId ? status.stopRequired : null
+  React.useEffect(() => {
+    const controller = new AbortController()
+    setFailed(false)
+    void readArchiveStopRequired(target.sessionId, controller.signal).then(
+      (required) => {
+        if (!controller.signal.aborted)
+          setStatus({ sessionId: target.sessionId, stopRequired: required })
+      },
+      () => {
+        if (!controller.signal.aborted) setFailed(true)
+      }
+    )
+    return () => controller.abort()
+  }, [target.sessionId])
   const confirm = async (): Promise<void> => {
-    if (busy) return
+    if (busy || stopRequired === null) return
     setBusy(true)
     setFailed(false)
-    const result = await setSessionArchived(target.sessionId, true)
+    let result: Awaited<ReturnType<typeof setSessionArchived>>
+    try {
+      const required =
+        (await readArchiveStopRequired(target.sessionId, new AbortController().signal)) ||
+        status?.serverRequired === true
+      if (required !== stopRequired) {
+        setStatus({ sessionId: target.sessionId, stopRequired: required })
+        setBusy(false)
+        return
+      }
+      result = await setSessionArchived(target.sessionId, true, stopRequired)
+    } catch {
+      setBusy(false)
+      setFailed(true)
+      return
+    }
     setBusy(false)
+    if (result.stopRequired) {
+      setStatus({ sessionId: target.sessionId, stopRequired: true, serverRequired: true })
+      return
+    }
     if (!result.ok) {
       setFailed(true)
       return
@@ -71,7 +119,9 @@ export function ArchiveDialog(): React.JSX.Element {
         <AlertDialogContent data-testid="task-archive-confirm">
           <AlertDialogHeader>
             <div className="flex items-start justify-between gap-[var(--vds-space-2)]">
-              <AlertDialogTitle>{t('taskArchive.confirmTitle')}</AlertDialogTitle>
+              <AlertDialogTitle>
+                {t(stopRequired ? 'taskArchive.stopTitle' : 'taskArchive.confirmTitle')}
+              </AlertDialogTitle>
               <IconButton
                 variant="ghost"
                 icon={<X />}
@@ -84,16 +134,27 @@ export function ArchiveDialog(): React.JSX.Element {
               {t('taskArchive.confirmDescription', { title: target.title })}
             </AlertDialogDescription>
           </AlertDialogHeader>
-          {failed && <Alert tone="error" description={t('taskArchive.failed')} />}
+          {stopRequired === null && !failed && (
+            <Alert tone="neutral" description={t('taskArchive.loading')} />
+          )}
+          {failed && (
+            <Alert
+              tone="error"
+              description={t(
+                stopRequired === null ? 'taskArchive.statusFailed' : 'taskArchive.failed'
+              )}
+            />
+          )}
           <AlertDialogFooter>
             <AlertDialogCancel disabled={busy}>{t('taskArchive.cancel')}</AlertDialogCancel>
             <Button
               variant="danger"
               loading={busy}
+              disabled={stopRequired === null}
               onClick={() => void confirm()}
               data-testid="task-archive-submit"
             >
-              {t('taskArchive.confirm')}
+              {t(stopRequired ? 'taskArchive.stopConfirm' : 'taskArchive.confirm')}
             </Button>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -173,6 +234,8 @@ export function ArchivedTasksPage(): React.JSX.Element {
   const [history, setHistory] = React.useState<HistoryResult | null>(null)
   const [historyFailed, setHistoryFailed] = React.useState(false)
   const [removing, setRemoving] = React.useState<ServeSession | null>(null)
+  const children = useSessionChildCount(removing?.session_id)
+  const { t: shellText } = useTranslation('shell')
   const reader = React.useRef<ArchiveReader | null>(null)
   const catalogRevision = React.useRef(state.sessionCatalogRevision)
   React.useEffect(() => {
@@ -235,7 +298,7 @@ export function ArchivedTasksPage(): React.JSX.Element {
     window.dispatchEvent(new Event('scholarseed:refresh-session-list'))
   }
   const remove = async (): Promise<void> => {
-    if (!removing || busy) return
+    if (!removing || busy || children.count === null) return
     setBusy(true)
     const result = await deleteSession(removing.session_id)
     setBusy(false)
@@ -352,11 +415,26 @@ export function ArchivedTasksPage(): React.JSX.Element {
             <AlertDialogHeader>
               <AlertDialogTitle>{t('taskArchive.delete')}</AlertDialogTitle>
               <AlertDialogDescription>{t('taskArchive.deleteDescription')}</AlertDialogDescription>
+              {children.count !== null && children.count > 0 && (
+                <AlertDialogDescription>
+                  {shellText('delete.children', { count: children.count })}
+                </AlertDialogDescription>
+              )}
+              {children.failed && (
+                <AlertDialogDescription>
+                  {shellText('delete.childrenFailed')}
+                </AlertDialogDescription>
+              )}
             </AlertDialogHeader>
             {failed && <Alert tone="error" description={t('taskArchive.loadFailed')} />}
             <AlertDialogFooter>
               <AlertDialogCancel disabled={busy}>{t('taskArchive.cancel')}</AlertDialogCancel>
-              <Button variant="danger" loading={busy} onClick={() => void remove()}>
+              <Button
+                variant="danger"
+                loading={busy}
+                disabled={children.count === null}
+                onClick={() => void remove()}
+              >
                 {t('taskArchive.delete')}
               </Button>
             </AlertDialogFooter>

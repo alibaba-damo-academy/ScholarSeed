@@ -10,12 +10,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "scholarseed"
-version = "0.2.0"
+version = "0.3.2"
 description = "ScholarSeed product backend, composition root, and desktop launcher"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
+    "deep-rnd-l1==0.2.6",
     "aiosqlite",
     "damoatrace==0.1.0",
     "anthropic",
@@ -25,7 +26,8 @@ dependencies = [
     "mcp==1.26.0",
     "zotero-mcp-server==0.15.1",
     "json-repair",
-    "jsonschema>=4",
+    "jsonschema>=4.18",
+    "referencing>=0.28.4",
     "lxml>=5.2",
     "numpy",
     "openpyxl",
