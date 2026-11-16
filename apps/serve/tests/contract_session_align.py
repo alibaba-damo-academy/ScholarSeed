@@ -38,6 +38,7 @@ from scholarseed_runtime.contract import (  # noqa: E402
     ModelIntent,
     RuntimePermissionMode,
 )
+from scholarseed_runtime.contract.resource import RESOURCE_HOST_CONFIGURATION_CONFLICT  # noqa: E402
 from service.chat.persistence.catalog import (  # noqa: E402
     SessionCatalogStore,
     SessionPrincipal,
@@ -46,6 +47,7 @@ from service.chat.persistence.catalog import (  # noqa: E402
 from service.chat.persistence.events import (  # noqa: E402 -- after SCHOLARSEED_HOME test isolation
     ProductEventStore,
 )
+from service.chat.runtime.activation import SessionActivationError  # noqa: E402
 from service.chat.runtime.composition import (  # noqa: E402 -- after SCHOLARSEED_HOME test isolation
     LiveSessionService,
 )
@@ -334,7 +336,7 @@ def _service(
         artifacts=SimpleNamespace(),  # type: ignore[arg-type]
         settings=SettingsService(),
         credentials=credentials,  # type: ignore[arg-type]
-        logger=SimpleNamespace(error=lambda *_a, **_k: None),
+        logger=SimpleNamespace(error=lambda *_a, **_k: None, warning=lambda *_a, **_k: None),
     )
     return service, engine, catalog
 
@@ -1001,28 +1003,60 @@ class PermissionActivationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(live.suspensions, 0)
         self.assertEqual(runtime.model_switches, [])
 
-    async def test_default_model_is_persisted_before_runtime_drain_can_start(self) -> None:
+    async def test_model_switch_accepts_scheduled_reconfiguration_after_persisting_default(
+        self,
+    ) -> None:
         live = _Live(environment=CURRENT)
-        service, _runtime, _catalog = _service(live, _Credentials(CURRENT))
+        service, runtime, _catalog = _service(live, _Credentials(CURRENT))
         service._settings = SettingsService()
         service._settings.set_runtime_model("previous-default")
 
         async def start_drain(*_args, **_kwargs):
             self.assertEqual(service._settings.runtime_model(), "deepseek-v4-pro")
-            service._activities.begin()
-            raise RuntimeError("runtime_host_configuration_conflict")
+            raise SessionActivationError(RESOURCE_HOST_CONFIGURATION_CONFLICT)
 
-        with patch.object(service, "prepare_turn", side_effect=start_drain):
+        def schedule(*_args, model_id, **_kwargs):
+            self.assertEqual(model_id, "deepseek-v4-pro")
+            service._activities.begin()
+            return {"state": CommandState.ACCEPTED.value}
+
+        with (
+            patch.object(service, "_prepare_turn", side_effect=start_drain),
+            patch.object(runtime, "reconfiguration_supported", True, create=True),
+            patch.object(service, "_reconfigure_host", side_effect=schedule) as reconfigure,
+        ):
             payload, status = await service.set_model(
                 SESSION_ID, OWNER, "deepseek-v4-pro", actor_id=ACTOR_ID, remember_default=True
             )
-        self.assertEqual(status, 500)
+        reconfigure.assert_called_once()
+        self.assertEqual(status, 202)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["deferred"])
         self.assertEqual(payload["model_id"], "deepseek-v4-pro")
         self.assertEqual(payload["default_model_id"], "deepseek-v4-pro")
         self.assertEqual(service.model(SESSION_ID)["default_model_id"], "deepseek-v4-pro")
         self.assertIs(service._activities.snapshot().phase, ActivityPhase.DRAINING)
         with self.assertRaises(MaintenanceActive):
             service._activities.enter(ActivityDomain.RUNTIME, root=True)
+
+    async def test_model_switch_fails_when_reconfiguration_cannot_be_scheduled(self) -> None:
+        live = _Live(environment=CURRENT)
+        service, runtime, _catalog = _service(live, _Credentials(CURRENT))
+        with (
+            patch.object(
+                service,
+                "_prepare_turn",
+                side_effect=SessionActivationError(RESOURCE_HOST_CONFIGURATION_CONFLICT),
+            ),
+            patch.object(runtime, "reconfiguration_supported", True, create=True),
+            patch.object(service, "_reconfigure_host", side_effect=ValueError("runtime_host_busy")),
+        ):
+            payload, status = await service.set_model(
+                SESSION_ID, OWNER, "deepseek-v4-pro", actor_id=ACTOR_ID
+            )
+        self.assertEqual(status, 500)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["code"], RESOURCE_HOST_CONFIGURATION_CONFLICT)
 
     async def test_detached_and_busy_selections_can_remember_without_activation(self) -> None:
         for running in (False, True):
@@ -1031,7 +1065,7 @@ class PermissionActivationTests(unittest.IsolatedAsyncioTestCase):
                 live.runtime_session = None
             service, _runtime, _catalog = _service(live, _Credentials(CURRENT))
             service._settings.set_runtime_model("previous-default")
-            with patch.object(service, "prepare_turn", new=AsyncMock()) as prepare:
+            with patch.object(service, "_prepare_turn", new=AsyncMock()) as prepare:
                 payload, status = await service.set_model(
                     SESSION_ID, OWNER, "deepseek-v4-pro", actor_id=ACTOR_ID, remember_default=True
                 )
@@ -1043,7 +1077,7 @@ class PermissionActivationTests(unittest.IsolatedAsyncioTestCase):
         live = _Live(environment=CURRENT)
         service, runtime, catalog = _service(live, _Credentials(CURRENT))
         service._settings.set_runtime_model("previous-default")
-        with patch.object(service, "prepare_turn", new=AsyncMock()):
+        with patch.object(service, "_prepare_turn", new=AsyncMock()):
             payload, status = await service.set_model(
                 SESSION_ID, OWNER, "deepseek-v4-pro", actor_id=ACTOR_ID
             )
@@ -1068,7 +1102,7 @@ class PermissionActivationTests(unittest.IsolatedAsyncioTestCase):
             patch.object(
                 service._settings, "set_runtime_model", side_effect=PermissionError("denied")
             ),
-            patch.object(service, "prepare_turn", new=AsyncMock()) as prepare,
+            patch.object(service, "_prepare_turn", new=AsyncMock()) as prepare,
         ):
             with self.assertRaises(PermissionError):
                 await service.set_model(

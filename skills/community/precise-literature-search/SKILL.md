@@ -3,7 +3,7 @@ name: precise-literature-search
 display_name_zh: 精确文献检索
 description: Iteratively search a precise research question, present candidate papers for review and selection, download authorized full texts, verify PDFs, and synthesize evidence grounded in the verified files. Use when the user emphasizes finding specific papers to answer specific research questions that may need fulltext screening. It may run unattended when explicitly requested after this skill is selected. Do not use when the user primarily wants an autonomous narrative literature review, asks broad research questions, or simply wants to download specific papers. The host must be a ScholarSeed product session, where full-text acquisition and reading happen only through the in-process `scholarseed_bridge` product tool, so other hosts cannot download or read full texts.
 description_zh: 围绕明确的研究问题开展迭代检索，展示候选论文供审阅和筛选，下载具有访问授权的全文，核验 PDF，并基于已核验文件中的证据形成综合分析。适用于用户强调查找特定论文来回答可能需要阅读全文才能回答的具体研究问题。选定本技能后，用户明确要求时可无人值守运行。如果用户的主要需求是自主撰写叙述性文献综述，提出宽泛的研究问题，或者下载具体文章，则不应使用本技能。宿主必须是书深（ScholarSeed）产品会话：全文获取与阅读只通过服务进程内的 `scholarseed_bridge` 产品工具完成，其他宿主不能下载或阅读全文。
-version: "1.0.50"
+version: "1.0.54"
 ---
 
 # Precise Literature Search
@@ -21,34 +21,34 @@ run the host's general research clarification loop first. Preserve the original
 request and actual user answers. Summarize explicit topic, dates, count, paper
 types and hard conditions, leaving optional fields unspecified. Follow
 [intent clarification](modules/intent/clarification.md) for the question contract.
-Host context never bypasses the mandatory start confirmation or authorizes auto
-mode, result acceptance or downloads.
 
-## Before starting — mandatory confirmation
+## Before starting
 
-Before preparing files or running any workflow command, call the
-`scholarseed_bridge` model tool with
-`{"capability":"literature","operation":"confirm-search-start","request":{}}`.
-The product shows and localizes the confirmation card and waits for the user.
-Do not recreate this card, ask for a second confirmation, or fall back to a
-plain-text confirmation. Do not execute `stage.py start`, initialize a run,
-or begin research unless the bridge returns `ok=true` and `disposition="start"`.
-For defer, stop without starting. If the bridge is unavailable or returns an
-error, report that the confirmation could not be obtained and stop.
+Before initializing the run or asking a scope question, send a standalone
+user-visible duration notice. Do not leave it only in reasoning or a plan.
+Tell the user in their language that precise literature search may take a while
+because it involves multiple retrieval and evidence checks. Adapt that one notice
+to the work actually requested, not the length of the message. A narrow topic
+with a few requested records and no full-text synthesis is usually quicker.
+A large requested set may take longer because more papers need screening.
+A multi-part question requiring cross-study comparison or full-text evidence
+may take substantially longer; if the set is also large, mention both drivers.
+When scope is unclear, keep the general notice. Use relative expectations rather
+than promising a duration or a result count. This notice does not change the
+requested scope, mode, result limits, or authorization. Give it as information,
+not a question; continue to the applicable path without waiting for a reply.
 
-Confirmation of the research scope is separate and does not satisfy
-this start confirmation. Selecting this skill, requesting auto mode,
-silence, or an ambiguous acknowledgement does not satisfy it either.
-
-After the user confirms, continue with Phase 0–1. Auto mode may govern
-later research decisions, but must not bypass this initial confirmation.
+Proceed to Phase 0–1 without asking whether to begin, whether the skill was
+selected explicitly or applied automatically. Starting does not confirm the
+research scope or authorize auto mode, result acceptance, or downloads. Keep
+the later checkpoints unchanged.
 
 ## Complete workflow
 
 | Phase | Agent action | Script / next checkpoint |
 |---|---|---|
 | 0. Start | Save the original request; choose interactive or explicitly delegated auto mode | `stage.py start` → run directory, intent draft, next command and this turn's task activation request |
-| 1. Confirm intent | Edit the generated draft; restate question, criteria and scope; clarify ambiguity | Confirm intent, then execute the returned search command |
+| 1. Resolve scope | Edit the generated draft; state a clear scope or ask about a material retrieval fork | Execute the returned search command once scope is resolved |
 | 2. Search | Follow exactly one mode prompt; collect and screen evidence | `stage.py search` → stage token, prompt and commands; `complete` → candidates |
 | 3. Review | Show real candidates, relevance and limitations | Refine with feedback, stop at metadata, or accept candidates |
 | 4. Select and download | The product authorization card carries the exact download subset; download only that scope | `authorize-download`, then the card and the bridge `acquire` tool call, then `download`; resolve or explicitly skip failures |
@@ -132,7 +132,7 @@ Use subagents when the expected benefits of context isolation or parallel
 execution outweigh startup and handoff overhead.
 
 
-## Phase 0–1: start and confirm intent
+## Phase 0–1: start and resolve scope
 
 ```bash
 scholarseed-skill-python "$SKILL_DIR/scripts/stage.py" start \
@@ -145,10 +145,17 @@ identity) and an executable `next_command`.
 Edit that file from the user's request: restate the intent and fill supported
 criteria; leave unspecified values empty or null. The copied request is a draft,
 not an inferred scope. Follow [intent clarification](modules/intent/clarification.md)
-for material ambiguity and confirmation. Set `confirmed: true` and the appropriate
-`confirmation_source` only after user confirmation or explicitly delegated intent
-resolution, then run `next_command`. A user-provided already-confirmed scope needs
-no repeated confirmation. No discovery before confirmed intent.
+before discovery. If scope is clear from the request, send a short user-visible
+scope statement before the search command, as a statement rather than a question.
+Do not put it only in a plan, tool call, or reasoning. If the duration notice
+already states that scope, do not repeat it. Proceed without waiting using
+`confirmation_source: request_clear`.
+If plausible interpretations would materially change results, ask only about
+the concrete fork and wait for the answer. Once it resolves the scope, proceed
+with `confirmation_source: user_explicit`; do not ask for a second confirmation.
+Reuse explicitly confirmed scope and handle delegated intent as described in
+the clarification procedure. Set `confirmed: true` only once scope is resolved,
+then run `next_command`. This does not authorize result selection or downloads.
 
 ## Phase 2: search
 

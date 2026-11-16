@@ -6,6 +6,7 @@ import argparse
 import base64
 import dataclasses
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -46,6 +47,7 @@ from service.chat.constants import (  # noqa: E402
     PRODUCT_EVENT_MESSAGE_DELTA,
     PRODUCT_EVENT_USER_MESSAGE,
 )
+from service.chat.persistence import events as event_persistence  # noqa: E402
 from service.chat.persistence.catalog import (  # noqa: E402
     SessionListScope,
     SessionPrincipal,
@@ -54,6 +56,12 @@ from service.chat.persistence.catalog import (  # noqa: E402
 from service.chat.persistence.events import (  # noqa: E402 -- after SCHOLARSEED_HOME isolation
     SESSION_FORK_EVENT,
     SESSION_FORK_KEY,
+)
+from service.chat.service.sessions import (  # noqa: E402
+    SESSION_LIST_TIMING_LOGGER,
+    SessionListPhase,
+    SessionListTiming,
+    SessionListTimingEvent,
 )
 from service.identity.utils import (  # noqa: E402
     OWNERSHIP_AXIS_MACHINE,
@@ -308,22 +316,37 @@ def principal_axis(root: Path) -> None:
             all("last_agent_reply_at" not in row for row in rows),
             str(rows),
         )
-        reply_rows = client.get(
-            "/api/serve/sessions", params={"include_last_agent_reply": "true"}
-        ).json()["sessions"]
+        with (
+            patch.object(
+                app.state.product_events, "observe", wraps=app.state.product_events.observe
+            ) as reply_observer,
+            patch(
+                "service.chat.persistence.events.reader",
+                wraps=event_persistence.reader,
+            ) as reply_readers,
+        ):
+            reply_rows = client.get(
+                "/api/serve/sessions", params={"include_last_agent_reply": "true"}
+            ).json()["sessions"]
+        check(
+            "reply-time listing never installs mutation notifications",
+            reply_observer.call_count == 0,
+            str(reply_observer.call_count),
+        )
+        check("reply-time listing uses one read snapshot", reply_readers.call_count == 1)
         reply_times = {row["session_id"]: row.get("last_agent_reply_at") for row in reply_rows}
         entered = Event()
         release = Event()
-        original_reply = app.state.product_events.last_agent_reply_at
+        original_reply = app.state.product_events.last_agent_reply_times
 
-        def delayed_reply(session_id: str) -> float | None:
+        def delayed_reply(session_ids: list[str]) -> dict[str, float | None]:
             entered.set()
             if not release.wait(10):
                 raise TimeoutError("history probe was not released")
-            return original_reply(session_id)
+            return original_reply(session_ids)
 
         with (
-            patch.object(app.state.product_events, "last_agent_reply_at", delayed_reply),
+            patch.object(app.state.product_events, "last_agent_reply_times", delayed_reply),
             ThreadPoolExecutor(max_workers=2) as executor,
         ):
             listing = executor.submit(
@@ -464,7 +487,10 @@ def principal_axis(root: Path) -> None:
             created_at=0.0,
         )
         with patch.object(catalog, "observe", wraps=catalog.observe) as observer:
-            legacy_response = client.get("/api/serve/sessions", params={"query": legacy.title})
+            # The project pagination fixtures must not consume this query's candidate window.
+            legacy_response = client.get(
+                "/api/serve/sessions", params={"scope": "unassigned", "query": legacy.title}
+            )
             check("legacy model backfill uses one observed connection", observer.call_count == 1)
         legacy_rows = legacy_response.json().get("sessions", [])
         persisted = catalog.get(legacy.session_id)
@@ -601,6 +627,111 @@ def pagination_regression(app: Any, client: TestClient, principal: SessionPrinci
     check(
         "unassigned excludes projects and foreign principal",
         {row["session_id"] for row in unassigned["sessions"]} == {"oldest", "middle", "newest"},
+    )
+    with (
+        patch.object(SESSION_LIST_TIMING_LOGGER, "isEnabledFor", return_value=True),
+        patch.object(SESSION_LIST_TIMING_LOGGER, "log") as diagnostic_log,
+        patch.object(
+            app.state.product_events, "observe", wraps=app.state.product_events.observe
+        ) as notifications,
+        patch.object(event_persistence, "reader", wraps=event_persistence.reader) as reply_readers,
+    ):
+        diagnostic = client.get(
+            "/api/serve/sessions",
+            params={**params, "limit": 500, "include_last_agent_reply": True},
+            headers={"x-scholarseed-diagnostic-id": "a" * 32},
+        )
+    check("500-task reply listing preserves the page", len(diagnostic.json()["sessions"]) == 500)
+    check("500-task reply listing opens one read snapshot", reply_readers.call_count == 1)
+    check("500-task reply listing has zero write observers", notifications.call_count == 0)
+    timings = [json.loads(call.args[1]) for call in diagnostic_log.call_args_list]
+    check(
+        "correlated list timing is available at normal INFO level",
+        all(call.args[0] == logging.INFO for call in diagnostic_log.call_args_list),
+    )
+    check(
+        "timing distinguishes physical worker completion from response completion",
+        [row["event"] for row in timings] == ["worker_finished", "finished"],
+    )
+    final = timings[-1]
+    check(
+        "timing correlates with the HTTP request",
+        bool(final["request_id"]) and final["client_request_id"] == "a" * 32,
+    )
+    check(
+        "timing records real page counts",
+        final["counts"]["selected_rows"] == final["counts"]["reply_sessions"] == 500,
+    )
+    check(
+        "timing separates worker queue and query phases",
+        final["queue_ms"] >= 0
+        and all(
+            phase.value in final["phases_ms"]
+            for phase in (
+                SessionListPhase.CATALOG,
+                SessionListPhase.SEARCH,
+                SessionListPhase.STATES,
+                SessionListPhase.REPLIES,
+                SessionListPhase.PROJECTION,
+            )
+        ),
+    )
+    check(
+        "timing excludes project paths and titles",
+        project not in json.dumps(timings) and "needle" not in json.dumps(timings),
+    )
+    print("session_list_probe " + json.dumps(final))
+    with patch.object(SESSION_LIST_TIMING_LOGGER, "isEnabledFor", return_value=False):
+        check(
+            "disabled diagnostics allocate no observation",
+            SessionListTiming.create(None, None) is None,
+        )
+    with patch.object(
+        SESSION_LIST_TIMING_LOGGER, "isEnabledFor", side_effect=lambda level: level >= logging.INFO
+    ):
+        check(
+            "ordinary uncorrelated reads remain DEBUG-only",
+            SessionListTiming.create(None, None) is None,
+        )
+        check(
+            "correlated reads retain phase timing without global DEBUG",
+            SessionListTiming.create("server-request", "a" * 32) is not None,
+        )
+    entered, release = Event(), Event()
+    observation = SessionListTiming()
+
+    def held_reader():
+        entered.set()
+        if not release.wait(5):
+            raise TimeoutError("test reader not released")
+        raise ValueError("private-query-and-body")
+
+    with (
+        patch.object(SESSION_LIST_TIMING_LOGGER, "log") as lifecycle_log,
+        ThreadPoolExecutor(max_workers=1) as executor,
+    ):
+        pending = executor.submit(observation.run, held_reader)
+        try:
+            check("physical timing starts with the actual worker", entered.wait(5))
+            observation.report(SessionListTimingEvent.FINISHED, "CancelledError")
+            check(
+                "cancelled waiter does not claim the worker completed",
+                not json.loads(lifecycle_log.call_args.args[1])["worker_completed"],
+            )
+        finally:
+            release.set()
+        try:
+            pending.result(timeout=5)
+        except ValueError:
+            pass
+        else:
+            check("timing preserves worker errors", False)
+    final_worker = json.loads(lifecycle_log.call_args.args[1])
+    check(
+        "late worker completion retains failure class without error text",
+        final_worker["worker_completed"]
+        and final_worker["error_type"] == "ValueError"
+        and "private-query-and-body" not in str(lifecycle_log.call_args_list),
     )
 
 
@@ -1135,7 +1266,7 @@ def machine_axis(root: Path) -> None:
             if cursor is None:
                 break
         check("machine 轴下别的账号建的会话可见", "foreign" in ids, str(ids))
-        expected = {"oldest", "middle", "newest", "foreign", "project-a-2"}
+        expected = {"oldest", "middle", "newest", "foreign", "project-a-2", "legacy-model"}
         expected.update(f"project-b-{index}" for index in range(4))
         expected.update(f"paged-{index:04d}" for index in range(505))
         check(

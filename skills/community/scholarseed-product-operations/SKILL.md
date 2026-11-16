@@ -1,6 +1,6 @@
 ---
 name: scholarseed-product-operations
-version: "2026.11.13+2"
+version: "2026.11.16+1"
 description: >-
   Use ScholarSeed's Bridge, guide users to supported product destinations, and
   choose official conversation components. Load for project resources and papers,
@@ -10,7 +10,7 @@ description: >-
   from displayed options and continue with their choice, even if no card was requested.
   Skip for self-contained text answers and discussion that requires no product operation.
 metadata:
-  version: "2026.11.13+2"
+  version: "2026.11.16+1"
 ---
 
 # ScholarSeed Product Operations

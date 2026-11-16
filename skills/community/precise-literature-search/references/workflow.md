@@ -52,8 +52,8 @@ are immediate.
 | State | Enter when | Interactive behavior |
 |---|---|---|
 | `INITIALIZED` | A unique run and raw request exist | Yes, to intent drafting |
-| `INTENT_DRAFTED` | A precise restatement/draft exists | No; wait for confirmation |
-| `INTENT_CONFIRMED` | Interactive user confirmation, explicit auto delegation, or the user supplies an already clarified and explicitly confirmed intent | Yes, start search |
+| `INTENT_DRAFTED` | A precise restatement/draft exists | Wait only for an unresolved material fork; otherwise state the scope and continue |
+| `INTENT_CONFIRMED` | Initial scope was clear, the user resolved any material fork or explicitly confirmed scope, or the host resolved it under explicit auto delegation | Yes, start search |
 | `SEARCHING` | A new immutable outer round was allocated | Yes, delegate one Search Agent when available or use the host fallback |
 | `REVIEW_PENDING` | Metadata and the search report for the round exist | No; wait for the user to refine, accept, pause, ask questions, or respond freely |
 | `REFINEMENT_REQUESTED` | Interactive user or auto host supplies retrieval-changing feedback | Yes, start the next round |
@@ -83,7 +83,8 @@ INITIALIZED → INTENT_DRAFTED → INTENT_CONFIRMED → SEARCHING
                           └→ REFINEMENT_REQUESTED → SEARCHING
 ```
 
-When the user supplies an already clarified and explicitly confirmed intent, bypass intent drafting and confirmation without entering auto mode:
+When the initial scope is clear or already explicitly confirmed, materialize
+the intent and begin without a user stop or entering auto mode:
 
 ```text
 INITIALIZED → INTENT_CONFIRMED → SEARCHING
@@ -104,7 +105,7 @@ analysis. Neither path authorizes PDF access.
 
 Stop at these points:
 
-1. After the intent restatement, until the user confirms or modifies it. Skip this stop for a trusted host-confirmed intent; continue to require every later interactive stop.
+1. After asking about a material retrieval fork, until the user resolves it. A clear initial scope or a resolved answer needs no separate confirmation; continue to require every later interactive stop.
 2. After each metadata review, wait for the user to refine the search, accept the result set, pause with the current results, ask questions, or respond freely. Do not require a fixed command or force a listed choice.
 3. After result acceptance, present the candidate list with identity, access status, tier and relevance, and publish the product authorization card (`checkpoint=selection`); the card carries the download subset selection and the full-text authorization, and serve returns the granted subset as `authorization.granted_refs` — never infer it from model text. Do not ask a separate scope question and do not infer download permission from accepting the candidate set.
 4. At `PAID_DOWNLOAD_PENDING`, after internally recording the managed acquisition results, wait until the user confirms downloads for the papers serve reported as failed when that scope was not explicitly included in the selection. Terminal `skipped` papers — ungranted, or without an arXiv/DOI identifier serve can fetch — are not part of that scope and are never download or recovery targets. State that these sources may require login or a subscription; do not expose the backend downloader or call the entire batch paid. Skip this stop when `paid_download_confirmation` is `included_in_selection`.

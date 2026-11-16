@@ -3,8 +3,8 @@
 Use this procedure before retrieval. Keep every user-facing message in the
 user's language and never expose internal checks or artifact paths.
 
-This procedure starts only after the mandatory start confirmation in `SKILL.md`.
-Explicit auto mode does not waive that confirmation.
+Follow the startup rules in `SKILL.md` before this procedure. Invoking the
+skill does not resolve a material fork or authorize access to full text.
 
 If the host identifies an explicit auto, autonomous, unattended, or no-interaction
 request, do not ask further intent clarification or confirmation questions. Resolve ambiguity
@@ -28,12 +28,13 @@ Check the request in this order:
 2. **Relations:** preserve bound phrases; clarify whether juxtaposed or
    overlapping topics mean their intersection or separate searches.
 3. **Premise:** clarify only recognized, nameable divisions of a field.
-4. **Scope and boundary:** establish a retrieval anchor and actively elicit
-   exclusions. Accept broad scope when the user chooses it.
+4. **Scope and boundary:** establish a retrieval anchor and preserve stated
+   exclusions. Do not ask for optional exclusions when retrieval can proceed.
 5. **Required inputs:** ask for an omitted value only when retrieval cannot
    start without it. Do not ask about search engines or query construction.
 
-Ask only questions that materially change retrieval, in one 1–3 question card
+Ask only about the concrete alternatives that materially change retrieval,
+not whether the user approves the whole scope. Use one 1–3 question card
 and at most one conflict-resolution follow-up. Use a question tool only when
 available and permitted; otherwise ask the same questions in conversation.
 Describe alternatives neutrally in research terms. Re-run all five checks after
@@ -62,7 +63,14 @@ or exclusions of your own. Check both directions: nothing user-supplied was
 dropped, and nothing unsupported was added.
 
 Fill the remaining `intent.json` fields only from the same supported facts.
-Use `null` or empty arrays for unspecified optional values. In particular, include `language: null` and `max_results: null` when the user did not specify a language or result count; keep all 11 required intent fields. The separate search request uses a positive tool budget (default 20), not a fabricated user criterion. In interactive mode,
-write the draft with `confirmed: false`, present the precise restatement once, and
-wait; only the user's explicit confirmation or correction may then set
-`confirmed: true`.
+Use `null` or empty arrays for unspecified optional values. In particular, include `language: null` and `max_results: null` when the user did not specify a language or result count; keep all 11 required intent fields. The separate search request uses a positive tool budget (default 20), not a fabricated user criterion.
+
+- Clear initial request: state the understood scope in a user-visible message
+  before the search command and start without waiting. If the visible duration
+  notice already stated the scope, continue without repeating it.
+  Set `confirmed: true` and `confirmation_source: request_clear`. This records
+  the basis for retrieval, not an explicit user confirmation or auto delegation.
+- Material fork: keep `confirmed: false` and wait for the specific answer. Once
+  the user resolves it, state the resulting scope and proceed with
+  `confirmed: true` and `confirmation_source: user_explicit`, without a second
+  confirmation. Use the same source for an already explicitly confirmed scope.

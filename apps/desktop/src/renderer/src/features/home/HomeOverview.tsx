@@ -60,10 +60,7 @@ export function HomeOverview(): React.JSX.Element {
   useEffect(() => {
     let active = true
     setPhase((current) => (current === 'ready' ? current : 'loading'))
-    void listAllSessions(
-      { scope: 'all', limit: HOME_TASK_LIMIT, includeAgentReplyAt: true },
-      () => active
-    ).then((rows) => {
+    void listAllSessions({ scope: 'all', limit: HOME_TASK_LIMIT }, () => active).then((rows) => {
       if (!active) return
       if (!rows) {
         setPhase('error')

@@ -21,7 +21,7 @@ from run_state import (initialize_run, read_state, update_status, increment_sear
 from stage_guard import (authorize_download, claim_stage, contained, digest,
                          require_run, release_stage, require_worker, cancel_stage, serialized)
 from task_binding import ACTIVATION_HINT, activation_request
-from validate_json import ContractError, validate_data
+from validate_json import ContractError, INTENT_SOURCE_REQUEST_CLEAR, validate_data
 
 SKILL = Path(__file__).resolve().parent.parent
 FINAL_DELIVERY_CHECKPOINT = {
@@ -106,7 +106,7 @@ def start(
     atomic_write_json(intent_path, draft)
     command = [sys.executable, str(SKILL / "scripts/stage.py"), "search",
                "--run-dir", str(run), "--intent", str(intent_path)]
-    return {"status": "ready", "run_dir": str(run), "next_action": "confirm_intent",
+    return {"status": "ready", "run_dir": str(run), "next_action": "resolve_intent",
             "intent_file": str(intent_path),
             "intent_instructions": (
                 "Edit this complete draft: restate precise_intent and fill criteria only from "
@@ -115,9 +115,12 @@ def start(
                 + ("Resolve ambiguity conservatively under explicit auto delegation; then set "
                    "confirmed=true and confirmation_source=auto_delegated."
                    if auto_delegated else
-                   "Obtain explicit user confirmation (reuse an already-confirmed scope); then set "
-                   "confirmed=true and confirmation_source=user_explicit.")
-                + " Execute next_command only after confirmation; balance is the default, "
+                   "If the original scope is clear, send a user-visible scope statement before "
+                   "the search command unless the duration notice already stated it. Do not wait. "
+                   f"Set confirmed=true and confirmation_source={INTENT_SOURCE_REQUEST_CLEAR}. "
+                   "Ask only about material forks; once the user resolves them, use "
+                   "confirmed=true and confirmation_source=user_explicit without another confirmation.")
+                + " Execute next_command only after resolving scope; balance is the default, "
                   "and an explicit mode/budget can be appended with search options."),
             "next_argv": command, "next_command": command_display(command)}
 
@@ -163,6 +166,13 @@ def prepare_search(run: Path, intent_path: Path | None, profile: str | None,
         validate_data("intent", intent)
         if intent["confirmed"] is not True:
             raise ValueError("intent is not confirmed")
+        if intent.get("confirmation_source") == INTENT_SOURCE_REQUEST_CLEAR:
+            request_path = state["paths"]["request"]
+            if not request_path or (
+                intent["original_request"].rstrip()
+                != filesystem_path(contained(run, request_path)).read_text(encoding="utf-8").rstrip()
+            ):
+                raise ValueError("clear scope must preserve the original request")
         if intent.get("confirmation_source") == "auto_delegated" and not read_json(run / "workflow.json")["auto_delegated"]:
             raise ValueError("automatic intent confirmation was not delegated")
         atomic_write_json(run / "intent.json", intent)

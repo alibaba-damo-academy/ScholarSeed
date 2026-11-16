@@ -9,6 +9,8 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
+RESOURCE_BASELINE_FAILED = "resource_baseline_failed"
+
 
 class SessionTitleFallback(str, Enum):
     """Explicit provenance for an application-generated session title."""
