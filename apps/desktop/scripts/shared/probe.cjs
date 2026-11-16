@@ -7,7 +7,7 @@
 //   且 purelib 根不得残留任何产品发行物（组件内容只随第三方锁变化，这是命中语义的前提）。
 const RUNTIME_PROBE_SCRIPT = `
 import contextlib, importlib, json, os, pathlib, sys, sysconfig
-names = ("scholarseed_runtime", "damoatrace", "service.cli.serve", "service.cli.browser", "scholarseed_codex", "scholarseed_dsh", "knowledge_layer.comprehend")
+names = ("scholarseed_runtime", "damoatrace", "service.cli.serve", "service.cli.browser", "scholarseed_codex", "knowledge_layer.comprehend")
 root = pathlib.Path(sysconfig.get_path("purelib")).resolve()
 product_libs = os.environ.get("SCHOLARSEED_PRODUCT_LIBS", "")
 with contextlib.redirect_stdout(sys.stderr):
@@ -20,7 +20,7 @@ assert all(
 if product_libs:
     libs = pathlib.Path(product_libs).resolve()
     assert all(pathlib.Path(filename).is_relative_to(libs) for filename in resolved.values())
-    product_markers = ("service", "scholarseed_runtime", "damoatrace", "scholarseed_codex", "scholarseed_dsh", "knowledge_layer")
+    product_markers = ("service", "scholarseed_runtime", "damoatrace", "scholarseed_codex", "knowledge_layer")
     assert not any((root / marker).exists() for marker in product_markers), "product code leaked into the component tree"
     assert not list(root.glob("scholarseed*-*.dist-info")) and not list(root.glob("damoatrace-*.dist-info"))
     assert not list(root.glob("deep_rnd_l1-*.dist-info"))

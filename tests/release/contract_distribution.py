@@ -268,7 +268,6 @@ def main() -> int:
                     "damoatrace/",
                     "scholarseed_runtime/",
                     "scholarseed_codex/",
-                    "scholarseed_dsh/",
                 )
             )
             for name in product_members
@@ -305,7 +304,6 @@ def main() -> int:
                 "damoagent",
                 "scholarseed-runtime",
                 "scholarseed-codex",
-                "scholarseed-dsh",
                 "scholarseed;",
             )
         ),

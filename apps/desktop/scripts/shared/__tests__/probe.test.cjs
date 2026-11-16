@@ -9,7 +9,7 @@ const {RUNTIME_PROBE_SCRIPT} = require('../probe.cjs')
 
 const REPO = path.resolve(__dirname, '../../../../..')
 const PYTHON = process.env.TEST_PYTHON || developmentPython(REPO, process.env.VENV, {context: process.env.CI ? 'ci' : 'local'})
-const MODULES = ['scholarseed_runtime', 'damoatrace', 'service.cli.serve', 'service.cli.browser', 'scholarseed_codex', 'scholarseed_dsh', 'knowledge_layer.comprehend']
+const MODULES = ['scholarseed_runtime', 'damoatrace', 'service.cli.serve', 'service.cli.browser', 'scholarseed_codex', 'knowledge_layer.comprehend']
 
 function probe(t, failure = false) {
   const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ss-probe-')))

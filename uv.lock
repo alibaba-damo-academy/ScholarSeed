@@ -24,7 +24,6 @@ members = [
     "damoatrace",
     "scholarseed",
     "scholarseed-codex",
-    "scholarseed-dsh",
     "scholarseed-runtime",
     "scholarseed-workspace",
 ]
@@ -3135,7 +3134,6 @@ all = [
     { name = "python-multipart" },
     { name = "python-pptx" },
     { name = "scholarseed-codex" },
-    { name = "scholarseed-dsh" },
     { name = "uvicorn" },
     { name = "watchfiles" },
 ]
@@ -3147,9 +3145,6 @@ codex = [
 ]
 docker = [
     { name = "docker" },
-]
-dsh = [
-    { name = "scholarseed-dsh" },
 ]
 serve = [
     { name = "cryptography" },
@@ -3208,8 +3203,6 @@ requires-dist = [
     { name = "rich" },
     { name = "scholarseed-codex", marker = "extra == 'all'", editable = "packages/adapters/codex" },
     { name = "scholarseed-codex", marker = "extra == 'codex'", editable = "packages/adapters/codex" },
-    { name = "scholarseed-dsh", marker = "extra == 'all'", editable = "packages/adapters/dsh" },
-    { name = "scholarseed-dsh", marker = "extra == 'dsh'", editable = "packages/adapters/dsh" },
     { name = "scholarseed-runtime", editable = "packages/runtime" },
     { name = "tenacity", specifier = ">=9.0" },
     { name = "truststore", specifier = ">=0.10" },
@@ -3222,7 +3215,7 @@ requires-dist = [
     { name = "zotero-mcp-server", specifier = "==0.15.1", index = "https://pypi.org/simple" },
     { name = "zstandard", specifier = ">=0.23,<1" },
 ]
-provides-extras = ["docker", "claude-sdk", "codex", "dsh", "serve", "all"]
+provides-extras = ["docker", "claude-sdk", "codex", "serve", "all"]
 
 [[package]]
 name = "scholarseed-codex"
@@ -3240,17 +3233,6 @@ requires-dist = [
     { name = "scholarseed-runtime", editable = "packages/runtime" },
     { name = "tomlkit", specifier = "==0.15.1", index = "https://pypi.org/simple" },
 ]
-
-[[package]]
-name = "scholarseed-dsh"
-version = "0.2.1"
-source = { editable = "packages/adapters/dsh" }
-dependencies = [
-    { name = "scholarseed-runtime" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "scholarseed-runtime", editable = "packages/runtime" }]
 
 [[package]]
 name = "scholarseed-runtime"
