@@ -1,6 +1,0 @@
-{
-  "scenarioId": "model-settings",
-  "version": "2026-10-23",
-  "provisional": true,
-  "metrics": { "turnCount": { "min": 0, "max": 0 } }
-}
