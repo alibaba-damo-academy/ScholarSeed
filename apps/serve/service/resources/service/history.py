@@ -1248,9 +1248,7 @@ class ResourceVersionService:
                     raise
                 current_pending = store.pending(managed.file_id)
                 drifted = managed.object_id != object_id or managed.mode_bits != stable.mode_bits
-                if drifted and current_pending is not None and current_pending.needs_review:
-                    raise ResourceVersionError(ReviewConflict.CANDIDATE_REVISION.value)
-                if drifted:
+                if drifted and not (current_pending is not None and current_pending.needs_review):
                     store.accept_working(
                         managed.file_id,
                         SnapshotVersion(

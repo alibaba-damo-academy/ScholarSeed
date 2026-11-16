@@ -12,7 +12,18 @@ import type {
   ReadingTask,
   ReadingTiming,
 } from '../../contracts/literature'
-import { Alert, Button, EmptyState, IconButton, Spinner, Tooltip, useToast } from '../ui'
+import {
+  Alert,
+  Button,
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+  EmptyState,
+  IconButton,
+  Spinner,
+  Tooltip,
+  useToast,
+} from '../ui'
 import { ModelMenu } from './ModelMenu'
 import { Summary } from './Summary'
 import { pdfAiCaughtFailure, pdfAiFailureText } from './diagnostic'
@@ -111,6 +122,11 @@ export function Reading({
     })
   }
   const asset = data?.results.summary
+  const savedSummary = asset?.modules?.summary
+  const completeSummary = savedSummary?.organization === 'complete' ? savedSummary : undefined
+  const failed = error || (task?.status === 'failed' ? task : null)
+  const fallbackOnly = savedSummary?.organization === 'fallback'
+  const unfinished = !readingBusy(task) && !pending && Boolean(failed || fallbackOnly)
   const preview =
     task?.status !== 'cancelled' &&
     !task?.reading_complete &&
@@ -121,7 +137,7 @@ export function Reading({
       ? task?.preview
       : undefined
   const busy = pending || (readingBusy(task) && !task?.reading_complete)
-  const summary = busy ? preview : preview || asset?.modules?.summary
+  const summary = busy ? preview : unfinished ? completeSummary : preview || savedSummary
   const chatReady =
     !loading &&
     !loadError &&
@@ -323,7 +339,6 @@ export function Reading({
       }
     }
   }
-  const failed = error || (task?.status === 'failed' ? task : null)
   return (
     <div
       className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
@@ -362,11 +377,6 @@ export function Reading({
             {t('reading.cancel')}
           </Button>
         )}
-        {summary && !busy && (preview || summary.organization === 'fallback') && (
-          <span className="ml-auto text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-tertiary)]">
-            {t(preview ? 'reading.preview' : 'reading.basic')}
-          </span>
-        )}
       </div>
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden" data-testid="reading-body">
         {loading && (
@@ -394,7 +404,11 @@ export function Reading({
             className="mx-[var(--vds-space-4)] mb-[var(--vds-space-4)] flex min-h-0 flex-1 flex-col items-center justify-center gap-[var(--vds-space-2)] overflow-auto rounded-[var(--vds-radius-4)] border border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] p-[var(--vds-space-3)] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-tertiary)]"
           >
             <Spinner aria-hidden="true" className="!size-[var(--vds-icon-7)] shrink-0" />
-            <span>{t('reading.organizing')}</span>
+            <span>
+              {pending || task?.status === 'pending'
+                ? t('reading.preparing')
+                : t('reading.organizing')}
+            </span>
             {task?.model_key && (
               <span className="sr-only">
                 {t('reading.runningModel', { model: task.model_key })}
@@ -402,28 +416,37 @@ export function Reading({
             )}
           </div>
         )}
-        {failed && (
+        {unfinished && (
           <div role="alert" className="space-y-[var(--vds-space-2)] p-[var(--vds-space-4)]">
-            <p>{pdfAiFailureText(pdfAiCaughtFailure(failed), t)}</p>
-            {asset?.modules?.summary?.organization === 'complete' && (
-              <p>{t('reading.previousPreserved')}</p>
-            )}
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setError(null)
-                setReload((value) => value + 1)
-              }}
-            >
-              {t('reading.reconnect')}
-            </Button>
+            <p>
+              {failed ? pdfAiFailureText(pdfAiCaughtFailure(failed), t) : t('reading.incomplete')}
+            </p>
+            {completeSummary && <p>{t('reading.previousPreserved')}</p>}
             {!busy && (
               <Button variant="outline" size="sm" onClick={() => void run()}>
                 {t('reading.retry')}
               </Button>
             )}
           </div>
+        )}
+        {unfinished && !completeSummary && preview && (
+          <Collapsible
+            key={task?.task_id}
+            className="min-h-0 overflow-auto px-[var(--vds-space-4)]"
+          >
+            <CollapsibleTrigger asChild>
+              <Button variant="ghost" size="sm">
+                {t('reading.viewPartial')}
+              </Button>
+            </CollapsibleTrigger>
+            <CollapsibleContent>
+              <Summary
+                value={preview}
+                showSources={showSources}
+                onSource={(source) => onSource(source, data?.revision || revision)}
+              />
+            </CollapsibleContent>
+          </Collapsible>
         )}
         {task?.status === 'unknown' && (
           <div role="status" className="p-[var(--vds-space-4)]">
@@ -448,7 +471,7 @@ export function Reading({
           !loading &&
           !loadError &&
           !busy &&
-          !failed &&
+          !unfinished &&
           task?.status !== 'unknown' && (
             <div className="grid min-h-0 flex-1 place-items-center overflow-auto">
               <EmptyState

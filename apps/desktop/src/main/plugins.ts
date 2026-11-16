@@ -255,6 +255,7 @@ export function createPluginHost(): {
       const fixed = structuredClone(snapshot)
       const components = fixed.descriptor.components.filter(
         (component) =>
+          !component.openui &&
           (!component.public || component.entry) &&
           (!reference || component.id === reference.component)
       )

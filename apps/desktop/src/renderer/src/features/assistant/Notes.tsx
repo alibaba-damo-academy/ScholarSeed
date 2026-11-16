@@ -219,7 +219,7 @@ export function AnnotationBadgeNote({
         <PopoverTrigger asChild>
           <span className="inline-flex">{tooltip}</span>
         </PopoverTrigger>
-        <PopoverContent className={NOTE_EDITOR_POPOVER_CLASS}>
+        <PopoverContent hosted className={NOTE_EDITOR_POPOVER_CLASS}>
           <AnnotationCommentEditor
             annotation={annotation}
             inputLabel={t('remaining.editNote', { number })}
@@ -520,6 +520,7 @@ export function AnnotationSummary({
         onClose={onClear}
       />
       <HoverCardContent
+        hosted
         className="!w-[var(--vds-assistant-notes-width)] !max-w-[var(--vds-assistant-notes-max-width)] overflow-hidden !rounded-[var(--vds-radius-6)] !border-0 !bg-[var(--vds-surface-raised)] !p-0 !shadow-[var(--vds-shadow-2-center)]"
         side="top"
       >

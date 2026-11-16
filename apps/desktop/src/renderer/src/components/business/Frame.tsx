@@ -40,7 +40,7 @@ import {
   RETIRED_PUBLIC_COMPONENT_FINGERPRINT,
 } from '../../../../plugins'
 import { PublicComponentsContext } from './publicComponents'
-import { RegisteredContent } from './Declarative'
+import { DeclarativeContent, RegisteredContent } from './Declarative'
 import type { DraftBuffer } from './drafts'
 import { retainDraft, releaseDraft, waitForDraft, type DraftReceipt } from './drafts'
 import { OPENUI_SLOT } from '../../../../../../../packages/ui/document'
@@ -834,7 +834,11 @@ function PluginInteractionContent({
         if (
           !current ||
           next.fingerprint !== fingerprint ||
-          (!isPublic && !next.frames[componentId])
+          (!isPublic &&
+            !next.frames[componentId] &&
+            !next.descriptor.components.some(
+              (candidate) => candidate.id === componentId && candidate.openui
+            ))
         ) {
           void window.scholarseed.deviceSkills({
             operation: 'plugin-release',
@@ -1115,6 +1119,10 @@ function PluginInteractionContent({
     )
   }
   if (!activeMount || !component) return <p>{t('plugin.loading')}</p>
+  if (component.openui)
+    return present(
+      <DeclarativeContent data={activeMount.interaction?.data ?? data} layout={component.openui} />
+    )
   const request: PluginRequestHandler =
     onRequest ??
     (async (action, values, _capability, authorize) => {

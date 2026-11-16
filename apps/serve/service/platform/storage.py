@@ -111,6 +111,7 @@ WRITE_DAC = 0x00040000
 GENERIC_READ = 0x80000000
 GENERIC_WRITE = 0x40000000
 SYNCHRONIZE = 0x00100000
+DIRECTORY_ACL_READ_ACCESS = FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE
 FILE_SHARE_READ = 0x00000001
 FILE_SHARE_WRITE = 0x00000002
 FILE_SHARE_DELETE = 0x00000004
@@ -755,6 +756,7 @@ class DirectoryHandle:
             raise
 
     def mkdir(self, name: str, mode: int = DIRECTORY_MODE, *, inherit_acl: bool = False) -> None:
+        """Windows ACL inheritance requires a parent opened with DIRECTORY_ACL_READ_ACCESS."""
         target = self.child(name)
         if self.descriptor is not None:
             os.mkdir(name, mode, dir_fd=self.descriptor)
@@ -1446,7 +1448,12 @@ def open_directory(
     create: bool = False,
     final_access: int = FILE_READ_ATTRIBUTES | SYNCHRONIZE,
 ) -> DirectoryHandle:
-    """Open every ancestor without following a symlink or Windows reparse point."""
+    """Open every ancestor without following a symlink or Windows reparse point.
+
+    final_access applies only to the final Windows directory.
+    Callers creating ACL-inheriting children must request DIRECTORY_ACL_READ_ACCESS
+    so GetSecurityInfo can read that parent's DACL. Ordinary pins stay metadata-only.
+    """
     if not root.is_absolute():
         raise ValueError(DIRECTORY_PATH_INVALID)
     steps = tuple((part, False) for part in root.parts[1:]) + tuple(
@@ -1599,6 +1606,7 @@ def is_regular(identity: os.stat_result) -> bool:
 
 __all__ = [
     "DIRECTORY",
+    "DIRECTORY_ACL_READ_ACCESS",
     "NOFOLLOW",
     "NONBLOCK",
     "DirectoryHandle",

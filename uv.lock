@@ -675,26 +675,26 @@ requires-dist = [
 provides-extras = ["dev"]
 
 [[package]]
+name = "deep-rnd-l1"
+version = "0.2.8"
+source = { path = "apps/serve/vendor/deep_rnd_l1-0.2.8-py3-none-any.whl" }
+wheels = [
+    { filename = "deep_rnd_l1-0.2.8-py3-none-any.whl", hash = "sha256:862ee6f754794c9b7620e1ae25d9ff0fe87ec1d77ff6c65ad14ddaafe5fca92a" },
+]
+
+[[package]]
 name = "delocate"
 version = "0.13.0"
 source = { registry = "https://mirrors.aliyun.com/pypi/simple" }
 dependencies = [
     { name = "macholib" },
-    { name = "packaging", version = "26.2", source = { registry = "https://mirrors.aliyun.com/pypi/simple" }, marker = "(extra == 'group-21-scholarseed-workspace-component-build-bibtexparser' and extra == 'group-21-scholarseed-workspace-component-build-fastcdc') or (extra == 'group-21-scholarseed-workspace-component-build-bibtexparser' and extra == 'group-21-scholarseed-workspace-component-build-jieba') or (extra == 'group-21-scholarseed-workspace-component-build-bibtexparser' and extra == 'group-21-scholarseed-workspace-wheel-build') or (extra != 'group-21-scholarseed-workspace-component-build-bibtexparser' and extra == 'group-21-scholarseed-workspace-desktop') or (extra != 'group-21-scholarseed-workspace-component-build-bibtexparser' and extra != 'group-21-scholarseed-workspace-wheel-build')" },
-    { name = "packaging", version = "26.3", source = { registry = "https://mirrors.aliyun.com/pypi/simple" }, marker = "(extra == 'group-21-scholarseed-workspace-component-build-bibtexparser' and extra == 'group-21-scholarseed-workspace-component-build-fastcdc') or (extra == 'group-21-scholarseed-workspace-component-build-bibtexparser' and extra == 'group-21-scholarseed-workspace-component-build-jieba') or (extra != 'group-21-scholarseed-workspace-component-build-bibtexparser' and extra == 'group-21-scholarseed-workspace-wheel-build') or (extra != 'group-21-scholarseed-workspace-component-build-fastcdc' and extra != 'group-21-scholarseed-workspace-component-build-jieba' and extra == 'group-21-scholarseed-workspace-wheel-build')" },
+    { name = "packaging", version = "26.2", source = { registry = "https://mirrors.aliyun.com/pypi/simple" }, marker = "(extra != 'group-21-scholarseed-workspace-component-build-bibtexparser' and extra != 'group-21-scholarseed-workspace-wheel-build') or (extra == 'group-21-scholarseed-workspace-component-build-bibtexparser' and extra == 'group-21-scholarseed-workspace-wheel-build') or (extra == 'group-21-scholarseed-workspace-component-build-fastcdc' and extra != 'group-21-scholarseed-workspace-wheel-build') or (extra == 'group-21-scholarseed-workspace-component-build-jieba' and extra != 'group-21-scholarseed-workspace-wheel-build') or (extra == 'group-21-scholarseed-workspace-desktop' and extra == 'group-21-scholarseed-workspace-wheel-build')" },
+    { name = "packaging", version = "26.3", source = { registry = "https://mirrors.aliyun.com/pypi/simple" }, marker = "extra == 'group-21-scholarseed-workspace-wheel-build' or (extra == 'group-21-scholarseed-workspace-component-build-bibtexparser' and extra == 'group-21-scholarseed-workspace-component-build-fastcdc') or (extra == 'group-21-scholarseed-workspace-component-build-bibtexparser' and extra == 'group-21-scholarseed-workspace-component-build-jieba')" },
     { name = "typing-extensions" },
 ]
 sdist = { url = "https://mirrors.aliyun.com/pypi/packages/2d/21/f1679803b2582632e7b9fdd83e675d5fc661513433c0f661938414978bc7/delocate-0.13.0.tar.gz", hash = "sha256:a93e67a9f56ee01a3f7096a042231d4ac37fecac873cd5ea34ea2b4f43a8fa13" }
 wheels = [
     { url = "https://mirrors.aliyun.com/pypi/packages/2b/dd/437e601fa9d2b6bf8507256daf52196a226c3b340261f4cde8fac8e853ea/delocate-0.13.0-py3-none-any.whl", hash = "sha256:11f7596f88984c33f76b27fe2eea7637d1ce369a9e0b6737bbc706b6426e862c" },
-]
-
-[[package]]
-name = "deep-rnd-l1"
-version = "0.2.6"
-source = { path = "apps/serve/vendor/deep_rnd_l1-0.2.6-py3-none-any.whl" }
-wheels = [
-    { filename = "deep_rnd_l1-0.2.6-py3-none-any.whl", hash = "sha256:1e99d38d1c191ab87b18a3529bf8d5bf72ccaad4f8d1a590e2295e9f3c3309b5" },
 ]
 
 [[package]]
@@ -3166,7 +3166,7 @@ requires-dist = [
     { name = "cryptography", marker = "extra == 'all'", specifier = "<49.0.0" },
     { name = "cryptography", marker = "extra == 'serve'", specifier = "<49.0.0" },
     { name = "damoatrace", editable = "packages/damoatrace" },
-    { name = "deep-rnd-l1", path = "apps/serve/vendor/deep_rnd_l1-0.2.6-py3-none-any.whl" },
+    { name = "deep-rnd-l1", path = "apps/serve/vendor/deep_rnd_l1-0.2.8-py3-none-any.whl" },
     { name = "docker", marker = "extra == 'all'" },
     { name = "docker", marker = "extra == 'docker'" },
     { name = "fastapi", marker = "extra == 'all'" },
@@ -3899,7 +3899,7 @@ name = "wheel"
 version = "0.48.0"
 source = { registry = "https://mirrors.aliyun.com/pypi/simple" }
 dependencies = [
-    { name = "packaging", version = "26.2", source = { registry = "https://mirrors.aliyun.com/pypi/simple" }, marker = "(extra != 'group-21-scholarseed-workspace-component-build-bibtexparser' and extra != 'group-21-scholarseed-workspace-wheel-build') or (extra == 'group-21-scholarseed-workspace-component-build-bibtexparser' and extra == 'group-21-scholarseed-workspace-wheel-build') or (extra == 'group-21-scholarseed-workspace-component-build-fastcdc' and extra != 'group-21-scholarseed-workspace-wheel-build') or (extra == 'group-21-scholarseed-workspace-component-build-jieba' and extra != 'group-21-scholarseed-workspace-wheel-build') or (extra == 'group-21-scholarseed-workspace-desktop' and extra == 'group-21-scholarseed-workspace-wheel-build')" },
+    { name = "packaging", version = "26.2", source = { registry = "https://mirrors.aliyun.com/pypi/simple" }, marker = "extra == 'group-21-scholarseed-workspace-component-build-bibtexparser' or extra == 'group-21-scholarseed-workspace-desktop' or extra != 'group-21-scholarseed-workspace-wheel-build'" },
     { name = "packaging", version = "26.3", source = { registry = "https://mirrors.aliyun.com/pypi/simple" }, marker = "extra == 'group-21-scholarseed-workspace-wheel-build' or (extra == 'group-21-scholarseed-workspace-component-build-bibtexparser' and extra == 'group-21-scholarseed-workspace-component-build-fastcdc') or (extra == 'group-21-scholarseed-workspace-component-build-bibtexparser' and extra == 'group-21-scholarseed-workspace-component-build-jieba')" },
 ]
 sdist = { url = "https://mirrors.aliyun.com/pypi/packages/d0/20/50ed6bdf27dec98b568a8ae25dc599f35baa3d9709f9e83fd1edb56b9a90/wheel-0.48.0.tar.gz", hash = "sha256:94800765601e9171bf5d58d066e640662842bcedcbab982b2c90787a2c987322" }

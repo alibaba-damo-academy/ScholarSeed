@@ -23,6 +23,7 @@ from scholarseed_runtime.contract.sandbox import SandboxProbe
 from service.platform.access import RESOURCE_PRINCIPAL_CHANGED, prepare_tool_access
 from service.platform.pdf import pdf_document_text
 from service.platform.storage import (
+    DIRECTORY_ACL_READ_ACCESS,
     NOFOLLOW,
     PRIVATE_FILE_MODE,
     canonical_root,
@@ -335,7 +336,7 @@ class CompilerResources:
             (TEXLIVE_CONFIG_DIRECTORY, fingerprint),
         ):
             with ExitStack() as stack:
-                parent = open_directory(root, ())
+                parent = open_directory(root, (), final_access=DIRECTORY_ACL_READ_ACCESS)
                 stack.callback(parent.close)
                 parts: tuple[str, ...] = ()
                 for part in (TOOL_CACHE_DIRECTORY, RESOURCE_TEXLIVE, *suffix):
@@ -344,7 +345,7 @@ class CompilerResources:
                     except FileExistsError:
                         pass
                     parts += (part,)
-                    parent = open_directory(root, parts)
+                    parent = open_directory(root, parts, final_access=DIRECTORY_ACL_READ_ACCESS)
                     stack.callback(parent.close)
         publish_exact_bytes(
             root,
@@ -476,7 +477,7 @@ class ToolResources:
         output_identity = None
         with ExitStack() as stack:
             if output_root is not None and texlive is not None:
-                parent = open_directory(output_root, ())
+                parent = open_directory(output_root, (), final_access=DIRECTORY_ACL_READ_ACCESS)
                 stack.callback(parent.close)
                 for part in (TOOL_CACHE_DIRECTORY, VERIFICATION_DIRECTORY, uuid4().hex):
                     try:
@@ -485,7 +486,9 @@ class ToolResources:
                         if len(parts) == 2:
                             raise FileExistsError("tool probe identity collision") from None
                     parts += (part,)
-                    parent = open_directory(output_root, parts)
+                    parent = open_directory(
+                        output_root, parts, final_access=DIRECTORY_ACL_READ_ACCESS
+                    )
                     stack.callback(parent.close)
                 output = output_root.joinpath(*parts)
                 output_identity = parent.identity()

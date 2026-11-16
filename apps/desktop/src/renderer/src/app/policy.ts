@@ -27,7 +27,11 @@ interface Location {
   target?: { kind: string; id?: string } | null
 }
 
-export function createAvailabilityPolicy(browserEnabled: boolean, advancedEnabled = false) {
+export function createAvailabilityPolicy(
+  browserEnabled: boolean,
+  advancedEnabled = false,
+  navigationEnabled = false
+) {
   const enabled: Readonly<Record<string, boolean>> = {
     [BROWSER_FEATURE]: browserEnabled,
     [BROWSER_ADVANCED_FEATURE]: browserEnabled && advancedEnabled,
@@ -48,7 +52,12 @@ export function createAvailabilityPolicy(browserEnabled: boolean, advancedEnable
     tabAvailable,
     tabIdAvailable,
     settingsAvailable,
-    hilAvailable: (kind: string): boolean => available(HIL_FEATURES, kind),
+    hilAvailable: (kind: string, action?: string): boolean =>
+      (browserEnabled &&
+        navigationEnabled &&
+        kind === 'browser_approval' &&
+        action === 'navigate') ||
+      available(HIL_FEATURES, kind),
     navigationPatch<State extends NavigationState>(
       current: State,
       patch: Partial<State>
@@ -104,5 +113,6 @@ export function createAvailabilityPolicy(browserEnabled: boolean, advancedEnable
 export type AvailabilityPolicy = ReturnType<typeof createAvailabilityPolicy>
 export const availabilityPolicy = createAvailabilityPolicy(
   typeof window !== 'undefined' && window.scholarseed?.browserEnabled === true,
-  typeof window !== 'undefined' && window.scholarseed?.browserAdvancedSettingsEnabled === true
+  typeof window !== 'undefined' && window.scholarseed?.browserAdvancedSettingsEnabled === true,
+  typeof window !== 'undefined' && window.scholarseed?.browserAgentNavigationEnabled === true
 )

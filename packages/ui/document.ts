@@ -18,3 +18,8 @@ export interface ConversationDocument {
   version: typeof OPENUI_VERSION
   source: string
 }
+
+export interface ConversationLayout {
+  component: typeof OPENUI_ROOT
+  args: unknown[]
+}

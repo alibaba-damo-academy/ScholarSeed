@@ -47,7 +47,7 @@ for (const withFields of [false, true]) test(`editable template preserves edits 
       } })
     }, withFields)
     await page.addScriptTag({ url: 'http://template.test/ui.js' })
-    await page.addScriptTag({ content: await fs.readFile(path.resolve(__dirname, '../../skills/community/plugin-create/templates/card.js'), 'utf8') })
+    await page.addScriptTag({ content: await fs.readFile(path.resolve(__dirname, 'example/legacy-card.js'), 'utf8') })
     await expect(page.getByRole('checkbox', { name: '目标一', exact: true })).toHaveAttribute('aria-checked', 'true')
     if (withFields) {
       await page.getByRole('textbox', { name: '自定义问题' }).fill('初次问题')

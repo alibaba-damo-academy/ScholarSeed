@@ -3,7 +3,7 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
-import { BROWSER_ERROR } from '../browser.ts'
+import { BROWSER_ERROR, MAX_HISTORY_SEARCH_CHARS } from '../browser.ts'
 import type {
   BrowserHistoryPage,
   BrowserHistoryQuery,
@@ -24,7 +24,6 @@ import {
 const HISTORY_PROOF_TTL_MS = 60_000
 const HISTORY_APPROVAL_HANDOFF_MS = 5_000
 const MAX_HISTORY_PROOFS = 4096
-const MAX_HISTORY_SEARCH_CHARS = 256
 const MAX_HISTORY_INTENT_CHARS = 512
 const MAX_HISTORY_OFFSET = 1000
 const MAX_HISTORY_LIMIT = 20
@@ -397,7 +396,10 @@ export function createHistoryAgentAuthority(
   history: BrowserHistory,
   agentUseRevision: () => number | null
 ): HistoryAgentAuthority {
-  const proofs = new Map<string, { proof: HistoryAgentProof; granted: boolean; notifyGrant?: () => void }>()
+  const proofs = new Map<
+    string,
+    { proof: HistoryAgentProof; granted: boolean; notifyGrant?: () => void }
+  >()
   const leases = new Map<string, { scope: BrowserReadScope; proofId: string; owner: object }>()
   const watchedOwners = new WeakSet<object>()
   const endedOwners = new WeakSet<object>()
@@ -418,10 +420,7 @@ export function createHistoryAgentAuthority(
       throw new Error('browser_unavailable')
     return revision
   }
-  const current = (
-    requestId: string,
-    proofId: string
-  ) => {
+  const current = (requestId: string, proofId: string) => {
     const record = proofs.get(requestId)
     if (!record || record.proof.proofId !== proofId) throw new Error('approval_required')
     if (record.proof.expiresAt <= Date.now()) {
@@ -506,12 +505,21 @@ export function createHistoryAgentAuthority(
           delete record.notifyGrant
           input.signal?.removeEventListener('abort', abort)
         }
-        const abort = (): void => { cleanup(); reject(new Error('request_expired')) }
-        const timer = setTimeout(() => {
+        const abort = (): void => {
           cleanup()
-          reject(new Error('approval_required'))
-        }, Math.min(HISTORY_APPROVAL_HANDOFF_MS, record.proof.expiresAt - Date.now()))
-        record.notifyGrant = () => { cleanup(); resolve() }
+          reject(new Error('request_expired'))
+        }
+        const timer = setTimeout(
+          () => {
+            cleanup()
+            reject(new Error('approval_required'))
+          },
+          Math.min(HISTORY_APPROVAL_HANDOFF_MS, record.proof.expiresAt - Date.now())
+        )
+        record.notifyGrant = () => {
+          cleanup()
+          resolve()
+        }
         input.signal?.addEventListener('abort', abort, { once: true })
       })
     },

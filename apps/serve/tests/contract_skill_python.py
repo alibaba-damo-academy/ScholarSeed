@@ -336,7 +336,7 @@ class SkillPythonContracts(unittest.TestCase):
         source = (
             "import sys\nfrom importlib.metadata import version\n"
             "from knowledge_layer.comprehend import process_single_doc\n"
-            "assert version('deep-rnd-l1') == '0.2.6'\n"
+            "assert version('deep-rnd-l1') == '0.2.8'\n"
             "assert 'openai' not in sys.modules and 'anthropic' not in sys.modules\n"
             "print('l1-ready')\n"
         )

@@ -28,6 +28,7 @@
   "include": [
     "src/markdown/**/*",
     "../../packages/ui/document.ts",
+    "../../packages/ui/layout.ts",
     "../../packages/ui/canvas.ts",
     "../../packages/ui/canvas.worker.ts",
     "../../packages/ui/canvases.tsx",

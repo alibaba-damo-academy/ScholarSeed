@@ -12,7 +12,7 @@ from pathlib import Path
 from service.paths import legacy_coordination_root
 
 _IDENTITY = r"(?:posix-[0-9a-f]{16}-[0-9a-f]{16}|windows-[0-9a-f]{16}-[0-9a-f]{32})"
-_SLOT = re.compile(_IDENTITY + r"-(?:(?:admission|occupancy)-[ab]|families|mutations)")
+_SLOT = re.compile(_IDENTITY + r"-(?:(?:admission|occupancy)-[ab]|families|mutations|policy)")
 _INDEXES = {"domains-v1", "mutations-v1"}
 _SCOPES = {"self", "descendants"}
 _QUARANTINE_SUFFIX = ".retired"
@@ -20,7 +20,10 @@ _QUARANTINE_SUFFIX = ".retired"
 
 def _metadata(path: Path) -> os.stat_result:
     info = path.lstat()
-    if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+    if (
+        stat.S_ISLNK(info.st_mode)
+        or getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
+    ):
         raise ValueError(f"Linked or redirected entry: {path}")
     return info
 
@@ -44,7 +47,12 @@ def _inventory(path: Path) -> tuple[str, list[Path]]:
     entries = []
     for entry in path.iterdir():
         info = _metadata(entry)
-        if _SLOT.fullmatch(entry.name) and stat.S_ISREG(info.st_mode) and info.st_size == 0 and info.st_nlink == 1:
+        if (
+            _SLOT.fullmatch(entry.name)
+            and stat.S_ISREG(info.st_mode)
+            and info.st_size == 0
+            and info.st_nlink == 1
+        ):
             entries.append(entry)
         elif entry.name in _INDEXES and stat.S_ISDIR(info.st_mode):
             entries.extend(_empty_index(entry))
@@ -82,11 +90,15 @@ def retire(
     has_source = _exists(source)
     has_quarantine = _exists(quarantine)
     if has_source and has_quarantine:
-        raise ValueError("Legacy directory and quarantine both exist. Inspect the cutover before proceeding.")
+        raise ValueError(
+            "Legacy directory and quarantine both exist. Inspect the cutover before proceeding."
+        )
     if action not in {"inspect", "quarantine", "purge"}:
         raise ValueError(f"Unknown retirement action: {action}")
     if action != "inspect" and (not offline or not expected_identity):
-        raise ValueError("Confirm old processes are stopped and disabled, and supply the inspected identity.")
+        raise ValueError(
+            "Confirm old processes are stopped and disabled, and supply the inspected identity."
+        )
     if action == "purge" and (not verified or has_source):
         raise ValueError("Purge requires Desktop and Serve verification and an absent legacy path.")
     if not has_source and not has_quarantine:

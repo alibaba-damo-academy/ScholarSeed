@@ -910,12 +910,39 @@ class WindowsSandboxContracts(unittest.IsolatedAsyncioTestCase):
         with (
             patch("scholarseed_codex.sandbox.sys.platform", "win32"),
             patch("scholarseed_codex.sandbox._system_directory", return_value=Path("system")),
+            self.assertLogs(LOGGER, level="INFO") as diagnostics,
         ):
             await bootstrap.ensure_thread_execution_ready(
                 request, Path.cwd(), {"type": "workspaceWrite"}
             )
         self.assertEqual(len(native_calls), 3)
         self.assertEqual(resources.validate_probe.await_count, 2)
+        for kind, entry in (("python", 0), ("libraries", 1)):
+            self.assertRegex(
+                "\n".join(diagnostics.output),
+                rf"windows_sandbox_probe_maintenance event=finished kind={kind} "
+                rf"entry={entry} generation=\d+ elapsed_ms=\d+ recovery_available=True",
+            )
+
+        bootstrap._recovery.prepare = AsyncMock(side_effect=[None, PermissionError("private path")])
+        blocked_request = AsyncMock(return_value={"exitCode": 0})
+        with (
+            patch("scholarseed_codex.sandbox.sys.platform", "win32"),
+            patch("scholarseed_codex.sandbox._system_directory", return_value=Path("system")),
+            self.assertLogs(LOGGER, level="WARNING") as diagnostics,
+        ):
+            with self.assertRaises(AppServerError) as raised:
+                await bootstrap.ensure_thread_execution_ready(
+                    blocked_request, Path.cwd(), {"type": "workspaceWrite"}
+                )
+        self.assertEqual(raised.exception.safe_error, SANDBOX_SETUP_ERROR)
+        blocked_request.assert_awaited_once()
+        diagnostic = "\n".join(diagnostics.output)
+        self.assertIn(
+            "windows_sandbox_probe_maintenance event=failed kind=python entry=0", diagnostic
+        )
+        self.assertIn(f"safe_error={SANDBOX_SETUP_ERROR}", diagnostic)
+        self.assertNotIn("private path", diagnostic)
 
     async def test_private_recovery_failure_blocks_native_execution(self) -> None:
         for version in ("0.163.0", "0.165.0", "codex-cli 0.165.0"):

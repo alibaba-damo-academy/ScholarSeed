@@ -1,10 +1,17 @@
 const assert = require('node:assert/strict')
 const { createHash } = require('node:crypto')
-const { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } = require('node:fs')
+const { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } = require('node:fs')
 const { tmpdir } = require('node:os')
 const { join, resolve } = require('node:path')
 const test = require('node:test')
 const { resolveExample, readExampleFile, fileMetadata, EXAMPLE_ROOT } = require('../examples.cjs')
+
+test('exploratory contains only page requirement directories', () => {
+  const root = resolve(__dirname, '../../../apps/desktop/eval-scenarios/exploratory')
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    assert.ok(entry.isDirectory() && existsSync(join(root, entry.name, 'requirements.md')), entry.name)
+  }
+})
 
 test('evaluation example contains the frozen source inputs needed by the adopted pages', () => {
   const plan = resolveExample({ projectId: 'evaluation' })

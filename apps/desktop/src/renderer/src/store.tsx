@@ -1405,6 +1405,7 @@ export interface Actions extends AssistantIngress {
       returnProjectId?: string
       browserPageId?: string
       browserPageOwned?: boolean
+      preserveLayout?: boolean
     }
   ) => void
   /** 打开指定回合的文本变更审阅，并保留右侧当前会话。 */
@@ -3646,7 +3647,7 @@ export function StoreProvider({
               homeProjectMenuOpen: false,
               mainView: view,
               workbenchReturnProjectId: options?.returnProjectId ?? null,
-              ...(view === 'browser'
+              ...(view === 'browser' && !options?.preserveLayout
                 ? {
                     workbenchLayout: {
                       ...current.workbenchLayout,

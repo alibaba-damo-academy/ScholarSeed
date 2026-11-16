@@ -258,6 +258,7 @@ async function awaitNavigationIdle(contents: WebContents): Promise<void> {
 export interface BrowserRegistry {
   createSearchTarget(): Promise<{ tabId: string; close(): void }>
   isSearchTarget(tabId: string): boolean
+  isAgentTarget(tabId: string, sessionId?: string): boolean
   takeSearchRedirect(tabId: string): Readonly<{ requestedUrl: string; url: string }> | null
   prepareSearchForm(
     tabId: string,
@@ -2211,6 +2212,14 @@ export function createBrowserRegistry(
           target.close()
         },
       }
+    },
+    isAgentTarget(tabId, sessionId) {
+      const owner = agentOwners.get(tabId)
+      return (
+        owner !== undefined &&
+        entries.get(tabId) === owner.entry &&
+        (sessionId === undefined || sessionId === owner.sessionId)
+      )
     },
     isSearchTarget(tabId) {
       const entry = entries.get(tabId)

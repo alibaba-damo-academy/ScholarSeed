@@ -2201,6 +2201,11 @@ async function startManagedBackend(
         const controller = browserAgentController
         if (!grants || !controller || !browserPolicy?.agentUseEnabled())
           throw new Error('browser_unavailable')
+        if (
+          !resolveProductConfig(pushLog).features.browserAdvancedSettings &&
+          !browserHost?.agent.isAgentTarget(input.tabId, input.scope.sessionId)
+        )
+          throw new Error('browser_unavailable')
         const proof = grants.prepareNavigate({
           sessionId: input.scope.sessionId,
           turnId: input.scope.turnId,
@@ -3051,9 +3056,13 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
     },
   })
   registerBrowserApprovalIpc(ipcMain, {
-    enabled: () => {
+    enabled: (action) => {
       const features = resolveProductConfig(pushLog).features
-      return features.browser && features.browserAdvancedSettings
+      return (
+        features.browser &&
+        (features.browserAdvancedSettings ||
+          (features.browserAgentNavigation && action === 'navigate'))
+      )
     },
 
     contents: () => mainWindow?.webContents ?? null,
@@ -3300,6 +3309,7 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
       channel: desktopConfig.channel,
       developerToolsEnabled,
       browserEnabled: productConfig.features.browser,
+      browserAgentNavigationEnabled: productConfig.features.browserAgentNavigation,
       browserAdvancedSettingsEnabled: productConfig.features.browserAdvancedSettings,
       feedbackRecorderEnabled: productConfig.features.feedbackRecorder,
       preferences: loadRendererPreferences(),
@@ -4770,10 +4780,13 @@ async function initializeWindowServices(
 ): Promise<void> {
   if (windowServices === browserWindow) return
   if (appQuitting || aliveMainWindow() !== browserWindow) return
-  const { browser: browserEnabled, browserAdvancedSettings } =
-    resolveProductConfig(pushLog).features
+  const {
+    browser: browserEnabled,
+    browserAdvancedSettings,
+    browserAgentNavigation,
+  } = resolveProductConfig(pushLog).features
   browserPolicy =
-    browserEnabled && browserAdvancedSettings
+    browserEnabled && (browserAdvancedSettings || browserAgentNavigation)
       ? createBrowserPolicy(desktopHome(), storageNative, coordinationRoot())
       : null
   const windowPolicy = browserPolicy
@@ -5110,7 +5123,11 @@ async function initializeWindowServices(
         }
       },
       navigateTarget: (tabId) => {
-        if (!agentTargetEnabled(tabId)) return null
+        if (
+          !agentTargetEnabled(tabId) &&
+          !(browserAgentNavigation && nextRegistry.isAgentTarget(tabId))
+        )
+          return null
         try {
           const target = grantRegistry.agentNavigationTarget(tabId)
           return target.origin === null && target.url !== 'about:blank'

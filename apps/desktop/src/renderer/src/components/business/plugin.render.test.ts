@@ -34,6 +34,30 @@ const createServer = (config: InlineConfig) =>
   )
 
 test(
+  'fixed OpenUI layout renders two inputs through the Desktop renderer without a frame',
+  { timeout: 180_000 },
+  async (context) => {
+    const fixture = await renderFixture(ROOT)
+    context.after(() => fixture.close())
+    const page = await fixture.page(context)
+    const target = new URL(
+      '/components/business/plugin.render.fixture.html?mode=fixed-openui',
+      fixture.url
+    )
+    for (const current of ['15 days', '21 days']) {
+      target.searchParams.set('current', current)
+      await page.goto(target.href, { waitUntil: 'domcontentloaded', timeout: 120_000 })
+      await expect(page.locator('[data-conversation-ui]')).toHaveAttribute('data-state', 'ready')
+      await expect(page.getByText('Previous', { exact: true })).toBeVisible()
+      await expect(page.getByText('Current', { exact: true })).toBeVisible()
+      await expect(page.getByText('10 days', { exact: true })).toBeVisible()
+      await expect(page.getByText(current, { exact: true })).toBeVisible()
+      await expect(page.locator('iframe')).toHaveCount(0)
+    }
+  }
+)
+
+test(
   'declarative content rejects a missing root without reporting an unavailable plugin',
   { timeout: 60_000 },
   async (context) => {

@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "skill-import",
+  "revision": "1",
+  "name": "技能导入合成输入",
+  "description": "本地技能导入专项使用的合成原始文件，不包含安装或执行结果。",
+  "source": {
+    "kind": "synthetic",
+    "origin": "Repository-authored synthetic Skill document for manual import evaluation.",
+    "rights": "Synthetic repository input containing no third-party or user data; repository license applies."
+  },
+  "files": [
+    {
+      "id": "skill-document",
+      "source": "files/SKILL.md",
+      "target": "skill-input/SKILL.md",
+      "mediaType": "text/markdown",
+      "size": 312,
+      "sha256": "eab4bb10f0ca6ab6562436448074960a7bcc41001cbfb49228773ff16b827e1e"
+    }
+  ]
+}

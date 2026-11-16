@@ -67,6 +67,15 @@ The same registration produces conversation.json and drives the live preview. Na
 
 ## Isolated executable plugin SDK
 
+Display-only plugins can instead declare a fixed `openui` layout and business
+`input_schema`. The installed slot accepts only business data; the Desktop
+renderer binds literal values using the same registered conversation library for
+preview and live display. No plugin JavaScript, actions, draft or iframe is used.
+
+展示型插件也可声明固定的 `openui` 布局与业务 `input_schema`。安装后的 slot 只接收
+业务数据，Desktop 在预览与正式展示中用同一对话组件注册表绑定字面值并渲染；
+不加载插件 JavaScript，不提供动作、草稿或 iframe。
+
 The following 2.0 resource contract remains limited to executable sandboxed plugins;
 it does not grant host execution to a plugin or a resource with an official name.
 

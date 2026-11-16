@@ -193,8 +193,10 @@
     "resizeTranslation": "Resize original and translation columns",
     "organizing": "Generating the reading",
     "preview": "Preview · not saved",
+    "incomplete": "The reading could not be completed. Please retry.",
+    "viewPartial": "View partial reading",
     "basic": "Basic reading · L1",
-    "previousPreserved": "Your previously saved reading is still available."
+    "previousPreserved": "This generation did not complete. Your previous reading has been preserved."
   },
   "status": {
     "strikethroughSaved": "Strikethrough saved",

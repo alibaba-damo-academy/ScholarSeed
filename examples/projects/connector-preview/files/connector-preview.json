@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "Synthetic Preview HTTP": {
+      "type": "http",
+      "url": "https://connector-http.invalid/mcp",
+      "description": "Synthetic preview input; no service is provided."
+    },
+    "Synthetic Preview SSE": {
+      "type": "sse",
+      "url": "https://connector-sse.invalid/events",
+      "description": "Synthetic preview input; no service is provided."
+    }
+  }
+}

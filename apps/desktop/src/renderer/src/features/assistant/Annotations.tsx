@@ -1,7 +1,6 @@
 import { assistantFailureDetail } from './failure'
 import { sessionFileRawUrl } from '../../api'
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import { Copy, MessageCirclePlus, Plus } from 'lucide-react'
 
@@ -13,7 +12,7 @@ import { activeThread, useApp } from '../../store'
 import { Markdown } from '../../components/primitive/Markdown'
 import { writeClipboard } from '../../components/primitive/clipboard'
 import { mappedSourceBoundary } from '../../components/markdown/source'
-import { Button, Divider, FloatingToolbar, useToast } from '../../components/ui'
+import { Button, Divider, FloatingToolbar, Portal, useToast } from '../../components/ui'
 import { expandedResourceAncestors } from '../../contracts/resources'
 import { citationSources, fetchResourceDirectoryTree, saveAnswerSelectionToResource } from './api'
 import { ANSWER_ANNOTATION_LOCATION, sha256Text } from './anchors'
@@ -275,6 +274,11 @@ export function AnnotatedAnswer({
   const { toast } = useToast()
   const rootRef = useRef<HTMLDivElement>(null)
   const toolbarRef = useRef<HTMLDivElement>(null)
+  const [toolbarElement, setToolbarElement] = useState<HTMLDivElement | null>(null)
+  const bindToolbar = React.useCallback((element: HTMLDivElement | null) => {
+    toolbarRef.current = element
+    setToolbarElement(element)
+  }, [])
   const [toolbarLeft, setToolbarLeft] = useState(0)
   const [editingAnnotationId, setEditingAnnotationId] = useState<string | null>(null)
   const annotationSavingRef = useRef(false)
@@ -290,7 +294,7 @@ export function AnnotatedAnswer({
   const selectionLeft = draft?.left ?? 0
   useLayoutEffect(() => {
     const root = rootRef.current
-    const toolbar = toolbarRef.current
+    const toolbar = toolbarElement
     if (!selectionIdentity || !root || !toolbar) return
     const stream = root.closest<HTMLElement>(CONVERSATION_STREAM_SELECTOR)
     const updatePosition = (): void => {
@@ -338,7 +342,7 @@ export function AnnotatedAnswer({
       window.removeEventListener('resize', updatePosition)
       window.removeEventListener('scroll', updatePosition, true)
     }
-  }, [selectionBottom, selectionIdentity, selectionLeft, selectionTop])
+  }, [selectionBottom, selectionIdentity, selectionLeft, selectionTop, toolbarElement])
   const draftRef = useRef<SelectionDraft | null>(null)
   useEffect(() => {
     draftRef.current = draft
@@ -896,61 +900,60 @@ export function AnnotatedAnswer({
           resolveEnabled={citationEnabled}
         />
       )}
-      {draft
-        ? createPortal(
-            <div
-              className={`answer-selection-anchor !z-[var(--vds-z-inline-flyout)] !fixed flex w-max flex-col items-center -translate-x-1/2 ${
-                toolbarPosition.placement === 'above' ? '-translate-y-full pb-2' : 'pt-2'
-              }`}
-              ref={toolbarRef}
-              style={{ left: toolbarLeft, top: toolbarPosition.top }}
-              onMouseUp={(event) => event.stopPropagation()}
-            >
-              <FloatingToolbar
-                actions={
-                  <div className="flex w-max flex-nowrap items-center gap-[var(--vds-space-half)]">
-                    <Button
-                      className={SELECTION_ACTION_CLASS}
-                      icon={<MessageCirclePlus size={14} />}
-                      disabled={saving}
-                      onClick={() => void addAnnotation()}
-                      size="sm"
-                      variant="ghost"
-                    >
-                      {a('remaining.addConversation')}
-                    </Button>
-                    <Button
-                      className={SELECTION_ACTION_CLASS}
-                      icon={<Plus size={14} />}
-                      disabled={state.projects.length === 0}
-                      onClick={openSaveDialog}
-                      size="sm"
-                      variant="ghost"
-                    >
-                      {a('remaining.importAnswer')}
-                    </Button>
-                    <Divider
-                      orientation="vertical"
-                      className="!h-[var(--vds-space-4)] !min-h-0 !self-center !m-0"
-                    />
-                    <Button
-                      className={SELECTION_ACTION_CLASS}
-                      icon={<Copy size={14} />}
-                      onClick={() => void copySelection()}
-                      size="sm"
-                      variant="ghost"
-                    >
-                      {a('remaining.copyText')}
-                    </Button>
-                  </div>
-                }
-                className="w-max max-w-none [&_[role=toolbar]]:!p-[calc(var(--vds-space-2)-var(--vds-border-width-1))]"
-                label={a('remaining.selectionActions')}
-              />
-            </div>,
-            document.body
-          )
-        : null}
+      {draft ? (
+        <Portal hosted>
+          <div
+            className={`answer-selection-anchor !z-[var(--vds-z-inline-flyout)] !fixed flex w-max flex-col items-center -translate-x-1/2 ${
+              toolbarPosition.placement === 'above' ? '-translate-y-full pb-2' : 'pt-2'
+            }`}
+            ref={bindToolbar}
+            style={{ left: toolbarLeft, top: toolbarPosition.top }}
+            onMouseUp={(event) => event.stopPropagation()}
+          >
+            <FloatingToolbar
+              actions={
+                <div className="flex w-max flex-nowrap items-center gap-[var(--vds-space-half)]">
+                  <Button
+                    className={SELECTION_ACTION_CLASS}
+                    icon={<MessageCirclePlus size={14} />}
+                    disabled={saving}
+                    onClick={() => void addAnnotation()}
+                    size="sm"
+                    variant="ghost"
+                  >
+                    {a('remaining.addConversation')}
+                  </Button>
+                  <Button
+                    className={SELECTION_ACTION_CLASS}
+                    icon={<Plus size={14} />}
+                    disabled={state.projects.length === 0}
+                    onClick={openSaveDialog}
+                    size="sm"
+                    variant="ghost"
+                  >
+                    {a('remaining.importAnswer')}
+                  </Button>
+                  <Divider
+                    orientation="vertical"
+                    className="!h-[var(--vds-space-4)] !min-h-0 !self-center !m-0"
+                  />
+                  <Button
+                    className={SELECTION_ACTION_CLASS}
+                    icon={<Copy size={14} />}
+                    onClick={() => void copySelection()}
+                    size="sm"
+                    variant="ghost"
+                  >
+                    {a('remaining.copyText')}
+                  </Button>
+                </div>
+              }
+              className="w-max max-w-none [&_[role=toolbar]]:!p-[calc(var(--vds-space-2)-var(--vds-border-width-1))]"
+              label={a('remaining.selectionActions')}
+            />
+          </div>
+        </Portal>
+      ) : null}
       <ResourceSaveDialog
         description={a('remaining.excerptDescription')}
         error={saveError === null ? '' : a('remaining.saveFailed', { detail: saveError })}

@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import re
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
@@ -240,6 +241,7 @@ class PreparedAnalysis:
     reading: ReadingInput | None = None
     saved_reading: dict | None = None
     index_cache_hit: bool | None = None
+    preparation_stages: dict[str, float] | None = None
     translation_structure: tuple[dict, ...] = ()
 
     @property
@@ -726,6 +728,7 @@ def prepare(
         request = request.model_copy(
             update={"attachment_id": pdf.primary(request.literature_id).id}
         )
+    source_started = time.monotonic()
     data, title = read_source(
         request,
         repository,
@@ -734,6 +737,7 @@ def prepare(
         citation_reader=citation_reader,
         artifact_reader=artifact_reader,
     )
+    source_seconds = time.monotonic() - source_started
     visual = request.kind in VISUAL_ACTIONS
     if not visual and len(data) > MAX_PDF_BYTES:
         raise AnalysisError(AnalysisErrorCode.FILE_TOO_LARGE)
@@ -743,7 +747,9 @@ def prepare(
     if request.kind is ActionKind.INTERPRETATION:
         if request.module not in (*ALL_MODULES, "all"):
             raise AnalysisError(AnalysisErrorCode.MODULE_UNSUPPORTED)
+        l1_started = time.monotonic()
         saved = load_l1(request.literature_id, revision, request.attachment_id) if load_l1 else None
+        l1_seconds = time.monotonic() - l1_started
         if saved is not None and reading_state(saved, revision) is ReadingState.READY:
             reading = saved_source(saved, request.response_language.value, max_interpretation_chars)
             return PreparedAnalysis(
@@ -759,10 +765,12 @@ def prepare(
         if indexes is None:
             raise AnalysisError(AnalysisErrorCode.PREPARATION_FAILED)
         document = visual_region_document(request, data, title, f"{REVISION_PREFIX}{revision}", pdf)
+        index_started = time.monotonic()
         index_cache_hit = indexes.status(document).get("state") == "ready"
         index = indexes.index(document, wait=True)
         if index is None:
             raise ComprehensionError(INPUT_UNAVAILABLE)
+        index_seconds = time.monotonic() - index_started
         item = repository.get(request.literature_id)
         reading = prepare_reading(
             index,
@@ -794,6 +802,12 @@ def prepare(
             interpretation_input_limit=max_interpretation_chars,
             source_page_count=index.page_count,
             index_cache_hit=index_cache_hit,
+            preparation_stages={
+                "source_seconds": round(source_seconds, 3),
+                "l1_lookup_seconds": round(l1_seconds, 3),
+                "index_seconds": round(index_seconds, 3),
+                **reading.snapshot.get("preparation_stages", {}),
+            },
         )
     page_count = pdf_document_info(data).page_count
     if request.page > page_count:

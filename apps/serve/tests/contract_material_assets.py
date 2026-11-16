@@ -141,6 +141,43 @@ class MaterialContracts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(diagnostic["l1"]["extraction_diagnostics"]), 2)
         self.assertEqual(diagnostic["source_snapshot"], json.loads(json.dumps(source.snapshot)))
 
+    async def test_failed_mixed_recovery_keeps_saved_success_and_partial_diagnostic(self):
+        saved, _ = await self.generate()
+        store = MaterialAssets(self.database)
+        initial = block_record("extract", EXTRACTION)
+        initial = replace(
+            initial,
+            output_text=initial.output_text.replace(
+                "<common_fields>{", "<common_fields>{broken,", 1
+            ),
+        )
+        invoke = AsyncMock(
+            side_effect=[
+                initial,
+                record("syntax", {}),
+                record("content", {"fields": {}, "source_map": {}}),
+            ]
+        )
+        source = replace(self.source, language="zh")
+        with self.assertRaises(ComprehensionError) as failure:
+            await material_asset(
+                source, ReadingClient(source, invoke), database=self.database, paper_type="method"
+            )
+        self.assertEqual(invoke.await_count, 3)
+        self.assertEqual(store.get(saved["revision"], "en"), saved)
+        self.assertIsNone(store.get(saved["revision"], "zh"))
+        self.assertEqual(failure.exception.diagnostics["l1"]["card"], EXTRACTION["card"])
+        self.assertEqual(
+            failure.exception.diagnostics["source_mapping"]["card_mapping"][
+                "card.method.description"
+            ],
+            [1],
+        )
+        with sqlite3.connect(self.database) as connection:
+            rows = connection.execute("SELECT payload FROM literature_material_failures").fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(json.loads(rows[0][0])["l1"]["extraction_quality"]["status"], "DEGRADED")
+
     async def test_compatible_saved_assets_survive_extractor_upgrade(self):
         from service.literature.service.comprehension import COMPATIBLE_EXTRACTOR_VERSIONS
 
@@ -172,7 +209,17 @@ class MaterialContracts(unittest.IsolatedAsyncioTestCase):
             },
         }
         invoke = AsyncMock(
-            side_effect=[block_record("extract", initial), record("repair", repaired)]
+            side_effect=[
+                record(
+                    "extract",
+                    "<card>"
+                    + json.dumps(initial["card"])
+                    + "</card><source_map>"
+                    + json.dumps(initial["source_map"])
+                    + "</source_map>",
+                ),
+                record("repair", repaired),
+            ]
         )
         asset = await material_asset(
             self.source,

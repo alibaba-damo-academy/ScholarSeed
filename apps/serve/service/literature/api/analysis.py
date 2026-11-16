@@ -307,6 +307,12 @@ def register_analysis_routes(
                 "task_id": key[1],
                 "ui_timing": states.get(key, {}).get("ui_timing", {}),
                 "preparation_seconds": round(preparation_seconds, 3),
+                "preparation_stages": prepared.preparation_stages or {},
+                "preparation_diagnostic": (
+                    prepared.reading.snapshot.get("preparation_diagnostic", {})
+                    if prepared.reading
+                    else {}
+                ),
                 "request_seconds": round(now - submitted_at, 3) if complete else None,
                 "index_cache_hit": prepared.index_cache_hit,
                 "invocations": [

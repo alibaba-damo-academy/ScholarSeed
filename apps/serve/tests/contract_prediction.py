@@ -15,7 +15,9 @@ from scholarseed_runtime.contract import (
     RuntimeCapability,
     RuntimeCapabilityName,
     RuntimeControlKind,
+    TurnRequest,
 )
+from scholarseed_runtime.contract.input import TurnInput
 from service.chat.persistence.catalog import SessionPrincipal
 from service.chat.runtime.live import LiveSession
 from service.chat.service.sessions import PREDICTION_SOURCE_UNAVAILABLE, SessionService
@@ -147,11 +149,70 @@ def test_auxiliary_model_context_never_relabels_the_main_turn():
     assert live.model_request_id == "main-turn"
 
 
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_main_submission_drains_prediction_started_after_preparation(cleanup_fails):
+    async def run():
+        service, live, _record, control = fixture()
+        started, cancelling, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        live.model_run = None
+        live.runtime_driver = SimpleNamespace(submit=AsyncMock(return_value="main-result"))
+
+        async def pending(_request):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelling.set()
+                await release.wait()
+                assert live.active_product_turn_id == ""
+                if cleanup_fails:
+                    raise RuntimeError("auxiliary provider failure")
+
+        async def submit(request):
+            assert live.prediction_task is None
+            assert live.auxiliary_model_request_id == ""
+            assert live.auxiliary_model_source is None
+            assert LiveSession.model_request_id.fget(live) == request.command_id
+            return "main-result"
+
+        control.side_effect = pending
+        live.runtime_driver.submit.side_effect = submit
+        prediction = asyncio.create_task(
+            service.predict_message("session", "turn", SessionPrincipal("owner"))
+        )
+        await started.wait()
+        live.running = True
+        main = asyncio.create_task(
+            LiveSession.run_runtime(
+                live,
+                TurnInput((), client_user_message_id="main-turn"),
+                frozen_request=TurnRequest("main-turn", ("hello",)),
+            )
+        )
+        try:
+            await asyncio.wait_for(cancelling.wait(), timeout=1)
+            live.runtime_driver.submit.assert_not_awaited()
+            with pytest.raises(ValueError, match=PREDICTION_SOURCE_UNAVAILABLE):
+                await service.predict_message("session", "turn", SessionPrincipal("owner"))
+        finally:
+            release.set()
+            if not cancelling.is_set():
+                prediction.cancel()
+            results = await asyncio.gather(prediction, main, return_exceptions=True)
+        assert isinstance(results[0], RuntimeError if cleanup_fails else asyncio.CancelledError)
+        assert results[1] == "main-result"
+        live.runtime_driver.submit.assert_awaited_once()
+
+    asyncio.run(run())
+
+
 def main():
     test_prediction_uses_neutral_control_and_caches_only_its_source()
     test_busy_and_changed_sources_do_not_publish_suggestions()
     test_prediction_cancellation_waits_for_runtime_cleanup()
     test_auxiliary_model_context_never_relabels_the_main_turn()
+    test_main_submission_drains_prediction_started_after_preparation(cleanup_fails=False)
+    test_main_submission_drains_prediction_started_after_preparation(cleanup_fails=True)
     return 0
 
 

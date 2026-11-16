@@ -52,7 +52,7 @@ from service.platform import access, windows
 from service.platform.activity import Activities, ActivityDomain, MaintenanceActive
 from service.platform.bridge import ArtifactPublishFailure
 from service.platform.inference import ReasoningPolicy
-from service.platform.storage import DirectoryHandle, open_directory
+from service.platform.storage import DIRECTORY_ACL_READ_ACCESS, DirectoryHandle, open_directory
 from service.platform.vocabulary import (
     BRIDGE_SESSION_HEADER,
     BRIDGE_TOKEN_HEADER,
@@ -487,6 +487,27 @@ class InvocationContract(unittest.TestCase):
             "/api/agent/invocations", json={"prompt": "not a file API", "input_files": {"x": "y"}}
         )
         self.assertEqual(response.status_code, 422)
+        self.assertEqual(self.runtime.calls, [])
+
+    def test_workspace_parent_requests_acl_read_access_before_inherited_creation(self) -> None:
+        with patch(
+            "service.invocation.service.runtime.open_directory", wraps=open_directory
+        ) as opened:
+            prepared = asyncio.run(
+                self.service.prepare(
+                    InvocationStartRequest(prompt="prepare workspace").command(),
+                    owner_id=OWNER_ID,
+                    user_id=USER_ID,
+                )
+            )
+        workspace = Path(prepared.record.workspace)
+        self.assertTrue(workspace.is_dir())
+        opened.assert_called_once_with(
+            self.service._root,
+            (prepared.record.invocation_id,),
+            create=True,
+            final_access=DIRECTORY_ACL_READ_ACCESS,
+        )
         self.assertEqual(self.runtime.calls, [])
 
     @unittest.skipUnless(os.name == "nt", "Windows inheritance requires native ACLs")

@@ -39,6 +39,7 @@
     "src/notifications.ts",
     "src/skills.ts",
     "src/plugins.ts",
+    "../../packages/ui/document.ts",
     "src/mcp-settings.ts",
     "src/reconfiguration.ts",
     "src/translation.ts",

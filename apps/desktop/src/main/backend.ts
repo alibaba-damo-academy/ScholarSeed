@@ -1102,7 +1102,10 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
           options.browserActionActions,
           options.browserHistoryActions,
           options.browserSearchAction,
-          { advancedEnabled: productConfig.features.browserAdvancedSettings }
+          {
+            advancedEnabled: productConfig.features.browserAdvancedSettings,
+            navigationEnabled: productConfig.features.browserAgentNavigation,
+          }
         )
       : null
     handle.agentTransport = agentTransport

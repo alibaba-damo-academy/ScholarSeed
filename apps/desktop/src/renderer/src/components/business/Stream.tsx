@@ -3286,7 +3286,7 @@ function BrowserAwareHilCard(props: {
   if (
     item.hilState === 'stale' &&
     isQuestionHil(item) &&
-    availabilityPolicy.hilAvailable(item.hilKind ?? '') &&
+    availabilityPolicy.hilAvailable(item.hilKind ?? '', item.browserApproval?.action) &&
     questions.every(
       (question) => !question.installation && (!question.component || question.options.length > 0)
     ) &&
@@ -3310,12 +3310,15 @@ function BrowserAwareHilCard(props: {
   }
   const content =
     props.item.hilKind === 'browser_approval' &&
-    availabilityPolicy.hilAvailable(props.item.hilKind) ? (
+    availabilityPolicy.hilAvailable(props.item.hilKind, props.item.browserApproval?.action) ? (
       <BrowserApprovalCard {...props} />
     ) : props.item.hilKind === 'browser_history_approval' &&
       availabilityPolicy.hilAvailable(props.item.hilKind) ? (
       <BrowserHistoryApprovalCard {...props} />
-    ) : !availabilityPolicy.hilAvailable(props.item.hilKind ?? '') ? (
+    ) : !availabilityPolicy.hilAvailable(
+        props.item.hilKind ?? '',
+        props.item.browserApproval?.action
+      ) ? (
       <UnavailableHilCard />
     ) : (
       <HilCardView {...props} />
@@ -3387,7 +3390,7 @@ function BrowserHistoryApprovalCard({
 
   const decide = async (decision: 'deny' | 'allow_once'): Promise<void> => {
     if (thread.readOnly) return
-    if (!availabilityPolicy.hilAvailable(item.hilKind ?? '')) return
+    if (!availabilityPolicy.hilAvailable(item.hilKind ?? '', item.browserApproval?.action)) return
     if (
       !sessionId ||
       !approval ||
@@ -3668,7 +3671,7 @@ function BrowserApprovalCard({
 
   const decide = async (decision: 'deny' | 'allow_once'): Promise<void> => {
     if (thread.readOnly) return
-    if (!availabilityPolicy.hilAvailable(item.hilKind ?? '')) return
+    if (!availabilityPolicy.hilAvailable(item.hilKind ?? '', item.browserApproval?.action)) return
     if (
       !sessionId ||
       done ||

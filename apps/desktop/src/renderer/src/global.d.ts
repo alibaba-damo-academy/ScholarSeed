@@ -113,6 +113,7 @@ declare global {
     developerToolsEnabled: boolean
     browserEnabled: boolean
     browserAdvancedSettingsEnabled: boolean
+    browserAgentNavigationEnabled?: boolean
     feedbackRecorderEnabled: boolean
     preferences: RendererPreferences
     reconcilePreferences: () => Promise<RendererPreferences>

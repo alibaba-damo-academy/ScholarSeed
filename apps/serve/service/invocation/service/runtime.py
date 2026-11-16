@@ -63,7 +63,7 @@ from service.paths import ONE_SHOT_DIR, ONE_SHOT_WORKSPACE_DIRNAME
 from service.platform.activity import Activities, ActivityDomain, ActivityLease
 from service.platform.bridge import BRIDGE_TOKEN_BYTES, ArtifactPublishFailure
 from service.platform.generation import GenerationScope
-from service.platform.storage import canonical_root, open_directory
+from service.platform.storage import DIRECTORY_ACL_READ_ACCESS, canonical_root, open_directory
 
 INVOCATION_PURPOSE = "isolated_one_shot"
 INVOCATION_RUNTIME_INSTRUCTIONS = (
@@ -297,7 +297,12 @@ class InvocationService:
             try:
                 if trusted_workspace is None:
                     with closing(
-                        open_directory(canonical_root(self._root), (invocation_id,), create=True)
+                        open_directory(
+                            canonical_root(self._root),
+                            (invocation_id,),
+                            create=True,
+                            final_access=DIRECTORY_ACL_READ_ACCESS,
+                        )
                     ) as directory:
                         directory.mkdir(workspace.name, inherit_acl=True)
             except OSError as error:

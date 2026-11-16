@@ -10,6 +10,7 @@ import math
 import os
 import subprocess
 import sys
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -62,6 +63,8 @@ class PdfNativeOperation(StrEnum):
     TEXT = "text"
     IMAGES = "images"
     RENDER = "render"
+    PREVIEW = "preview"
+    TABLE = "table"
 
 
 def pdf_worker_crashed(returncode: int) -> bool:
@@ -209,7 +212,13 @@ def pdf_document_info(payload: bytes) -> PdfDocumentInfo:
     return PdfDocumentInfo(page_count=page_count, encrypted=encrypted)
 
 
-def _native_pdf(payload: bytes, operation: PdfNativeOperation, **parameters: Any) -> Any:
+def _native_pdf(
+    payload: bytes,
+    operation: PdfNativeOperation,
+    *,
+    deadline: float | None = None,
+    **parameters: Any,
+) -> Any:
     if len(payload) > PDF_WORKER_MAXIMUM_INPUT_BYTES:
         raise PdfDocumentError("pdf_document_too_large")
     command = [
@@ -223,6 +232,9 @@ def _native_pdf(payload: bytes, operation: PdfNativeOperation, **parameters: Any
         json.dumps(parameters, allow_nan=False),
     ]
     for attempt in range(PDF_WORKER_MAXIMUM_ATTEMPTS):
+        remaining = PDF_WORKER_TIMEOUT_SECONDS if deadline is None else deadline - time.monotonic()
+        if remaining <= 0:
+            raise PdfDocumentError("pdf_worker_timeout")
         with TemporaryFile() as output_file, TemporaryFile() as error_file:
             try:
                 with subprocess.Popen(
@@ -235,7 +247,7 @@ def _native_pdf(payload: bytes, operation: PdfNativeOperation, **parameters: Any
                     },
                 ) as process:
                     try:
-                        process.communicate(payload, timeout=PDF_WORKER_TIMEOUT_SECONDS)
+                        process.communicate(payload, timeout=remaining)
                     except subprocess.TimeoutExpired as error:
                         process.kill()
                         process.communicate()
@@ -475,6 +487,51 @@ def pdf_image_bounds(
         return tuple(tuple(PdfRect(*bounds) for bounds in page) for page in result)
     except (TypeError, ValueError) as error:
         raise PdfDocumentError("pdf_worker_invalid_output") from error
+
+
+def extract_pdf_table(
+    payload: bytes,
+    page_number: int,
+    *,
+    quad: tuple[float, ...],
+    allow_unruled: bool,
+    layout_settings: dict,
+    deadline: float,
+) -> dict:
+    """Extract one native table in the existing cancellable worker."""
+    return _native_pdf(
+        payload,
+        PdfNativeOperation.TABLE,
+        deadline=deadline,
+        page_number=page_number,
+        quad=quad,
+        allow_unruled=allow_unruled,
+        layout_settings=layout_settings,
+    )
+
+
+def render_pdf_preview(
+    payload: bytes,
+    page_number: int,
+    *,
+    quad: tuple[float, ...],
+    scale: float,
+    max_edge: int,
+    quality: int,
+    deadline: float,
+) -> bytes:
+    """Bound layout, crop and JPEG encoding by the caller's shared deadline."""
+    result = _native_pdf(
+        payload,
+        PdfNativeOperation.PREVIEW,
+        deadline=deadline,
+        page_number=page_number,
+        quad=quad,
+        scale=scale,
+        max_edge=max_edge,
+        quality=quality,
+    )
+    return base64.b64decode(result, validate=True)
 
 
 def render_pdf_page(

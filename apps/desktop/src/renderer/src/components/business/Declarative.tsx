@@ -7,7 +7,12 @@ import {
   ConversationChartContext,
   type ConversationChartProps,
 } from '../../../../../../../packages/ui/charts'
-import { OPENUI_SLOT, type ConversationDocument } from '../../../../../../../packages/ui/document'
+import {
+  OPENUI_SLOT,
+  type ConversationDocument,
+  type ConversationLayout,
+} from '../../../../../../../packages/ui/document'
+import { bindConversationLayout } from '../../../../../../../packages/ui/layout'
 import { validateEnvelope } from '../../../../../../../packages/ui/validation'
 import type { PublicComponentProps } from '../../contracts/components'
 import { conversationTheme, useConversationMode } from '../../design/conversation'
@@ -31,17 +36,31 @@ function ConversationChart(props: ConversationChartProps): React.JSX.Element {
   )
 }
 
-function DeclarativeContent(props: PublicComponentProps): React.JSX.Element {
+export function DeclarativeContent({
+  data,
+  layout,
+}: {
+  data: Record<string, unknown>
+  layout?: ConversationLayout
+}): React.JSX.Element {
   const { t } = useTranslation('skills')
   const mode = useConversationMode()
   const errorLabel = t('plugin.conversationContentFailed')
   const description = useMemo<ConversationDocument | null>(() => {
     try {
-      return validateEnvelope(props.data.document ?? props.data)
+      return validateEnvelope(
+        layout
+          ? bindConversationLayout(
+              layout,
+              data,
+              Object.keys(registeredConversationLibrary.components)
+            )
+          : (data.document ?? data)
+      )
     } catch {
       return null
     }
-  }, [props.data])
+  }, [data, layout])
   if (!description) return <p role="alert">{errorLabel}</p>
   return (
     <ConversationChartContext.Provider value={ConversationChart}>

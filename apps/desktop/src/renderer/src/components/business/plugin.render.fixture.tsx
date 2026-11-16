@@ -739,6 +739,47 @@ function Fixture() {
         <p data-testid="external-selection">{String(selected)}</p>
       </>
     )
+  if (mode === 'fixed-openui') {
+    const definition: PluginComponent = {
+      id: 'comparison',
+      slot: 'fixed.comparison',
+      preview: 'comparison.json',
+      actions: [],
+      openui: {
+        component: 'Conversation',
+        args: [
+          [
+            {
+              component: 'Table',
+              args: [
+                [
+                  { component: 'Col', args: ['Previous', { field: 'previous' }] },
+                  { component: 'Col', args: ['Current', { field: 'current' }] },
+                ],
+              ],
+            },
+          ],
+        ],
+      },
+    }
+    return (
+      <PluginInteraction
+        reference={{ plugin: 'fixed', component: definition.id, fingerprint: 'fixed-v1' }}
+        previewMount={{
+          descriptor: { ...mount.descriptor, id: 'fixed', components: [definition] },
+          fingerprint: 'fixed-v1',
+          scenarios: {},
+          frames: {},
+        }}
+        status="resolved"
+        data={{
+          previous: ['10 days'],
+          current: [new URLSearchParams(location.search).get('current')],
+        }}
+        onAction={() => undefined}
+      />
+    )
+  }
   if (mode === 'declarative') {
     return (
       <RegisteredContent

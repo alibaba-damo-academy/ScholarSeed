@@ -329,7 +329,10 @@ export function SentReferenceAttachment({
         <HoverCardTrigger asChild>{attachment}</HoverCardTrigger>
       )}
       {variant === 'annotation' ? (
-        <HoverCardContent className="!w-[var(--vds-assistant-notes-width)] !max-w-[var(--vds-assistant-notes-max-width)] overflow-hidden !rounded-[var(--vds-radius-6)] !border-0 !bg-[var(--vds-surface-raised)] !p-0 !shadow-[var(--vds-shadow-2-center)]">
+        <HoverCardContent
+          hosted
+          className="!w-[var(--vds-assistant-notes-width)] !max-w-[var(--vds-assistant-notes-max-width)] overflow-hidden !rounded-[var(--vds-radius-6)] !border-0 !bg-[var(--vds-surface-raised)] !p-0 !shadow-[var(--vds-shadow-2-center)]"
+        >
           {details}
         </HoverCardContent>
       ) : description !== undefined ? (

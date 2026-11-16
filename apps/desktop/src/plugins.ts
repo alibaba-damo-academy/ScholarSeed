@@ -1,3 +1,5 @@
+import type { ConversationLayout } from '../../../packages/ui/document'
+
 export const PLUGIN_SCHEME = 'scholarseed-plugin'
 export const PLUGIN_SCHEME_PRIVILEGES = {
   standard: true,
@@ -58,6 +60,7 @@ export interface PluginComponent {
   id: string
   slot?: string | null
   entry?: string
+  openui?: ConversationLayout
   public?: boolean
   workbench?: boolean
   preview: string

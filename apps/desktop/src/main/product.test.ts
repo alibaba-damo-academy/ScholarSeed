@@ -108,6 +108,7 @@ test('advanced browser settings default to hidden without changing browser avail
     const { features } = parseDesktopProductConfig(manifest, platform)
     assert.equal(features.browser, true)
     assert.equal(features.browserAdvancedSettings, false)
+    assert.equal(features.browserAgentNavigation, true)
     const enabled = { ...manifest.features, browser_advanced_settings: true }
     assert.equal(
       parseDesktopProductConfig({ ...manifest, features: enabled }, platform).features

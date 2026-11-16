@@ -300,7 +300,10 @@ export async function createAgentTransport(
   actionActions?: BrowserActionActions,
   historyActions?: BrowserHistoryActions,
   searchAction?: BrowserSearchAction,
-  { advancedEnabled = true }: { advancedEnabled?: boolean } = {}
+  {
+    advancedEnabled = true,
+    navigationEnabled = false,
+  }: { advancedEnabled?: boolean; navigationEnabled?: boolean } = {}
 ): Promise<AgentTransport> {
   const key = randomBytes(32).toString('hex')
   const scopes = new Map<string, ScopeRecord>()
@@ -398,12 +401,14 @@ export async function createAgentTransport(
     const cancellingHistory = action === 'history/cancel'
     const completingHistory = action === 'history/complete'
     const searching = action === 'search'
-    if (!advancedEnabled && !control && !searching) {
+    const opening = action === OPEN_ACTION
+    const closingTab = action === CLOSE_ACTION
+    const navigation =
+      opening || closingTab || preparingNavigate || executingNavigate || cancellingNavigate
+    if (!advancedEnabled && !control && !searching && !(navigationEnabled && navigation)) {
       respond(response, listDenied.status, listDenied.body)
       return
     }
-    const opening = action === OPEN_ACTION
-    const closingTab = action === CLOSE_ACTION
     const effectful = executingNavigate || executingAction || closingTab
     const readAction =
       snapshotting || reading || effectful || executingHistory || searching || opening || closingTab

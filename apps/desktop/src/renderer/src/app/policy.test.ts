@@ -2,6 +2,18 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createAvailabilityPolicy } from './policy.ts'
 
+test('navigation-only mode exposes only navigation approvals', () => {
+  const policy = createAvailabilityPolicy(true, false, true)
+  assert.equal(policy.hilAvailable('browser_approval', 'navigate'), true)
+  assert.equal(policy.hilAvailable('browser_approval', 'read'), false)
+  assert.equal(policy.hilAvailable('browser_approval', 'interact'), false)
+  assert.equal(policy.hilAvailable('browser_history_approval'), false)
+  assert.equal(
+    createAvailabilityPolicy(false, false, true).hilAvailable('browser_approval', 'navigate'),
+    false
+  )
+})
+
 test('product availability rejects browser routes, tabs, settings and old restore pointers', () => {
   const policy = createAvailabilityPolicy(false)
   const tabs = [
