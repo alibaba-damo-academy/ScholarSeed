@@ -274,95 +274,55 @@ class LiteratureResultContract(unittest.TestCase):
         skill = PRECISE_SKILL.read_text(encoding="utf-8")
         prompt = HOST_PROMPT.read_text(encoding="utf-8")
 
-        self.assertIn("Before starting — mandatory confirmation", skill)
-        self.assertIn("The product shows and localizes the confirmation card and waits", skill)
+        self.assertIn("Before starting", skill)
         self.assertIn(
             "Intent clarification is not authorization to start, download,",
             RESEARCH_GUIDANCE_SKILL.read_text(encoding="utf-8"),
         )
         self.assertIn(
-            "Host context never bypasses the mandatory start confirmation", " ".join(skill.split())
+            "Starting does not confirm the research scope or authorize auto mode",
+            " ".join(skill.split()),
         )
         self.assertNotIn("skip its additional clarification and confirmation", prompt)
 
-    def test_precise_start_confirmation_uses_the_product_question_card(self) -> None:
+    def test_literature_skill_package_and_plugin_versions_match(self) -> None:
+        for directory in (
+            PRECISE_SKILL.parent,
+            PRECISE_SKILL.parent.parent / "scholarseed-product-operations",
+        ):
+            with self.subTest(skill=directory.name):
+                version = (directory / "VERSION").read_text(encoding="utf-8").strip()
+                descriptor = directory / ".scholarseed-plugin.json"
+                self.assertEqual(
+                    json.loads(descriptor.read_text(encoding="utf-8"))["version"], version
+                )
+
+    def test_precise_start_notice_does_not_require_confirmation(self) -> None:
         skill = PRECISE_SKILL.read_text(encoding="utf-8")
-        confirmation = skill.split("## Before starting — mandatory confirmation", 1)[1]
-        confirmation = " ".join(confirmation.split("## Complete workflow", 1)[0].split())
+        startup = skill.split("## Before starting", 1)[1].split("## Complete workflow", 1)[0]
+        notice = " ".join(startup.split())
 
         for requirement in (
-            '"operation":"confirm-search-start"',
-            '"request":{}',
-            'disposition="start"',
-            "Do not execute `stage.py start`",
+            "Before initializing the run or asking a scope question",
+            "user-visible duration notice",
+            "may take a while",
+            "without waiting for a reply",
+            "A large requested set may take longer",
+            "cross-study comparison or full-text evidence",
         ):
-            self.assertIn(requirement, confirmation)
-        self.assertNotIn("request_user_input", confirmation)
+            self.assertIn(requirement, notice)
+        self.assertNotIn("confirm-search-start", startup)
+        self.assertNotIn("request_user_input", startup)
 
-    def test_precise_search_start_uses_the_durable_manual_choice(self) -> None:
+    def test_precise_search_start_endpoint_is_not_available(self) -> None:
         app = FastAPI()
-        activities = Activities()
-        turn_activity = activities.enter(ActivityDomain.TURN)
-        self.addCleanup(turn_activity.close)
-        answer = {}
-
-        async def request_input(question, *, turn_id, activity):
-            self.assertEqual(turn_id, "native-turn")
-            self.assertIs(activity, turn_activity)
-            self.assertEqual(question["presentation"], {"kind": "precise-search-start"})
-            self.assertTrue(question["requires_user_confirmation"])
-            self.assertEqual(
-                [option["label"] for option in question["options"]], ["start", "defer"]
-            )
-            return {**answer, "answers": {question["id"]: answer.get("choice", "")}}
-
-        ask = AsyncMock(side_effect=request_input)
-        live = SimpleNamespace(
-            id="s1",
-            bridge_token="private",
-            publication_turn_id="native-turn",
-            bridge_activity=turn_activity,
-            turn_activity=turn_activity,
-            interactions=SimpleNamespace(request_product_input=ask),
-        )
-        sessions = SimpleNamespace(bridge_caller=lambda key: live if key == live.id else None)
+        sessions = SimpleNamespace(bridge_caller=lambda _session_id: None)
         register_result_routes(
-            app, sessions, SimpleNamespace(), SimpleNamespace(), activities=activities
+            app, sessions, SimpleNamespace(), SimpleNamespace(), activities=Activities()
         )
-        headers = {BRIDGE_SESSION_HEADER: live.id, BRIDGE_TOKEN_HEADER: live.bridge_token}
-        route = "/api/internal/bridge/literature/confirm-search-start"
         with TestClient(app) as client:
-            self.assertEqual(client.post(route, json={}).status_code, 403)
-            self.assertEqual(
-                client.post(route, headers=headers, json={"label": "Start"}).status_code, 400
-            )
-            ask.assert_not_awaited()
-            for decision, expected in (
-                ({"choice": "start", "decision_source": "user_explicit"}, "start"),
-                ({"choice": "defer", "decision_source": "user_explicit"}, "defer"),
-                ({"choice": "Start search", "decision_source": "user_explicit"}, "defer"),
-                ({"choice": "start", "decision_source": "auto_delegated"}, "defer"),
-                (
-                    {"choice": "start", "decision_source": "user_explicit", "cancelled": True},
-                    "defer",
-                ),
-                (
-                    {"choice": "start", "decision_source": "user_explicit", "timed_out": True},
-                    "defer",
-                ),
-                (
-                    {"choice": "start", "decision_source": "user_explicit", "free_text": "wait"},
-                    "defer",
-                ),
-                ({}, "defer"),
-            ):
-                with self.subTest(decision=decision):
-                    answer.clear()
-                    answer.update(decision)
-                    response = client.post(route, headers=headers, json={})
-                    self.assertEqual(response.status_code, 200, response.text)
-                    self.assertEqual(response.json(), {"ok": True, "disposition": expected})
-        self.assertEqual(len({call.args[0]["id"] for call in ask.await_args_list}), 1)
+            response = client.post("/api/internal/bridge/literature/confirm-search-start", json={})
+        self.assertEqual(response.status_code, 404)
 
     def test_precise_skill_owns_search_publication_and_authorization_recovery(self) -> None:
         skill = PRECISE_SKILL.read_text(encoding="utf-8")
@@ -377,7 +337,9 @@ class LiteratureResultContract(unittest.TestCase):
         clarification = (PRECISE_SKILL.parent / "modules/intent/clarification.md").read_text(
             encoding="utf-8"
         )
-        self.assertIn("Explicit auto mode does not waive that confirmation", clarification)
+        self.assertIn("not whether the user approves the whole scope", clarification)
+        self.assertIn("confirmation_source: request_clear", clarification)
+        self.assertIn("state the understood scope in a user-visible message", clarification)
         self.assertIn("one 1–3 question card", clarification)
         self.assertIn("at most one conflict-resolution follow-up", clarification)
         self.assertNotIn("Ask one question per turn", clarification)

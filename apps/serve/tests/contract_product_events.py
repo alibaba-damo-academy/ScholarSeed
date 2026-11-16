@@ -82,6 +82,44 @@ def register_session(database: Path, session_id: str = SESSION_ID) -> SessionCat
 
 
 class ProductEventContract(unittest.TestCase):
+    def test_reply_times_share_one_readonly_snapshot_and_preserve_physical_forms(self) -> None:
+        unanswered = "unanswered"
+        register_session(self.database, unanswered)
+        self.append("inline-answer")
+        with self.events.transaction() as connection:
+            connection.execute("UPDATE product_event SET kind='message_delta',created_at=19")
+        for index, (text, timestamp) in enumerate(
+            (("answer", 7), ("\u2003\t\n", 50), ("later sequence", 4))
+        ):
+            self.events.append(
+                session_id=SESSION_ID,
+                runtime_id=RUNTIME_ID,
+                vendor_thread_id=VENDOR_THREAD_ID,
+                vendor_turn_id="turn",
+                vendor_item_id="item",
+                kind=PRODUCT_EVENT_MESSAGE_DELTA,
+                payload={"delta": text},
+                idempotency_key=f"reply-{index}",
+                created_at=float(timestamp),
+            )
+        for physical_form in ("journal", "inline"):
+            with self.subTest(physical_form=physical_form):
+                with (
+                    patch.object(
+                        self.events, "_connect", side_effect=AssertionError("write connection")
+                    ),
+                    patch.object(event_storage, "reader", wraps=event_storage.reader) as readers,
+                ):
+                    result = self.events.last_agent_reply_times(
+                        (SESSION_ID, unanswered, SESSION_ID)
+                    )
+                self.assertEqual(result, {SESSION_ID: 19.0, unanswered: None})
+                self.assertEqual(readers.call_count, 1)
+            self._inline_events()
+        self.assertEqual(self.events.last_agent_reply_at(SESSION_ID), 19.0)
+        with patch.object(event_storage, "reader", side_effect=AssertionError("empty page opened")):
+            self.assertEqual(self.events.last_agent_reply_times(()), {})
+
     def test_user_send_time_uses_first_submission_after_binding_and_reopen(self) -> None:
         for binding, created_at in (("pending", 10.0), ("bound", 20.0)):
             self.events.append(

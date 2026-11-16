@@ -283,6 +283,7 @@ import { runDrive } from './drive'
 import { runWorkbenchCheck } from './workbench'
 import { runPackageCheck } from './packagecheck'
 import { installContentSecurityPolicy, mainWindowContentSecurityPolicy } from './csp'
+import { installNetworkDiagnostics } from './latency'
 import { finishHeadlessCheck } from './headless'
 import {
   loadRendererPreferences,
@@ -4634,6 +4635,12 @@ async function createWindow(
   // instead open them in the system browser.
   installExternalNavigationGuard(mainWindow)
   installContentSecurityPolicy(mainWindow, mainWindowContentSecurityPolicy(launchAccountBase))
+  const disposeNetworkDiagnostics = installNetworkDiagnostics(
+    mainWindow.webContents,
+    () => apiBase,
+    (message) => logWindowLifecycle(`${message}\n`)
+  )
+  mainWindow.once('closed', disposeNetworkDiagnostics)
 
   const handoff = createStartupWindowHandoff(
     () =>

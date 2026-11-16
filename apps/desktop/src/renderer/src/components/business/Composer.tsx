@@ -1050,6 +1050,7 @@ export function Composer({
       application === 'interrupt_continue'
         ? {
             clientUserMessageId: crypto.randomUUID(),
+            locale: language,
             ...(state.aiPanel.sessionId === sidNow && state.aiPanel.contextState === 'ready'
               ? { assistantContextRevision: state.aiPanel.revision }
               : {}),

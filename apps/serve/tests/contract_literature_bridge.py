@@ -1097,7 +1097,6 @@ class LiteratureBridgeContracts(unittest.TestCase):
                 "acquire",
                 "import",
                 "receipt",
-                "confirm-search-start",
             }
             | set(TAXONOMY_REQUESTS),
         )

@@ -12,12 +12,13 @@ import sqlite3
 import time
 import uuid
 from collections.abc import AsyncIterator
-from contextlib import AsyncExitStack, asynccontextmanager
-from dataclasses import asdict, dataclass, is_dataclass
-from enum import Enum
+from contextlib import AsyncExitStack, asynccontextmanager, contextmanager, nullcontext
+from dataclasses import asdict, dataclass, field, is_dataclass
+from enum import Enum, StrEnum
+from functools import partial
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Mapping
+from typing import Any, Awaitable, Callable, Iterator, Mapping
 
 from scholarseed_runtime.contract import (
     AppliedState,
@@ -239,6 +240,7 @@ PREDICTION_PROMPT = (
     "Do not use tools or perform actions. Do not introduce permissions or commitments. "
     "Use at most 500 characters. Return no text if there is no useful next message."
 )
+HTTP_ACCEPTED = 202
 HTTP_BAD_REQUEST = 400
 HTTP_NOT_FOUND = 404
 HTTP_CONFLICT = 409
@@ -251,6 +253,8 @@ SESSION_OPEN_TIMING_EVENT = "session_open_timing"
 # INFO 放行名单内 (root=WARNING 会丢弃其 INFO, 见 cli/serve.py 的 namespace setLevel), 用独立
 # logger 才能保证埋点在生产日志里必达。
 SESSION_OPEN_TIMING_LOGGER = logging.getLogger(__name__).getChild("open_timing")
+SESSION_LIST_TIMING_LOGGER = logging.getLogger(__name__).getChild("list_timing")
+SESSION_LIST_TIMING_MILLISECONDS = 1000
 
 
 RECOVERY_CHECK_SETTLEMENT_WAIT_SECONDS = 3.0
@@ -271,9 +275,10 @@ SESSION_PERMISSION_STOP_PENDING = "session_permission_stop_pending"
 SESSION_PERMISSION_CONTINUATION_STALE = "session_permission_continuation_stale"
 SESSION_PERMISSION_STOP_TIMEOUT_SECONDS = 30.0
 SESSION_PERMISSION_STOP_POLL_SECONDS = 0.1
-SESSION_PERMISSION_CONTINUATION_TEXT = (
-    "继续刚才中断的任务。先核对已完成操作和产物，不重复已产生副作用的步骤。"
-)
+SESSION_PERMISSION_CONTINUATION_TEXT = {
+    "zh": "继续刚才中断的任务。先核对已完成操作和产物，不重复已产生副作用的步骤。",
+    "en": "Continue the interrupted task. First check completed actions and outputs; do not repeat steps that have already caused side effects.",
+}
 
 
 class PermissionApplication(str, Enum):
@@ -425,6 +430,86 @@ class SessionListEntry:
     state: SessionListState
     match: dict[str, Any] | None
     last_agent_reply_at: float | None
+
+
+class SessionListPhase(StrEnum):
+    CATALOG = "catalog"
+    SEARCH = "search"
+    STATES = "states"
+    REPLIES = "replies"
+    RECOVERY = "recovery"
+    PROJECTION = "projection"
+
+
+class SessionListTimingEvent(StrEnum):
+    WORKER_FINISHED = "worker_finished"
+    FINISHED = "finished"
+
+
+@dataclass
+class SessionListTiming:
+    request_id: str | None = None
+    client_request_id: str | None = None
+    submitted_at: float = field(default_factory=time.perf_counter)
+    queue_ms: float | None = None
+    worker_completed: bool = False
+    phases: dict[SessionListPhase, float] = field(default_factory=dict)
+    counts: dict[str, int] = field(default_factory=dict)
+
+    @classmethod
+    def create(
+        cls, request_id: str | None, client_request_id: str | None
+    ) -> SessionListTiming | None:
+        level = logging.INFO if client_request_id is not None else logging.DEBUG
+        if not SESSION_LIST_TIMING_LOGGER.isEnabledFor(level):
+            return None
+        return cls(request_id, client_request_id)
+
+    @contextmanager
+    def measure(self, phase: SessionListPhase) -> Iterator[None]:
+        started = time.perf_counter()
+        try:
+            yield
+        finally:
+            elapsed = (time.perf_counter() - started) * SESSION_LIST_TIMING_MILLISECONDS
+            self.phases[phase] = self.phases.get(phase, 0.0) + elapsed
+
+    def run(self, operation: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        self.queue_ms = (time.perf_counter() - self.submitted_at) * SESSION_LIST_TIMING_MILLISECONDS
+        error_type = ""
+        try:
+            return operation(*args, **kwargs)
+        except BaseException as error:
+            error_type = type(error).__name__
+            raise
+        finally:
+            self.worker_completed = True
+            self.report(SessionListTimingEvent.WORKER_FINISHED, error_type)
+
+    def report(self, event: SessionListTimingEvent, error_type: str = "") -> None:
+        SESSION_LIST_TIMING_LOGGER.log(
+            logging.INFO if self.client_request_id is not None else logging.DEBUG,
+            json.dumps(
+                {
+                    "event": event.value,
+                    "request_id": self.request_id,
+                    "client_request_id": self.client_request_id,
+                    "elapsed_ms": round(
+                        (time.perf_counter() - self.submitted_at)
+                        * SESSION_LIST_TIMING_MILLISECONDS,
+                        3,
+                    ),
+                    "queue_ms": self.queue_ms,
+                    "worker_completed": self.worker_completed,
+                    "phases_ms": {
+                        phase.value: round(value, 3) for phase, value in self.phases.copy().items()
+                    },
+                    "counts": self.counts.copy(),
+                    "error_type": error_type,
+                },
+                separators=(",", ":"),
+            ),
+        )
 
 
 class SessionService:
@@ -1723,42 +1808,55 @@ class SessionService:
         cursor: str = "",
         archived: bool = False,
         include_last_agent_reply: bool = False,
+        timing: SessionListTiming | None = None,
     ) -> dict[str, Any]:
-        entries, total, next_cursor = await self._activities.observe_thread(
-            self._read_list_page,
-            limit,
-            principal,
-            scope=scope,
-            project_path=project_path,
-            query=query,
-            history=history,
-            cursor=cursor,
-            archived=archived,
-            include_last_agent_reply=include_last_agent_reply,
-        )
-        sessions = []
-        for entry in entries:
-            record, state = entry.record, entry.state
-            row = self._list_row(record, state)
-            if entry.match is not None:
-                row["match"] = entry.match
-            if include_last_agent_reply:
-                row["last_agent_reply_at"] = entry.last_agent_reply_at
-            if row["recovery_blocked"] and state.pending is not None:
-                row.update(
-                    await self._activities.observe_thread(
-                        self._events.recovery_snapshot,
-                        record.session_id,
-                        state.pending.native_turn_id,
-                    )
-                )
-            sessions.append(row)
-        return {
-            "sessions": sessions,
-            "total": total,
-            "runtime_id": self._runtime.runtime_id,
-            "next_cursor": next_cursor,
-        }
+        error_type = ""
+        operation = partial(timing.run, self._read_list_page) if timing else self._read_list_page
+        try:
+            entries, total, next_cursor = await self._activities.observe_thread(
+                operation,
+                limit,
+                principal,
+                scope=scope,
+                project_path=project_path,
+                query=query,
+                history=history,
+                cursor=cursor,
+                archived=archived,
+                include_last_agent_reply=include_last_agent_reply,
+                timing=timing,
+            )
+            sessions = []
+            for entry in entries:
+                record, state = entry.record, entry.state
+                with timing.measure(SessionListPhase.PROJECTION) if timing else nullcontext():
+                    row = self._list_row(record, state)
+                    if entry.match is not None:
+                        row["match"] = entry.match
+                    if include_last_agent_reply:
+                        row["last_agent_reply_at"] = entry.last_agent_reply_at
+                if row["recovery_blocked"] and state.pending is not None:
+                    with timing.measure(SessionListPhase.RECOVERY) if timing else nullcontext():
+                        row.update(
+                            await self._activities.observe_thread(
+                                self._events.recovery_snapshot,
+                                record.session_id,
+                                state.pending.native_turn_id,
+                            )
+                        )
+                sessions.append(row)
+            return {
+                "sessions": sessions,
+                "total": total,
+                "runtime_id": self._runtime.runtime_id,
+                "next_cursor": next_cursor,
+            }
+        except BaseException as error:
+            error_type = type(error).__name__
+            raise
+        finally:
+            if timing:
+                timing.report(SessionListTimingEvent.FINISHED, error_type)
 
     def _read_list_page(
         self,
@@ -1772,6 +1870,7 @@ class SessionService:
         cursor: str,
         archived: bool,
         include_last_agent_reply: bool,
+        timing: SessionListTiming | None = None,
     ) -> tuple[builtins.list[SessionListEntry], int, str | None]:
         bounded = min(SESSION_LIST_MAX_LIMIT, max(1, int(limit or SESSION_LIST_DEFAULT_LIMIT)))
         normalized_query = str(query or "").strip()[:SESSION_SEARCH_QUERY_MAX_LENGTH]
@@ -1789,45 +1888,57 @@ class SessionService:
                 raise SessionAccessError("project not found")
             normalized_project = str(project)
         scan_limit = SESSION_LIST_MAX_LIMIT if normalized_query else bounded
-        rows = self._access.listed(
-            principal,
-            runtime_id=self._runtime.runtime_id,
-            scope=scope,
-            project_path=normalized_project,
-            limit=scan_limit + 1,
-            after=parse_session_list_cursor(cursor),
-            archived=archived,
-        )
+        with timing.measure(SessionListPhase.CATALOG) if timing else nullcontext():
+            rows = self._access.listed(
+                principal,
+                runtime_id=self._runtime.runtime_id,
+                scope=scope,
+                project_path=normalized_project,
+                limit=scan_limit + 1,
+                after=parse_session_list_cursor(cursor),
+                archived=archived,
+            )
         selected = []
         scanned = 0
         for record in rows[:scan_limit]:
             scanned += 1
-            match = (
-                self._search_match(
-                    record,
-                    normalized_query,
-                    history or self._access.portable_history,
+            with timing.measure(SessionListPhase.SEARCH) if timing else nullcontext():
+                match = (
+                    self._search_match(
+                        record,
+                        normalized_query,
+                        history or self._access.portable_history,
+                    )
+                    if normalized_query
+                    else None
                 )
-                if normalized_query
-                else None
-            )
             if normalized_query and match is None:
                 continue
             selected.append((record, match))
             if len(selected) >= bounded:
                 break
         session_ids = [record.session_id for record, _ in selected]
-        states = self._access.list_states(session_ids, default_model_id=RETIRED_NATIVE_MODEL_KEY)
+        with timing.measure(SessionListPhase.STATES) if timing else nullcontext():
+            states = self._access.list_states(
+                session_ids, default_model_id=RETIRED_NATIVE_MODEL_KEY
+            )
+        with timing.measure(SessionListPhase.REPLIES) if timing else nullcontext():
+            reply_times = (
+                self._events.last_agent_reply_times(session_ids) if include_last_agent_reply else {}
+            )
+        if timing:
+            timing.counts.update(
+                catalog_rows=len(rows),
+                scanned_rows=scanned,
+                selected_rows=len(selected),
+                reply_sessions=len(reply_times),
+            )
         entries = [
             SessionListEntry(
                 record,
                 states[record.session_id],
                 match,
-                (
-                    self._events.last_agent_reply_at(record.session_id)
-                    if include_last_agent_reply
-                    else None
-                ),
+                reply_times.get(record.session_id),
             )
             for record, match in selected
         ]
@@ -4032,8 +4143,12 @@ class SessionService:
             self._settings.set_runtime_model(target)
         if apply_now and live is not None:
             try:
-                await self.prepare_turn(live, purpose=ResourcePurpose.SESSION)
+                await self._prepare_turn(live, purpose=ResourcePurpose.SESSION)
             except Exception as error:
+                conflict = getattr(error, "safe_error", "") == RESOURCE_HOST_CONFIGURATION_CONFLICT
+                if conflict and self._schedule_reconfiguration(live):
+                    # The drain can finish only after this request releases its activity lease.
+                    return {"ok": True, **self.model(session_id)}, HTTP_ACCEPTED
                 return (
                     {
                         **_runtime_failure_payload(error, operation="model_switch"),
@@ -4149,20 +4264,21 @@ class SessionService:
                 self._schedule_reconfiguration(live)
             raise
 
-    def _schedule_reconfiguration(self, live: LiveSession) -> None:
+    def _schedule_reconfiguration(self, live: LiveSession) -> bool:
         try:
             if not self._runtime.reconfiguration_supported:
-                return
+                return False
             record = self._access.get(live.id)
             if record is None:
-                return
-            self._reconfigure_host(
+                return False
+            operation = self._reconfigure_host(
                 live.id,
                 SessionPrincipal(record.principal_id),
                 actor_id=live.user_id,
                 request_id=str(uuid.uuid4()),
                 model_id=self.model(live.id)["model_id"],
             )
+            return operation["state"] == CommandState.ACCEPTED.value
         except Exception as error:
             self._logger.warning(
                 "runtime_host_reconfiguration_not_scheduled session_id=%s failure_type=%s code=%s",
@@ -4170,6 +4286,7 @@ class SessionService:
                 type(error).__name__,
                 getattr(error, "safe_error", "") or RESOURCE_HOST_CONTEXT_REQUIRED,
             )
+            return False
 
     async def _prepare_turn(
         self,

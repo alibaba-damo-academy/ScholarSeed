@@ -54,12 +54,32 @@ An archive request with `stop_running=false` permits direct archival only after 
 <a id="http-diagnostic-correlation--http-诊断关联"></a>
 ## HTTP Diagnostic Correlation
 
-During feedback recording, Desktop adds an opaque, per-fetch diagnostic ID only
-to its configured Serve API. Serve validates the ID and records it separately
+Desktop automatically adds an opaque diagnostic ID to session-catalog GETs.
+Feedback recording also instruments other fetches to the configured Serve API
+and preserves an existing valid ID. Serve validates the ID and records it separately
 from its own request ID; it is never an authentication or admission capability.
 Detailed Resource Timing is permitted only for such requests whose response
-already grants the same origin CORS access. Recording may therefore introduce a
+already grants the same origin CORS access. The diagnostic header can introduce a
 CORS preflight; timing gaps must not be labelled pure connection queuing.
+
+Valid correlated requests retain received, headers, finished and catalog-worker
+phase records at INFO. Uncorrelated successes remain DEBUG-only. Desktop's
+`[http-latency]` records join renderer fetch, headers, body-start, JSON and catalog
+outcomes to native network send, response, completion and error stages using
+`client_request_id`. Native observation is limited to the main renderer, configured
+backend origin and exact catalog route. It retains at most 128 requests and leaves
+headers, network policy and CSP callbacks untouched. Disposal or eviction leaves
+the network outcome unknown.
+
+The renderer captures event times immediately and batches logs on decode or failure.
+Native logs include the response-start timestamp in the terminal record, avoiding a
+synchronous disk write for each phase. A process crash can leave renderer stages
+unflushed. These records omit queries, user paths, headers, bodies and exception
+messages. Use event timestamps to align processes and monotonic durations within
+each process. Native records include the previous diagnostic write duration for the
+same request. Log writes can overlap network or server work, so their duration
+cannot simply be added or subtracted. Missing stages have unknown timing. The
+instrumentation leaves the cause and repair of the Windows cold-entry timeout unverified.
 
 With DEBUG logging enabled, the outer ASGI lifespan owns a loop heartbeat and a
 bounded watchdog thread. A stall records an episode ID and at most twelve frame

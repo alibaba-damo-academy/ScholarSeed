@@ -776,11 +776,35 @@ Diagnostic field definitions:
   absolute elapsed time since ingress. Do not conflate them. The point at which a stall triggers a warning depends on sampling phase; absence of `loop_lag`
   does not prove the block was under 500 ms, and `delay + interval` is not an exact total blocking duration.
 
-During feedback recording, `x-scholarseed-diagnostic-id` is added only to fetch requests for a configured Serve API, with a random
-32-character lowercase hexadecimal value. Serve rejects duplicates and noncanonical values and correlates it to its own
-`request_id` using `client_request_id`. Ordinary unrecorded requests and external URLs do not receive this header; the ID grants no authentication or admission rights.
+Session-catalog GETs receive `x-scholarseed-diagnostic-id` by default. Feedback recording also covers other fetches to the configured Serve API and preserves any valid ID already set by the API client.
+The ID is a random 32-character lowercase hexadecimal value. Serve rejects duplicates and noncanonical values and correlates it to its own
+`request_id` using `client_request_id`. Other unrecorded requests and external URLs do not receive this header. The ID grants no authentication or admission rights.
 The recording JSON's `correlationId` uses the same value as the Renderer `[http-latency]` log; logs contain no URL,
 request headers, body, or exception text. XHR and requests initiated by Main are outside this client-side correlation scope.
+
+Catalog diagnostics work with recording off. `app/api/timing.ts` captures `fetch_started`, `headers_received`,
+`body_started`, `body_decoded` or `body_failed`, and `catalog_ready` or `catalog_failed`.
+`main/latency.ts` observes `onSendHeaders`, `onResponseStarted`, `onCompleted` and `onErrorOccurred` for the
+main window's configured backend catalog route. It records the shared ID and the native request ID.
+It leaves `onBeforeRequest`, `onBeforeSendHeaders` and `onHeadersReceived` to their existing owners and
+does not change requests, responses, CSP or authorization. The observer owns these stages for each Session
+and disconnects when its window closes. Do not register another listener for the same stages. It retains up to
+128 requests. Eviction or closure leaves the outcome unknown. Valid correlated HTTP and catalog-phase
+records are logged at INFO, while other successful requests stay at DEBUG. No global log-level change is needed.
+
+Use `client_request_id` to join renderer stages, native network events, the Serve `request_id` and catalog
+stages. Route and timestamp proximity alone cannot identify a request. Time between renderer invocation and
+native send can include preflight, connection and process scheduling. Time from native completion to JSON
+availability can include more than decoding. Use the payload's wall-clock `timestamp_ms` to align processes
+and monotonic `elapsed_ms` within a single process. Console prefixes can reflect receipt or write time.
+Missing stages are unobserved, and the diagnostic data does not establish that a timeout was fixed.
+
+`diagnostic_previous_write_ms` and `diagnostic_previous_write_event` describe the previous log write for the
+same request and are null on the first record. Logging can overlap network and server work. Keep that I/O
+separate from database timing and avoid simply adding or subtracting it. The renderer captures timestamps
+immediately, emits `stages` on decode or failure, and logs catalog readiness separately. Native send is logged
+immediately, while `response_started_*` is stored with completion or failure. A crash can leave renderer
+stages unflushed even though the request started.
 
 The recording probe uses a Resource Timing observer under an exclusive lease, retaining at most the latest 128 resource entries and
 128 pending match records. On release, it disconnects and clears them without modifying the browser's global buffer. It stores `timeOrigin`, fetch invocation/

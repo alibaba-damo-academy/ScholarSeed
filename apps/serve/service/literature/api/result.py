@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-from hashlib import sha256
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
@@ -24,11 +23,6 @@ from service.assistant.service.authorization import (
     task_authorization_policy,
 )
 from service.chat.api.bridge import bridge_caller, session_bridge_admission
-from service.chat.constants import (
-    PRODUCT_DECISION_SOURCE,
-    PRODUCT_DECISION_USER,
-    PRODUCT_INTERACTION_MANUAL,
-)
 from service.chat.persistence.catalog import (
     SessionAccessError,
     SessionCatalogStore,
@@ -91,13 +85,10 @@ from service.literature.service.review import (
 from service.literature.service.status import ResultStatusRequest, ResultStatusService
 from service.platform.activity import Activities, ActivityDomain, MaintenanceActive
 from service.platform.bridge import (
-    CONFIRM_SEARCH_START_ROUTE,
     LITERATURE_RESULT_ROUTE,
     ArtifactPublishFailure,
     DisplayCardContent,
     LiteratureResultPublish,
-    LiteratureSearchStart,
-    LiteratureSearchStartResult,
 )
 from service.platform.citations import PDF_INDEX_STATE
 from service.platform.context import FulltextBindingScope, ProductTaskType
@@ -108,9 +99,6 @@ FULLTEXT_HOLDINGS_ROUTE = (
 )
 HELD_ATTACHMENTS_ROUTE = "/api/sessions/{session_id}/literature/results/{card_id}/attachments/held"
 RESULT_NOT_FOUND = "literature_result_not_found"
-SEARCH_START_PRESENTATION = "precise-search-start"
-SEARCH_START: Literal["start"] = "start"
-SEARCH_DEFER: Literal["defer"] = "defer"
 SESSION_WORKDIR_UNAVAILABLE = "literature_session_workdir_unavailable"
 RESULT_REPORT_ROLE = "supporting"
 AGENTIC_CANDIDATES_CHECKPOINT = "candidates"
@@ -183,47 +171,6 @@ def register_result_routes(
     activities: Activities,
 ) -> APIRouter:
     router = APIRouter(dependencies=[Depends(session_bridge_admission(sessions, activities))])
-
-    @router.post(CONFIRM_SEARCH_START_ROUTE)
-    async def confirm_search_start(request: Request) -> JSONResponse:
-        live = bridge_caller(request, sessions)
-        if live is None or not (turn_id := live.publication_turn_id):
-            return JSONResponse({"ok": False, "error": "bridge_access_denied"}, HTTP_403_FORBIDDEN)
-        try:
-            LiteratureSearchStart.model_validate_json(await request.body())
-        except ValueError:
-            return JSONResponse(
-                {"ok": False, "error": "invalid_search_start_request"}, HTTP_400_BAD_REQUEST
-            )
-        if sessions.bridge_caller(live.id) is not live or live.publication_turn_id != turn_id:
-            return JSONResponse({"ok": False, "error": "bridge_access_denied"}, HTTP_403_FORBIDDEN)
-        identity = sha256(json.dumps([live.id, turn_id]).encode()).hexdigest()
-        request_id = f"{SEARCH_START_PRESENTATION}:{identity}"
-        decision = await live.interactions.request_product_input(
-            {
-                "id": request_id,
-                "header": "Confirm literature search",
-                "question": "Start the literature search?",
-                "options": [{"label": action} for action in (SEARCH_START, SEARCH_DEFER)],
-                "presentation": {"kind": SEARCH_START_PRESENTATION},
-                PRODUCT_INTERACTION_MANUAL: True,
-            },
-            turn_id=turn_id,
-            activity=live.bridge_activity,
-        )
-        start = (
-            sessions.bridge_caller(live.id) is live
-            and live.publication_turn_id == turn_id
-            and decision.get(PRODUCT_DECISION_SOURCE) == PRODUCT_DECISION_USER
-            and not decision.get("cancelled")
-            and not decision.get("timed_out")
-            and not decision.get("free_text")
-            and decision.get("answers") == {request_id: SEARCH_START}
-        )
-        result = LiteratureSearchStartResult(
-            ok=True, disposition=SEARCH_START if start else SEARCH_DEFER
-        )
-        return JSONResponse(result.model_dump())
 
     @router.post(LITERATURE_RESULT_ROUTE)
     async def publish_result(request: Request) -> JSONResponse:

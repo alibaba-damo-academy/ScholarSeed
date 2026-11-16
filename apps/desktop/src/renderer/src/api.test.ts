@@ -73,6 +73,37 @@ import {
   updateQueuedMessage,
 } from './api.ts'
 import { SKILL_CATALOG_CHANGED_EVENT } from '../../skills.ts'
+
+test('permission continuation sends the interface locale', async () => {
+  const previousFetch = globalThis.fetch
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: { scholarseed: { getApiBase: () => '' }, sessionStorage: modelSelectionStorage },
+  })
+  try {
+    for (const locale of ['zh', 'en']) {
+      globalThis.fetch = async (_input, init) => {
+        const body = JSON.parse(String(init?.body))
+        assert.equal(body.continuation_context.locale, locale)
+        return Response.json({ ok: true, mode: 'ask' })
+      }
+      assert.equal(
+        (
+          await setMode('session', 'ask', 'interrupt_continue', {
+            clientUserMessageId: 'message',
+            locale,
+          })
+        ).ok,
+        true
+      )
+    }
+  } finally {
+    globalThis.fetch = previousFetch
+    if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
+    else Reflect.deleteProperty(globalThis, 'window')
+  }
+})
 import { createModelSelectionGuard } from './modelselection.ts'
 
 const modelSelectionStorage: Storage = (() => {
@@ -2035,7 +2066,9 @@ test('session catalog failures retain safe route and phase evidence without chan
   const secret = 'private-path-token-and-response'
   let bridgeFailure = false
   flushApiDiagnostics()
-  console.info = (...values: unknown[]) => records.push(values.join(' '))
+  console.info = (...values: unknown[]) => {
+    if (values[0] === '[api-request]') records.push(values.join(' '))
+  }
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
     value: {
