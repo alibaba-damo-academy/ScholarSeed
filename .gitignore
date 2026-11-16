@@ -217,6 +217,7 @@ scholarseed-distribution/
 chimp.sh
 chimp.bat
 
-# 本地执行计划缓存；共享计划与工作记录正文归 work-records/。
+# Local execution plans and work records.
 /docs/superpowers/
+/work-records/
 /handoff.md
