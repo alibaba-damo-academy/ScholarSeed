@@ -1,13 +1,13 @@
 ---
 id: research-dev-cli-inventory
-title: "ops 开发工具现状与迁移台账"
+title: "ops Development Tooling Inventory and Migration Ledger"
 doc_type: research
 category: architecture
 status: draft
 date: 2026-10-23
 updated: 2026-10-26
 keywords: [cli, toolchain, monorepo, worktree, packaging, test-gate]
-summary: "记录开发脚本现状、需求分类、旧入口映射、隐含消费者及生命周期关联，为 ops CLI 技术设计与整体一次性切换提供依据。"
+summary: "Records the current state of development scripts, requirement classifications, mappings from legacy entry points, implicit consumers, and lifecycle relationships to inform the ops CLI technical design and the coordinated one-time migration."
 related: [proposal-dev-cli]
 code_refs:
   - "package.json"
@@ -24,749 +24,757 @@ code_refs:
   - ".gitlab-ci.yml"
 ---
 
-# ops 开发工具现状与迁移台账
+<a id="ops-开发工具现状与迁移台账"></a>
+# ops Development Tooling Inventory and Migration Ledger
 
-本页保留历史迁移审计。旧私有导出器及其投影测试已不属于当前公开质量集合；
-当前归属见[仓库与知识边界](repositories.md)，实际集合以 `scripts/ci/test.cjs` 为准。
+This page preserves the historical migration audit. The legacy private exporter and its projection tests are no longer part of the current public quality set;
+see [Repository and Knowledge Boundaries](repositories.md) for current ownership, and use `scripts/ci/test.cjs` as the source of truth for the actual set.
 
-## 1. 范围、基线与使用方式
+<a id="1-范围基线与使用方式"></a>
+## 1. Scope, Baseline, and How to Use This Page
 
-本页是独立的现状收集和迁移记录，不是现行CLI使用指南或架构规范。
-技术目标、命令树、模块职责、权限政策与验收边界仅以[概要设计](ops-cli.md)为真源。
+This page is a standalone inventory of the current state and migration record, not the current CLI user guide or architecture specification.
+The [overview design](ops-cli.md) is the sole source of truth for technical goals, command tree, module responsibilities, permission policies, and acceptance boundaries.
 
-事实基于本worktree源码基线 `92f949471`，收集日期为2026-10-23；
-覆盖根与Desktop package scripts、仓库工具、后端套件入口及相关CI/构建消费者。
-本轮为只读源码盘点，未运行产品、模型、安装、构建或发布，未依据日志判断使用频率。
-后续源码变化时先核当前实现，不将这份快照当作持续有效的执行保证。
+Facts are based on the source baseline `92f949471` in this worktree and were collected on 2026-10-23;
+coverage includes root and Desktop package scripts, repository tools, backend suite entry points, and related CI/build consumers.
+This was a read-only source inventory: no product, model, installation, build, or release was run, and usage frequency was not inferred from logs.
+When source changes later, verify the current implementation first; do not treat this snapshot as an enduring guarantee of executable behavior.
 
-第2节记录现状及影响；第3节的保留/合并/内部化/暂缓属于目标处置，
-第4、5节“目标”栏属于待实施映射，并非已可执行能力；第6节记录现有hook关系。
-台账不包含逐轮调查日志或原始运行证据，也不授予删除旧入口或迁移权限。
-实施者在整体切换任务中更新受影响的来源、消费者、验收状态与清理结果；已接受的
-技术机制变化同步更新概要设计，不在两处复制命令树或权限规范。
-保留/合并项是本次一次切换范围，不设旧公开别名兼容期；内部化项仍按生命周期或
-领域Owner调用。暂缓项明确排除本次，不是同一范围分批接入。以下分类与目标映射
-不改变上述交付方式；事实快照中的旧入口直到获准实施前仍是当前代码行为。
-目标根script统一命名为`ops`，推荐使用`pnpm ops`，由Node直接运行`scripts/ops-cli.cjs`；
-不设独立CLI目录、依赖包、bin或dist。现状列中的根`dev`、Desktop `dev`及predev等保留原名，不能把目标改名
-误写成基线已有行为。根旧公开`dev`在整体切换时移除，能力由`pnpm ops dev`承接。
-目标一级命令统一为pre/dev/ci/cd，不保留prepare/env/debug/quality/deliver/maintain等并行别名。
-本次范围随最新设计收敛：用户数据操作暂缓，CLI自身直接做源码契约与回归测试，不需编译或产物安装，原受控入口保持。
+Section 2 records the current state and its impact. The retain/merge/internalize/defer dispositions in Section 3 are target decisions;
+the “Target” columns in Sections 4 and 5 are mappings pending implementation, not executable capabilities; Section 6 records existing hook relationships.
+This ledger contains neither per-iteration investigation logs nor raw runtime evidence, and grants no authority to delete legacy entry points or migrate them.
+During the coordinated cutover, implementers update affected sources, consumers, acceptance status, and cleanup results. Accepted changes to technical mechanisms are also reflected in the overview design; do not duplicate the command tree or permission policy in both places.
+Items marked retain/merge are in scope for this one-time cutover, with no compatibility period for legacy public aliases. Internalized items continue to be invoked by lifecycle or domain Owners. Deferred items are explicitly excluded from this cutover; they are not staged rollouts within the same scope. The classifications and target mappings below do not change this delivery model; legacy entry points in the factual snapshot remain current code behavior until implementation is authorized.
+The target root script is named `ops`; `pnpm ops` is recommended and Node directly runs `scripts/ops-cli.cjs`.
+There is no separate CLI directory, dependency package, bin, or dist. Preserve names such as root `dev`, Desktop `dev`, and `predev` in the current-state columns; do not misstate target renames as baseline behavior. The legacy public root `dev` is removed in the coordinated cutover, with its capability provided by `pnpm ops dev`.
+The target top-level commands are `pre`/`dev`/`ci`/`cd`, with no parallel aliases such as `prepare`/`env`/`debug`/`quality`/`deliver`/`maintain`.
+The scope has been narrowed to match the latest design: user-data operations are deferred; the CLI itself directly runs source-contract and regression tests, without compilation or artifact installation; existing controlled entry points remain.
 
-## 2. 现状与问题证据
+<a id="2-现状与问题证据"></a>
+## 2. Current State and Evidence of Problems
 
-项目逐步积累了较多根 `scripts/`、Desktop局部脚本，以及根和子包package.json中的
-scripts。工具覆盖环境准备、开发启动、测试、规范检查、构建和交付，但用户面对的是
-文件路径、历史别名和不同包装层，缺少按“我现在要完成什么任务”组织的统一使用界面。
-本设计首先解决入口发现、语义辨别和职责收敛，不以“把脚本换个地方”或减少文件数为目标。
+The project has accumulated many root `scripts/`, Desktop-local scripts, and scripts in root and subpackage `package.json` files.
+The tools cover environment setup, development startup, testing, standards checks, builds, and delivery, but users encounter file paths, legacy aliases, and different wrapper layers, without a unified interface organized around “what task do I need to complete now?”
+This design first addresses discoverability of entry points, distinguishing their meaning, and consolidating responsibilities; moving scripts elsewhere or reducing the file count is not the goal.
 
-| 现状与依据 | 用户困惑或维护风险 | 需要解决的一般问题 |
+| Current state and evidence | User confusion or maintenance risk | General problem to solve |
 | --- | --- | --- |
-| 根和Desktop均有dev、test、docs:check等入口，但含义/准备范围不同 | 不清楚应该在哪个目录执行、是否会启动真实产品、是否包含前置步骤 | 对象、作用域与模式可见，统一定位目标worktree和执行cwd |
-| clean/distclean、test/desktop:test、多个release别名并存 | 用户需要记忆历史名称，维护者难判断哪些入口可以合并 | 合并真正同义入口，登记同次切换的旧消费者与清理目标 |
-| package:dist与package:distribution名称接近，依赖准备和外部调用契约不同 | 机械改名可能改变CI与交付行为 | 保留编排边界，固定smoke归共同的安装包构建器 |
-| workspace/desktop/toolchain及局部脚本构成多层准备和转发 | 参数、包管理器、进程和环境处理散落，多处变更容易遗漏消费者 | 编排职责唯一、公共执行能力复用、领域策略归原Owner |
-| 有用工具没有package alias，另有hook、库及退休脚本混在目录中 | 浏览目录不能直接知道哪些可以运行、哪些只是内部实现 | 统一能力登记与发现，不把每个文件变成一个公开命令 |
-| doctor、health、template、logs的名称不能完整表达效果 | 容易把下载/用户配置写入/模型费用误认成只读检查 | 帮助与执行前校验明确副作用、前置与权限，而非靠名称猜测 |
+| Root and Desktop both expose `dev`, `test`, `docs:check`, and similar entry points, but their meanings and setup scopes differ | Users do not know which directory to run them from, whether they start the real product, or whether they include prerequisites | Make target, scope, and mode visible; consistently locate the target worktree and execution cwd |
+| `clean`/`distclean`, `test`/`desktop:test`, and multiple release aliases coexist | Users must remember legacy names, and maintainers cannot easily tell which entry points can be merged | Merge genuinely equivalent entry points and record legacy consumers and cleanup targets for the same cutover |
+| `package:dist` and `package:distribution` have similar names but different dependency setup and external invocation contracts | Mechanical renaming may change CI and delivery behavior | Preserve orchestration boundaries and keep the fixed smoke test with the shared installer builder |
+| `workspace`/`desktop`/`toolchain` and local scripts form multiple layers of setup and forwarding | Parameters, package managers, processes, and environment handling are scattered; changes in multiple places can leave consumers behind | Give orchestration a single Owner, reuse common execution capabilities, and keep domain policy with its original Owner |
+| Useful tools have no package alias, while hooks, libraries, and retired scripts are also mixed into directories | Browsing a directory does not reveal which files can be run and which are internal implementations | Register and discover capabilities consistently without turning every file into a public command |
+| Names such as `doctor`, `health`, `template`, and `logs` do not fully express their effects | Downloads, writes to user configuration, or model costs may be mistaken for read-only checks | Help and pre-execution checks must state side effects, prerequisites, and permissions rather than relying on names |
 
-入口相似和转发层多说明需要核职责，不能据此断言所有实现重复。
-当前已核实同义别名，也已发现不可合并的准备链；须逐项选择复用、迁移、保留或暂缓，
-不能为了“统一”删掉必要的领域实现或新增一层永久转发器。
-现状依据为[根scripts](../../package.json)、[Desktop scripts](../../apps/desktop/package.json)
-及对应[workspace](../../scripts/shared/workspace.cjs)、[Desktop包装](../../scripts/shared/desktop.cjs)
-和[toolchain](../../scripts/pre/toolchain.cjs)实现；分类、映射与消费者记录见本页后续章节。
+Similar entry points and numerous forwarding layers indicate a need to inspect responsibilities; they do not prove that all implementations are duplicates.
+Equivalent aliases have been verified, and setup chains that cannot be merged have also been identified. Each must be assessed for reuse, migration, retention, or deferral; do not remove necessary domain implementations or add a permanent forwarding layer in the name of “unification.”
+The current-state evidence comes from [root scripts](../../package.json), [Desktop scripts](../../apps/desktop/package.json), and the corresponding [workspace](../../scripts/shared/workspace.cjs), [Desktop wrapper](../../scripts/shared/desktop.cjs), and [toolchain](../../scripts/pre/toolchain.cjs) implementations. Classifications, mappings, and consumer records appear in later sections of this page.
 
-## 3. 需求分类与目标处置
+<a id="3-需求分类与目标处置"></a>
+## 3. Requirement Classification and Target Disposition
 
-以下均为目标映射，不表示CLI已实现。概要设计维护唯一接口契约，本页记录当前来源、
-用户目标及迁移处置。pre使用doctor，不保留pre check；ci仅check/format/test；
-cd仅build local/release。四个一级无参数入口分别为完整环境准备、热更新开发调试、
-主流程核心冒烟、本地可运行包构建，详见概要设计第1.4节。测试按类型配scope组织。
+All entries below are target mappings and do not mean the CLI has been implemented. The overview design maintains the sole interface contract; this page records current sources,
+user goals, and migration dispositions. `pre` uses `doctor` and does not retain `pre check`; `ci` contains only `check`/`format`/`test`;
+`cd` contains only `build local`/`release`. The four top-level commands with no arguments respectively perform complete environment setup, hot-reload development and debugging,
+the core smoke test for the main flow, and construction of a locally runnable package; see Section 1.4 of the overview design. Tests are organized by type and `scope`.
 
-| 需求簇 | 处置 | 目标边界 |
+| Requirement cluster | Disposition | Target boundary |
 | --- | --- | --- |
-| 四个一级默认任务链 | 新增编排 | pre准备当前worktree必需环境；dev完整产品/HMR；ci沿原固定smoke；cd沿原本地包。默认动作不是帮助；专项与默认共用Owner/recipe，不复制链路 |
-| 环境诊断与专项检测 | 合并发现 | pre doctor默认原doctor集合；--scope environment/toolchain/interpreter/deps/links选择精确配方，不自动修复 |
-| Python/Node安装、链接修复、配置、清理 | 保留明确动作 | pre install/repair/config/clean；Python environment/desktop保留不同准备包装 |
-| 完整产品、浏览器真实界面、模拟工作台 | 合并发现、保留准备链 | dev默认隔离产品＋renderer HMR；非renderer监听/安全重启为目标补齐，当前debug仍要求重启。browser连既有Serve，--mock独立模拟 |
-| Serve独立调试与当前实例观察 | 精简保留 | dev serve [--watch]、dev status、dev logs [--errors]；日志改为当前实例且缺文件不创建，明确行为调整 |
-| 配置型启动、launcher、构建产物preview/shoot | 暂缓ops包装 | 保留原Owner入口及真实消费者；root desktop有README引用，不假装被隔离dev等价承接 |
-| Trace UI与组件发现 | 暂缓ops包装 | DamoATrace原生入口及组件Owner/Skill保留，不复制实现 |
-| 类型/lint/docs/i18n/UI/Skill合规 | 合并发现 | ci check按专项，Python原check聚合为--profile python，格式专项只从ci format进入 |
-| 格式检查与格式化 | 合并入口 | ci format默认检查，--write才格式化；缺工具沿原检查/写模式分别处理 |
-| ESLint修复、文档派生、i18n生成 | 合并到所属对象 | ci check lint desktop --fix、docs desktop --write、i18n --generate，均显式写入，不塞进format |
-| 快速核心冒烟 | 保留固定集合 | ci test smoke沿原scripts/ci/smoke.cjs，跨层标签不复制用例、不接受scope裁剪；速度须实测 |
-| 单元/集成/API/E2E/视觉测试 | 按类型与scope组织 | unit/integration/api/e2e/visual配合--scope desktop/serve/runtime/trace/tooling；精确组合登记，空集合不通过 |
-| 原混合测试与综合质量流程 | 保留原集合 | 无类型的ci test --scope承接各原混合集合；--profile quality承接ci:test原综合流程，不能强行标成unit |
-| 真实模型探测、影响推荐、模拟报告 | 各归所属职责 | e2e/desktop model-probe沿原health；ci test --affected只推荐；ci check preview-report只读关联 |
-| 本地构建及各类产物 | 合并发现 | cd build local，target选择desktop/web/backend/wheels/trace/skills，desktop的app/dir/installer分别保留原recipe |
-| 发布包与发行候选检查 | 合并发现 | cd build release按preview/release渠道；candidate dir沿原package:check，非可发布签名包 |
-| 冒烟后分发与安装包验收 | 保留不同固定链 | release --workflow distribution沿原分发；local --workflow package-acceptance沿原full→本地dev包→真实安装验收，不误称签名发布 |
-| GitLab/Preview/coverage消费者 | 保留并原子接线 | 无需根安装的CLI入口/原生npm安装分别处理，显式context recipe，不偷换集合/报告 |
-| Office assets、identity、Electron runtime、hook/锁/resolver | 内部化 | 原Owner/生命周期管理，不按文件增加用户叶子 |
-| CLI自身验证 | 内部化 | Node源码契约与回归测试，不设独立包、编译或dist一致性检查 |
-| 用户数据/全局链接/all初始化、供应链/基线修改 | 暂缓 | 保留原受控入口，不由clean或CI自动进入，不恢复退休脚本 |
-| 外部上传/发布/部署 | 暂缓接入 | CD构建不授予发布权限；需另定接口、幂等、制品身份与读回 |
+| Four default top-level task chains | Add orchestration | `pre` prepares the environment required by the current worktree; `dev` runs the full product/HMR; `ci` follows the existing fixed smoke test; `cd` follows the existing local package flow. The default action is not help; specialized and default flows share Owners/recipes and do not duplicate chains |
+| Environment diagnosis and focused checks | Consolidate discovery | `pre doctor` defaults to the existing doctor set; `--scope environment/toolchain/interpreter/deps/links` selects an exact recipe and does not auto-repair |
+| Python/Node installation, link repair, configuration, cleanup | Retain explicit actions | `pre install/repair/config/clean`; retain distinct setup wrappers for Python `environment` and `desktop` |
+| Full product, real browser UI, simulated workbench | Consolidate discovery; retain setup chain | `dev` defaults to an isolated product plus renderer HMR; add non-renderer watching/safe restart as a target capability, while current debug still requires restart. `browser` connects to the existing Serve; `--mock` is a separate simulation |
+| Standalone Serve debugging and observation of the current instance | Retain in simplified form | `dev serve [--watch]`, `dev status`, `dev logs [--errors]`; logs target the current instance and do not create a missing file, an explicit behavior change |
+| Configuration-based startup, launcher, preview/shoot of build artifacts | Defer ops wrapper | Retain original Owner entry points and actual consumers; root `desktop` has README references and must not be presented as equivalently handled by isolated `dev` |
+| Trace UI and component discovery | Defer ops wrapper | Retain DamoATrace's native entry point and component Owner/Skill; do not duplicate implementation |
+| Type/lint/docs/i18n/UI/Skill compliance | Consolidate discovery | `ci check` exposes focused checks; aggregate the existing Python checks under `--profile python`; enter format-specific checks only through `ci format` |
+| Format checking and formatting | Consolidate entry point | `ci format` checks by default; only `--write` formats; handle missing tools according to the existing check/write modes respectively |
+| ESLint fixes, derived documentation, i18n generation | Merge into owning command | `ci check lint desktop --fix`, `docs desktop --write`, and `i18n --generate` all write explicitly and are not folded into `format` |
+| Fast core smoke test | Retain fixed set | `ci test smoke` follows the existing `scripts/ci/smoke.cjs`; cross-layer labels do not duplicate cases or allow scope pruning; measure speed |
+| Unit/integration/API/E2E/visual tests | Organize by type and scope | Combine `unit`/`integration`/`api`/`e2e`/`visual` with `--scope desktop/serve/runtime/trace/tooling`; register exact combinations and fail on empty sets |
+| Existing mixed tests and comprehensive quality flow | Retain existing sets | Untyped `ci test --scope` carries each existing mixed set; `--profile quality` carries the existing `ci:test` comprehensive flow and must not be mislabeled as unit |
+| Real-model probes, impact recommendations, simulated reports | Keep with their respective responsibilities | `e2e/desktop model-probe` follows existing `health`; `ci test --affected` only recommends; `ci check preview-report` reads associated reports only |
+| Local builds and artifact types | Consolidate discovery | `cd build local`, with `target` selecting `desktop/web/backend/wheels/trace/skills`; retain separate existing recipes for Desktop `app`/`dir`/`installer` |
+| Release packages and release-candidate checks | Consolidate discovery | `cd build release` selects the `preview`/`release` channel; candidate `dir` follows existing `package:check` and is not a signed, releasable package |
+| Distribution after smoke and installer acceptance | Retain distinct fixed chains | `release --workflow distribution` follows the existing distribution flow; `local --workflow package-acceptance` follows the existing full test → local dev package → real installation acceptance flow, and is not mislabeled as signed release |
+| GitLab/Preview/coverage consumers | Retain and wire atomically | Handle CLI entry points that need no root install separately from native npm installation; use explicit context recipes and do not substitute test sets/reports |
+| Office assets, identity, Electron runtime, hooks/locks/resolvers | Internalize | Managed by their original Owner/lifecycle; do not add user-facing leaves per file |
+| CLI self-validation | Internalize | Node source-contract and regression tests; no separate package, compilation, or dist consistency check |
+| User data/global links/`all` initialization, supply-chain/baseline changes | Defer | Retain original controlled entry points; do not run automatically through `clean` or CI, and do not restore retired scripts |
+| External upload/release/deployment | Defer integration | CD builds do not grant release permissions; define interfaces, idempotency, artifact identity, and read-back separately |
 
-CLI入口与目录组织以概要设计第2–3节为准：现有workspace根分发按功能收敛到
-ops-cli.cjs，debug/toolchain/Python/格式化及领域runner复用原Owner。只清理无消费者的
-重复包装，不将全部scripts迁入入口，也不预建commands/core目录。原安装hook独立自举；
-已有npm ci保留，原不装根依赖的CI不为获取CLI新增安装。源码与工具消费者同次切换。
+Use Sections 2–3 of the overview design as the authority for CLI entry points and directory organization: consolidate existing workspace root dispatch by function into
+`ops-cli.cjs`; reuse the original Owners for debug/toolchain/Python/formatting and domain runners. Clean up only duplicate wrappers with no consumers; do not move all scripts into the entry point or pre-create `commands/core` directories. The original installation hook bootstraps independently;
+retain existing `npm ci`, and do not add an installation to CI jobs that currently omit root dependencies just to obtain the CLI. Migrate source and tool consumers together.
 
-四个默认链路是新增用户体验，不把它们说成基线已经存在。pre复用现有安装/诊断/
-安全链接Owner，终态校验必需环境；ci不升级为quality/full，cd不升级为release或自动
-安装。dev全栈安全重载尚需实现，现有证据仅renderer HMR及独立serve watch。宿主
-Node/包管理器前提、全局工具授权、活跃实例/依赖并发与真实模型权限不因自动准备取消。
+The four default chains are new user experiences and must not be described as already present in the baseline. `pre` reuses existing installation/diagnosis/
+safe-link Owners and validates the required final environment; `ci` is not upgraded to quality/full, and `cd` is not upgraded to release or automatic
+installation. Full-stack safe reload for `dev` remains to be implemented; current evidence covers only renderer HMR and standalone Serve watch. Host
+Node/package-manager prerequisites, authorization for global tools, concurrency with active instances/dependencies, and permission for real model calls are not waived by automatic setup.
 
-### 3.1 用户任务与职责矩阵
+<a id="31-用户任务与职责矩阵"></a>
+### 3.1 User Task and Responsibility Matrix
 
-| 用户目标 | 唯一规范归属 | 实际Owner | 前置与副作用 | 当前来源/消费者 |
+| User goal | Sole canonical command | Actual Owner | Prerequisites and side effects | Current sources/consumers |
 | --- | --- | --- | --- | --- |
-| 环境故障定位 | pre doctor | toolchain diagnose | node/npm/uv/python/codex/electron，可能恢复Codex缓存；不含完整manager/marker/链接 | doctor |
-| 工具链/解释器/依赖/物理链接专项 | pre doctor --scope toolchain/interpreter/deps/links | toolchain、python.cjs、symlinks.cjs | 保留各专项集合，不自动安装/修复；frontend仍为内部Node+npm子集 | check:toolchain/check:python/check:symlinks、hooks、原生CI |
-| 环境准备/配置/清理 | pre install/repair/config/clean | 原Python/Toolchain/配置/Cleanup Owner | 仅原目标，显式写入 | 原安装/配置/清理入口 |
-| 产品开发/后端调试/实例观察 | dev及browser/serve/status/logs | debug、Desktop、两套Vite、日志Owner | 保留隔离/真实/模拟身份；browser允许先Vite后Serve，日志行为变化单独验收 | dev、dev:web、dev:preview、Preview webServer、serve、logs |
-| 源码检查与固定Python组合 | ci check专项或--profile python | lint.py/mypy/tsc/standards/localization/reuse | python组合为fmt-check→lint→mypy；不诊断环境或自动修复 | 原check/typecheck/lint/docs/i18n/UI入口 |
-| 检查/修复代码格式 | ci format [--write] | scripts/ci/format.cjs | 默认check不安装；write沿原prepare-dev及格式化，互斥参数提前拒绝 | fmt、fmt-check |
-| 其他显式派生/修复 | ci check所属目标的fix/write/generate模式 | ESLint/standards/localization | 仅原已有写范围，不更新政策基线或用户数据 | lint:fix、docs:write、i18n:generate |
-| 产品 Skill 源码与 pack | ci check skills product --mode source | Serve prebundle | 比较源码和已编译 pack，不依赖编码宿主或源码快照 | skills:verify |
-| 核心冒烟与综合质量门 | ci test smoke；ci test --profile quality | ci/smoke.cjs、ci/test.cjs | 前者固定快集合；后者原静态/构建/测试及external模式，不互相冒充 | ci:smoke、ci:test、GitLab |
-| 分层与子系统测试 | ci test <类型> --scope <子系统> | 原各测试Owner | 用例登记唯一；原混合集合无类型调用保持，不伪称unit/API | Desktop Node、Preview、Serve run_all、Trace等 |
-| 模型探测/变更推荐/报告 | e2e desktop model-probe；ci test --affected；ci check preview-report | workspace health、affected.cjs、preview/report.ts | 原费用/目标；推荐不执行，报告不判验收 | health、影响推荐、模拟关联报告 |
-| 本地运行包与产物 | cd build local | Desktop构建/打包及各产物Owner | macOS必要ad-hoc，Windows不签；app原electron-vite build不等于installer | build/package/package:dir及其他构建 |
-| 发布包及原固定交付链 | cd build release；local --workflow package-acceptance | 原package/distribution/ci:package | 正式签名渠道、候选拒绝发布、full验收核本次本地dev安装包 | release/package:dist/ci:package |
+| Diagnose environment failures | `pre doctor` | toolchain diagnose | node/npm/uv/python/codex/electron; may restore the Codex cache; excludes the full manager/marker/link checks | doctor |
+| Focused toolchain/interpreter/dependency/physical-link checks | `pre doctor --scope toolchain/interpreter/deps/links` | toolchain, python.cjs, symlinks.cjs | Retain each focused set; do not auto-install/repair; frontend remains an internal Node+npm subset | check:toolchain/check:python/check:symlinks, hooks, native CI |
+| Environment setup/configuration/cleanup | `pre install/repair/config/clean` | Original Python/Toolchain/Configuration/Cleanup Owners | Only the original targets; explicit writes | Original installation/configuration/cleanup entry points |
+| Product development/backend debugging/instance observation | `dev` and `browser/serve/status/logs` | debug, Desktop, both Vite servers, logs Owner | Preserve isolated/real/simulated identity; `browser` may start Vite before Serve; changes to log behavior require separate acceptance | dev, dev:web, dev:preview, Preview webServer, serve, logs |
+| Source checks and fixed Python combination | `ci check` focused commands or `--profile python` | lint.py/mypy/tsc/standards/localization/reuse | Python combination is fmt-check → lint → mypy; does not diagnose environment or auto-fix | Original check/typecheck/lint/docs/i18n/UI entry points |
+| Check/fix code formatting | `ci format [--write]` | scripts/ci/format.cjs | Default check does not install; write follows existing prepare-dev and formatting; reject mutually exclusive arguments early | fmt, fmt-check |
+| Other explicit derivation/fixes | `fix`/`write`/`generate` modes on the relevant `ci check` target | ESLint/standards/localization | Only existing write scopes; does not update policy baselines or user data | lint:fix, docs:write, i18n:generate |
+| Product Skill source and pack | `ci check skills product --mode source` | Serve prebundle | Compare source with compiled pack; does not depend on the encoding host or source snapshot | skills:verify |
+| Core smoke test and comprehensive quality gate | `ci test smoke`; `ci test --profile quality` | ci/smoke.cjs, ci/test.cjs | The former is a fixed fast set; the latter preserves existing static/build/test and external modes; do not conflate them | ci:smoke, ci:test, GitLab |
+| Layered and subsystem tests | `ci test <type> --scope <subsystem>` | Existing test Owners | Register each case once; keep existing mixed sets available without a type, and do not misrepresent them as unit/API | Desktop Node, Preview, Serve run_all, Trace, etc. |
+| Model probes/change recommendations/reports | `e2e desktop model-probe`; `ci test --affected`; `ci check preview-report` | workspace health, affected.cjs, preview/report.ts | Preserve original costs/targets; recommendations do not execute tests, and reports do not decide acceptance | health, impact recommendation, simulated association report |
+| Locally runnable packages and artifacts | `cd build local` | Desktop build/packaging and each artifact Owner | Required ad-hoc signing on macOS; no signing on Windows; the original app `electron-vite build` is not an installer | build/package/package:dir and other builds |
+| Release packages and original fixed delivery chain | `cd build release`; `local --workflow package-acceptance` | Original package/distribution/ci:package | Formal signed channels; candidates cannot be released; full acceptance checks this locally built dev installer | release/package:dist/ci:package |
 
-聚合与专项是显式固定组合，不是重复别名；doctor默认不等于全部专项并集。
-scope在doctor中表示环境目标，在ci test中表示被测Owner，二者不是全局共享参数。
-test基础类型与smoke标签不复制用例。前端包含于desktop范围，其具体renderer套件须核
-实际清单；server概念对应真实Owner名serve，不注册同义server命令。
+Aggregates and focused checks are explicit fixed combinations, not duplicate aliases; the default doctor set is not the union of all focused checks.
+In doctor, `scope` identifies an environment target; in `ci test`, it identifies the Owner being tested. These are not globally shared parameters.
+Test base types and the smoke label do not duplicate cases. Frontend is included in the Desktop scope; verify the actual inventory for its renderer suites.
+The server concept maps to the actual Owner name `serve`; do not register a synonymous `server` command.
 
-### 3.2 测试分类与构建迁移差异
+<a id="32-测试分类与构建迁移差异"></a>
+### 3.2 Test Classification and Build Migration Differences
 
-- 原Desktop test/coverage是混合Node回归，保留无类型的ci test --scope desktop及原
-  pretest差异；文献搜索专项归unit，native-contract编译归integration，不能全量改称unit。
-- Preview契约及模拟浏览器UI分别归integration/desktop的preview-contract、preview-ui；
-  当前截图证据不是visual。Serve run_all含contract与integration，默认原集合保留；
-  api层须逐用例核HTTP边界，禁止把全部后端契约改名API测试后声称分类完成。
-- type/scope/suite的有效组合须登记来源、准备、用例集合、权限和报告；新api/visual组合
-  未接线时标planned并报UNSUPPORTED，不产出空壳成功。visual需比较基准、环境、容差与
-  明确结果，基准更新另受控。smoke沿原必选核心集合，速度以宿主冷/热数据验证，不偷减用例。
-- 原ci:test映射ci test --profile quality，严格保留--strict/--with-external等原参数、
-  退出与quarantine/预算/阶段报告，不因新分类只跑某一层。profile与type/scope/suite互斥。
-- 原CI冒烟与Playwright smoke不是同一集合：前者ci test smoke；后者e2e/desktop suite mr，
-  保留原build准备。live/update及真实model-probe各有费用/状态影响，不自动混入快冒烟。
-- CD local默认本地Desktop安装包，target与stage保留不同构建recipe，不把app CLI阶段
-  直接传给只支持backend/dir/installer的build.cjs。release默认正式release渠道direct构建，
-  preview渠道仍按原签名政策；发行candidate明确不可发布。
-- 原ci:package源码实际调用ci:test --with-external→package（type dev）→安装后真实E2E，
-  因而归cd build local --workflow package-acceptance，不误写成签名release验收。
-  package:dist仍归release --workflow distribution；direct与distribution的安装包均由构建器执行固定smoke。
-- local“不签名”仅指不使用正式发行证书/公证凭据：macOS必要ad-hoc及受保护runtime/
-  嵌套校验保留，Windows本地不签名；正式preview/release缺凭据失败，不自动降级candidate。
-- 旧配置型启动、launcher、产物preview/shoot与独立工具暂缓ops包装，保留原入口/消费者。
-  已承接用法同次更新，无新旧同义入口兼容期；日志当前实例/缺文件行为变化需独立验收。
+- The original Desktop test/coverage is mixed Node regression testing. Retain untyped `ci test --scope desktop` and the original
+  `pretest` differences; classify the literature-search suite as unit and native-contract compilation as integration, and do not relabel the entire set as unit.
+- Classify Preview contracts and simulated browser UI as `integration/desktop` suites `preview-contract` and `preview-ui`, respectively;
+  existing screenshot evidence is not visual testing. Serve `run_all` contains contract and integration tests; retain its original set by default.
+  The API layer must verify HTTP boundaries case by case. Do not rename all backend contracts as API tests and claim classification is complete.
+- Register the source, setup, case set, permissions, and report for every valid type/scope/suite combination. When new API/visual combinations
+  are not wired, mark them planned and report `UNSUPPORTED`; do not return an empty successful run. Visual testing requires a comparison baseline, environment, tolerance, and
+  explicit result; baseline updates remain separately controlled. Smoke follows the original mandatory core set; verify speed using cold/warm host measurements and do not reduce cases.
+- Map the original `ci:test` to `ci test --profile quality`, strictly preserving original parameters such as `--strict`/`--with-external`,
+  exit behavior, and quarantine/budget/stage reports. Do not run only one layer because of the new classifications. `profile` is mutually exclusive with `type`/`scope`/`suite`.
+- The original CI smoke and Playwright smoke are different sets: the former is `ci test smoke`; the latter is `e2e/desktop suite mr`,
+  retaining the original build setup. `live`/`update` and real `model-probe` each affect cost/state and are not automatically included in the fast smoke test.
+- `CD local` defaults to a local Desktop installer. Preserve the distinct build recipes for `target` and `stage`; do not pass the app CLI stage
+  directly to `build.cjs`, which supports only `backend`/`dir`/`installer`. `release` defaults to a direct build on the formal release channel;
+  the preview channel retains its original signing policy, and a release candidate is explicitly not publishable.
+- The original `ci:package` source actually runs `ci:test --with-external` → `package` (type `dev`) → real E2E after installation,
+  so map it to `cd build local --workflow package-acceptance`, not signed-release acceptance.
+  `package:dist` still maps to `release --workflow distribution`; the builder runs the fixed smoke test for both direct and distribution installers.
+- Local “unsigned” means only that formal release certificates/notarization credentials are not used: retain required macOS ad-hoc signing and protected runtime/
+  nested verification; local Windows builds are unsigned. Formal preview/release builds fail without credentials and do not automatically downgrade to candidate.
+- Defer ops wrappers for legacy configuration-based startup, launchers, artifact preview/shoot, and standalone tools; retain their original entry points/consumers.
+  Migrate carried-over usage in the same cutover, with no compatibility period for synonymous old/new entry points. Changes to current-instance/missing-file log behavior require separate acceptance.
 
-## 4. package scripts迁移映射
+<a id="4-package-scripts迁移映射"></a>
+## 4. package scripts Migration Mapping
 
-以下逐条覆盖基线两份package.json，事实列保持原名。规范目标不表示已经可执行；
-本次实施同一版本接线并移除已承接的根公开别名，不设兼容转发期。
-Desktop领域scripts作为实际内部执行边界可保留，不能宣传为第二套公开命令。
-同一规范路径下不同来源的包装差异由概要设计的local/ci recipe显式保留，不靠CI=1切换。
-root的默认local recipe维持根包装，现有GitLab子包直调只在具名ci recipe里复现；
-源码/脚本清单变化时更新对应行，不把这份快照当成永远有效的执行保证。
+The tables below cover both baseline `package.json` files item by item; names in the factual columns remain unchanged. Canonical targets are not necessarily executable yet;
+the cutover wires them together in one revision and removes root public aliases whose capabilities have been carried over, with no compatibility-forwarding period.
+Desktop domain scripts may remain as actual internal execution boundaries and must not be advertised as a second public command set.
+Wrapper differences for different sources under the same canonical path are explicitly preserved through the overview design's local/ci recipes, not selected by switching `CI=1`.
+The root's default local recipe retains the root wrapper; existing direct GitLab subpackage invocations are reproduced only in named ci recipes.
+Update the corresponding rows when source/scripts inventories change; do not treat this snapshot as an everlasting guarantee of executable behavior.
 
-### 4.1 根package.json
+<a id="41-根packagejson"></a>
+### 4.1 Root package.json
 
-来源：[根scripts](../../package.json)。下表只说明去向；准备顺序、身份与权限依概要设计，
-具体行为仍核Owner源码，尤其doctor/logs/config/probe不是按名称推断只读。
+Source: [root scripts](../../package.json). The table below states only the destination; setup order, identity, and permissions are defined by the overview design.
+Verify actual behavior against Owner source, especially because `doctor`/`logs`/`config`/`probe` cannot be assumed read-only from their names.
 
-| 当前script | 处置 | 规范目标（省略pnpm ops） |
+| Current script | Disposition | Canonical target (omit `pnpm ops`) |
 | --- | --- | --- |
-| `postinstall` | 内部化 | 保留安装/自举hook，不调用待安装ops |
-| `prepare:python` | 保留能力 | `pre install python --mode desktop` |
-| `dev` | 保留能力 | `dev`（默认完整产品，沿原隔离监督） |
-| `dev:status` | 保留能力 | `dev status` |
-| `test:debug` | 保留能力 | `ci test --scope tooling --suite debug` |
-| `dev:preview` | 保留能力 | `dev browser --mock` |
-| `test:preview` | 保留能力 | `ci test integration --scope desktop --suite preview-contract` |
-| `test:preview:ui` | 保留能力 | `ci test integration --scope desktop --suite preview-ui` |
-| `check:preview:bundle` | 保留能力 | `ci check preview-bundle` |
-| `build` | 保留能力 | `cd build local --stage app` |
-| `build:check` | 合并入口 | `cd build release --stage dir --candidate` |
-| `package` | 保留能力 | `cd build local` |
-| `build:release` | 合并入口 | `cd build release` |
-| `test` | 合并入口 | `ci test --scope desktop` |
-| `ci:test` | 保留能力 | `ci test --profile quality` |
-| `ci:smoke` | 保留能力 | `ci test smoke` |
-| `ci:package` | 保留能力 | `cd build local --workflow package-acceptance` |
-| `typecheck` | 保留能力 | `ci check types desktop` |
-| `updater:test` | 保留能力 | `ci test --scope desktop --suite updater` |
-| `package:check` | 合并入口 | `cd build release --stage dir --candidate` |
-| `release` | 合并入口 | `cd build release` |
-| `package:distribution` | 合并入口 | `cd build release` |
-| `package:dist` | 保留能力 | `cd build release --workflow distribution` |
-| `all` | 暂缓 | 明确排除本次；保留原独立受控入口，不进入ops组合动作 |
-| `install:python` | 保留能力 | `pre install python --mode environment` |
-| `check:python` | 保留能力 | `pre doctor --scope interpreter` |
-| `skills:install` | 保留能力 | `cd build local --target skills` |
-| `skills:verify` | 保留能力 | `ci check skills product --mode source` |
-| `skills:check-links` | 保留能力 | `ci check skills host --mode links` |
-| `dependency-wheels` | 合并入口 | `cd build local --target wheels` |
-| `damoatrace:contract` | 保留能力 | `ci test --scope trace` |
-| `damoatrace:check` | 保留能力 | `ci test --scope trace --with-format-check` |
-| `damoatrace:wheel` | 保留能力 | `cd build local --target trace` |
-| `agent-wheel` | 合并入口 | `cd build local --target wheels` |
-| `doctor` | 合并入口 | `pre doctor` |
-| `check:symlinks` | 保留能力 | `pre doctor --scope links` |
-| `repair:symlinks` | 保留能力 | `pre repair links` |
-| `check:toolchain` | 保留能力 | `pre doctor --scope toolchain` |
-| `ui-find` | 暂缓 | 不包装进ops；保留原组件Owner/Skill入口及完整参数 |
-| `desktop:test` | 合并入口 | `ci test --scope desktop` |
-| `desktop:e2e:mr` | 保留能力 | `ci test e2e --scope desktop --suite mr` |
-| `desktop:e2e:live` | 保留能力 | `ci test e2e --scope desktop --suite live` |
-| `config` | 保留能力 | `pre config edit` |
-| `config:template` | 保留能力 | `pre config template` |
-| `start` | 暂缓 | 本次不包装进ops；保留原checkPython→venv scholarseed独立启动，不与默认dev等价替换 |
-| `desktop` | 暂缓 | 本次不包装进ops；原配置型启动及README消费者保留，默认dev不进入该写配置链 |
-| `health` | 保留能力 | `ci test e2e --scope desktop --suite model-probe` |
-| `fmt` | 保留能力 | `ci format --write` |
-| `fmt-check` | 保留能力 | `ci format` |
-| `lint` | 保留能力 | `ci check lint python` |
-| `python:typecheck` | 保留能力 | `ci check types python` |
-| `check` | 保留能力 | `ci check --profile python` |
-| `serve` | 保留能力 | `dev serve` |
-| `serve:dev` | 保留能力 | `dev serve --watch` |
-| `logs` | 保留能力 | `dev logs`（目标绑定当前隔离实例；缺日志不创建） |
-| `logs:errors` | 保留能力 | `dev logs --errors`（同上，保留原筛选及最近50行） |
-| `trace-ui` | 暂缓 | 不包装进ops；使用DamoATrace原生serve入口，原能力保留 |
-| `trace-ui:stop` | 暂缓 | 不包装进ops；保留Trace Owner现有stop能力与原受控入口 |
-| `docs:check` | 保留能力 | `ci check docs workspace` |
-| `install:cmd` | 暂缓 | 明确排除本次；保留原独立受控入口，不进入ops组合动作 |
-| `uninstall:cmd` | 暂缓 | 明确排除本次；保留原独立受控入口，不进入ops组合动作 |
-| `clean` | 合并入口 | `pre clean` |
-| `distclean` | 合并入口 | `pre clean` |
-| `user-data:preview` | 暂缓 | 明确排除本次；保留原独立受控入口，不进入ops组合动作 |
-| `user-data:delete` | 暂缓 | 明确排除本次；保留原独立受控入口，不进入ops组合动作 |
-| `prepare` | 内部化 | 保留安装/自举hook，不调用待安装ops |
+| `postinstall` | Internalize | Retain installation/bootstrap hook; do not invoke ops before it is installed |
+| `prepare:python` | Retain capability | `pre install python --mode desktop` |
+| `dev` | Retain capability | `dev` (full product by default, following original isolated supervision) |
+| `dev:status` | Retain capability | `dev status` |
+| `test:debug` | Retain capability | `ci test --scope tooling --suite debug` |
+| `dev:preview` | Retain capability | `dev browser --mock` |
+| `test:preview` | Retain capability | `ci test integration --scope desktop --suite preview-contract` |
+| `test:preview:ui` | Retain capability | `ci test integration --scope desktop --suite preview-ui` |
+| `check:preview:bundle` | Retain capability | `ci check preview-bundle` |
+| `build` | Retain capability | `cd build local --stage app` |
+| `build:check` | Merge entry point | `cd build release --stage dir --candidate` |
+| `package` | Retain capability | `cd build local` |
+| `build:release` | Merge entry point | `cd build release` |
+| `test` | Merge entry point | `ci test --scope desktop` |
+| `ci:test` | Retain capability | `ci test --profile quality` |
+| `ci:smoke` | Retain capability | `ci test smoke` |
+| `ci:package` | Retain capability | `cd build local --workflow package-acceptance` |
+| `typecheck` | Retain capability | `ci check types desktop` |
+| `updater:test` | Retain capability | `ci test --scope desktop --suite updater` |
+| `package:check` | Merge entry point | `cd build release --stage dir --candidate` |
+| `release` | Merge entry point | `cd build release` |
+| `package:distribution` | Merge entry point | `cd build release` |
+| `package:dist` | Retain capability | `cd build release --workflow distribution` |
+| `all` | Defer | Explicitly excluded from this cutover; retain the original standalone controlled entry point and do not include it in ops composite actions |
+| `install:python` | Retain capability | `pre install python --mode environment` |
+| `check:python` | Retain capability | `pre doctor --scope interpreter` |
+| `skills:install` | Retain capability | `cd build local --target skills` |
+| `skills:verify` | Retain capability | `ci check skills product --mode source` |
+| `skills:check-links` | Retain capability | `ci check skills host --mode links` |
+| `dependency-wheels` | Merge entry point | `cd build local --target wheels` |
+| `damoatrace:contract` | Retain capability | `ci test --scope trace` |
+| `damoatrace:check` | Retain capability | `ci test --scope trace --with-format-check` |
+| `damoatrace:wheel` | Retain capability | `cd build local --target trace` |
+| `agent-wheel` | Merge entry point | `cd build local --target wheels` |
+| `doctor` | Merge entry point | `pre doctor` |
+| `check:symlinks` | Retain capability | `pre doctor --scope links` |
+| `repair:symlinks` | Retain capability | `pre repair links` |
+| `check:toolchain` | Retain capability | `pre doctor --scope toolchain` |
+| `ui-find` | Defer | Do not wrap in ops; retain the original component Owner/Skill entry point and complete parameters |
+| `desktop:test` | Merge entry point | `ci test --scope desktop` |
+| `desktop:e2e:mr` | Retain capability | `ci test e2e --scope desktop --suite mr` |
+| `desktop:e2e:live` | Retain capability | `ci test e2e --scope desktop --suite live` |
+| `config` | Retain capability | `pre config edit` |
+| `config:template` | Retain capability | `pre config template` |
+| `start` | Defer | Do not wrap in ops in this cutover; retain standalone startup after original `checkPython` → venv setup, not as an equivalent replacement for default `dev` |
+| `desktop` | Defer | Do not wrap in ops in this cutover; retain configuration-based startup and README consumers; default `dev` does not enter this configuration-writing chain |
+| `health` | Retain capability | `ci test e2e --scope desktop --suite model-probe` |
+| `fmt` | Retain capability | `ci format --write` |
+| `fmt-check` | Retain capability | `ci format` |
+| `lint` | Retain capability | `ci check lint python` |
+| `python:typecheck` | Retain capability | `ci check types python` |
+| `check` | Retain capability | `ci check --profile python` |
+| `serve` | Retain capability | `dev serve` |
+| `serve:dev` | Retain capability | `dev serve --watch` |
+| `logs` | Retain capability | `dev logs` (target the current isolated instance; do not create a missing log file) |
+| `logs:errors` | Retain capability | `dev logs --errors` (same as above; retain the original filter and most recent 50 lines) |
+| `trace-ui` | Defer | Do not wrap in ops; use DamoATrace's native serve entry point and retain its capability |
+| `trace-ui:stop` | Defer | Do not wrap in ops; retain the Trace Owner's existing stop capability and original controlled entry point |
+| `docs:check` | Retain capability | `ci check docs workspace` |
+| `install:cmd` | Defer | Explicitly excluded from this cutover; retain the original standalone controlled entry point and do not include it in ops composite actions |
+| `uninstall:cmd` | Defer | Explicitly excluded from this cutover; retain the original standalone controlled entry point and do not include it in ops composite actions |
+| `clean` | Merge entry point | `pre clean` |
+| `distclean` | Merge entry point | `pre clean` |
+| `user-data:preview` | Defer | Explicitly excluded from this cutover; retain the original standalone controlled entry point and do not include it in ops composite actions |
+| `user-data:delete` | Defer | Explicitly excluded from this cutover; retain the original standalone controlled entry point and do not include it in ops composite actions |
+| `prepare` | Internalize | Retain installation/bootstrap hook; do not invoke ops before it is installed |
 
 ### 4.2 Desktop package.json
 
-来源：[Desktop scripts](../../apps/desktop/package.json)。表中规范目标为发现路径；
-领域动作/钩子是内部Owner，不复制实现。local与已有ci recipe的前置差异由明确上下文
-选择；未登记ci recipe不能将context=ci当成跳过所有检查。
+Source: [Desktop scripts](../../apps/desktop/package.json). Canonical targets in the table are discovery paths;
+domain actions/hooks belong to internal Owners, and their implementations are not duplicated. Differences in prerequisites between local and existing ci recipes are selected by explicit context;
+an unregistered ci recipe must not treat `context=ci` as a reason to skip all checks.
 
-| 当前script | 处置 | 规范目标（省略pnpm ops） |
+| Current script | Disposition | Canonical target (omit `pnpm ops`) |
 | --- | --- | --- |
-| `preinstall` | 内部化 | 保留领域/生命周期入口，由登记的任务recipe调用，不作为第二套公开CLI |
-| `pretest` | 内部化 | 保留领域/生命周期入口，由登记的任务recipe调用，不作为第二套公开CLI |
-| `docs:write` | 保留能力 | `ci check docs desktop --write` |
-| `docs:check` | 保留能力 | `ci check docs desktop` |
-| `postinstall` | 内部化 | 保留领域/生命周期入口，由登记的任务recipe调用，不作为第二套公开CLI |
-| `predev` | 内部化 | 保留领域/生命周期入口，由登记的任务recipe调用，不作为第二套公开CLI |
-| `dev` | 内部化 | 保留领域/生命周期入口，由登记的任务recipe调用，不作为第二套公开CLI |
-| `dev:web` | 保留能力 | `dev browser` |
-| `dev:preview` | 保留能力 | `dev browser --mock` |
-| `predev:preview` | 内部化 | 保留领域/生命周期入口，由登记的任务recipe调用，不作为第二套公开CLI |
-| `test:preview` | 保留能力 | `ci test integration --scope desktop --suite preview-contract` |
-| `test:preview:ui` | 保留能力 | `ci test integration --scope desktop --suite preview-ui` |
-| `check:preview:bundle` | 保留能力 | `ci check preview-bundle` |
-| `prebuild` | 内部化 | 保留领域/生命周期入口，由登记的任务recipe调用，不作为第二套公开CLI |
-| `build` | 保留能力 | `cd build local --stage app` |
-| `build:web` | 保留能力 | `cd build local --target web` |
-| `preview:web` | 暂缓 | 本次不包装进ops；原Web产物预览及frontend前置保留，不是dev browser开发服务或--mock |
-| `test` | 保留能力 | `ci test --scope desktop` |
-| `native:contract` | 保留能力 | `ci test integration --scope desktop --suite native-contract` |
-| `test:native` | 保留能力 | `ci test unit --scope desktop --suite native` |
-| `test:coverage` | 保留能力 | `ci test --scope desktop --coverage` |
-| `test:literature-search` | 保留能力 | `ci test unit --scope desktop --suite literature-search` |
-| `prepreview` | 内部化 | 保留领域/生命周期入口，由登记的任务recipe调用，不作为第二套公开CLI |
-| `preview` | 暂缓 | 本次不包装进ops；原Electron产物预览及prepreview保留，不与模拟工作台合并 |
-| `shoot` | 暂缓 | 本次不包装进ops；保留toolchain→electron-vite build→electron .及原参数，不代表截图/断言，不并入默认dev |
-| `bundle:backend` | 保留能力 | `cd build local --target backend` |
-| `package:dir` | 保留能力 | `cd build local --stage dir` |
-| `package:installer` | 合并入口 | `cd build local` |
-| `typecheck` | 保留能力 | `ci check types desktop` |
-| `lint` | 保留能力 | `ci check lint desktop` |
-| `lint:fix` | 保留能力 | `ci check lint desktop --fix` |
-| `test:e2e` | 保留能力 | `ci test e2e --scope desktop` |
-| `test:e2e:mr` | 保留能力 | `ci test e2e --scope desktop --suite mr` |
-| `test:e2e:live` | 保留能力 | `ci test e2e --scope desktop --suite live` |
-| `test:e2e:update` | 保留能力 | `ci test e2e --scope desktop --suite update` |
-| `i18n:check` | 保留能力 | `ci check i18n --mode check` |
-| `i18n:dom:gaps` | 保留能力 | `ci check i18n --mode gaps` |
-| `i18n:generate` | 保留能力 | `ci check i18n --generate` |
-| `i18n:test` | 保留能力 | `ci test --scope tooling --suite i18n` |
-| `preshoot` | 内部化 | 保留领域/生命周期入口，由登记的任务recipe调用，不作为第二套公开CLI |
-| `predev:web` | 内部化 | 保留领域/生命周期入口，由登记的任务recipe调用，不作为第二套公开CLI |
-| `prebuild:web` | 内部化 | 保留领域/生命周期入口，由登记的任务recipe调用，不作为第二套公开CLI |
-| `prepreview:web` | 内部化 | 保留领域/生命周期入口，由登记的任务recipe调用，不作为第二套公开CLI |
-| `prepare:python` | 内部化 | 保留领域/生命周期入口，由登记的任务recipe调用，不作为第二套公开CLI |
-| `build:check` | 合并入口 | `cd build release --stage dir --candidate` |
-| `package` | 合并入口 | `cd build local` |
-| `build:release` | 合并入口 | `cd build release` |
-| `package:check` | 合并入口 | `cd build release --stage dir --candidate` |
-| `release` | 合并入口 | `cd build release` |
-| `package:distribution` | 合并入口 | `cd build release` |
-| `package:dist` | 保留能力 | `cd build release --workflow distribution` |
+| `preinstall` | Internalize | Retain as a domain/lifecycle entry point, called by a registered task recipe; not a second public CLI |
+| `pretest` | Internalize | Retain as a domain/lifecycle entry point, called by a registered task recipe; not a second public CLI |
+| `docs:write` | Retain capability | `ci check docs desktop --write` |
+| `docs:check` | Retain capability | `ci check docs desktop` |
+| `postinstall` | Internalize | Retain as a domain/lifecycle entry point, called by a registered task recipe; not a second public CLI |
+| `predev` | Internalize | Retain as a domain/lifecycle entry point, called by a registered task recipe; not a second public CLI |
+| `dev` | Internalize | Retain as a domain/lifecycle entry point, called by a registered task recipe; not a second public CLI |
+| `dev:web` | Retain capability | `dev browser` |
+| `dev:preview` | Retain capability | `dev browser --mock` |
+| `predev:preview` | Internalize | Retain as a domain/lifecycle entry point, called by a registered task recipe; not a second public CLI |
+| `test:preview` | Retain capability | `ci test integration --scope desktop --suite preview-contract` |
+| `test:preview:ui` | Retain capability | `ci test integration --scope desktop --suite preview-ui` |
+| `check:preview:bundle` | Retain capability | `ci check preview-bundle` |
+| `prebuild` | Internalize | Retain as a domain/lifecycle entry point, called by a registered task recipe; not a second public CLI |
+| `build` | Retain capability | `cd build local --stage app` |
+| `build:web` | Retain capability | `cd build local --target web` |
+| `preview:web` | Defer | Do not wrap in ops in this cutover; retain original Web artifact preview and frontend prerequisites; this is not the `dev browser` development server or `--mock` |
+| `test` | Retain capability | `ci test --scope desktop` |
+| `native:contract` | Retain capability | `ci test integration --scope desktop --suite native-contract` |
+| `test:native` | Retain capability | `ci test unit --scope desktop --suite native` |
+| `test:coverage` | Retain capability | `ci test --scope desktop --coverage` |
+| `test:literature-search` | Retain capability | `ci test unit --scope desktop --suite literature-search` |
+| `prepreview` | Internalize | Retain as a domain/lifecycle entry point, called by a registered task recipe; not a second public CLI |
+| `preview` | Defer | Do not wrap in ops in this cutover; retain original Electron artifact preview and prepreview; do not merge it with the simulated workbench |
+| `shoot` | Defer | Do not wrap in ops in this cutover; retain toolchain → electron-vite build → electron . and original parameters; this does not represent screenshot/assertion and is not part of default `dev` |
+| `bundle:backend` | Retain capability | `cd build local --target backend` |
+| `package:dir` | Retain capability | `cd build local --stage dir` |
+| `package:installer` | Merge entry point | `cd build local` |
+| `typecheck` | Retain capability | `ci check types desktop` |
+| `lint` | Retain capability | `ci check lint desktop` |
+| `lint:fix` | Retain capability | `ci check lint desktop --fix` |
+| `test:e2e` | Retain capability | `ci test e2e --scope desktop` |
+| `test:e2e:mr` | Retain capability | `ci test e2e --scope desktop --suite mr` |
+| `test:e2e:live` | Retain capability | `ci test e2e --scope desktop --suite live` |
+| `test:e2e:update` | Retain capability | `ci test e2e --scope desktop --suite update` |
+| `i18n:check` | Retain capability | `ci check i18n --mode check` |
+| `i18n:dom:gaps` | Retain capability | `ci check i18n --mode gaps` |
+| `i18n:generate` | Retain capability | `ci check i18n --generate` |
+| `i18n:test` | Retain capability | `ci test --scope tooling --suite i18n` |
+| `preshoot` | Internalize | Retain as a domain/lifecycle entry point, called by a registered task recipe; not a second public CLI |
+| `predev:web` | Internalize | Retain as a domain/lifecycle entry point, called by a registered task recipe; not a second public CLI |
+| `prebuild:web` | Internalize | Retain as a domain/lifecycle entry point, called by a registered task recipe; not a second public CLI |
+| `prepreview:web` | Internalize | Retain as a domain/lifecycle entry point, called by a registered task recipe; not a second public CLI |
+| `prepare:python` | Internalize | Retain as a domain/lifecycle entry point, called by a registered task recipe; not a second public CLI |
+| `build:check` | Merge entry point | `cd build release --stage dir --candidate` |
+| `package` | Merge entry point | `cd build local` |
+| `build:release` | Merge entry point | `cd build release` |
+| `package:check` | Merge entry point | `cd build release --stage dir --candidate` |
+| `release` | Merge entry point | `cd build release` |
+| `package:distribution` | Merge entry point | `cd build release` |
+| `package:dist` | Retain capability | `cd build release --workflow distribution` |
 
-## 5. 额外工具与消费者
+<a id="5-额外工具与消费者"></a>
+## 5. Additional Tools and Consumers
 
-| 当前工具/消费者 | 目标或处置 | 差异与验收 |
+| Current tool/consumer | Target or disposition | Differences and acceptance |
 | --- | --- | --- |
-| toolchain frontend/dependencies/ensure | pre doctor --scope deps、pre install deps；frontend内部化 | 检查不自动安装；frontend保留GitLab静态job及四个Web/Preview hook的原Node+npm检查，不新增uv要求；根hook仍自举 |
-| scripts/shared/python.cjs prepare（仅runtime下载） | 内部化/暂缓公开 | 不替代完整开发环境准备，Linux不能调用Desktop发行manifest冒充支持 |
-| scripts/ci/affected.cjs | ci test --affected | 推荐/未匹配fallback/退出语义不变；已有grep/平台路径假设需实际跨平台验收 |
-| apps/serve/tests/run_all.py | ci test --scope serve [--list] | 保留cwd/PYTHONPATH、独占套件、并发/报告，避免两个tests包遮蔽 |
-| Preview report.ts | ci check preview-report | 文件/stdin关联报告，保留原状态，不写成执行成绩 |
-| standards --report、reuse --report | ci check docs desktop --mode report、ci check ui | 报告含原字段/语义，不透传baseline写入 |
-| 显式文件结构工具 | ci check docs workspace --mode structure | 必须给明确路径；Node-only结构检查不替代完整知识门禁 |
-| 原ui-find完整参数能力 | 暂缓ops包装；保留原Owner/Skill入口 | registry为唯一真源；使用原完整选项，不复制组件清单 |
-| 原GitLab Python jobs | checkout后使用源码入口，不为CLI新增根安装；显式context=ci | `PYTHON=3.12`由准备链显式传入，`prepareDevelopmentEnvironment`跳过原生runtime下载并走uv同步；apt Node仍未固定为仓库Node版本，Linux实际流水线尚未执行，不以源码接线宣称验收通过 |
-| GitLab子包typecheck/localization/coverage及其他离散jobs | 全部登记消费者，按实际来源选local/ci recipe | 原ignore-scripts、子包安装/explicit pretest、报告、超时和allow_failure保留；不强制引入原无Desktop完整marker |
-| GitLab ci-package-macos/windows原生jobs | 保留原根npm ci和实际hook，再依旧check/repair/check/installPython；规范ops入口显式npm执行器，默认local根包装 | 不新增CLI file依赖或pnpm根安装，不手工重放hook；原未装根job仅准备声明的Node/pnpm |
-| GitLab desktop-e2e-smoke（.gitlab-ci.yml中的Linux Xvfb任务） | 保留原真实Electron build+Playwright smoke，显式ci recipe逐项接线 | 原子包安装/Playwright依赖/Xvfb/报告与判据保持；原配置存在不证明通过；未闭合的Linux前置需基线对照和Owner处理，不得删任务、静态替代或因平台拒绝就视为完成 |
-| npm_execpath依赖与嵌套toolchain执行 | 真包管理器创建一次上下文 | pnpm ops→显式npm→嵌套前置不再读旧pnpm身份；不能伪造环境变量 |
-| coverage字符串解析、Preview webServer | 同次更新消费者 | 本地/CI同一测试清单，不能只改根别名 |
-| public policy/overlay | 工具源码闭包检查 | 若保留ops script，携带ops-cli.cjs及实际调用的领域源码；若明确排除则移除入口，禁止悬空源码路径 |
-| CLI源码测试 | 内部契约与行为回归 | Node直接运行，无根/Desktop依赖仍可help/list；不比较dist、不为CLI新增用户构建命令 |
-| public/vendor/native/corpus与外部分发系统 | 暂缓，原Owner保留 | 不凭文件名声明跨平台/发布能力，CD接入需独立接口与授权 |
+| toolchain frontend/dependencies/ensure | `pre doctor --scope deps`, `pre install deps`; internalize frontend | Checks do not auto-install; frontend retains the original Node+npm checks in the GitLab static job and four Web/Preview hooks, with no new uv requirement; the root hook still bootstraps |
+| `scripts/shared/python.cjs` prepare (runtime download only) | Internalize/defer from public interface | Does not replace complete development environment setup; Linux must not call the Desktop release manifest to imply support |
+| `scripts/ci/affected.cjs` | `ci test --affected` | Preserve recommendation, unmatched fallback, and exit semantics; verify existing grep/platform path assumptions through actual cross-platform acceptance |
+| `apps/serve/tests/run_all.py` | `ci test --scope serve [--list]` | Preserve cwd/PYTHONPATH, exclusive suites, concurrency, and reports; prevent the two `tests` packages from shadowing each other |
+| Preview `report.ts` | `ci check preview-report` | Associate reports from files/stdin; preserve original status and do not present them as execution results |
+| `standards --report`, `reuse --report` | `ci check docs desktop --mode report`, `ci check ui` | Reports retain original fields/semantics; do not pass through baseline writes |
+| Explicit file-structure tool | `ci check docs workspace --mode structure` | Require an explicit path; Node-only structure checks do not replace the full knowledge gate |
+| Original full-parameter `ui-find` capability | Defer ops wrapper; retain original Owner/Skill entry point | Registry is the sole source of truth; use the complete original options and do not duplicate the component inventory |
+| Original GitLab Python jobs | After checkout, use source entry point without adding root installation for CLI; explicit `context=ci` | Pass `PYTHON=3.12` explicitly through setup; `prepareDevelopmentEnvironment` skips native runtime download and synchronizes through uv. apt Node is still not pinned to the repository's Node version, and the actual Linux pipeline has not run; source wiring alone does not prove acceptance |
+| GitLab subpackage typecheck/localization/coverage and other discrete jobs | Register all consumers and select local/ci recipe by actual source | Preserve original `ignore-scripts`, subpackage installation/explicit pretest, reports, timeouts, and `allow_failure`; do not force the full Desktop marker into jobs that did not have it |
+| GitLab native `ci-package-macos/windows` jobs | Retain original root `npm ci` and actual hooks, followed by existing check/repair/check/installPython; canonical ops entry uses explicit npm executor, with root wrapper for default local | Do not add a CLI file dependency or pnpm root install, and do not manually replay hooks; original rootless jobs only prepare declared Node/pnpm |
+| GitLab `desktop-e2e-smoke` (Linux Xvfb task in `.gitlab-ci.yml`) | Retain original real Electron build + Playwright smoke and wire each item through an explicit ci recipe | Preserve atomic package installation/Playwright dependencies/Xvfb/reports/criteria. Existing configuration does not prove a pass; compare unresolved Linux prerequisites against baseline and have the Owner address them. Do not delete the task, substitute static checks, or count platform rejection as completion |
+| `npm_execpath` dependency and nested toolchain execution | Let the real package manager create one context | `pnpm ops` → explicit npm → nested prerequisites no longer read the old pnpm identity; do not forge environment variables |
+| Coverage string parsing, Preview webServer | Update consumers in the same cutover | Use the same test inventory locally and in CI; changing only the root alias is insufficient |
+| Public policy/overlay | Tool source-closure check | If the ops script is retained, include `ops-cli.cjs` and the domain source it actually invokes; if explicitly excluded, remove the entry point; dangling source paths are forbidden |
+| CLI source tests | Internal contract and behavior regression | Run directly with Node; help/list must still work without root/Desktop dependencies; do not compare dist or add a user-facing CLI build command |
+| Public/vendor/native/corpus and external distribution systems | Defer; retain original Owners | Do not claim cross-platform/release capability from filenames; CD integration requires a separate interface and authorization |
 
-## 6. 生命周期钩子关联
+<a id="6-生命周期钩子关联"></a>
+## 6. Lifecycle Hook Relationships
 
-当前hook关联如下。表中内容是包管理器在各自配置下的原始关联，不意味着CLI强制
-补跑全部hook；npm/pnpm、ignore-scripts和pre/post配置分别做真实等价验证。
+Current hook relationships are listed below. The table records the package managers' original relationships under their respective configurations; it does not mean the CLI must
+run every hook again. Verify actual equivalence separately for npm/pnpm, `ignore-scripts`, and pre/post configuration.
 
-| 所属包 / hook | 原职责与目标关联 | 迁移约束 |
+| Package / hook | Original responsibility and target relationship | Migration constraints |
 | --- | --- | --- |
-| 根 postinstall | toolchain ensure；根依赖安装 | 保留首次安装自举，不调用ops，不静默转换既有管理器 |
-| 根 prepare | husky；Git hook配置 | 与已退休的symlink hook不同，不误删或恢复旧脚本 |
-| Desktop preinstall | toolchain check；子包安装 | 先核工具链，不由CLI绕开 |
-| Desktop postinstall | electron.cjs；子包安装 | APFS克隆/标准dist/独立身份，Windows沿上游；刷新不是普通检查 |
-| Desktop predev | Office→prepare:python→toolchain→identity；默认dev的隔离领域叶子 | 顺序与用户环境覆盖保持，不能跳过根debug监督/准备 |
-| Desktop predev:web | frontend；dev browser | 不新增Python/身份准备 |
-| Desktop predev:preview | frontend；dev browser --mock | Preview UI webServer同为消费者，不仅根scripts |
-| Desktop prebuild | prepare:python→toolchain；cd build local --stage app等实际build消费者 | 不与build主体Office步骤混淆，避免重复执行 |
-| Desktop prebuild:web | frontend；cd build local --target web | 保持Web产物边界 |
-| Desktop prepreview | prepare:python→toolchain→identity；暂缓ops包装的Electron产物预览 | 与predev的Office准备不同 |
-| Desktop prepreview:web | frontend；暂缓ops包装的Web产物预览 | 与Electron预览不同 |
-| Desktop preshoot | toolchain；暂缓ops包装的shoot入口 | 主体仍build→electron，不私加完整predev |
-| Desktop pretest | toolchain→runtime/构建工具契约→standards→i18n test/check；ci test --scope desktop | 不自动套到test:coverage；CI显式pretest阶段是另一消费者 |
+| Root `postinstall` | toolchain ensure; root dependency installation | Retain first-install bootstrap; do not invoke ops or silently switch the existing package manager |
+| Root `prepare` | husky; Git hook configuration | Unlike the retired symlink hook; do not accidentally delete or restore old scripts |
+| Desktop `preinstall` | toolchain check; subpackage installation | Check the toolchain first; the CLI must not bypass it |
+| Desktop `postinstall` | `electron.cjs`; subpackage installation | APFS clone/standard dist/independent identity, with Windows following upstream; refresh is not a routine check |
+| Desktop `predev` | Office → prepare:python → toolchain → identity; isolated domain leaf for default `dev` | Preserve ordering and user environment overrides; do not skip root debug supervision/setup |
+| Desktop `predev:web` | frontend; `dev browser` | Do not add Python/identity setup |
+| Desktop `predev:preview` | frontend; `dev browser --mock` | Preview UI webServer is also a consumer, not just root scripts |
+| Desktop `prebuild` | prepare:python → toolchain; actual build consumers such as `cd build local --stage app` | Do not confuse this with the build body's Office steps and avoid duplicate execution |
+| Desktop `prebuild:web` | frontend; `cd build local --target web` | Preserve the Web artifact boundary |
+| Desktop `prepreview` | prepare:python → toolchain → identity; Electron artifact preview deferred from ops wrapper | Different from `predev` Office setup |
+| Desktop `prepreview:web` | frontend; Web artifact preview deferred from ops wrapper | Different from Electron preview |
+| Desktop `preshoot` | toolchain; shoot entry point deferred from ops wrapper | Main flow remains build → electron; do not add full `predev` privately |
+| Desktop `pretest` | toolchain → runtime/build-tool contracts → standards → i18n test/check; `ci test --scope desktop` | Do not automatically apply to `test:coverage`; the explicit CI pretest stage is another consumer |
 
-Desktop其余普通scripts中内联的prepare:python、toolchain run build和package stage
-不是命名hook，仍是完整迁移单元的一部分。不能只保留表中钩子而遗漏内联前置。
+The `prepare:python`, `toolchain run build`, and package-stage steps inlined in other ordinary Desktop scripts
+are not named hooks, but remain part of the complete migration unit. Do not retain only the hooks in the table and omit inlined prerequisites.
 
-## 8. 脚本逐文件实施迁移清单
+<a id="8-脚本逐文件实施迁移清单"></a>
+## 8. Per-File Script Migration Checklist
 
-### 8.1 本次新增职责
+<a id="81-本次新增职责"></a>
+### 8.1 Responsibilities Added in This Cutover
 
-以下为本次实际新增文件，不混入旧249文件基数；测试目录是原Owner归拢位置，不是独立CLI工程。
+The following files were actually added in this cutover and are not included in the baseline count of 249 legacy files; test directories are consolidation locations for existing Owners, not a standalone CLI project.
 
-| 新路径 | 分类 / Owner | 实际消费者 | 验证方式 |
+| New path | Category / Owner | Actual consumers | Verification method |
 | --- | --- | --- | --- |
-| `apps/desktop/scripts/dev/supervision.mjs` | 开发宿主 / Desktop开发工具 | Desktop内部dev脚本，经lease-runner持有完整环境租约；非第二用户入口 | 编译/排空/停止/发布/恢复的行为回归及真实Electron验收；Windows无family proof时不自动重载 |
-| `apps/desktop/scripts/dev/__tests__/supervision.test.mjs` | 开发宿主编排回归 / Desktop开发工具 | Desktop test与coverage显式集合 | busy候选复用、源码变化、退出确认、未知状态与失败恢复；不冒充真实会话验收 |
-| `apps/desktop/scripts/dev/development.mjs` | 开发候选编译 / Desktop开发宿主 | `supervision.mjs`调用候选编译与发布，已接入隔离dev重载；候选API返回经所有权和冻结摘要核验的native Buffer，由宿主发布到本worktree的内容寻址依赖缓存避免Windows DLL锁，交原pre clean回收；不提供第二个用户入口 | 复用electron-vite配置与Vite编译，候选main/preload/protected隔离，失败仅清自身目录、canonical保持；macOS已观察编译失败保活与恢复后空闲重启，Windows仍需真实验收 |
-| `apps/desktop/scripts/dev/__tests__/development.test.mjs` | 候选编译行为回归 / Desktop开发宿主 | Desktop test与coverage显式集合；不新增pretest或递归glob | 实际Vite构建、路径转义、禁用watch、保留插件及失败清理；不是产品会话验收 |
-| `scripts/ops-cli.cjs` | 用户入口 / 仓库开发工具 | 根 `ops`；直接Node调用的显式管理器上下文复用同一script | 帮助无副作用、参数与错误、真实npm/pnpm上下文；不增加第二个worker script或参数 |
-| `scripts/shared/commands.cjs` | 命令契约与必要编排 / 仓库开发工具 | `scripts/ops-cli.cjs` | 默认链路、scope组合、无效参数先失败及Owner调用配方 |
-| `scripts/shared/execution.cjs` | 仓库定位与执行上下文 / 仓库开发工具 | `scripts/ops-cli.cjs`、`scripts/shared/commands.cjs` | 子进程退出/信号、真实管理器上下文复用与参数校验 |
-| `scripts/__tests__/ops.test.cjs` | CLI行为回归 / 仓库开发工具 | 显式tooling测试集合 | 隔离fixture中的调用、退出码、JSON及无副作用边界；非产品验收 |
-| `scripts/ci/__tests__/routing.test.cjs` | 受影响测试推荐回归 / 仓库测试路由 | 显式tooling测试集合 | `__tests__`相邻发现、fallback与未匹配目标的真实推荐结果 |
-| `scripts/shared/__tests__/interpreter.test.cjs` | 开发解释器解析回归 / Python工具链 | 依赖就绪后的显式tooling测试集合 | 受控解释器来源、拒绝不可信解析及实际宿主探针；不在安装前自举阶段执行 |
-| `scripts/shared/source.cjs` | 共享源码身份 / 仓库工具 | 固定smoke与Desktop本地/发行构建 | HEAD/index、真实源码字节、链接边界及前后稳定性；不放宽发行clean要求 |
-| `scripts/shared/__tests__/source.test.cjs` | 源码身份回归 / 仓库工具 | 显式tooling测试集合 | 临时Git仓库的dirty稳定、字节/类型/暂存/删除变化、隐藏跟踪标记及越界链接拒绝 |
-| `scripts/shared/lease.cjs` | Worktree环境资源读写租约 / 仓库开发工具 | Python/Node准备、workspace clean、Desktop长驻开发命令 | 冲突矩阵、规范路径别名、并发写入、异常保守保留及清理前阻断测试 |
-| `scripts/shared/permissions.cjs` | 私有状态ACL验证 / 跨平台开发工具 | `scripts/shared/lease.cjs` | Windows ACL主机验证未执行；macOS拒绝不可信`SystemRoot`探针及Windows专属ACL测试 |
-| `scripts/ci/docs/structure-check.mjs` | 显式文档结构CLI / 仓库文档工具 | `ci check docs workspace --mode structure` | 安全路径拒绝、链接/锚点/code_refs结构核验；复用`structure-core.mjs` |
-| `scripts/shared/__tests__/lease.test.cjs` | Worktree租约安全回归 / 仓库开发工具 | tooling固定测试集合、Desktop test及coverage | 并发读写、进程异常、保留冲突及Node/Python准备边界 |
-| `apps/desktop/scripts/dev/runner.cjs` | Desktop依赖运行时读租约及进程树监督 / Desktop开发工具 | `dev`、`dev:web`、`dev:preview`、`preview`、`preview:web` scripts及对应npm生命周期 | 真实开发启动/退出、POSIX组信号转发、Windows保守保留未确认租约 |
-| `apps/desktop/scripts/dev/__tests__/lease.test.cjs` | Desktop开发租约/中断生命周期回归 / Desktop构建开发工具 | Desktop `test`、`test:coverage`、GitLab desktop-unit覆盖率stage | 锁定包入口解析、读租约生命周期、POSIX Ctrl+C转发和租约释放；Windows树退出能力须Windows宿主验收 |
-| `apps/desktop/scripts/dev/worker.cjs` | Windows私有启动barrier / Desktop开发宿主 | `supervision.mjs`的Job管理；Job attach成功后才spawn Electron，经stdin转发bootstrap，IPC受限schema；不是用户入口或通用执行器 | 参数、permission与错误边界；真实Windows Job和子代退出仍需Windows宿主验证 |
-| `apps/desktop/scripts/dev/__tests__/worker.test.cjs` | Windows开发启动barrier回归 / Desktop开发工具 | Desktop test/coverage的精确集合，不加入pretest | macOS真实Node fixture验证permission、错误、参数及退出码；Windows真实Job子代计数需`SCHOLARSEED_LEASE_LIBRARY`和Windows宿主，不以条件跳过代替验收 |
+| `apps/desktop/scripts/dev/supervision.mjs` | Development host / Desktop development tooling | Internal Desktop dev script; holds the complete environment lease through lease-runner; not a second user entry point | Behavioral regression for compile/drain/stop/publish/recovery and real Electron acceptance; no automatic reload on Windows without family proof |
+| `apps/desktop/scripts/dev/__tests__/supervision.test.mjs` | Development-host orchestration regression / Desktop development tooling | Explicit Desktop test and coverage sets | Busy-candidate reuse, source changes, exit confirmation, unknown state, and failure recovery; not a substitute for real-session acceptance |
+| `apps/desktop/scripts/dev/development.mjs` | Development candidate compilation / Desktop development host | Called by `supervision.mjs` for candidate compilation and publishing; integrated with isolated dev reload. Candidate API returns a native Buffer verified by ownership and frozen digest; the host publishes it to a content-addressed dependency cache in this worktree to avoid Windows DLL locks, and original `pre clean` reclaims it; no second user entry point | Reuses electron-vite configuration and Vite compilation; isolates candidate main/preload/protected outputs; on failure clears only its own directory and preserves canonical output. macOS has observed compile-failure survival and idle restart after recovery; Windows still requires real acceptance |
+| `apps/desktop/scripts/dev/__tests__/development.test.mjs` | Candidate compilation behavior regression / Desktop development host | Explicit Desktop test and coverage sets; adds no pretest or recursive glob | Actual Vite build, path escaping, disabled watch, retained plugins, and failure cleanup; not product-session acceptance |
+| `scripts/ops-cli.cjs` | User entry point / repository development tooling | Root `ops`; direct Node invocation with explicit manager context reuses the same script | Side-effect-free help, argument/error handling, real npm/pnpm context; no second worker script or parameter |
+| `scripts/shared/commands.cjs` | Command contract and necessary orchestration / repository development tooling | `scripts/ops-cli.cjs` | Default chains, scope combinations, fail-fast invalid arguments, and Owner invocation recipes |
+| `scripts/shared/execution.cjs` | Repository location and execution context / repository development tooling | `scripts/ops-cli.cjs`, `scripts/shared/commands.cjs` | Child-process exits/signals, real manager-context reuse, and argument validation |
+| `scripts/__tests__/ops.test.cjs` | CLI behavior regression / repository development tooling | Explicit tooling test set | Calls, exit codes, JSON, and side-effect boundaries in isolated fixtures; not product acceptance |
+| `scripts/ci/__tests__/routing.test.cjs` | Affected-test recommendation regression / repository test routing | Explicit tooling test set | Actual recommendation result for adjacent `__tests__` discovery, fallback, and unmatched targets |
+| `scripts/shared/__tests__/interpreter.test.cjs` | Development interpreter resolution regression / Python toolchain | Explicit tooling test set after dependencies are ready | Controlled interpreter source, rejection of untrusted resolution, and actual host probes; not run during pre-install bootstrap |
+| `scripts/shared/source.cjs` | Shared source identity / repository tooling | Fixed smoke and Desktop local/release builds | HEAD/index, actual source bytes, link boundary, and before/after stability; do not relax release clean requirements |
+| `scripts/shared/__tests__/source.test.cjs` | Source identity regression / repository tooling | Explicit tooling test set | Dirty-state stability in temporary Git repositories, byte/type/stage/delete changes, hidden tracking markers, and rejection of out-of-bounds links |
+| `scripts/shared/lease.cjs` | Worktree environment-resource read/write lease / repository development tooling | Python/Node setup, workspace clean, long-running Desktop development commands | Conflict matrix, canonical path aliases, concurrent writes, conservative retention on exceptions, and blocking before cleanup |
+| `scripts/shared/permissions.cjs` | Private-state ACL verification / cross-platform development tooling | `scripts/shared/lease.cjs` | Windows ACL host verification not run; macOS rejects untrusted `SystemRoot` probe and Windows-specific ACL tests |
+| `scripts/ci/docs/structure-check.mjs` | Explicit documentation-structure CLI / repository docs tooling | `ci check docs workspace --mode structure` | Reject unsafe paths; verify link/anchor/code_refs structure; reuse `structure-core.mjs` |
+| `scripts/shared/__tests__/lease.test.cjs` | Worktree lease security regression / repository development tooling | Fixed tooling test set, Desktop test and coverage | Concurrent reads/writes, process failures, retained conflicts, and Node/Python setup boundaries |
+| `apps/desktop/scripts/dev/runner.cjs` | Desktop dependency runtime read lease and process-tree supervision / Desktop development tooling | `dev`, `dev:web`, `dev:preview`, `preview`, `preview:web` scripts and their npm lifecycles | Real development startup/shutdown, POSIX process-group signal forwarding, and conservative retention of unconfirmed leases on Windows |
+| `apps/desktop/scripts/dev/__tests__/lease.test.cjs` | Desktop development lease/interruption lifecycle regression / Desktop build tooling | Desktop `test`, `test:coverage`, GitLab desktop-unit coverage stage | Lock package entry resolution, read-lease lifecycle, POSIX Ctrl+C forwarding, and lease release; Windows tree shutdown requires Windows-host acceptance |
+| `apps/desktop/scripts/dev/worker.cjs` | Private Windows startup barrier / Desktop development host | Job management for `supervision.mjs`; spawns Electron only after Job attachment succeeds, forwards bootstrap via stdin, and restricts IPC schema; not a user entry point or general-purpose executor | Parameter, permission, and error boundaries; real Windows Job and child-process shutdown still require Windows-host verification |
+| `apps/desktop/scripts/dev/__tests__/worker.test.cjs` | Windows development startup-barrier regression / Desktop development tooling | Exact Desktop test/coverage set; not included in pretest | Real Node fixtures on macOS verify permissions, errors, parameters, and exit codes; counting actual Windows Job children requires `SCHOLARSEED_LEASE_LIBRARY` and a Windows host; conditional skipping is not acceptance |
 
-公开投影Python安全回归由GitLab的`public-projection`显式job和完整quality的
-`python-public-projection`阶段运行，仅选择`scripts/cd/public/__tests__/test_sync.py`；
-不加入Desktop coverage/pretest，不改变固定smoke或原测试选择。Python环境复用现有
-开发依赖准备（pytest；PyYAML与packaging由Serve依赖声明承接），测试还需要git、git-lfs与Node。
-本地依赖就绪不证明容器流水线已运行，公开投影测试通过也不等同真实全树导出通过。
+Public-projection Python safety regression runs in GitLab’s explicit `public-projection` job and the full-quality
+`python-public-projection` stage, selecting only `scripts/cd/public/__tests__/test_sync.py`;
+It is not added to Desktop coverage/pretest and does not change the fixed smoke test or original test selection. The Python environment reuses the existing
+development dependency setup (`pytest`; Serve dependency declarations provide PyYAML and packaging); the test also requires git, git-lfs, and Node.
+Local dependency readiness does not prove that the container pipeline has run, and passing the public-projection test is not equivalent to a successful full-tree export.
 
-2026-10-23 macOS开发宿主新增观察：候选编译失败时原Electron PID `19531`和后端
-PID `19574`保持运行，没有先停止旧实例。恢复源码后，日志`tmp/ops-dev-runtime.log:1418`
-记录空闲且clean状态下完成重启；截图`tmp/test_snapshot/ops-preload-recovered.png`已由
-主线程打开核验恢复界面。退出后status为stopped，任务进程与租约已清理。该证据不证明
-活跃会话保护或Windows进程树能力；Windows Job/worker源码已接线，但真实平台验收仍待补齐。
+New observation on the macOS development host on 2026-10-23: when candidate compilation failed, the original Electron PID `19531` and backend
+PID `19574` remained running; the old instance was not stopped first. After restoring the source, log entry `tmp/ops-dev-runtime.log:1418`
+records a successful restart while idle and clean; the screenshot `tmp/test_snapshot/ops-preload-recovered.png` was opened and checked by
+the main thread, which verified the recovered interface. After exit, status was stopped and task processes and the lease were cleaned up. This evidence does not prove
+active-session protection or Windows process-tree capability; Windows Job/worker source is wired, but real-platform acceptance remains outstanding.
 
-### 8.2 既有文件处置
+<a id="82-既有文件处置"></a>
+### 8.2 Disposition of Existing Files
 
-本次追加源码状态策略：固定smoke与本地dev构建允许起始dirty，但必须保存真实状态与
-前后相同的源码指纹；完整quality、preview/release/candidate及安装包验收工作流仍要求
-clean。该策略由共享源码身份Owner承接，不修改核心用例、签名或发布资格。
+This cutover adds a source-state policy: fixed smoke and local dev builds may start dirty, but must record the actual state and
+the same source fingerprint before and after; full quality, preview/release/candidate, and installer acceptance workflows still require
+a clean tree. The shared source-identity Owner owns this policy; it does not change core cases, signing, or release eligibility.
 
-本表以实施前HEAD `92f949471a45161c162dfc4ec229f838a09d148f` 的Git索引249个文件为盘点边界（根scripts 105、Desktop scripts 144）；
-86个既有测试按原Owner就近移入__tests__，非测试文件保留领域归属，公开分发和重复编排
-由ops接管而非机械按pre/dev/ci/cd重搬。忽略的bytecode和本次新增ops源码不计入旧文件数。
-“消费者”列来自实施前HEAD的精确路径静态引用，非调用闭包证明；未检出不代表可删除，
-同级require/import、动态清单和安装hook还须按该行Owner及迁移后相对路径验证。验证列是
-必需验证方法，不表示本表所有平台验收已通过。旧路径保留为来源证据，不是兼容入口。
+This table inventories the 249 files in the Git index at pre-implementation HEAD `92f949471a45161c162dfc4ec229f838a09d148f` (105 root scripts and 144 Desktop scripts);
+86 existing tests were moved close to their original Owners under `__tests__`; non-test files retain their domain ownership, while public distribution and duplicate orchestration
+are taken over by ops rather than mechanically relocating everything into `pre`/`dev`/`ci`/`cd`. Ignored bytecode and new ops source added in this cutover are excluded from the legacy file count.
+The “Consumers” column comes from exact-path static references at the pre-implementation HEAD and does not prove the full call closure; a missing match does not mean a file can be deleted.
+Sibling `require`/`import` references, dynamic manifests, and installation hooks must also be checked against the Owner in each row and the post-migration relative paths. The verification column lists
+required verification methods; it does not mean acceptance on every platform listed here has passed. Original paths are retained as source evidence, not compatibility entry points.
 
-| 原路径 | 目标路径/处置 | 分类 | Owner | 静态路径消费者（最多3处） | 验证方式 |
+| Original path | Target path/disposition | Category | Owner | Static path consumers (up to 3) | Verification method |
 | --- | --- | --- | --- | --- | --- |
-| `apps/desktop/scripts/acceptance.cjs` | `apps/desktop/scripts/cd/acceptance.cjs`（保留Owner） | 领域机制/构建自举 | Desktop构建/运行时 | 未检出精确路径；核同级模块/动态消费者 | 原构建/运行时契约与实际宿主探针 |
-| `apps/desktop/scripts/acceptance.test.cjs` | `apps/desktop/scripts/cd/__tests__/acceptance.test.cjs`（移动） | 测试 | Desktop构建/开发工具 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/archive_inventory.py` | `apps/desktop/scripts/cd/archive_inventory.py`（保留Owner） | 领域机制/构建自举 | Desktop构建/运行时 | 未检出精确路径；核同级模块/动态消费者 | 原构建/运行时契约与实际宿主探针 |
-| `apps/desktop/scripts/archive_inventory.test.cjs` | `apps/desktop/scripts/cd/__tests__/archive_inventory.test.cjs`（移动） | 测试 | Desktop构建/开发工具 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/archive_inventory_test.py` | `apps/desktop/scripts/cd/__tests__/archive_inventory_test.py`（移动） | 测试 | Desktop构建/开发工具 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/assembly.cjs` | `apps/desktop/scripts/cd/assembly.cjs`（保留Owner） | 领域机制/构建自举 | Desktop构建/运行时 | `apps/desktop/scripts/component-cache.cjs` | 原构建/运行时契约与实际宿主探针 |
-| `apps/desktop/scripts/assembly.test.cjs` | `apps/desktop/scripts/cd/__tests__/assembly.test.cjs`（移动） | 测试 | Desktop构建/开发工具 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/branding.cjs` | `apps/desktop/scripts/cd/branding.cjs`（保留Owner） | 领域机制/构建自举 | Desktop构建/运行时 | 未检出精确路径；核同级模块/动态消费者 | 原构建/运行时契约与实际宿主探针 |
-| `apps/desktop/scripts/branding.test.cjs` | `apps/desktop/scripts/cd/__tests__/branding.test.cjs`（移动） | 测试 | Desktop构建/开发工具 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/browser.cjs` | `apps/desktop/scripts/cd/browser.cjs`（保留Owner） | 领域机制/构建自举 | Desktop构建/运行时 | `scripts/BUILD.md` | 原构建/运行时契约与实际宿主探针 |
-| `apps/desktop/scripts/browser.test.cjs` | `apps/desktop/scripts/cd/__tests__/browser.test.cjs`（移动） | 测试 | Desktop构建/开发工具 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/build-state.cjs` | `apps/desktop/scripts/shared/build-state.cjs`（保留Owner） | 领域机制/构建自举 | Desktop构建/运行时 | `docs/runbooks/windows.md`、`scripts/shared/dependencies.cjs`、`scripts/npm-installed-cache.test.cjs` | 原构建/运行时契约与实际宿主探针 |
-| `apps/desktop/scripts/build.cjs` | `apps/desktop/scripts/cd/build.cjs`（保留Owner） | 领域机制/构建自举 | Desktop构建/运行时 | `README_zh.md`、`docs/architecture/persistence.md`、`docs/index.md` | 原构建/运行时契约与实际宿主探针 |
-| `apps/desktop/scripts/build.test.cjs` | `apps/desktop/scripts/cd/__tests__/build.test.cjs`（移动） | 测试 | Desktop构建/开发工具 | `docs/runbooks/development.md`、`scripts/cd/public/README.md`、`scripts/cd/public/overlay.patch` | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/bundle.cjs` | `apps/desktop/scripts/cd/bundle.cjs`（保留Owner） | 领域机制/构建自举 | Desktop构建/运行时 | `apps/desktop/scripts/assembly.test.cjs`、`scripts/cd/public/overlay.patch`、`work-records/proposals/2026-10-17/windows-build-optimization/plan.md` | 原构建/运行时契约与实际宿主探针 |
-| `apps/desktop/scripts/bundle.test.cjs` | `apps/desktop/scripts/cd/__tests__/bundle.test.cjs`（移动） | 测试 | Desktop构建/开发工具 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/bytecode.py` | `apps/desktop/scripts/cd/bytecode.py`（保留Owner） | 领域机制/构建自举 | Desktop构建/运行时 | `.gitattributes`、`apps/desktop/scripts/shared/component-cache.cjs` | 原构建/运行时契约与实际宿主探针 |
-| `apps/desktop/scripts/bytecode.test.cjs` | `apps/desktop/scripts/cd/__tests__/bytecode.test.cjs`（移动） | 测试 | Desktop构建/开发工具 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/bytecode_test.py` | `apps/desktop/scripts/cd/__tests__/bytecode_test.py`（移动） | 测试 | Desktop构建/开发工具 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/cache.cjs` | `apps/desktop/scripts/cd/cache.cjs`（保留Owner） | 领域机制/构建自举 | Desktop构建/运行时 | 未检出精确路径；核同级模块/动态消费者 | 原构建/运行时契约与实际宿主探针 |
-| `apps/desktop/scripts/cache.test.cjs` | `apps/desktop/scripts/cd/__tests__/cache.test.cjs`（移动） | 测试 | Desktop构建/开发工具 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/closure.cjs` | `apps/desktop/scripts/cd/closure.cjs`（保留Owner） | 领域机制/构建自举 | Desktop构建/运行时 | `scripts/BUILD.md`、`work-records/proposals/2026-10-22/feedback-zip/plan.md` | 原构建/运行时契约与实际宿主探针 |
-| `apps/desktop/scripts/closure.test.cjs` | `apps/desktop/scripts/cd/__tests__/closure.test.cjs`（移动） | 测试 | Desktop构建/开发工具 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/compiler.cjs` | `apps/desktop/scripts/cd/compiler.cjs`（保留Owner） | 领域机制/构建自举 | Desktop构建/运行时 | 未检出精确路径；核同级模块/动态消费者 | 原构建/运行时契约与实际宿主探针 |
-| `apps/desktop/scripts/compiler.test.cjs` | `apps/desktop/scripts/cd/__tests__/compiler.test.cjs`（移动） | 测试 | Desktop构建/开发工具 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/shared/component-cache.cjs` | `apps/desktop/scripts/shared/component-cache.cjs`（保留Owner） | 领域机制/构建自举 | Desktop构建/运行时 | `work-records/proposals/2026-10-17/windows-build-optimization/plan.md` | 原构建/运行时契约与实际宿主探针 |
-| `apps/desktop/scripts/component-cache.test.cjs` | `apps/desktop/scripts/shared/__tests__/component-cache.test.cjs`（显式登记） | 确定性宿主集成测试 | Desktop构建/开发工具 | `apps/desktop/scripts/ci/test.cjs`、`scripts/cd/public/policy.json` | 普通coverage直接承接真实ZIP/临时文件覆盖；build聚合不再重复导入，不代表原生制品验收 |
-| `apps/desktop/scripts/compression.cjs` | `apps/desktop/scripts/cd/compression.cjs`（保留Owner） | 领域机制/构建自举 | Desktop构建/运行时 | `apps/desktop/scripts/shared/component-cache.cjs` | 原构建/运行时契约与实际宿主探针 |
-| `apps/desktop/scripts/compression.test.cjs` | `apps/desktop/scripts/cd/__tests__/compression.test.cjs`（移动） | 测试 | Desktop构建/开发工具 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/css.baseline.json` | `apps/desktop/scripts/ci/css.baseline.json`（保留Owner） | 配置/声明/文档 | 相邻领域 | 未检出精确路径；核同级模块/动态消费者 | 原消费者及结构/声明检查 |
-| `apps/desktop/scripts/css.exceptions.json` | `apps/desktop/scripts/ci/css.exceptions.json`（保留Owner） | 配置/声明/文档 | 相邻领域 | `.agents/skills/ui-component-reuse/SKILL.md` | 原消费者及结构/声明检查 |
-| `apps/desktop/scripts/css.mjs` | `apps/desktop/scripts/ci/css.mjs`（保留Owner） | 质量实现 | Desktop质量 | 未检出精确路径；核同级模块/动态消费者 | 原质量与i18n集合；不改baseline |
-| `apps/desktop/scripts/digest.cjs` | `apps/desktop/scripts/shared/digest.cjs`（保留Owner） | 领域机制/构建自举 | Desktop构建/运行时 | `scripts/BUILD.md` | 原构建/运行时契约与实际宿主探针 |
-| `apps/desktop/scripts/electron.cjs` | `apps/desktop/scripts/pre/electron.cjs`（保留Owner） | 领域机制/构建自举 | Desktop构建/运行时 | `docs/runbooks/development.md` | 原构建/运行时契约与实际宿主探针 |
-| `apps/desktop/scripts/electron.test.cjs` | `apps/desktop/scripts/pre/__tests__/electron.test.cjs`（移动） | 测试 | Desktop构建/开发工具 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/engine.cjs` | `apps/desktop/scripts/cd/engine.cjs`（保留Owner） | 领域机制/构建自举 | Desktop构建/运行时 | `apps/desktop/scripts/shared/component-cache.cjs` | 原构建/运行时契约与实际宿主探针 |
-| `apps/desktop/scripts/engine.test.cjs` | `apps/desktop/scripts/cd/__tests__/engine.test.cjs`（移动） | 测试 | Desktop构建/开发工具 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/enginecheck.test.cjs` | `apps/desktop/scripts/cd/__tests__/enginecheck.test.cjs`（移动） | 测试 | Desktop构建/开发工具 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/fontconfig.cjs` | `apps/desktop/scripts/cd/fontconfig.cjs`（保留Owner） | 领域机制/构建自举 | Desktop构建/运行时 | `apps/desktop/native/fontconfig/README.md` | 原构建/运行时契约与实际宿主探针 |
-| `apps/desktop/scripts/fonts.cjs` | `apps/desktop/scripts/cd/fonts.cjs`（保留Owner） | 领域机制/构建自举 | Desktop构建/运行时 | `work-records/2026-10-13/office-font-duplicates-87640187/preparation.md`、`work-records/2026-10-13/office-font-duplicates-87640187/result.md` | 原构建/运行时契约与实际宿主探针 |
-| `apps/desktop/scripts/handoff.cjs` | `apps/desktop/scripts/cd/handoff.cjs`（保留Owner） | 发行安全机制 | Desktop发行/安装 | `work-records/proposals/2026-10-17/windows-install-directory/plan.md` | 原契约；受影响平台原生验收 |
-| `apps/desktop/scripts/handoff.test.cjs` | `apps/desktop/scripts/cd/__tests__/handoff.test.cjs`（移动） | 测试 | Desktop构建/开发工具 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/identity.cjs` | `apps/desktop/scripts/pre/identity.cjs`（保留Owner） | 领域机制/构建自举 | Desktop构建/运行时 | `docs/runbooks/development.md` | 原构建/运行时契约与实际宿主探针 |
-| `apps/desktop/scripts/installation-mutex.ps1` | `apps/desktop/scripts/cd/installation-mutex.ps1`（保留Owner） | 发行安全机制 | Desktop发行/安装 | 未检出精确路径；核同级模块/动态消费者 | 原契约；受影响平台原生验收 |
-| `apps/desktop/scripts/installation.cjs` | `apps/desktop/scripts/cd/installation.cjs`（保留Owner） | 发行安全机制 | Desktop发行/安装 | 未检出精确路径；核同级模块/动态消费者 | 原契约；受影响平台原生验收 |
-| `apps/desktop/scripts/installation.test.cjs` | `apps/desktop/scripts/cd/__tests__/installation.test.cjs`（移动） | 测试 | Desktop构建/开发工具 | `scripts/BUILD.md` | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/installer.test.cjs` | `apps/desktop/scripts/cd/__tests__/installer.test.cjs`（移动） | 测试 | Desktop构建/开发工具 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/lease.d.mts` | `apps/desktop/scripts/shared/lease.d.mts`（保留Owner） | 配置/声明/文档 | 相邻领域 | 未检出精确路径；核同级模块/动态消费者 | 原消费者及结构/声明检查 |
-| `apps/desktop/scripts/lease.mjs` | `apps/desktop/scripts/shared/lease.mjs`（保留Owner） | 领域机制/构建自举 | Desktop构建/运行时 | 未检出精确路径；核同级模块/动态消费者 | 原构建/运行时契约与实际宿主探针 |
-| `apps/desktop/scripts/legacy-files.json` | `apps/desktop/scripts/cd/legacy-files.json`（保留Owner） | 配置/声明/文档 | 相邻领域 | `.gitattributes` | 原消费者及结构/声明检查 |
-| `apps/desktop/scripts/legacy.json` | `apps/desktop/scripts/cd/legacy.json`（保留Owner） | 配置/声明/文档 | 相邻领域 | 未检出精确路径；核同级模块/动态消费者 | 原消费者及结构/声明检查 |
-| `apps/desktop/scripts/locales.cjs` | `apps/desktop/scripts/ci/locales.cjs`（保留Owner） | 领域机制/构建自举 | Desktop构建/运行时 | 未检出精确路径；核同级模块/动态消费者 | 原构建/运行时契约与实际宿主探针 |
-| `apps/desktop/scripts/localization.mjs` | `apps/desktop/scripts/ci/localization.mjs`（保留Owner） | 质量实现 | Desktop质量 | `apps/desktop/docs/work/i18n-verification.md`、`work-records/20260928-permission-switch-87153274/verification.md`、`work-records/20260929-office-recovery/verification.md` | 原质量与i18n集合；不改baseline |
-| `apps/desktop/scripts/localization/calls.mjs` | `apps/desktop/scripts/ci/localization/calls.mjs`（保留Owner） | 质量实现 | Desktop质量 | 未检出精确路径；核同级模块/动态消费者 | 原质量与i18n集合；不改baseline |
-| `apps/desktop/scripts/ci/localization/calls.test.mjs` | `apps/desktop/scripts/ci/localization/__tests__/calls.test.mjs`（移动） | 测试 | Desktop国际化 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/ci/localization/components.test.mjs` | `apps/desktop/scripts/ci/localization/__tests__/components.test.mjs`（移动） | 测试 | Desktop国际化 | `apps/desktop/docs/work/plan/i18n-plan.md` | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/localization/debt.json` | `apps/desktop/scripts/ci/localization/debt.json`（保留Owner） | 配置/声明/文档 | 相邻领域 | 未检出精确路径；核同级模块/动态消费者 | 原消费者及结构/声明检查 |
-| `apps/desktop/scripts/localization/dom.d.mts` | `apps/desktop/scripts/ci/localization/dom.d.mts`（保留Owner） | 配置/声明/文档 | 相邻领域 | 未检出精确路径；核同级模块/动态消费者 | 原消费者及结构/声明检查 |
-| `apps/desktop/scripts/localization/dom.mjs` | `apps/desktop/scripts/ci/localization/dom.mjs`（保留Owner） | 质量实现 | Desktop质量 | 未检出精确路径；核同级模块/动态消费者 | 原质量与i18n集合；不改baseline |
-| `apps/desktop/scripts/ci/localization/dom.test.mjs` | `apps/desktop/scripts/ci/localization/__tests__/dom.test.mjs`（移动） | 测试 | Desktop国际化 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/ci/localization/engine.test.mjs` | `apps/desktop/scripts/ci/localization/__tests__/engine.test.mjs`（移动） | 测试 | Desktop国际化 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/ci/localization/examples.test.mjs` | `apps/desktop/scripts/ci/localization/__tests__/examples.test.mjs`（移动） | 测试 | Desktop国际化 | `scripts/public/overlay.patch` | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/ci/localization/format.test.mjs` | `apps/desktop/scripts/ci/localization/__tests__/format.test.mjs`（移动） | 测试 | Desktop国际化 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/localization/gaps.mjs` | `apps/desktop/scripts/ci/localization/gaps.mjs`（保留Owner） | 质量实现 | Desktop质量 | 未检出精确路径；核同级模块/动态消费者 | 原质量与i18n集合；不改baseline |
-| `apps/desktop/scripts/localization/git.mjs` | `apps/desktop/scripts/ci/localization/git.mjs`（保留Owner） | 质量实现 | Desktop质量 | 未检出精确路径；核同级模块/动态消费者 | 原质量与i18n集合；不改baseline |
-| `apps/desktop/scripts/ci/localization/git.test.mjs` | `apps/desktop/scripts/ci/localization/__tests__/git.test.mjs`（移动） | 测试 | Desktop国际化 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/ci/localization/preferences.test.mjs` | `apps/desktop/scripts/ci/localization/__tests__/preferences.test.mjs`（移动） | 测试 | Desktop国际化 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/ci/localization/prettier.test.mjs` | `apps/desktop/scripts/ci/localization/__tests__/prettier.test.mjs`（移动） | 测试 | Desktop国际化 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/localization/resources.mjs` | `apps/desktop/scripts/ci/localization/resources.mjs`（保留Owner） | 质量实现 | Desktop质量 | 未检出精确路径；核同级模块/动态消费者 | 原质量与i18n集合；不改baseline |
-| `apps/desktop/scripts/ci/localization/resources.test.mjs` | `apps/desktop/scripts/ci/localization/__tests__/resources.test.mjs`（移动） | 测试 | Desktop国际化 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/localization/source.mjs` | `apps/desktop/scripts/ci/localization/source.mjs`（保留Owner） | 质量实现 | Desktop质量 | 未检出精确路径；核同级模块/动态消费者 | 原质量与i18n集合；不改baseline |
-| `apps/desktop/scripts/ci/localization/source.test.mjs` | `apps/desktop/scripts/ci/localization/__tests__/source.test.mjs`（移动） | 测试 | Desktop国际化 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/localization/staged.mjs` | `apps/desktop/scripts/ci/localization/staged.mjs`（保留Owner） | 质量实现 | Desktop质量 | 未检出精确路径；核同级模块/动态消费者 | 原质量与i18n集合；不改baseline |
-| `apps/desktop/scripts/ci/localization/staged.test.mjs` | `apps/desktop/scripts/ci/localization/__tests__/staged.test.mjs`（移动） | 测试 | Desktop国际化 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/macho.cjs` | `apps/desktop/scripts/cd/macho.cjs`（保留Owner） | 发行安全机制 | Desktop发行/安装 | 未检出精确路径；核同级模块/动态消费者 | 原契约；受影响平台原生验收 |
-| `apps/desktop/scripts/mutex.test.cjs` | `apps/desktop/scripts/cd/__tests__/mutex.test.cjs`（移动） | 测试 | Desktop构建/开发工具 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/native-contract.cjs` | `apps/desktop/scripts/ci/native-contract.cjs`（保留Owner） | 领域机制/构建自举 | Desktop构建/运行时 | 未检出精确路径；核同级模块/动态消费者 | 原构建/运行时契约与实际宿主探针 |
-| `apps/desktop/scripts/native.cjs` | `apps/desktop/scripts/shared/native.cjs`（保留Owner） | 领域机制/构建自举 | Desktop构建/运行时 | `apps/desktop/native/README.md`、`docs/runbooks/windows.md`、`work-records/2026-10-13/office-font-duplicates-87640187/plan.md` | 原构建/运行时契约与实际宿主探针 |
-| `apps/desktop/scripts/native.test.cjs` | `apps/desktop/scripts/shared/__tests__/native.test.cjs`（移动） | 测试 | Desktop构建/开发工具 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/node.sh` | `apps/desktop/scripts/cd/node.sh`（保留Owner） | 领域机制/构建自举 | Desktop构建/运行时 | 未检出精确路径；核同级模块/动态消费者 | 原构建/运行时契约与实际宿主探针 |
-| `apps/desktop/scripts/normalize.py` | `apps/desktop/scripts/cd/normalize.py`（保留Owner） | 领域机制/构建自举 | Desktop构建/运行时 | `apps/desktop/scripts/shared/component-cache.cjs` | 原构建/运行时契约与实际宿主探针 |
-| `apps/desktop/scripts/notarize.cjs` | `apps/desktop/scripts/cd/notarize.cjs`（保留Owner） | 发行安全机制 | Desktop发行/安装 | `.env.example`、`scripts/cd/public/overlay.patch` | 原契约；受影响平台原生验收 |
-| `apps/desktop/scripts/notices.cjs` | `apps/desktop/scripts/cd/notices.cjs`（保留Owner） | 领域机制/构建自举 | Desktop构建/运行时 | 未检出精确路径；核同级模块/动态消费者 | 原构建/运行时契约与实际宿主探针 |
-| `apps/desktop/scripts/office-assets.cjs` | `apps/desktop/scripts/pre/office-assets.cjs`（保留Owner） | 领域机制/构建自举 | Desktop构建/运行时 | 未检出精确路径；核同级模块/动态消费者 | 原构建/运行时契约与实际宿主探针 |
-| `apps/desktop/scripts/office.test.cjs` | `apps/desktop/scripts/pre/__tests__/office.test.cjs`（移动） | 测试 | Desktop构建/开发工具 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/package.cjs` | `apps/desktop/scripts/cd/package.cjs`（保留Owner） | 领域机制/构建自举 | Desktop构建/运行时 | `scripts/BUILD.md` | 原构建/运行时契约与实际宿主探针 |
-| `apps/desktop/scripts/payload.cjs` | `apps/desktop/scripts/cd/payload.cjs`（保留Owner） | 领域机制/构建自举 | Desktop构建/运行时 | 未检出精确路径；核同级模块/动态消费者 | 原构建/运行时契约与实际宿主探针 |
-| `apps/desktop/scripts/payload.py` | `apps/desktop/scripts/cd/payload.py`（保留Owner） | 领域机制/构建自举 | Desktop构建/运行时 | `apps/desktop/scripts/shared/component-cache.cjs`、`apps/desktop/scripts/compression.test.cjs` | 原构建/运行时契约与实际宿主探针 |
-| `apps/desktop/scripts/payload.test.cjs` | `apps/desktop/scripts/cd/__tests__/payload.test.cjs`（移动） | 测试 | Desktop构建/开发工具 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/payload_test.py` | `apps/desktop/scripts/cd/__tests__/payload_test.py`（移动） | 测试 | Desktop构建/开发工具 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/probe.cjs` | `apps/desktop/scripts/shared/probe.cjs`（保留Owner） | 领域机制/构建自举 | Desktop构建/运行时 | `scripts/cd/public/overlay.patch` | 原构建/运行时契约与实际宿主探针 |
-| `apps/desktop/scripts/python.test.cjs` | `apps/desktop/scripts/shared/__tests__/python.test.cjs`（移动） | 测试 | Desktop构建/开发工具 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/registration.cjs` | `apps/desktop/scripts/cd/registration.cjs`（保留Owner） | 发行安全机制 | Desktop发行/安装 | 未检出精确路径；核同级模块/动态消费者 | 原契约；受影响平台原生验收 |
-| `apps/desktop/scripts/registration.ps1` | `apps/desktop/scripts/cd/registration.ps1`（保留Owner） | 发行安全机制 | Desktop发行/安装 | 未检出精确路径；核同级模块/动态消费者 | 原契约；受影响平台原生验收 |
-| `apps/desktop/scripts/registration.psm1` | `apps/desktop/scripts/cd/registration.psm1`（保留Owner） | 发行安全机制 | Desktop发行/安装 | 未检出精确路径；核同级模块/动态消费者 | 原契约；受影响平台原生验收 |
-| `apps/desktop/scripts/registration.test.cjs` | `apps/desktop/scripts/cd/__tests__/registration.test.cjs`（移动） | 测试 | Desktop构建/开发工具 | `scripts/BUILD.md` | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/registration.test.ps1` | `apps/desktop/scripts/cd/__tests__/registration.test.ps1`（移动） | 测试 | Desktop构建/开发工具 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/reuse.baseline.json` | `apps/desktop/scripts/ci/reuse.baseline.json`（保留Owner） | 配置/声明/文档 | 相邻领域 | 未检出精确路径；核同级模块/动态消费者 | 原消费者及结构/声明检查 |
-| `apps/desktop/scripts/reuse.mjs` | `apps/desktop/scripts/ci/reuse.mjs`（保留Owner） | 质量实现 | Desktop质量 | `apps/desktop/scripts/ci/find.mjs` | 原质量与i18n集合；不改baseline |
-| `apps/desktop/scripts/reuse.policy.json` | `apps/desktop/scripts/ci/reuse.policy.json`（保留Owner） | 配置/声明/文档 | 相邻领域 | 未检出精确路径；核同级模块/动态消费者 | 原消费者及结构/声明检查 |
-| `apps/desktop/scripts/reuse.test.mjs` | `apps/desktop/scripts/ci/__tests__/reuse.test.mjs`（移动） | 测试 | Desktop构建/开发工具 | `work-records/20260929-ai-project-breadcrumb/result.md` | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/seal.cjs` | `apps/desktop/scripts/cd/seal.cjs`（保留Owner） | 发行安全机制 | Desktop发行/安装 | `work-records/2026-10-13/office-font-duplicates-87640187/plan.md`、`work-records/proposals/2026-10-17/windows-build-optimization/plan.md` | 原契约；受影响平台原生验收 |
-| `apps/desktop/scripts/seal.test.cjs` | `apps/desktop/scripts/cd/__tests__/seal.test.cjs`（移动） | 测试 | Desktop构建/开发工具 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/setup.cjs` | `apps/desktop/scripts/cd/setup.cjs`（保留Owner） | 领域机制/构建自举 | Desktop构建/运行时 | `scripts/BUILD.md` | 原构建/运行时契约与实际宿主探针 |
-| `apps/desktop/scripts/setup.test.cjs` | `apps/desktop/scripts/cd/__tests__/setup.test.cjs`（移动） | 测试 | Desktop构建/开发工具 | `apps/desktop/updater/README.md` | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/shipit.cjs` | `apps/desktop/scripts/cd/shipit.cjs`（保留Owner） | 发行安全机制 | Desktop发行/安装 | `work-records/proposals/2026-10-13/shipit-cleanup/plan.md` | 原契约；受影响平台原生验收 |
-| `apps/desktop/scripts/shipit.test.cjs` | `apps/desktop/scripts/cd/__tests__/shipit.test.cjs`（移动） | 测试 | Desktop构建/开发工具 | `work-records/proposals/2026-10-13/shipit-preparation/plan.md` | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/sign.cjs` | `apps/desktop/scripts/cd/sign.cjs`（保留Owner） | 发行安全机制 | Desktop发行/安装 | 未检出精确路径；核同级模块/动态消费者 | 原契约；受影响平台原生验收 |
-| `apps/desktop/scripts/signer.cjs` | `apps/desktop/scripts/cd/signer.cjs`（保留Owner） | 发行安全机制 | Desktop发行/安装 | 未检出精确路径；核同级模块/动态消费者 | 原契约；受影响平台原生验收 |
-| `apps/desktop/scripts/squirrel.cjs` | `apps/desktop/scripts/cd/squirrel.cjs`（保留Owner） | 发行安全机制 | Desktop发行/安装 | 未检出精确路径；核同级模块/动态消费者 | 原契约；受影响平台原生验收 |
-| `apps/desktop/scripts/squirrel.test.cjs` | `apps/desktop/scripts/cd/__tests__/squirrel.test.cjs`（移动） | 测试 | Desktop构建/开发工具 | `work-records/proposals/2026-10-13/shipit-preparation/plan.md` | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/standards.baseline.json` | `apps/desktop/scripts/ci/standards.baseline.json`（保留Owner） | 配置/声明/文档 | 相邻领域 | `scripts/public/policy.json` | 原消费者及结构/声明检查 |
-| `apps/desktop/scripts/standards.mjs` | `apps/desktop/scripts/ci/standards.mjs`（保留Owner） | 质量实现 | Desktop质量 | `scripts/cd/public/policy.json`、`work-records/20260928-batch-metadata/result.md`、`work-records/20260929-office-recovery/verification.md` | 原质量与i18n集合；不改baseline |
-| `apps/desktop/scripts/standards.policy.json` | `apps/desktop/scripts/ci/standards.policy.json`（保留Owner） | 配置/声明/文档 | 相邻领域 | `scripts/cd/public/policy.json` | 原消费者及结构/声明检查 |
-| `apps/desktop/scripts/standards.test.mjs` | `apps/desktop/scripts/ci/__tests__/standards.test.mjs`（移动） | 测试 | Desktop构建/开发工具 | `scripts/cd/public/policy.json` | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/target.cjs` | `apps/desktop/scripts/shared/target.cjs`（保留Owner） | 领域机制/构建自举 | Desktop构建/运行时 | `scripts/BUILD.md` | 原构建/运行时契约与实际宿主探针 |
-| `apps/desktop/scripts/temporary-cleanup.cjs` | `apps/desktop/scripts/shared/temporary-cleanup.cjs`（保留Owner） | 领域机制/构建自举 | Desktop构建/运行时 | 未检出精确路径；核同级模块/动态消费者 | 原构建/运行时契约与实际宿主探针 |
-| `apps/desktop/scripts/temporary-cleanup.test.cjs` | `apps/desktop/scripts/shared/__tests__/temporary-cleanup.test.cjs`（移动） | 测试 | Desktop构建/开发工具 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/toolchain.test.cjs` | `apps/desktop/scripts/cd/__tests__/toolchain.test.cjs`（移动） | 测试 | Desktop构建/开发工具 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/utils.cjs` | `apps/desktop/scripts/shared/utils.cjs`（保留Owner） | 领域机制/构建自举 | Desktop构建/运行时 | 未检出精确路径；核同级模块/动态消费者 | 原构建/运行时契约与实际宿主探针 |
-| `apps/desktop/scripts/utils.test.cjs` | `apps/desktop/scripts/shared/__tests__/utils.test.cjs`（移动） | 测试 | Desktop构建/开发工具 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/velobundle.test.mjs` | `apps/desktop/scripts/cd/__tests__/velobundle.test.mjs`（移动） | 测试 | Desktop构建/开发工具 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/velopack-sign.cjs` | `apps/desktop/scripts/cd/velopack-sign.cjs`（保留Owner） | 发行安全机制 | Desktop发行/安装 | 未检出精确路径；核同级模块/动态消费者 | 原契约；受影响平台原生验收 |
-| `apps/desktop/scripts/velopack-sign.test.cjs` | `apps/desktop/scripts/cd/__tests__/velopack-sign.test.cjs`（移动） | 测试 | Desktop构建/开发工具 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/velopack.cjs` | `apps/desktop/scripts/cd/velopack.cjs`（保留Owner） | 发行安全机制 | Desktop发行/安装 | `work-records/proposals/2026-10-17/windows-install-directory/plan.md` | 原契约；受影响平台原生验收 |
-| `apps/desktop/scripts/velopack.d.mts` | `apps/desktop/scripts/cd/velopack.d.mts`（保留Owner） | 配置/声明/文档 | 相邻领域 | 未检出精确路径；核同级模块/动态消费者 | 原消费者及结构/声明检查 |
-| `apps/desktop/scripts/velopack.mjs` | `apps/desktop/scripts/cd/velopack.mjs`（保留Owner） | 发行安全机制 | Desktop发行/安装 | 未检出精确路径；核同级模块/动态消费者 | 原契约；受影响平台原生验收 |
-| `apps/desktop/scripts/velopack.py` | `apps/desktop/scripts/cd/velopack.py`（保留Owner） | 发行安全机制 | Desktop发行/安装 | 未检出精确路径；核同级模块/动态消费者 | 原契约；受影响平台原生验收 |
-| `apps/desktop/scripts/velopack.test.cjs` | `apps/desktop/scripts/cd/__tests__/velopack.test.cjs`（移动） | 测试 | Desktop构建/开发工具 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/velopack_test.py` | `apps/desktop/scripts/cd/__tests__/velopack_test.py`（移动） | 测试 | Desktop构建/开发工具 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/verification-directories.py` | `apps/desktop/scripts/cd/verification-directories.py`（保留Owner） | 领域机制/构建自举 | Desktop构建/运行时 | 未检出精确路径；核同级模块/动态消费者 | 原构建/运行时契约与实际宿主探针 |
-| `apps/desktop/scripts/verification-directory.cjs` | `apps/desktop/scripts/cd/verification-directory.cjs`（保留Owner） | 领域机制/构建自举 | Desktop构建/运行时 | `scripts/updater.cjs` | 原构建/运行时契约与实际宿主探针 |
-| `apps/desktop/scripts/verify.cjs` | `apps/desktop/scripts/cd/verify.cjs`（保留Owner） | 领域机制/构建自举 | Desktop构建/运行时 | `work-records/proposals/2026-10-17/windows-install-directory/plan.md` | 原构建/运行时契约与实际宿主探针 |
-| `apps/desktop/scripts/visual.mjs` | `apps/desktop/scripts/ci/visual.mjs`（保留Owner） | 质量实现 | Desktop质量 | `scripts/cd/public/policy.json` | 原质量与i18n集合；不改baseline |
-| `apps/desktop/scripts/visual.test.mjs` | `apps/desktop/scripts/ci/__tests__/visual.test.mjs`（移动） | 测试 | Desktop构建/开发工具 | `scripts/ci/test.cjs`、`scripts/cd/public/policy.json` | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/vpk.cjs` | `apps/desktop/scripts/cd/vpk.cjs`（保留Owner） | 发行安全机制 | Desktop发行/安装 | `scripts/BUILD.md` | 原契约；受影响平台原生验收 |
-| `apps/desktop/scripts/vpk.json` | `apps/desktop/scripts/cd/vpk.json`（保留Owner） | 配置/声明/文档 | 相邻领域 | 未检出精确路径；核同级模块/动态消费者 | 原消费者及结构/声明检查 |
-| `apps/desktop/scripts/vpk.test.cjs` | `apps/desktop/scripts/cd/__tests__/vpk.test.cjs`（移动） | 测试 | Desktop构建/开发工具 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/wheels.cjs` | `apps/desktop/scripts/cd/wheels.cjs`（保留Owner） | 领域机制/构建自举 | Desktop构建/运行时 | 未检出精确路径；核同级模块/动态消费者 | 原构建/运行时契约与实际宿主探针 |
-| `apps/desktop/scripts/wheels.json` | `apps/desktop/scripts/cd/wheels.json`（保留Owner） | 配置/声明/文档 | 相邻领域 | 未检出精确路径；核同级模块/动态消费者 | 原消费者及结构/声明检查 |
-| `apps/desktop/scripts/windows-runtime.cjs` | `apps/desktop/scripts/cd/windows-runtime.cjs`（保留Owner） | 领域机制/构建自举 | Desktop构建/运行时 | 未检出精确路径；核同级模块/动态消费者 | 原构建/运行时契约与实际宿主探针 |
-| `apps/desktop/scripts/windows-runtime.test.cjs` | `apps/desktop/scripts/cd/__tests__/windows-runtime.test.cjs`（移动） | 测试 | Desktop构建/开发工具 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `apps/desktop/scripts/windows-sign.cjs` | `apps/desktop/scripts/cd/windows-sign.cjs`（保留Owner） | 发行安全机制 | Desktop发行/安装 | `.env.example`、`scripts/BUILD.md`、`scripts/cd/public/overlay.patch` | 原契约；受影响平台原生验收 |
-| `apps/desktop/scripts/windows-sign.test.cjs` | `apps/desktop/scripts/cd/__tests__/windows-sign.test.cjs`（移动） | 测试 | Desktop构建/开发工具 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `scripts/BUILD.md` | `docs/runbooks/build.md`（承接上游正文迁移，不恢复旧路径） | 配置/声明/文档 | 构建操作规范 | `.agents/skills/update-codex-packages/SKILL.md`、`.env.example`、`AGENTS.md` | 原消费者及结构/声明检查 |
-| `scripts/affected.cjs` | `scripts/ci/affected.cjs`（保留Owner） | 领域机制/安装自举 | 仓库工具链/构建 | `.agents/skills/test-quality/SKILL.md`、`docs/runbooks/development.md`、`scripts/ci/affected.test.mjs` | 原模块契约及安装自举行为 |
-| `scripts/affected.policy.json` | `scripts/ci/affected.policy.json`（保留Owner） | 配置/声明/文档 | 相邻领域 | `.agents/skills/test-quality/SKILL.md`、`docs/runbooks/development.md` | 原消费者及结构/声明检查 |
-| `scripts/appicon.py` | `scripts/cd/icons.py`（保留Owner） | 领域机制/安装自举 | 仓库工具链/构建 | `apps/desktop/resources/ICONS.md` | 原模块契约及安装自举行为 |
-| `scripts/artifacts.cjs` | `scripts/shared/artifacts.cjs`（保留Owner） | 领域机制/安装自举 | 仓库工具链/构建 | `.agents/skills/update-codex-packages/SKILL.md`、`apps/desktop/docs/architecture/ownership.md`、`apps/desktop/runtime/codex.cjs` | 原模块契约及安装自举行为 |
-| `scripts/artifacts.test.cjs` | `scripts/shared/__tests__/artifacts.test.cjs`（移动） | 测试 | 仓库开发工具 | `.agents/skills/update-codex-packages/SKILL.md`、`apps/desktop/package.json`、`scripts/ci/test.cjs` | 原测试集合及相对路径/辅助闭包 |
-| `scripts/check_import_position.py` | `scripts/ci/imports.py`（保留Owner） | 质量实现 | 仓库质量 | `scripts/ci/format.cjs`、`scripts/formatter.test.cjs` | 原格式/静态检查集合 |
-| `scripts/ci/README.md` | `scripts/ci/README.md`（保留Owner） | CI编排/配置 | 仓库CI | `work-records/proposals/2026-10-22/quick/plan.md` | 原stage/集合/报告/隔离身份 |
-| `scripts/ci/affected.test.mjs` | `scripts/ci/__tests__/affected.test.mjs`（移动） | 测试 | 仓库CI | `scripts/ci/test.cjs` | 原测试集合及相对路径/辅助闭包 |
-| `scripts/ci/distribution.cjs` | `scripts/cd/distribution.cjs`（保留Owner） | CI编排/配置 | 仓库CI | `apps/desktop/package.json`、`package.json`、`scripts/ci/distribution.test.cjs` | 原stage/集合/报告/隔离身份 |
-| `scripts/ci/distribution.test.cjs` | `scripts/cd/__tests__/distribution.test.cjs`（移动） | 测试 | 仓库CI | `scripts/ci/test.cjs`、`scripts/ci/test.test.cjs` | 原测试集合及相对路径/辅助闭包 |
-| `scripts/ci/events.cjs` | `scripts/ci/events.cjs`（保留Owner） | CI编排/配置 | 仓库CI | 未检出精确路径；核同级模块/动态消费者 | 原stage/集合/报告/隔离身份 |
-| `scripts/ci/events.test.cjs` | `scripts/ci/__tests__/events.test.cjs`（移动） | 测试 | 仓库CI | `scripts/ci/test.cjs`、`work-records/proposals/2026-10-21/testing/plan.md` | 原测试集合及相对路径/辅助闭包 |
-| `scripts/ci/external-cases.json` | `scripts/ci/external-cases.json`（保留Owner） | CI编排/配置 | 仓库CI | `docs/runbooks/development.md` | 原stage/集合/报告/隔离身份 |
-| `scripts/ci/generate-office-corpus.cjs` | `scripts/ci/generate-office-corpus.cjs`（保留Owner） | CI编排/配置 | 仓库CI | `apps/desktop/e2e/fixtures/office-corpus/README.md`、`scripts/ci/README.md` | 原stage/集合/报告/隔离身份 |
-| `scripts/ci/model.cjs` | `scripts/ci/model.cjs`（保留Owner） | CI编排/配置 | 仓库CI | 未检出精确路径；核同级模块/动态消费者 | 原stage/集合/报告/隔离身份 |
-| `scripts/ci/model.test.cjs` | `scripts/ci/__tests__/model.test.cjs`（移动） | 测试 | 仓库CI | `scripts/ci/README.md`、`scripts/ci/test.cjs` | 原测试集合及相对路径/辅助闭包 |
-| `scripts/ci/package.cjs` | `scripts/cd/package.cjs`（保留Owner） | CI编排/配置 | 仓库CI | `docs/runbooks/development.md`、`package.json`、`work-records/ci-package/2026-09-24/plan.md` | 原stage/集合/报告/隔离身份 |
-| `scripts/ci/package.test.cjs` | `scripts/cd/__tests__/package.test.cjs`（移动） | 测试 | 仓库CI | `scripts/ci/README.md`、`scripts/ci/quarantine.json`、`scripts/ci/test.cjs` | 原测试集合及相对路径/辅助闭包 |
-| `scripts/ci/progress.cjs` | `scripts/ci/progress.cjs`（保留Owner） | CI编排/配置 | 仓库CI | 未检出精确路径；核同级模块/动态消费者 | 原stage/集合/报告/隔离身份 |
-| `scripts/ci/progress.test.cjs` | `scripts/ci/__tests__/progress.test.cjs`（移动） | 测试 | 仓库CI | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `scripts/ci/quality.py` | `scripts/ci/quality.py`（保留Owner） | CI编排/配置 | 仓库CI | `work-records/proposals/2026-10-21/testing/plan.md` | 原stage/集合/报告/隔离身份 |
-| `scripts/ci/quarantine.json` | `scripts/ci/quarantine.json`（保留Owner） | CI编排/配置 | 仓库CI | `apps/desktop/e2e/fixtures/quarantine.ts`、`docs/runbooks/development.md` | 原stage/集合/报告/隔离身份 |
-| `scripts/ci/skillhub.cjs` | `scripts/ci/skillhub.cjs`（保留Owner） | CI编排/配置 | 仓库CI | 未检出精确路径；核同级模块/动态消费者 | 原stage/集合/报告/隔离身份 |
-| `scripts/ci/skillhub.test.cjs` | `scripts/ci/__tests__/skillhub.test.cjs`（移动） | 测试 | 仓库CI | `scripts/ci/README.md`、`scripts/ci/test.cjs` | 原测试集合及相对路径/辅助闭包 |
-| `scripts/ci/smoke.cjs` | `scripts/ci/smoke.cjs`（保留Owner） | CI编排/配置 | 仓库CI | `package.json`、`scripts/ci/smoke.test.cjs`、`work-records/proposals/2026-10-22/quick/plan.md` | 原stage/集合/报告/隔离身份 |
-| `scripts/ci/smoke.json` | `scripts/ci/smoke.json`（保留Owner） | CI编排/配置 | 仓库CI | `apps/serve/tests/contract_runner.py`、`work-records/proposals/2026-10-22/quick/plan.md` | 原stage/集合/报告/隔离身份 |
-| `scripts/ci/smoke.test.cjs` | `scripts/ci/__tests__/smoke.test.cjs`（移动） | 测试 | 仓库CI | `scripts/ci/README.md`、`scripts/ci/smoke.json`、`scripts/ci/test.cjs` | 原测试集合及相对路径/辅助闭包 |
-| `scripts/ci/test.cjs` | `scripts/ci/test.cjs`（保留Owner） | CI编排/配置 | 仓库CI | `apps/desktop/docs/architecture/testing-strategy.md`、`docs/runbooks/development.md`、`package.json` | 原stage/集合/报告/隔离身份 |
-| `scripts/ci/test.test.cjs` | `scripts/ci/__tests__/test.test.cjs`（移动） | 测试 | 仓库CI | `scripts/ci/README.md`、`scripts/ci/test.cjs` | 原测试集合及相对路径/辅助闭包 |
-| `scripts/ci/transport.test.cjs` | `scripts/ci/__tests__/transport.test.cjs`（移动） | 测试 | 仓库CI | `scripts/ci/test.cjs`、`work-records/proposals/2026-10-21/testing/plan.md` | 原测试集合及相对路径/辅助闭包 |
-| `scripts/ci/verdict.cjs` | `scripts/ci/verdict.cjs`（保留Owner） | CI编排/配置 | 仓库CI | `docs/runbooks/development.md`、`work-records/ci-package/2026-09-24/plan.md` | 原stage/集合/报告/隔离身份 |
-| `scripts/ci/verdict.test.cjs` | `scripts/ci/__tests__/verdict.test.cjs`（移动） | 测试 | 仓库CI | `docs/runbooks/development.md`、`scripts/ci/README.md`、`scripts/ci/test.cjs` | 原测试集合及相对路径/辅助闭包 |
-| `scripts/cleanup.cjs` | `scripts/pre/cleanup.cjs`（保留Owner） | 领域机制/安装自举 | 仓库工具链/构建 | `scripts/cd/public/test_sync.py` | 原模块契约及安装自举行为 |
-| `scripts/cleanup.test.cjs` | `scripts/pre/__tests__/cleanup.test.cjs`（移动） | 测试 | 仓库开发工具 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `scripts/command-links.cjs` | `scripts/pre/commands.cjs`（保留Owner） | 领域机制/安装自举 | 仓库工具链/构建 | `docs/runbooks/development.md`、`scripts/cd/public/test_sync.py` | 原模块契约及安装自举行为 |
-| `scripts/command-links.test.cjs` | `scripts/pre/__tests__/commands.test.cjs`（移动） | 测试 | 仓库开发工具 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `scripts/debug.cjs` | `scripts/dev/desktop.cjs`（保留Owner） | 开发调试机制 | 仓库实例/Serve调试 | `docs/runbooks/development.md`、`package.json`、`scripts/debug.test.cjs` | 原进程/监督/隔离契约 |
-| `scripts/debug.test.cjs` | `scripts/dev/__tests__/desktop.test.cjs`（移动） | 测试 | 仓库开发工具 | `apps/desktop/package.json`、`package.json`、`scripts/ci/test.test.cjs` | 原测试集合及相对路径/辅助闭包 |
-| `scripts/dependencies.py` | `scripts/shared/dependencies.py`（保留Owner） | 领域机制/安装自举 | 仓库工具链/构建 | `apps/desktop/scripts/shared/component-cache.cjs`、`apps/serve/tests/contract_skill_dependencies.py`、`docs/runbooks/development.md` | 原模块契约及安装自举行为 |
-| `scripts/desktop.cjs` | `scripts/shared/desktop.cjs`（保留Owner） | 混合入口/编排待收敛 | 仓库开发编排 | `apps/desktop/docs/architecture/ownership.md`、`docs/runbooks/development.md`、`package.json` | ops命令契约与原准备链 |
-| `scripts/docs/check.py` | `scripts/ci/docs/check.py`（保留Owner） | 文档检查/资源 | 仓库知识检查 | `docs/architecture/knowledge.md`、`docs/index.md`、`scripts/ci/docs/keywords.yaml` | 文档与结构原集合 |
-| `scripts/ci/docs/commands.test.cjs` | `scripts/ci/docs/__tests__/commands.test.cjs`（移动） | 测试 | 仓库知识检查 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `scripts/docs/frontmatter.py` | `scripts/ci/docs/frontmatter.py`（保留Owner） | 文档检查/资源 | 仓库知识检查 | `docs/architecture/knowledge.md` | 文档与结构原集合 |
-| `scripts/docs/keywords.yaml` | `scripts/ci/docs/keywords.yaml`（保留Owner） | 文档检查/资源 | 仓库知识检查 | `.agents/skills/design-solution/SKILL.md`、`docs/architecture/knowledge.md`、`scripts/cd/public/test_sync.py` | 文档与结构原集合 |
-| `scripts/docs/structure-core.mjs` | `scripts/ci/docs/structure-core.mjs`（保留Owner） | 文档检查/资源 | 仓库知识检查 | `.agents/skills/knowledge-governance/scripts/check.mjs`、`docs/runbooks/development.md` | 文档与结构原集合 |
-| `scripts/docs/structure.mjs` | `scripts/ci/docs/structure.mjs`（保留Owner） | 文档检查/资源 | 仓库知识检查 | 未检出精确路径；核同级模块/动态消费者 | 文档与结构原集合 |
-| `scripts/ci/docs/structure.test.mjs` | `scripts/ci/docs/__tests__/structure.test.mjs`（移动） | 测试 | 仓库知识检查 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `scripts/ci/docs/test_check.py` | `scripts/ci/docs/__tests__/test_check.py`（移动） | 测试 | 仓库知识检查 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `scripts/docs/vocabulary.py` | `scripts/ci/docs/vocabulary.py`（保留Owner） | 文档检查/资源 | 仓库知识检查 | `docs/architecture/knowledge.md`、`scripts/ci/docs/keywords.yaml` | 文档与结构原集合 |
-| `scripts/format.sh` | `scripts/ci/format.sh`（保留Owner） | 质量实现 | 仓库质量 | `docs/runbooks/development.md` | 原格式/静态检查集合 |
-| `scripts/formatter.cjs` | `scripts/ci/format.cjs`（保留Owner） | 质量实现 | 仓库质量 | `docs/runbooks/development.md`、`scripts/cd/public/overlay.patch`、`scripts/shared/workspace.cjs` | 原格式/静态检查集合 |
-| `scripts/formatter.test.cjs` | `scripts/ci/__tests__/format.test.cjs`（移动） | 测试 | 仓库开发工具 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `scripts/git-hooks.test.cjs` | 已随退休入口删除 | 测试 | 仓库开发工具 | 无持续消费者 | 不为无用途的退休提示脚本保留专用测试；当前显式links检查/修复由原Owner验证 |
-| `scripts/install-git-hooks.sh` | 已删除退休提示脚本 | 退休入口 | 仓库工具链 | 公开导出登记已移除 | 无当前命令调用；既有共享hooks的安全迁移说明归开发指南，不安装或自动清理hooks |
-| `scripts/lint.py` | `scripts/ci/lint.py`（保留Owner） | 质量实现 | 仓库质量 | `docs/architecture/persistence.md`、`scripts/shared/workspace.cjs`、`tests/release/contract_lint.py` | 原格式/静态检查集合 |
-| `scripts/npm-installed-cache.cjs` | `scripts/shared/dependencies.cjs`（保留Owner） | 领域机制/安装自举 | 仓库工具链/构建 | `scripts/cd/public/test_sync.py` | 原模块契约及安装自举行为 |
-| `scripts/npm-installed-cache.test.cjs` | `scripts/shared/__tests__/dependencies.test.cjs`（移动） | 测试 | 仓库开发工具 | `apps/desktop/package.json` | 原测试集合及相对路径/辅助闭包 |
-| `scripts/public/.gitignore` | `scripts/cd/public/.gitignore`（保留Owner） | 公开准备工具/策略 | 公开导出 | 未检出精确路径；核同级模块/动态消费者 | 隔离sync/npm测试及overlay应用 |
-| `scripts/public/README.md` | `scripts/cd/public/README.md`（保留Owner） | 公开准备工具/策略 | 公开导出 | `docs/architecture/ownership.md` | 隔离sync/npm测试及overlay应用 |
-| `scripts/public/npm.mjs` | `scripts/cd/public/npm.mjs`（保留Owner） | 公开准备工具/策略 | 公开导出 | 未检出精确路径；核同级模块/动态消费者 | 隔离sync/npm测试及overlay应用 |
-| `scripts/cd/public/npm.test.mjs` | `scripts/cd/public/__tests__/npm.test.mjs`（移动） | 测试 | 公开导出 | `scripts/ci/test.cjs`、`scripts/cd/public/README.md` | 原测试集合及相对路径/辅助闭包 |
-| `scripts/cd/public/overlay.patch` | `scripts/cd/public/overlay.patch`（保留Owner） | 公开准备工具/策略 | 公开导出 | `apps/desktop/docs/architecture/evaluation.md` | 隔离sync/npm测试及overlay应用 |
-| `scripts/cd/public/policy.json` | `scripts/cd/public/policy.json`（保留Owner） | 公开准备工具/策略 | 公开导出 | `docs/architecture/ownership.md` | 隔离sync/npm测试及overlay应用 |
-| `scripts/public/sync.py` | `scripts/cd/public/sync.py`（保留Owner） | 公开准备工具/策略 | 公开导出 | `scripts/cd/public/README.md` | 隔离sync/npm测试及overlay应用 |
-| `scripts/cd/public/test_sync.py` | `scripts/cd/public/__tests__/test_sync.py`（移动） | 测试 | 公开导出 | `apps/desktop/docs/architecture/evaluation.md`、`scripts/cd/public/README.md` | 原测试集合及相对路径/辅助闭包 |
-| `scripts/python.cjs` | `scripts/shared/python.cjs`（保留Owner） | 领域机制/安装自举 | 仓库工具链/构建 | `apps/desktop/package.json`、`apps/desktop/runtime/codex.cjs`、`apps/desktop/runtime/powershell.cjs` | 原模块契约及安装自举行为 |
-| `scripts/python.d.cts` | `scripts/shared/python.d.cts`（保留Owner） | 配置/声明/文档 | 相邻领域 | 未检出精确路径；核同级模块/动态消费者 | 原消费者及结构/声明检查 |
-| `scripts/ripgrep.cjs` | `scripts/shared/ripgrep.cjs`（保留Owner） | 领域机制/安装自举 | 仓库工具链/构建 | `apps/desktop/scripts/cd/build.cjs`、`apps/desktop/scripts/cd/bundle.cjs` | 原模块契约及安装自举行为 |
-| `scripts/serve-dev.sh` | `scripts/dev/serve.sh`（保留Owner） | 开发调试机制 | 仓库实例/Serve调试 | `docs/runbooks/development.md` | 原进程/监督/隔离契约 |
-| `scripts/serve_watch.py` | `scripts/dev/watch.py`（保留Owner） | 开发调试机制 | 仓库实例/Serve调试 | `docs/runbooks/development.md`、`scripts/test_serve_watch.py`、`scripts/shared/workspace.cjs` | 原进程/监督/隔离契约 |
-| `scripts/setup_config.py` | `scripts/pre/config.py`（保留Owner） | 领域机制/安装自举 | 仓库工具链/构建 | `scripts/workspace.cjs` | 原模块契约及安装自举行为 |
-| `scripts/symlinks.cjs` | `scripts/pre/symlinks.cjs`（保留Owner） | 领域机制/安装自举 | 仓库工具链/构建 | `scripts/shared/workspace.cjs` | 原模块契约及安装自举行为 |
-| `scripts/symlinks.test.cjs` | `scripts/pre/__tests__/symlinks.test.cjs`（移动） | 测试 | 仓库开发工具 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `scripts/test_serve_watch.py` | `scripts/dev/__tests__/test_watch.py`（移动） | 测试 | 仓库开发工具 | 未检出精确路径；核同级模块/动态消费者 | 原测试集合及相对路径/辅助闭包 |
-| `scripts/timing.cjs` | `scripts/shared/timing.cjs`（保留Owner） | 领域机制/安装自举 | 仓库工具链/构建 | `apps/desktop/scripts/cd/acceptance.cjs`、`apps/desktop/scripts/cd/branding.cjs`、`apps/desktop/scripts/cd/build.cjs` | 原模块契约及安装自举行为 |
-| `scripts/timing.test.cjs` | `scripts/shared/__tests__/timing.test.cjs`（移动） | 测试 | 仓库开发工具 | `apps/desktop/package.json` | 原测试集合及相对路径/辅助闭包 |
-| `scripts/toolchain-install.test.cjs` | `scripts/pre/__tests__/toolchain-install.test.cjs`（移动） | 测试 | 仓库开发工具 | `apps/desktop/package.json`、`package.json` | 原测试集合及相对路径/辅助闭包 |
-| `scripts/toolchain.cjs` | `scripts/pre/toolchain.cjs`（保留Owner） | 领域机制/安装自举 | 仓库工具链/构建 | `.agents/skills/test-quality/SKILL.md`、`.codex/environments/pnpm.toml`、`.gitlab-ci.yml` | 原模块契约及安装自举行为 |
-| `scripts/updater-session.test.cjs` | `scripts/cd/__tests__/updater-session.test.cjs`（移动） | 测试 | 仓库开发工具 | `apps/desktop/package.json` | 原测试集合及相对路径/辅助闭包 |
-| `scripts/cd/updater.cjs` | `scripts/cd/updater.cjs`（保留Owner） | 开发调试机制 | 仓库实例/Serve调试 | `package.json` | 原进程/监督/隔离契约 |
-| `scripts/vendor/codex/README.md` | `scripts/vendor/codex/README.md`（保留Owner） | 供应链资源/实现 | 工具链供应链 | `.agents/skills/update-codex-packages/SKILL.md`、`docs/runbooks/development.md` | manifest来源/库存及原供应链契约 |
-| `scripts/vendor/codex/manifest.json` | `scripts/vendor/codex/manifest.json`（保留Owner） | 供应链资源/实现 | 工具链供应链 | `.agents/skills/update-codex-packages/SKILL.md`、`apps/desktop/runtime/codex.test.cjs`、`apps/serve/service/chat/service/subscriptions.py` | manifest来源/库存及原供应链契约 |
-| `scripts/vendor/fetch-vendor.sh` | `scripts/vendor/fetch-vendor.sh`（保留Owner） | 供应链资源/实现 | 工具链供应链 | 未检出精确路径；核同级模块/动态消费者 | manifest来源/库存及原供应链契约 |
-| `scripts/vendor/powershell/manifest.json` | `scripts/vendor/powershell/manifest.json`（保留Owner） | 供应链资源/实现 | 工具链供应链 | 未检出精确路径；核同级模块/动态消费者 | manifest来源/库存及原供应链契约 |
-| `scripts/vendor/python-build-standalone/README.md` | `scripts/vendor/python-build-standalone/README.md`（保留Owner） | 供应链资源/实现 | 工具链供应链 | 未检出精确路径；核同级模块/动态消费者 | manifest来源/库存及原供应链契约 |
-| `scripts/vendor/python-build-standalone/manifest.json` | `scripts/vendor/python-build-standalone/manifest.json`（保留Owner） | 供应链资源/实现 | 工具链供应链 | `apps/desktop/scripts/python.test.cjs`、`scripts/BUILD.md`、`scripts/cd/public/test_sync.py` | manifest来源/库存及原供应链契约 |
-| `scripts/vendor/ripgrep/COPYING` | `scripts/vendor/ripgrep/COPYING`（保留Owner） | 供应链资源/实现 | 工具链供应链 | 未检出精确路径；核同级模块/动态消费者 | manifest来源/库存及原供应链契约 |
-| `scripts/vendor/ripgrep/LICENSE-MIT` | `scripts/vendor/ripgrep/LICENSE-MIT`（保留Owner） | 供应链资源/实现 | 工具链供应链 | 未检出精确路径；核同级模块/动态消费者 | manifest来源/库存及原供应链契约 |
-| `scripts/vendor/ripgrep/README.md` | `scripts/vendor/ripgrep/README.md`（保留Owner） | 供应链资源/实现 | 工具链供应链 | 未检出精确路径；核同级模块/动态消费者 | manifest来源/库存及原供应链契约 |
-| `scripts/vendor/ripgrep/UNLICENSE` | `scripts/vendor/ripgrep/UNLICENSE`（保留Owner） | 供应链资源/实现 | 工具链供应链 | 未检出精确路径；核同级模块/动态消费者 | manifest来源/库存及原供应链契约 |
-| `scripts/vendor/ripgrep/manifest.json` | `scripts/vendor/ripgrep/manifest.json`（保留Owner） | 供应链资源/实现 | 工具链供应链 | `scripts/cd/public/test_sync.py` | manifest来源/库存及原供应链契约 |
-| `scripts/vendor/ripgrep/aarch64-apple-darwin/rg` | `scripts/vendor/ripgrep/aarch64-apple-darwin/rg`（保留Owner） | 已审查的供应链二进制 | Desktop构建资源 | `scripts/shared/ripgrep.cjs`、`apps/desktop/scripts/cd/build.cjs`、`apps/desktop/scripts/cd/bundle.cjs` | manifest平台/架构解析、SHA-256校验、公开导出精确排除 |
-| `scripts/vendor/texlive/README.md` | `scripts/vendor/texlive/README.md`（保留Owner） | 供应链资源/实现 | 工具链供应链 | `docs/architecture/skills.md`、`work-records/proposals/2026-10-17/windows-tex-sandbox/plan.md` | manifest来源/库存及原供应链契约 |
-| `scripts/vendor/texlive/build-windows.ps1` | `scripts/vendor/texlive/build-windows.ps1`（保留Owner） | 供应链资源/实现 | 工具链供应链 | `work-records/proposals/2026-10-17/windows-tex-sandbox/plan.md` | manifest来源/库存及原供应链契约 |
-| `scripts/vendor/texlive/build.sh` | `scripts/vendor/texlive/build.sh`（保留Owner） | 供应链资源/实现 | 工具链供应链 | `scripts/vendor/texlive/README.md` | manifest来源/库存及原供应链契约 |
-| `scripts/vendor/texlive/discovery.patch` | `scripts/vendor/texlive/discovery.patch`（保留Owner） | 供应链资源/实现 | 工具链供应链 | 未检出精确路径；核同级模块/动态消费者 | manifest来源/库存及原供应链契约 |
-| `scripts/vendor/texlive/engines.json` | `scripts/vendor/texlive/engines.json`（保留Owner） | 供应链资源/实现 | 工具链供应链 | 未检出精确路径；核同级模块/动态消费者 | manifest来源/库存及原供应链契约 |
-| `scripts/vendor/texlive/engines.ps1` | `scripts/vendor/texlive/engines.ps1`（保留Owner） | 供应链资源/实现 | 工具链供应链 | 未检出精确路径；核同级模块/动态消费者 | manifest来源/库存及原供应链契约 |
-| `scripts/vendor/texlive/engines.py` | `scripts/vendor/texlive/engines.py`（保留Owner） | 供应链资源/实现 | 工具链供应链 | `scripts/vendor/texlive/README.md` | manifest来源/库存及原供应链契约 |
-| `scripts/vendor/texlive/kpathsea.json` | `scripts/vendor/texlive/kpathsea.json`（保留Owner） | 供应链资源/实现 | 工具链供应链 | 未检出精确路径；核同级模块/动态消费者 | manifest来源/库存及原供应链契约 |
-| `scripts/vendor/texlive/kpathsea.ps1` | `scripts/vendor/texlive/kpathsea.ps1`（保留Owner） | 供应链资源/实现 | 工具链供应链 | 未检出精确路径；核同级模块/动态消费者 | manifest来源/库存及原供应链契约 |
-| `scripts/vendor/texlive/manifest.json` | `scripts/vendor/texlive/manifest.json`（保留Owner） | 供应链资源/实现 | 工具链供应链 | `apps/desktop/protected.test.ts`、`apps/desktop/protected.ts`、`apps/desktop/runtime/texlive.cjs` | manifest来源/库存及原供应链契约 |
-| `scripts/wheel.py` | `scripts/cd/wheel.py`（保留Owner） | 领域机制/安装自举 | 仓库工具链/构建 | `apps/desktop/scripts/cd/wheels.cjs`、`docs/architecture/ownership.md`、`scripts/BUILD.md` | 原模块契约及安装自举行为 |
-| `scripts/shared/workspace.cjs` | `scripts/shared/workspace.cjs`（保留Owner） | 混合入口/编排待收敛 | 仓库开发编排 | `docs/runbooks/development.md`、`open.md`、`package.json` | ops命令契约与原准备链 |
+| `apps/desktop/scripts/acceptance.cjs` | `apps/desktop/scripts/cd/acceptance.cjs` (retain Owner) | Domain mechanism/build bootstrap | Desktop build/runtime | No exact path found; check sibling modules/dynamic consumers | Original build/runtime contract and actual host probe |
+| `apps/desktop/scripts/acceptance.test.cjs` | `apps/desktop/scripts/cd/__tests__/acceptance.test.cjs` (move) | Test | Desktop build/development tooling | No exact path found; check sibling modules/dynamic consumers | Original test set and relative-path/call-closure checks |
+| `apps/desktop/scripts/archive_inventory.py` | `apps/desktop/scripts/cd/archive_inventory.py` (retain Owner) | Domain mechanism/build bootstrap | Desktop build/runtime | No exact path found; check sibling modules/dynamic consumers | Original build/runtime contract and actual host probe |
+| `apps/desktop/scripts/archive_inventory.test.cjs` | `apps/desktop/scripts/cd/__tests__/archive_inventory.test.cjs` (move) | Test | Desktop build/development tooling | No exact path found; check sibling modules/dynamic consumers | Original test set and relative-path/call-closure checks |
+| `apps/desktop/scripts/archive_inventory_test.py` | `apps/desktop/scripts/cd/__tests__/archive_inventory_test.py` (move) | Test | Desktop build/development tooling | No exact path found; check sibling modules/dynamic consumers | Original test set and relative-path/call-closure checks |
+| `apps/desktop/scripts/assembly.cjs` | `apps/desktop/scripts/cd/assembly.cjs` (retain Owner) | Domain mechanism/build bootstrap | Desktop build/runtime | `apps/desktop/scripts/component-cache.cjs` | Original build/runtime contract and actual host probe |
+| `apps/desktop/scripts/assembly.test.cjs` | `apps/desktop/scripts/cd/__tests__/assembly.test.cjs` (move) | Test | Desktop build/development tooling | No exact path found; check sibling modules/dynamic consumers | Original test set and relative-path/call-closure checks |
+| `apps/desktop/scripts/branding.cjs` | `apps/desktop/scripts/cd/branding.cjs` (retain Owner) | Domain mechanism/build bootstrap | Desktop build/runtime | No exact path found; check sibling modules/dynamic consumers | Original build/runtime contract and actual host probe |
+| `apps/desktop/scripts/branding.test.cjs` | `apps/desktop/scripts/cd/__tests__/branding.test.cjs` (move) | Test | Desktop build/development tooling | No exact path found; check sibling modules/dynamic consumers | Original test set and relative-path/call-closure checks |
+| `apps/desktop/scripts/browser.cjs` | `apps/desktop/scripts/cd/browser.cjs` (retain Owner) | Domain mechanism/build bootstrap | Desktop build/runtime | `scripts/BUILD.md` | Original build/runtime contract and actual host probe |
+| `apps/desktop/scripts/browser.test.cjs` | `apps/desktop/scripts/cd/__tests__/browser.test.cjs` (move) | Test | Desktop build/development tooling | No exact path found; check sibling modules/dynamic consumers | Original test set and relative-path/call-closure checks |
+| `apps/desktop/scripts/build-state.cjs` | `apps/desktop/scripts/shared/build-state.cjs` (retain Owner) | Domain mechanism/build bootstrap | Desktop build/runtime | `docs/runbooks/windows.md`, `scripts/shared/dependencies.cjs`, `scripts/npm-installed-cache.test.cjs` | Original build/runtime contract and actual host probe |
+| `apps/desktop/scripts/build.cjs` | `apps/desktop/scripts/cd/build.cjs` (retain Owner) | Domain mechanism/build bootstrap | Desktop build/runtime | `README_zh.md`, `docs/architecture/persistence.md`, `docs/index.md` | Original build/runtime contract and actual host probe |
+| `apps/desktop/scripts/build.test.cjs` | `apps/desktop/scripts/cd/__tests__/build.test.cjs` (move) | Test | Desktop build/development tooling | `docs/runbooks/development.md`, `scripts/cd/public/README.md`, `scripts/cd/public/overlay.patch` | Original test set and relative-path/call-closure checks |
+| `apps/desktop/scripts/bundle.cjs` | `apps/desktop/scripts/cd/bundle.cjs` (retain Owner) | Domain mechanism/build bootstrap | Desktop build/runtime | `apps/desktop/scripts/assembly.test.cjs`, `scripts/cd/public/overlay.patch`, `work-records/proposals/2026-10-17/windows-build-optimization/plan.md` | Baseline build/runtime contracts and actual host probes |
+| `apps/desktop/scripts/bundle.test.cjs` | `apps/desktop/scripts/cd/__tests__/bundle.test.cjs` (move) | Test | Desktop build/development tooling | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/bytecode.py` | `apps/desktop/scripts/cd/bytecode.py` (retain Owner) | Domain mechanism/build bootstrap | Desktop build/runtime | `.gitattributes`, `apps/desktop/scripts/shared/component-cache.cjs` | Baseline build/runtime contracts and actual host probes |
+| `apps/desktop/scripts/bytecode.test.cjs` | `apps/desktop/scripts/cd/__tests__/bytecode.test.cjs` (move) | Test | Desktop build/development tooling | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/bytecode_test.py` | `apps/desktop/scripts/cd/__tests__/bytecode_test.py` (move) | Test | Desktop build/development tooling | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/cache.cjs` | `apps/desktop/scripts/cd/cache.cjs` (retain Owner) | Domain mechanism/build bootstrap | Desktop build/runtime | No exact path found; check sibling modules and dynamic consumers | Baseline build/runtime contracts and actual host probes |
+| `apps/desktop/scripts/cache.test.cjs` | `apps/desktop/scripts/cd/__tests__/cache.test.cjs` (move) | Test | Desktop build/development tooling | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/closure.cjs` | `apps/desktop/scripts/cd/closure.cjs` (retain Owner) | Domain mechanism/build bootstrap | Desktop build/runtime | `scripts/BUILD.md`, `work-records/proposals/2026-10-22/feedback-zip/plan.md` | Baseline build/runtime contracts and actual host probes |
+| `apps/desktop/scripts/closure.test.cjs` | `apps/desktop/scripts/cd/__tests__/closure.test.cjs` (move) | Test | Desktop build/development tooling | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/compiler.cjs` | `apps/desktop/scripts/cd/compiler.cjs` (retain Owner) | Domain mechanism/build bootstrap | Desktop build/runtime | No exact path found; check sibling modules and dynamic consumers | Baseline build/runtime contracts and actual host probes |
+| `apps/desktop/scripts/compiler.test.cjs` | `apps/desktop/scripts/cd/__tests__/compiler.test.cjs` (move) | Test | Desktop build/development tooling | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/shared/component-cache.cjs` | `apps/desktop/scripts/shared/component-cache.cjs` (retain Owner) | Domain mechanism/build bootstrap | Desktop build/runtime | `work-records/proposals/2026-10-17/windows-build-optimization/plan.md` | Baseline build/runtime contracts and actual host probes |
+| `apps/desktop/scripts/component-cache.test.cjs` | `apps/desktop/scripts/shared/__tests__/component-cache.test.cjs` (explicitly registered) | Deterministic host integration test | Desktop build/development tooling | `apps/desktop/scripts/ci/test.cjs`, `scripts/cd/public/policy.json` | Regular coverage directly covers real ZIP and temporary-file cases; the build aggregate no longer imports it again, which does not represent native-artifact acceptance |
+| `apps/desktop/scripts/compression.cjs` | `apps/desktop/scripts/cd/compression.cjs` (retain Owner) | Domain mechanism/build bootstrap | Desktop build/runtime | `apps/desktop/scripts/shared/component-cache.cjs` | Baseline build/runtime contracts and actual host probes |
+| `apps/desktop/scripts/compression.test.cjs` | `apps/desktop/scripts/cd/__tests__/compression.test.cjs` (move) | Test | Desktop build/development tooling | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/css.baseline.json` | `apps/desktop/scripts/ci/css.baseline.json` (retain Owner) | Configuration/declaration/documentation | Adjacent domain | No exact path found; check sibling modules and dynamic consumers | Original consumers and structural/declaration checks |
+| `apps/desktop/scripts/css.exceptions.json` | `apps/desktop/scripts/ci/css.exceptions.json` (retain Owner) | Configuration/declaration/documentation | Adjacent domain | `.agents/skills/ui-component-reuse/SKILL.md` | Original consumers and structural/declaration checks |
+| `apps/desktop/scripts/css.mjs` | `apps/desktop/scripts/ci/css.mjs` (retain Owner) | Quality implementation | Desktop quality | No exact path found; check sibling modules and dynamic consumers | Original quality and i18n sets; do not change the baseline |
+| `apps/desktop/scripts/digest.cjs` | `apps/desktop/scripts/shared/digest.cjs` (retain Owner) | Domain mechanism/build bootstrap | Desktop build/runtime | `scripts/BUILD.md` | Baseline build/runtime contracts and actual host probes |
+| `apps/desktop/scripts/electron.cjs` | `apps/desktop/scripts/pre/electron.cjs` (retain Owner) | Domain mechanism/build bootstrap | Desktop build/runtime | `docs/runbooks/development.md` | Baseline build/runtime contracts and actual host probes |
+| `apps/desktop/scripts/electron.test.cjs` | `apps/desktop/scripts/pre/__tests__/electron.test.cjs` (move) | Test | Desktop build/development tooling | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/engine.cjs` | `apps/desktop/scripts/cd/engine.cjs` (retain Owner) | Domain mechanism/build bootstrap | Desktop build/runtime | `apps/desktop/scripts/shared/component-cache.cjs` | Baseline build/runtime contracts and actual host probes |
+| `apps/desktop/scripts/engine.test.cjs` | `apps/desktop/scripts/cd/__tests__/engine.test.cjs` (move) | Test | Desktop build/development tooling | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/enginecheck.test.cjs` | `apps/desktop/scripts/cd/__tests__/enginecheck.test.cjs` (move) | Test | Desktop build/development tooling | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/fontconfig.cjs` | `apps/desktop/scripts/cd/fontconfig.cjs` (retain Owner) | Domain mechanism/build bootstrap | Desktop build/runtime | `apps/desktop/native/fontconfig/README.md` | Baseline build/runtime contracts and actual host probes |
+| `apps/desktop/scripts/fonts.cjs` | `apps/desktop/scripts/cd/fonts.cjs` (retain Owner) | Domain mechanism/build bootstrap | Desktop build/runtime | `work-records/2026-10-13/office-font-duplicates-87640187/preparation.md`, `work-records/2026-10-13/office-font-duplicates-87640187/result.md` | Baseline build/runtime contracts and actual host probes |
+| `apps/desktop/scripts/handoff.cjs` | `apps/desktop/scripts/cd/handoff.cjs` (retain Owner) | Release security mechanism | Desktop release/installation | `work-records/proposals/2026-10-17/windows-install-directory/plan.md` | Original contract; native acceptance on affected platforms |
+| `apps/desktop/scripts/handoff.test.cjs` | `apps/desktop/scripts/cd/__tests__/handoff.test.cjs` (move) | Test | Desktop build/development tooling | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/identity.cjs` | `apps/desktop/scripts/pre/identity.cjs` (retain Owner) | Domain mechanism/build bootstrap | Desktop build/runtime | `docs/runbooks/development.md` | Baseline build/runtime contracts and actual host probes |
+| `apps/desktop/scripts/installation-mutex.ps1` | `apps/desktop/scripts/cd/installation-mutex.ps1` (retain Owner) | Release security mechanism | Desktop release/installation | No exact path found; check sibling modules and dynamic consumers | Original contract; native acceptance on affected platforms |
+| `apps/desktop/scripts/installation.cjs` | `apps/desktop/scripts/cd/installation.cjs` (retain Owner) | Release security mechanism | Desktop release/installation | No exact path found; check sibling modules and dynamic consumers | Original contract; native acceptance on affected platforms |
+| `apps/desktop/scripts/installation.test.cjs` | `apps/desktop/scripts/cd/__tests__/installation.test.cjs` (move) | Test | Desktop build/development tooling | `scripts/BUILD.md` | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/installer.test.cjs` | `apps/desktop/scripts/cd/__tests__/installer.test.cjs` (move) | Test | Desktop build/development tooling | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/lease.d.mts` | `apps/desktop/scripts/shared/lease.d.mts` (retain Owner) | Configuration/declaration/documentation | Adjacent domain | No exact path found; check sibling modules and dynamic consumers | Original consumers and structural/declaration checks |
+| `apps/desktop/scripts/lease.mjs` | `apps/desktop/scripts/shared/lease.mjs` (retain Owner) | Domain mechanism/build bootstrap | Desktop build/runtime | No exact path found; check sibling modules and dynamic consumers | Baseline build/runtime contracts and actual host probes |
+| `apps/desktop/scripts/legacy-files.json` | `apps/desktop/scripts/cd/legacy-files.json` (retain Owner) | Configuration/declaration/documentation | Adjacent domain | `.gitattributes` | Original consumers and structural/declaration checks |
+| `apps/desktop/scripts/legacy.json` | `apps/desktop/scripts/cd/legacy.json` (retain Owner) | Configuration/declaration/documentation | Adjacent domain | No exact path found; check sibling modules and dynamic consumers | Original consumers and structural/declaration checks |
+| `apps/desktop/scripts/locales.cjs` | `apps/desktop/scripts/ci/locales.cjs` (retain Owner) | Domain mechanism/build bootstrap | Desktop build/runtime | No exact path found; check sibling modules and dynamic consumers | Baseline build/runtime contracts and actual host probes |
+| `apps/desktop/scripts/localization.mjs` | `apps/desktop/scripts/ci/localization.mjs` (retain Owner) | Quality implementation | Desktop quality | `apps/desktop/docs/work/i18n-verification.md`, `work-records/20260928-permission-switch-87153274/verification.md`, `work-records/20260929-office-recovery/verification.md` | Original quality and i18n sets; do not change the baseline |
+| `apps/desktop/scripts/localization/calls.mjs` | `apps/desktop/scripts/ci/localization/calls.mjs` (retain Owner) | Quality implementation | Desktop quality | No exact path found; check sibling modules and dynamic consumers | Original quality and i18n sets; do not change the baseline |
+| `apps/desktop/scripts/ci/localization/calls.test.mjs` | `apps/desktop/scripts/ci/localization/__tests__/calls.test.mjs` (move) | Test | DesktopInternationalization | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/ci/localization/components.test.mjs` | `apps/desktop/scripts/ci/localization/__tests__/components.test.mjs` (move) | Test | DesktopInternationalization | `apps/desktop/docs/work/plan/i18n-plan.md` | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/localization/debt.json` | `apps/desktop/scripts/ci/localization/debt.json` (retain Owner) | Configuration/declaration/documentation | Adjacent domain | No exact path found; check sibling modules and dynamic consumers | Original consumers and structural/declaration checks |
+| `apps/desktop/scripts/localization/dom.d.mts` | `apps/desktop/scripts/ci/localization/dom.d.mts` (retain Owner) | Configuration/declaration/documentation | Adjacent domain | No exact path found; check sibling modules and dynamic consumers | Original consumers and structural/declaration checks |
+| `apps/desktop/scripts/localization/dom.mjs` | `apps/desktop/scripts/ci/localization/dom.mjs` (retain Owner) | Quality implementation | Desktop quality | No exact path found; check sibling modules and dynamic consumers | Original quality and i18n sets; do not change the baseline |
+| `apps/desktop/scripts/ci/localization/dom.test.mjs` | `apps/desktop/scripts/ci/localization/__tests__/dom.test.mjs` (move) | Test | DesktopInternationalization | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/ci/localization/engine.test.mjs` | `apps/desktop/scripts/ci/localization/__tests__/engine.test.mjs` (move) | Test | DesktopInternationalization | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/ci/localization/examples.test.mjs` | `apps/desktop/scripts/ci/localization/__tests__/examples.test.mjs` (move) | Test | DesktopInternationalization | `scripts/public/overlay.patch` | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/ci/localization/format.test.mjs` | `apps/desktop/scripts/ci/localization/__tests__/format.test.mjs` (move) | Test | DesktopInternationalization | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/localization/gaps.mjs` | `apps/desktop/scripts/ci/localization/gaps.mjs` (retain Owner) | Quality implementation | Desktop quality | No exact path found; check sibling modules and dynamic consumers | Original quality and i18n sets; do not change the baseline |
+| `apps/desktop/scripts/localization/git.mjs` | `apps/desktop/scripts/ci/localization/git.mjs` (retain Owner) | Quality implementation | Desktop quality | No exact path found; check sibling modules and dynamic consumers | Original quality and i18n sets; do not change the baseline |
+| `apps/desktop/scripts/ci/localization/git.test.mjs` | `apps/desktop/scripts/ci/localization/__tests__/git.test.mjs` (move) | Test | DesktopInternationalization | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/ci/localization/preferences.test.mjs` | `apps/desktop/scripts/ci/localization/__tests__/preferences.test.mjs` (move) | Test | DesktopInternationalization | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/ci/localization/prettier.test.mjs` | `apps/desktop/scripts/ci/localization/__tests__/prettier.test.mjs` (move) | Test | DesktopInternationalization | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/localization/resources.mjs` | `apps/desktop/scripts/ci/localization/resources.mjs` (retain Owner) | Quality implementation | Desktop quality | No exact path found; check sibling modules and dynamic consumers | Original quality and i18n sets; do not change the baseline |
+| `apps/desktop/scripts/ci/localization/resources.test.mjs` | `apps/desktop/scripts/ci/localization/__tests__/resources.test.mjs` (move) | Test | DesktopInternationalization | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/localization/source.mjs` | `apps/desktop/scripts/ci/localization/source.mjs` (retain Owner) | Quality implementation | Desktop quality | No exact path found; check sibling modules and dynamic consumers | Original quality and i18n sets; do not change the baseline |
+| `apps/desktop/scripts/ci/localization/source.test.mjs` | `apps/desktop/scripts/ci/localization/__tests__/source.test.mjs` (move) | Test | DesktopInternationalization | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/localization/staged.mjs` | `apps/desktop/scripts/ci/localization/staged.mjs` (retain Owner) | Quality implementation | Desktop quality | No exact path found; check sibling modules and dynamic consumers | Original quality and i18n sets; do not change the baseline |
+| `apps/desktop/scripts/ci/localization/staged.test.mjs` | `apps/desktop/scripts/ci/localization/__tests__/staged.test.mjs` (move) | Test | DesktopInternationalization | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/macho.cjs` | `apps/desktop/scripts/cd/macho.cjs` (retain Owner) | Release security mechanism | Desktop release/installation | No exact path found; check sibling modules and dynamic consumers | Original contract; native acceptance on affected platforms |
+| `apps/desktop/scripts/mutex.test.cjs` | `apps/desktop/scripts/cd/__tests__/mutex.test.cjs` (move) | Test | Desktop build/development tooling | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/native-contract.cjs` | `apps/desktop/scripts/ci/native-contract.cjs` (retain Owner) | Domain mechanism/build bootstrap | Desktop build/runtime | No exact path found; check sibling modules and dynamic consumers | Baseline build/runtime contracts and actual host probes |
+| `apps/desktop/scripts/native.cjs` | `apps/desktop/scripts/shared/native.cjs` (retain Owner) | Domain mechanism/build bootstrap | Desktop build/runtime | `apps/desktop/native/README.md`, `docs/runbooks/windows.md`, `work-records/2026-10-13/office-font-duplicates-87640187/plan.md` | Baseline build/runtime contracts and actual host probes |
+| `apps/desktop/scripts/native.test.cjs` | `apps/desktop/scripts/shared/__tests__/native.test.cjs` (move) | Test | Desktop build/development tooling | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/node.sh` | `apps/desktop/scripts/cd/node.sh` (retain Owner) | Domain mechanism/build bootstrap | Desktop build/runtime | No exact path found; check sibling modules and dynamic consumers | Baseline build/runtime contracts and actual host probes |
+| `apps/desktop/scripts/normalize.py` | `apps/desktop/scripts/cd/normalize.py` (retain Owner) | Domain mechanism/build bootstrap | Desktop build/runtime | `apps/desktop/scripts/shared/component-cache.cjs` | Baseline build/runtime contracts and actual host probes |
+| `apps/desktop/scripts/notarize.cjs` | `apps/desktop/scripts/cd/notarize.cjs` (retain Owner) | Release security mechanism | Desktop release/installation | `.env.example`, `scripts/cd/public/overlay.patch` | Original contract; native acceptance on affected platforms |
+| `apps/desktop/scripts/notices.cjs` | `apps/desktop/scripts/cd/notices.cjs` (retain Owner) | Domain mechanism/build bootstrap | Desktop build/runtime | No exact path found; check sibling modules and dynamic consumers | Baseline build/runtime contracts and actual host probes |
+| `apps/desktop/scripts/office-assets.cjs` | `apps/desktop/scripts/pre/office-assets.cjs` (retain Owner) | Domain mechanism/build bootstrap | Desktop build/runtime | No exact path found; check sibling modules and dynamic consumers | Baseline build/runtime contracts and actual host probes |
+| `apps/desktop/scripts/office.test.cjs` | `apps/desktop/scripts/pre/__tests__/office.test.cjs` (move) | Test | Desktop build/development tooling | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/package.cjs` | `apps/desktop/scripts/cd/package.cjs` (retain Owner) | Domain mechanism/build bootstrap | Desktop build/runtime | `scripts/BUILD.md` | Baseline build/runtime contracts and actual host probes |
+| `apps/desktop/scripts/payload.cjs` | `apps/desktop/scripts/cd/payload.cjs` (retain Owner) | Domain mechanism/build bootstrap | Desktop build/runtime | No exact path found; check sibling modules and dynamic consumers | Baseline build/runtime contracts and actual host probes |
+| `apps/desktop/scripts/payload.py` | `apps/desktop/scripts/cd/payload.py` (retain Owner) | Domain mechanism/build bootstrap | Desktop build/runtime | `apps/desktop/scripts/shared/component-cache.cjs`, `apps/desktop/scripts/compression.test.cjs` | Baseline build/runtime contracts and actual host probes |
+| `apps/desktop/scripts/payload.test.cjs` | `apps/desktop/scripts/cd/__tests__/payload.test.cjs` (move) | Test | Desktop build/development tooling | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/payload_test.py` | `apps/desktop/scripts/cd/__tests__/payload_test.py` (move) | Test | Desktop build/development tooling | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/probe.cjs` | `apps/desktop/scripts/shared/probe.cjs` (retain Owner) | Domain mechanism/build bootstrap | Desktop build/runtime | `scripts/cd/public/overlay.patch` | Baseline build/runtime contracts and actual host probes |
+| `apps/desktop/scripts/python.test.cjs` | `apps/desktop/scripts/shared/__tests__/python.test.cjs` (move) | Test | Desktop build/development tooling | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/registration.cjs` | `apps/desktop/scripts/cd/registration.cjs` (retain Owner) | Release security mechanism | Desktop release/installation | No exact path found; check sibling modules and dynamic consumers | Original contract; native acceptance on affected platforms |
+| `apps/desktop/scripts/registration.ps1` | `apps/desktop/scripts/cd/registration.ps1` (retain Owner) | Release security mechanism | Desktop release/installation | No exact path found; check sibling modules and dynamic consumers | Original contract; native acceptance on affected platforms |
+| `apps/desktop/scripts/registration.psm1` | `apps/desktop/scripts/cd/registration.psm1` (retain Owner) | Release security mechanism | Desktop release/installation | No exact path found; check sibling modules and dynamic consumers | Original contract; native acceptance on affected platforms |
+| `apps/desktop/scripts/registration.test.cjs` | `apps/desktop/scripts/cd/__tests__/registration.test.cjs` (move) | Test | Desktop build/development tooling | `scripts/BUILD.md` | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/registration.test.ps1` | `apps/desktop/scripts/cd/__tests__/registration.test.ps1` (move) | Test | Desktop build/development tooling | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/reuse.baseline.json` | `apps/desktop/scripts/ci/reuse.baseline.json` (retain Owner) | Configuration/declaration/documentation | Adjacent domain | No exact path found; check sibling modules and dynamic consumers | Original consumers and structural/declaration checks |
+| `apps/desktop/scripts/reuse.mjs` | `apps/desktop/scripts/ci/reuse.mjs` (retain Owner) | Quality implementation | Desktop quality | `apps/desktop/scripts/ci/find.mjs` | Original quality and i18n sets; do not change the baseline |
+| `apps/desktop/scripts/reuse.policy.json` | `apps/desktop/scripts/ci/reuse.policy.json` (retain Owner) | Configuration/declaration/documentation | Adjacent domain | No exact path found; check sibling modules and dynamic consumers | Original consumers and structural/declaration checks |
+| `apps/desktop/scripts/reuse.test.mjs` | `apps/desktop/scripts/ci/__tests__/reuse.test.mjs` (move) | Test | Desktop build/development tooling | `work-records/20260929-ai-project-breadcrumb/result.md` | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/seal.cjs` | `apps/desktop/scripts/cd/seal.cjs` (retain Owner) | Release security mechanism | Desktop release/installation | `work-records/2026-10-13/office-font-duplicates-87640187/plan.md`, `work-records/proposals/2026-10-17/windows-build-optimization/plan.md` | Original contract; native acceptance on affected platforms |
+| `apps/desktop/scripts/seal.test.cjs` | `apps/desktop/scripts/cd/__tests__/seal.test.cjs` (move) | Test | Desktop build/development tooling | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/setup.cjs` | `apps/desktop/scripts/cd/setup.cjs` (retain Owner) | Domain mechanism/build bootstrap | Desktop build/runtime | `scripts/BUILD.md` | Baseline build/runtime contracts and actual host probes |
+| `apps/desktop/scripts/setup.test.cjs` | `apps/desktop/scripts/cd/__tests__/setup.test.cjs` (move) | Test | Desktop build/development tooling | `apps/desktop/updater/README.md` | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/shipit.cjs` | `apps/desktop/scripts/cd/shipit.cjs` (retain Owner) | Release security mechanism | Desktop release/installation | `work-records/proposals/2026-10-13/shipit-cleanup/plan.md` | Original contract; native acceptance on affected platforms |
+| `apps/desktop/scripts/shipit.test.cjs` | `apps/desktop/scripts/cd/__tests__/shipit.test.cjs` (move) | Test | Desktop build/development tooling | `work-records/proposals/2026-10-13/shipit-preparation/plan.md` | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/sign.cjs` | `apps/desktop/scripts/cd/sign.cjs` (retain Owner) | Release security mechanism | Desktop release/installation | No exact path found; check sibling modules and dynamic consumers | Original contract; native acceptance on affected platforms |
+| `apps/desktop/scripts/signer.cjs` | `apps/desktop/scripts/cd/signer.cjs` (retain Owner) | Release security mechanism | Desktop release/installation | No exact path found; check sibling modules and dynamic consumers | Original contract; native acceptance on affected platforms |
+| `apps/desktop/scripts/squirrel.cjs` | `apps/desktop/scripts/cd/squirrel.cjs` (retain Owner) | Release security mechanism | Desktop release/installation | No exact path found; check sibling modules and dynamic consumers | Original contract; native acceptance on affected platforms |
+| `apps/desktop/scripts/squirrel.test.cjs` | `apps/desktop/scripts/cd/__tests__/squirrel.test.cjs` (move) | Test | Desktop build/development tooling | `work-records/proposals/2026-10-13/shipit-preparation/plan.md` | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/standards.baseline.json` | `apps/desktop/scripts/ci/standards.baseline.json` (retain Owner) | Configuration/declaration/documentation | Adjacent domain | `scripts/public/policy.json` | Original consumers and structural/declaration checks |
+| `apps/desktop/scripts/standards.mjs` | `apps/desktop/scripts/ci/standards.mjs` (retain Owner) | Quality implementation | Desktop quality | `scripts/cd/public/policy.json`, `work-records/20260928-batch-metadata/result.md`, `work-records/20260929-office-recovery/verification.md` | Original quality and i18n sets; do not change the baseline |
+| `apps/desktop/scripts/standards.policy.json` | `apps/desktop/scripts/ci/standards.policy.json` (retain Owner) | Configuration/declaration/documentation | Adjacent domain | `scripts/cd/public/policy.json` | Original consumers and structural/declaration checks |
+| `apps/desktop/scripts/standards.test.mjs` | `apps/desktop/scripts/ci/__tests__/standards.test.mjs` (move) | Test | Desktop build/development tooling | `scripts/cd/public/policy.json` | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/target.cjs` | `apps/desktop/scripts/shared/target.cjs` (retain Owner) | Domain mechanism/build bootstrap | Desktop build/runtime | `scripts/BUILD.md` | Baseline build/runtime contracts and actual host probes |
+| `apps/desktop/scripts/temporary-cleanup.cjs` | `apps/desktop/scripts/shared/temporary-cleanup.cjs` (retain Owner) | Domain mechanism/build bootstrap | Desktop build/runtime | No exact path found; check sibling modules and dynamic consumers | Baseline build/runtime contracts and actual host probes |
+| `apps/desktop/scripts/temporary-cleanup.test.cjs` | `apps/desktop/scripts/shared/__tests__/temporary-cleanup.test.cjs` (move) | Test | Desktop build/development tooling | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/toolchain.test.cjs` | `apps/desktop/scripts/cd/__tests__/toolchain.test.cjs` (move) | Test | Desktop build/development tooling | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/utils.cjs` | `apps/desktop/scripts/shared/utils.cjs` (retain Owner) | Domain mechanism/build bootstrap | Desktop build/runtime | No exact path found; check sibling modules and dynamic consumers | Baseline build/runtime contracts and actual host probes |
+| `apps/desktop/scripts/utils.test.cjs` | `apps/desktop/scripts/shared/__tests__/utils.test.cjs` (move) | Test | Desktop build/development tooling | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/velobundle.test.mjs` | `apps/desktop/scripts/cd/__tests__/velobundle.test.mjs` (move) | Test | Desktop build/development tooling | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/velopack-sign.cjs` | `apps/desktop/scripts/cd/velopack-sign.cjs` (retain Owner) | Release security mechanism | Desktop release/installation | No exact path found; check sibling modules and dynamic consumers | Original contract; native acceptance on affected platforms |
+| `apps/desktop/scripts/velopack-sign.test.cjs` | `apps/desktop/scripts/cd/__tests__/velopack-sign.test.cjs` (move) | Test | Desktop build/development tooling | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/velopack.cjs` | `apps/desktop/scripts/cd/velopack.cjs` (retain Owner) | Release security mechanism | Desktop release/installation | `work-records/proposals/2026-10-17/windows-install-directory/plan.md` | Original contract; native acceptance on affected platforms |
+| `apps/desktop/scripts/velopack.d.mts` | `apps/desktop/scripts/cd/velopack.d.mts` (retain Owner) | Configuration/declaration/documentation | Adjacent domain | No exact path found; check sibling modules and dynamic consumers | Original consumers and structural/declaration checks |
+| `apps/desktop/scripts/velopack.mjs` | `apps/desktop/scripts/cd/velopack.mjs` (retain Owner) | Release security mechanism | Desktop release/installation | No exact path found; check sibling modules and dynamic consumers | Original contract; native acceptance on affected platforms |
+| `apps/desktop/scripts/velopack.py` | `apps/desktop/scripts/cd/velopack.py` (retain Owner) | Release security mechanism | Desktop release/installation | No exact path found; check sibling modules and dynamic consumers | Original contract; native acceptance on affected platforms |
+| `apps/desktop/scripts/velopack.test.cjs` | `apps/desktop/scripts/cd/__tests__/velopack.test.cjs` (move) | Test | Desktop build/development tooling | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/velopack_test.py` | `apps/desktop/scripts/cd/__tests__/velopack_test.py` (move) | Test | Desktop build/development tooling | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/verification-directories.py` | `apps/desktop/scripts/cd/verification-directories.py` (retain Owner) | Domain mechanism/build bootstrap | Desktop build/runtime | No exact path found; check sibling modules and dynamic consumers | Baseline build/runtime contracts and actual host probes |
+| `apps/desktop/scripts/verification-directory.cjs` | `apps/desktop/scripts/cd/verification-directory.cjs` (retain Owner) | Domain mechanism/build bootstrap | Desktop build/runtime | `scripts/updater.cjs` | Baseline build/runtime contracts and actual host probes |
+| `apps/desktop/scripts/verify.cjs` | `apps/desktop/scripts/cd/verify.cjs` (retain Owner) | Domain mechanism/build bootstrap | Desktop build/runtime | `work-records/proposals/2026-10-17/windows-install-directory/plan.md` | Baseline build/runtime contracts and actual host probes |
+| `apps/desktop/scripts/visual.mjs` | `apps/desktop/scripts/ci/visual.mjs` (retain Owner) | Quality implementation | Desktop quality | `scripts/cd/public/policy.json` | Original quality and i18n sets; do not change the baseline |
+| `apps/desktop/scripts/visual.test.mjs` | `apps/desktop/scripts/ci/__tests__/visual.test.mjs` (move) | Test | Desktop build/development tooling | `scripts/ci/test.cjs`, `scripts/cd/public/policy.json` | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/vpk.cjs` | `apps/desktop/scripts/cd/vpk.cjs` (retain Owner) | Release security mechanism | Desktop release/installation | `scripts/BUILD.md` | Original contract; native acceptance on affected platforms |
+| `apps/desktop/scripts/vpk.json` | `apps/desktop/scripts/cd/vpk.json` (retain Owner) | Configuration/declaration/documentation | Adjacent domain | No exact path found; check sibling modules and dynamic consumers | Original consumers and structural/declaration checks |
+| `apps/desktop/scripts/vpk.test.cjs` | `apps/desktop/scripts/cd/__tests__/vpk.test.cjs` (move) | Test | Desktop build/development tooling | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/wheels.cjs` | `apps/desktop/scripts/cd/wheels.cjs` (retain Owner) | Domain mechanism/build bootstrap | Desktop build/runtime | No exact path found; check sibling modules and dynamic consumers | Baseline build/runtime contracts and actual host probes |
+| `apps/desktop/scripts/wheels.json` | `apps/desktop/scripts/cd/wheels.json` (retain Owner) | Configuration/declaration/documentation | Adjacent domain | No exact path found; check sibling modules and dynamic consumers | Original consumers and structural/declaration checks |
+| `apps/desktop/scripts/windows-runtime.cjs` | `apps/desktop/scripts/cd/windows-runtime.cjs` (retain Owner) | Domain mechanism/build bootstrap | Desktop build/runtime | No exact path found; check sibling modules and dynamic consumers | Baseline build/runtime contracts and actual host probes |
+| `apps/desktop/scripts/windows-runtime.test.cjs` | `apps/desktop/scripts/cd/__tests__/windows-runtime.test.cjs` (move) | Test | Desktop build/development tooling | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `apps/desktop/scripts/windows-sign.cjs` | `apps/desktop/scripts/cd/windows-sign.cjs` (retain Owner) | Release security mechanism | Desktop release/installation | `.env.example`, `scripts/BUILD.md`, `scripts/cd/public/overlay.patch` | Original contract; native acceptance on affected platforms |
+| `apps/desktop/scripts/windows-sign.test.cjs` | `apps/desktop/scripts/cd/__tests__/windows-sign.test.cjs` (move) | Test | Desktop build/development tooling | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `scripts/BUILD.md` | `docs/runbooks/build.md` (carries the upstream body migration; does not restore the old path) | Configuration/declaration/documentation | build operation guidelines | `.agents/skills/update-codex-packages/SKILL.md`, `.env.example`, `AGENTS.md` | Original consumers and structural/declaration checks |
+| `scripts/affected.cjs` | `scripts/ci/affected.cjs` (retain Owner) | Domain mechanism/installation bootstrap | Repository toolchain/build | `.agents/skills/test-quality/SKILL.md`, `docs/runbooks/development.md`, `scripts/ci/affected.test.mjs` | Original module contract and installation bootstrap behavior |
+| `scripts/affected.policy.json` | `scripts/ci/affected.policy.json` (retain Owner) | Configuration/declaration/documentation | Adjacent domain | `.agents/skills/test-quality/SKILL.md`, `docs/runbooks/development.md` | Original consumers and structural/declaration checks |
+| `scripts/appicon.py` | `scripts/cd/icons.py` (retain Owner) | Domain mechanism/installation bootstrap | Repository toolchain/build | `apps/desktop/resources/ICONS.md` | Original module contract and installation bootstrap behavior |
+| `scripts/artifacts.cjs` | `scripts/shared/artifacts.cjs` (retain Owner) | Domain mechanism/installation bootstrap | Repository toolchain/build | `.agents/skills/update-codex-packages/SKILL.md`, `apps/desktop/docs/architecture/ownership.md`, `apps/desktop/runtime/codex.cjs` | Original module contract and installation bootstrap behavior |
+| `scripts/artifacts.test.cjs` | `scripts/shared/__tests__/artifacts.test.cjs` (move) | Test | Repository development tooling | `.agents/skills/update-codex-packages/SKILL.md`, `apps/desktop/package.json`, `scripts/ci/test.cjs` | Original test set and relative paths/helper closure |
+| `scripts/check_import_position.py` | `scripts/ci/imports.py` (retain Owner) | Quality implementation | Repository quality | `scripts/ci/format.cjs`, `scripts/formatter.test.cjs` | Original formatting/static-check set |
+| `scripts/ci/README.md` | `scripts/ci/README.md` (retain Owner) | CI orchestration/configuration | Repository CI | `work-records/proposals/2026-10-22/quick/plan.md` | Original stage/set/report/isolated identity |
+| `scripts/ci/affected.test.mjs` | `scripts/ci/__tests__/affected.test.mjs` (move) | Test | Repository CI | `scripts/ci/test.cjs` | Original test set and relative paths/helper closure |
+| `scripts/ci/distribution.cjs` | `scripts/cd/distribution.cjs` (retain Owner) | CI orchestration/configuration | Repository CI | `apps/desktop/package.json`, `package.json`, `scripts/ci/distribution.test.cjs` | Original stage/set/report/isolated identity |
+| `scripts/ci/distribution.test.cjs` | `scripts/cd/__tests__/distribution.test.cjs` (move) | Test | Repository CI | `scripts/ci/test.cjs`, `scripts/ci/test.test.cjs` | Original test set and relative paths/helper closure |
+| `scripts/ci/events.cjs` | `scripts/ci/events.cjs` (retain Owner) | CI orchestration/configuration | Repository CI | No exact path found; check sibling modules and dynamic consumers | Original stage/set/report/isolated identity |
+| `scripts/ci/events.test.cjs` | `scripts/ci/__tests__/events.test.cjs` (move) | Test | Repository CI | `scripts/ci/test.cjs`, `work-records/proposals/2026-10-21/testing/plan.md` | Original test set and relative paths/helper closure |
+| `scripts/ci/external-cases.json` | `scripts/ci/external-cases.json` (retain Owner) | CI orchestration/configuration | Repository CI | `docs/runbooks/development.md` | Original stage/set/report/isolated identity |
+| `scripts/ci/generate-office-corpus.cjs` | `scripts/ci/generate-office-corpus.cjs` (retain Owner) | CI orchestration/configuration | Repository CI | `apps/desktop/e2e/fixtures/office-corpus/README.md`, `scripts/ci/README.md` | Original stage/set/report/isolated identity |
+| `scripts/ci/model.cjs` | `scripts/ci/model.cjs` (retain Owner) | CI orchestration/configuration | Repository CI | No exact path found; check sibling modules and dynamic consumers | Original stage/set/report/isolated identity |
+| `scripts/ci/model.test.cjs` | `scripts/ci/__tests__/model.test.cjs` (move) | Test | Repository CI | `scripts/ci/README.md`, `scripts/ci/test.cjs` | Original test set and relative paths/helper closure |
+| `scripts/ci/package.cjs` | `scripts/cd/package.cjs` (retain Owner) | CI orchestration/configuration | Repository CI | `docs/runbooks/development.md`, `package.json`, `work-records/ci-package/2026-09-24/plan.md` | Original stage/set/report/isolated identity |
+| `scripts/ci/package.test.cjs` | `scripts/cd/__tests__/package.test.cjs` (move) | Test | Repository CI | `scripts/ci/README.md`, `scripts/ci/quarantine.json`, `scripts/ci/test.cjs` | Original test set and relative paths/helper closure |
+| `scripts/ci/progress.cjs` | `scripts/ci/progress.cjs` (retain Owner) | CI orchestration/configuration | Repository CI | No exact path found; check sibling modules and dynamic consumers | Original stage/set/report/isolated identity |
+| `scripts/ci/progress.test.cjs` | `scripts/ci/__tests__/progress.test.cjs` (move) | Test | Repository CI | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `scripts/ci/quality.py` | `scripts/ci/quality.py` (retain Owner) | CI orchestration/configuration | Repository CI | `work-records/proposals/2026-10-21/testing/plan.md` | Original stage/set/report/isolated identity |
+| `scripts/ci/quarantine.json` | `scripts/ci/quarantine.json` (retain Owner) | CI orchestration/configuration | Repository CI | `apps/desktop/e2e/fixtures/quarantine.ts`, `docs/runbooks/development.md` | Original stage/set/report/isolated identity |
+| `scripts/ci/skillhub.cjs` | `scripts/ci/skillhub.cjs` (retain Owner) | CI orchestration/configuration | Repository CI | No exact path found; check sibling modules and dynamic consumers | Original stage/set/report/isolated identity |
+| `scripts/ci/skillhub.test.cjs` | `scripts/ci/__tests__/skillhub.test.cjs` (move) | Test | Repository CI | `scripts/ci/README.md`, `scripts/ci/test.cjs` | Original test set and relative paths/helper closure |
+| `scripts/ci/smoke.cjs` | `scripts/ci/smoke.cjs` (retain Owner) | CI orchestration/configuration | Repository CI | `package.json`, `scripts/ci/smoke.test.cjs`, `work-records/proposals/2026-10-22/quick/plan.md` | Original stage/set/report/isolated identity |
+| `scripts/ci/smoke.json` | `scripts/ci/smoke.json` (retain Owner) | CI orchestration/configuration | Repository CI | `apps/serve/tests/contract_runner.py`, `work-records/proposals/2026-10-22/quick/plan.md` | Original stage/set/report/isolated identity |
+| `scripts/ci/smoke.test.cjs` | `scripts/ci/__tests__/smoke.test.cjs` (move) | Test | Repository CI | `scripts/ci/README.md`, `scripts/ci/smoke.json`, `scripts/ci/test.cjs` | Original test set and relative paths/helper closure |
+| `scripts/ci/test.cjs` | `scripts/ci/test.cjs` (retain Owner) | CI orchestration/configuration | Repository CI | `apps/desktop/docs/architecture/testing-strategy.md`, `docs/runbooks/development.md`, `package.json` | Original stage/set/report/isolated identity |
+| `scripts/ci/test.test.cjs` | `scripts/ci/__tests__/test.test.cjs` (move) | Test | Repository CI | `scripts/ci/README.md`, `scripts/ci/test.cjs` | Original test set and relative paths/helper closure |
+| `scripts/ci/transport.test.cjs` | `scripts/ci/__tests__/transport.test.cjs` (move) | Test | Repository CI | `scripts/ci/test.cjs`, `work-records/proposals/2026-10-21/testing/plan.md` | Original test set and relative paths/helper closure |
+| `scripts/ci/verdict.cjs` | `scripts/ci/verdict.cjs` (retain Owner) | CI orchestration/configuration | Repository CI | `docs/runbooks/development.md`, `work-records/ci-package/2026-09-24/plan.md` | Original stage/set/report/isolated identity |
+| `scripts/ci/verdict.test.cjs` | `scripts/ci/__tests__/verdict.test.cjs` (move) | Test | Repository CI | `docs/runbooks/development.md`, `scripts/ci/README.md`, `scripts/ci/test.cjs` | Original test set and relative paths/helper closure |
+| `scripts/cleanup.cjs` | `scripts/pre/cleanup.cjs` (retain Owner) | Domain mechanism/installation bootstrap | Repository toolchain/build | `scripts/cd/public/test_sync.py` | Original module contract and installation bootstrap behavior |
+| `scripts/cleanup.test.cjs` | `scripts/pre/__tests__/cleanup.test.cjs` (move) | Test | Repository development tooling | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `scripts/command-links.cjs` | `scripts/pre/commands.cjs` (retain Owner) | Domain mechanism/installation bootstrap | Repository toolchain/build | `docs/runbooks/development.md`, `scripts/cd/public/test_sync.py` | Original module contract and installation bootstrap behavior |
+| `scripts/command-links.test.cjs` | `scripts/pre/__tests__/commands.test.cjs` (move) | Test | Repository development tooling | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `scripts/debug.cjs` | `scripts/dev/desktop.cjs` (retain Owner) | Development/debugging mechanism | Repository instance/Serve debugging | `docs/runbooks/development.md`, `package.json`, `scripts/debug.test.cjs` | Original process/supervision/isolation contract |
+| `scripts/debug.test.cjs` | `scripts/dev/__tests__/desktop.test.cjs` (move) | Test | Repository development tooling | `apps/desktop/package.json`, `package.json`, `scripts/ci/test.test.cjs` | Original test set and relative paths/helper closure |
+| `scripts/dependencies.py` | `scripts/shared/dependencies.py` (retain Owner) | Domain mechanism/installation bootstrap | Repository toolchain/build | `apps/desktop/scripts/shared/component-cache.cjs`, `apps/serve/tests/contract_skill_dependencies.py`, `docs/runbooks/development.md` | Original module contract and installation bootstrap behavior |
+| `scripts/desktop.cjs` | `scripts/shared/desktop.cjs` (retain Owner) | Mixed entry point/orchestration to be consolidated | Repository development orchestration | `apps/desktop/docs/architecture/ownership.md`, `docs/runbooks/development.md`, `package.json` | ops command contract and original setup chain |
+| `scripts/docs/check.py` | `scripts/ci/docs/check.py` (retain Owner) | Documentation checks/resource | Repository knowledge checks | `docs/architecture/knowledge.md`, `docs/index.md`, `scripts/ci/docs/keywords.yaml` | Original documentation and structure set |
+| `scripts/ci/docs/commands.test.cjs` | `scripts/ci/docs/__tests__/commands.test.cjs` (move) | Test | Repository knowledge checks | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `scripts/docs/frontmatter.py` | `scripts/ci/docs/frontmatter.py` (retain Owner) | Documentation checks/resource | Repository knowledge checks | `docs/architecture/knowledge.md` | Original documentation and structure set |
+| `scripts/docs/keywords.yaml` | `scripts/ci/docs/keywords.yaml` (retain Owner) | Documentation checks/resource | Repository knowledge checks | `.agents/skills/design-solution/SKILL.md`, `docs/architecture/knowledge.md`, `scripts/cd/public/test_sync.py` | Original documentation and structure set |
+| `scripts/docs/structure-core.mjs` | `scripts/ci/docs/structure-core.mjs` (retain Owner) | Documentation checks/resource | Repository knowledge checks | `.agents/skills/knowledge-governance/scripts/check.mjs`, `docs/runbooks/development.md` | Original documentation and structure set |
+| `scripts/docs/structure.mjs` | `scripts/ci/docs/structure.mjs` (retain Owner) | Documentation checks/resource | Repository knowledge checks | No exact path found; check sibling modules and dynamic consumers | Original documentation and structure set |
+| `scripts/ci/docs/structure.test.mjs` | `scripts/ci/docs/__tests__/structure.test.mjs` (move) | Test | Repository knowledge checks | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `scripts/ci/docs/test_check.py` | `scripts/ci/docs/__tests__/test_check.py` (move) | Test | Repository knowledge checks | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `scripts/docs/vocabulary.py` | `scripts/ci/docs/vocabulary.py` (retain Owner) | Documentation checks/resource | Repository knowledge checks | `docs/architecture/knowledge.md`, `scripts/ci/docs/keywords.yaml` | Original documentation and structure set |
+| `scripts/format.sh` | `scripts/ci/format.sh` (retain Owner) | Quality implementation | Repository quality | `docs/runbooks/development.md` | Original formatting/static-check set |
+| `scripts/formatter.cjs` | `scripts/ci/format.cjs` (retain Owner) | Quality implementation | Repository quality | `docs/runbooks/development.md`, `scripts/cd/public/overlay.patch`, `scripts/shared/workspace.cjs` | Original formatting/static-check set |
+| `scripts/formatter.test.cjs` | `scripts/ci/__tests__/format.test.cjs` (move) | Test | Repository development tooling | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `scripts/git-hooks.test.cjs` | Deleted with the retired entry point | Test | Repository development tooling | No ongoing consumers | Do not retain a dedicated test for a retired prompt script with no remaining use; currently explicitlinkscheck/repair by original Owner verification |
+| `scripts/install-git-hooks.sh` | Retired prompt script already deleted | retired entry point | Repository toolchain | Public-export registration removed | No current command invocation; Existing sharedhookssecurity migration guidance belongs in the development guide, Do not install or clean up automaticallyhooks |
+| `scripts/lint.py` | `scripts/ci/lint.py` (retain Owner) | Quality implementation | Repository quality | `docs/architecture/persistence.md`, `scripts/shared/workspace.cjs`, `tests/release/contract_lint.py` | Original formatting/static-check set |
+| `scripts/npm-installed-cache.cjs` | `scripts/shared/dependencies.cjs` (retain Owner) | Domain mechanism/installation bootstrap | Repository toolchain/build | `scripts/cd/public/test_sync.py` | Original module contract and installation bootstrap behavior |
+| `scripts/npm-installed-cache.test.cjs` | `scripts/shared/__tests__/dependencies.test.cjs` (move) | Test | Repository development tooling | `apps/desktop/package.json` | Original test set and relative paths/helper closure |
+| `scripts/public/.gitignore` | `scripts/cd/public/.gitignore` (retain Owner) | Public preparation tooling/policy | Public export | No exact path found; check sibling modules and dynamic consumers | isolationsync/npmtests andoverlayapplication |
+| `scripts/public/README.md` | `scripts/cd/public/README.md` (retain Owner) | Public preparation tooling/policy | Public export | `docs/architecture/ownership.md` | isolationsync/npmtests andoverlayapplication |
+| `scripts/public/npm.mjs` | `scripts/cd/public/npm.mjs` (retain Owner) | Public preparation tooling/policy | Public export | No exact path found; check sibling modules and dynamic consumers | isolationsync/npmtests andoverlayapplication |
+| `scripts/cd/public/npm.test.mjs` | `scripts/cd/public/__tests__/npm.test.mjs` (move) | Test | Public export | `scripts/ci/test.cjs`, `scripts/cd/public/README.md` | Original test set and relative paths/helper closure |
+| `scripts/cd/public/overlay.patch` | `scripts/cd/public/overlay.patch` (retain Owner) | Public preparation tooling/policy | Public export | `apps/desktop/docs/architecture/evaluation.md` | isolationsync/npmtests andoverlayapplication |
+| `scripts/cd/public/policy.json` | `scripts/cd/public/policy.json` (retain Owner) | Public preparation tooling/policy | Public export | `docs/architecture/ownership.md` | isolationsync/npmtests andoverlayapplication |
+| `scripts/public/sync.py` | `scripts/cd/public/sync.py` (retain Owner) | Public preparation tooling/policy | Public export | `scripts/cd/public/README.md` | isolationsync/npmtests andoverlayapplication |
+| `scripts/cd/public/test_sync.py` | `scripts/cd/public/__tests__/test_sync.py` (move) | Test | Public export | `apps/desktop/docs/architecture/evaluation.md`, `scripts/cd/public/README.md` | Original test set and relative paths/helper closure |
+| `scripts/python.cjs` | `scripts/shared/python.cjs` (retain Owner) | Domain mechanism/installation bootstrap | Repository toolchain/build | `apps/desktop/package.json`, `apps/desktop/runtime/codex.cjs`, `apps/desktop/runtime/powershell.cjs` | Original module contract and installation bootstrap behavior |
+| `scripts/python.d.cts` | `scripts/shared/python.d.cts` (retain Owner) | Configuration/declaration/documentation | Adjacent domain | No exact path found; check sibling modules and dynamic consumers | Original consumers and structural/declaration checks |
+| `scripts/ripgrep.cjs` | `scripts/shared/ripgrep.cjs` (retain Owner) | Domain mechanism/installation bootstrap | Repository toolchain/build | `apps/desktop/scripts/cd/build.cjs`, `apps/desktop/scripts/cd/bundle.cjs` | Original module contract and installation bootstrap behavior |
+| `scripts/serve-dev.sh` | `scripts/dev/serve.sh` (retain Owner) | Development/debugging mechanism | Repository instance/Serve debugging | `docs/runbooks/development.md` | Original process/supervision/isolation contract |
+| `scripts/serve_watch.py` | `scripts/dev/watch.py` (retain Owner) | Development/debugging mechanism | Repository instance/Serve debugging | `docs/runbooks/development.md`, `scripts/test_serve_watch.py`, `scripts/shared/workspace.cjs` | Original process/supervision/isolation contract |
+| `scripts/setup_config.py` | `scripts/pre/config.py` (retain Owner) | Domain mechanism/installation bootstrap | Repository toolchain/build | `scripts/workspace.cjs` | Original module contract and installation bootstrap behavior |
+| `scripts/symlinks.cjs` | `scripts/pre/symlinks.cjs` (retain Owner) | Domain mechanism/installation bootstrap | Repository toolchain/build | `scripts/shared/workspace.cjs` | Original module contract and installation bootstrap behavior |
+| `scripts/symlinks.test.cjs` | `scripts/pre/__tests__/symlinks.test.cjs` (move) | Test | Repository development tooling | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `scripts/test_serve_watch.py` | `scripts/dev/__tests__/test_watch.py` (move) | Test | Repository development tooling | No exact path found; check sibling modules and dynamic consumers | Original test set and relative paths/helper closure |
+| `scripts/timing.cjs` | `scripts/shared/timing.cjs` (retain Owner) | Domain mechanism/installation bootstrap | Repository toolchain/build | `apps/desktop/scripts/cd/acceptance.cjs`, `apps/desktop/scripts/cd/branding.cjs`, `apps/desktop/scripts/cd/build.cjs` | Original module contract and installation bootstrap behavior |
+| `scripts/timing.test.cjs` | `scripts/shared/__tests__/timing.test.cjs` (move) | Test | Repository development tooling | `apps/desktop/package.json` | Original test set and relative paths/helper closure |
+| `scripts/toolchain-install.test.cjs` | `scripts/pre/__tests__/toolchain-install.test.cjs` (move) | Test | Repository development tooling | `apps/desktop/package.json`, `package.json` | Original test set and relative paths/helper closure |
+| `scripts/toolchain.cjs` | `scripts/pre/toolchain.cjs` (retain Owner) | Domain mechanism/installation bootstrap | Repository toolchain/build | `.agents/skills/test-quality/SKILL.md`, `.codex/environments/pnpm.toml`, `.gitlab-ci.yml` | Original module contract and installation bootstrap behavior |
+| `scripts/updater-session.test.cjs` | `scripts/cd/__tests__/updater-session.test.cjs` (move) | Test | Repository development tooling | `apps/desktop/package.json` | Original test set and relative paths/helper closure |
+| `scripts/cd/updater.cjs` | `scripts/cd/updater.cjs` (retain Owner) | Development/debugging mechanism | Repository instance/Serve debugging | `package.json` | Original process/supervision/isolation contract |
+| `scripts/vendor/codex/README.md` | `scripts/vendor/codex/README.md` (retain Owner) | Supply-chain resource/implementation | Toolchain supply chain | `.agents/skills/update-codex-packages/SKILL.md`, `docs/runbooks/development.md` | Manifest sources/inventory and original supply-chain contract |
+| `scripts/vendor/codex/manifest.json` | `scripts/vendor/codex/manifest.json` (retain Owner) | Supply-chain resource/implementation | Toolchain supply chain | `.agents/skills/update-codex-packages/SKILL.md`, `apps/desktop/runtime/codex.test.cjs`, `apps/serve/service/chat/service/subscriptions.py` | Manifest sources/inventory and original supply-chain contract |
+| `scripts/vendor/fetch-vendor.sh` | `scripts/vendor/fetch-vendor.sh` (retain Owner) | Supply-chain resource/implementation | Toolchain supply chain | No exact path found; check sibling modules and dynamic consumers | Manifest sources/inventory and original supply-chain contract |
+| `scripts/vendor/powershell/manifest.json` | `scripts/vendor/powershell/manifest.json` (retain Owner) | Supply-chain resource/implementation | Toolchain supply chain | No exact path found; check sibling modules and dynamic consumers | Manifest sources/inventory and original supply-chain contract |
+| `scripts/vendor/python-build-standalone/README.md` | `scripts/vendor/python-build-standalone/README.md` (retain Owner) | Supply-chain resource/implementation | Toolchain supply chain | No exact path found; check sibling modules and dynamic consumers | Manifest sources/inventory and original supply-chain contract |
+| `scripts/vendor/python-build-standalone/manifest.json` | `scripts/vendor/python-build-standalone/manifest.json` (retain Owner) | Supply-chain resource/implementation | Toolchain supply chain | `apps/desktop/scripts/python.test.cjs`, `scripts/BUILD.md`, `scripts/cd/public/test_sync.py` | Manifest sources/inventory and original supply-chain contract |
+| `scripts/vendor/ripgrep/COPYING` | `scripts/vendor/ripgrep/COPYING` (retain Owner) | Supply-chain resource/implementation | Toolchain supply chain | No exact path found; check sibling modules and dynamic consumers | Manifest sources/inventory and original supply-chain contract |
+| `scripts/vendor/ripgrep/LICENSE-MIT` | `scripts/vendor/ripgrep/LICENSE-MIT` (retain Owner) | Supply-chain resource/implementation | Toolchain supply chain | No exact path found; check sibling modules and dynamic consumers | Manifest sources/inventory and original supply-chain contract |
+| `scripts/vendor/ripgrep/README.md` | `scripts/vendor/ripgrep/README.md` (retain Owner) | Supply-chain resource/implementation | Toolchain supply chain | No exact path found; check sibling modules and dynamic consumers | Manifest sources/inventory and original supply-chain contract |
+| `scripts/vendor/ripgrep/UNLICENSE` | `scripts/vendor/ripgrep/UNLICENSE` (retain Owner) | Supply-chain resource/implementation | Toolchain supply chain | No exact path found; check sibling modules and dynamic consumers | Manifest sources/inventory and original supply-chain contract |
+| `scripts/vendor/ripgrep/manifest.json` | `scripts/vendor/ripgrep/manifest.json` (retain Owner) | Supply-chain resource/implementation | Toolchain supply chain | `scripts/cd/public/test_sync.py` | Manifest sources/inventory and original supply-chain contract |
+| `scripts/vendor/ripgrep/aarch64-apple-darwin/rg` | `scripts/vendor/ripgrep/aarch64-apple-darwin/rg` (retain Owner) | Reviewed supply-chain binary | Desktop build resources | `scripts/shared/ripgrep.cjs`, `apps/desktop/scripts/cd/build.cjs`, `apps/desktop/scripts/cd/bundle.cjs` | Manifest platform/architecture resolution, SHA-256 validation, and explicit exclusion from public export |
+| `scripts/vendor/texlive/README.md` | `scripts/vendor/texlive/README.md` (retain Owner) | Supply-chain resource/implementation | Toolchain supply chain | `docs/architecture/skills.md`, `work-records/proposals/2026-10-17/windows-tex-sandbox/plan.md` | Manifest sources/inventory and original supply-chain contract |
+| `scripts/vendor/texlive/build-windows.ps1` | `scripts/vendor/texlive/build-windows.ps1` (retain Owner) | Supply-chain resource/implementation | Toolchain supply chain | `work-records/proposals/2026-10-17/windows-tex-sandbox/plan.md` | Manifest sources/inventory and original supply-chain contract |
+| `scripts/vendor/texlive/build.sh` | `scripts/vendor/texlive/build.sh` (retain Owner) | Supply-chain resource/implementation | Toolchain supply chain | `scripts/vendor/texlive/README.md` | Manifest sources/inventory and original supply-chain contract |
+| `scripts/vendor/texlive/discovery.patch` | `scripts/vendor/texlive/discovery.patch` (retain Owner) | Supply-chain resource/implementation | Toolchain supply chain | No exact path found; check sibling modules and dynamic consumers | Manifest sources/inventory and original supply-chain contract |
+| `scripts/vendor/texlive/engines.json` | `scripts/vendor/texlive/engines.json` (retain Owner) | Supply-chain resource/implementation | Toolchain supply chain | No exact path found; check sibling modules and dynamic consumers | Manifest sources/inventory and original supply-chain contract |
+| `scripts/vendor/texlive/engines.ps1` | `scripts/vendor/texlive/engines.ps1` (retain Owner) | Supply-chain resource/implementation | Toolchain supply chain | No exact path found; check sibling modules and dynamic consumers | Manifest sources/inventory and original supply-chain contract |
+| `scripts/vendor/texlive/engines.py` | `scripts/vendor/texlive/engines.py` (retain Owner) | Supply-chain resource/implementation | Toolchain supply chain | `scripts/vendor/texlive/README.md` | Manifest sources/inventory and original supply-chain contract |
+| `scripts/vendor/texlive/kpathsea.json` | `scripts/vendor/texlive/kpathsea.json` (retain Owner) | Supply-chain resource/implementation | Toolchain supply chain | No exact path found; check sibling modules and dynamic consumers | Manifest sources/inventory and original supply-chain contract |
+| `scripts/vendor/texlive/kpathsea.ps1` | `scripts/vendor/texlive/kpathsea.ps1` (retain Owner) | Supply-chain resource/implementation | Toolchain supply chain | No exact path found; check sibling modules and dynamic consumers | Manifest sources/inventory and original supply-chain contract |
+| `scripts/vendor/texlive/manifest.json` | `scripts/vendor/texlive/manifest.json` (retain Owner) | Supply-chain resource/implementation | Toolchain supply chain | `apps/desktop/protected.test.ts`, `apps/desktop/protected.ts`, `apps/desktop/runtime/texlive.cjs` | Manifest sources/inventory and original supply-chain contract |
+| `scripts/wheel.py` | `scripts/cd/wheel.py` (retain Owner) | Domain mechanism/installation bootstrap | Repository toolchain/build | `apps/desktop/scripts/cd/wheels.cjs`, `docs/architecture/ownership.md`, `scripts/BUILD.md` | Original module contract and installation bootstrap behavior |
+| `scripts/shared/workspace.cjs` | `scripts/shared/workspace.cjs` (retain Owner) | Mixed entry point/orchestration to be consolidated | Repository development orchestration | `docs/runbooks/development.md`, `open.md`, `package.json` | ops command contract and original setup chain |
 
-### 8.3 上游整合补记（2026-10-23）
+<a id="83-上游整合补记2026-10-23"></a>
+### 8.3 Upstream Integration Notes (2026-10-23)
 
-本轮实施期间先将最新 preview 整合到当前工作分支，HEAD 从
-`92f949471a45161c162dfc4ec229f838a09d148f` 快进到
-`501320305ff88b6be078c1eaa6bfb4011d794ca1`，共47个上游提交，再恢复本任务未提交改动。
-第8.2节249个旧文件及“原路径/静态消费者”仍表示旧HEAD的盘点事实，不重新覆盖计数；
-仅原构建指南行的目标承接已发生的远程迁移。当前规范以真实Owner为准，不恢复旧文件。
+During this implementation, the latest preview was first integrated into the current working branch, fast-forwarding HEAD from
+`92f949471a45161c162dfc4ec229f838a09d148f` to
+`501320305ff88b6be078c1eaa6bfb4011d794ca1` with 47 upstream commits, after which this task's uncommitted changes were restored.
+The 249 legacy files and the “original path/static consumers” in Section 8.2 remain inventory facts from the old HEAD; their counts are not recalculated.
+Only the destination for the original build-guide row reflects a remote migration. Current conventions follow the actual Owners; do not restore old files.
 
-| 上游或整合项 | 当前归属与处置 | 当前消费者与验证边界 |
+| Upstream or integration item | Current ownership and disposition | Current consumers and verification boundary |
 | --- | --- | --- |
-| `scripts/BUILD.md` 迁移 | `docs/runbooks/build.md` 为当前构建规范 | 根规则、开发说明、构建脚本与签名/发行操作前提同步指向新正文；旧路径仅在历史盘点保留 |
-| 新分发协作说明 | `docs/runbooks/distribution.md` 持有客户端/独立分发仓/服务端交接 | 本仓命令接线不证明外仓构建、上传或服务端发布；外仓只读核对仍为 `cb29ba9b9226f6b4b0fc3a2e64ab966e9358a38d` |
-| 文档检查 Owner 更新 | `scripts/ci/docs/check.py` 及迁入 `scripts/ci/docs/__tests__/test_check.py` 的原测试 | 承接上游发现范围与必需正文；构建产物不是规范源，不据此缩减源码门禁 |
-| 公开投影与排除更新 | `scripts/cd/public/policy.json`、`overlay.patch` 与迁入 `__tests__/test_sync.py` 的测试 | 保留上游新正文排除和本任务ops投影；原路径删除，上游新增排除断言不丢失；全树历史漂移仍分别核验 |
-| 公开 overlay 当前状态（2026-10-24复核） | 已合入 `shushen_release/mvp_v0.3_preview` 的 `18d77f13d`；全树补丁漂移已修复，已退休的自动upload补丁按删除提交移除 | 实施期间真实导出已核验986个npm版本，但完整导出仍被未审核二进制阻断。素材审核、Office corpus白名单及其审核声明不纳入本次ops-cli提交；不得批量补哈希或跳过扫描放行。嵌套worktree输出的Git跳过补丁问题已通过隔离Git发现修复；机械测试不代替全树导出成功 |
+| Migration of `scripts/BUILD.md` | `docs/runbooks/build.md` is the current build specification | Root rules, development guidance, build scripts, and prerequisites for signing/release operations point to the new text; the old path remains only in the historical inventory |
+| New distribution coordination guide | `docs/runbooks/distribution.md` owns client/standalone distribution repository/server handoffs | Wiring commands in this repository does not prove builds, uploads, or server releases in external repositories; the read-only check of the external repository remains at `cb29ba9b9226f6b4b0fc3a2e64ab966e9358a38d` |
+| Documentation-check Owner update | `scripts/ci/docs/check.py` and the original test moved to `scripts/ci/docs/__tests__/test_check.py` | Carries forward upstream discovery scope and required content; build artifacts are not the canonical source and do not justify reducing source gates |
+| Public projection and exclusion update | `scripts/cd/public/policy.json`, `overlay.patch`, and tests moved to `__tests__/test_sync.py` | Retains new upstream content exclusions and this task's ops projection; old paths are removed and new upstream exclusion assertions are preserved; historical drift across the full tree still requires separate verification |
+| Current public overlay status (rechecked 2026-10-24) | Merged in `18d77f13d` on `shushen_release/mvp_v0.3_preview`; full-tree patch drift is fixed, and the retired automatic-upload patch was removed in a deletion commit | During implementation, a real export verified 986 npm versions, but a complete export remained blocked by unaudited binaries. Asset review, the Office corpus allowlist, and its review declaration are outside this ops-cli commit; do not bulk-add hashes or bypass scanning to allow release. The Git skip-patch issue in nested worktree output was found and fixed using isolated Git; mechanical tests do not replace a successful full-tree export |
 
-最新接口核对区分本仓与外仓：`.gitlab-ci.yml` 已改用ops，本地分发仓库 `build/build.py`
-仍选择根 `package:dist`、`package:check`，preview 追加 `--type`，续跑调用不存在的
-`package:verify`，并可能追加当前未登记的 `--skip-check`。这些不是可静默忽略的参数。
-这是当时的切换阻断快照；2026-10-24用户明确要求外仓不动，产品仓保留固定协议，
-当前处理见第8.5节，不以该历史快照要求修改外仓。
+The latest interface check distinguishes this repository from external ones: `.gitlab-ci.yml` now uses ops, while the local distribution repository's `build/build.py`
+still selects root `package:dist` and `package:check`, appends `--type` for preview, calls nonexistent
+`package:verify` to resume, and may append the currently unregistered `--skip-check`. These parameters cannot be silently ignored.
+This was a snapshot of a cutover blocker at that time. On 2026-10-24, the user explicitly required leaving the external repository untouched and retaining the fixed protocol in the product repository;
+see Section 8.5 for current handling, and do not use this historical snapshot to require changes to the external repository.
 
-2026-10-23 macOS宿主核验：以独立物理Home运行`pnpm ops dev serve --watch`，
-对真实监听源仅更新mtime（内容SHA256前后一致）后，原Serve PID退出、新PID完成启动，
-服务实例身份改变而工作目录保持；Ctrl+C后两代进程及监听端口均释放。
-此证据仅证明真实后端空闲重载与退出链，未发送模型请求，不证明活跃对话/HIL保护、
-Electron main/preload协调或Windows子树退出。首次使用`/tmp`别名的启动被存储安全边界
-拒绝，改用物理路径后通过；没有为验收放宽路径解析或目录保护。
+2026-10-23 macOS host verification: ran `pnpm ops dev serve --watch` from an independent physical home directory.
+After updating only the mtime of a real watched source file (content SHA256 unchanged), the original Serve PID exited and a new PID started;
+the service instance identity changed while the working directory remained the same. Ctrl+C released both generations of processes and the listening port.
+This evidence proves only real backend idle reload and shutdown behavior. No model request was sent, and it does not prove protection of active conversations/HIL,
+Electron main/preload coordination, or Windows child-tree shutdown. The first launch using a `/tmp` alias was rejected by the storage security boundary;
+using the physical path succeeded. Path resolution and directory protection were not loosened for acceptance.
 
-当前已登记 preview/release 的 direct、distribution 与显式 candidate dir，
-但外仓消费者与 checkpoint/skip-check 尚未闭合；原 `--install` 需求
-仍由 Desktop 安装 Owner 持有，CLI 不开放安装参数。详见构建指南及分发协作说明，
-本次仅整合文档与记录缺口，不授权修改外仓、构建、安装、上传或发布。
+Direct, distribution, and explicit candidate `dir` flows for preview/release are now registered,
+but external-repository consumers and checkpoint/skip-check are not yet closed. The original `--install` requirement
+remains with the Desktop installation Owner; the CLI does not expose an install parameter. See the build guide and distribution coordination guide.
+This work only integrates documentation and recorded gaps; it does not authorize changes to external repositories, builds, installation, uploads, or releases.
 
-之后于`2026-10-23`将更新后的`shushen_release/mvp_v0.3_preview`从
-`404e131d3bad1c1e387ed726d373a26fae9f0cb2`快进整合至
-`682ed3b0a8e3a9549dbe0a2caef7fb53f37061f3`。既有库存和首次整合统计仍是历史快照，
-不代表当前全仓消费者清单；当前工作区改动及其验收应以该HEAD为基线重新核对。
+Later, on `2026-10-23`, the updated `shushen_release/mvp_v0.3_preview` was fast-forwarded from
+`404e131d3bad1c1e387ed726d373a26fae9f0cb2` to
+`682ed3b0a8e3a9549dbe0a2caef7fb53f37061f3`. The existing inventory and initial integration statistics remain historical snapshots
+and do not represent the current repository-wide consumer list; recheck current worktree changes and their acceptance against that HEAD.
 
-随后于`2026-10-23`将远端最新`shushen_release/mvp_v0.3_preview`从
-`682ed3b0a8e3a9549dbe0a2caef7fb53f37061f3`快进整合至
-`3dd502cf583e1415ae82e4f6f7a9dc9157e3b8c8`（12个提交）；合并前复核源SHA稳定，
-整合后通过`git diff --check`且无未合并路径。当前CLI任务脏改动已通过命名stash保护并恢复，
-其验收须以此HEAD为准。
+Subsequently, on `2026-10-23`, the latest remote `shushen_release/mvp_v0.3_preview` was fast-forwarded from
+`682ed3b0a8e3a9549dbe0a2caef7fb53f37061f3` to
+`3dd502cf583e1415ae82e4f6f7a9dc9157e3b8c8` (12 commits); the source SHA was rechecked as stable before integration,
+and `git diff --check` passed afterward with no unmerged paths. The current CLI task's dirty changes were protected and restored through a named stash;
+its acceptance must use this HEAD as the baseline.
 
-本轮继续将远端`shushen_release/mvp_v0.3_preview`快进合入至
-`fbe85189516e86fe5b289b01b91ba7a308aa76f9`。整合前后的既有staged、unstaged及
-untracked内容逐字节比对保留，未以重新暂存或覆盖方式消除原工作区分层；此前历史
-记录不改写为新版本验收，后续真实构建和宿主验收以该HEAD及最终工作区源码为准。
+This iteration continued by fast-forwarding remote `shushen_release/mvp_v0.3_preview` to
+`fbe85189516e86fe5b289b01b91ba7a308aa76f9`. Existing staged, unstaged, and
+untracked content was byte-for-byte compared before and after integration and preserved; the original worktree staging layers were not erased through restaging or overwriting. Earlier historical
+records are not rewritten as acceptance for the new revision; subsequent real builds and host acceptance must use this HEAD and final worktree source.
 
 
-### 8.4 按任务域组织脚本（2026-10-24）
+<a id="84-按任务域组织脚本2026-10-24"></a>
+### 8.4 Organizing Scripts by Task Domain (2026-10-24)
 
-- 根 scripts 的实现按 `pre`、`dev`、`ci`、`cd`、`shared` 实际迁移，根仅保留 `ops-cli.cjs` 用户入口；`vendor` 仍持有冻结供应链资源。
-- `cd` 承接原 `ci/package.cjs` 和 `ci/distribution.cjs` 的跨域编排；docs 检查归 `ci/docs`，公开投影工具归 `cd/public`，不扩大公开导出权限或素材白名单。
-- Desktop 的准备、开发、检查、打包和共享机制在 `apps/desktop/scripts` 内按相同职责归拢，不上移其构建、签名或原生安全策略。
-- 测试和专用夹具就近放入各 Owner 的 `__tests__`；根仅保留入口和组织回归。新增组织检查核验实际包 cwd 下的脚本与测试集合，不仅比较目录字符串。
-- 第8.2节原路径列保留历史盘点身份，目标列承接本次新路径；原生命周期名称、参数顺序、CI 配方、执行 cwd 和信号/权限边界不随迁移改变。
-- 相对导入、Python模块名、构建回调、PS1/PSM1、LF约束、初始化配置、生成器与公开 overlay 同步迁移；不保留旧文件转发壳。
-- 验收与遗留缺证见本次交付记录；已有实例、独立分发仓、Windows/真实模型/公开资产审核的暂缓边界不变。
+- Root script implementations were migrated by responsibility into `pre`, `dev`, `ci`, `cd`, and `shared`; only `ops-cli.cjs` remains as the root user entry point. `vendor` continues to hold frozen supply-chain resources.
+- `cd` takes over cross-domain orchestration from the original `ci/package.cjs` and `ci/distribution.cjs`; docs checks belong under `ci/docs`, public projection tools under `cd/public`, without expanding public-export permissions or the asset allowlist.
+- Desktop setup, development, checks, packaging, and shared mechanisms were grouped under the same responsibilities within `apps/desktop/scripts`; its build, signing, and native security policies were not moved upward.
+- Tests and dedicated fixtures were placed near each Owner under `__tests__`; the root retains only the entry point and organization regression tests. New organization checks verify scripts and test sets under the actual package cwd, not just directory strings.
+- The original-path column in Section 8.2 preserves historical inventory identity, while its target column carries the new paths from this cutover; lifecycle names, argument order, CI recipes, execution cwd, and signal/permission boundaries remain unchanged by migration.
+- Relative imports, Python module names, build callbacks, PS1/PSM1, LF constraints, initialization configuration, generators, and public overlay were migrated in sync; no forwarding shells for old files were retained.
+- Acceptance and remaining evidence gaps are recorded in the delivery record; the deferral boundaries for existing instances, the standalone distribution repository, Windows/real models/public asset review remain unchanged.
 
-### 8.5 固定分发协议（2026-10-24）
+<a id="85-固定分发协议2026-10-24"></a>
+### 8.5 Fixed Distribution Protocol (2026-10-24)
 
-- 独立`scholarseed-distribution`不修改。产品根保留其探测的`scripts/desktop.cjs`，
-  三个npm接口为`package:dist`、`package:check`和`package:verify`，日常入口仍为ops。
-- `package:dist`映射到`cd build release --workflow distribution`；`package:check`
-  映射到`cd build release --stage dir --candidate`；旧`--type`转为`--channel`，
-  版本、结果路径和签名材料参数仍由canonical解析器验证，不新增任意参数透传通道。
-- `package:verify`明确拒绝旧checkpoint续跑；`--skip-check`明确拒绝跳过验收。
-  当前Owner缺少这些能力，不因命令存在就记录为可用；不以重建或旧结果冒充续跑。
-- 测试就近放根`__tests__/desktop.test.cjs`并接入既有CI集合；用未修改分发仓的
-  实际参数生成函数复核协议，正常构建、候选检查与不支持能力分别记录证据。
-- 第8.4节“根仅ops、无旧入口”为该轮历史组织状态；本节外部协议例外以用户新要求为准，
-  不恢复其他旧路径。此前误加到分发仓的六个文件改动仅清理本任务部分。
+- Leave the standalone `scholarseed-distribution` repository unchanged. The product root retains the probed `scripts/desktop.cjs`;
+  its three npm interfaces are `package:dist`, `package:check`, and `package:verify`, while ops remains the everyday entry point.
+- `package:dist` maps to `cd build release --workflow distribution`; `package:check`
+  maps to `cd build release --stage dir --candidate`; legacy `--type` maps to `--channel`.
+  The canonical parser continues validating version, result path, and signing-material parameters; no arbitrary argument passthrough channel is added.
+- `package:verify` explicitly rejects resuming a legacy checkpoint; `--skip-check` explicitly rejects skipping acceptance.
+  The current Owner lacks these capabilities, so their presence as commands does not mean they are available; do not present a rebuild or old result as a resume.
+- Tests are placed near the root in `__tests__/desktop.test.cjs` and added to the existing CI set. Verify the protocol using the actual parameter-generation function from the unmodified distribution repository,
+  recording evidence separately for normal builds, candidate checks, and unsupported capabilities.
+- Section 8.4's “ops only at root, no legacy entry points” describes the historical organization state for that iteration. The external-protocol exception in this section follows the user's newer requirement;
+  do not restore other old paths. Only this task's portion of the six files previously added to the distribution repository by mistake was cleaned up.
 
-### 8.6 Desktop 工程接口优化（2026-10-26）
+<a id="86-desktop-工程接口优化2026-10-26"></a>
+### 8.6 Desktop Engineering Interface Improvements (2026-10-26)
 
-本节记录本轮实现及剩余核验，不将前文历史映射重写为当前能力。工作基线为产品
-worktree 的 `2099b41eb47e56ddf4a92f4cf9c5c0890b530158`；仅 fetch，不合并远端新提交。
-`scripts/vendor` 原位置、版本、下载、缓存和信任策略均不纳入调整，独立分发仓只读。
+This section records the implementation and remaining verification from this iteration; it does not rewrite historical mappings above as current capabilities. The product
+worktree baseline is `2099b41eb47e56ddf4a92f4cf9c5c0890b530158`; fetch only, without merging new remote commits.
+The original location, versions, downloads, cache, and trust policy for `scripts/vendor` are outside this adjustment; the standalone distribution repository is read-only.
 
-| 盘点项 | 基线 / 本轮处置 | 消费者与保持边界 |
+| Inventory item | Baseline / disposition in this iteration | Consumers and preserved boundaries |
 | --- | --- | --- |
-| Desktop scripts | 51 个入口、11 个实际钩子；删除 4 个无独立职责的重复别名后为 47 个入口 | `package:installer` → `package`；`build:check` → `package:check`；`build:release` / `release` → `package:distribution`。同步准备白名单，不新增兼容别名 |
-| `pretest` 长链 | 提取为 Desktop `scripts/ci/pretest.cjs`，持有同序检查及契约文件清单 | 本地 test 的前置；CI 普通 pretest stage 及 quarantine 的原有拆分消费同一契约集合，保留失败短路 |
-| test / coverage | Desktop `scripts/ci/test.cjs` 为唯一测试文件清单 | 本地 Node/c8 及根 CI 共同消费；删除 coverage 字符串解析，不删原测试、改变 glob 范围或提高本地文件并发 |
-| E2E | `scripts/ci/e2e.cjs` 合并 mr/live/update 的构建与运行步骤 | 项目仍为 smoke/live/update；generic `test:e2e`、Preview Playwright 与真实产品验收不合并 |
-| 生成代码路径 | 修复 closure 测试中因源文件迁移而误改的虚拟 main/preload 引用 | 以产物布局而非测试源码目录解析；真实落盘后从不同 cwd 用 Node 加载，原生 fixture 读取 Owner 库存，不改变生产 verifier 或安全判据 |
-| 公开投影 | 同步 package、pretest Owner 与其测试的 overlay，并追加独立消费者回归 | 保留私有 5 步 / 公开 3 步差异；不改冻结策略、白名单、验证命令或用户已有投影策略修改 |
-| 分发协议 | 根三个 package 兼容入口和 Desktop `package:dist` 保留 | 外仓当前通过根 ops 调用 distribution / candidate；完整 distribution 的准备、固定冒烟、签名和结果准入不变 |
-| 模块引用 | 不实施别名，保持字面量相对导入 | 24 个生产 CJS 文件的 38 条跨根引用及 3 条 ESM 引用，共 10 个目标；公开导出和 bootstrap 的静态闭包仍可追踪，不引入额外 resolver |
+| Desktop scripts | 51 entry points and 11 actual hooks; 47 entry points after removing 4 duplicate aliases with no independent responsibility | `package:installer` → `package`; `build:check` → `package:check`; `build:release` / `release` → `package:distribution`. Update the setup allowlist in sync; add no compatibility aliases |
+| `pretest` long chain | Extracted to Desktop `scripts/ci/pretest.cjs`, which owns the ordered checks and contract-file list | Prerequisite for local test; the ordinary CI pretest stage and quarantine's existing split consume the same contract set; preserve fail-fast behavior |
+| test / coverage | Desktop `scripts/ci/test.cjs` is the sole test-file inventory | Shared by local Node/c8 and root CI; remove coverage string parsing without deleting tests, changing glob scope, or increasing local file concurrency |
+| E2E | `scripts/ci/e2e.cjs` combines build and run steps for mr/live/update | Project suites remain smoke/live/update; do not merge generic `test:e2e`, Preview Playwright, and real-product acceptance |
+| Generated-code paths | Fixed virtual main/preload references accidentally changed in closure tests during source-file migration | Resolve against artifact layout rather than test source directory; after writing artifacts to disk, load them with Node from a different cwd; native fixtures read the Owner inventory; do not change the production verifier or security criteria |
+| Public projection | Synchronized the package, pretest Owner, and its tests' overlay; added independent-consumer regression | Preserve the difference between private 5 steps and public 3 steps; do not change freeze policy, allowlist, verification command, or existing user projection-policy changes |
+| Distribution protocol | Retained the three root package compatibility entry points and Desktop `package:dist` | External repository currently invokes distribution/candidate through root ops; setup, fixed smoke, signing, and result admission for full distribution remain unchanged |
+| Module references | No aliases; retain literal relative imports | 38 cross-root references in 24 production CJS files and 3 ESM references, pointing to 10 targets; public exports and bootstrap static closure remain traceable without an extra resolver |
 
-TypeScript 基线使用 compiler Program 核对：node 为 330 个 root / 384 个仓内源文件，
-web 为 1024 个 root / 1072 个仓内源文件；根 Playwright、4 个根测试和 68 个 E2E TS 文件
-不在二者 Program 内。基线两份配置实际 `tsc --noEmit -p` 均通过，但不证明遗漏文件正确。
-本轮新增base公共配置、tools混合模拟宿主及test项目，solution为类型与i18n检查的共同清单。
-node root / Program 不变；web变为955 / 1002，移出69个root，由tools/test承接，原ES2020
-环境保留。tools为960 / 1008；test为1152 / 1203（含JSON，详尽类型清单由回归动态检查）。
-仓内TS类文件Program并集从1320增至1418，无删除：原E2E 68、根测试/Playwright 5、
-src根原漏检测试22与settings.ts 1，另新增application.d.cts和electron.test.ts各1。原node 141个、web剩余281个
-测试root仍保留各自环境检查，不将Node测试统一为浏览器target。测试新纳入的类型错误
-通过准确fixture声明、DOM泛型和必要前置收窄修正，不降低strict、不排除错误文件。
+The TypeScript baseline was checked using the compiler Program: node has 330 roots / 384 in-repository source files,
+and web has 1024 roots / 1072 in-repository source files; root Playwright, 4 root tests, and 68 E2E TS files
+are outside both Programs. The two baseline configurations both pass actual `tsc --noEmit -p`, but that does not prove omitted files are correct.
+This iteration added a shared base configuration, a mixed simulated-host `tools` project, and a `test` project; the solution is the shared inventory for type and i18n checks.
+The node root/Program is unchanged; web is now 955 / 1002, with 69 roots moved to tools/test, preserving the original ES2020
+environment. tools has 960 / 1008; test has 1152 / 1203 (including JSON; regression checks dynamically verify the detailed type inventory).
+The Program union of TS-class files in the repository grew from 1320 to 1418, with none removed: the original 68 E2E files, 5 root test/Playwright files,
+22 previously untyped tests under src root and 1 `settings.ts`, plus 1 each for new `application.d.cts` and `electron.test.ts`. The original 141 node and remaining 281 web
+test roots still retain their respective environment checks; Node tests are not all changed to a browser target. Type errors in newly included tests
+were fixed through precise fixture declarations, DOM generics, and necessary narrowing prerequisites; strictness was not reduced and no failing file was excluded.
 
-保护回归放在 Desktop `scripts/ci/__tests__/`，并接入唯一测试清单；真实 npm/pnpm 临时
-空依赖 fixture 检查钩子调度，不替代产品或 Windows 原生验收。工程接口已切换；完整
-门禁仍有经 HEAD 对照复现的既有失败，用户确认另列待办。本轮不据此声称全仓绿色或
-产品/发布验收完成；证据、剩余问题与范围例外见交付概要 (non-public execution/provenance record omitted)。
-用户限定本轮工程工具在macOS实测、Windows分析适配；产品和打包的Windows原生验收
-要求不变，不以开发工具验证代替产品双平台证据。
+Protective regression tests are under Desktop `scripts/ci/__tests__/` and included in the sole test inventory. Real npm/pnpm temporary
+empty-dependency fixtures check hook scheduling; they do not replace product or native Windows acceptance. The engineering interface has been switched; the full
+gate still has pre-existing failures reproduced against HEAD, which the user confirmed should be tracked separately. This does not support a claim that the full repository is green or that
+product/release acceptance is complete; evidence, remaining issues, and scope exceptions are in the delivery summary (non-public execution/provenance record omitted).
+The user limited this iteration to exercising engineering tooling on macOS and analyzing Windows compatibility; Windows native acceptance
+requirements for the product and packaging remain unchanged, and development-tool verification does not replace product evidence on both platforms.

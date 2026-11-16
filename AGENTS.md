@@ -5,19 +5,13 @@ are the maintained project rules; edit their physical sources directly.
 
 ## Task Knowledge Routing
 
-Owner 或知识位置不明时，按任务意图查 [知识索引](docs/index.md)，只追加适用正文；
-已有有效 Skill 直达链接时不绕回全库导航。索引不替代本文件任何硬约束；自动加载被
-截断或上下文不完整时，工作前补读本文件相关规则及目标目录的 `AGENTS.md`。
-问题现象已明确且需要专题直达时，按需查[症状级知识路由](docs/runbooks/triage.md)，
-不把它作为所有任务的默认必读。
-知识治理、回写与归属判断读 [唯一规范正文](docs/architecture/knowledge.md)；
-新增或修改 Markdown 图片引用遵守[图片路径规则](docs/architecture/knowledge.md#markdown-图片引用)。
-历史命令和授权不继承为本次权限，未核验结论不写成能力，规范与源码冲突不自动取消安全要求。
-脚本模块导入与路径别名先读 [作用域和实施约束](docs/architecture/ops-cli.md#脚本模块导入与别名)，
-再核最近package.json的真实声明；无声明时不使用规划别名，不以别名绕过Owner边界。
-开发工作流 Skill 只在文档内源仓维护，不随源码分发，也不是公开开发的前提。
-产品 `skills/community/` 仍由源码仓持有。文档、工具与产品分别走实际检查和宿主/产品验收，
-链接或元数据通过不证明语义、真实调用或完整验收通过。
+When the Owner or knowledge location is unclear, use the task intent to consult the [knowledge index](docs/index.md), and append only applicable content. If there is already a valid direct link to a Skill, do not route back through the full-library navigation. The index does not replace any hard constraint in this file. If automatic loading is truncated or context is incomplete, read the relevant rules in this file and the target directory's `AGENTS.md` before work begins.
+When the issue is clear and a direct topic-specific entry is useful, consult the [symptom-level knowledge routing](docs/runbooks/triage.md) as needed; it is not required reading for every task.
+For knowledge governance, write-back, and ownership decisions, read the [single authoritative specification](docs/architecture/knowledge.md). For new or modified Markdown image references, follow the [image path rules](docs/architecture/knowledge.md#markdown-图片引用).
+Historical commands and authorization do not carry over as authorization for the current task. Do not state unverified conclusions as capabilities, and do not treat conflicts between specifications and source code as automatically removing safety requirements.
+For script-module imports and path aliases, first read the [scope and implementation constraints](docs/architecture/ops-cli.md#脚本模块导入与别名), then verify the actual declaration in the nearest `package.json`. If there is no declaration, do not use a planned alias or use an alias to bypass Owner boundaries.
+Development-workflow Skills are maintained only in the documentation source repository; they are not distributed with source code and are not a prerequisite for public development.
+The product `skills/community/` remains owned by the source repository. Validate documentation, tools, and products through their actual checks and host/product acceptance respectively; passing links or metadata checks does not prove semantics, real invocation, or complete acceptance.
 
 ## What This Repo Is
 
@@ -55,9 +49,10 @@ materials or prohibit localized product copy.
   messages and text copied automatically from review descriptions. Remove
   internal code review, issue, and document URLs; keep useful text and public
   links. Save any internal links needed for traceability in internal work records.
-  Git 提交说明不得包含内网链接。提交或合并前检查最终标题、正文和尾注，包括合并、squash
-  和平台从 MR 描述自动带入的内容。移除内网评审、工单和文档 URL，保留有用文字及可公开链接；
-  需要追溯的内网链接只留在内部工作记录中。
+  Git commit messages must not contain internal URLs. Before committing or merging, check the final
+  title, body, and trailers, including merge and squash messages and text automatically copied from MR
+  descriptions. Remove internal review, issue, and document URLs while retaining useful text and
+  public links; keep internal links needed for traceability only in internal work records.
 
 ### Review delivery
 
@@ -97,9 +92,9 @@ screenshots are not required. See the development-environment scope below.
 ### Real Product Verification
 
 Product behavior requires the real user-facing flow, not just source, type or
-contract checks. Select it through [按改动选择命令与证据](docs/runbooks/development.md#按改动选择命令与证据)
+contract checks. Select it through [commands and evidence by change type](docs/runbooks/development.md#按改动选择命令与证据)
 and the applicable Owner; Desktop conversation/HIL work also reads the
-[Desktop 调试 工程规范](docs/runbooks/development.md).
+[Desktop debugging engineering specification](docs/runbooks/development.md).
 Preserve the actual runtime, model credentials and user configuration; never
 restart Serve mid-conversation. A healthy HTTP endpoint alone does not prove
 a real session or model turn. Trigger instruction-only Skills in their host;
@@ -159,7 +154,7 @@ Trace and vendor execution in their respective Owners.
 - Place files by Owner: Runtime contract/Gateway, Trace, adapter and Serve
   business each stay in their own package; locate an owner before adding a file.
   Helpers belong in that owner's `utils.py`.
-- Renderer features/components/shell/app: MUST read [Desktop AGENTS](apps/desktop/AGENTS.md) and [components: 原生控件复用棘轮、Ownership / Dependency](apps/desktop/docs/design/components.md). UI first; no banned native controls/look-alikes/count increases/unlisted debt, wrong Owner/missing double registration, policy widening or hand-edited baseline.
+- Renderer features/components/shell/app: MUST read [Desktop AGENTS](apps/desktop/AGENTS.md) and [components: native-control reuse ratchet, Ownership / Dependency](apps/desktop/docs/design/components.md). UI first; no banned native controls/look-alikes/count increases/unlisted debt, wrong Owner/missing double registration, policy widening or hand-edited baseline.
 
 ### Desktop-Specific Security
 
@@ -170,14 +165,14 @@ relax the stricter security boundary or bypass native package acceptance.
 
 ### Desktop Visual Defaults
 
-Every UI task first MUST read [DESIGN](apps/desktop/DESIGN.md), then [vibe: Required、滚动、浮层、Enforced by、Stop condition](apps/desktop/docs/design/vibe-coding.md).
+Every UI task first MUST read [DESIGN](apps/desktop/DESIGN.md), then [vibe: Required, scrolling, overlays, Enforced by, Stop condition](apps/desktop/docs/design/vibe-coding.md).
 Evidence is not inference; Values only in design; gates never replace real themes/narrow-window/keyboard/interaction.
 
 ### Cross-Platform Engineering (hard gate)
 
 ScholarSeed supports macOS and Windows. Changes involving paths, permissions,
 processes, locks, archives, executable discovery, native libraries or installers
-MUST read [跨平台开发与验收](docs/runbooks/development.md#跨平台开发与验收), define both
+MUST read [cross-platform development and acceptance](docs/runbooks/development.md#跨平台开发与验收), define both
 platform semantics and verify affected gates and real flows on each target.
 One OS never proves the other; a baseline-red gate is not green.
 Development-environment-only work (local Worktree setup, dependency installation
@@ -225,8 +220,7 @@ Development workflow Skills live in private supplements, not this checkout. Publ
 uses the local AGENTS, Owner contracts and tools without a private Skill host or parent repository.
 Before product Skill packaging or discovery changes, read [Skill ownership](docs/architecture/skills.md).
 Optional host instructions do not replace design, contracts or real acceptance.
-Renderer 页面、组件或交互视觉变更另读 [UI 复用 工程规范](apps/desktop/docs/design/components.md)；
-纯状态与协议改动按 Desktop Owner 入口定位，不为其强制加载组件流程。
+For renderer page, component, or interaction-visual changes, also read the [UI reuse engineering specification](apps/desktop/docs/design/components.md). For changes limited to state and protocols, locate the relevant Desktop Owner entry; do not require the component workflow for them.
 Use the current task's authorized materials for reports and artifacts; external download, upload,
 release and user/host configuration still need authorization.
 
@@ -241,10 +235,10 @@ artifacts; while waiting, continue independent authorized work.
 
 Distinguish deterministic contract tests, real-state integration and end-to-end
 product acceptance; none substitutes for another. Before tests, read
-[按改动选择命令与证据](docs/runbooks/development.md#按改动选择命令与证据).
+[commands and evidence by change type](docs/runbooks/development.md#按改动选择命令与证据).
 Real models or real-path deletion require their exact authority and prerequisites.
 For proposal/long-horizon acceptance, also read
-[design-solution 的验证规则](docs/runbooks/development.md); use observed
+[design-solution verification rules](docs/runbooks/development.md); use observed
 state and complete lifecycle evidence, not a fixed script or a reduced gate.
 ## User Entry Points
 
@@ -255,7 +249,7 @@ Reading the guide does not authorize signing, publishing, changing credentials o
 ### Python Distribution Boundary
 
 Before toolchain, installer or Python distribution work, read
-[工具链与支持入口](docs/runbooks/development.md#工具链与支持入口) and
+[toolchain and support entry points](docs/runbooks/development.md#工具链与支持入口) and
 [BUILD](docs/runbooks/build.md). Installation, cleanup, PATH/config changes and
 real-model calls are not read-only; verify exact executable provenance and
 platform requirements. Stop on unknown source or resolver failure; health/ready
@@ -263,17 +257,18 @@ alone is not provenance or authorization. Never change a live environment
 mid-conversation.
 
 Before product Skill pack/update/validation, read
-[Skill 边界](docs/architecture/skills.md), [产品适配指南](skills/ADAPTATION.md)
-and [BUILD 的冻结与制品核验](docs/runbooks/build.md). Keep reviewed bundled and user
+[Skill boundaries](docs/architecture/skills.md), [product adaptation guide](skills/ADAPTATION.md)
+and [BUILD freeze and artifact verification](docs/runbooks/build.md). Keep reviewed bundled and user
 roots separate; never bundle user assets, silently download or treat partial/
 failed scans as safe. Validate exact frozen inventory and real lifecycle.
 
 Old root paths and ignored build residue are not source; when encountered, read
 [current ownership](docs/architecture/ownership.md#当前仓库地图) before using them.
 
-## 测试与快照目录约定
+<a id="测试与快照目录约定"></a>
+## Test And Snapshot Directory Conventions
 
-- Test owners and snapshot paths: [开发验收入口](docs/runbooks/development.md#按改动选择命令与证据).
+- Test owners and snapshot paths: [development and acceptance entry point](docs/runbooks/development.md#按改动选择命令与证据).
   Keep screenshots and runtime artifacts ignored; never commit them by default.
 - `tmp/research/` is itself the workspace root; do not create nested workspace
   aliases there. Never read or clean `tmp/manage-cc-hosts/`.

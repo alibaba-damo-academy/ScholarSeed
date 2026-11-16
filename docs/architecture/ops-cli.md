@@ -1,6 +1,6 @@
 ---
 id: proposal-dev-cli
-title: "ops 开发工具概要设计"
+title: "ops Development Tool High-Level Design"
 doc_type: proposal
 category: architecture
 status: draft
@@ -8,7 +8,7 @@ date: 2026-10-23
 updated: 2026-11-06
 keywords: [cli, toolchain, monorepo, worktree, packaging, test-gate]
 related: [research-dev-cli-inventory]
-summary: "针对脚本与 package scripts 分散、使用困惑和潜在职责重复，以 ops 统一任务入口、命令发现与编排职责，改善开发体验及可维护性，保持生命周期、CI 与跨平台行为。"
+summary: "Address scattered scripts and package scripts, confusing usage, and potential duplication of responsibilities by using ops to unify task entry, command discovery, and orchestration, improving the development experience and maintainability while preserving lifecycle, CI, and cross-platform behavior."
 code_refs:
   - "package.json"
   - "scripts/shared/desktop.cjs"
@@ -26,36 +26,33 @@ code_refs:
   - ".gitlab-ci.yml"
 ---
 
-# ops 开发工具概要设计
+<a id="ops-开发工具概要设计"></a>
+# ops Development Tool High-Level Design
 
-当前仓库归属以[仓库与知识边界](repositories.md)为准：通用知识与工具随公开源码维护，
-本页历史迁移记录中的 `cd/public`、overlay 与私有导出步骤不是当前产品发布入口。
+Current repository ownership is defined by [Repository and Knowledge Boundaries](repositories.md): general knowledge and tools are maintained with the public source. The `cd/public`, overlay, and private-export steps in this page's historical migration record are not current product release entry points.
 
-## 1. 背景、目标与总体方案
+<a id="1-背景目标与总体方案"></a>
+## 1. Background, Goals, and Overall Approach
 
-### 1.1 背景与目标
+<a id="11-背景与目标"></a>
+### 1.1 Background and Goals
 
-项目的根/局部scripts及package scripts逐渐增多，入口分散、相似名称语义不同，
-用户难以选择正确命令，公共编排也存在重复维护风险。ops以统一任务界面和清晰
-职责边界改善使用体验与可维护性，不以移动文件或机械减少命令数量为目标。
-现状依据、需求分类、旧入口映射及消费者记录见[现状与迁移台账](ops-cli-inventory.md)；
-本文仅维护技术方案、接口与不变量，不重复保存逐项盘点。
+The number of root and local scripts and package scripts has grown. Entry points are scattered, similarly named commands have different meanings, users have difficulty choosing the right command, and shared orchestration risks being maintained more than once. ops improves usability and maintainability through a unified task interface and clear responsibility boundaries; moving files or mechanically reducing the number of commands is not the goal. See the [current-state and migration inventory](ops-cli-inventory.md) for the evidence, requirement categories, old-entry mapping, and consumer records. This document maintains only the technical approach, interfaces, and invariants; it does not duplicate the item-by-item inventory.
 
-- 使用体验：只记住 `pnpm ops`，通过任务域、分层帮助和示例发现命令，无需先研究脚本路径。
-- 语义清晰：区分真实/模拟、检查/修改、普通测试/发布验收，让用户先知道执行什么、影响哪里。
-- 易于排错：明确缺失前提、失败步骤、实际Owner和下一步操作，不因检查失败静默安装或修复。
-- 可维护性：命令语义、编排、执行基础能力与领域策略各有唯一Owner；帮助、发现与调用保持一致。
-- 整体切换：本次范围内的命令、消费者、文档和工具源码在同一交付版本一次切换，不设新旧公开入口并行兼容期；生命周期、CI与权限约束保持不变。
+- Usability: Remember only `pnpm ops`; discover commands through task domains, layered help, and examples without first studying script paths.
+- Clear semantics: Distinguish real/mock, check/modify, and ordinary tests/release acceptance so users know what will run and what it will affect before execution.
+- Easier troubleshooting: Identify missing prerequisites, the failed step, the actual Owner, and the next action; a failed check must not silently install or repair anything.
+- Maintainability: Command semantics, orchestration, execution primitives, and domain policy each have a single Owner; help, discovery, and invocation stay consistent.
+- One-time migration: Commands, consumers, documentation, and tool source in this scope switch together in one delivery; there is no parallel compatibility period for old and new public entry points. Lifecycle, CI, and permission constraints remain unchanged.
 
-统一纳入是“所有开发工具有明确归属和处置”，不是“所有脚本必须搬进CLI源码或暴露叶子”。
-保留与合并项进入统一用户界面，内部化项成为可追溯执行步骤，暂缓项登记原入口和边界，
-不静默遗漏，也不在尚无安全契约时强行开放。
-不接管产品业务、独立Trace CLI或外部发布系统，不建设插件平台、通用工作流引擎，
-不承诺仅凭统一入口就降低运行成本或证明产品验收通过。
+Unified inclusion means that every development tool has an explicit owner and disposition; it does not mean that every script must move into the CLI source or become a user-facing leaf command. Retained and merged items enter the unified user interface; internalized items become traceable execution steps; deferred items record their original entry points and boundaries. Nothing is silently omitted, and nothing is forced open without a safe contract.
 
-### 1.2 总体方案与关键取舍
+The CLI does not take over product business logic, the standalone Trace CLI, or external release systems. It does not build a plugin platform or general-purpose workflow engine, and a unified entry point alone is not claimed to reduce runtime cost or prove product acceptance.
 
-采用 `scripts/ops-cli.cjs` 作为仓库统一开发入口与必要编排层，由Node直接运行JavaScript：
+<a id="12-总体方案与关键取舍"></a>
+### 1.2 Overall Approach and Key Trade-offs
+
+Use `scripts/ops-cli.cjs` as the repository's unified development entry point and necessary orchestration layer, running JavaScript directly with Node:
 
 ```text
 用户任务 → pnpm ops → 命令解析与契约登记
@@ -64,38 +61,30 @@ code_refs:
                                                 └─ 复用进程/路径/包管理器等执行基础能力
 ```
 
-CLI集中管理公开命令命名、作用域、前置编排、参数边界和错误呈现；领域Owner保留实际
-构建、检查、持久化、供应链与安全政策。仓库级工具实现与消费者在同一次交付中归拢，
-原属领域的逻辑不复制。切换后移除已纳入范围的旧公开别名；安装hook、自举及被领域
-Owner真实消费的内部scripts可保留，但不作为面向用户的新旧双入口。
+The CLI centrally manages public command names, scopes, prerequisite orchestration, argument boundaries, and error presentation. Domain Owners retain actual build, check, persistence, supply-chain, and security policies. Repository-level tool implementations and their consumers are consolidated in the same delivery; domain logic is not duplicated. After the switch, remove old public aliases included in scope. Installation hooks, bootstrap steps, and internal scripts genuinely consumed by domain Owners may remain, but they are not parallel old and new user-facing entry points.
 
-| 方案 | 取舍 |
+| Approach | Trade-off |
 | --- | --- |
-| 仅整理package scripts与文档 | 初期改动少，但多包作用域、参数及准备策略仍散落，不足以解决持续增加的工具发现和职责问题 |
-| 新CLI逐个转发全部旧公开脚本 | 叠加复杂度且保留重复入口，不采用，也不作为对外过渡方案 |
-| 统一CLI契约和编排，保留领域Owner（选择） | 提供一致体验并收敛公共职责；代价是完整核验消费者、编写等价回归并承担一次整体切换的集成成本 |
+| Organize package scripts and documentation only | Smaller initial change, but multi-package scopes, arguments, and preparation policies remain scattered; this does not solve the growing command-discovery and responsibility problems. |
+| Add a new CLI that forwards each old public script | Adds complexity and preserves duplicate entry points. Not selected and not an external transition plan. |
+| Unify the CLI contract and orchestration while retaining domain Owners (selected) | Provides a consistent experience and consolidates shared responsibilities. The cost is fully checking consumers, writing equivalent regression coverage, and integrating a one-time overall switch. |
 
-只增加命令树、不收敛重复编排，不算完成；全量搬走脚本、破坏原Owner，也不算完成。
-后文目录和源码执行方案服务于此目标，不建设独立依赖包或需要每位同学编译的工具工程。
+Adding a command tree without consolidating duplicated orchestration is not completion; moving all scripts and breaking their original Owners is not completion either. The directory and source-execution design below serves this goal. It does not create a separate dependency package or a tool project that every contributor must compile.
 
-### 1.3 入口方式与当前状态
+<a id="13-入口方式与当前状态"></a>
+### 1.3 Entry Point and Current Status
 
-CLI直接放在现有scripts目录，唯一Node入口为`scripts/ops-cli.cjs`，不单独创建CLI文件夹，
-根package script的目标为`"ops": "node scripts/ops-cli.cjs"`。
-内部直接维护CommonJS JavaScript源码，不设独立package.json、bin、file依赖或dist，
-不编译TypeScript、不发布npm包、不生成exe。开发同学拉取源码即可获得同版本入口；
-实际任务需要的Desktop/Python依赖仍按原流程准备，不因入口轻量而跳过。
+Place the CLI directly in the existing scripts directory. Its only Node entry point is `scripts/ops-cli.cjs`; do not create a separate CLI directory. The root package script targets `"ops": "node scripts/ops-cli.cjs"`.
 
-macOS和Windows统一使用`pnpm ops`，Node解释.cjs，不依赖Bash或可执行权限位。
-根目录不新增启动文件，也不提供全局ops命令。工具源码与测试随仓库管理；概要与台账使用ops-cli文件名，知识ID保持稳定。它不是ScholarSeed产品CLI或独立DamoCli的替代品。
+Maintain CommonJS JavaScript source directly: no separate `package.json`, `bin`, file dependency, or `dist`; no TypeScript compilation, npm package publication, or exe generation. Contributors get the same-version entry point by pulling the source. Prepare Desktop/Python dependencies needed by actual tasks through the existing process; a lightweight entry point does not skip that preparation.
 
-本文定义目标契约，当前正在实施统一入口与消费者切换。源码是否满足契约以最终
-版本的实际验证为准；命令清单和设计状态不代表全链路、跨平台或发布验收已通过。
+macOS and Windows both use `pnpm ops`; Node interprets `.cjs`, without relying on Bash or executable permission bits. Do not add a root launcher or provide a global `ops` command. Manage tool source and tests in the repository; use the `ops-cli` filename for the design and inventory while keeping the knowledge ID stable. This is not a replacement for the ScholarSeed product CLI or the standalone DamoCli.
 
-构建操作规范归[构建指南](../runbooks/build.md)，跨仓消费者与发布交接归
-分发协作说明 (non-public execution/provenance record omitted)，不恢复已迁移的 `scripts/BUILD.md`。
-本仓 GitLab 接线与独立分发仓库的迁移分别验收；后者仍消费旧根命令、preview/续跑等
-未登记组合时阻断整体交付，不能靠恢复旧别名或文档改名掩盖。上游整合记录见台账第8.3节。
+This document defines the target contract; implementation of the unified entry point and consumer switch is in progress. Whether the source satisfies the contract must be determined by validating the final revision. The command list and design status do not mean that end-to-end, cross-platform, or release acceptance has passed.
+
+Build operation requirements belong in the [Build Guide](../runbooks/build.md); cross-repository consumers and release handoff belong in the distribution coordination record. Do not restore the migrated `scripts/BUILD.md`.
+
+GitLab wiring in this repository and migration of the standalone distribution repository are accepted separately. If the latter still consumes old root commands or unregistered combinations such as preview/resume, the overall delivery is blocked; restoring old aliases or renaming documentation cannot conceal this. See §8.3 of the inventory for upstream integration records.
 
 ```text
 pnpm ops dev                                   # 隔离的完整产品：Electron + 真实后端
@@ -107,16 +96,14 @@ pnpm ops ci test smoke                         # 固定核心冒烟集合
 pnpm ops cd build local                        # 本地运行包，macOS保留必要ad-hoc
 ```
 
-CLI本身仅需要仓库声明的Node与所选包管理器，不为获得入口新增根依赖安装步骤。
-不使用缺包时临时下载其他版本的入口，不自动安装全局命令或另建工作流平台。
+The CLI itself requires only the Node version declared by the repository and the selected package manager; do not add a root dependency-install step just to obtain the entry point. Do not temporarily download another CLI version when a package is missing, automatically install a global command, or create a separate workflow platform.
 
-阅读顺序：第1–3节说明职责、目录与源码执行机制；第4–6节定义命令接口、权限及执行
-不变量；第7节定义一次切换和验收。逐项现状与来源映射仅维护于独立台账。
+Reading order: §§1–3 describe responsibilities, directories, and source execution; §§4–6 define command interfaces, permissions, and execution invariants; §7 defines the one-time switch and acceptance. The itemized current-state and source mapping is maintained only in the separate inventory.
 
-### 1.4 典型用法：四个无参数入口
+<a id="14-典型用法四个无参数入口"></a>
+### 1.4 Typical Usage: Four No-Argument Entry Points
 
-四个一级命令都提供完整的默认任务链，不需要先理解子命令。这里“完整”指该任务从
-前提到结果闭环，不表示自动调用全部其他一级命令、全部可选能力或真实模型验收。
+Each of the four top-level commands provides a complete default task chain without requiring users to understand subcommands first. “Complete” here means that the task is closed from prerequisites through result; it does not mean automatically invoking every other top-level command, every optional capability, or real-model acceptance.
 
 ```bash
 pnpm ops pre    # 自动准备当前worktree所需开发环境，完成后退出
@@ -125,66 +112,38 @@ pnpm ops ci     # 执行主流程核心冒烟，输出明确结果
 pnpm ops cd     # 构建当前宿主可运行的本地安装包，输出路径与校验结果
 ```
 
-日常顺序为pre→dev→ci→cd。dev是长驻任务，结束开发并退出该实例后再执行ci/cd，
-不是将四个命令用&&串接；每个命令也可独立执行，不依赖上一个命令留下的内存状态。
+The usual order is pre→dev→ci→cd. `dev` is a long-running task; exit that instance after development before running `ci` or `cd`. Do not chain the four commands with `&&`. Each command can also run independently and does not depend on in-memory state left by the preceding command.
 
-| 无参数入口 | 默认链路 | 边界 |
+| No-argument entry point | Default chain | Boundary |
 | --- | --- | --- |
-| pre | 固定 `desktop-development` profile：宿主工具与目标身份核验→按原Owner检查/安全修复仓库链接→准备Desktop依赖、开发Python环境及开发启动必需本地资源→最终诊断 | profile在命令配方中显式登记；只包含启动开发产品所需的必选工具、依赖、Python开发环境和Office资源，不包含可选能力或凭据。显式选择pre即允许登记的下载/缓存/当前worktree写入；可重复执行，无变化不强制重装。不覆盖冲突文件、不清理用户数据、不写模型凭据或全局配置 |
-| dev | 原隔离监督/依赖准备→Electron＋真实后端→前端HMR及开发调试→退出清理本任务进程/锁 | 保留worktree身份；主进程/preload/后端不能把任意重启称为HMR，不中断活跃对话 |
-| ci | 原固定smoke前提核验→主流程核心用例→报告/清理判定 | 与ci test smoke为同一执行配方，不扩大为quality/full，也不自动格式化或调用模型 |
-| cd | 原本地构建准备→应用/后端打包→宿主安装器→库存/制品校验及结果 | 与cd build local默认desktop/installer/direct为同一配方，不签正式发行证书、不公证、不上传、不自动安装生成包；macOS保留必要ad-hoc |
+| pre | Fixed `desktop-development` profile: verify host tools and target identity → check/safely repair repository links through the original Owner → prepare Desktop dependencies, the development Python environment, and local resources required to start development → final diagnosis | The profile is explicitly registered in the command recipe. It includes only required tools, dependencies, the Python development environment, and Office resources needed to start the development product; it excludes optional capabilities and credentials. Explicitly selecting `pre` permits registered downloads/cache writes and writes in the current worktree. It is repeatable and does not force reinstallation when nothing changed. It does not overwrite conflicting files, clean user data, write model credentials, or change global configuration. |
+| dev | Original isolated supervision/dependency preparation → Electron + real backend → frontend HMR and development debugging → on exit, clean up this task's processes/locks | Preserve worktree identity. Do not call arbitrary restarts of the main process/preload/backend HMR; do not interrupt active conversations. |
+| ci | Verify prerequisites for the original fixed smoke → core main-flow cases → report/cleanup determination | Same execution recipe as `ci test smoke`; does not expand to quality/full, format automatically, or call a model. |
+| cd | Original local-build preparation → package app/backend → host installer → inventory/artifact verification and result | Same recipe as the default `cd build local` desktop/installer/direct. No formal release certificate signing, notarization, upload, or automatic installation of the generated package; retain necessary ad-hoc signing on macOS. |
 
-pre的“所需环境”以当前开发profile的已登记必需清单为准，包含原完整Python开发环境
-同步，不是仅下载Python运行时；可选功能首次使用资源、跨平台交叉编译、发行签名/
-公证凭据及外部服务认证不冒称已自动准备。CLI首先需要可运行的Node与包管理器；
-宿主工具缺失/版本不符时按原精确版本安装流程给出阻塞，不静默修改全局PATH或用户配置。
-并发环境安装、活跃实例正在使用的依赖/解释器须按Owner拒绝或等待，不热改对话环境。
-pre doctor仍仅诊断，其失败不会自动执行pre；pre install等专项也不回调完整pre造成循环。
+The “required environment” for `pre` is the registered required-item list in the current development profile. It includes synchronization of the original full Python development environment, not just downloading the Python runtime. Do not claim that first-use resources for optional features, cross-platform cross-compilation, release signing/notarization credentials, or external-service authentication are prepared automatically. The CLI first requires a runnable Node and package manager. If a host tool is missing or has the wrong version, report the blocker through the original exact-version installation process; do not silently modify the global PATH or user configuration. For concurrent environment installation, or dependencies/interpreters in use by an active instance, the Owner must reject or wait; do not hot-modify a conversation environment. `pre doctor` remains diagnostic only; its failure does not automatically run `pre`. Specialized commands such as `pre install` do not call the full `pre` chain and create a loop.
 
-热更新要求：renderer沿原HMR；main/preload/后端变更由debug Owner协调安全重启，
-构建失败保留现有实例，活跃对话/HIL期间延迟，不得直接采用无保护的强制重启。
-空闲重启许可须在后端admission边界原子取得，避免查询空闲后进入新请求的竞态。
-开发宿主已接入非renderer候选编译、私有空闲排空协议与事务恢复；macOS已观察编译失败
-保活及修复后的空闲重启。**gap**：全部失败恢复、真实会话与平台验收尚未完整闭合，
-不能把确定性编排回归当成完整热重载验收。
-独立serve --watch已接入私有父子控制通道：忙时保留待重载状态，获得空闲许可才停止
-并重建；控制结果不确定则保留原实例，等待用户显式退出。确定性与POSIX进程族回归
-不代替真实产品会话验收；Windows仍只有原有root-only退出保证，需继续补齐验证。
-私有父子进程控制通道已增加`quiesce_if_idle`协议及`BackendControl.quiesceIfIdle()`：
-原子尝试关闭准入，不中断会话，失败恢复自身维护代次；这只是重启协调的前提，
-main已接入显式开发marker控制客户端：仅非打包、非headless且有renderer开发URL时
-读取继承stdin的bootstrap，按私有代次处理idle/resume/exit，并沿正常退出链排空。
-开发宿主通过直接启动Electron的继承stdin驱动此协议，不经过包管理器传递秘密；
-退出ACK先等待精确后端排空，但仍不代替Electron进程族退出与新实例就绪证明。
-Desktop候选编译Owner复用`desktopConfiguration`与既有Vite编译链，将main/preload及
-protected资产写入独立候选目录，不启用watch、不发布canonical输出；编译失败只清理
-本候选。发布事务校验本进程登记的候选与完整摘要，同卷staging发布并保留旧输出，
-失败回滚；新实例就绪后才commit，失败且确认新实例已停后可rollback。
-停止许可仅为内部调用方必须证明的前置条件，不是用户可传的授权flag。
-这些能力由Desktop开发宿主编排，根debug只管理worktree身份、锁和顶层启动；
-Windows以仅加载Node内置模块的私有worker建立启动屏障，先加入本任务原生Job才允许
-创建Electron；子代继承Job，活跃计数归零才证明退出。宿主读取已登记候选的完整性证明，
-将N-API库按内容摘要发布到本worktree的`node_modules/.cache/scholarseed-development/`
-后加载，避免Windows锁住待替换的canonical输出；同摘要验证复用，新摘要新目录，不覆写
-已加载DLL。运行持有依赖读租约，原`pre clean`独占租约后统一回收，无需独立临时目录GC。
-该worker不是用户命令或任意脚本执行入口。
-宿主完成清理后通过私有IPC向租约持有者发送唯一终态证明；未知结果返回专用状态并保留
-收据、租约和launcher锁。缺少Job证明时不自动重载，不以单进程退出冒充跨平台验收。
-实现接线不等于Windows原生启动、Job继承和退出已验收。
-退出时清理本任务watcher、定时器、子树和锁；
-底层零退出但生命周期从未观察到renderer启动就绪时，明确返回启动失败，不把
-HTTP/CDP启动就绪当成业务或模型验收。
+Hot-reload requirements: renderer changes use the original HMR. For main/preload/backend changes, the debug Owner coordinates a safe restart. Preserve the existing instance if the build fails; defer during an active conversation/HIL, and do not use an unprotected forced restart. Acquire idle-restart permission atomically at the backend admission boundary to avoid a race where a new request arrives after checking that the backend is idle.
+The development host has integrated non-renderer candidate compilation, a private idle-quiescence protocol, and transactional recovery. On macOS, build-failure preservation and idle restart after a fix have been observed. **Gap:** failure recovery as a whole, real-session behavior, and platform acceptance are not yet fully closed; deterministic orchestration regression tests cannot be treated as complete hot-reload acceptance.
 
-这是四个无参数分组从“仅帮助”到“执行任务”的明确设计调整。根pnpm ops仍只展示
-帮助；pnpm ops pre/dev/ci/cd --help及help/list绝不触发准备、启动、测试或构建。
-未知参数/子命令报错，不回落默认链路。每条链的前置失败即停止后续阶段，保留实际
-退出码与诊断，不因无TTY/CI默认确认危险操作。其他未登记默认动作的非叶子仍只显示帮助。
+Standalone `serve --watch` has integrated a private parent-child control channel: while busy, it preserves the pending-reload state and stops/rebuilds only after obtaining idle permission; if the control result is uncertain, it preserves the existing instance and waits for the user to exit explicitly. Deterministic and POSIX process-family regression tests do not replace real product-session acceptance. On Windows, only the original root-only exit guarantee exists; verification still needs to be completed.
 
-## 2. scripts组织与职责
+The private parent-child process control channel now includes the `quiesce_if_idle` protocol and `BackendControl.quiesceIfIdle()`: it atomically attempts to close admission without interrupting a session, and on failure restores its own maintained generation. This is only a prerequisite for restart coordination. `main` has integrated an explicit development-marker control client: only when unpackaged, non-headless, and provided with a renderer development URL does it read the bootstrap from inherited stdin, handle idle/resume/exit by private generation, and drain through the normal exit chain. The development host drives this protocol by launching Electron directly with inherited stdin, without passing secrets through the package manager. The exit ACK first waits for the exact backend to drain, but does not replace proof that the Electron process family exited and the new instance became ready.
 
-不创建独立CLI项目；仓库工具按pre、dev、ci、cd与shared职责实际分目录。
-用户命令树负责交互，目录负责实现归属，不要求每个叶子都有一个同名转发文件。
+The Desktop candidate-compilation Owner reuses `desktopConfiguration` and the existing Vite compilation chain. It writes main/preload and protected assets to a separate candidate directory, does not enable watch or publish canonical output, and cleans up only this candidate on compilation failure. The publish transaction validates the candidate registered by this process and its full digest, stages publication on the same volume while retaining the old output, and rolls back on failure. It commits only after the new instance is ready; on failure it can roll back once the new instance is confirmed stopped. Stop permission is a prerequisite that internal callers must prove, not a user-supplied authorization flag.
+
+The Desktop development host orchestrates these capabilities; root debug manages only worktree identity, locks, and top-level startup. On Windows, a private worker loading only Node built-in modules creates a startup barrier: Electron may be created only after the worker joins this task's native Job. Descendants inherit the Job, and an active count of zero is the proof of exit. The host reads the integrity proof for the registered candidate, publishes N-API libraries by content digest under this worktree's `node_modules/.cache/scholarseed-development/`, and then loads them. This avoids Windows locking canonical output that must be replaced: a matching digest reuses the existing copy, a new digest gets a new directory, and a loaded DLL is never overwritten. The running process holds a read lease on dependencies; the original `pre clean` reclaims them together after acquiring an exclusive lease, without a separate temporary-directory GC. This worker is not a user command or arbitrary script-execution entry point.
+
+After cleanup, the host sends the lease holder a unique terminal-state proof over private IPC. An unknown result returns a dedicated status and retains the receipt, lease, and launcher lock. Without Job proof, it does not auto-reload or treat one process exiting as cross-platform acceptance. Wiring up the implementation does not mean native Windows startup, Job inheritance, and exit have been accepted.
+
+On exit, clean up this task's watcher, timers, process subtree, and locks. If the underlying process exits with code zero but the lifecycle never observed renderer startup readiness, return an explicit startup failure; HTTP/CDP startup readiness is not business or model acceptance.
+
+This explicitly changes the four no-argument groups from “help only” to “run the task.” Root `pnpm ops` still displays help; `pnpm ops pre/dev/ci/cd --help` and `help/list` never trigger preparation, startup, tests, or builds. Unknown arguments/subcommands produce errors and do not fall back to the default chain. A prerequisite failure in any chain stops later stages and preserves the actual exit code and diagnostics. Dangerous actions are not implicitly confirmed because there is no TTY or the command runs in CI. Other non-leaf commands without a registered default action still display help only.
+
+<a id="2-scripts组织与职责"></a>
+## 2. scripts Organization and Responsibilities
+
+Do not create a standalone CLI project. Organize repository tools into directories by their actual `pre`, `dev`, `ci`, `cd`, and `shared` responsibilities. The user-facing command tree handles interaction; directories define implementation ownership. A same-named forwarding file is not required for every leaf.
 
 ```text
 仓库根目录/
@@ -210,54 +169,43 @@ HTTP/CDP启动就绪当成业务或模型验收。
 └── package.json              scripts.ops = node scripts/ops-cli.cjs
 ```
 
-入口保留小型命令契约登记供help/list/调度共用，不是重写所有工具的巨型脚本，也不是
-逐个转发旧根别名。复杂机制复用原Owner；确有独立职责的编排再就近拆模块，不预建
-commands/core/dist目录。静态登记不是任意shell执行或通用流程DSL。
+Keep a small command-contract registry at the entry point for help/list/orchestration to share. It is neither a giant script that rewrites all tools nor a one-by-one forwarding layer for old root aliases. Reuse the original Owner for complex mechanisms; split out nearby modules only when orchestration has a genuinely independent responsibility. Do not pre-create `commands/core/dist` directories. Static registration is not arbitrary shell execution or a general-purpose workflow DSL.
 
-测试与专用夹具放在所属实现目录的`__tests__`，不创建另一棵平行测试目录；跨层入口
-测试才保留根`scripts/__tests__`。目录迁移同步相对导入、仓库/包根解析、显式测试集合、
-安装hook、构建器回调、CI、公开投影及文档。唯一外部协议例外为下述分发入口，
-不恢复其他旧路径或逐命令转发壳。
-包生命周期名称、调用顺序、参数、执行cwd与退出/信号策略不因文件重组改变。
+Place tests and dedicated fixtures in `__tests__` within the owning implementation directory; do not create a parallel test tree. Keep root `scripts/__tests__` only for cross-layer entry-point tests. Directory moves must update relative imports, repository/package-root resolution, explicit test sets, installation hooks, builder callbacks, CI, public projections, and documentation together. The distribution entry described below is the only external-protocol exception; do not restore other old paths or per-command forwarding shells.
 
-独立分发仓保持原样：保留其探测的`scripts/desktop.cjs`以及根`package:dist`、
-`package:check`、`package:verify`三个接口。前两者将旧`--type preview|release`
-映射为`--channel`，分别选择原distribution工作流和candidate目录检查；不复制构建策略。
-此为用户明确要求保留的外部集成协议，不新增第二套交互命令树；日常入口仍为`pnpm ops`。
-`--skip-check`及旧checkpoint续跑在当前Owner没有对应实现，必须在执行任何Owner前明确
-非零失败，不丢弃参数、不回退旧构建、不消费历史结果；保留入口不代表具备这两项能力。
-macOS与Windows仍使用Node/pathlib解析路径，PS1/PSM1和配套资源就近迁移，保留文件模式
-及换行约束；单机路径回归不冒充Windows原生安装或进程族验收。
-受保护编译的源码库存同步枚举这些已知任务域的顶层实现，仍不递归放行测试、vendor或
-任意目录；原有字节冻结、未知源码拒绝、编译期篡改拒绝与失败不发布规则保持不变。
+Package lifecycle names, call order, arguments, execution cwd, and exit/signal policies do not change as a result of reorganizing files.
 
-| 现有功能 | 目标处理 | 防重复边界 |
+Leave the standalone distribution repository unchanged: retain the `scripts/desktop.cjs` it probes and the three root interfaces `package:dist`, `package:check`, and `package:verify`. The first two map the old `--type preview|release` to `--channel`, selecting the original distribution workflow and candidate-directory check respectively; do not copy build policy. This is an external integration protocol the user explicitly requires retaining. Do not add a second interactive command tree; the everyday entry point remains `pnpm ops`.
+
+The current Owner has no implementation for `--skip-check` or resuming an old checkpoint. These must fail explicitly with a nonzero status before invoking any Owner; do not discard the arguments, fall back to the old build, or consume historical results. Retaining the entry point does not mean these capabilities exist.
+
+macOS and Windows continue to resolve paths through Node/pathlib. Move PS1/PSM1 files and their resources next to their owners while preserving file modes and newline requirements; a single-machine path regression is not Windows native-installation or process-family acceptance. The protected-compilation source inventory must enumerate the top-level implementations of these known task domains as well, without recursively allowing tests, vendor, or arbitrary directories. Preserve the existing rules for byte freezing, rejecting unknown source and compile-time tampering, and not publishing on failure.
+
+| Existing function | Target handling | Boundary against duplication |
 | --- | --- | --- |
-| 参数、帮助、发现、错误/JSON、作用域选择 | ops-cli.cjs统一交互 | 一份登记，不复制领域清单或策略 |
-| workspace根分发与跨任务顺序 | 入口收敛必要编排，拆清原功能 | 同次迁消费者，清理无消费者分发，不留CLI→旧根别名→分发器链 |
-| desktop包装的执行器/argv/cwd/准备选择 | 复用或按职责收敛为一份公共实现 | 不在每个命令手写spawn；真实hook仍由包管理器触发 |
-| debug的锁/监督/身份 | 复用debug Owner | 不复制第二套启动/状态机制 |
-| toolchain/Python/制品/配置/清理策略 | 保留真实Owner，必要时拆清边界 | 不复制版本、路径、下载与安全规则，不整文件机械搬迁 |
-| Desktop构建/签名、Serve、Trace、测试runner | 原领域模块或已核验子进程 | 保留技术栈，不全部重写成JavaScript |
-| 安装hook/首次自举 | 原package scripts及仓库侧模块 | 无需CLI依赖，不调用尚未安装的第三方模块 |
-| 重复包装与历史别名 | 核消费者后同次移除 | 不保永久兼容壳；明确暂缓入口按台账保留 |
+| Arguments, help, discovery, errors/JSON, and scope selection | Centralize interaction in `ops-cli.cjs` | One registry; do not duplicate domain inventories or policies. |
+| Workspace-root dispatch and cross-task ordering | Consolidate necessary orchestration at the entry point and clarify the original functions | Migrate consumers in the same change; remove dispatch with no consumers; do not leave a CLI → old root alias → dispatcher chain. |
+| Executor/argv/cwd/preparation selection in the desktop wrapper | Reuse or consolidate into one shared implementation according to responsibility | Do not hand-write `spawn` in each command; the package manager still triggers real hooks. |
+| debug locks/supervision/identity | Reuse the debug Owner | Do not duplicate startup/state mechanisms. |
+| toolchain/Python/artifact/configuration/cleanup policies | Retain the actual Owners and clarify boundaries where needed | Do not duplicate version, path, download, or security rules; do not mechanically move whole files. |
+| Desktop build/signing, Serve, Trace, and test runners | Keep them in their original domain modules or use verified child processes | Preserve their technology stacks; do not rewrite everything in JavaScript. |
+| Installation hooks/first-run bootstrap | Original package scripts and repository-side modules | No CLI dependency; do not call third-party modules that have not yet been installed. |
+| Duplicate wrappers and historical aliases | Remove in the same change after checking consumers | No permanent compatibility shells; retain explicitly deferred entry points as recorded in the inventory. |
 
-## 3. 源码执行与仓库身份
+<a id="3-源码执行与仓库身份"></a>
+## 3. Source Execution and Repository Identity
 
-### 3.1 Node入口与依赖
+<a id="31-node入口与依赖"></a>
+### 3.1 Node Entry Point and Dependencies
 
-CLI自身使用受支持Node直接执行.cjs和内置模块，基础解析/帮助不引入新的运行依赖。
-顶层导入仅使用Node内置与无副作用本地模块，不能在装载阶段调用环境检查、下载、
-探测产品或加载缺失Desktop依赖；领域第三方工具在明确任务执行时通过稳定边界启动。
-若未来确有第三方依赖需求，须重新说明收益、根依赖与无安装CI的影响，不静默破坏本约束。
+The CLI itself runs `.cjs` directly with a supported Node version and built-in modules; basic parsing/help adds no runtime dependency. Top-level imports may use only Node built-ins and side-effect-free local modules. Loading must not run environment checks, download anything, probe the product, or load missing Desktop dependencies. Launch domain third-party tools through a stable boundary when the relevant task is explicitly run. If a third-party dependency is genuinely needed in the future, explain its benefits and its effect on root dependencies and CI without installation; do not silently violate this constraint.
 
-Node与包管理器版本沿用仓库真源，不另设CLI版本锁或包发布周期。版本输出可报告根项目
-版本与可获得的源码标识，不能虚构独立发布版本；缺少可选Git标识不能阻塞help。
-子Node进程使用已核验process.execPath，Python/其他工具使用所属Owner解析，不回退猜PATH。
+Use the repository's source of truth for Node and package-manager versions; do not create a separate CLI version lock or package-release cycle. Version output may report the root project version and any available source identifier, but must not invent a separate release version. Missing optional Git identifiers must not block help. Node child processes use the verified `process.execPath`; Python and other tools are resolved by their Owners, with no fallback that guesses from PATH.
 
-### 3.2 根script与参数
+<a id="32-根script与参数"></a>
+### 3.2 Root Script and Arguments
 
-根package.json只推荐一个用户入口，另保留实际包管理器建立执行身份的内部script：
+The root `package.json` recommends one user entry point and retains an internal script through which the actual package manager establishes execution identity:
 
 ```json
 {
@@ -267,73 +215,54 @@ Node与包管理器版本沿用仓库真源，不另设CLI版本锁或包发布�
 }
 ```
 
-pnpm ops不依赖node_modules/.bin；包管理器把参数传给Node入口，不调用同名script递归。
-不增加业务preops/postops，使help/list不会安装或启动产品。需要真实生命周期的领域
-任务仍交已选择的包管理器执行，保留npm/pnpm各自hook、ignore-scripts和参数分隔语义。
-ops-cli.cjs只保留交互、命令选择与必要编排，复杂领域机制复用原模块，不扩成巨型脚本。
+`pnpm ops` does not depend on `node_modules/.bin`; the package manager passes arguments to the Node entry point without recursively invoking a same-named script. Do not add business `preops`/`postops`, so help/list cannot install or start the product. Domain tasks that need real lifecycle behavior still run through the selected package manager, preserving npm/pnpm-specific hooks, `ignore-scripts`, and argument-separator semantics. `ops-cli.cjs` handles only interaction, command selection, and necessary orchestration; reuse original modules for complex domain mechanisms rather than growing a giant script.
 
-根目录只声明ops用户入口，不增加worker script或隐藏worker参数。直接Node调用并显式选择
-npm/pnpm时，由真实所选包管理器再次运行同一个ops script建立生命周期身份；子进程通过
-真实包管理器环境识别已建立的执行上下文并直接运行领域步骤，不再次自举。不得伪造
-npm_execpath/user-agent，也不得递归回调公开ops。安装postinstall/prepare及台账明确
-暂缓的入口不因切换被机械删除。
+The root declares only the user-facing `ops` entry point; do not add a worker script or hidden worker arguments. When directly invoking Node and explicitly selecting npm/pnpm, the actual selected package manager runs the same ops script again to establish lifecycle identity. Child processes recognize the established execution context from the real package-manager environment and run domain steps directly, without bootstrapping again. Do not fake `npm_execpath`/user-agent or recursively call public `ops`. Do not mechanically remove installation `postinstall`/`prepare` hooks or entries explicitly deferred in the inventory as part of this switch.
 
-Linux容器的显式CI配方使用Python Owner的非Desktop解释器端口：uv离线解析指定的
-已准备venv，核对实际prefix和项目requires-python，不搜索系统解释器或下载兜底。
-macOS/Windows仍走原Desktop运行时来源核验；CI context不是普遍跳过准备/hook的开关。
+Explicit CI recipes in Linux containers use the Python Owner's non-Desktop interpreter port: `uv` resolves the specified, already prepared venv offline and verifies its actual prefix and the project's `requires-python`; it does not search for a system interpreter or download a fallback. macOS/Windows continue to use the original Desktop runtime provenance check. CI context is not a general switch for skipping preparation/hooks.
 
-维护者和普通同学都直接运行同一份受Git管理源码，无编译、产物提交、安装副本刷新或
-本地file依赖。只为入口不新增根安装步骤；实际任务依赖缺失时仍按原recipe失败或在
-原本允许的显式准备阶段安装。非安装任务不得借入口变轻而静默安装。
+Maintainers and other contributors run the same Git-managed source directly, with no compilation, committed build artifacts, installed-copy refresh, or local file dependency. Do not add a root installation step solely for the entry point. If an actual task lacks a dependency, it still fails according to its original recipe or installs it in an explicitly permitted preparation stage. A non-installation task must not silently install something merely because the entry point is lightweight.
 
-### 3.3 仓库及worktree身份
+<a id="33-仓库及worktree身份"></a>
+### 3.3 Repository and Worktree Identity
 
-源码模块按入口文件所在位置定位自身文件，执行目标仍通过cwd或显式--repo解析并校验
-根package、scripts/ops-cli.cjs入口及Desktop声明，兼容worktree的.git文件。不从node_modules、
-包缓存或外层INIT_CWD反推目标。帮助与实际执行显示明确目标，每个任务cwd明确指定。
+Source modules locate themselves relative to the entry-point file. The execution target is still resolved from `cwd` or explicit `--repo` and validated against the root package, `scripts/ops-cli.cjs` entry point, and Desktop declaration, supporting worktree `.git` files. Do not infer the target from `node_modules`, package caches, or an outer `INIT_CWD`. Help and actual execution show the explicit target; each task specifies its cwd.
 
-来自仓库外的绝对路径Node调用须给--repo后验证；不兼容的工具源码与目标仓库组合在
-副作用前拒绝，不能把一个checkout的编排与另一个checkout的领域脚本默默拼接。
-危险路径、用户数据、端口/锁/profile仍采用原Owner规则，不以入口路径替代实例身份。
+An absolute-path Node invocation from outside the repository must specify and validate `--repo`. Reject incompatible tool-source/target-repository combinations before side effects; do not silently combine orchestration from one checkout with domain scripts from another. Dangerous paths, user data, ports/locks/profiles continue to follow their original Owner rules; the entry-point path does not replace instance identity.
 
-拉取/切换分支后不需重装CLI，但必须退出该worktree正在运行的命令后再切换源码；
-已启动Node进程不会自动加载新模块，不支持运行中热替换编排。领域依赖/锁变动仍按原安装
-规则处理。Windows覆盖文件占用与失败恢复，只中断本任务子树，不强杀其他worktree。
+The CLI need not be reinstalled after pulling or switching branches, but exit commands running in that worktree before switching source. A running Node process does not automatically load new modules; hot replacement of orchestration is unsupported. Domain dependency/lock changes still follow the original installation rules. On Windows, cover file contention and failure recovery; interrupt only this task's subtree and never kill other worktrees forcefully.
 
-### 3.4 源码验证
+<a id="34-源码验证"></a>
+### 3.4 Source Verification
 
-使用node --test验证命令契约、编排和执行基础能力，测试不得仅比较脚本文本代替行为。
-CI从干净checkout直接运行源码，验证帮助不依赖根/Desktop node_modules；不构建或比较dist。
-真实任务仍需按Owner核准备链、平台、报告和退出结果。未来跨仓复用/独立发布才重评打包，
-不能仅为统一仓库命令引入单独包、bin、file依赖或额外版本同步。
+Use `node --test` to verify command contracts, orchestration, and execution primitives; tests must not compare script text alone as a substitute for behavior. CI runs source directly from a clean checkout and verifies that help does not depend on root/Desktop `node_modules`; it does not build or compare `dist`. Real tasks still require Owner-level verification of preparation chains, platforms, reports, and exit results. Reconsider packaging only for future cross-repository reuse or standalone release; do not introduce a separate package, `bin`, file dependency, or extra version synchronization merely to unify repository commands.
 
-## 4. 命令组织与接口
+<a id="4-命令组织与接口"></a>
+## 4. Command Organization and Interfaces
 
-### 4.1 组织原则
+<a id="41-组织原则"></a>
+### 4.1 Organization Principles
 
-按用户任务而非文件数组织命令。工具分别采用以下四类处置，逐项结论维护于
-[需求处置清单](ops-cli-inventory.md#3-需求分类与目标处置)，本文只定义组织规则。
-目标接口不表示CLI已实现，也不授权移除旧入口。
+Organize commands by user task, not by file count. Assign tools to the following four dispositions; maintain each item's conclusion in the [requirement disposition inventory](ops-cli-inventory.md#3-需求分类与目标处置). This document defines only organizational rules. The target interface does not mean the CLI is implemented, and does not authorize removing old entry points.
 
-| 分类 | 判断标准 | 交付方式 |
+| Category | Criteria | Delivery |
 | --- | --- | --- |
-| 保留 | 对象、效果或权限独立，合并会丢失语义 | 保留可发现的独立叶子或明确模式，领域实现不换 Owner |
-| 合并 | 同一任务的别名或可参数化变体，能够完整保留行为 | 一个规范入口，差异进入显式子命令/选项；不等于合并实现与准备链 |
-| 内部化 | hook、resolver、缓存、协议适配器或构建 stage，无独立用户目标 | 作为所属命令前置或内部库；不在公开树按文件增加命令 |
-| 暂缓 | 供应链/跨仓权限复杂、平台未闭合、能力未实现或价值证据不足 | 明确排除本次范围，原受控入口保留；不是已纳入命令的延后接线或兼容期 |
+| Retain | The object, effect, or permission is independent; merging would lose semantics. | Retain a discoverable standalone leaf or explicit mode; do not change the domain implementation's Owner. |
+| Merge | Aliases or parameterizable variants of the same task whose behavior can be fully preserved. | Provide one canonical entry point; express differences with explicit subcommands/options. This does not mean merging implementations or preparation chains. |
+| Internalize | A hook, resolver, cache, protocol adapter, or build stage with no independent user goal. | Make it a prerequisite of its owning command or an internal library; do not add a public command for every file. |
+| Defer | Supply-chain/cross-repository permissions are complex, platform support is incomplete, capability is unimplemented, or value evidence is insufficient. | Explicitly exclude it from this scope and retain its original controlled entry point; this is not delayed wiring or a compatibility period for an included command. |
 
-### 4.2 多级命令树
+<a id="42-多级命令树"></a>
+### 4.2 Multi-level Command Tree
 
-统一入口为 `pnpm ops`，业务域为pre/dev/ci/cd。按用户任务组织，不按脚本文件平铺；
-不强求所有路径都有三级，不增加未说明的同义入口。第1.4节的一级默认动作是明确的
-便捷入口，直接选择同一份专项配方，不复制实现、前置或报告，不形成另一套任务集合。
+The unified entry point is `pnpm ops`, with the task domains `pre/dev/ci/cd`. Organize by user task rather than flattening the script files. Not every path needs three levels, and do not add undocumented synonyms. The top-level default actions in §1.4 are explicit convenience entry points that select the same specialized recipe; they do not copy implementations, prerequisites, or reports, nor create a second task set.
 
-| 一级 | 二级职责 | 不负责 |
+| Top-level | Second-level responsibilities | Not responsible for |
 | --- | --- | --- |
-| pre | 默认完整环境准备；doctor/install/repair/config/clean为专项 | doctor不触发自动安装/修复；默认pre准备范围显式登记，不检查源码质量 |
-| dev | 默认完整产品；browser/serve/status/logs | 不把启动或模拟场景当产品验收 |
-| ci | 默认主流程冒烟；check/format/test为专项 | 不默认quality/full、格式化或模型调用，不重复环境doctor |
-| cd | 默认本地可运行包；build local/release为专项 | 默认不正式签名/公证/上传，保留macOS必要ad-hoc |
+| pre | Full environment preparation by default; `doctor/install/repair/config/clean` are specialized. | `doctor` does not trigger automatic installation/repair; the default `pre` preparation scope is explicitly registered and does not check source quality. |
+| dev | Full product by default; `browser/serve/status/logs`. | Do not treat startup or a mock scenario as product acceptance. |
+| ci | Main-flow smoke by default; `check/format/test` are specialized. | No default `quality/full`, formatting, or model calls; do not repeat environment diagnosis. |
+| cd | Locally runnable package by default; `build local/release` are specialized. | No formal signing/notarization/upload by default; retain necessary macOS ad-hoc signing. |
 
 ```text
 pnpm ops                                                 # 目标组织；可执行组合以源码登记为准
@@ -380,8 +309,7 @@ pnpm ops                                                 # 目标组织；可执
                                                           # 发布包构建；明确签名及完整交付链，不自动上传
 ```
 
-树中`#`后为说明，`|`表示可选值，`[]`表示可选参数，不能整行复制执行。
-主帮助优先给出以下常见任务，进阶组合从所属命令帮助发现：
+In the tree, text after `#` is explanatory; `|` denotes alternatives and `[]` denotes optional arguments. Do not copy and run a whole line. The main help prioritizes the common tasks below; discover advanced combinations in the help for the relevant command:
 
 ```text
 pnpm ops pre doctor                            # 定位开发环境故障，不自动修复
@@ -401,457 +329,277 @@ pnpm ops cd build local                        # 本地运行包；macOS保留�
 pnpm ops cd build release --channel release    # 正式渠道发布包构建，不上传
 ```
 
-#### 环境与工程检查
+<a id="环境与工程检查"></a>
+#### Environment and Engineering Checks
 
-pre不再设check分组，环境检测统一由doctor发现。`--scope`在doctor中只表示环境目标，
-不是ci test的子系统筛选。默认environment严格保持原doctor的node/npm/uv/python/
-codex/electron集合与Codex缓存恢复副作用，不新增links、deps marker或完整manager
-检查。toolchain、interpreter、deps、links分别调用现有Owner专项；共享检测不代表
-不同集合等价。frontend仍仅作为原hook/CI内部的Node+npm子集，不新增公开叶子。
+`pre` no longer has a `check` group; `doctor` is the unified way to discover environment checks. In `doctor`, `--scope` means only an environment target, not a subsystem filter for `ci test`. The default `environment` scope retains exactly the original `doctor` set of node/npm/uv/python/codex/electron checks and Codex-cache recovery side effects; it adds no links, deps marker, or full-manager checks. `toolchain`, `interpreter`, `deps`, and `links` each call the corresponding existing Owner specialization; shared checks do not mean the sets are equivalent. `frontend` remains only the Node+npm subset used internally by the original hook/CI; do not add a public leaf.
 
-ci check负责源码/资产合规，ci format负责代码格式。原根check固定流程映射为
-`ci check --profile python`，依次执行格式检查→Python lint→mypy，复用专项Owner；
-它不是全部质量门，也不接受其他目标或任意裁剪。ci check无目标/无profile展示帮助。
-不再保留ci check format、ci run或ci write公开路径。
+`ci check` handles source/asset compliance; `ci format` handles code formatting. Map the original fixed root-check flow to `ci check --profile python`, which reuses the specialized Owners and runs format check → Python lint → mypy in that order. It is not the full quality gate and accepts neither other targets nor arbitrary pruning. `ci check` without a target/profile displays help. Do not retain the public paths `ci check format`, `ci run`, or `ci write`.
 
-ci format默认与--check同义，不写源码、不自动安装工具；--write与--check互斥，
-沿原formatter的isort/black/import规则，缺工具时保留原写模式的prepare-dev前置并
-在帮助中披露。ESLint --fix、Desktop docs --write和i18n --generate是对应检查对象的
-显式写模式，不伪装成格式化、不提供通用fix-all。仅注册原有写范围；Python lint --fix、
-workspace docs --write、report/gaps与写模式混用等未支持组合在副作用前拒绝。
+`ci format` defaults to the same behavior as `--check`: it does not write source or automatically install tools. `--write` and `--check` are mutually exclusive. Follow the original formatter's isort/black/import rules; if a tool is missing, retain the original write-mode `prepare-dev` prerequisite and disclose it in help. ESLint `--fix`, Desktop docs `--write`, and i18n `--generate` are explicit write modes for their respective check targets; do not disguise them as formatting or provide a general `fix-all`. Register only the existing write scopes. Reject unsupported combinations, such as Python `lint --fix`, workspace docs `--write`, and mixing report/gaps with write modes, before side effects.
 
-pre doctor links 检查 Git 实际登记的软链接及其普通物理目标，不固定绑定某个宿主目录。
-开发 Skill 的宿主检查已迁入内源仓，不属于公开 CLI。
-docs workspace默认full，可用structure且结构模式必须显式给路径；desktop默认full，可用report；
-workspace structure通过仓库`scripts/ci/docs/structure-check.mjs`调用`structure-core.mjs`，不依赖
-Skill 内部路径；skills product 默认 source。报告不等于质量通过。
+`pre doctor links` checks symbolic links actually registered in Git and their ordinary filesystem targets; it is not hard-coded to a particular host directory. Host checks for development Skills have moved to the internal source repository and are not part of the public CLI.
 
-#### 测试类型与子系统
+`docs workspace` defaults to `full`; it also supports `structure`, and structure mode must be given an explicit path. `desktop` defaults to `full` and supports `report`. Workspace structure checking calls `structure-core.mjs` through the repository's `scripts/ci/docs/structure-check.mjs` and does not depend on an internal Skill path. `skills product` defaults to `source`. A report does not mean quality has passed.
 
-测试类型是执行方式，scope是被测子系统，只维护一份用例登记，不另设desktop/server/
-frontend平行测试子树。规范scope为desktop、serve、runtime、trace、tooling；
-desktop包含renderer/main/preload/native，前端专项通过其已登记suite选择；server是
-概念称呼，命令使用真实Owner名serve。suite仅选择已有具名集合，不能透传任意脚本。
+<a id="测试类型与子系统"></a>
+#### Test Types and Subsystems
 
-每个用例有唯一基础类型及Owner/scope，smoke是跨层精选标签而非第七个基础层。
-实现时核真实隔离与调用边界，不能把现有混合Node集合或所有Python contract统一
-改称unit，也不能把所有contract都当HTTP api。原混合集合使用不带类型的
-`ci test --scope desktop`、`ci test --scope serve`、`ci test --scope trace`等登记配方，
-保留原集合与准备；显式类型只选经核验的该层用例，不隐式运行同scope其他层。
+Test type is the execution method; scope is the subsystem under test. Maintain one case registry; do not create parallel desktop/server/frontend test subtrees. The canonical scopes are desktop, serve, runtime, trace, and tooling. Desktop includes renderer/main/preload/native; select frontend-specific cases through their registered suites. “Server” is a conceptual label; commands use the actual Owner name `serve`. A suite selects only an existing named set and cannot pass through an arbitrary script.
 
-- 普通类型unit/integration/api/e2e/visual要求显式scope；不支持的type/scope/suite组合
-  执行前报UNSUPPORTED，空选择不能报通过。不带类型且未给有效scope/profile时只展示帮助。
-- smoke沿scripts/ci/smoke.cjs固定清单、必选核心项、平台、报告和零跳过判据，不接受scope、
-  suite、coverage或quality专用参数裁剪。它与Playwright smoke项目不是相同集合。
-  “快速”需用受支持宿主冷/热耗时及核心用例覆盖证明；耗时预算归CI Owner配置，未测不写已达标。
-- `ci test --profile quality`保留原ci:test综合质量工作流、--strict/--with-external等原有参数，
-  包含其原静态/构建/测试阶段，而非仅unit。此固定配方不与类型/scope/suite/coverage混用，
-  不另设ci run；原full（--with-external）模式仍披露模型、网络、安装及授权。
-- Desktop默认混合集合保留普通pretest；--coverage沿原coverage recipe，不补普通pretest。
-  文献搜索为unit/desktop的literature-search专项，不能与coverage组合。原生unit与
-  native-contract集成编译是不同套件，后者可能下载工具链并清理本次临时产物。
-- 原Preview契约及模拟浏览器UI分别登记integration/desktop的preview-contract、preview-ui，
-  mock浏览器UI不是完整产品E2E，也不是视觉基准比较；保留原webServer/安装前提。
-- e2e/desktop默认沿原通用Playwright集合与前置；suite mr/live/update分别沿原对应
-  profile的build→项目运行链，live可能调用模型，update可能改变安装状态。
-  model-probe是独立真实--say链路配方，保留原health的scholarseed-desktop入口、配置目标与
-  退出码，不初始化配置、不新增原本没有的内容断言、不并入默认dev/单元/coverage/smoke。
-- `ci test --scope serve --list`仅列原run_all套件，不执行；具名suite仍保留cwd/PYTHONPATH、
-  并发、独占和报告。Trace默认原契约集合，--with-format-check只增加原Trace格式前置。
-- `ci test --affected [--base <ref>] [files...]`只计算推荐与fallback，不执行；不能与实际
-  执行类型/scope/suite/profile混用。输出kind=affected，fallback3沿原语义。
-- API 仅登记 `serve --suite projects`，经原 Serve runner 执行项目读模型、查询和资源列表
-  三个既有契约套件，不等于全部接口覆盖。它不允许透传选例、调用模型或替代原持续CI。
-  `integration_serve` 含真实模型，仍属独立真实链路。截图文件不是视觉
-  回归。visual需基准、容差、主题/尺寸/字体环境、比较结果及基准更新权限；不能自动更新
-  基准让失败通过。尚未接线的组合在list标为planned并拒绝执行，不注册“成功”空壳；
-  已有消费者必须先完整映射，不能借新分类删掉旧用例。
+Each case has one base type and one Owner/scope. `smoke` is a curated cross-layer label, not a seventh base layer. During implementation, verify actual isolation and call boundaries. Do not relabel existing mixed Node sets or all Python contracts as `unit`, and do not treat every contract as an HTTP API. Run original mixed sets through registered recipes without a type, such as `ci test --scope desktop`, `ci test --scope serve`, and `ci test --scope trace`, preserving their original membership and preparation. An explicit type selects only verified cases of that layer; it does not implicitly run other layers in the same scope.
 
-#### 本地与发布构建
+- Ordinary types `unit/integration/api/e2e/visual` require an explicit scope. Report unsupported type/scope/suite combinations as `UNSUPPORTED` before execution; an empty selection cannot pass. Without a type and a valid scope/profile, display help only.
+- `smoke` follows the fixed inventory, required core cases, platforms, reports, and zero-skip criterion in `scripts/ci/smoke.cjs`; it does not accept scope, suite, coverage, or quality-specific parameters that prune the set. It is not the same set as the Playwright smoke project. Prove “fast” using cold/warm durations and core-case coverage on supported hosts; the CI Owner configures the duration budget, and do not claim the budget is met without measurement.
+- `ci test --profile quality` retains the original comprehensive `ci:test` quality workflow and its existing parameters such as `--strict`/`--with-external`, including the original static/build/test stages rather than only unit tests. This fixed recipe cannot be combined with type/scope/suite/coverage. Do not add `ci run`. The original full (`--with-external`) mode still discloses model, network, installation, and authorization effects.
+- The default Desktop mixed set retains ordinary `pretest`; `--coverage` follows the original coverage recipe and does not add ordinary `pretest`. Literature search is the `unit/desktop` `literature-search` suite and cannot be combined with coverage. Native unit tests and native-contract integration compilation are different suites; the latter may download a toolchain and clean up temporary artifacts created by this run.
+- Register the original Preview contract and mock browser UI separately as `integration/desktop` suites `preview-contract` and `preview-ui`. Mock browser UI is neither full product E2E nor a visual-baseline comparison; preserve the original `webServer`/installation prerequisites.
+- `e2e/desktop` defaults to the original general Playwright set and prerequisites. Suites `mr/live/update` follow the build → project-run chain of their corresponding original profiles; `live` may call a model, and `update` may change installation state. `model-probe` is a separate real `--say` chain recipe; retain the original health `scholarseed-desktop` entry point, configuration target, and exit code. Do not initialize configuration, add content assertions that did not previously exist, or include it in default dev/unit/coverage/smoke.
+- `ci test --scope serve --list` lists only the original `run_all` suites and does not execute them. Named suites still preserve cwd/PYTHONPATH, concurrency, exclusivity, and reports. Trace defaults to the original contract set; `--with-format-check` adds only the original Trace format prerequisite.
+- `ci test --affected [--base <ref>] [files...]` computes recommendations and fallback only; it does not execute tests and cannot be combined with execution type/scope/suite/profile. Output `kind=affected`; fallback 3 retains its original semantics.
+- API registers only `serve --suite projects`. The original Serve runner executes its three existing contract suites for project read models, queries, and resource lists; this is not complete API coverage. It does not allow arbitrary case selection, model calls, or replacing the original continuous CI. `integration_serve` includes a real model and remains a separate real-path recipe. Screenshot files are not visual regression tests. `visual` requires a baseline, tolerance, theme/size/font environment, comparison result, and permission to update the baseline; do not auto-update baselines to make failures pass. Mark unwired combinations as `planned` in `list` and reject execution; do not register an empty “success” shell. Fully map existing consumers first; do not use the new categories to remove old cases.
 
-CD只公开build local/release，原产物种类通过target筛选、阶段通过stage选择，不再
-平铺package/pipeline或每种产物。target默认desktop；local的desktop默认installer，
-app仅沿原electron-vite build应用构建recipe，dir沿原开发解包recipe；app是CLI阶段名，
-不得作为原build.cjs不支持的stage直接传入。backend/web/wheels/trace/skills各沿原Owner
-准备与构建，只有desktop接受app/dir/installer，其他target不接受这些stage。
-release当前只支持desktop，channel默认release，preview与release保持原渠道身份。
+<a id="本地与发布构建"></a>
+#### Local and Release Builds
 
-| 构建形态 | 实际边界 |
+CD publicly exposes only `build local/release`. Select the original artifact type with `target` and the build stage with `stage`; do not flatten `package`/`pipeline` or expose a command per artifact. The default target is `desktop`; for local desktop builds, the default stage is `installer`. `app` uses only the original `electron-vite build` application-build recipe; `dir` uses the original development unpacked-build recipe. `app` is a CLI stage name and must not be passed directly as a stage unsupported by the original `build.cjs`. `backend/web/wheels/trace/skills` each follow their original Owner's preparation and build. Only `desktop` accepts `app/dir/installer`; other targets reject these stages. `release` currently supports only `desktop`, with `release` as the default channel; `preview` and `release` retain their original channel identities.
+
+| Build mode | Actual boundary |
 | --- | --- |
-| local Desktop | 原dev构建，不使用正式发行签名身份/公证凭据；macOS保留运行所需ad-hoc及原嵌套签名/校验，Windows不签名。不重签原受保护runtime，不削弱库存和安全检查 |
-| release direct（默认） | 发行安装包复用构建器的固定smoke；preview/release正式签名，macOS按渠道要求公证，缺凭据失败 |
-| release distribution | 保留ensure→Python prepare-dev→发行构建；固定smoke由构建器执行一次，构建参数不传入smoke |
-| local package-acceptance | full质量流程→固定smoke→本地dev安装包→真实安装后E2E；不升级为签名发布包，核commit/平台/制品路径及SHA-256，不接受历史包替代 |
-| release --stage dir --candidate | 原package:check的发行候选目录构建/检查，不能称只读，也不能作为可发布签名包；沿原candidate规则与拒绝上传标记 |
+| local Desktop | Original dev build; no formal-release signing identity or notarization credentials. On macOS retain required ad-hoc signing and original nested signing/verification; on Windows do not sign. Do not re-sign the protected runtime or weaken inventory and security checks. |
+| release direct (default) | The release installer reuses the builder's fixed smoke. Formally sign for `preview`/`release`; notarize on macOS as required by the channel; fail if credentials are missing. |
+| release distribution | Retain ensure → Python prepare-dev → release build. The builder runs the fixed smoke once; do not pass build arguments into smoke. |
+| local package-acceptance | Full quality flow → fixed smoke → local dev installer → real post-install E2E. Do not upgrade this to a signed release package. Verify commit/platform/artifact path and SHA-256; do not substitute a historical package. |
+| release --stage dir --candidate | Build/check the release-candidate directory through the original `package:check`; do not call it read-only or treat it as a releasable signed package. Follow original candidate rules and upload-rejection markers. |
 
-preview/release 共用 direct 与 distribution 配方；显式 candidate 仅支持 direct dir，
-沿原渠道感知的候选检查 Owner。CLI 不开放 `--install` 或 `--skip-check`，原安装 Owner 需求保留并单独授权，
-不把它们作为通用原生透传。外部分发侧的旧参数与待接线项由分发协作说明维护。
+`preview`/`release` share the `direct` and `distribution` recipes. Explicit `candidate` supports only `direct dir` and follows the original channel-aware candidate-check Owner. The CLI does not expose `--install` or `--skip-check`; preserve the original installation Owner's requirements and authorize them separately. Do not treat these as generic native passthrough. Maintain old arguments and unwired items on the external-distribution side in the distribution coordination record.
 
-workflow按构建形态封闭登记：direct是各自默认，distribution仅release，package-acceptance
-仅local，不是任意流程DSL或静默增加所有前置。candidate dir必须选原package:check配方，
-保留其更新URL来源与校验，不能先执行release包装的强制签名/更新URL取值再假装跳过。
-固定smoke由Desktop安装包构建器统一执行，与workflow无关；app、backend、dir及候选目录检查不执行。
-package-acceptance仅local Desktop完整安装包，不与release、candidate、dir、任意target或剪裁测试混用。
-渠道接线的确定性验证不能替代两渠道真实签名及发行验收。candidate不是签名失败后的
-自动降级，须显式指定并保留原Owner的安全/上传拒绝契约。
+Register workflows as a closed set by build mode: `direct` is the default for each; `distribution` is release-only; `package-acceptance` is local-only. This is not an arbitrary workflow DSL and does not silently add every prerequisite. `candidate dir` must select the original `package:check` recipe and retain its update-URL source and validation; do not first run release-wrapper mandatory signing/update-URL selection and then pretend to skip it. The Desktop installer builder runs fixed smoke exactly once, independently of workflow; `app`, `backend`, `dir`, and candidate-directory checks do not run it. `package-acceptance` is only for a complete local Desktop installer and cannot be combined with release, candidate, dir, arbitrary targets, or pruned tests. Deterministic verification of channel wiring does not replace real signing and release acceptance for both channels. `candidate` is not an automatic downgrade after signing fails: it must be explicitly selected and preserve the original Owner's security/upload-rejection contract.
 
-#### 默认执行与保留边界
+<a id="默认执行与保留边界"></a>
+#### Default Execution and Retained Boundaries
 
-根入口和未登记默认动作的普通非叶子无参数展示帮助；pre/dev/ci/cd执行第1.4节的
-默认任务链，--help与list不执行任何任务。未知子命令/选项报错，不回落默认链路。无TTY/CI不自动确认，
-长驻任务按Owner规则阻塞/中断，不自动后台化或调用模型。
+The root entry point and ordinary non-leaf commands without a registered default action display help when invoked without arguments. `pre/dev/ci/cd` run the default chains in §1.4; `--help` and `list` run no task. Unknown subcommands/options produce an error and do not fall back to a default chain. No-TTY/CI does not auto-confirm; long-running tasks block or are interrupted according to their Owner's rules, and are not automatically backgrounded or used to call a model.
 
-dev/browser/--mock仍采用各自准备链。browser保留原SCHOLARSEED_SERVE_URL→默认端点
-来源，允许先启动Vite再启动Serve，不新增在线探针/ready门槛，不自启第二后端或降级mock；
-Vite就绪不证明业务通过。mock不消费真实后端目标，显式冲突选项提前拒绝。
-status只观察原隔离debug实例，保留wait/timeout及0/1/2语义；--port仅默认dev支持。
-serve [--watch]保留原解释器/Codex来源、端口、CASES和监听范围，不重启活跃对话实例。
-logs [--errors]目标绑定当前worktree隔离实例，不再默认全局Home；保留WARNING/ERROR及
-最近50行筛选，缺日志报不可用、不创建文件，这是明确行为调整，需真实宿主验收。
+`dev/browser/--mock` retain their respective preparation chains. `browser` retains the original `SCHOLARSEED_SERVE_URL` → default endpoint source. It may start Vite before Serve; do not add an online probe/readiness gate, start a second backend, or degrade to mock. Vite readiness does not prove business success. `mock` does not consume a real backend target; reject explicitly conflicting options in advance.
 
-旧根start/desktop、Desktop产物preview/shoot/preview:web、组件发现与Trace UI仍暂缓
-ops包装，保留原Owner入口和真实消费者，不用无调用内部recipe伪装承接。root desktop
-有README消费者且会config(false)，不能当作隔离dev的等价替换；shoot只做build→electron，
-不代表截图或断言。已承接的根dev/dev:preview及Desktop dev:web等公开用法同次切换，
-必要领域script可内部保留但不宣传第二套入口。用户数据暂缓，CLI自身只做源码测试，不设构建/产物校验流程。
-外部upload/publish/deploy接入须另定制品身份、渠道、权限、幂等与读回；本次不注册空壳。
+`status` observes only the original isolated debug instance and preserves `wait`/`timeout` and 0/1/2 semantics. Only default `dev` supports `--port`. `serve [--watch]` preserves the original interpreter/Codex source, port, CASES, and listen scope; it does not restart an active conversation instance. `logs [--errors]` binds to the isolated instance in the current worktree rather than defaulting to the global Home; it preserves WARNING/ERROR and recent-50-line filtering. If logs are missing, report them unavailable and do not create a file. This is an explicit behavior change and requires real-host acceptance.
 
-### 4.3 AI与自动化调用契约
+Wrapping the old root `start/desktop`, Desktop artifact `preview/shoot/preview:web`, component discovery, and Trace UI with ops remains deferred. Retain their original Owner entry points and real consumers; do not pretend to support them through an unused internal recipe. Root `desktop` has README consumers and calls `config(false)`, so it is not an equivalent replacement for isolated `dev`. `shoot` only runs build → electron; it does not represent a screenshot or assertion. Switch already adopted public usages such as root `dev/dev:preview` and Desktop `dev:web` together. Necessary domain scripts may remain internally but must not be promoted as a second entry point. User-data operations remain deferred. The CLI itself runs source tests only and does not define a build/artifact-check flow.
 
-本节是待实施接口要求，不表示已有可调用CLI。普通模式保持原生任务stdio及退出码，
-不要求将每个领域工具改造成JSON。元命令与有限状态查询提供机器接口；其他叶子
-逐项声明是否支持JSON结果适配，不支持时执行前拒绝，不能先运行再报无法编码。
+Integrating external upload/publish/deploy requires separately defining artifact identity, channel, permissions, idempotency, and readback; do not register an empty shell in this change.
 
-- 全局选项置于命令路径前：`--repo`、`--package-manager npm|pnpm`、
-  `--context local|ci`、`--non-interactive`、`--json`；原生透传仅限明确叶子后的`--`。
-- 机器调用使用`pnpm --silent ops --json list`、`pnpm --silent ops --json version`；
-  silent抑制包管理器脚本前缀，不是关闭领域日志。无repo仍可help/list/version；
-  实际仓库任务必须能确认目标身份。
-  affected推荐使用`pnpm --silent ops --json ci test --affected --base <ref>`；JSON是
-  全局输出选项，不另设叶子同名选项，底层affected的原JSON载荷由适配器放入data。
-- JSON输出为单个UTF-8文档，含schemaVersion、kind、规范command、repo、context及对应
-  data/error。schemaVersion初版为1，新增可选字段兼容，字段语义不兼容必须升版本；
-  kind区分help/list/version/status/result/error/affected，不能把报告当验收结果。
-- list/help披露叶子、默认值、有效模式、平台/context、JSON/交互支持、前置与效果标签；
-  命令发现不执行探针、读凭据或运行用户代码；错误及实际参数中的敏感值脱敏，不输出凭据或用户配置正文。
-- JSON stdout不混横幅、颜色、进度或原生日志。元命令与状态用CLI自身编码器；
-  只有有结果适配器的执行叶子可转发子日志到stderr/独立证据路径并输出JSON汇总，
-  不支持的长驻/TTY任务应拒绝JSON而不是改变交互行为。普通模式不替换领域报告协议。
-- 错误包括origin（cli/child）、稳定code、failedStep、owner和nextAction，内容脱敏。
-  CLI参数错误退出2，目标/依赖/权限/不支持组合失败退出1；子命令沿原退出码，
-  区分CLI错误和子进程同号错误，不统一压成1。有限等待/超时沿Owner原有状态与退出语义。
-- 稳定CLI错误code为INVALID_ARGUMENT、REPO_INVALID、PREREQUISITE_MISSING、
-  PERMISSION_REQUIRED、UNSUPPORTED及EXECUTION_FAILED；子进程失败型非零为CHILD_EXIT，
-  具体原退出码放data.exitCode。登记的领域状态码沿原kind与数据表达（如status等待的2、
-  affected需升级门禁的3），不统一变成CLI错误，也不能将这些同号解释为参数错误。
-- 显式non-interactive、无TTY或CI运行时禁止无限等待输入、菜单或编辑器；缺必要参数、
-  确认或凭据即报错，需要交互且无既有非交互实现的任务声明UNSUPPORTED。
-  CI/非交互不是操作授权，不能默认确认。子进程不能继承可永久等待输入的开放stdin；
-  需要文件/stdin输入的报告任务按登记边界消费，交互任务与报告输入分别处理。
-- dev默认启动、browser/serve、日志跟随等长驻任务声明阻塞、归属与中断方式，不强加统一超时或新增后台模式；
-  有限等待声明超时及失败语义，状态查询不通过“进程存在”宣称业务验收通过。
-- 原生参数以argv数组原样传递，不经字符串重拼。叶子登记可透传目标与可影响效果的
-  参数策略；会改变执行入口、配置、安装/模型模式、路径范围、基线或授权的参数须提升为
-  显式受控选项并重算效果，或拒绝。无法判定的参数不能按“--之后都安全”放行；
-  实际执行在产生副作用前拒绝，而不是重写任意原生工具解析器。
+<a id="43-ai与自动化调用契约"></a>
+### 4.3 AI and Automation Invocation Contract
 
-## 5. 权限与副作用契约
+This section specifies an interface yet to be implemented; it does not mean an invokable CLI already exists. In ordinary mode, preserve native task stdio and exit codes; do not require every domain tool to be converted to JSON. Meta-commands and finite state queries provide machine interfaces. Each other leaf must declare whether it supports JSON result adaptation; reject unsupported commands before execution rather than running them and then reporting that their output cannot be encoded.
 
-权限取决于实际效果，不取决于pre/doctor/check等命名。每个叶子的模式/context登记
-前置、网络、源码/宿主/外部写入、模型费用、安装和进程标签，组合取效果并集；
-帮助与真实执行共用该登记，不另写一套“只读”清单。
+- Place global options before the command path: `--repo`, `--package-manager npm|pnpm`, `--context local|ci`, `--non-interactive`, and `--json`. Native passthrough is limited to `--` after an explicitly designated leaf.
+- Machine calls use `pnpm --silent ops --json list` and `pnpm --silent ops --json version`. `silent` suppresses the package manager's script prefix; it does not disable domain logs. Help/list/version work without `repo`; actual repository tasks must be able to verify target identity. For affected tests, recommend `pnpm --silent ops --json ci test --affected --base <ref>`. JSON is a global output option, not a same-named leaf option; the adapter places the underlying affected command's original JSON payload in `data`.
+- JSON output is one UTF-8 document containing `schemaVersion`, `kind`, canonical `command`, `repo`, `context`, and the corresponding `data`/`error`. The initial `schemaVersion` is 1; adding optional fields is backward-compatible, while incompatible field semantics require a version increase. `kind` distinguishes help/list/version/status/result/error/affected; a report must not be presented as an acceptance result.
+- `list`/help disclose leaves, defaults, valid modes, platform/context, JSON/interaction support, prerequisites, and effect labels. Command discovery does not run probes, read credentials, or execute user code. Redact sensitive values in errors and actual arguments; do not output credentials or the body of user configuration.
+- JSON stdout must not contain banners, color, progress, or native logs. Meta-commands and status use the CLI's own encoder. Only execution leaves with a result adapter may forward child logs to stderr/a separate evidence path and emit a JSON summary. Reject unsupported long-running/TTY tasks in JSON mode instead of changing their interaction behavior. Ordinary mode does not replace domain report protocols.
+- Errors include `origin` (`cli`/`child`), a stable `code`, `failedStep`, `owner`, and `nextAction`, with sensitive content redacted. CLI argument errors exit 2; target/dependency/permission/unsupported-combination failures exit 1. Subcommands preserve their original exit codes. Distinguish CLI errors from child-process errors with the same code; do not normalize all failures to 1. Finite waits/timeouts preserve the Owner's original status and exit semantics.
+- Stable CLI error codes are `INVALID_ARGUMENT`, `REPO_INVALID`, `PREREQUISITE_MISSING`, `PERMISSION_REQUIRED`, `UNSUPPORTED`, and `EXECUTION_FAILED`. A nonzero child-process failure uses `CHILD_EXIT`, with the original code in `data.exitCode`. Registered domain status codes retain their original `kind` and data representation (for example, 2 for a status wait and 3 when affected tests require an upgraded gate); do not normalize them to CLI errors or misinterpret matching codes as argument errors.
+- With explicit `non-interactive`, no TTY, or CI, never wait indefinitely for input, a menu, or an editor. Missing required arguments, confirmation, or credentials are errors. Declare `UNSUPPORTED` for tasks that require interaction and have no existing non-interactive implementation. CI/non-interactive is not operational authorization and must not auto-confirm. Child processes must not inherit an open stdin that can wait forever. Report tasks needing file/stdin input consume it according to their registered boundary; handle interactive-task input and report input separately.
+- Long-running tasks such as default `dev`, `browser/serve`, and log following declare blocking behavior, ownership, and interruption method; do not impose a common timeout or add background mode. Finite waits declare timeout and failure semantics. A status query must not claim business acceptance merely because “the process exists.”
+- Pass native arguments unchanged as an argv array; do not rebuild them into a string. Each leaf registers its passthrough targets and policies for arguments that can affect behavior. Arguments that change the execution entry point, configuration, installation/model mode, path scope, baseline, or authorization must become explicit controlled options with effects recalculated, or be rejected. Do not permit an argument merely because it follows `--` when its impact cannot be determined; reject before side effects rather than rewriting arbitrary native-tool parsers.
 
-| 效果 | 规范入口举例 | 执行边界 |
+<a id="5-权限与副作用契约"></a>
+## 5. Permission and Side-Effect Contract
+
+Permissions depend on actual effects, not names such as `pre/doctor/check`. For every leaf mode/context, register prerequisites, network access, source/host/external writes, model costs, installation, and process tags; combinations take the union of their effects. Help and real execution share this registry; do not create a separate “read-only” list.
+
+| Effect | Canonical entry-point examples | Execution boundary |
 | --- | --- | --- |
-| 元信息/状态/报告 | help/list/version、dev status、ci check preview-report | 不为发现命令而安装、启动、创建用户目录或读凭据；报告不等于质量通过 |
-| 探针、缓存/临时文件和质量报告 | pre doctor、ci check、ci format、ci test | 披露实际网络/编译/安装前置；check不是所有叶子零副作用的保证，不能自动修复 |
-| 环境/源码写入 | pre install/repair/config、ci format --write、ci check的fix/write/generate模式、cd build local --target skills | 显式选择原有格式化、ESLint修复、文档/i18n派生动作，仅写已登记Owner范围，不含基线重置 |
-| 开发启动/观察 | dev各开发对象 | 明示模式与进程归属，长驻任务由显式中断结束；不重启活跃对话Serve |
-| 配置与清理 | pre config、pre clean | 配置必须显式执行，默认dev不进入原configured写配置链；clean仅原开发环境范围，用户数据操作明确暂缓 |
-| 模型、外部服务、应用安装 | ci test e2e --scope desktop --suite model-probe、E2E相应模式、ci test --profile quality的外部/full模式、cd build local --workflow package-acceptance | 核具体目标、凭据、预算/费用和当次授权；缺前提拒绝，不降级mock或将启动成功写成业务通过 |
-| 签名、公证、发行构建 | cd build local/release | local保留macOS必要ad-hoc、Windows不签名；release按渠道正式签名/公证，缺凭据不降级；构建不授予上传/发布/部署许可 |
-| 待接入外部CD及受控维护 | 上传/发布/部署；暂缓的用户数据/全局链接/供应链/基线修改 | 接入前核Owner、接口、幂等、部分失败和读回；当前不注册捷径，不借CI、无TTY或--yes扩大权限 |
-
-CLI只校验明确输入、目标及实际系统权限，不能推断自然语言授权。宿主智能体仍负责
-核用户当次权限；CI、context=ci和non-interactive不是授权声明。无通用--yes、allow-all、
-fix-all或基线重置；日志和错误脱敏。模式/参数无法确认安全效果时在副作用前拒绝，
-不能静默漏接已经纳入范围的任务；调整范围须同步设计、台账与交付验收。
-
-例如原logs可能创建空日志，目标dev logs明确改变该行为并需真实宿主验收；pre doctor
-可能恢复制品，config template会写配置，ci test e2e --scope desktop --suite model-probe会请求模型。
-名称不证明只读；browser --mock和真实backend必须登记不同的准备链与效果。
-
-## 6. 生命周期、CI 和跨平台不变量
-
-### 生命周期
-
-迁移单元是“根包装层 → 依赖准备/检查 → 环境配置 → 包管理器 → hook → 主命令”，
-不是仅替换叶子script。迁入CLI的实际实现与消费者同次原子接线，保留现有Desktop
-完整准备边界和debug监督语义；领域实现按Owner复用，不新增过渡转发壳。
-保留 PREPARATION_COMMANDS 对 ensure/check 的区分、dev 环境默认值及用户覆盖优先级、
-Desktop cwd、stdio、npm 的 `--` 与 pnpm 参数转发规则。
-生命周期仍交选定包管理器执行，不手工补跑 hook 后再执行同一 script。
-保留 npm/pnpm 各自当前生命周期与 `ignore-scripts` 语义，不能为了“统一”增加或遗漏步骤。
-被修饰命令的前置顺序和变体差异必须保持，不能因测试集合相同就给coverage补跑
-普通test的hook，也不能将显式CI前置和包管理器自动hook重复执行。
-安装 hook 不能依赖尚未安装的 CLI，避免全新安装时死循环。
-迁移后单一实现归 CLI 或实际领域 Owner，旧 hook 只在确有兼容消费者时保留。
-
-完整hook与内联前置关联记录于[生命周期台账](ops-cli-inventory.md#6-生命周期钩子关联)。
-实施时核对当前源码和消费者，台账不取代包管理器实际配置或执行证据。
-
-开发环境资源采用共享租约保护：Python准备与Desktop依赖安装对实际写入目录持有独占租约；
-开发版Desktop、浏览器开发面、Electron预览及Serve运行期间对所用环境持有读租约；
-`pre clean` 对目标目录取得独占租约后才删除。并发冲突直接失败，不杀进程、不从PID推断
-租约失效。若异常退出无法确认进程树已停止或写入已完成，租约收据保留并提示人工检查；
-不得仅因PID已退出就自动清理。该锁只约束接入此Owner的仓库命令，不声称防住绕过CLI
-或直接改文件的外部进程。
-
-### 执行context与准备语义
-
-全局 `--context local|ci` 默认local，选择有界、已登记的来源recipe，不按CI环境变量
-自动切换。local表示旧根包装语义而非“人工宿主”，CI也可使用；它保留check/ensure、
-默认环境与hook。ci只在已有CI消费者
-确有差异的叶子注册，精确复现原job的子包直调及已显式前置，不是skip-preparation开关。
-两者共享领域动作和测试集合，差异仅限已核来源的包装/准备，帮助和JSON显式披露。
-
-无ci recipe的叶子收到context=ci即UNSUPPORTED，不能接受后忽略；ci仍校验Node、
-目标身份、实际必要依赖、路径和权限。例：types desktop及Desktop coverage原GitLab
-job按子包直调且ignore-scripts，与旧根包装的完整Desktop marker检查不同。
-ci recipe不得补入原本没有的全Desktop安装/marker，也不得为去重自动执行或省略job前置；
-需要差异recipe的GitLab job显式传context=ci；无差异的原生job保留local，不能为所有CI
-调用统一添加context=ci。原安装顺序、allow_failure、超时、产物与报告保持。
-
-### 包管理器选择与依赖身份
-
-启动CLI的包管理器与任务执行器分开。选择优先级为显式
-`--package-manager npm|pnpm` → 可核验运行上下文 → 仓库默认pnpm。
-显式npm可以覆盖pnpm ops带来的启动上下文；多个身份字段自相矛盾或版本不符则拒绝，
-不根据同时存在的锁文件猜安装方式，不将已有npm依赖静默转换pnpm，反向亦然。
-
-选定执行器必须贯穿整个调用图：CLI经已核验包管理器的真实run创建内部执行上下文，
-固定内部适配入口属于仓库源码/实际执行Owner而非已删除根公开别名；嵌套prepare、toolchain
-和CI阶段都使用其实际npm_execpath/user_agent。不能只让第一层spawn用npm，
-后续再读继承的pnpm身份；不能伪造npm变量当作已经过包管理器执行。
-建立上下文仅一次，包管理器调用同一个根ops script，不再次自举；输入仍校验命令、recipe与repo，
-不能当成权限后门。适配argv差异复用toolchain Owner，而非每个叶子手写shell拼接。
-
-安装/检查类任务依原recipe核验管理器、版本和依赖标记；明确prepare/install才可按
-原Owner更新依赖。CI无hook安装的合法recipe使用其原前提，不假装生成完整开发marker。
-必须回归pnpm入口→显式npm→嵌套前置/CI阶段，以及无显式覆盖的pnpm调用。
-
-### CI自举、既有Linux任务与消费者切换
-
-CLI加载只依赖受支持Node与仓库源码，不在装载/help时运行checkToolchain。
-CI只需准备声明的Node/pnpm和原任务执行器，不为获得入口新增根依赖安装。
-
-| 原job来源 | 源码入口接线 | 不允许的变化 |
+| Effect | Canonical entry-point examples | Execution boundary |
 | --- | --- | --- |
-| Python、静态/coverage、Xvfb等原未安装根依赖的job | checkout后使用pnpm ops，原子包/工具准备照旧 | 不为CLI新增根install，不触发根postinstall安装Desktop，不把入口可用当成业务前提已满足 |
-| macOS/Windows等原已有根npm ci的job | 保留原npm ci、hook、后续check/repair/installPython顺序，ops显式选择npm任务执行器 | 不删除原任务所需安装，不叠加pnpm根重装，不手动重放hook |
+| Metadata/status/reports | help/list/version, `dev status`, `ci check preview-report` | Do not install, start processes, create user directories, or read credentials for command discovery; a report is not a quality pass. |
+| Probes, cache/temp files, and quality reports | `pre doctor`, `ci check`, `ci format`, `ci test` | Disclose actual network/compilation/installation prerequisites; `check` does not guarantee that every leaf has zero side effects and must not auto-repair. |
+| Environment/source writes | `pre install/repair/config`, `ci format --write`, fix/write/generate modes of `ci check`, `cd build local --target skills` | Explicitly select existing formatting, ESLint repair, or docs/i18n derived actions. Write only within registered Owner scopes; do not reset baselines. |
+| Development startup/observation | Each development target under `dev` | Show the mode and process ownership; explicitly interrupt long-running tasks to end them; do not restart Serve during an active conversation. |
+| Configuration and cleanup | `pre config`, `pre clean` | Configuration must be explicitly invoked; default `dev` does not enter the original `configured` configuration-write chain. `clean` is limited to the original development-environment scope; user-data operations are explicitly deferred. |
+| Models, external services, app installation | `ci test e2e --scope desktop --suite model-probe`, corresponding E2E modes, external/full modes of `ci test --profile quality`, `cd build local --workflow package-acceptance` | Verify the exact target, credentials, budget/cost, and authorization for this run. Reject missing prerequisites; do not degrade to mock or present successful startup as business success. |
+| Signing, notarization, release builds | `cd build local/release` | `local` retains necessary macOS ad-hoc signing and does not sign on Windows. `release` performs formal signing/notarization by channel and does not downgrade if credentials are missing. A build does not authorize upload/release/deployment. |
+| External CD not yet integrated and controlled maintenance | Upload/release/deployment; deferred user-data/global-link/supply-chain/baseline changes | Before integration, verify the Owner, interface, idempotency, partial-failure behavior, and readback. Do not register shortcuts now or expand permissions through CI, no-TTY, or `--yes`. |
 
-原根/Desktop依赖与锁仍按真实消费者维护，不因取消CLI依赖包忽略领域锁变化。
-两类job均核入口与执行器来源，不存在CLI bin、安装副本版本或产物摘要刷新。
+The CLI validates explicit inputs, targets, and actual system permissions; it cannot infer authorization from natural language. The host agent remains responsible for checking authorization for the user's current request. CI, `context=ci`, and `non-interactive` are not authorization declarations. There is no general `--yes`, `allow-all`, `fix-all`, or baseline reset; redact logs and errors. If a mode/argument's safety effect cannot be determined, reject it before side effects. Do not silently omit an in-scope task; scope changes must update the design, inventory, and delivery acceptance together.
 
-当前GitLab包含Linux Python jobs、只装子包的静态/coverage jobs，以及
-desktop-e2e-smoke的Xvfb→子包安装→Playwright依赖→Electron build→smoke真实宿主链。
-它们都需接入源码入口及精确工具链，不为获取CLI新增根安装，也不能用apt未固定版本Node
-冒充满足声明。逐个登记原job及ci recipe，不以“Linux只是静态检查”遗漏Electron消费者。
-保留Xvfb任务原步骤、集合、报告和失败判据，分别通过cd build local --stage app与ci test e2e --scope desktop的
-显式ci recipe接线；不得删除、改成静态替代或只拒绝该组合便声称完成切换。
+For example, the original logs command may create an empty log, while target `dev logs` explicitly changes this behavior and requires real-host acceptance; `pre doctor` may restore artifacts; `config template` writes configuration; and `ci test e2e --scope desktop --suite model-probe` requests a model. Names do not prove a command is read-only. `browser --mock` and a real backend must register different preparation chains and effects.
 
-既有job配置不是支持/通过证据。Linux Electron和其Python/依赖前置若未闭合，应在
-同版本基线记录实际失败，由对应Owner解决或经用户明确授权调整范围，未确认前阻断
-整体切换。不得为让工具迁移看似成功而弱化测试或顺带扩大Linux产品支持承诺。
-一般开发/原生质量门及安装器仍以macOS/Windows为支持边界；Linux仅为具名既有CI
-消费者建立受限recipe，其他组合提前拒绝，不视为新增Linux产品平台。
+<a id="6-生命周期ci-和跨平台不变量"></a>
+## 6. Lifecycle, CI, and Cross-Platform Invariants
 
-Python Owner需提供显式非Desktop CI环境解析端口：PYTHON用于创建/选择输入，
-后续执行必须解析并核验VENV中的实际解释器、版本及依赖，不能把PYTHON=3.12当绝对
-可执行路径，不回退系统Python，也不在CLI JavaScript中拼venv路径。当前developmentPython
-无条件经Desktop发行manifest解析，Linux路径尚未闭合；这项Owner接线及真实Linux
-job验证属于整体切换阻断项，不能以“旧job存在”写成已有平台能力或扩大Desktop manifest。
+<a id="生命周期"></a>
+### Lifecycle
 
-原coverage脚本字符串曾是CI数据接口；当前已由Desktop测试Owner的单一清单承接，
-package scripts只提供短入口，CI不再解析其文本。改变清单结构时仍须同步全部消费者。
-公开投影也属于消费者：私有前置移入新Owner后，overlay须同步对应实现及测试，保留
-原有公开/私有检查差异；不能只刷新package上下文，更不能改冻结策略绕过源漂移。
-保留pretest差异、测试集合、并发、quarantine、预算、阶段ID和报告；GitLab、Preview
-webServer和文档/Skill引用同次切换；除固定分发协议外，旧公开别名及根ops递归回调必须清除。
-CLI源码契约与回归直接由Node测试验证，不依赖待构建产物，也不顺带触发产品发布。
-测试体系的宿主资源策略由领域 Owner 持有：Desktop 混合补集沿其本地串行常量，
-CI 通用 CPU 配额不覆盖该约束；其他 CPU 阶段继续消费原配额，不增加第二套调度器。
+The migration unit is “root wrapper → dependency preparation/check → environment configuration → package manager → hook → main command,” not merely replacing a leaf script. Wire the actual implementations moved into the CLI and their consumers atomically in the same change. Preserve the existing complete Desktop preparation boundary and debug supervision semantics; reuse domain implementations according to their Owners and do not add transitional forwarding shells.
 
-### 跨平台与安全
+Preserve how `PREPARATION_COMMANDS` distinguishes ensure from check, dev environment defaults and user-override precedence, Desktop cwd, stdio, npm's `--`, and pnpm argument-forwarding rules.
 
-macOS 使用明确的可执行路径和 argv 数组；Windows 区分 exe/cmd/bat，
-复用受支持的包管理器边界，不拼接用户输入到 shell。
-路径覆盖空格、中文、盘符、Git worktree 的 `.git` 文件及 LF/CRLF。
-保持 cwd、环境优先级、stdio、TTY、退出码及 Ctrl+C 的进程树清理行为；
-只清理本次任务拥有的子进程，不按全局名称杀进程，不重启正在对话的 Serve。
-Electron APFS 共享只沿用 macOS Owner；Windows 安装路径与行为不变。
-发布、签名、上传、模型调用、暂缓的用户数据删除和全局命令安装仍有各自授权边界，
-统一 CLI 不赋予额外权限。平台准则见[开发与验收](../runbooks/development.md#跨平台开发与验收)。
+The selected package manager remains responsible for lifecycle execution; do not manually rerun a hook and then execute the same script. Preserve each package manager's current lifecycle and `ignore-scripts` semantics; do not add or omit steps in the name of “unification.” Preserve prerequisite order and variant differences for commands with modifiers. Do not rerun ordinary-test hooks for coverage just because the test sets are the same, and do not execute explicit CI prerequisites again through automatic package-manager hooks.
 
-| 行为 | macOS | Windows | 共同失败与验收契约 |
+Installation hooks must not depend on the not-yet-installed CLI, which would cause an infinite loop during a fresh install. After migration, a single implementation belongs to the CLI or the actual domain Owner; retain old hooks only where real compatibility consumers require them.
+
+The [lifecycle inventory](ops-cli-inventory.md#6-生命周期钩子关联) records all hook and inline-prerequisite relationships. Verify current source and consumers during implementation; the inventory does not replace evidence from actual package-manager configuration or execution.
+
+Protect development-environment resources with shared leases. Python preparation and Desktop dependency installation hold exclusive leases on the directories they actually write. Development Desktop, the browser development surface, Electron preview, and Serve hold read leases on the environments they use while running. `pre clean` deletes only after obtaining an exclusive lease on the target directory. On concurrent conflict, fail directly; do not kill processes or infer lease expiration from a PID. If an abnormal exit leaves uncertainty about whether the process tree stopped or writes completed, retain the lease receipt and ask for manual inspection; do not auto-clean merely because the PID exited. This lock constrains only repository commands integrated with this Owner; it does not claim to protect against external processes that bypass the CLI or directly modify files.
+
+<a id="执行context与准备语义"></a>
+### Execution Context and Preparation Semantics
+
+Global `--context local|ci` defaults to `local` and selects a bounded, registered source recipe; do not switch automatically based on CI environment variables. `local` means the original root-wrapper semantics, not “a human-operated host,” and may also be used in CI; it preserves check/ensure, environment defaults, and hooks. Register `ci` only for leaves where existing CI consumers genuinely differ, exactly reproducing the original job's direct subpackage invocation and explicit prerequisites; it is not a skip-preparation switch. Both contexts share domain actions and test sets. Differences are limited to verified source-specific wrappers/preparation and are disclosed explicitly in help and JSON.
+
+If a leaf has no `ci` recipe, `context=ci` must return `UNSUPPORTED`; do not accept and ignore it. CI still verifies Node, target identity, actual required dependencies, paths, and permissions. For example, the original GitLab jobs for `types desktop` and Desktop coverage call the subpackage directly with `ignore-scripts`, unlike the full Desktop marker check in the old root wrapper.
+
+A CI recipe must not add a full Desktop installation/marker that the original job did not have, nor automatically run or omit job prerequisites just to deduplicate them. GitLab jobs that need the distinct recipe explicitly pass `context=ci`; native jobs with no difference retain `local`, so do not add `context=ci` uniformly to every CI invocation. Preserve original installation order, `allow_failure`, timeouts, artifacts, and reports.
+
+<a id="包管理器选择与依赖身份"></a>
+### Package-Manager Selection and Dependency Identity
+
+The package manager that starts the CLI and the task executor are separate. Selection precedence is explicit `--package-manager npm|pnpm` → verifiable runtime context → repository default `pnpm`. Explicit npm can override the startup context introduced by `pnpm ops`. Reject contradictory identity fields or version mismatches. Do not guess the installation method from the simultaneous presence of lockfiles, and do not silently convert existing npm dependencies to pnpm or vice versa.
+
+The selected executor must be used throughout the entire call graph. The CLI uses the verified package manager's real `run` to create an internal execution context. The fixed internal adapter entry belongs to repository source/the actual execution Owner, not a deleted public root alias. Nested prepare, toolchain, and CI stages all use the real `npm_execpath`/`user_agent`. Do not use npm only for the first `spawn` and then read inherited pnpm identity in later stages; do not fake npm variables as proof that execution went through the package manager.
+
+Establish the context once. The package manager invokes the same root ops script and does not bootstrap again. Continue validating command, recipe, and repo inputs; this is not a permission backdoor. Reuse the toolchain Owner to adapt argv differences rather than hand-writing shell concatenation in every leaf.
+
+Installation/check tasks verify the manager, version, and dependency markers according to their original recipe. Update dependencies through the original Owner only when `prepare/install` is explicit. A valid CI recipe without hook installation uses its original prerequisites and does not pretend to generate a complete development marker. Regression coverage must include the pnpm entry → explicit npm → nested prerequisite/CI stage path, as well as pnpm invocation without an explicit override.
+
+<a id="ci自举既有linux任务与消费者切换"></a>
+### CI Bootstrap, Existing Linux Jobs, and Consumer Switch
+
+CLI loading depends only on supported Node and repository source; do not run `checkToolchain` while loading or displaying help. CI needs only the declared Node/pnpm and original task executor prepared; do not add root dependency installation just to obtain the entry point.
+
+| Original job source | Wire to source entry point | Prohibited changes |
+| --- | --- | --- |
+| Python, static/coverage, Xvfb, and other jobs that did not originally install root dependencies | Use `pnpm ops` after checkout; prepare atomic packages/tools as before. | Do not add root install for the CLI, trigger Desktop installation through root postinstall, or treat entry-point availability as proof that business prerequisites are met. |
+| macOS/Windows and other jobs that already ran root `npm ci` | Preserve the original `npm ci`, hooks, and subsequent check/repair/installPython order; have ops explicitly select npm as task executor. | Do not remove installations required by the original task, add a second pnpm root install, or manually replay hooks. |
+
+Continue maintaining root/Desktop dependencies and locks according to their actual consumers; removing a CLI dependency package does not mean ignoring domain lockfile changes. Verify entry-point and executor provenance in both job types. There is no CLI `bin`, installed-copy version, or artifact-digest refresh.
+
+Current GitLab includes Linux Python jobs, static/coverage jobs that install only subpackages, and the real-host `desktop-e2e-smoke` chain of Xvfb → subpackage install → Playwright dependencies → Electron build → smoke. All must connect to the source entry point and exact toolchain without adding root installation for the CLI or using an unpinned apt Node version as if it met the declared requirement. Register each original job and CI recipe; do not omit Electron consumers by claiming “Linux is only static checks.” Preserve the Xvfb task's original steps, sets, reports, and failure criteria, wiring it through explicit CI recipes for `cd build local --stage app` and `ci test e2e --scope desktop` respectively. Do not delete it, replace it with a static substitute, or claim the switch is complete merely by rejecting that combination.
+
+Existing job configuration is not evidence of support or a passing result. If Linux Electron or its Python/dependency prerequisites are not closed, record the actual failure against the same-version baseline. The responsible Owner must resolve it, or the user must explicitly authorize a scope adjustment; until then, block the overall switch. Do not weaken tests or implicitly expand Linux product-support commitments to make the tool migration appear successful.
+
+General development/native quality gates and installers remain supported on macOS/Windows. Linux gets restricted recipes only for the named existing CI consumers; reject other combinations in advance. This is not a new Linux product platform.
+
+The Python Owner must provide an explicit non-Desktop CI environment resolver port. `PYTHON` is an input used to create/select the environment; later execution must resolve and verify the actual interpreter, version, and dependencies in `VENV`. Do not treat `PYTHON=3.12` as an absolute executable path, fall back to system Python, or construct venv paths in CLI JavaScript. `developmentPython` currently always resolves through the Desktop distribution manifest, and the Linux path is not yet closed. This Owner wiring and real Linux job verification block the overall switch; do not describe an existing old job as an established platform capability or expand the Desktop manifest.
+
+Coverage script strings used to be a CI data interface; the Desktop test Owner's single manifest now owns this data. Package scripts provide only short entry points, and CI no longer parses their text. When changing the manifest structure, update every consumer. Public projections are also consumers: after moving private prerequisites to a new Owner, update the corresponding implementation and tests in the overlay while preserving public/private check differences. Do not merely refresh package context, and especially do not change freeze policy to bypass source drift.
+
+Preserve pretest differences, test sets, concurrency, quarantine, budgets, stage IDs, and reports. Switch GitLab, Preview `webServer`, and documentation/Skill references together. Remove old public aliases and root ops recursive callbacks in the same change, except for the fixed distribution protocol. Verify CLI source contracts and regressions directly with Node tests; do not depend on build artifacts or incidentally trigger product release.
+
+The domain Owner controls host-resource policy for the test system: the Desktop mixed complement follows its local serialization constant, which the generic CI CPU quota does not override. Other CPU stages continue using the existing quota; do not add a second scheduler.
+
+<a id="跨平台与安全"></a>
+### Cross-Platform and Security
+
+On macOS, use explicit executable paths and argv arrays. On Windows, distinguish exe/cmd/bat and reuse supported package-manager boundaries; do not concatenate user input into a shell command.
+
+Paths must cover spaces, Chinese characters, drive letters, Git worktree `.git` files, and LF/CRLF. Preserve cwd, environment precedence, stdio, TTY, exit codes, and Ctrl+C process-tree cleanup. Clean up only child processes owned by this task; do not kill processes by global name or restart Serve during an active conversation. Electron APFS sharing continues to follow the macOS Owner only; Windows installation paths and behavior remain unchanged.
+
+Release, signing, upload, model calls, deferred user-data deletion, and global command installation each retain their own authorization boundary. A unified CLI grants no additional permissions. See [Development and Acceptance](../runbooks/development.md#跨平台开发与验收) for platform requirements.
+
+| Behavior | macOS | Windows | Shared failure and acceptance contract |
 | --- | --- | --- | --- |
-| 源码入口 | pnpm script调用Node执行scripts/ops-cli.cjs | 同一script由Node解释.cjs，无需Bash/exe或POSIX可执行位 | 干净checkout无需根/Desktop依赖即可help/list；实际任务仍核自身前提 |
-| 子进程与参数 | 对原生执行器使用 argv 数组、shell false | 优先受支持的 Node CLI 入口；cmd/bat 仅走 toolchain 平台边界 | 不将用户输入拼成 shell 字符串；cmd 包装必须有明确转义/拒绝规则，覆盖空格、中文、引号和 shell 元字符，未验证的组合拒绝 |
-| 中断与退出 | 沿用 debug 的任务专属进程组与有界等待 | 开发worker先入原生Job再启动Electron；活跃计数与私有终态证明闭合退出，不模拟POSIX组信号；真实平台待验 | 正常退出、主进程失败、Ctrl+C 后检查真实子树及锁；只处理本任务进程族，无法确认退出则保留诊断状态，不声称已清理 |
-| 源码更新与领域依赖 | Git更新源码，无CLI独立安装步骤 | 同左，覆盖运行进程与文件占用 | 更新前退出当前任务，不热替换已加载模块；领域安装沿原串行/锁规则，外部并发冲突拒绝，不强杀其他worktree |
-| 开发环境使用与清理 | 运行进程对VENV/Node依赖持读租约，清理和安装写端互斥 | 同语义，以受保护的Windows ACL建立租约目录与收据；本次未做Windows真机验证 | 共享读可并发，写与任何重叠读/写冲突；身份与ACL无法验证时失败关闭；异常进程树保留收据供人工核验，不自动回收 |
-| 路径与身份 | 规范化真实路径，不按包缓存定位 | 覆盖盘符、大小写、junction/reparse 与文件占用 | 子目录、独立 worktree、仓库外 --repo、LF/CRLF 都有用例；危险路径复用所属 Owner 安全校验 |
+| Source entry point | Run Node on `scripts/ops-cli.cjs` through a pnpm script. | The same script is interpreted by Node as `.cjs`; no Bash/exe or POSIX executable bit is needed. | A clean checkout can run help/list without root/Desktop dependencies; actual tasks still verify their own prerequisites. |
+| Child processes and arguments | Use argv arrays with `shell: false` for native executors. | Prefer supported Node CLI entry points; cmd/bat go only through the toolchain platform boundary. | Never concatenate user input into a shell string. cmd wrappers need explicit escaping/rejection rules covering spaces, Chinese characters, quotes, and shell metacharacters; reject unverified combinations. |
+| Interrupt and exit | Reuse debug's task-specific process group and bounded wait. | The development worker joins a native Job before starting Electron; active counts and private terminal-state proof establish exit without emulating POSIX group signals. Real-platform verification remains pending. | After normal exit, main-process failure, or Ctrl+C, inspect the actual subtree and locks. Handle only this task's process family. If exit cannot be confirmed, retain diagnostic state and do not claim cleanup. |
+| Source updates and domain dependencies | Update source through Git, with no separate CLI installation. | Same, covering running processes and file contention. | Exit the current task before updates; do not hot-replace loaded modules. Domain installs follow original serialization/lock rules; reject external concurrency conflicts and do not force-kill other worktrees. |
+| Development-environment use and cleanup | Running processes hold read leases on VENV/Node dependencies; cleanup and installation writers are mutually exclusive. | Same semantics, with protected Windows ACLs for lease directories and receipts; no native Windows verification was done in this round. | Shared reads may run concurrently; a write conflicts with any overlapping read/write. Fail closed if identity/ACL cannot be verified. Retain receipts for abnormal process trees for manual verification; do not auto-reclaim. |
+| Path and identity | Normalize real paths; do not locate by package cache. | Cover drive letters, case sensitivity, junction/reparse points, and file contention. | Include cases for subdirectories, independent worktrees, `--repo` outside the repository, and LF/CRLF. Dangerous paths reuse the owning Owner's security checks. |
 
-开发宿主覆盖macOS arm64/x64、Windows x64，Linux覆盖上述具名既有CI消费者，
-包括配置中的Xvfb Electron smoke，但其配置存在不证明实际已通过或支持Linux产品。
-同一份JS源码不证明跨平台行为，引入原生依赖须重评。设计验证与产品验收分别按Owner
-要求执行，未测平台具名标注，不以macOS结果证明Windows或Linux CI完成。
-整体切换若包含某平台实际消费者，该消费者验证未完成即不放行；不降低产品双平台验收。
+Development hosts cover macOS arm64/x64 and Windows x64. Linux covers the named existing CI consumers above, including the configured Xvfb Electron smoke, but the presence of that configuration proves neither that it actually passes nor that Linux is a supported product platform. Identical JavaScript source does not prove cross-platform behavior; reassess when adding native dependencies. Run design verification and product acceptance as required by each Owner. Name any untested platform explicitly; do not use macOS results as proof that Windows or Linux CI is complete.
 
-### Desktop 领域配方与检查配置
+If the overall switch includes an actual consumer on a platform, do not release it until that consumer is verified. Do not lower the product's two-platform acceptance bar.
 
-Desktop `package.json` 按安装、准备、开发、检查、测试、构建组织；hooks紧邻主命令。
-ops不内联Desktop细节，Desktop不反向调用ops。长命令由本Owner的`pretest.cjs`、
-`test.cjs`、`e2e.cjs`承接，采用Node argv启动、固定包cwd、继承stdio/env、失败短路；
-信号退出沿共享execution语义，不把中断统一降成普通失败。
+<a id="desktop-领域配方与检查配置"></a>
+### Desktop Domain Recipes and Check Configuration
 
-测试文件清单及有界glob仅由Desktop测试runner声明，本地普通/coverage与根CI读取同一
-来源；不再解析package命令字符串。CI仍独立运行前置，保留原有并发配额、quarantine、
-stage ID、c8覆盖范围和报告。E2E构建前置与项目选择参数化，不把通用Playwright入口
-改成自动构建。具体生命周期与保留接口由[Desktop测试Owner](../../apps/desktop/docs/quality/testing.md#工程脚本接口)
-维护，删除及消费者盘点见[现状台账](ops-cli-inventory.md#86-desktop-工程接口优化2026-10-26)。
+Organize Desktop `package.json` by installation, preparation, development, checks, tests, and builds; keep hooks next to their main commands. ops does not inline Desktop details, and Desktop does not call ops in reverse. Long commands are handled by this Owner's `pretest.cjs`, `test.cjs`, and `e2e.cjs`: launch with Node argv, use a fixed package cwd, inherit stdio/env, and short-circuit on failure. Signal exits follow shared execution semantics; do not normalize interruption to ordinary failure.
 
-TypeScript solution的references是检查项目清单；类型runner与国际化检查器读取同一来源，
-公共严格检查选项由base配置持有，运行环境和target由各项目保留。真实Program的闭包
-可以交叠，不能为了目录整齐删除环境检查、用全局Node/DOM类型掩盖错误或排除新发现的
-失败文件。类型覆盖完整不等于Electron构建、安装器或跨平台运行验收完成。
+Only the Desktop test runner declares test-file inventories and bounded globs; local ordinary/coverage runs and root CI read the same source. Do not parse package command strings. CI still runs prerequisites independently and preserves the original concurrency quota, quarantine, stage ID, c8 coverage scope, and reports. Parameterize E2E build prerequisites and project selection; do not turn the general Playwright entry point into an automatic build. The [Desktop test Owner](../../apps/desktop/docs/quality/testing.md#工程脚本接口) maintains lifecycle and retained interfaces; see the [current-state inventory](ops-cli-inventory.md#86-desktop-工程接口优化2026-10-26) for removal and consumer mapping.
 
-### 脚本模块导入与别名
+The TypeScript solution's references are the project list for checks. The type runner and i18n checker read the same source; common strict-check options belong to the base configuration, while each project retains its runtime environment and target. Closures of real Programs may overlap. Do not remove environment checks for directory tidiness, mask errors with global Node/DOM types, or exclude newly discovered failing files. Complete type coverage does not mean Electron builds, installers, or cross-platform runtime acceptance are complete.
 
-**状态：本轮评估后不采用。** 根和Desktop均未声明Node `imports`，不提供已生效或
-待复制的别名写法。就近模块使用`./`、`../`；跨Owner依赖保持文件头的显式字面量相对导入。
-Renderer/Vite/TypeScript解析配置不替代直接执行CommonJS/ESM的模块解析。
+<a id="脚本模块导入与别名"></a>
+### Script Module Imports and Aliases
 
-评估基线覆盖Desktop生产CJS的38条跨根引用及ESM的3条跨根引用，共10个目标。
-原生imports是package私有映射：Desktop不继承根imports，且相对target不能越过
-自身package根。因此跨包别名还需要显式`createRequire`入口，不能仅增加两份声明。
-公开导出fixture与打包bootstrap检查当前只追踪静态相对导入闭包；自定义解析入口会
-要求同步升级依赖图分析，否则可能漏复制或漏查依赖。另有`pre`、`dev`目标，不能为
-统一名字将其伪装为`shared`职责。本轮保留可追踪依赖比新增解析层更简单。
+**Status: Not adopted after this round's evaluation.** Neither the root nor Desktop declares Node `imports`; no active or proposed alias syntax is provided for copying. Nearby modules use `./` and `../`; cross-Owner dependencies retain explicit literal relative imports at the top of the file. Renderer/Vite/TypeScript resolution configuration does not replace module resolution for directly executed CommonJS/ESM.
 
-若共享工具形成真实独立package Owner，或统一依赖图能识别原生imports及显式
-createRequire，再重评`#tooling/*`和`#desktop-scripts/*`。声明、解析入口、全部消费者、
-CJS/ESM扫描器及测试必须同一里程碑切换；不增加安装或编译前提，不使用`NODE_PATH`、
-`NODE_OPTIONS`预加载、全局loader或任意动态specifier，不以别名绕过Owner依赖边界。
+The evaluation baseline covers 38 cross-root references in production Desktop CJS and 3 in ESM, across 10 targets. Native `imports` are package-private mappings: Desktop does not inherit root `imports`, and a relative target cannot cross its own package root. Cross-package aliases would therefore also require an explicit `createRequire` entry point; adding two declarations alone is insufficient. Public-export fixtures and packaged-bootstrap checks currently track only static relative-import closures. A custom resolution entry point would also require upgrading dependency-graph analysis, or dependencies could be missed during copying or checking. There are also `pre` and `dev` targets; do not disguise them as `shared` responsibilities just to unify names. In this round, retaining traceable dependencies is simpler than adding a resolution layer.
 
-模块解析不用于Python、vendor、文件系统或spawn路径；这些仍由所属resolver产生。
-冻结安装包的main/preload/renderer与独立Electron bootstrap不能隐式依赖仓库根源码。
-复制或生成到独立目录的代码不能假定原package作用域存在。未来实施须分别覆盖
-无node_modules自举、直接Node、node --test、npm/pnpm、不同cwd/worktree及原生Windows；
-不通过补隐藏预加载环境放行，固定冒烟、签名与完整验收不变。
+Reconsider `#tooling/*` and `#desktop-scripts/*` if shared tools become a genuinely independent package Owner or the unified dependency graph can recognize native `imports` and explicit `createRequire`. Declarations, resolution entry points, all consumers, CJS/ESM scanners, and tests must switch in the same milestone. Do not add installation or compilation prerequisites; use no `NODE_PATH`, `NODE_OPTIONS` preload, global loader, or arbitrary dynamic specifier; and do not use aliases to bypass Owner dependency boundaries.
 
-AI Coding先读调用文件最近的package.json及真实声明，再读所属Owner。本节维护
-未采用理由和重评边界，不建立第二套别名配置；根AGENTS只保留导航。
+Module resolution does not apply to Python, vendor, filesystem, or spawn paths; those remain the responsibility of their owning resolvers. The `main`/preload/renderer in a frozen installer and an independent Electron bootstrap must not implicitly depend on repository-root source. Code copied or generated into a separate directory must not assume the original package scope exists. Future implementation must separately cover bootstrap without `node_modules`, direct Node, `node --test`, npm/pnpm, different cwd/worktrees, and native Windows. Do not allow it by adding a hidden preload environment; fixed smoke, signing, and full acceptance remain unchanged.
 
-Node规则依据：[Node 24.16 package imports](https://nodejs.org/download/release/v24.16.0/docs/api/packages.html#subpath-imports)。
+AI Coding should first read the nearest `package.json` to the calling file and its actual declarations, then read the owning Owner. This section records why aliases were not adopted and the conditions for reconsidering them; do not create a second alias configuration. Root AGENTS retains navigation only.
 
-### 冒烟与本地构建的源码状态
+Node rule reference: [Node 24.16 package imports](https://nodejs.org/download/release/v24.16.0/docs/api/packages.html#subpath-imports).
 
-`pnpm ops ci` / `ci test smoke` 和 `pnpm ops cd` / `cd build local` 允许起始工作区
-有未提交修改，无需先提交才能获得开发反馈。此策略仅用于固定冒烟与本地dev构建，
-不放宽完整quality、安装包验收工作流、preview/release及candidate的干净工作区要求。
+<a id="冒烟与本地构建的源码状态"></a>
+### Source State for Smoke and Local Builds
 
-允许dirty不等于允许运行中继续改源码：共同源码身份Owner记录真实HEAD、干净状态及
-源码指纹，覆盖暂存区、受跟踪文件和未忽略的新文件的路径、类型与实际内容；不跟随
-外部链接，不把文件内容写入报告。开始与结束的提交或指纹不同、快照采集失败、证据
-缺失均失败。已忽略的日志、依赖、缓存和制品不视为源码变化。
+`pnpm ops ci` / `ci test smoke` and `pnpm ops cd` / `cd build local` may start with uncommitted worktree changes; a commit is not required to get development feedback. This policy applies only to fixed smoke and local dev builds. It does not relax the clean-worktree requirement for full quality, package-acceptance workflows, preview/release, or candidates.
 
-完整内容采集将 `ctime` 作为读取竞态信号，而非源码内容身份：若仅 `ctime` 变化，
-在同一文件身份、权限、大小和 `mtime` 不变的前提下，最多读取三次，比较每次内容
-摘要，并要求最终一次读取前后元数据稳定。真实内容变化、文件替换或持续不稳定均
-失败，不跳过冒烟、不重试测试用例。此机制容纳 macOS 扩展属性扫描等纯元数据写入，
-不依赖或修改安全软件配置。开发快照的二进制资产也走同一内容哈希与读取校验，
-不再用大小/mtime/ctime 代替实际内容；纯扩展属性变化不改变源码身份，同大小且
-恢复 mtime 的内容改写仍会被检测。开发指纹策略升级为 `development-content-v2`，
-与旧元数据快照及完整发布快照不混用；不添加文件类型豁免或跳过一致性比较。
+Allowing a dirty worktree does not permit changing source while a task is running. The shared source-identity Owner records the actual HEAD, clean/dirty state, and source fingerprint, covering paths, types, and actual contents in the index, tracked files, and unignored new files. Do not follow external links or write file contents into reports. Fail if the starting and ending commit/fingerprint differ, snapshot collection fails, or evidence is missing. Ignored logs, dependencies, caches, and artifacts are not source changes.
 
-报告与本地构建结果必须如实保留dirty状态和源码身份，不把它伪装成clean，也不能仅
-靠HEAD标识未提交版本。dirty冒烟通过不构成发布准入，dirty本地包不因此可发布。
-核心用例、完整性、零skip/retry、清理、平台和本地ad-hoc签名判据保持原样。
+Full-content collection treats `ctime` as a read-race signal, not as source-content identity. If only `ctime` changes, read at most three times while file identity, permissions, size, and `mtime` remain unchanged; compare each content digest and require metadata to remain stable before and after the final read. Actual content changes, file replacement, or continued instability all fail; do not skip smoke or retry test cases. This accommodates metadata-only writes such as macOS extended-attribute scanning without relying on or modifying security-software configuration. Binary assets in development snapshots use the same content-hash and read verification; do not substitute size/mtime/ctime for actual contents. Extended-attribute-only changes do not change source identity, while same-size content changes with restored mtime are still detected. The development fingerprint policy is upgraded to `development-content-v2` and is not mixed with old metadata snapshots or full release snapshots. Do not add file-type exemptions or skip consistency comparisons.
 
-## 7. 整体切换与验收
+Reports and local build results must truthfully retain dirty state and source identity. Do not present a dirty worktree as clean or identify an uncommitted version by HEAD alone. Passing dirty smoke does not qualify a release; a dirty local package is not thereby releasable. Core cases, integrity, zero-skip/retry, cleanup, platform, and local ad-hoc signing criteria remain unchanged.
 
-### 7.1 体验与可维护性的完成标准
+<a id="7-整体切换与验收"></a>
+## 7. Overall Switch and Acceptance
 
-命令数量减少、文件移动或文档检查通过，不单独证明改进。使用以下可观察结果判断
-设计目标是否落地；实施后记录实际过程，不在设计阶段宣称效率提升比例。
+<a id="71-体验与可维护性的完成标准"></a>
+### 7.1 Completion Criteria for Usability and Maintainability
 
-| 目标 | 可观察的验收结果 |
+Fewer commands, moved files, or passing documentation checks do not independently prove improvement. Use the observable results below to determine whether design goals have been achieved. Record actual results after implementation; do not claim an efficiency-improvement percentage at the design stage.
+
+| Goal | Observable acceptance result |
 | --- | --- |
-| 用户能发现正确入口 | 仅从 `pnpm ops help/list` 可定位启动、预览、定向测试和构建任务，明确真实/模拟及作用域，不必先查脚本目录 |
-| 用户能预判影响 | 对比帮助与实际执行，前置、写入、网络、模型/安装等效果一致；不确定项明确标注，不伪造只读保证 |
-| 用户能处理失败 | 缺Python、源码入口/模块缺失、依赖身份冲突、工具失败均指出实际原因和建议操作；不会自动转换管理器、删除数据或下载CLI |
-| 使用方式跨平台一致 | macOS/Windows安装后使用相同命令路径；差异由平台边界处理或明确拒绝，不要求普通用户自选脚本变体 |
-| 新工具接入不扩散重复 | 新增一个任务只增加其契约和必要实现；帮助/list与调度一致，不新增同义根转发链或复制领域清单 |
-| 公共职责真正收敛 | 已纳入任务的编排和执行基础能力有唯一Owner；旧公开别名及其消费者同时清理，不设兼容转发链 |
-| 行为与维护成本可核验 | 新旧入口在对应版本、包管理器配置和宿主上对照，生命周期/CI/错误结果不退化；未验收范围明确保留 |
+| Users can find the right entry point | Startup, preview, targeted tests, and build tasks are discoverable using only `pnpm ops help/list`, with real/mock and scope made clear; users do not need to inspect script directories first. |
+| Users can predict effects | Help and actual execution agree on prerequisites, writes, network, model/installation, and other effects. Uncertain items are labeled clearly; no false read-only guarantee is made. |
+| Users can handle failures | Missing Python, source entry/module, dependency-identity conflicts, and tool failures identify the actual cause and recommended action; the CLI does not automatically switch managers, delete data, or download itself. |
+| Usage is consistent across platforms | After installation on macOS/Windows, users follow the same command path. Platform differences are handled at the platform boundary or explicitly rejected; ordinary users need not choose script variants. |
+| New tools do not spread duplication | Adding a task adds only its contract and necessary implementation. Help/list and orchestration agree; no synonymous root forwarding chain or copied domain inventory is added. |
+| Shared responsibilities genuinely converge | Orchestration and execution primitives for included tasks have one Owner; remove old public aliases and their consumers together, without compatibility forwarding chains. |
+| Behavior and maintenance cost are verifiable | Compare old and new entry points on corresponding versions, package-manager configurations, and hosts; lifecycle/CI/error results do not regress, and unaccepted scope remains explicit. |
 
-### 7.2 一次性交付门槛
+<a id="72-一次性交付门槛"></a>
+### 7.2 One-Time Delivery Gate
 
-实施可以拆分开发任务和内部提交，但只能在集成分支内验证；本次范围内命令、消费者与
-工具源码全部就绪后，以同一个MR交付整体切换，不按任务域逐步对外启用。
+Implementation may be divided into development tasks and internal commits, but verification must occur only on the integration branch. After all in-scope commands, consumers, and tool source are ready, deliver the overall switch in one MR; do not enable it externally by task domain in stages.
 
-| 切换前必须满足 | 放行条件 |
+| Required before switching | Release condition |
 | --- | --- |
-| 范围和契约闭环 | 所有保留/合并项有已实现目标，内部化项有Owner，暂缓项明确排除；没有未说明的遗漏或空壳 |
-| 源码入口就绪 | ops-cli.cjs及根ops script同步，干净checkout无需CLI编译/安装即可help/list；原安装自举不依赖CLI |
-| 编排与消费者原子接线 | CLI、GitLab Linux/原生jobs、Preview、文档/Skill一起更新，无旧公开别名消费者；无新增根安装的入口及local/ci recipe分别通过 |
-| 独立分发消费者闭合 | 实际分发仓库版本切换至已登记ops调用；preview、check、续跑及skip-check逐项明确状态与验证，不能以本仓GitLab已改接代替外仓验收 |
-| 生命周期及平台验证 | hook、包管理器、参数、cwd/env、中断及worktree隔离按实际受影响平台验证，缺口不伪称已通过 |
-| 测试、构建及危险操作验证 | coverage/CI集合及直接构建、smoke分发、本地包安装验收三条链保持；Linux Python解析及既有Xvfb Electron链逐项验证/基线对照；配置、模型、安装/清理边界通过；用户数据和外部CD待接入项排除 |
-| 旧公开入口收尾 | 同次移除已承接旧别名及无消费者分发逻辑；必要hook/内部领域入口具名保留，不能作为旧用户入口继续宣传 |
+| Scope and contract closed | Every retained/merged item has an implemented target; every internalized item has an Owner; deferred items are explicitly excluded; there are no unexplained omissions or empty shells. |
+| Source entry point ready | `ops-cli.cjs` and the root ops script are synchronized. Help/list work from a clean checkout without CLI compilation/installation; original installation bootstrap does not depend on the CLI. |
+| Atomic wiring of orchestration and consumers | Update the CLI, GitLab Linux/native jobs, Preview, documentation/Skills together; no consumer remains on an old public alias. Separately pass entry-point, local, and CI recipes without a new root installation. |
+| Standalone distribution consumers closed | Switch the actual distribution repository version to registered ops calls. State and verify preview, check, resume, and skip-check individually; changes to this repository's GitLab are not a substitute for external-repository acceptance. |
+| Lifecycle and platform verified | Verify hooks, package managers, arguments, cwd/env, interruption, and worktree isolation on each platform actually affected; do not claim gaps passed. |
+| Tests, builds, and dangerous operations verified | Preserve coverage/CI sets and the direct-build, smoke-distribution, and local-package-install acceptance chains. Verify/baseline-compare Linux Python resolution and the existing Xvfb Electron chain individually. Pass configuration, model, installation/cleanup boundaries; exclude user-data and external-CD integrations that remain deferred. |
+| Old public entry points retired | Remove migrated old aliases and distribution logic with no consumers in the same change. Retain necessary hooks/internal domain entry points by name, but do not continue promoting them as old user-facing entry points. |
 
-范围内任一门槛未满足，不把部分命令接入当作切换完成。暂缓项保留原受控流程仅因
-其明确不在本次范围，不代表本次范围允许新旧双轨。切换失败的恢复遵守仓库Git约束，
-不执行自动revert或删除用户环境；整体未通过前不更改默认用户入口。
+If any in-scope gate is unmet, do not treat partial command integration as completion of the switch. Deferred items retain their original controlled flow only because they are explicitly out of scope; this does not authorize a dual-track in-scope migration. Recover from switch failures according to repository Git constraints; do not automatically revert or delete user environments. Do not change the default user entry point until the overall switch passes.
 
-验证证据分三层：命令/路径/错误的确定性测试，真实工具链与文件系统状态测试，
-以及受影响的真实开发、CI 或产品流程。覆盖冷/热安装、npm/pnpm、忽略生命周期、
-前置失败、主进程失败、中断、并发、包安装/更新占用、缺包与仓库/包版本冲突。
-必须在干净checkout直接通过pnpm ops运行源码，help/list不安装根或Desktop依赖。
-覆盖两worktree、子目录/显式repo、分支切换源码更新及Windows占用，不以语法检查代替
-真实执行；源码更新前退出活跃任务，不热替换编排。逐命令核验hook次数/顺序、
-主命令 argv/cwd/env、失败短路与退出结果；覆盖 npm/pnpm 及 ignore-scripts 的真实配置。
-开发环境变更按实际宿主验收，Windows 未测不宣称兼容；触及产品打包/运行时后按
-相应 Owner 执行双平台验收。既有红项与同版本基线分开记录，不降低判据。
+Verification evidence has three layers: deterministic tests for commands/paths/errors; tests of real toolchains and filesystem state; and affected real development, CI, or product flows. Cover cold/warm installation, npm/pnpm, ignored lifecycle hooks, prerequisite failure, main-process failure, interruption, concurrency, package install/update contention, missing packages, and repository/package-version conflicts. Run source directly through `pnpm ops` from a clean checkout; help/list must not install root or Desktop dependencies. Cover two worktrees, subdirectories/explicit `repo`, source updates after branch switches, and Windows file contention. Do not substitute syntax checks for real execution. Exit active tasks before source updates; do not hot-replace orchestration. For every command, verify hook count/order, main-command argv/cwd/env, failure short-circuit, and exit result; cover actual npm/pnpm and `ignore-scripts` configurations. Accept development-environment changes on the actual host; do not claim Windows compatibility when untested. After touching product packaging/runtime, perform dual-platform acceptance as required by the relevant Owner. Record existing red results separately from same-version baselines; do not lower criteria.
 
-新增接口的验收还包括：专项路径唯一且登记/台账完整；四个默认链路与对应专项复用
-同一Owner和执行配方、无重复前置，help/未知参数不触发默认执行；pre幂等与并发边界、
-renderer HMR及非renderer变更的安全重启/活跃对话保护分别通过；模式/平台/context组合可判定，
-未支持组合提前拒绝；无空壳和旧别名递归；元命令不执行探针/读凭据；显式写模式不穿透到
-预算基线；原生透传不会扩大Owner、路径、费用/安装或验收模式。
+Acceptance for new interfaces also includes: each specialized path is unique and fully registered/inventoried; the four default chains reuse the same Owner and execution recipe as their corresponding specialized commands without duplicate prerequisites; help/unknown arguments do not trigger default execution; pre idempotency and concurrency boundaries, renderer HMR, and safe restart/active-conversation protection for non-renderer changes each pass; mode/platform/context combinations are decidable and unsupported combinations are rejected in advance; no empty shells or recursive old aliases; meta-commands run no probes/read no credentials; explicit write modes do not reach budget baselines; native passthrough does not widen Owner, path, cost/installation, or acceptance mode.
 
-AI调用必须用锁定pnpm验证：机器stdout可独立解析且不混日志；元命令不要求Python；
-未知命令、缺前提、子进程非零、状态2分别有明确origin/code；无TTY缺输入不会挂起；
-报告stdin与交互stdin分离；长驻任务不伪装有限JSON任务；帮助披露的效果与实际argv一致。
-CI必须实际覆盖无需根安装的CLI入口、原子包ignore-scripts、local/ci recipe差异、pnpm入口
-切换npm后的嵌套身份，以及Linux的实际venv解析；静态文档检查不能代替这些实施验收。
-现有Linux desktop-e2e-smoke必须有同版本基线、对应recipe及实际结果，红项不得用静态
-检查或仅“平台不支持”替代；要改变现有job范围须另有明确决定，不能隐式删减。
+Verify AI calls with the locked pnpm version: machine-readable stdout parses independently and contains no logs; meta-commands do not require Python; unknown commands, missing prerequisites, nonzero child exits, and status 2 each have clear origin/code; missing input with no TTY does not hang; report stdin is separate from interactive stdin; long-running tasks are not disguised as finite JSON tasks; and help-disclosed effects match actual argv.
 
-外部上传、公开推送与供应链重建仍需独立接口和授权，不因清理旧命令顺带实施。
-上述是整体交付的可观察放行标准。当前处于实施与验证阶段，局部命令、文档或回归通过
-不代表所有用户链路、外部消费者和跨平台验收已完成。
+CI must actually cover the CLI entry point without root installation, atomic-package `ignore-scripts`, local/CI recipe differences, nested identity after switching from a pnpm entry to npm, and real Linux venv resolution. Static documentation checks do not replace these implementation acceptance checks. The existing Linux `desktop-e2e-smoke` requires a same-version baseline, corresponding recipe, and actual result. Do not replace red results with static checks or a bare “platform unsupported.” Changing the scope of an existing job requires a separate explicit decision; do not implicitly reduce it.
 
-## 8. 待冻结决策
+External upload, public push, and supply-chain reconstruction still require separate interfaces and authorization; do not implement them incidentally while removing old commands. These are the observable release criteria for the overall delivery. Implementation and verification are in progress; passing an individual command, document, or regression does not mean all user flows, external consumers, and cross-platform acceptance are complete.
 
-- ops-cli.cjs的最小命令登记、按功能复用边界与源码/目标仓库兼容判据。
-- Node/pnpm版本、源码入口测试矩阵、分支切换及Windows文件占用验收。
-- 包管理器选择器的扩展接口、Windows cmd/bat 参数安全规则及真实验证环境。
-- 同次切换的消费者清单、必要内部入口保留理由、权限标签登记及危险命令确认契约。
-- 测试type/scope/suite的精确用例归类与覆盖核验、smoke冷/热预算，以及api/visual尚未接线组合的能力状态；不得以新名字宣称已有套件。
+<a id="8-待冻结决策"></a>
+## 8. Decisions to Freeze
 
-上述决策在整体切换验收前冻结；本文不授权安装依赖、修改现有 hook/CI、
-执行发布或迁移用户数据。CLI 正在另获授权的实施任务中开发，完成状态以实际源码、
-消费者切换与真实验证证据为准，不由本概要设计的存在推定已经交付。
+- Minimum command registration for `ops-cli.cjs`, feature-based reuse boundaries, and source/target repository compatibility criteria.
+- Node/pnpm versions, source-entry test matrix, branch-switch handling, and Windows file-contention acceptance.
+- Extension interface for the package-manager selector, Windows cmd/bat argument-safety rules, and the actual verification environment.
+- Consumer inventory for the single switch, reasons for retaining necessary internal entry points, permission-tag registration, and dangerous-command confirmation contract.
+- Exact case classification and coverage verification for test type/scope/suite; cold/warm smoke budget; and capability status for unwired api/visual combinations. Do not claim an existing suite under a new name.
+
+Freeze these decisions before overall-switch acceptance. This document does not authorize dependency installation, changes to existing hooks/CI, release execution, or user-data migration. The CLI is being developed in a separately authorized implementation task. Its completion status is determined by actual source, consumer migration, and real verification evidence; it must not be inferred from the existence of this high-level design.

@@ -1,4 +1,5 @@
-# ScholarSeed Desktop 设计开发指南
+<a id="scholarseed-desktop-设计开发指南"></a>
+# ScholarSeed Desktop Design and Development Guide
 
 ## Scope / Non-goals
 
@@ -6,129 +7,155 @@ Public requirements, tokens, component contracts and the design-to-code map are 
 checkout. Private design-platform access is optional; omitted raw evidence is not a development
 prerequisite and must not be presented as publicly reproducible pixel-exact provenance.
 
-面向 Desktop 页面、面板、弹层、表单和列表的 AI Coding 与人工开发。
-先用本页了解视觉方向、定位设计，再读取相应详细规范。
-本页维护摘要与导航，具体设计参数、组件 API 和实现差距由所属文档维护。
+This guide is for AI-assisted and human development of Desktop pages, panels, overlays, forms, and lists.
+Use it first to understand the visual direction and locate the relevant design, then read the detailed
+specifications. This page maintains the summary and navigation; the owning documents maintain
+specific design parameters, component APIs, and implementation gaps.
 
 ## Source of truth
 
-| 要确认的信息 | 权威来源 |
+| Information to verify | Authoritative source |
 | --- | --- |
-| 设计稿来源、图层与状态 | [MasterGo 证据入口](docs/design/mastergo.md)及对应图层 |
-| 颜色、字体、间距、层级与主题 | [基础规范](docs/design/foundations.md)与其指向的源码 |
-| 组件复用与新增组件归属 | [组件规范](docs/design/components.md) |
-| 键盘、焦点、浮层与反馈 | [交互规范](docs/design/interaction.md) |
-| 当前实现与设计的差距 | [公开设计契约](docs/design/foundations.md)，实施时重读源码 |
-| 实际组件与 token 库存 | [组件库存](docs/_generated/components.md)、[token 库存](docs/_generated/tokens.md) |
-| 无业务稿件时的页面结构 | [Vibe Coding 页面契约](docs/design/vibe-coding.md#业务无关的页面类型) |
+| Information to confirm | Authoritative source |
+| --- | --- |
+| Design source, layers, and states | [MasterGo evidence entry](docs/design/mastergo.md) and the corresponding layers |
+| Colors, fonts, spacing, stacking, and themes | [Foundations specification](docs/design/foundations.md) and the source it references |
+| Component reuse and ownership of new components | [Components specification](docs/design/components.md) |
+| Keyboard, focus, overlays, and feedback | [Interaction specification](docs/design/interaction.md) |
+| Gaps between current implementation and design | [Public design contract](docs/design/foundations.md); reread source during implementation |
+| Actual component and token inventories | [Component inventory](docs/_generated/components.md), [token inventory](docs/_generated/tokens.md) |
+| Page structure without a product design | [Vibe Coding page contract](docs/design/vibe-coding.md#业务无关的页面类型) |
 
-设计链接可重新取证；采集机器的截图路径不保证其他开发者可访问。
-历史源码映射带有证据日期，不能直接当作当前版本事实。
+Design links can be re-evidenced; screenshot paths on the collection machine are not guaranteed to be
+accessible to other developers. Historical source mappings are dated evidence and must not be treated
+as facts about the current version without verification.
 
 ## Current / Required / Gap / Advisory
 
-- **current**：设计报告呈现暖色背景与表面、深绿品牌操作、分层中性文本；现有实现使用 `--vds-*` 和 `components/ui`。
-- **required**：按具体图层、状态和语义选择现有 token，精确值与差异见基础规范；保留设计属性、截图观察、代码事实和实现建议的区别。
-- **gap**：候选版本取舍、部分组件内部参数、暗色及窄窗状态尚缺证据。已完成设计分析不代表已经完成视觉还原。
-- **advisory**：用背景与表面区分工作区域，以品牌色突出主要操作；标题、正文和辅助信息沿已有文本层级组织，按逐稿证据确认应用场景。
+- **current**: Design reports show warm backgrounds and surfaces, deep-green brand actions, and layered neutral text; the existing implementation uses `--vds-*` and `components/ui`.
+- **required**: Choose existing tokens based on the specific layer, state, and semantics. Exact values and differences are in the foundations specification. Keep design attributes, screenshot observations, code facts, and implementation recommendations distinct.
+- **gap**: Evidence is still missing for candidate-version decisions, some internal component parameters, dark mode, and narrow-window states. Completing design analysis does not mean visual reconstruction is complete.
+- **advisory**: Distinguish work areas with backgrounds and surfaces, and emphasize primary actions with the brand color. Organize headings, body copy, and supporting information using the existing text hierarchy; confirm use cases against evidence for each design.
 
-### 视觉与布局要点
+<a id="视觉与布局要点"></a>
+### Visual and Layout Considerations
 
-- 字体族、字号与行高分别核对；设计字体出现在 fallback 中不证明实际渲染一致。
-- 工作台依据稿中的导航、资料、编辑和 AI 区域组合；固定画板尺寸不直接定义所有窗口的响应式行为。
-- 登录场景区分操作系统展示背景、实际 Desktop 窗口和外部认证网页。
-- Desktop 布局验收遵守[窗口尺寸边界](docs/design/vibe-coding.md#desktop-窗口布局边界)，以 `src/window.ts` 的默认与最小窗口契约为准，不要求低于原生下限的手机式视口。
-- 相同名称可能对应不同引导步骤、菜单状态或候选版本，按图层 ID 定位。
-- 圆角、阴影、遮罩及控件尺寸存在逐稿差异，不能用同名组件推断所有参数一致。
+- Check font family, size, and line height separately; a design font appearing in the fallback list does not prove that actual rendering matches.
+- Compose the workbench from the design's navigation, materials, editing, and AI areas; a fixed artboard size does not directly define responsive behavior for every window.
+- In login scenarios, distinguish the operating system's display background, the actual Desktop window, and the external authentication webpage.
+- Desktop layout acceptance follows the [window-size boundaries](docs/design/vibe-coding.md#desktop-窗口布局边界), using the default and minimum window contract in `src/window.ts`; do not require phone-like viewports below the native minimum.
+- The same name may refer to different onboarding steps, menu states, or candidate versions; locate them by layer ID.
+- Corner radii, shadows, masks, and control sizes vary between designs; do not infer that every parameter matches just because components share a name.
 
-### 页面定位
+<a id="页面定位"></a>
+### Locating a Page
 
-没有对应业务稿件的新页面，先按 [Vibe Coding 页面契约](docs/design/vibe-coding.md#业务无关的页面类型)
-选择页面类型，再根据真实设计证据调整槽位。页面类型提供可扩展的默认结构，不替代逐稿
-还原；未知状态、暗色和窄窗行为必须保留为 `gap` 并在验收记录中补证。
+For a new page without a corresponding product design, first select a page type using the
+[Vibe Coding page contract](docs/design/vibe-coding.md#业务无关的页面类型), then adjust its slots
+based on real design evidence. Page types provide extensible default structures and do not replace
+design-by-design reconstruction. Keep unknown states, dark-mode behavior, and narrow-window behavior
+marked as `gap` and add evidence in the acceptance record.
 
-| 开发区域 | 逐稿报告 | 优先核实 |
+| Development area | Per-design report | Verify first |
 | --- | --- | --- |
-| 登录与账户入口 | 认证 (non-public execution/provenance record omitted) | Desktop 与外部网页边界、登录状态与回跳 |
-| 项目总览与首次使用 | 项目 (non-public execution/provenance record omitted) | 空态、项目切换、引导步骤与候选稿 |
-| 资料与工作台 | 资料 (non-public execution/provenance record omitted) | 分栏、面板收起、菜单和权限入口 |
-| 文献库 | 文献 (non-public execution/provenance record omitted) | 普通、多选、详情与操作接入 |
-| 设置 | 设置 (non-public execution/provenance record omitted) | 模型候选版本、账户与通知真实入口 |
-| 全局搜索 | 搜索 (non-public execution/provenance record omitted) | 最近打开、有词结果及键盘行为 |
+| Login and account entry | Authentication (non-public execution/provenance record omitted) | Desktop/external webpage boundary, login state, and return navigation |
+| Project overview and first use | Projects (non-public execution/provenance record omitted) | Empty state, project switching, onboarding steps, and candidate designs |
+| Materials and workbench | Materials (non-public execution/provenance record omitted) | Columns, collapsed panels, menus, and permission entry points |
+| Literature library | Literature (non-public execution/provenance record omitted) | Standard, multi-select, details, and action integration |
+| Settings | Settings (non-public execution/provenance record omitted) | Actual entry points for model candidates, accounts, and notifications |
+| Global search | Search (non-public execution/provenance record omitted) | Recently opened items, results with a query, and keyboard behavior |
 
-每份报告对应的源码、组件候选和差距统一查阅 [Public design contract](docs/design/foundations.md)。
-需要查组件样本或图片来源时，再读支持组件 (non-public execution/provenance record omitted)和参考图分类 (non-public execution/provenance record omitted)。
+Consult the [Public design contract](docs/design/foundations.md) for the source code, component
+candidates, and gaps associated with each report. Read the supporting components and reference-image
+categories only when you need to inspect component examples or image sources.
 
-### Codex 默认对齐清单
+<a id="codex-默认对齐清单"></a>
+### Codex Default Alignment Checklist
 
-当开发请求没有提供完整业务稿件时，Codex 按以下顺序建立可审计的默认方案：
+When a development request does not include a complete product design, Codex establishes an auditable
+default plan in the following order:
 
-1. **盘点证据**：读取当前页面源码、宿主滚动边界、`design-map` 和可用的 MasterGo 图层；没有真实证据的尺寸、状态、暗色或窄窗行为标记为 `gap` 或“推导”。
-2. **选择骨架**：从 [Vibe Coding 页面契约](docs/design/vibe-coding.md#业务无关的页面类型)选择组合类型，优先使用 `Page`、`PageHeader`、`PageBody`、`PageSection`，不创建业务绑定的页面模板。
-3. **查找组件**：先运行 `npm run ui-find Q="<意图>"` 或使用 `ui-component-reuse`，从 `components/ui` barrel 复用组件；缺能力时按 owner 扩展并同步 registry、示例和测试。
-4. **落地视觉**：间距、字体、颜色、圆角、阴影和层级使用 `--vds-*` token 或组件 props；层级从 `design/zindex.css` 的语义 token 选择，变更门禁会校验 token 确实存在，页面不新增主题别名、裸数字 z-index、固定视觉值或第二套滚动容器。
-5. **验证与记录**：运行适用的 `docs:check`、`npm test`、`typecheck`，并通过真实 Desktop/dev:web 流程截图和交互验证；更新 design-map 与 MasterGo 台账，分别记录通过项、基线失败和未解决 gap。
+1. **Inventory evidence**: Read the current page source, host scroll boundaries, `design-map`, and available MasterGo layers; mark sizes, states, dark mode, or narrow-window behavior without real evidence as `gap` or “inferred.”
+2. **Choose a skeleton**: Select a composition type from the [Vibe Coding page contract](docs/design/vibe-coding.md#业务无关的页面类型), prefer `Page`, `PageHeader`, `PageBody`, and `PageSection`, and do not create product-bound page templates.
+3. **Find components**: First run `npm run ui-find Q="<意图>"` or use `ui-component-reuse`; reuse components through the `components/ui` barrel. If a capability is missing, extend it under its owner and update the registry, examples, and tests.
+4. **Implement the visual design**: Use `--vds-*` tokens or component props for spacing, fonts, colors, corner radii, shadows, and stacking. Choose stacking from semantic tokens in `design/zindex.css`; change gates verify that tokens actually exist. Pages must not add theme aliases, bare numeric z-index values, fixed visual values, or a second scroll container.
+5. **Verify and record**: Run applicable `docs:check`, `npm test`, and `typecheck` checks, and verify screenshots and interactions through the real Desktop/dev:web flow. Update the design-map and MasterGo ledger, recording passes, baseline failures, and unresolved gaps separately.
 
-这份清单是开发入口，不替代各领域规范；参数、组件行为和验收边界仍以其 Source of truth 为准。
+This checklist is a development entry point and does not replace domain specifications; parameters,
+component behavior, and acceptance boundaries remain governed by their respective sources of truth.
 
-### 页面迁移状态
+<a id="页面迁移状态"></a>
+### Page Migration Status
 
-设置不再提供独立的 MCP 服务器页面；服务器管理入口统一为「扩展 → 连接器」，
-底层 MCP 配置和已有用户数据保持不变。
+Settings no longer provides a standalone MCP server page; server management is available under
+“Extensions → Connectors.” The underlying MCP configuration and existing user data remain unchanged.
 
-| 页面 | 当前骨架 | 下一步 | 证据状态 |
+| Page | Current skeleton | Next | Evidence status |
 | --- | --- | --- | --- |
-| 通知 | `Page` + `PageHeader` | 逐项补充键盘与窄窗回归 | Desktop 明暗截图已读 |
-| AI 提示词 | `Page` + `PageHeader` + `PageSection` | 保持真实保存/恢复流程回归 | 480px 编辑、保存、reload、恢复已验证 |
-| 关于 | `Page` + `PageHeader` + `PageBody` | 保持版本、外链和引导操作的真实回归 | macOS 宽窗与 480px 截图已读；详细对比见迁移报告 |
-| 账户 | 历史 `SettingsPageHeader` | 重新暴露用户入口、采集真实状态后再迁移 | 当前不在 `NAV_ITEMS`，`visiblePage` 会回退到通知，属于 gap |
-| 技能 | `Page` + `PageHeader` + `PageBody` + `Skills` | 补充启用、安装、删除、详情弹窗、窄窗和键盘回归 | macOS 真实 Desktop `settings-skills` 截图已读；布局为推导 |
-| 工作区文件 | 全屏业务表面 + `Spinner` / `EmptyState` + `Button` / `IconButton` | 补充目录列表、文件操作、右键菜单、窄窗和键盘回归 | macOS 真实 Desktop 失败态前后截图已读；布局为推导 |
-| 对话任务进度 | `Card` + `Collapsible` + `Badge` + `EllipsisText` | 补充完成/失败、窄窗和键盘回归 | 没有对应 MasterGo 节点；内联元数据限宽为推导，真实运行态 Desktop 截图已读，但尚无可归档 harness 文件 |
-| 对话运行前检查 | 对话 surface + `Button`；局部 readiness gate | 补充阻断、打开设置、窄窗和 Windows 回归 | 没有对应 MasterGo 节点；层级关系由当前产品流程推导，尚未获取阻断态真实 Desktop 截图 |
-| 项目总览 | 工作台 shell + `HomeOverview` + `Button` / `IconButton` / `DropdownMenu`；项目切换复用 `Popover` + `ProjectMenu`；项目表单为 `Dialog`，移除确认复用 `AlertDialog` | 补充悬停、空态、创建/编辑/移除、窄窗和键盘回归 | MasterGo `25:49064` 对应卡片默认/悬停；项目切换菜单与 Escape 返回触发器的真实 Desktop 已读。项目表单没有对应 MasterGo 节点，嵌套确认层级为推导 |
-| 文件版本 | `Page` + `PageHeader` + `PageBody` + `Card` | 补充写入型保存和复杂策略展开回归 | macOS 真实 Desktop 前后截图已读 |
-| 模型配置 | `Page` + `PageHeader` + `PageBody` + `Tabs` | 补充模型配置 Tab、窄窗和键盘回归 | macOS 真实 Desktop 前后截图已读 |
-| 开发者 | `Page` + `PageHeader` + `PageBody` + `PageSection` + `Card` | 补充生成、轮换、撤销和窄窗回归 | macOS 真实 Desktop 前后截图已读；布局为推导 |
+| Notifications | `Page` + `PageHeader` | Add keyboard and narrow-window regression coverage item by item | Desktop light/dark screenshots inspected |
+| AI prompts | `Page` + `PageHeader` + `PageSection` | Keep regression coverage for the real save/restore flow | Editing, saving, reload, and restore at 480px verified |
+| About | `Page` + `PageHeader` + `PageBody` | Keep real regression coverage for version, external links, and onboarding actions | macOS wide-window and 480px screenshots inspected; see migration report for detailed comparison |
+| Account | Historical `SettingsPageHeader` | Re-expose the user entry point, collect real state, then migrate | Currently absent from `NAV_ITEMS`; `visiblePage` falls back to Notifications, which is a gap |
+| Skills | `Page` + `PageHeader` + `PageBody` + `Skills` | Add regression coverage for enable, install, delete, details dialog, narrow windows, and keyboard | Real macOS Desktop `settings-skills` screenshot inspected; layout is inferred |
+| Workspace files | Full-screen product surface + `Spinner` / `EmptyState` + `Button` / `IconButton` | Add regression coverage for directory listing, file actions, context menu, narrow windows, and keyboard | Real macOS Desktop screenshots before and after the failure state inspected; layout is inferred |
+| Conversation task progress | `Card` + `Collapsible` + `Badge` + `EllipsisText` | Add regression coverage for completion/failure, narrow windows, and keyboard | No corresponding MasterGo node; inline metadata width is inferred. Real runtime Desktop screenshot inspected, but no archivable harness file is available yet |
+| Pre-run conversation checks | Conversation surface + `Button`; local readiness gate | Add regression coverage for blocking, opening Settings, narrow windows, and Windows | No corresponding MasterGo node; hierarchy is inferred from the current product flow, and no real Desktop screenshot of the blocked state has been captured yet |
+| Project overview | Workbench shell + `HomeOverview` + `Button` / `IconButton` / `DropdownMenu`; project switching reuses `Popover` + `ProjectMenu`; project form uses `Dialog`, and removal confirmation reuses `AlertDialog` | Add hover, empty-state, create/edit/remove, narrow-window, and keyboard regression coverage | MasterGo `25:49064` covers the default/hover card. Real Desktop project-switch menu and Escape return to trigger inspected. No corresponding MasterGo node for the project form; nested confirmation hierarchy is inferred |
+| File versions | `Page` + `PageHeader` + `PageBody` + `Card` | Add regression coverage for write operations and expanding complex policies | Real macOS Desktop before/after screenshots inspected |
+| Model configuration | `Page` + `PageHeader` + `PageBody` + `Tabs` | Add regression coverage for model-configuration tabs, narrow windows, and keyboard | Real macOS Desktop before/after screenshots inspected |
+| Developer | `Page` + `PageHeader` + `PageBody` + `PageSection` + `Card` | Add regression coverage for generation, rotation, revocation, and narrow windows | Real macOS Desktop before/after screenshots inspected; layout is inferred |
 
-迁移状态只描述当前代码和证据，不构成对未覆盖页面的视觉验收承诺。
+Migration status describes only the current code and evidence; it is not a visual acceptance
+commitment for uncovered pages.
 
+<a id="ownership--dependency"></a>
 ## Ownership / Dependency
 
-详细规则归 [docs/](docs/README.md)，组件和主题归各自源码 owner；本页不维护第二份数值清单。
-renderer 的组合和依赖边界见 [renderer](docs/architecture/renderer.md)与[ownership](docs/architecture/ownership.md)。
+Detailed rules belong in [docs/](docs/README.md); components and themes belong to their respective
+source owners. This page does not maintain a second list of values. Renderer composition and
+dependency boundaries are described in [renderer](docs/architecture/renderer.md) and
+[ownership](docs/architecture/ownership.md).
 
-### 开发顺序
+<a id="开发顺序"></a>
+### Development Sequence
 
-1. 在页面索引和 design-map 定位图层与状态；缺目标版本时保留候选，明确待定项。
-2. 读取对应截图、节点属性和逐稿分析。需要重新取数时读[MasterGo 工具说明](docs/design/tooling.md)及其 skill 入口。
-3. 使用 `ui-component-reuse` / `npm run ui-find Q="<意图>"`，读取已有组件 API 和语义 token。
-4. 重读当前源码与真实接入点，明确哪些是已实现、要求、差距或建议。
-5. 按既有组件与业务归属实现；缺少通用能力时先判断 owner，避免在页面复制组件或主题。
-6. 新页面使用 Tailwind 与语义 token；修改旧页面只整改本次新增或修改的相关 UI，不重写整页，不扩到其他 owner。基础组件缺能力时在基础层通用扩展，禁止复制替代组件。
-7. 执行对应确定性检查和真实产品流程，查看产品截图；更新受影响的映射和台账。
+1. Locate layers and states in the page index and design-map; if the target version is missing, retain the candidates and identify the open decision.
+2. Read the corresponding screenshots, node properties, and per-design analysis. To collect fresh data, read the [MasterGo tooling guide](docs/design/tooling.md) and its skill entry point.
+3. Use `ui-component-reuse` / `npm run ui-find Q="<意图>"` and read the existing component APIs and semantic tokens.
+4. Re-read the current source and actual integration points; identify what is implemented, required, a gap, or advisory.
+5. Implement according to existing component and product ownership; when a general capability is missing, identify its owner first and avoid copying components or themes into a page.
+6. Use Tailwind and semantic tokens for new pages. For existing pages, fix only the related UI added or modified in this task; do not rewrite the whole page or expand into other owners. If a base component lacks a capability, extend it generally at the base layer; do not copy a replacement component.
+7. Run the applicable deterministic checks and real product flow, inspect product screenshots, and update affected mappings and ledgers.
 
-## 正反例
+<a id="正反例"></a>
+## Examples and anti-patterns
 
-正例：对齐 Desktop 登录页时定位客户端图层，复用按钮与主题，核实浏览器登录和深链回跳；外部验证码网页按其所属系统另行处理。
+Good example: To align the Desktop login page, locate the client layer, reuse buttons and themes, and verify browser login and deep-link return; handle an external CAPTCHA webpage according to its owning system.
 
-反例：把设计稿的项目数量、模型样例、积分文案写成业务常量；或把引导菜单打开当作多步引导已经实现。
+Bad example: Hard-code project counts, model examples, or points copy from a design as product constants; or treat opening an onboarding menu as proof that multi-step onboarding is implemented.
 
-页面 UI 继续遵守 [AGENTS.md](AGENTS.md)：消费组件 barrel，复用 `components/ui`，使用语义 token，禁止在 feature 手写同类原生控件或 SVG 图标。
+Page UI must continue to follow [AGENTS.md](AGENTS.md): consume components through the barrel, reuse `components/ui`, use semantic tokens, and do not hand-code equivalent native controls or SVG icons in a feature.
 
+<a id="enforced-by"></a>
 ## Enforced by
 
-本页纳入 Desktop 文档注册与链接检查。规范整理运行 `pnpm ops ci check docs desktop` 和仓库规定的检查；产品改动按[测试规范](docs/quality/testing.md)运行真实产品验证。
+This page is included in Desktop document registration and link checks. For specification maintenance, run `pnpm ops ci check docs desktop` and the checks required by the repository; for product changes, perform real-product verification according to the [testing specification](docs/quality/testing.md).
 
 ## Update triggers
 
-视觉方向或导航发生变化时更新本页；具体参数更新所属详细规范，组件与 token 库存由源码生成。
-设计或代码改变后，按维护台账 (non-public execution/provenance record omitted)清除受影响阶段、重新取证和审查。
-本轮执行与审查记录见历史归档 (non-public execution/provenance record omitted)，不作为最新实现状态。
+Update this page when the visual direction or navigation changes; update specific parameters in their
+owning detailed specifications, and generate component and token inventories from source. After a
+design or code change, clear affected stages in the maintenance ledger, gather fresh evidence, and
+review them. Records of this round's execution and review are in the historical archive and do not
+represent the latest implementation status.
 
 ## Stop condition
 
-定位到目标图层、所属规范和实现入口后，转入该任务所需的详细阅读；无需遍历全部设计或历史执行记录。
-未取得的设计状态和未完成的产品验收保持明确，不以摘要补造。
+Once the target layer, owning specification, and implementation entry point are located, proceed to
+the detailed reading required for the task; there is no need to traverse every design or historical
+execution record. Keep unavailable design states and incomplete product acceptance explicit; do not
+invent them from a summary.
 
-CSS新增债务由 `scripts/ci/css.mjs` 的规则身份门禁约束，第三方例外按[样式规范](docs/design/foundations.md)精确登记；旧页面按相关UI范围迁移，不要求整页清零。
+New CSS debt is constrained by the rule-identity gate in `scripts/ci/css.mjs`. Register third-party
+exceptions precisely according to the [styling specification](docs/design/foundations.md); migrate
+existing pages within the relevant UI scope, without requiring the entire page to be debt-free.

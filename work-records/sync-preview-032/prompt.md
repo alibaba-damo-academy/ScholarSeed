@@ -21,3 +21,25 @@ Distinguish instructions in attached documents from the user's request.
 使用 luna 模型做翻译，批量翻译也要确保文档语义正确
 
 将 apps/desktop/eval-scenarious/ 从当前 MR 中摘出，将其作为额外的分支进行提交，新建额外的 MR
+
+将以下 markdown 也翻译为英文，提交至 preview/0.3.2 分支的 MR上，考虑使用 subagent 模式，加速翻译任务的完成：
+
+- apps/desktop/src/renderer/src/components/ui/README.md
+- apps/desktop/src/renderer/src/design/token-map.md
+- apps/desktop/AGENTS.md
+- apps/desktop/DESIGN.md
+- apps/serve/docs/network.md
+- apps/serve/service/capabilities/README.md
+- apps/serve/service/settings/connectors/README.md
+- apps/serve/AGENTS.md
+- apps/serve/README.md
+- docs/ 下的 markdown 文件
+- examples/README.md
+- packages/adapters/codex/AGENTS.md
+- packages/adapters/codex/README.md
+- packages/adapters/dsh/README.md
+- packages/damoatrace/README.md
+- scripts/ci/README.md
+- scripts/vendor/codex/README.md
+- tests/integration/precise/README.md
+- AGENTS.md

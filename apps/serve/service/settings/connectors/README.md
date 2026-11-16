@@ -1,178 +1,115 @@
-# MCP 连接器
+<a id="mcp-连接器"></a>
+# MCP Connectors
 
-产品级目录、安装、授权与凭据由本目录持有。执行配置仍由 `settings/mcp.py` 应用到
-Runtime；不复制 Adapter 的 MCP 控制协议，也不读取厂商私有凭据库。
+This directory owns the product-level catalog, installation, authorization, and credentials. Execution configuration is still applied to Runtime by `settings/mcp.py`; it does not copy the Adapter's MCP control protocol or read vendors' private credential stores.
 
-## 当前范围
+<a id="当前范围"></a>
+## Current Scope
 
-- 七个预置条目见 `catalog.py`；前端使用现有技能页的 UI 组件和卡片布局。
-- 安装只登记并发布停用配置，不发起 OAuth 或调用第三方工具。
-- API Key 验证与 OAuth 完成后执行只读握手、完整分页工具发现；Zotero 先验证
-  Web API 资料库权限（空库有效），再启动固定版本本地 MCP 检查协议及工具。
-- HTTP OAuth 使用服务发现、PKCE S256、一次性 state、固定回环回调、issuer 校验、
-  DCR 或预注册客户端。元数据端点必须属于该预置服务允许的 HTTPS 主机。
-- 更新失败保留原凭据和启停选择。取消、重新发起、移除使旧尝试失效。
-- 刷新与凭据读取受私有状态锁保护；invalid_grant 转待授权。已运行连接的每次
-  HTTP/SSE 请求由 Serve 解析最新凭据，避免原生宿主长期持有过期服务商 Token。
+- See `catalog.py` for the seven preset entries; the frontend uses the existing Skills page UI components and card layout.
+- Installation only registers and publishes a disabled configuration; it does not start OAuth or call third-party tools.
+- After API Key validation or OAuth completes, the connector performs a read-only handshake and discovers the complete paginated tool list. Zotero first validates Web API library access (an empty library is valid), then starts the pinned local MCP server to check its protocol and tools.
+- HTTP OAuth uses service discovery, PKCE S256, one-time state, a fixed loopback callback, issuer validation, and DCR or a pre-registered client. Metadata endpoints must use an HTTPS host allowed by that preset service.
+- Failed updates preserve the original credentials and enabled/disabled choice. Cancellation, retry, or removal invalidates the previous attempt.
+- Refresh and credential reads are protected by a private state lock; `invalid_grant` changes the state to authorization required. For each HTTP/SSE request on a running connection, Serve resolves the latest credentials so the native host does not retain stale provider tokens.
 
-## 真实执行
+<a id="真实执行"></a>
+## Real Execution
 
-`transport.py` 使用固定版本 MCP SDK 连接 HTTP、SSE 和 STDIO；`broker.py` 把这些
-连接投影为仅回环、随机临时令牌保护的 HTTP 端点供既有原生 Runtime 调用。桥接不
-复制业务工具实现，透传实际工具、资源、提示词、进度与错误；不自动重试工具调用。
-服务商凭据不会下发到原生宿主。工具变化通知重新发现完整工具并通知宿主，详情页
-轮询公开目录反映变化。停用、修改目标、删除和服务退出关闭对应会话与本地进程。
+`transport.py` uses a pinned MCP SDK version to connect over HTTP, SSE, and STDIO. `broker.py` projects these connections as loopback-only HTTP endpoints protected by random temporary tokens for the existing native Runtime to call. The bridge does not copy business tool implementations; it passes through actual tools, resources, prompts, progress, and errors, and does not automatically retry tool calls. Provider credentials are not sent to the native host. Tool-change notifications trigger discovery of the complete tool list and notify the host; the details page reflects changes by polling the public catalog. Disabling, changing the target, removing a connector, or exiting the service closes the corresponding session and local process.
 
-连接错误区分 TLS 中断、证书校验、代理连接／认证、超时及明确的网络策略拦截。
-只有响应含已识别的完整策略提示特征时才标记域名拦截；普通 403 保留服务或网关拒绝
-的歧义，不直接归因于账号权限。探测与 SDK 执行共享错误分类，不返回原始响应或凭据，
-不关闭 TLS 校验、不切换代理、不自动重试工具调用。重新授权清除历史撤销提示，已有
-凭据的公开视图也不再显示过期的“已移除授权”记录。
-桥接令牌按应用实例在首次配置时预留为共享启动凭据，仅经私有环境别名投影；新增、
-编辑和启停连接器不改变已运行原生宿主的凭据环境，不取消其安全静默点检查。
+Connection errors distinguish TLS interruption, certificate validation, proxy connection/authentication, timeouts, and explicit network-policy blocking. A domain is marked as blocked only when the response contains a recognized, complete policy-hint signature; an ordinary 403 remains ambiguous between a service or gateway denial and is not directly attributed to account permissions. Probing and SDK execution share error classification; raw responses and credentials are not returned. TLS validation is not disabled, proxies are not switched, and tool calls are not automatically retried. Reauthorization clears historical revocation notices; the public view of an existing credential also no longer shows a stale “authorization removed” record.
+The bridge token is reserved as a shared startup credential on first configuration per application instance and projected only through a private environment alias. Adding, editing, or enabling/disabling a connector does not change the credential environment of a running native host or cancel its secure silent-point checks.
 
-## Zotero 资料库发现
+<a id="zotero-资料库发现"></a>
+## Zotero Library Discovery
 
-个人库默认只需填写 API Key：后端通过 Zotero 官方 `/keys/current` 验证权限并获取
-用户数字 ID，再沿原有资料库读取与 MCP 握手流程连接。省略资料库类型时由后端
-默认个人库；授权页不再选择库或填写 ID，也不新增专属配置页。空库允许连接，
-没有个人库读取权限时明确拒绝，不伪装成空库或擅自选一个群组。
+For a personal library, the API Key is the only required input by default: the backend verifies access through Zotero's official `/keys/current` endpoint and obtains the user's numeric ID, then continues through the existing library-read and MCP-handshake flow. If the library type is omitted, the backend defaults to the personal library. The authorization page no longer asks users to select a library or enter an ID, and no dedicated configuration page is added. An empty library may connect; missing personal-library read access is rejected explicitly, not presented as an empty library or silently replaced with a group.
 
-资料库选择交给已有 Zotero MCP 工具：`zotero_list_libraries` 发现资料库，
-`zotero_switch_library` 切换后供后续工具使用；目标不明确时应在对话中确认。
-这不是 Qoder 的逐次调用参数协议，也不是自动聚合所有库：上游切换作用于当前
-MCP 进程的后续调用，读取个人库前须恢复个人库上下文，群组仍受 API Key 权限约束。
-本机依赖源码默认启用 libraries 工具组；真实账号及并发会话行为须单独验收。
+Library selection is handled by existing Zotero MCP tools: `zotero_list_libraries` discovers libraries, and `zotero_switch_library` switches the library for subsequent tool calls; confirm the target in conversation when it is unclear.
+This is not Qoder's per-call argument protocol, nor does it automatically aggregate all libraries: the upstream switch applies to subsequent calls in the current MCP process. Restore personal-library context before reading the personal library; group libraries remain subject to API Key permissions.
+The locally dependent source enables the `libraries` tool group by default; real account and concurrent-session behavior require separate acceptance.
 
-`libraries` 使用同一个宿主授权管理通道，只读发现，不安装、保存或替换凭据，也不
-变更已运行 MCP 配置。Key 只经请求头发送至固定的 Zotero 官方 API；分页不跟随
-服务返回的任意链接。此接口不再由授权表单消费。已有显式库配置仍按原目标验证，
-不会在刷新授权或重连时被默默改成其他库；重新提交仅含 API Key 的授权则默认个人库。
-上述是源码行为；真实个人／群组账号联调与最终 Desktop 截图须单独验收。
+`libraries` uses the same host authorization-management channel for read-only discovery. It does not install, save, or replace credentials, or change the running MCP configuration. The Key is sent only in request headers to the fixed official Zotero API; pagination does not follow arbitrary links returned by the service. This endpoint is no longer used by the authorization form. Existing explicit library configuration is still validated against its original target and is not silently changed to another library during authorization refresh or reconnection; resubmitting authorization with only an API Key defaults to the personal library.
+These statements describe source behavior; integration with real personal/group accounts and final Desktop screenshots require separate acceptance.
 
-## OAuth 应用配置
+<a id="oauth-应用配置"></a>
+## OAuth Client Configuration
 
-授权 UI 固定按 API Key、OAuth 排序，仅显示服务实际支持的方式。API Key 由后端
-调用服务验证；OAuth 必须经真实服务发现、客户端注册、浏览器授权、回调交换及
-握手检查，不能由前端按钮直接标记成功。浏览器只打开服务返回的 HTTPS 授权 URL，
-没有 `about:blank`、本地演示账号或模拟同意页面的回退。参考 HTML 的演示脚本不
-属于产品入口；本仓库不修改参考文件来冒充真实接入。
+The authorization UI lists API Key before OAuth and shows only methods actually supported by the service. The backend validates API Keys by calling the service. OAuth must complete real service discovery, client registration, browser authorization, callback exchange, and handshake checks; a frontend button cannot directly mark it successful. The browser opens only the HTTPS authorization URL returned by the service, with no fallback to `about:blank`, a local demo account, or a simulated consent page. Demo scripts in reference HTML are not product entry points; this repository does not modify reference files to pass them off as a real integration.
 
-密钥标签、占位、获取链接与帮助文案统一使用 API Key，不改变各服务的认证协议。
-授权状态属于连接器而非某个页签，任一方式有效即显示已授权；只有显式“更换授权”
-才重新进入授权表单，失败或取消保留原授权。目录展示版本统一为 `1.0.0`，
-实际协议握手版本和底层依赖版本保留原值，不以展示版本覆盖运行信息。
+Key labels, placeholders, acquisition links, and help text consistently use “API Key” without changing each service's authentication protocol. Authorization state belongs to the connector, not an individual tab; any valid method shows the connector as authorized. Only an explicit “Change authorization” action reopens the authorization form; failure or cancellation preserves the original authorization. The catalog displays version `1.0.0` consistently; actual protocol handshake and underlying dependency versions retain their original values and are not overwritten by the display version.
 
-支持 DCR 的服务会复用本机注册记录。GitHub 使用托管授权策略：先登录书深，
-由当前账号服务创建绑定用户、PKCE 和回环 URI 的授权事务；回调仍由本地 Serve 接收，
-兑换与刷新通过 HTTPS 调用账号服务，不在客户端配置或接收共享 Client Secret。
-服务端管理配置和实现属于独立企业仓，本仓只维护消费契约；服务未配置或登录失效时
-明确报错，不退回内置 Secret、PAT 或 Device Flow。其他连接器的既有授权流程不变。
-其他服务同样支持 `SCHOLARSEED_CONNECTOR_<大写条目 ID>_CLIENT_ID` 与
-`_CLIENT_SECRET`，不替用户自动修改环境或注册账号。
+Services supporting DCR reuse the local registration record. GitHub uses a managed authorization strategy: first sign in to ScholarSeed, then the current account service creates an authorization transaction bound to the user, PKCE, and loopback URI. The callback is still received by local Serve; code exchange and refresh call the account service over HTTPS, and the client neither configures nor receives a shared Client Secret.
+Server-side configuration and implementation belong to a separate enterprise repository; this repository maintains only the consumer contract. If the service is unconfigured or login has expired, report an explicit error; do not fall back to a built-in Secret, PAT, or Device Flow. Existing authorization flows for other connectors are unchanged.
+Other services also support `SCHOLARSEED_CONNECTOR_<大写条目 ID>_CLIENT_ID` (“uppercase entry ID”) and `_CLIENT_SECRET`; do not automatically modify the user's environment or register an account.
 
-回调是当前 Serve 实际监听端口上的
-`http://127.0.0.1:<port>/api/settings/connectors/callback`，不得使用请求 Host 或
-转发头构造。预注册应用需允许该回调；不支持动态回环端口的服务需要部署方提供
-兼容的客户端注册策略，不能靠放宽回调校验绕过。
+The callback is `http://127.0.0.1:<port>/api/settings/connectors/callback` on the port actually listened to by the current Serve process. Do not construct it from the request Host or forwarding headers. Pre-registered applications must allow this callback; for services that do not support dynamic loopback ports, the deployer must provide a compatible client-registration strategy rather than bypassing the restriction by relaxing callback validation.
 
-## 持久化与边界
+<a id="持久化与边界"></a>
+## Persistence and Boundaries
 
-`paths.CONNECTOR_STATE_ROOT` 中的 `state.json` 使用现有 pinned-directory、原生锁
-和原子发布能力。凭据为操作系统权限保护的私有存储，**并非加密存储**；该目录已
-加入产品 Agent deny-read roots。公开响应只含状态、工具与不透明授权地址，不含
-Token、PKCE verifier、client secret 或凭据引用。运行配置只保存 opaque 引用。
+`state.json` under `paths.CONNECTOR_STATE_ROOT` uses the existing pinned-directory, native-lock, and atomic-publication capabilities. Credentials are stored privately with operating-system permission protection, **not encrypted at rest**; this directory is included in the product Agent deny-read roots. Public responses contain only state, tools, and opaque authorization URLs; they do not contain a Token, PKCE verifier, client secret, or credential reference. Runtime configuration stores only opaque references.
 
-macOS 与 Windows 均复用 storage Owner 的权限、锁和路径语义；本机契约测试不证明
-Windows 原生产品验收。STDIO 不使用 Shell 拼接、不在连接时下载依赖；内置 Zotero
-由当前产品 Python 启动固定的 `zotero-mcp-server==0.15.1`，MCP SDK 固定为
-`mcp==1.26.0`。二者及新增依赖闭包显式走项目已有官方 PyPI 索引，不改变全局配置
-和其余包的镜像来源；源码部署需可达该索引，最终安装包仍需两平台冻结与发行验收。
+Both macOS and Windows reuse the storage Owner's permission, lock, and path semantics; local contract tests do not prove native Windows product acceptance. STDIO does not concatenate Shell commands or download dependencies when connecting. The bundled Zotero server is launched by the current product Python at the pinned version `zotero-mcp-server==0.15.1`; the MCP SDK is pinned to `mcp==1.26.0`. Both and any added transitive dependencies use the project's existing official PyPI index explicitly, without changing global configuration or the mirror source for other packages. Source deployments must be able to reach that index; final installers still require freezing and distribution acceptance on both platforms.
 
-### 跨平台预检查
+<a id="跨平台预检查"></a>
+### Cross-Platform Preflight
 
-| 边界 | macOS | Windows | 验证边界 |
+| Boundary | macOS | Windows | Verification boundary |
 | --- | --- | --- | --- |
-| 本地命令与参数 | SDK 以独立 argv 启动 | SDK 查找命令扩展名并以独立 argv 启动 | 不新增 Shell 拼接；Windows `.exe`／`.cmd`／`.bat` 仍需原生运行验证 |
-| 路径和环境变量 | 保留本机绝对路径与逐项值 | 保留盘符／UNC、空格、反斜杠与逐项值 | 中文工作目录、引号及特殊字符参数、空参数、中文环境值已在 macOS 子进程契约验证，不代表 Windows 实测 |
-| 协议与诊断编码 | MCP 使用 UTF-8；stderr 容错读取 | 同左，不依赖系统代码页 | 非 UTF-8 stderr 不得盖住原始错误分类；UTF-8 协议和 CRLF 在契约中覆盖 |
-| 子进程退出 | SDK 负责进程组清理 | SDK 负责 Job Object／进程树清理 | 保留既有活动排空，不自行按进程名结束进程；Windows 后代退出仍待实机验证 |
-| 私有状态 | 复用 storage Owner | 复用 storage Owner 原生权限、锁和原子替换 | 不把 POSIX 权限位或裸目录 fd 当作 Windows 实现 |
+| Local command and arguments | SDK starts a separate argv | SDK resolves the command extension and starts a separate argv | Do not add Shell concatenation; Windows `.exe`/`.cmd`/`.bat` still need native runtime verification |
+| Paths and environment variables | Preserve local absolute paths and each value | Preserve drive letters/UNC, spaces, backslashes, and each value | Chinese working directories, quoted and special-character arguments, empty arguments, and Chinese environment values were verified in the macOS subprocess contract; this is not a Windows test |
+| Protocol and diagnostic encoding | MCP uses UTF-8; stderr is read with error tolerance | Same; does not rely on the system code page | Non-UTF-8 stderr must not mask the original error classification; UTF-8 protocol and CRLF are covered by contracts |
+| Subprocess exit | SDK cleans up the process group | SDK cleans up the Job Object/process tree | Preserve existing activity draining; do not terminate processes by name. Windows descendant-process exit still needs device verification |
+| Private state | Reuse the storage Owner | Reuse the storage Owner's native permissions, locks, and atomic replacement | Do not treat POSIX permission bits or a bare directory fd as a Windows implementation |
 
-STDIO 的 stderr 只用于有界错误分类，不向前端回显原始日志。非 UTF-8 字节按替代字符
-读取，仍保留依赖缺失与进程失败的区别；协议 stdout 仍严格遵循 UTF-8，不以容错解码
-接受损坏的 MCP 消息。
+STDIO stderr is used only for bounded error classification; raw logs are not echoed to the frontend. Non-UTF-8 bytes are read with replacement characters while preserving the distinction between a missing dependency and process failure. Protocol stdout still strictly follows UTF-8; tolerant decoding is not used to accept malformed MCP messages.
 
-## 自定义
+<a id="自定义"></a>
+## Custom Connectors
 
-市场中的“添加连接器”复用已有版本化 MCP 配置通道，支持 HTTP/SSE/STDIO 表单与
-`mcpServers` JSON 批量导入、预览、编辑、启停与移除。单条配置可以在表单与 JSON
-之间互转，参数逐项保序；描述与不少于 1000 毫秒的整数超时进入真实配置，超时映射到
-Codex `tool_timeout_sec`，不是仅供展示的字段。新建保留启用意图，保存时实际检查 HTTP
-握手及完整工具列表；网络失败保留配置，401 进入待授权。STDIO 使用真实子进程
-握手与发现，不以保存成功代替联通。整批校验和版本冲突检查通过后才发布，
-保留已有配置。请求头和环境变量值保存在 ConnectorStore 私有记录，仅不透明引用
-进入 MCP 配置；同一目标编辑留空沿用原字段值，删除字段移除该值，公开列表不回显值。
-服务地址、命令、参数或工作目录变化后，不得将原凭据自动交给新目标；留空沿用会被拒绝。
-macOS/Windows 均复用原有路径、锁和执行通道，不引入 Shell 拼接或自动安装命令；
-本机验收不能证明 Windows。自定义 HTTP/SSE 遇到真实认证挑战时，按资源元数据
-发现 OAuth，复用真实登录、回调、刷新及撤销生命周期。发现与授权端点只允许公开
-HTTPS，DNS 解析固定到已检查的公网地址，禁止回环／私网元数据及重定向外泄凭据。
-没有可用 OAuth 元数据时不伪造登录入口；仍可编辑请求头。撤销结果区分远端撤销和
-仅本机移除，并提供服务商管理入口，不把删除本机 Token 表述为远端权限已撤销。
+“Add connector” in the marketplace reuses the existing versioned MCP configuration channel. It supports HTTP/SSE/STDIO forms and bulk import, preview, editing, enable/disable, and removal of `mcpServers` JSON. A single configuration can be converted between form and JSON with parameter order preserved. Descriptions and integer timeouts of at least 1000 milliseconds are stored in the actual configuration; the timeout maps to Codex `tool_timeout_sec` and is not display-only. New configurations preserve the intent to enable them. Saving performs an actual HTTP handshake and discovers the complete tool list; network failures preserve the configuration, and a 401 sets the state to authorization required. STDIO performs a real subprocess handshake and discovery; a successful save does not stand in for connectivity. Publish the batch only after all validation and version-conflict checks pass, preserving existing configuration.
+Request-header and environment-variable values are stored in private ConnectorStore records; only opaque references enter MCP configuration. When editing the same target, leaving a field blank preserves its existing value; removing a field removes that value; public listings never echo values. After the service address, command, arguments, or working directory changes, do not automatically pass the old credentials to the new target; preserving them by leaving fields blank is rejected.
+macOS and Windows both reuse the existing path, lock, and execution channels; no Shell concatenation or automatic installation commands are introduced. Local acceptance does not prove Windows behavior. When custom HTTP/SSE encounters a real authentication challenge, discover OAuth using resource metadata and reuse the real login, callback, refresh, and revocation lifecycle. Discovery and authorization endpoints must use public HTTPS; DNS resolution is pinned to a checked public address to prevent loopback/private metadata access and credential leakage through redirects.
+Do not fabricate a login entry point when usable OAuth metadata is absent; request headers can still be edited. Revocation results distinguish remote revocation from local-only removal and provide a provider management link; deleting a local Token must not be described as revoking remote access.
 
-资源发现优先使用认证挑战中的 `resource_metadata`；没有该提示时，依次查询 MCP
-路径和站点根对应的 `/.well-known/oauth-protected-resource`，兼容 GET 返回 405 的
-仅 POST 服务。仅 404/405 进入下一候选，认证、网络错误和资源身份不匹配保持失败；
-所有候选继续走公网 HTTPS、DNS 固定和资源／issuer 校验，不自动注册或登录。
-详情与卡片区分已授权、凭据待验证、无需授权及认证方式尚未识别；本地进程无需授权
-不代表握手成功。自定义条目未发现 OAuth 时提供编辑配置和失败重试，不把配置编辑
-标成授权；协议失败和 401 分别提示通信失败及缺失／无效／过期凭据。
+Resource discovery prioritizes `resource_metadata` from the authentication challenge. If it is absent, query `/.well-known/oauth-protected-resource` for the MCP path and then the site root, supporting POST-only services that return 405 for GET. Only 404/405 advances to the next candidate; authentication errors, network errors, and resource-identity mismatches remain failures. Every candidate still uses public HTTPS, pinned DNS, and resource/issuer validation; there is no automatic registration or login.
+Details and cards distinguish authorized, credentials pending validation, authorization not required, and authentication method not yet identified. A local process not requiring authorization does not mean the handshake succeeded. If OAuth is not discovered for a custom entry, offer configuration editing and retry after failure; do not label configuration editing as authorization. Protocol failures and 401 responses separately indicate communication failure and missing/invalid/expired credentials.
 
-## PRD 对齐边界（2026-10-22）
+<a id="prd-对齐边界2026-10-22"></a>
+## PRD Alignment Boundaries (2026-10-22)
 
-| 需求 | 当前实现与验收边界 |
+| Requirement | Current implementation and acceptance boundary |
 | --- | --- |
-| §4 目录、安装、搜索 | 市场／我的分离，安装不授权；卡片不展示额外状态，数量和刷新位于标签行，添加位于搜索区 |
-| §5 详情与状态 | 自定义同样进入独立详情；四态由授权、启停与连接结果派生；版本、分页工具和获取时间来自验证结果，未知不是零 |
-| §6 首次授权及更换 | 已证明有效的首份凭据在工具发现失败时保留；新凭据与连接均成功才替换原授权；真实服务商正向授权仍需账号与权限验收 |
-| §7 管理与删除 | 详情管理已有授权；停用保留凭据；删除只移除本机记录，不删除第三方内容；配置移除失败保留可恢复记录 |
-| §8 自定义输入 | HTTP／SSE／STDIO、名称／描述／超时、逐项参数与键值项、单条表单↔JSON、批量预览、配置冲突保护、目标变更凭据隔离 |
-| §8 自定义连接 | 三种传输实际握手、完整发现；自定义 OAuth 资源发现及真实生命周期；失败保留配置与可操作错误 |
-| 执行 | SDK 会话、工具变化通知、每请求凭据解析和刷新、停用及退出收尾；确定性协议测试不等于真实账号验收 |
-| 已验收范围 | macOS Desktop：公开 DeepWiki HTTP 发现及真实模型驱动工具调用；真实 Zotero SSE／STDIO 进程握手与发现，不等于资料库账号验收 |
-| gap | 两平台安装包冻结／发行、Windows 产品运行、七个服务的真实账号正向授权与账号内 Agent 调用仍需独立验收 |
+| §4 Catalog, installation, search | Marketplace/My are separate; installation does not authorize. Cards show no extra status; counts and refresh are on the tab row, and Add is in the search area |
+| §5 Details and status | Custom connectors also open a separate detail view; four states derive from authorization, enablement, and connection results. Version, paginated tools, and retrieval time come from validation results; unknown is not zero |
+| §6 Initial authorization and replacement | Preserve the first credential already proven valid if tool discovery fails; replace the original authorization only after the new credential and connection both succeed. Positive authorization with real providers still needs account and permission acceptance |
+| §7 Management and deletion | Manage existing authorization in details; disabling preserves credentials; deletion removes only local records, not third-party content; failed configuration removal preserves a recoverable record |
+| §8 Custom input | HTTP/SSE/STDIO, name/description/timeout, individual arguments and key-value items, single-item form↔JSON conversion, bulk preview, configuration-conflict protection, and credential isolation after target changes |
+| §8 Custom connection | Real handshakes and complete discovery for all three transports; custom OAuth resource discovery and real lifecycle; failures preserve configuration and provide actionable errors |
+| Execution | SDK sessions, tool-change notifications, per-request credential resolution and refresh, and cleanup on disable/exit; deterministic protocol tests are not real-account acceptance |
+| Accepted scope | macOS Desktop: public DeepWiki HTTP discovery and real model-driven tool calls; real Zotero SSE/STDIO process handshakes and discovery, which do not constitute library-account acceptance |
+| gap | Installer freezing/distribution on both platforms, Windows product execution, and positive real-account authorization and in-account Agent calls for all seven services still require separate acceptance |
 
-本表区分代码能力与产品验收，不表示需求已经全部完成；真实测试结果和截图保存在
-忽略的任务证据目录，不把模拟协议测试当成服务商联通。
+This table distinguishes code capability from product acceptance and does not mean all requirements are complete. Real test results and screenshots are stored in an ignored task evidence directory; mocked protocol tests are not provider connectivity.
 
-## 验证
+<a id="验证"></a>
+## Verification
 
-目录接管和存储维护先排空 Runtime 附着与 Provider 池，再由组合根请求 Broker
-释放空闲连接。Broker 校验当前维护 generation；启动中、执行中的 RPC 或未结束的
-HTTP 请求均返回阻塞，不强停活动连接。空闲连接复用已有 SDK 关闭路径并等待真实收尾，
-失败或取消不能冒充成功；所有 Owner 完成后才允许封闭准入并切换目录资格。
-释放不删除连接器配置或凭据，不关闭监听器；相同端点在维护结束后按需建立新连接。
-目录超时日志记录各 Owner 阻塞项及活动计数，不记录凭据或工具内容。
+For catalog takeover and storage maintenance, first drain Runtime attachments and the Provider pool; then the composition root asks the Broker to release idle connections. The Broker validates the current maintenance generation. Startup, in-flight RPCs, or unfinished HTTP requests return a blocker; active connections are not forcibly stopped. Idle connections reuse the existing SDK close path and wait for actual cleanup; failure or cancellation cannot be reported as success. Admission can be closed and catalog eligibility switched only after every Owner has completed.
+Release does not delete connector configuration or credentials and does not close the listener; the same endpoint can establish a new connection as needed after maintenance. Catalog timeout logs record each Owner's blockers and activity counts, not credentials or tool content.
 
-在 `apps/serve` 运行 `../../.venv/bin/python -m tests.contract_connectors`；该套件
-已登记 `tests/run_all.py`。HTTP mock 仅用于确定性协议与安全契约，不是服务商联通
-验收。真实授权需要用户账号、凭据、服务套餐与组织权限；无条件的项目明确待验收。
+Run `../../.venv/bin/python -m tests.contract_connectors` from `apps/serve`; this suite is registered in `tests/run_all.py`. HTTP mocks are only for deterministic protocol and security contracts, not provider-connectivity acceptance. Real authorization requires a user account, credentials, service plan, and organization permissions; projects that lack these prerequisites remain explicitly pending acceptance.
 
-## MCP 初始化超时与诊断
+<a id="mcp-初始化超时与诊断"></a>
+## MCP Initialization Timeout and Diagnostics
 
-自定义连接器的高级 JSON 配置支持 `startup_timeout`（毫秒，至少 1000，最大为
-JavaScript 安全整数）；原有 `timeout` 仍是工具请求超时。例：
+Advanced JSON configuration for custom connectors supports `startup_timeout` in milliseconds (minimum 1000, maximum JavaScript safe integer); the existing `timeout` remains the tool-request timeout. Example:
 `{"mcpServers":{"research":{"url":"https://example.invalid/mcp","startup_timeout":120000,"timeout":60000}}}`。
-JSON 与表单切换及再次保存保留启动超时；本次不增加表单控件。未设置时维持现有默认行为。
+Switching between JSON and form views and saving again preserves the startup timeout; this does not add a form control. If unset, the existing default behavior remains.
 
-显式启动预算覆盖 Serve bridge 的连接、initialize 和首次工具发现，并透传到 Runtime
-和 Codex 的 `startup_timeout_sec`；工具请求继续使用独立预算。超时不自动重放工具，
-关闭仍等待所属连接任务收尾，不将定时器触发当作原生进程已结束。
-初始化失败记录固定阶段、服务器标识摘要、数值 errno/Windows 系统码与关联号，
-不记录原始异常正文、命令、路径和凭据。日志写入失败不改变原始初始化结果。
+An explicit startup budget covers connection, initialization, and first tool discovery in the Serve bridge, and is passed through to Runtime and Codex as `startup_timeout_sec`; tool requests continue to use a separate budget. A timeout does not automatically replay a tool. Shutdown still waits for the associated connection task to finish and does not treat a timer firing as proof that the native process has exited.
+Initialization failures record a fixed stage, server-identifier digest, numeric errno/Windows system code, and correlation ID; they do not record raw exception text, commands, paths, or credentials. A log-write failure does not change the original initialization result.
 
-关闭/停用与启动超时是不同控制：关闭会取消尚在连接、initialize 或首次发现阶段的
-所属 transport 任务，并等待 SDK 上下文与进程清理完成；已准入的工具调用仍先排空。
-关闭调用者被取消时，独立清理任务继续并被等待，不将发出取消视为清理结束。
-关闭后不再接收新 start，bridge 的冷启动也遵守同一关闭协议。
+Shutdown/disable and startup timeout are separate controls. Shutdown cancels the associated transport task if it is still connecting, initializing, or performing first discovery, and waits for SDK context and process cleanup to finish; already admitted tool calls are drained first. If the shutdown caller is cancelled, the independent cleanup task continues and is awaited; issuing cancellation does not count as completed cleanup. After shutdown, no new start is accepted, and bridge cold startup follows the same shutdown protocol.

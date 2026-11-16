@@ -1,189 +1,101 @@
-# 文献入库与授权全文读取
+<a id="文献入库与授权全文读取"></a>
+# Literature Import and Authorized Full-Text Reading
 
-科研结果提供添加到文献库、仅添加元信息及 BibTeX 导出；只有精确检索卡片、且所选论文确实已下载完成时，才多一条复用这些已下载字节的「元信息和全文」入库。授权全文获取用于 Agent 读取证据，不自动入库，也不另存 PDF。资料复制与关联另见[资源导入](imports.md)。
+Research results offer adding to the literature library, adding metadata only, and BibTeX export. Only a precise-search card with a paper that has actually finished downloading offers an additional “metadata and full text” import option that reuses those downloaded bytes. Authorized full-text acquisition lets the Agent read evidence; it does not automatically import the paper or save another PDF. For resource copy and linking, see [Resource Import](imports.md).
 
-- [科研结果](../../apps/desktop/src/renderer/src/features/literature/Results.tsx) 持有对话结果入口；[入库与导出](../../apps/desktop/src/renderer/src/features/literature/Search.tsx) 复用现有文献工作台能力。
-- [全文获取](../../apps/serve/service/literature/api/acquire.py) 绑定当前任务和授权；[托管读取](../../apps/serve/service/literature/service/fulltexts.py) 解析可读文献和历史引用，不将缓存或历史回执写入新的库记录。
-- [已下载全文复用](../../apps/serve/service/literature/service/holdings.py) 判定本会话已经下载完成的 PDF 并只挂载这些字节，不重新下载；[结果路由](../../apps/serve/service/literature/api/result.py) 对非精确检索来源直接拒绝。
+- [Research results](../../apps/desktop/src/renderer/src/features/literature/Results.tsx) owns the conversation-result entry point; [library import and export](../../apps/desktop/src/renderer/src/features/literature/Search.tsx) reuse existing literature-workbench capabilities.
+- [Full-text acquisition](../../apps/serve/service/literature/api/acquire.py) binds the current task and authorization; [managed reads](../../apps/serve/service/literature/service/fulltexts.py) resolve readable papers and historical citations without writing cache or historical receipts into new library records.
+- [Reuse of downloaded full text](../../apps/serve/service/literature/service/holdings.py) identifies PDFs whose downloads completed in the current session and mounts only those bytes without downloading again; the [result route](../../apps/serve/service/literature/api/result.py) rejects non-precise-search sources directly.
 
-## 准入、身份与成果生命周期
+<a id="准入身份与成果生命周期"></a>
+## Admission, Identity, and Artifact Lifecycle
 
-### 搜索栏任务与对话结果是不同生命周期
+<a id="搜索栏任务与对话结果是不同生命周期"></a>
+### Search-Bar Tasks and Conversation Results Have Different Lifecycles
 
-文献库搜索栏由[搜索任务 Owner](../../apps/serve/service/literature/persistence/search.py)
-持有目录、状态与后台消费，固定调用 `builtin:fast-search`；搜索栏关键词已确定，
-不采用精准检索对话的多轮澄清。两者复用结果展示并不意味着共享任务、确认或删除账本。
-[搜索 API](../../apps/serve/service/literature/api/search.py) 只接受 query 与服务端任务 ID，
-任务归属经 owner 校验；不让客户端提交 cwd、Skill 路径或任意运行配置。
-Invocation 的受信 workspace 是服务端内部绑定，不能为复用检索开放公开 raw cwd，
-也不在文献域复制 Runtime 执行链。
+The literature-library search bar is owned by the [search-task Owner](../../apps/serve/service/literature/persistence/search.py), which manages its directory, state, and background consumption and always calls `builtin:fast-search`. Search-bar keywords are already determined, so the flow does not use the multi-turn clarification of precise-search conversations. Sharing result presentation does not mean the two flows share task, confirmation, or deletion ledgers.
+The [search API](../../apps/serve/service/literature/api/search.py) accepts only a query and server-side task ID; task ownership is checked by owner. Clients cannot submit cwd, Skill paths, or arbitrary runtime configuration.
+Invocation's trusted workspace is bound internally by the server. Do not expose a public raw cwd to reuse search, and do not duplicate the Runtime execution chain in the literature domain.
 
-活动任务通过内存事件通道按 seq 重放和跟随，先订阅再重放避免中间遗漏；
-断开订阅只解除订阅者，不等于中断后台任务。任务创建与 `result.completed` 保存状态，
-不是逐事件持久化。成功 Runtime 终态与有效检索结果分别判断；缺失、非法或多份 metadata
-不能冒充有效论文结果。重启后磁盘非 completed 状态只读投影为 `search_interrupted`，
-不伪造 native Turn resume、不回写另一个进程的任务状态。
+Active tasks are replayed and followed by sequence number over an in-memory event channel. Subscribe before replay to avoid missing events in between. Disconnecting a subscriber only unsubscribes it; it does not interrupt the background task. Task creation and `result.completed` save state; individual events are not persisted. A successful Runtime terminal state and a valid search result are checked separately. Missing, invalid, or multiple metadata files must not be treated as a valid paper result. After restart, non-completed states on disk are projected read-only as `search_interrupted`; do not fabricate native Turn resumption or write back task state from another process.
 
-删除先中断并等待活动消费，必要时取消本地消费，再移出内存注册表并回收精确目录。
-目录删除失败时尝试普通 `deleted.flag`，读侧忽略已标记任务，下次构造服务重试清扫。
-这是可推迟回收，不能用立即物理删除作为跨平台承诺；标记写入也可能失败并记录错误，
-因此不能把 DELETE 正常返回或源码注释视为“任何故障下永不重新出现”的保证。
-当前路径预检、标记创建与 rmtree 机制不等于对任意并发路径替换完成了安全证明。
+Deletion first interrupts and waits for active consumption, cancels local consumption if needed, then removes the task from the in-memory registry and reclaims the exact directory.
+If directory deletion fails, the service attempts to write a regular `deleted.flag`; readers ignore marked tasks, and the next service construction retries cleanup. Reclamation can be deferred, so immediate physical deletion is not a cross-platform promise. Writing the marker can also fail and report an error; therefore, a successful DELETE response or a source comment is not a guarantee that the item can never reappear under any failure.
+Current path preflight, marker creation, and `rmtree` behavior do not constitute a security proof against arbitrary concurrent path replacement.
 
-修改任务存储、删除、重放或 Invocation 绑定时，分别验证创建/成功快照写入失败、
-重启投影、运行中关闭、延迟回收及标记失败，以及实际 Desktop 断线与重启恢复。
-macOS 的目录删除结果不能代替 Windows 句柄共享与 reparse 行为；真实产品检索、
-断线与重启恢复须分别验收，旧实机计划不等于当前结果。
+When changing task storage, deletion, replay, or Invocation binding, separately verify failure while writing creation/success snapshots, restart projection, shutdown during execution, deferred reclamation and marker failure, plus actual Desktop disconnect and restart recovery.
+macOS directory-deletion results do not substitute for Windows handle-sharing and reparse behavior. Real product search, disconnect, and restart recovery require separate acceptance; an old device-test plan is not a current result.
 
-### 检索结果展示不等于下载或入库
+<a id="检索结果展示不等于下载或入库"></a>
+### Showing Search Results Does Not Mean Downloading or Importing Them
 
-[结果投影 Owner](../../apps/serve/service/literature/service/result.py) 只读取调用方明确
-给出的 run 相对路径及其文件指针，不扫描另一个 run 或改写技能成果。它校验确认意图、
-run/轮次、非占位 metadata、状态与论文列表一致性；来源统计缺失保持未知并提示，
-已记录来源全部失败时拒绝携带论文的成功结果。部分来源失败降为 partial，不能补造计数。
+The [result-projection Owner](../../apps/serve/service/literature/service/result.py) reads only the run-relative path and file pointers explicitly supplied by the caller; it does not scan another run or rewrite Skill artifacts. It validates confirmation intent, run/turn, non-placeholder metadata, and consistency between status and the paper list. Missing source statistics remain unknown and are surfaced as a notice. If all recorded sources failed, a successful result containing papers is rejected. Partial source failure lowers the result to partial; counts must not be fabricated.
 
-[发布与读取路由](../../apps/serve/service/literature/api/result.py) 经 live Bridge 和当前
-publication turn 绑定发布，异步准备、产物发布后重新核对调用身份与轮次。metadata/report
-按预期 hash 交给既有 artifact Owner；卡片仅含有界预览，完整结果从 session/card 对应
-产物快照读取，不靠原 run 永久存在。打开列表不能重新检索或自行获得全文授权。
-检索专属澄清和开始确认目前由
-[精准检索 Skill](../../skills/community/precise-literature-search/SKILL.md) 自己拥有；
-不恢复旧方案的宿主先行问答，也不能凭宿主背景或 auto 模式绕过开始确认。
-具体交互流程只维护在 Skill，不在本页复制。
+The [publication/read route](../../apps/serve/service/literature/api/result.py) publishes through the live Bridge bound to the current publication turn and rechecks caller identity and turn after asynchronous preparation and artifact publication. It passes metadata/report with expected hashes to the existing artifact Owner. Cards contain only bounded previews; the complete result is read from the artifact snapshot associated with the session/card and does not depend on the original run continuing to exist. Opening the list cannot trigger a new search or grant full-text authorization by itself.
+Clarification and start confirmation specific to search are currently owned by the [Precise Literature Search Skill](../../skills/community/precise-literature-search/SKILL.md). Do not restore host-first questions from the old design or bypass start confirmation based on host context or auto mode.
+The Skill remains the sole source for the specific interaction flow; this page does not duplicate it.
 
-[库状态 Owner](../../apps/serve/service/literature/service/status.py) 按实际项目文献视图
-查询，DOI 规范化优先，题名规范化匹配时排除已知 DOI 或年份冲突。当前同论文命中多行
-仍返回 matched，不采用旧提案的多解一律 ambiguous；这只回答库内存在性，不自动去重、
-合并或代表检索结果已获全文。查询错误返回 unavailable，不能当作 absent。
-[客户端加载](../../apps/desktop/src/renderer/src/features/literature/api.ts) 将库状态分批
-查询；非取消的单批失败保留全部论文及其余已知状态，显式标记未知，不丢弃结果或重新检索。
+The [library-status Owner](../../apps/serve/service/literature/service/status.py) queries the actual project literature view, prioritizing normalized DOI and then matching normalized titles while excluding known DOI or year conflicts. Multiple rows for the same paper currently still return `matched`; the old proposal's rule that all multiple matches are `ambiguous` is not used. This reports only whether the item exists in the library; it does not deduplicate, merge, or mean that search results have full-text authorization. Query errors return `unavailable`, not `absent`.
+The [client loader](../../apps/desktop/src/renderer/src/features/literature/api.ts) queries library state in batches. If a batch fails for a reason other than cancellation, all papers and other known states are retained and explicitly marked unknown; results are not dropped and search is not rerun.
 
-变更这些边界时核对
-[结果契约](../../apps/serve/tests/contract_literature_result.py) 的非改写、路径/轮次、
-统计缺失、来源失败、快照恢复与项目匹配场景，再验真实对话确认、结果展开和错误反馈。
-旧提案的检索计数、测试命令或截图不是当前覆盖率、检索查全或真实验收保证。
+When changing these boundaries, check the non-rewrite, path/turn, missing-statistics, source-failure, snapshot-recovery, and project-matching cases in the [result contract](../../apps/serve/tests/contract_literature_result.py), then verify real conversation confirmation, result expansion, and error feedback.
+Search counts, test commands, or screenshots from an old proposal are not guarantees of current coverage, search recall, or real acceptance.
 
-## 全文同意与有效授权范围
+<a id="全文同意与有效授权范围"></a>
+## Full-Text Consent and Effective Authorization Scope
 
-### 任务策略、候选检查点与字节读取边界
+<a id="任务策略候选检查点与字节读取边界"></a>
+### Task Policies, Candidate Checkpoints, and Byte-Read Boundaries
 
-[授权策略注册表](../../apps/serve/service/assistant/service/authorization.py) 当前覆盖
-研究想法、精准检索和文献综述；新增任务应明确注册策略，而不是按中文问题标题推定
-授权。精准检索 selection 与综述 retrieval 的结果路由分别调用产品 gate，绑定校验后的
-候选 refs；[检查点 Owner](../../apps/serve/service/literature/service/checkpoint.py)
-还根据技能产物发现候选。已知任务只观察对应策略，未知任务只观察不要求 task type 的
-策略；文件观察与 PDF API 的活动任务策略判断不是同一道边界，不应混写为通用沙箱保护。
+The [authorization-policy registry](../../apps/serve/service/assistant/service/authorization.py) currently covers research ideas, precise search, and literature review. New tasks must explicitly register a policy instead of inferring authorization from a Chinese question title. Result routes for precise-search selection and review retrieval each call a product gate and bind validated candidate refs; the [checkpoint Owner](../../apps/serve/service/literature/service/checkpoint.py) also discovers candidates from Skill artifacts. Known tasks observe only their corresponding policy; unknown tasks observe only policies that do not require a task type. File observation and active-task policy checks in the PDF API are different boundaries and should not be conflated as general sandbox protection.
 
-持久化 challenge 绑定 session、snapshot、turn、授权类型与候选范围；允许必须来自
-原 challenge 对应的已 resolved HIL 决议。[任务身份](../../apps/serve/service/platform/context.py)
-经 [Chat 租约](../../apps/serve/service/chat/service/tasks.py) 验证后，授权账本以任务身份和
-候选 refs 计算范围指纹：同一任务跨回合可复用原同意，新增候选只判断未决定范围；
-不同任务即使候选相同也不能互借。没有经验证的任务身份时仍限于原回合或产品显式
-绑定的 continuation，旧记录不追认任务身份。跨回合同意不延长执行租约；接入该
-策略的获取和读取入口仍须核对当前回合、任务及有效 refs。pending、未知、拒绝或无法匹配的答复
-不能产生有效 grant；grant 仍须经下文的子集派生，不能把允许动作直接当候选全集权限。
+The persisted challenge binds session, snapshot, turn, authorization type, and candidate scope. Permission must come from a resolved HIL decision corresponding to the original challenge. After [task identity](../../apps/serve/service/platform/context.py) is validated through the [Chat lease](../../apps/serve/service/chat/service/tasks.py), the authorization ledger computes a scope fingerprint from task identity and candidate refs: the same task may reuse its original consent across turns, while newly added candidates are evaluated only for the undecided scope. Different tasks cannot share consent even if their candidates are identical. Without a verified task identity, authorization remains limited to the original turn or a continuation explicitly bound by the product; old records do not retroactively establish task identity. Cross-turn consent does not extend an execution lease. Acquisition and read entry points using this policy must still check the current turn, task, and effective refs. Pending, unknown, denied, or unmatched responses cannot create a valid grant; the grant still requires subset derivation below, and an allowed action must not be treated as permission for the full candidate set.
 
-**current（源码，操作确认）**：全文门禁的产品问句默认没有超时。只有经验证的任务范围、
-已实际应用的 `safe_auto` 及未变更的提交/中断代次，才能生成当前候选集合的自动决议；
-合法的非持久任务租约仅授权当前回合，不因缺少跨回合任务键而退化为未验证任务，也不跨回合复用。
-自动决议仍落在原 HIL 账本并发布已解决回执，不推广到系统权限或其他任务。未知结果不自动批准。
-拒绝后的重新授权经文献域入口核对当前 owner、任务绑定与候选身份，产生新的待确认问句，
-不改写原拒绝回执、不直接授予读取权限；重复提交复用同一新请求，响应丢失先只读对账。
-空闲续接先保存当前上下文并传递版本，冷会话的空提交标识仍是受校验的来源；附件范围指纹不计入论文篇数。
-这些机制的确定性契约不替代真实等待、拒绝/恢复、自动批准及两平台产品验收。
+**current (source, operational confirmation)**: Product questions for the full-text gate have no timeout by default. An automatic decision for the current candidate set can be generated only with a verified task scope, an actually applied `safe_auto`, and unchanged submission/interruption generations. A valid non-persistent task lease authorizes only the current turn; lacking a cross-turn task key does not downgrade it to an unverified task, and it cannot be reused across turns.
+The automatic decision is still recorded in the original HIL ledger and publishes a resolved receipt; it does not extend to system permissions or other tasks. Unknown results are not automatically approved.
+After denial, reauthorization through the literature-domain entry point checks the current owner, task binding, and candidate identity and creates a new pending confirmation question. It does not rewrite the original denial receipt or directly grant read access. Repeated submissions reuse the same new request; if the response is lost, first reconcile read-only.
+Idle continuation first saves the current context and passes its version. The empty submission identity of a cold session remains a validated source; attachment scope fingerprints are not counted as papers.
+Deterministic contracts for these mechanisms do not replace product acceptance of real waiting, denial/recovery, automatic approval, and both platforms.
 
-metadata 可向模型展示，不等于服务端从未读取 PDF 字节。
-[文献目录服务](../../apps/serve/service/literature/service/evidence.py) 当前为条目查询页数，
-[PDF Owner](../../apps/serve/service/literature/service/pdf.py) 通过读取托管 PDF 后解析获得
-页数。因此“目录列举完全不读原文字节”仍是未满足的要求，不能由字段仅含题录、页数
-或 PDF Bridge 跳过 metadata 操作推出。调整时需同时明确模型可见内容、服务端字节读取
-和授权适用范围，不在知识迁移中擅自改行为，也不将旧提案的差距全部视为已闭合。
+Metadata being visible to the model does not mean the server has never read PDF bytes.
+The [literature-catalogue service](../../apps/serve/service/literature/service/evidence.py) currently queries page counts for items; the [PDF Owner](../../apps/serve/service/literature/service/pdf.py) obtains page counts by reading and parsing managed PDFs. Thus, the requirement that “catalogue listing never reads source bytes” remains unmet. It cannot be inferred from fields containing only bibliographic metadata/page count or from the PDF Bridge skipping a metadata operation. When changing this, specify model-visible content, server-side byte reads, and authorization scope together. Do not change behavior as part of knowledge migration or assume all gaps from old proposals are closed.
 
-获取前检查授权与读取时检查授权承担不同责任：前者避免该通道获取未授权字节，
-后者控制已持有内容进入模型。只更换读取指令不能阻止可读本地副本；产品全文同意、
-运行时命令审批与操作系统文件权限也互不蕴含。修改时分别核对匿名出网、既有下载接口、
-浏览器/付费路线、本地副本和派生文本，不借一个成功门禁宣称所有获取口已收口。
+Authorization checks before acquisition and at read time serve different purposes: the former prevents this channel from obtaining unauthorized bytes; the latter controls whether held content enters the model. Changing read instructions alone cannot prevent access to readable local copies. Product full-text consent, runtime command approval, and operating-system file permissions also do not imply one another. When changing this, check anonymous network access, existing download APIs, browser/paid routes, local copies, and derived text separately. Do not use one passing gate to claim all acquisition paths are closed.
 
-[全文授权 Owner](../../apps/serve/service/assistant/service/authorization.py) 从持久化产品决议
-派生有效 refs，授权账本保存被询问的候选范围，不另建技能授权账本。`require` 检查
-经验证的同任务范围；无有效任务身份时，仅检查当前轮或产品显式绑定的 continuation
-及其有效 refs。技能的 selection 文件不能作为独立授权真源。
-当前 [获取服务](../../apps/serve/service/literature/service/acquire.py) 保存托管对象登记并
-返回 `paper:<id>`；[引用解析](../../apps/serve/service/assistant/service/citations.py) 识别
-此类托管 ref。它不是旧提案设想的 `literature:<id>` 文献库条目，不能按前缀相似度
-混用身份或把临时获取自动等同永久入库。
-[候选投影](../../apps/serve/service/literature/service/result.py) 当前不再将 selection 的
-artifact hash 拼入 challenge refs；候选身份与授权后技能成果的变动应分开判断。
+The [full-text authorization Owner](../../apps/serve/service/assistant/service/authorization.py) derives effective refs from persisted product decisions. The authorization ledger stores the candidate scope that was asked about; there is no separate Skill authorization ledger. `require` checks a verified scope for the same task. Without a valid task identity, it checks only the current turn or a product-explicitly bound continuation and its effective refs. A Skill selection file is not an independent authorization source of truth.
+The current [acquisition service](../../apps/serve/service/literature/service/acquire.py) stores managed-object registration and returns `paper:<id>`; [citation resolution](../../apps/serve/service/assistant/service/citations.py) recognizes this managed ref. It is not the literature-library item `literature:<id>` envisioned by the old proposal. Do not conflate identities based on similar prefixes or treat temporary acquisition as permanent library import.
+The [candidate projection](../../apps/serve/service/literature/service/result.py) no longer appends selection artifact hashes to challenge refs. Candidate identity and changes to Skill artifacts after authorization should be evaluated separately.
 
-当前实现有明确的兼容边界：`decision_disposition` 判断允许动作；范围策略的
-`derive_granted_scope` 再读取 `values.selected_paper_ids`。缺少 values 或该字段时
-回退候选全集，非法或越界列表得到空范围。因此“动作被标为 authorized”、
-“实际有可用 refs”和“用户结构化选择非空子集”不是同一事实；不能宣称缺字段均拒绝。
-收紧此边界需同时核对卡片生产者、持久化答复和所有授权消费方，而非只改提示词。
+The current implementation has a defined compatibility boundary: `decision_disposition` determines whether the action is allowed; the scope policy's `derive_granted_scope` then reads `values.selected_paper_ids`. If `values` or that field is missing, it falls back to the full candidate set; an invalid or out-of-scope list yields an empty scope. Thus, “the action is marked authorized,” “usable refs actually exist,” and “the user structurally selected a non-empty subset” are not the same fact. Do not claim that a missing field is always rejected.
+Tightening this boundary requires checking card producers, persisted responses, and every authorization consumer, not just changing the prompt.
 
-设计要求由一次产品同意覆盖下载、读取与使用；技能仅提出候选、记录产品结果，
-不持有第二份人工同意。付费、登录或人工介入确认是不同能力边界，不能因去重删除。
-修改授权判据、候选 digest 或 selection 身份时，同批验证授权后改写成果不重复询问、
-不扩大有效范围，以及拒绝、空选择、过期答复和重启恢复。不能单独移除 artifact 身份
-而继续信任可变技能文件来决定 grant。
+The design requires one product consent to cover downloading, reading, and use. The Skill only proposes candidates and records the product result; it does not hold a second human-consent record. Paid access, login, and human-intervention confirmation are separate capability boundaries and must not be removed as a deduplication step.
+When changing authorization criteria, candidate digests, or selection identity, also verify in the same change that authorized results are not asked about again, the effective scope is not expanded, and denial, empty selection, expired responses, and restart recovery work. Do not remove artifact identity while continuing to trust mutable Skill files to determine grants.
 
-账本或 stage 的子集检查不证明所有工具、直接 PDF 读取和下载都经过字节级执行门禁。
-当前 [acquire API](../../apps/serve/service/literature/api/acquire.py) 在获取前逐篇检查
-`paper:<id>` 的有效授权，下载准入检查整批 refs；
-[PDF Bridge](../../apps/serve/service/assistant/api/citations.py) 在活动任务策略下对
-非元数据操作检查对应 ref。因此旧提案“精准检索没有 serve 中介、只有 stage 软检查”
-不再是当前描述，也不能反向由这些接点推断全部工具已隔离。无活动策略、直接本地读取
-和其他入口的语义须各自核对，不能用单个 API 的门禁覆盖它们。
-需要逐个核对实际入口的 ref lineage、任务租约和执行权限；未证明的路径保持缺口，
-不从历史沙箱实验外推当前宿主或另一平台。相关确定性检查见
-[全文门禁契约](../../apps/serve/tests/contract_fulltext_gate.py)，真实同意次数及拒绝后
-行为另需产品 transcript/trace；知识迁移本身不构成该功能验收。
+Ledger or stage subset checks do not prove that all tools, direct PDF reads, and downloads pass byte-level execution gates.
+The current [acquire API](../../apps/serve/service/literature/api/acquire.py) checks effective authorization for each `paper:<id>` before acquisition; download admission checks the entire set of refs. The [PDF Bridge](../../apps/serve/service/assistant/api/citations.py) checks the corresponding ref for non-metadata operations under an active task policy. Therefore, the old proposal's statement that “precise search has no Serve intermediary and only a soft stage check” is no longer current. Conversely, these integration points do not prove that all tools are isolated. Semantics for no active policy, direct local reads, and other entry points must be checked individually; a gate in one API cannot stand in for all of them.
+Check ref lineage, task lease, and execution permissions for every actual entry point. Unproven paths remain gaps; do not extrapolate from historical sandbox experiments to the current host or another platform. See the deterministic checks in the [full-text gate contract](../../apps/serve/tests/contract_fulltext_gate.py). Actual consent counts and post-denial behavior also require product transcripts/traces; a knowledge migration is not acceptance of this feature.
 
-托管全文禁止通过 materialize 整篇回写工作区，普通文档能力不因此全局删除；
-见 [materialize 判据](../../apps/serve/service/assistant/api/citations.py)。返回片段、引用
-持久化、缓存与运行时会话存档仍是不同保留面，不能承诺撤回授权会清除已进入上下文
-的全部内容。生命周期变更另核历史引用、恢复与清理消费者，不以收口某个落盘路径
-代替全文数据流验证，也不通过扩大日志内容取得审计证据。
+Managed full text must not be written back to the workspace as a whole through materialization; ordinary document capabilities are not removed globally. See the [materialization criteria](../../apps/serve/service/assistant/api/citations.py). Returned snippets, citation persistence, cache, and runtime-session archives are separate retention surfaces; do not promise that revoking authorization clears all content already included in context. For lifecycle changes, also check historical-citation, recovery, and cleanup consumers. Do not substitute closing one disk-write path for full-text data-flow verification, or expand log contents to obtain audit evidence.
 
-产品卡片当前以结构化 values 回传子集，Skill 正文要求不再单独询问下载范围或
-reading confirmation；这属于已存在的指令和代码机制，不是“真实流程只问一次”的证据。
-[技能输入契约](../../skills/community/precise-literature-search/references/integration-contracts.md)
-对 selection 的候选/确认语义仍有张力，且 Skill 同时要求不在沙箱获取 PDF、允许读取
-付费路线留下的本地 PDF。修改相关路径时先明确其适用范围及授权消费，不能把文档矛盾
-当作已取消的入口或在知识迁移中擅自修改产品 Skill 的运行指令。
+The product card currently returns a subset through structured `values`, and the Skill text says not to ask separately about download scope or reading confirmation. These are existing instruction and code mechanisms, not evidence that “the real flow asks only once.”
+The [Skill input contract](../../skills/community/precise-literature-search/references/integration-contracts.md) still has tension in the candidate/confirmation semantics for selection. The Skill also says not to acquire PDFs in the sandbox while allowing local PDFs left by paid-access routes to be read. Before changing related paths, clarify their scope and authorization consumers. Do not treat the document contradiction as an entry point that has been cancelled, or modify product Skill runtime instructions during a knowledge migration.
 
-## 题录入库是显式操作
+<a id="题录入库是显式操作"></a>
+## Bibliographic Import Is an Explicit Action
 
-对话中的文献查看入口复用[简洁检索回执](../../apps/desktop/src/renderer/src/features/literature/Summary.tsx)
-和[工作区结果页](../../apps/desktop/src/renderer/src/features/literature/Results.tsx)，不再内联展示独立的相关文献大列表。
-想法生成的 `citations` 检查点从 `references.json` 发布实际引用子集，使用独立的
-`research-idea-citations` 来源和冻结快照；不合并检索候选、不改全文授权、不删除正文引用。
-[结果页的入库操作](../../apps/desktop/src/renderer/src/features/literature/Search.tsx)复用
-[前端 API](../../apps/desktop/src/renderer/src/features/literature/api.ts)和
-[题录导入路由](../../apps/serve/service/literature/api/catalogue.py)。它是用户主动导入，
-不是展示结果自动入库；项目/分类范围由服务端校验。
+The conversation's literature-view entry reuses the [compact search receipt](../../apps/desktop/src/renderer/src/features/literature/Summary.tsx) and [workspace results page](../../apps/desktop/src/renderer/src/features/literature/Results.tsx); it no longer embeds a separate large related-literature list.
+The idea-generation `citations` checkpoint publishes the actual cited subset from `references.json`, using an independent `research-idea-citations` source and frozen snapshot. It does not merge search candidates, change full-text authorization, or remove citations from the body.
+The [import action on the results page](../../apps/desktop/src/renderer/src/features/literature/Search.tsx) reuses the [frontend API](../../apps/desktop/src/renderer/src/features/literature/api.ts) and [bibliographic import route](../../apps/serve/service/literature/api/catalogue.py). It is an explicit user import, not an automatic import when results are displayed; the server validates project/category scope.
 
-精确检索卡片的批量入库多一条「元信息和全文」腿，判据是服务端核验的下载事实，不是元数据
-里的 `access` 预测：[已下载全文复用](../../apps/serve/service/literature/service/holdings.py)
-只认两条证据 —— 本次会话在 `literature_deliveries` 里绑定、且托管目录里字节仍在的 bridge
-下载，或 scoped 读到 run 目录里真实存在的 PDF（`downloads/manifest.json` 只用于指路，
-模型可写，不作证据）。非精确检索来源返回 400，界面也不渲染加入方式选择；查询失败或
-一篇都没有时同样退回仅元信息。入库只经附件域唯一入口挂载这些字节，不产生第二次下载，
-已有可用主附件时保持原样；挂载失败不把已成功的题录入库说成失败，只在提示里分开计数。
+Batch import from a precise-search card adds a “metadata and full text” option. Its criterion is a server-verified download fact, not a prediction in metadata's `access` field. [Downloaded full-text reuse](../../apps/serve/service/literature/service/holdings.py) recognizes only two evidence types: a Bridge download bound to this session in `literature_deliveries` with bytes still in the managed directory, or a PDF that actually exists in the run directory and is read through scoped access (`downloads/manifest.json` is only a locator, is writable by the model, and is not evidence). Non-precise-search sources return 400, and the UI does not render the import-mode choice. If the query fails or returns no papers, it also falls back to metadata-only. Import mounts these bytes only through the attachment domain's sole entry point and does not download again. An existing usable primary attachment remains unchanged. A mount failure does not turn a successful bibliographic import into a failure; the notice reports the counts separately.
 
-[元数据转换](../../apps/serve/service/literature/service/metadata.py)使用无题录语义的新 ID，
-每次导入追加独立记录，不按 DOI/标题探测或覆盖已有文献。旧 `preview`、
-`preserve_existing`、`resolved_ids` 合并方案已被替代，不恢复为去重或重放保证。
-卡片 `saved` 只提供当前组件生命周期内本次添加的反馈，不证明跨卡片、重新挂载或
-重启后的库内存在性；前端发送 `Idempotency-Key` 也不能据此推断此路由有幂等处理。
+The [metadata conversion](../../apps/serve/service/literature/service/metadata.py) uses a new ID without bibliographic semantics; each import appends an independent record and does not search or overwrite existing literature by DOI/title. The old `preview`, `preserve_existing`, and `resolved_ids` merge proposal has been superseded; do not restore it as a deduplication or replay guarantee.
+Card `saved` feedback covers only the current addition during the component's lifetime. It does not prove library presence across cards, remounts, or restarts. A frontend `Idempotency-Key` does not prove that this route implements idempotency.
 
-BibTeX 映射保留真实 URL 等支持字段；卡片 `claim` 不是论文摘要，`has_fulltext`
-不证明已有本地 PDF。只有返回真实导入 ID 才记录添加成功，缺失 ID 或请求失败保留错误，
-不能借展示卡片成功宣称题录或全文已保存。字段、事务和范围变化分别覆盖
-[导入契约](../../apps/serve/tests/contract_literature_import.py)与
-[存储契约](../../apps/serve/tests/contract_literature_store.py)，另验真实卡片添加及错误反馈。
-历史调查中的重复合并、跨重启已添加和旧实机截图不是当前验收证据。
+BibTeX mapping preserves supported fields such as real URLs. A card's `claim` is not a paper abstract, and `has_fulltext` does not prove that a local PDF exists. Record an addition as successful only when a real import ID is returned. If the ID is missing or the request fails, retain the error; a successfully displayed card does not prove that metadata or full text was saved. Changes to fields, transactions, and scope should cover the [import contract](../../apps/serve/tests/contract_literature_import.py) and [store contract](../../apps/serve/tests/contract_literature_store.py), plus real card import and error feedback. Duplicate merging, cross-restart added-state, and old device screenshots from historical investigations are not current acceptance evidence.
 
-## 验证与更新条件
+<a id="验证与更新条件"></a>
+## Verification and Update Conditions
 
-覆盖[获取与授权回执](../../apps/serve/tests/contract_literature_acquire.py)、[全文门禁](../../apps/serve/tests/contract_fulltext_gate.py)、[结果契约](../../apps/serve/tests/contract_literature_result.py)和[已下载全文复用契约](../../apps/serve/tests/contract_literature_holdings.py)。产品验收需要真实 Desktop 检索、入库、仅添加元信息和 BibTeX 导出，精确检索卡片在已有下载完成论文时的「元信息和全文」入库及其计数提示，以及授权后可读、拒绝后不可读。
+Cover the [acquisition and authorization receipt](../../apps/serve/tests/contract_literature_acquire.py), [full-text gate](../../apps/serve/tests/contract_fulltext_gate.py), [result contract](../../apps/serve/tests/contract_literature_result.py), and [downloaded full-text reuse contract](../../apps/serve/tests/contract_literature_holdings.py). Product acceptance requires a real Desktop flow for search, import, metadata-only import, and BibTeX export; “metadata and full text” import from a precise-search card when a paper has already finished downloading, including its count notice; and readable content after authorization and unreadable content after denial.

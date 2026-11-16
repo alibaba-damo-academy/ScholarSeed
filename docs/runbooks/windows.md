@@ -1,146 +1,116 @@
-# Windows 问题收集与解决方法
+<a id="windows-问题收集与解决方法"></a>
+# Collecting and Resolving Windows Issues
 
-本页收集 Windows 开发、启动和排查中实际遇到的问题，记录现象、依据、处理办法与
-验证边界。它不是放宽权限的白名单，也不是所有机器都适用的一键修复脚本。
+This page records problems encountered in Windows development, startup, and troubleshooting, including symptoms, evidence, handling, and verification boundaries. It is not a permission-relaxation whitelist or a one-click repair script that applies to every machine.
 
-版本、工具链来源和构建机制以[构建指南](build.md)、
-[开发入口](development.md#工具链与支持入口)及实际 Owner 源码为准；
-真实产品检查遵循[Desktop 调试 工程规范](development.md)。
+Use the [build guide](build.md), [development entry point](development.md#工具链与支持入口), and actual Owner source as the authority for versions, toolchain sources, and build mechanisms. Real-product checks follow the [Desktop debugging engineering specification](development.md).
 
-## 1. 先判断卡在哪一层
+<a id="1-先判断卡在哪一层"></a>
+## 1. First Identify Which Layer Is Stuck
 
-| 最后看到的现象 | 优先检查 | 不能据此下的结论 |
+| Last observed symptom | Check first | What you must not conclude from it |
 | --- | --- | --- |
-| `expected ... Install the declared ... version` | Node/npm/uv 的实际路径和版本 | 不是 npm 依赖缺失，也不是业务 Bug |
-| `MethodInvocationNotSupportedInConstrainedLanguage` | 哪段脚本调用了受限方法 | 不等于需要管理员权限；改 ExecutionPolicy 不等于解除语言模式 |
-| `writable or replaceable build state ACL` | 报错路径及其全部父目录的 owner、有效写入/替换权限 | 不能只保护叶目录，或直接删除报错 ACE |
-| `directory-test.exe 0` 失败 | 测试的临时根、实际退出状态与输出 | 命令名本身不能证明具体 ACL 分支失败 |
-| `backend startup failed pid=null`、`ERR_LEASE_PERMISSION` | 后端进程创建之前的目录资格步骤 | 同一错误码不一定来自同一目录；不是模型授权失败 |
-| `backend ready`，主窗口未显示 | renderer 加载、启动屏、主窗口可见状态 | 进程或 health 成功不等于用户已经能交互 |
-| 模型列表缺失、置灰或调用被拒绝 | 真实 UI、内置模型目录、个人连接及各自登录状态 | 缺 `model_profiles.json` 不等于没有可用内置模型 |
+| `expected ... Install the declared ... version` | Actual Node/npm/uv paths and versions | This is not a missing npm dependency or a product Bug |
+| `MethodInvocationNotSupportedInConstrainedLanguage` | Which script called a restricted method | It does not mean administrator privileges are needed; changing ExecutionPolicy does not remove language-mode restrictions |
+| `writable or replaceable build state ACL` | Owners and effective write/replace permissions on the reported path and all its parent directories | Protecting only the leaf directory is insufficient; do not directly delete the reported ACE |
+| `directory-test.exe 0` failure | The test's temporary root, actual exit status, and output | The command name alone does not establish which ACL branch failed |
+| `backend startup failed pid=null`, `ERR_LEASE_PERMISSION` | Directory-qualification steps before backend-process creation | The same error code may come from different directories; this is not a model-authorization failure |
+| `backend ready`, but the main window is not shown | Renderer loading, splash screen, and main-window visibility | A running process or successful health check does not mean the user can interact |
+| Missing or disabled model list, or a rejected invocation | The real UI, built-in model catalog, personal connections, and each one's sign-in state | Missing `model_profiles.json` does not mean no built-in models are available |
 
-排查保留实际报错顺序。每处理一层重新观察下一层，不把后续错误当成同一问题，也不
-把启动完成写成模型、工具、HIL 或原业务 Bug 已验收。
+Preserve the actual order of reported errors while troubleshooting. After handling each layer, observe the next one; do not treat later errors as the same problem, and do not report startup completion as acceptance of the model, tools, HIL, or original product Bug.
 
-## 2. 本次完整案例：开发版从无法启动到显示主窗口
+<a id="2-本次完整案例开发版从无法启动到显示主窗口"></a>
+## 2. Complete Case: From a Development Build That Would Not Start to a Visible Main Window
 
-### 环境与结论
+<a id="环境与结论"></a>
+### Environment and Conclusion
 
-- 日期：2026-10-17；Windows x64；从 `D:\DeepR_D` 执行根 `npm run dev`。
-- 当次通过检查的工具：Node 24.16.0、npm 11.13.0、uv 0.12.11；Python 3.12.13、
-  SQLite 3.53.1。这里只记录当次环境，不作为后续版本要求。
-- 成功启动时，主工作区已有 `build-state.cjs`、`cache.test.cjs`、`BUILD.md` 的未提交改动，
-  其中构建 ACL 检查已改用兼容 ConstrainedLanguage 的 PowerShell cmdlet。
-  排查没有覆盖或提交这些既存改动；不能声称相同环境变量能使旧版检查代码也通过。
-- 本次启动恢复采用**仅作用于启动进程的环境变量**，将构建缓存、临时根和默认工作目录
-  放到经过现有校验的专属目录。没有修改系统语言策略、既有共享目录 ACL 或授权规则。
-- 保留原 `C:\Users\gaoquan\.scholarseed` 数据和模型配置；没有复制或注入登录凭证，
-  没有迁移历史项目或修改已有会话。
+- Date: 2026-10-17; Windows x64; ran root `npm run dev` from `D:\DeepR_D`.
+- Tools that passed checks at that time: Node 24.16.0, npm 11.13.0, uv 0.12.11; Python 3.12.13 and SQLite 3.53.1. These describe only that environment at that time; they are not future version requirements.
+- At successful startup, the main workspace already had uncommitted changes to `build-state.cjs`, `cache.test.cjs`, and `BUILD.md`; the build ACL check among them had been changed to use PowerShell cmdlets compatible with ConstrainedLanguage. Troubleshooting did not overwrite or commit these pre-existing changes. Do not claim that the same environment variables would also make the old check implementation pass.
+- Startup recovery used **environment variables scoped only to the startup process** to place the build cache, temporary root, and default workspace in dedicated directories that passed existing checks. It did not modify system language policy, existing shared-directory ACLs, or authorization rules.
+- Preserved the original `C:\Users\gaoquan\.scholarseed` data and model configuration. No sign-in credentials were copied or injected, and no historical projects were migrated or existing sessions modified.
 
-### WIN-001：默认 Node/npm 与仓库要求不一致
+<a id="win-001默认-nodenpm-与仓库要求不一致"></a>
+### WIN-001: Default Node/npm Does Not Match Repository Requirements
 
-**现象**：启动器报告实际 Node 24.21.0，但当时仓库声明为 24.16.0；默认 npm 也不同。
+**Symptom**: The launcher reported actual Node 24.21.0, while the repository then declared 24.16.0; the default npm version also differed.
 
-**依据**：`.node-version`、`package.json` 和 `scripts/pre/toolchain.cjs` 的实际路径/版本检查。
+**Evidence**: Actual path/version checks in `.node-version`, `package.json`, and `scripts/pre/toolchain.cjs`.
 
-**本次处理**：复用机器上已经存在的匹配工具链，将它们放到本次 PowerShell 的 `PATH`
-前部，再执行 `node scripts/pre/toolchain.cjs check`。没有修改系统 PATH、安装未知全局工具，
-也没有改仓库版本声明来适配宿主。
+**Handling in this case**: Reused matching toolchains already present on the machine, placed them at the front of this PowerShell process's `PATH`, then ran `node scripts/pre/toolchain.cjs check`. Did not change the system PATH, install unknown global tools, or change repository version declarations to fit the host.
 
-**验证**：检查返回 Node/npm/uv 的实际路径及匹配结果，随后进入 `predev` 和 Python 准备阶段。
+**Verification**: The check reported actual Node/npm/uv paths and match results, then proceeded to `predev` and Python preparation.
 
-### WIN-002：旧构建 ACL 脚本不兼容 ConstrainedLanguage
+<a id="win-002旧构建-acl-脚本不兼容-constrainedlanguage"></a>
+### WIN-002: Legacy Build ACL Script Is Incompatible with ConstrainedLanguage
 
-**现象**：早期独立 Worktree 的 `native.compile` 调用
-`WindowsIdentity.GetCurrent()` 等方法时，返回
-`MethodInvocationNotSupportedInConstrainedLanguage`。
+**Symptom**: `native.compile` in an early standalone Worktree called methods such as `WindowsIdentity.GetCurrent()` and returned `MethodInvocationNotSupportedInConstrainedLanguage`.
 
-**本次确认**：通过 `$ExecutionContext.SessionState.LanguageMode` 读回
-`ConstrainedLanguage`。这属于脚本与宿主语言模式的兼容问题，不是缓存位置问题。
+**Confirmed in this case**: Read `ConstrainedLanguage` from `$ExecutionContext.SessionState.LanguageMode`. This is a script/host-language-mode compatibility issue, not a cache-location issue.
 
-**处理边界**：成功运行的主工作区已有兼容 cmdlet 的实现；这是后续环境处理的前提，
-不是切换缓存目录自动修复了旧脚本。具体实现及当前边界查看
-[构建状态检查](../../apps/desktop/scripts/shared/build-state.cjs)和[构建指南](build.md)。
+**Handling boundary**: The main workspace that started successfully already had an implementation using compatible cmdlets. That was a prerequisite for later environment handling; changing the cache directory did not automatically fix the legacy script. See [build-state checks](../../apps/desktop/scripts/shared/build-state.cjs) and the [build guide](build.md) for the implementation and current boundary.
 
-不通过修改 ExecutionPolicy、解除宿主限制或删除 ACL 校验来获得绿色结果；旧实现仍存在时，
-应由对应 Owner 修正兼容性并单独验证。本次运行不是干净基线或该既存改动的完整验收。
+Do not obtain a green result by changing ExecutionPolicy, removing host restrictions, or deleting ACL checks. If the old implementation is still present, its Owner should fix compatibility and verify it separately. This run was not a clean baseline or complete acceptance of those pre-existing changes.
 
-### WIN-003：默认构建缓存的父目录含额外写入主体
+<a id="win-003默认构建缓存的父目录含额外写入主体"></a>
+### WIN-003: The Default Build Cache Has an Additional Write Principal in a Parent Directory
 
-**现象**：主工作区越过语言模式错误后，报错变为：
+**Symptom**: After the main workspace passed the language-mode error, the error changed to:
 
 ```text
 writable or replaceable build state ACL: C:\Users\gaoquan\AppData\Local ...
 ```
 
-**依据**：构建状态检查会核验对象及全部父目录；报错中存在允许额外主体写入/替换的 ACE。
-只把 `...\cache\build` 的叶目录设为私有，不能消除父目录替换风险。
+**Evidence**: The build-state check verifies the target and all parent directories; the reported path had an ACE allowing an additional principal to write/replace it. Making only the `...\cache\build` leaf private does not remove the parent-directory replacement risk.
 
-**本次处理**：先调用已有 `assertPrivateDirectory` 检查候选目录，再通过
-`SCHOLARSEED_BUILD_CACHE_ROOT` 选用 `$HOME\.cache\scholarseed-dev`。
-新目录由已有 `ensurePrivateDirectory` 创建并保护，然后继续执行原校验。
+**Handling in this case**: First used the existing `assertPrivateDirectory` to check a candidate directory, then selected `$HOME\.cache\scholarseed-dev` through `SCHOLARSEED_BUILD_CACHE_ROOT`. The existing `ensurePrivateDirectory` created and protected the new directory, after which the original check continued.
 
-**验证**：`toolchains.cache-build` / `toolchains.cache-verify` 通过，进入原生测试。
-路径只是本机可用示例，不代表所有 `.cache` 或所有 C 盘目录都安全；每台机器重新校验。
+**Verification**: `toolchains.cache-build` / `toolchains.cache-verify` passed and native tests began. The path is a local example; it does not mean every `.cache` or C-drive directory is safe. Recheck each machine.
 
-### WIN-004：原生目录测试仍使用不合格的系统 Temp
+<a id="win-004原生目录测试仍使用不合格的系统-temp"></a>
+### WIN-004: Native Directory Tests Still Use an Unqualified System Temp
 
-**现象**：缓存问题处理后，构建继续报 `Command failed: ...\directory-test.exe 0`。
+**Symptom**: After addressing the cache issue, the build continued to report `Command failed: ...\directory-test.exe 0`.
 
-**依据**：[原生测试](../../apps/desktop/native/directory.test.c)的 reclamation 用例读取
-`TMPDIR`，没有时读取 `TEMP`，并走真实 `directory_open`。测试编译工作目录也由
-[native builder](../../apps/desktop/scripts/shared/native.cjs)的 `os.tmpdir()` 选择。
+**Evidence**: The reclamation case in the [native test](../../apps/desktop/native/directory.test.c) reads `TMPDIR`, falls back to `TEMP`, and calls the real `directory_open`. The [native builder](../../apps/desktop/scripts/shared/native.cjs) also selects its test compilation working directory using `os.tmpdir()`.
 
-**本次处理**：为同一次启动同时设置 `TEMP`、`TMP`、`TMPDIR`，指向经过校验的新私有目录
-`$HOME\.cache\ss-dev-temp`。不修改生产目录策略，不编辑、删除或重设原系统 Temp 的 ACL。
+**Handling in this case**: Set `TEMP`, `TMP`, and `TMPDIR` together for the same startup, pointing to the new private directory `$HOME\.cache\ss-dev-temp` after it passed checks. Did not change production directory policy or edit, delete, or reset ACLs on the original system Temp.
 
-**验证**：重新执行根 `npm run dev` 后，`native.compile` 为 `status=passed`，随后主进程和
-preload 构建完成。这证明该环境调整在本例有效；原失败未额外采集测试内部的细分错误，
-不能将所有 `directory-test.exe` 失败都归为 Temp 权限问题。
+**Verification**: After rerunning root `npm run dev`, `native.compile` reported `status=passed`, then the main process and preload builds completed. This shows that the environment adjustment worked in this case. No finer-grained internal test error was collected for the original failure, so do not attribute every `directory-test.exe` failure to Temp permissions.
 
-### WIN-005：后端启动前创建默认开发工作目录被拒绝
+<a id="win-005后端启动前创建默认开发工作目录被拒绝"></a>
+### WIN-005: Creating the Default Development Workspace Before Backend Startup Is Denied
 
-**现象**：Electron 已显示启动屏，但仍报：
+**Symptom**: Electron showed the splash screen, but still reported:
 
 ```text
 ERROR backend startup failed: Error: ERR_LEASE_PERMISSION
 backend startup failed pid=null ... failure=startupFailed
 ```
 
-**依据**：[backend](../../apps/desktop/src/main/backend.ts)在创建 Serve 进程前调用
-`configureDesktopEnvironment`；当 `storage.createWorkspace` 为真时，会通过原生 writer
-创建默认工作目录。默认开发路径由[storage Owner](../../apps/desktop/src/main/storage.ts)
-选择为仓库下的 `tmp/desktop-workspace`。本机 D 盘目录链不满足相应资格检查，且失败前
-没有成功的 `desktop workspace=...` 日志，Serve 尚未创建。
+**Evidence**: [backend](../../apps/desktop/src/main/backend.ts) calls `configureDesktopEnvironment` before creating the Serve process. When `storage.createWorkspace` is true, it uses the native writer to create the default workspace. The [storage Owner](../../apps/desktop/src/main/storage.ts) selects `tmp/desktop-workspace` under the repository as the default development path. The local D-drive directory chain failed the relevant qualification check, and there was no successful `desktop workspace=...` log before failure; Serve had not yet been created.
 
-**本次处理**：显式设置支持的 `SCHOLARSEED_DEFAULT_WORKSPACE`，指向事先创建、校验的
-`$HOME\.cache\ss-dev-workspace`。仍从 `D:\DeepR_D` 启动代码，只改变新启动实例的默认
-工作目录，不移动仓库、不重写用户 Home，也不修改历史项目登记。
+**Handling in this case**: Explicitly set the supported `SCHOLARSEED_DEFAULT_WORKSPACE` to the previously created and checked `$HOME\.cache\ss-dev-workspace`. The code still started from `D:\DeepR_D`; only the new instance's default workspace changed. The repository was not moved, the user's Home was not rewritten, and historical project registrations were not modified.
 
-**验证**：启动日志依次出现明确的 workspace/home、固定 Codex 路径、Serve 进程、
-`backend healthy` 和 `backend ready`；窗口日志随后记录主窗口 `visible=true`。
-`ERR_LEASE_PERMISSION` 也可能来自其他目录或步骤，必须结合失败阶段定位，不能机械套用。
+**Verification**: Startup logs showed, in order, an explicit workspace/home, the fixed Codex path, the Serve process, `backend healthy`, and `backend ready`; the window log then recorded main-window `visible=true`. `ERR_LEASE_PERMISSION` may also come from other directories or steps; locate the failing stage rather than applying this fix mechanically.
 
-### WIN-006：把个人连接文件缺失误判为没有模型
+<a id="win-006把个人连接文件缺失误判为没有模型"></a>
+### WIN-006: Mistaking a Missing Personal-Connection File for No Available Models
 
-**现象**：根 `config.json` 的模型字段为空，且不存在 `model_profiles.json`。
+**Symptom**: The model field in root `config.json` was empty, and `model_profiles.json` did not exist.
 
-**纠正方法**：按[模型选择](../../apps/serve/service/chat/service/models.py)、
-[内置目录](../../apps/serve/service/settings/catalog.py)与
-[个人连接](../../apps/serve/service/settings/connections.py)区分配置来源，
-再从实际 UI 核对模型和登录状态。个人连接文件并不承担全部内置模型配置。
+**Correction**: Distinguish configuration sources using [model selection](../../apps/serve/service/chat/service/models.py), the [built-in catalog](../../apps/serve/service/settings/catalog.py), and [personal connections](../../apps/serve/service/settings/connections.py), then check models and sign-in state in the actual UI. The personal-connection file does not contain all built-in model configuration.
 
-本次排查撤回了“缺文件即缺模型”的过早判断，没有要求用户重新提供密钥或覆盖配置。
-启动恢复保留原配置，但没有由此证明上游模型请求一定成功。
+This troubleshooting corrected the premature conclusion that a missing file meant missing models; it did not ask the user to provide keys again or overwrite configuration. Startup recovery preserved the original configuration, but did not thereby prove that an upstream model request would succeed.
 
-## 3. 本例启动方法
+<a id="3-本例启动方法"></a>
+## 3. Startup Procedure Used in This Case
 
-以下命令只用于**当前调用的 PowerShell 进程及其子进程**。运行前正常退出使用同一
-Home 的其他实例；不要在真实对话期间重启 Serve。先确认代码包含适用的构建检查实现，
-并按[工具链入口](development.md#工具链与支持入口)核验工具来源。
+The following commands apply only to **the current PowerShell process and its child processes**. Before running them, exit other instances that use the same Home normally; do not restart Serve during a real conversation. First confirm that the code includes the applicable build-check implementation, and verify tool sources using the [toolchain entry point](development.md#工具链与支持入口).
 
-`$NodeDirectory`、`$UvDirectory` 应填入本机已核验工具目录，不安装或解析未知来源；
-版本取仓库声明，不复制本次案例中的固定版本作为未来要求。
+Set `$NodeDirectory` and `$UvDirectory` to locally verified tool directories. Do not install tools or resolve tools from unknown sources; use versions declared by the repository, and do not copy fixed versions from this case as future requirements. The two `Read-Host` prompts retain their original Chinese literals: “已核验的 Node 工具目录” means “verified Node tool directory,” and “已核验的 uv 工具目录” means “verified uv tool directory.” The `throw` messages likewise remain unchanged: “工具链校验失败，停止启动” means “Toolchain check failed; stopping startup,” and “目录资格检查失败，停止启动” means “Directory qualification failed; stopping startup.”
 
 ```powershell
 $Repo = 'D:\DeepR_D'
@@ -165,66 +135,48 @@ if ($LASTEXITCODE -ne 0) { throw '目录资格检查失败，停止启动' }
 npm.cmd run dev
 ```
 
-目录辅助方法只允许保护本次新建的目录，并会继续校验祖先；不得为复用该示例去重设
-既有目录、系统目录或用户资产的 ACL。任一候选路径被拒绝时，选另一个具备可信父目录链
-且本次获准使用的专属位置，或先报告权限阻塞，不修改允许主体列表。
+Directory helper methods may protect only directories newly created for this task and will continue to check ancestors. Do not reset ACLs on existing directories, system directories, or user assets to reuse this example. If any candidate path is denied, choose another dedicated location with a trusted parent-directory chain that is authorized for this use, or report the permission block first; do not change the allowed-principal list.
 
-这组路径没有写入系统环境变量、注册表或用户设置；关闭启动终端后不会自动成为下一次
-独立终端的配置。关闭本实例应走正常退出，勿按进程名批量杀掉其他 Python/Electron。
-不要在应用仍使用这些目录时清理缓存、临时根或工作文件。
+These paths were not written to system environment variables, the registry, or user settings; closing the startup terminal does not make them configuration for the next independent terminal. Close this instance normally; do not kill other Python/Electron processes by process name. Do not clean the cache, temporary root, or work files while the application is using them.
 
-## 4. 本次验证到什么程度
+<a id="4-本次验证到什么程度"></a>
+## 4. What Was Verified in This Case
 
-2026-10-17 的成功运行可由原用户 Home 下的 `logs/window.log` 核对：
+The successful run on 2026-10-17 can be checked in `logs/window.log` under the original user's Home:
 
-- 北京时间 20:26:19，出现 `backend ready`（当次端口 61730，端口是动态值）。
-- 北京时间 20:26:42，窗口记录 `productAvailable=true`、`visible=true`，随后启动屏关闭。
-- 实际 Serve 从 `D:\DeepR_D` 启动，Home 仍为原用户目录，默认 workspace 为上述安全目录。
-- 实际 Codex 来源为受审 vendor，版本为当次 manifest 对应的 0.159.0，不是 PATH 上的未知 CLI。
+- At 20:26:19 China Standard Time, `backend ready` appeared (port 61730 in that run; the port is dynamic).
+- At 20:26:42 China Standard Time, the window recorded `productAvailable=true` and `visible=true`, then the splash screen closed.
+- Serve actually started from `D:\DeepR_D`; Home remained the original user directory, and the default workspace was the safe directory above.
+- The actual Codex source was the reviewed vendor, at version 0.159.0 for that run's manifest, not an unknown CLI found on PATH.
 
-这些证据支持“开发版主窗口和后端已启动，可交给用户继续测试”。它们**不证明**：
-真实模型回合、全文授权卡片、下载或其他业务已经通过；也不证明 macOS、安装版、
-升级/卸载或干净源码基线通过。本次没有最终运行截图，不能当作功能或缺陷修复验收。
+This evidence supports the conclusion that “the development build's main window and backend started, and the instance was ready for the user to continue testing.” It **does not prove** that a real model turn, full-text authorization card, download, or other business flow passed; nor does it prove success on macOS, in an installed build, during upgrade/uninstall, or from a clean source baseline. No final runtime screenshot was captured in this case, so it cannot serve as feature or defect-fix acceptance evidence.
 
-此前为 Bug 87807033 增加的诊断日志仍在独立诊断分支；不能把主目录启动成功写成该 Bug
-已修复，或假定未合入的日志已经出现在当前运行进程。
+Diagnostic logs previously added for Bug 87807033 remain on a separate diagnostic branch. Do not report successful startup from the main workspace as a fix for that Bug or assume that unmerged logs are present in the current process.
 
-## 5. 后续问题如何补充
+<a id="5-后续问题如何补充"></a>
+## 5. Adding Future Cases
 
-每个新案例沿用一个独立编号，记录以下内容；未知项标为“待确认”，不要编造根因。
+Give each new case its own identifier and record the following; mark unknown items as “待确认” (pending confirmation) instead of inventing a root cause.
 
-| 项目 | 必填内容 |
+| Item | Required content |
 | --- | --- |
-| 范围 | Windows 版本/架构、开发或安装版、触发入口、任务授权边界 |
-| 运行身份 | 分支/提交及相关未提交改动、实际工具/解释器来源；不只写 HEAD |
-| 问题 | 用户可见现象、失败阶段、脱敏原始错误、日志时间和可定位指针 |
-| 原因 | 已证实的失败条件、仅为推断的部分、缺失证据及责任 Owner |
-| 处理 | 实际采取的代码/环境动作、为何适用、没有改变的安全边界 |
-| 验证 | 实际命令、退出状态、真实运行结果；需要验收时附已打开检查的本地截图 |
-| 限制 | 未执行项、平台缺口、是否仅恢复环境、尚未修复的业务问题 |
+| Scope | Windows version/architecture, development or installed build, entry point, task authorization boundary |
+| Runtime identity | Branch/commit and relevant uncommitted changes, actual tool/interpreter sources; do not record only HEAD |
+| Problem | User-visible symptom, failure stage, redacted original error, log time and locatable pointer |
+| Cause | Proven failure conditions, inferred parts only, missing evidence, and responsible Owner |
+| Handling | Actual code/environment actions, why they apply, and security boundaries left unchanged |
+| Verification | Actual commands, exit status, real runtime result; attach locally saved screenshots that have been opened and inspected when acceptance requires them |
+| Limitations | Items not run, platform gaps, whether only the environment was recovered, and unresolved product issues |
 
-长期可复用结论维护在本页；详细原始日志、凭据、截图和运行态文件不要提交到文档。
+Maintain reusable long-term conclusions on this page. Do not commit detailed raw logs, credentials, screenshots, or runtime-state files to documentation.
 
-### WIN-007：沙箱就绪但 PowerShell cwd 回落到盘符根
+<a id="win-007沙箱就绪但-powershell-cwd-回落到盘符根"></a>
+### WIN-007: Sandbox Is Ready but PowerShell CWD Falls Back to the Drive Root
 
-**区分两层权限**：无 bundled tool manifest 的 Windows 开发实例也需要准备已准入
-workspace 自身的非继承 `FILE_READ_ATTRIBUTES`；固定工具的安装准入 SID 校验不能
-误拦这项空资产准备。同时，工作区之外的私有祖先可能仍不允许沙箱读取属性。
-这两类问题都可能表现为 OS cwd 正确，而 `Get-Location` 返回 `C:\`，并伴随
-相对路径写入、`Rename-Item` 或 `Remove-Item` 拒绝访问。初始化 ready 不证明这些操作可用。
+**Distinguish two permission layers**: A Windows development instance without a bundled tool manifest still needs non-inherited `FILE_READ_ATTRIBUTES` on its admitted workspace itself. Fixed-tool installation-admission SID checks must not wrongly block this preparation of an empty asset. At the same time, private ancestors outside the workspace may still prevent the sandbox from reading attributes. Both problems can appear as an OS cwd that is correct while `Get-Location` returns `C:\`, along with relative-path write, `Rename-Item`, or `Remove-Item` access-denied errors. Initialization readiness does not prove these operations work.
 
-**诊断**：在同一真实沙箱、同一会话中先比较 `Get-Location` 与
-`[Environment]::CurrentDirectory`。不一致时停止相对路径写入。对已授权的目录链
-逐级使用 `Get-Item -LiteralPath <目录> -Force -ErrorAction Stop` 读取属性，记录首次
-拒绝的目录；不要用管理员终端的可访问结果代替沙箱证据，不递归列举或读取文件内容。
-通过 Trace CLI 回放真实工具输出，并区分运行目录错误和初始化竞争。
+**Diagnosis**: In the same real sandbox and session, first compare `Get-Location` with `[Environment]::CurrentDirectory`. If they differ, stop relative-path writes. For each authorized directory chain, read attributes level by level using `Get-Item -LiteralPath <目录> -Force -ErrorAction Stop` (`目录` means “directory”) and record the first denied directory. Do not substitute results accessible from an administrator terminal for sandbox evidence; do not recursively enumerate directories or read file contents. Replay actual tool output through the Trace CLI and distinguish a working-directory error from an initialization race.
 
-**处理边界**：工作区自身元数据由 Serve 准备；不自动授权其上方祖先。私有祖先布局
-应通过产品支持的工作区设置或新进程的 `SCHOLARSEED_DEFAULT_WORKSPACE` 选择祖先
-可解析的位置。已有产品设置优先，环境变量不会覆盖它；不改解析优先级、不迁移历史
-项目、不复制凭据，也不以改 ACL、绝对路径或替换文件 API 掩盖失败。
+**Handling boundary**: Serve prepares workspace metadata itself; this does not automatically authorize its ancestors. For private-ancestor layouts, use a product-supported workspace setting or set `SCHOLARSEED_DEFAULT_WORKSPACE` for a new process to choose a location whose ancestors can be resolved. An existing product setting takes precedence; the environment variable does not override it. Do not change resolution precedence, migrate historical projects, copy credentials, or conceal failures by changing ACLs, using absolute paths, or replacing file APIs.
 
-**验收**：使用官方 Codex，在实际会话中验证 cwd 相等、相对路径创建/读取/重命名/
-删除及最终不存在，并单独确认工作区根列目录与项目外文件读取仍拒绝。并发另用独立
-父进程测试冷/热初始化、同时执行和其他进程退出后的持续执行；不能用单会话成功
-代替多进程验证。开发客户端通过不等于签名安装包通过。
+**Acceptance**: With official Codex, verify in a real session that the cwd values match and that relative-path create/read/rename/delete operations succeed and the target is ultimately absent. Separately confirm that listing the workspace root and reading files outside the project are still denied. Use a separate parent process for concurrency checks of cold/warm initialization, concurrent execution, and continued execution after another process exits; a single-session success cannot substitute for multi-process verification. Passing in the development client does not mean the signed installer passed.

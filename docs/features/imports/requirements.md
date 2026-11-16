@@ -1,113 +1,103 @@
-# 资料 COPY 导入：需求恢复草案
+<a id="资料-copy-导入需求恢复草案"></a>
+# Resource COPY Import: Recovered Requirements Draft
 
-## 状态与范围
+<a id="状态与范围"></a>
+## Status and Scope
 
-**状态：待功能 Owner 确认，不是已批准 PRD 或发布准入基线。**
+**Status: Awaiting confirmation by the feature Owner; this is not an approved PRD or release acceptance baseline.**
 
-本草案由 `spec-miner` 方法从现行规范、源码和已有测试恢复，并记录已完成的有界
-产品观察。用户授权将生成的需求纳入 Git 评审，不等于批准每条要求或修改产品目标。
-技术与生命周期边界仍由 [资源导入与任务中心](../imports.md) 持有；本页只承载面向
-需求评审和重复验证的草案，不另建执行器、机器 schema 或第二套技术真源。
+This draft was recovered using the `spec-miner` method from current specifications, source code, and existing tests, and records bounded product observations already completed. Authorization to include the generated requirements in Git review does not mean each requirement is approved or that the product goal has changed.
+Technical and lifecycle boundaries remain owned by [Resource Import and Task Center](../imports.md). This page contains only a draft for requirements review and repeatable verification; it does not create another executor, machine schema, or technical source of truth.
 
-- 分析基准：`e0f983706b4b0d05ee8678de47cb286f53db4416`。
-- 来源：该版本现行导入规范、Desktop 普通入口、同步导入 API、Resources/Content
-  实现、版本 writer 及既有契约测试；不是从代码名称推测功能。
-- 范围：本机文件 COPY 到项目资料库，重名确认、重命名、版本化覆盖与版本读回。
-- 不覆盖：LINK、网页和文献附件导入，以及取消、批量中断恢复和全部跨平台行为。
-- 以下 `OBS-01` 至 `OBS-12` 是本草案稳定的候选观察标识，均待需求负责人确认；
-  不是技术文档自行批准的正式 Requirement/Check ID。正式评测须关联所属需求已有
-  标识，无法核实关联时只能作为探索，不计发布覆盖。
+- Analysis baseline: `e0f983706b4b0d05ee8678de47cb286f53db4416`.
+- Sources: the import specification in that revision, the ordinary Desktop entry point, the synchronous import API, Resources/Content implementation, version writer, and existing contract tests. Functionality was not inferred from code names.
+- Scope: COPY local files into a project resource library, duplicate-name confirmation, renaming, versioned replacement, and version read-back.
+- Excludes: LINK, web and literature-attachment imports, as well as cancellation, batch-interruption recovery, and all cross-platform behavior.
+- `OBS-01` through `OBS-12` below are stable candidate observation IDs in this draft, all awaiting confirmation by the requirements owner. They are not formal Requirement/Check IDs approved by a technical document. Formal evaluations must be linked to an existing ID for the relevant requirement. If the association cannot be verified, treat the work as exploratory and do not count it toward release coverage.
 
-## 两类入口必须分开
+<a id="两类入口必须分开"></a>
+## Keep the Two Entry Points Separate
 
-普通产品入口：原生选择器 → ImportDialog → importResourceFiles →
-createResourceImport → POST `/api/resource/import-jobs` → 后台 Content COPY →
-资料列表及版本初始化。
+Ordinary product entry: native picker → ImportDialog → importResourceFiles →
+createResourceImport → POST `/api/resource/import-jobs` → background Content COPY →
+resource list and version initialization.
 
-同步能力入口：POST `/api/resource/import` → 请求/项目/资料根校验 → 冲突计划 →
-`needs_resolution` → 显式决策、`plan_token`、`Idempotency-Key` → 精确重命名或
-版本化覆盖。
+Synchronous-capability entry: POST `/api/resource/import` → request/project/resource-root validation → conflict plan →
+`needs_resolution` → explicit decision, `plan_token`, `Idempotency-Key` → exact rename or
+versioned replacement.
 
-这两条链路不能概括为“所有导入都已有重名确认”。后端能力存在、UI 含冲突组件、
-源码断言通过，都不能单独证明普通用户能进入对应能力。
+Do not summarize these paths as “all imports already have duplicate-name confirmation.” Backend capability, a conflict component in the UI, or passing source assertions alone do not prove that ordinary users can access the corresponding capability.
 
-## 候选功能要求
+<a id="候选功能要求"></a>
+## Candidate Functional Requirements
 
-“应”表示提交评审的候选要求，不表示已批准或已验收。源码依据只支持实现观察，
-现有测试只支持测试期望；两者都不能独自证明产品目标正确。
+“Should” marks a candidate requirement submitted for review, not one that is approved or accepted. Source evidence supports implementation observations; existing tests support test expectations. Neither alone proves that the product goal is correct.
 
-| 标识 | 候选要求（EARS） | 适用入口与依据 | 已知验证边界 |
+| ID | Candidate Requirement (EARS) | Applicable Entry and Basis | Known Verification Boundary |
 | --- | --- | --- | --- |
-| OBS-01 | 当用户复制无冲突文件时，系统应在所选项目资料库创建内容一致的副本，并建立初始版本。 | COPY；导入策略与 Content；契约中的无冲突 COPY 检查。 | 指定旧版本真实导入及 v1 读回已观察；不是所有格式通过。 |
-| OBS-02 | 当同步 COPY 计划包含同名冲突时，系统应返回待确认状态与计划标识，在确认前不导入整批来源。 | 仅同步入口；`import_sources` 的冲突分支。 | 静态实现与既有测试期望；本次未运行同步入口。 |
-| OBS-03 | 当普通产品 COPY 入口遇到同名文件时，系统是否必须先提供重命名或覆盖选择，须由功能 Owner 确认。 | 普通 UI 与后台 job；入口策略存在待决项。 | 指定旧版本未出现确认，自动生成第二名称；不自动将此现状批准为目标。 |
-| OBS-04 | 当用户确认重命名时，系统应保留原文件，按冻结计划精确创建新名称，不在目标变化后静默另选名称。 | 同步确认；计划复核及 Content EXACT 创建。 | 静态实现与测试期望；自动重命名不替代显式确认验收。 |
-| OBS-05 | 当目标允许版本化覆盖且用户确认覆盖时，系统应保留准确旧字节，提交新内容，并沿同一文件身份追加版本。 | 同步确认；`commit_versioned_replace`。 | 覆盖分支未做本次真实验证。 |
-| OBS-06 | 当确认请求以相同幂等键及相同语义重放时，系统应返回原结果，不重复创建文件或追加版本。 | 同步确认；mutation receipt 和请求摘要。 | 既有测试有重命名/覆盖重放期望；未真实重放。 |
-| OBS-07 | 当确认前来源或目标的计划绑定状态变化时，系统应拒绝旧计划，不覆盖更新后的数据。 | 同步确认；计划摘要、来源 revision 与目标 revision。 | 既有测试表达来源/目标变化拒绝；真实并发尚未验证。 |
-| OBS-08 | 当决策重复、缺失、多余或与计划不匹配时，系统应拒绝确认请求。 | 同步请求模型、决策映射及冲突项集合校验。 | 静态实现；未验证所有请求组合或全部套件覆盖。 |
-| OBS-09 | 当目标不具备版本化覆盖资格时，系统应拒绝覆盖；目录同名不应授权合并、递归删除或覆盖。 | 同步确认；后端资格投影及覆盖分支校验。 | 既有目录与不支持类型检查；本次未做真实验收。 |
-| OBS-10 | 在项目、资料根、请求结构和 COPY 模式均已通过校验时，当带计划的确认请求缺少幂等键，系统应返回稳定错误，不进入导入执行。 | 同步入口；`idempotency_key_required` 映射 HTTP 400。 | 源码显式调用分析已完成；其他前置错误可能更早返回，未真实发缺键请求。 |
-| OBS-11 | 当导入提交忙碌时，界面应阻止重复提交；仅当全部冲突项允许覆盖时，覆盖按钮才可用。 | ImportDialog 的 busy 与后端覆盖资格投影。 | 静态实现；未专门验证连击、混合资格与键盘路径。 |
-| OBS-12 | 当用户查看历史版本时，系统应展示对应文件的历史并能读回版本内容，不把不同文件的 v1 当成同一文件的 v1/v2。 | 版本历史 UI、文件身份和版本内容读取。 | 指定旧版本两份文件各自 v1 已真实读回；不证明恢复或覆盖完整生命周期。 |
+| OBS-01 | When a user copies a file without a conflict, the system shall create a content-identical copy in the selected project's resource library and create its initial version. | COPY; import policy and Content; contract check for conflict-free COPY. | A real import and v1 read-back were observed for a specified older revision; this does not mean all formats pass. |
+| OBS-02 | When a synchronous COPY plan contains a same-name conflict, the system shall return a pending-confirmation state and plan ID and shall not import the entire source batch before confirmation. | Synchronous entry only; conflict branch in `import_sources`. | Static implementation and existing test expectations; the synchronous entry was not run in this round. |
+| OBS-03 | When the ordinary product COPY entry encounters a same-name file, whether the system must first offer rename or replace choices must be confirmed by the feature Owner. | Ordinary UI and background job; entry-point policy is undecided. | No confirmation appeared in the specified older revision; it automatically created a second name. Do not automatically approve this observed behavior as the goal. |
+| OBS-04 | When a user confirms a rename, the system shall retain the original file and create the exact new name in the frozen plan, without silently choosing another name if the target changes. | Synchronous confirmation; plan revalidation and Content EXACT creation. | Static implementation and test expectations; automatic renaming does not substitute for acceptance of explicit confirmation. |
+| OBS-05 | When the target supports versioned replacement and the user confirms replacement, the system shall retain the exact old bytes, commit the new content, and append a version under the same file identity. | Synchronous confirmation; `commit_versioned_replace`. | The replacement branch was not given real verification in this round. |
+| OBS-06 | When a confirmation request is replayed with the same idempotency key and semantics, the system shall return the original result without creating a duplicate file or version. | Synchronous confirmation; mutation receipt and request digest. | Existing tests expect rename/replacement replay behavior; no real replay was performed. |
+| OBS-07 | When the plan-bound state of a source or target changes before confirmation, the system shall reject the stale plan without overwriting the updated data. | Synchronous confirmation; plan digest, source revision, and target revision. | Existing tests express rejection of source/target changes; real concurrency has not been verified. |
+| OBS-08 | When decisions are duplicated, missing, extra, or inconsistent with the plan, the system shall reject the confirmation request. | Synchronous request model, decision mapping, and conflict-set validation. | Static implementation; not all request combinations or full suite coverage were verified. |
+| OBS-09 | When the target is not eligible for versioned replacement, the system shall reject replacement; a same-name directory does not authorize merging, recursive deletion, or replacement. | Synchronous confirmation; backend eligibility projection and replacement-branch validation. | Existing directory and unsupported-type checks; no real acceptance in this round. |
+| OBS-10 | When the project, resource root, request structure, and COPY mode have all passed validation, if a planned confirmation request lacks an idempotency key, the system shall return a stable error and shall not enter import execution. | Synchronous entry; `idempotency_key_required` maps to HTTP 400. | Analysis of the explicit source call is complete; other prerequisite errors may be returned earlier. No real missing-key request was sent. |
+| OBS-11 | While an import submission is busy, the UI shall prevent duplicate submissions. The replace button shall be enabled only when every conflict item is eligible for replacement. | ImportDialog busy state and backend replacement-eligibility projection. | Static implementation; double click, mixed eligibility, and keyboard paths were not specifically verified. |
+| OBS-12 | When a user views version history, the system shall show the history for the corresponding file and allow its version content to be read back; it shall not treat v1 of different files as v1/v2 of the same file. | Version history UI, file identity, and version-content read. | Both files' respective v1 contents were actually read back for the specified older revision; this does not prove a complete recovery or replacement lifecycle. |
 
-## 源码与测试依据
+<a id="源码与测试依据"></a>
+## Source and Test Basis
 
-以下入口对应分析基准；后续源码移动或行为改变时更新映射，不以旧行号证明新版本。
+The following entry points correspond to the analysis baseline. Update the mapping if source moves or behavior changes; old line numbers do not prove behavior in a new revision.
 
-| 责任 | 依据 |
+| Responsibility | Basis |
 | --- | --- |
-| 用户导入与冲突交互 | [ImportDialog](../../../apps/desktop/src/renderer/src/features/resources/ImportDialog.tsx) 的 importSources、resolveConflict、canReplace |
-| 普通与确认动作 | [store](../../../apps/desktop/src/renderer/src/store.tsx) 的 importResourceFiles、resolveResourceImport |
-| 前端请求 | [后台 job](../../../apps/desktop/src/renderer/src/features/resources/imports.ts) 的 createResourceImport；[同步 API](../../../apps/desktop/src/renderer/src/features/resources/api.ts) 的 importResources |
-| 后端入口与校验 | [同步路由](../../../apps/serve/service/resources/api/routes.py) 的 resource_import；[请求模型](../../../apps/serve/service/resources/api/schema.py) 的 ResourceImportRequest |
-| 计划、决策和重放 | [导入策略](../../../apps/serve/service/resources/service/importer.py) 的 _plan、_decision_map、_replayed、import_sources、_execute |
-| 后台执行和 I/O | [jobs](../../../apps/serve/service/resources/service/jobs.py)；[Content](../../../apps/serve/service/content/service/port.py) 的 plan_import_sources、import_sources |
-| 版本化覆盖与回执 | [history](../../../apps/serve/service/resources/service/history.py) 的 commit_versioned_replace、product_mutation_receipt |
-| 既有检查 | [导入契约](../../../apps/serve/tests/contract_resource_import.py)；[前端检查](../../../apps/desktop/src/renderer/src/resources.test.ts)，其中部分为源码断言，不证明真实 UI 可达 |
+| User import and conflict interaction | `importSources`, `resolveConflict`, and `canReplace` in [ImportDialog](../../../apps/desktop/src/renderer/src/features/resources/ImportDialog.tsx) |
+| Ordinary and confirmation actions | `importResourceFiles` and `resolveResourceImport` in [store](../../../apps/desktop/src/renderer/src/store.tsx) |
+| Frontend requests | `createResourceImport` in [background jobs](../../../apps/desktop/src/renderer/src/features/resources/imports.ts); `importResources` in the [synchronous API](../../../apps/desktop/src/renderer/src/features/resources/api.ts) |
+| Backend entry and validation | `resource_import` in the [synchronous route](../../../apps/serve/service/resources/api/routes.py); `ResourceImportRequest` in the [request model](../../../apps/serve/service/resources/api/schema.py) |
+| Planning, decisions, and replay | `_plan`, `_decision_map`, `_replayed`, `import_sources`, and `_execute` in the [import policy](../../../apps/serve/service/resources/service/importer.py) |
+| Background execution and I/O | [jobs](../../../apps/serve/service/resources/service/jobs.py); `plan_import_sources` and `import_sources` in [Content](../../../apps/serve/service/content/service/port.py) |
+| Versioned replacement and receipt | `commit_versioned_replace` and `product_mutation_receipt` in [history](../../../apps/serve/service/resources/service/history.py) |
+| Existing checks | [Import contract](../../../apps/serve/tests/contract_resource_import.py); [frontend checks](../../../apps/desktop/src/renderer/src/resources.test.ts), some of which are source assertions and do not prove that the real UI is reachable |
 
-单文件 mutation 的恢复能力不构成整批原子提交承诺；进度、任务终态、资料可见性与
-真实内容分别验证。没有性能 SLA 依据，不从“后台”名称、常量或单次耗时推导性能要求。
-安全边界由 Content 和现行导入规范持有，不能因本页草案扩大路径、项目或来源权限。
+Recovery capability for a single-file mutation does not promise atomic commit of the entire batch. Verify progress, task terminal state, resource visibility, and actual contents separately. There is no basis for a performance SLA; do not infer performance requirements from the word “background,” a constant, or a single elapsed-time measurement.
+Content and the current import specification own security boundaries. This draft must not expand path, project, or source permissions.
 
-## 重复验证场景草案
+<a id="重复验证场景草案"></a>
+## Repeatable Verification Scenario Draft
 
-这些是人读场景，不是已交付 runner 的字段。每次执行应固定源码/制品、单环境、
-输入资料和要求版本，使用独立初始状态并保留首轮失败；重试另编号，不能重试到绿。
+These scenarios are for people to read; they are not fields in a delivered runner. For each run, pin the source/artifact, single environment, input files, and required revision; use an independent initial state and preserve first-run failures. Number retries separately; do not retry until green.
 
-| 场景与关联 | Given / When | Then 与必要观察 |
+| Scenario and Links | Given / When | Then and Required Observations |
 | --- | --- | --- |
-| A 无冲突复制，OBS-01/12 | 独立项目无同名文件；通过普通 UI 和原生选择器复制带 original 标记的测试文件。 | 列表可见；来源与副本字节一致；历史只有初始 v1 且可读回；来源和其他项目不变。 |
-| B 普通入口同名，OBS-03/12 | A 已建立；另一个来源目录有同名但含 incoming 标记的文件；通过相同 UI 导入。 | 记录是否出现确认、用户选择和首次写入时点。若 Owner 批准必须先确认，则选择前应零导入；不能用最终列表截图独自证明全过程无弹窗。核对两份内容、文件身份和历史。 |
-| C 显式决策，OBS-02/04/05/09/11 | 通过获准真实入口进入冲突确认；分别从独立基线选择重命名与覆盖。 | 确认前不先导入；重命名保留原文件并精确创建；覆盖保留同一身份与旧字节并追加版本；不支持资格、忙碌和错误状态可观察。 |
-| D 失败与重放，OBS-06/07/08/09/10 | 分别构造来源变化、目标变化、重复确认、非法决策、非法覆盖和缺键请求。 | 拒绝时核错误及目标/历史无不当变化；重放无重复文件或版本。需独立核对 UI、接口与真实副作用，不将 API 探针冒充用户路径。 |
+| A Conflict-free copy, OBS-01/12 | An isolated project has no same-name file. Use the ordinary UI and native picker to copy a test file containing an `original` marker. | The item is visible in the list; source and copy bytes match; history contains only the initial v1 and can be read back; source and other projects remain unchanged. |
+| B Same name in ordinary entry, OBS-03/12 | A is set up. Another source directory contains a same-name file with an `incoming` marker. Import through the same UI. | Record whether confirmation appears, what the user selects, and when the first write occurs. If the Owner approves a requirement for prior confirmation, there must be no import before selection. A final list screenshot alone cannot prove that no dialog appeared during the whole flow. Check both contents, file identities, and history. |
+| C Explicit decision, OBS-02/04/05/09/11 | Enter conflict confirmation through an approved real entry point; select rename and replace from separate baselines. | No import occurs before confirmation; rename retains the original and creates the exact new name; replacement retains the same identity and old bytes and appends a version; unsupported eligibility, busy state, and errors are observable. |
+| D Failure and replay, OBS-06/07/08/09/10 | Construct source changes, target changes, repeated confirmation, invalid decisions, invalid replacement, and a missing-key request separately. | On rejection, check the error and ensure the target/history did not change improperly; replay creates no duplicate file or version. Check UI, interface, and actual side effects independently; do not present an API probe as a user path. |
 
-终态截图、原始请求/响应、文件摘要和版本读回是不同观察；缺必要证据给
-`inconclusive`，未执行给 `not_evaluated`。批准后每项才可按冻结标准给 pass/fail；
-不以关键词、计数、测试通过或产品自述替代语义与用户路径判定。
+Terminal screenshots, raw requests/responses, file digests, and version read-back are distinct observations. If necessary evidence is missing, mark `inconclusive`; if not run, mark `not_evaluated`. Only after approval may each item receive pass/fail against frozen criteria. Do not replace semantic and user-path judgment with keywords, counts, passing tests, or product self-report.
 
-## 已有运行概要与未覆盖
+<a id="已有运行概要与未覆盖"></a>
+## Existing Run Summary and Coverage Gaps
 
-2026-10-21 在分析基准版本的 macOS arm64 真实 Electron、renderer、Serve 和独立
-测试数据根中，经原生选择器依次导入同名、不同内容的两个 Markdown 文件：
+On 2026-10-21, two Markdown files with the same name but different contents were imported in sequence through the native picker using real Electron, renderer, Serve, and an isolated test data root on macOS arm64 at the analysis-baseline revision:
 
-- 首次文件保留 original 标记且建立 v1。
-- 第二次未观察到重名确认，普通 UI 请求后台 import-jobs，自动创建带 `(2)` 的文件。
-- 原文件字节未变，新文件为 incoming 内容；两个独立 file_id 各自只有初始 v1，
-  对应历史内容经 UI 读回，未在原文件上追加 v2。
+- The first file retained the original marker and created v1.
+- No duplicate-name confirmation was observed on the second import. The ordinary UI requested a background import job and automatically created a file suffixed with `(2)`.
+- The original file bytes were unchanged, and the new file contained the incoming content. Each of the two independent `file_id` values had only its initial v1; the corresponding historical content was read back through the UI, and no v2 was appended to the original file.
 
-这是版本绑定的执行概要，不是最新目标分支通过，也不证明同步覆盖 API 故障。
-详细截图、请求与日志按治理规则留在本地忽略运行目录；本页已提供可独立重建的
-前提、步骤与判据，不把个人路径或本地附件作为团队唯一需求说明。
-覆盖、重放、陈旧计划、目录限制、批量中断、恢复和 Windows 仍未真实验证；本轮
-入库不重新启动产品、不调用模型、不修改生产代码或宣布全功能合格。
+This is a revision-bound run summary, not evidence that the latest target branch passes, and it does not establish that the synchronous replacement API is faulty.
+Detailed screenshots, requests, and logs remain in a local ignored run directory under the governance rules. This page provides independently reproducible preconditions, steps, and criteria; it does not make a personal path or local attachment the team's only requirements record.
+Replacement, replay, stale plans, directory restrictions, batch interruption, recovery, and Windows have not received real verification. This documentation addition does not restart the product, call a model, modify production code, or declare the full feature accepted.
 
-## 待负责人决策与维护
+<a id="待负责人决策与维护"></a>
+## Owner Decisions and Maintenance Needed
 
-1. 普通 COPY 同名应先确认，还是允许后台默认重命名？确认前保持 OBS-03 待决，
-   不能把实际自动重命名结果当作自动批准的期望基线。
-2. 若入口策略不同，明确哪些用户入口消费同步确认能力，避免 API 能力被外推为 UI 交付。
-3. 确认适用要求、Owner 及已有正式需求标识后，再建立发布覆盖关联；不自动生成
-   正式产品 ID 或放宽标准追认既有行为。
-4. 需求批准、入口变更、计划/版本契约或观察能力变化时，需求负责人维护状态，
-   评测负责人复核关联和证据，开发者更新现行技术正文；三类职责不互相代替。
+1. For a same-name collision in ordinary COPY, should the user confirm first, or may the background process rename by default? Keep OBS-03 pending until confirmed; do not treat the observed automatic rename as an automatically approved expected baseline.
+2. If entry-point policies differ, specify which user entry points use synchronous confirmation so API capability is not mistaken for UI delivery.
+3. Establish release-coverage links only after confirming the applicable requirements, Owner, and existing formal requirement IDs. Do not automatically generate formal product IDs or relax criteria to retroactively approve existing behavior.
+4. When requirements are approved, entry points change, plan/version contracts change, or observation capabilities change, the requirements owner maintains status, the evaluation owner reviews links and evidence, and developers update the current technical source. These responsibilities do not substitute for one another.

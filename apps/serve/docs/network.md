@@ -1,17 +1,18 @@
-# 模型表单预置接收方登记
+<a id="模型表单预置接收方登记"></a>
+# Preset Model Form Recipient Registry
 
-[`providers.py`](../service/chat/service/providers.py) 是预置 ID、完整地址、协议与表单提示的执行真源。下表仅登记预置接收主机，供开发审查与 [`contract_model_profiles.py`](../tests/contract_model_profiles.py) 校验；不是运行时白名单或默认出网清单，也不替用户授权自定义端点。新增预置须同步登记并复核数据、凭据与协议边界；不得根据表中主机推导凭据。
+[`providers.py`](../service/chat/service/providers.py) is the execution source of truth for preset IDs, complete addresses, protocols, and form hints. The table below registers preset recipient hosts only, for development review and validation by [`contract_model_profiles.py`](../tests/contract_model_profiles.py); it is not a runtime allowlist or default outbound-network list, and it does not authorize custom endpoints on the user's behalf. New presets must be registered here in sync and reviewed for data, credential, and protocol boundaries; credentials must not be inferred from hosts in the table.
 
-| 表单预置 | 登记主机 |
+| Form preset | Registered host |
 | --- | --- |
-| 阿里云百炼 | `dashscope.aliyuncs.com` |
-| 百炼 Token Plan 个人版 / 团队版 | `token-plan.cn-beijing.maas.aliyuncs.com` |
+| Alibaba Cloud Bailian | `dashscope.aliyuncs.com` |
+| Bailian Token Plan Personal / Team | `token-plan.cn-beijing.maas.aliyuncs.com` |
 | OpenAI | `api.openai.com` |
-| Google Gemini OpenAI 兼容面 | `generativelanguage.googleapis.com` |
+| Google Gemini OpenAI-compatible surface | `generativelanguage.googleapis.com` |
 | DeepSeek | `api.deepseek.com` |
 | Moonshot | `api.moonshot.cn` |
-| 智谱 GLM | `open.bigmodel.cn` |
+| Zhipu GLM | `open.bigmodel.cn` |
 | OpenRouter | `openrouter.ai` |
-| 本地 Ollama / vLLM 表单提示 | `127.0.0.1` |
+| Local Ollama / vLLM form hint | `127.0.0.1` |
 
-这些是用户主动选择、提供凭据并启用连接后才可能请求的表单提示。回环地址同样保留登记，便于既有契约覆盖全部预置，但不计为外部网络依赖。契约只检查主机文本存在，不证明登记完整准确、实际请求获授权或运行时没有其他出网。
+These are form hints for hosts that may be requested only after the user actively selects them, provides credentials, and enables the connection. The loopback address is also registered so existing contracts can cover every preset, but it does not count as an external network dependency. The contract checks only that host text is present; it does not prove that the registry is complete or accurate, that an actual request is authorized, or that runtime has no other outbound network access.

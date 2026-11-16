@@ -1,6 +1,8 @@
-# Codex Runtime 制品维护
+<a id="codex-runtime-制品维护"></a>
+# Codex Runtime Artifact Maintenance
 
-## macOS packaging profile / macOS 打包策略
+<a id="macos-packaging-profile--macos-打包策略"></a>
+## macOS Packaging Profile
 
 The product supports macOS 13 and does not expose Codex voice. The macOS bundle
 therefore excludes only `codex-resources/voice/` from its staging copy. The
@@ -14,32 +16,27 @@ projection. Other resources and upstream signatures remain unchanged. Full
 Mach-O minimum-version validation still runs: another incompatible binary must
 fail. Static inspection does not establish macOS 13 device acceptance.
 
-产品支持 macOS 13，未接入 Codex 语音，因此仅从 macOS 打包副本排除
-`codex-resources/voice/`。受审官方原包和完整解包缓存保持原样；Windows 继续保留
-完整载荷及逐字节相同的原解析收据。
+The product supports macOS 13 and does not integrate Codex voice, so only the macOS packaging copy excludes `codex-resources/voice/`. The reviewed official archive and complete extraction cache remain unchanged; Windows continues to retain the complete payload and the byte-identical original resolution receipt.
 
-产物 `resolve-receipt.json` 精确列出实际随包文件，`packaging` 记录策略、原因、原收据
-SHA-256，以及每个排除文件的路径、SHA-256、模式和大小；构建检查点也记录该投影。
-其他资源及上游签名字节不变。完整 Mach-O 下限门禁继续运行，其他不兼容二进制必须
-失败；静态检查通过不等于 macOS 13 真机验收。
+The artifact's `resolve-receipt.json` lists exactly the files shipped in the package. Its `packaging` record contains the policy, reason, original receipt SHA-256, and each excluded file's path, SHA-256, mode, and size; the build checkpoint also records this projection. Other resources and upstream signature bytes remain unchanged. The full Mach-O minimum-version gate continues to run, and any other incompatible binary must fail; passing static checks is not macOS 13 device acceptance.
 
-本目录保存 Desktop 内置的官方 Codex Runtime 平台清单。制品不进入 Git；构建仅按清单中的固定 OSS HTTPS URL 下载并校验，不访问 npm `latest`。
+This directory stores the official Codex Runtime platform manifest bundled with Desktop. Artifacts are not committed to Git; builds download and verify them only from the fixed OSS HTTPS URLs in the manifest and do not access npm `latest`.
 
-当前固定为 `0.165.0`，对应 2026-10-29 查询的 npm 稳定版本。三平台原始包已与 npm SHA-512 integrity 比对，并通过 OSS 匿名完整下载的大小和 SHA-256 校验。Windows 组件同步绑定 `0.165.0-r1` 的实测文件树和规范 ZIP 摘要；该 ZIP 在 macOS 上按现有打包配方生成，不代表 Windows 原生构建、组件发布或产品验收通过。
-macOS 与 Windows 统一固定为 `0.165.0`，支持当前会话的隔离文本采样。
-平台条目未指定版本时使用清单顶层版本；缓存身份和版本探测均使用选中平台的版本。
-Windows 升级同时核对完整官方归档、组件内容绑定和精确沙箱版本准入；
-不能凭 macOS 验证宣称 Windows 原生提权助手或安装版验收通过。
+The version is currently pinned to `0.165.0`, the npm stable version queried on 2026-10-29. The original packages for all three platforms have been compared with npm SHA-512 integrity values and passed size and SHA-256 checks after complete anonymous downloads from OSS. The Windows component is also bound to the measured file tree and canonical ZIP digest for `0.165.0-r1`; that ZIP was generated on macOS using the existing packaging recipe and does not demonstrate a native Windows build, component publication, or product acceptance.
+macOS and Windows are both pinned to `0.165.0`, which supports isolated text sampling for the current session.
+When a platform entry does not specify a version, the manifest's top-level version is used; cache identity and version probing both use the selected platform's version.
+Windows upgrades also verify the complete official archive, the component content binding, and exact sandbox-version admission. macOS verification cannot be used to claim acceptance of the Windows native privilege helper or installed build.
 
-Windows 沙箱资源接口保留 Adapter 已评审的版本兼容；当前打包原生 helper 仅接受冻结清单中的 `0.165.0`，不以 Adapter 的旧版本接口兼容性扩大 helper 准入。helper 必须匹配请求版本对应的签名组件，路径、入口摘要、Owner-only 修复和 DACL 检查不变。官方源码对比与边界见 [Adapter 兼容说明](../../../packages/adapters/codex/README.md#windows-01650-沙箱适配)。
+The Windows sandbox resource interface retains the version compatibility reviewed in the Adapter. The currently packaged native helper accepts only `0.165.0` from the frozen manifest; the Adapter's compatibility with older interface versions does not expand helper admission. The helper must match the signed component for the requested version; path, entrypoint digest, Owner-only repair, and DACL checks remain unchanged. See [Adapter compatibility notes](../../../packages/adapters/codex/README.md#windows-01650-沙箱适配) for the official source comparison and boundaries.
 
-**gap**：Windows 真机、组件发布、安装与真实模型/工具回合尚未验收。macOS arm64 / x64 已通过完整 Runtime 解包和版本探针，真实 Desktop 模型及工具回合仍未验收。
+**gap**: Windows device testing, component publication, installation, and real model/tool turns have not yet been accepted. macOS arm64 / x64 have passed complete Runtime extraction and version probing; real Desktop model and tool turns have not yet been accepted.
 
-这是构建输入调整，不执行客户端安装或数据迁移。禁止未经兼容性验证让旧版直接打开新版写入的用户 Home、SQLite 或会话文件；真实对照必须使用隔离目录，Windows 打包、组件可下载性和产品流程仍需分别验收。
+This changes build inputs; it does not install a client or migrate data. Do not let an older version directly open a user Home, SQLite database, or session file written by a newer version without compatibility verification. Real comparisons must use isolated directories; Windows packaging, component downloadability, and product flows still require separate acceptance.
 
-产品仅接受本清单固定的官方制品，不提供定制原生候选选源或兼容版本覆盖。
+The product accepts only official artifacts pinned in this manifest; it provides no custom native candidate source selection or compatible-version override.
 
-## 当前平台
+<a id="当前平台"></a>
+## Current Platforms
 
 ```text
 codex-<version>-darwin-arm64.tgz
@@ -47,15 +44,16 @@ codex-<version>-darwin-x64.tgz
 codex-<version>-win32-x64.tgz
 ```
 
-## 官方来源
+<a id="官方来源"></a>
+## Official Source
 
-先查询官方稳定版本：
+First query the official stable version:
 
 ```bash
 npm view @openai/codex@latest version
 ```
 
-以当前固定版本 `0.165.0` 为例，下载地址为：
+For the currently pinned version `0.165.0`, the download URLs are:
 
 ```text
 https://registry.npmjs.org/@openai/codex/-/codex-0.165.0-darwin-arm64.tgz
@@ -63,7 +61,7 @@ https://registry.npmjs.org/@openai/codex/-/codex-0.165.0-darwin-x64.tgz
 https://registry.npmjs.org/@openai/codex/-/codex-0.165.0-win32-x64.tgz
 ```
 
-也可以直接下载：
+You can also download directly:
 
 ```bash
 VERSION=0.165.0
@@ -81,9 +79,10 @@ curl -fL --retry 3 \
   -o "scripts/vendor/codex/codex-${VERSION}-win32-x64.tgz"
 ```
 
-## 完整性记录
+<a id="完整性记录"></a>
+## Integrity Records
 
-从 npm 元数据读取官方 SHA-512 integrity：
+Read the official SHA-512 integrity values from npm metadata:
 
 ```bash
 VERSION=0.165.0
@@ -92,18 +91,19 @@ npm view "@openai/codex@${VERSION}-darwin-x64" dist.integrity
 npm view "@openai/codex@${VERSION}-win32-x64" dist.integrity
 ```
 
-同时记录实际字节数和 SHA-256：
+Also record the actual byte count and SHA-256:
 
 ```bash
 stat -f%z "scripts/vendor/codex/codex-${VERSION}-darwin-arm64.tgz"
 shasum -a 256 "scripts/vendor/codex/codex-${VERSION}-darwin-arm64.tgz"
 ```
 
-将 URL、字节数、SHA-256 和 npm SHA-512 integrity 一并写入 `manifest.json`。
+Record the URL, byte count, SHA-256, and npm SHA-512 integrity together in `manifest.json`.
 
-## 内容检查
+<a id="内容检查"></a>
+## Content Checks
 
-平台包必须包含完整 Runtime，不能只提取主程序：
+The platform package must contain the complete Runtime, not just the main executable:
 
 ```bash
 tar -tzf "codex-${VERSION}-darwin-arm64.tgz"
@@ -111,25 +111,27 @@ tar -tzf "codex-${VERSION}-darwin-x64.tgz"
 tar -tzf "codex-${VERSION}-win32-x64.tgz"
 ```
 
-至少检查：
+Check at least:
 
 - `codex-package.json`；
-- `bin/codex` 或 `bin/codex.exe`；
+- `bin/codex` or `bin/codex.exe`;
 - code-mode host；
-- command runner、sandbox 等平台辅助程序；
-- manifest 中的 `target` 和 `entrypoint` 与文件名平台一致。
+- platform helper programs such as the command runner and sandbox;
+- `target` and `entrypoint` in the manifest match the platform in the filename.
 
-## 更新步骤
+<a id="更新步骤"></a>
+## Update Steps
 
-1. 查询 `@openai/codex@latest` 的稳定版本。
-2. 下载 macOS arm64、macOS x64 和 Windows x64 官方平台包。
-3. 核对 npm metadata 中的版本、平台和 SHA-512 integrity。
-4. 将原始平台包上传 OSS 并验证匿名下载，更新 manifest 中的 OSS URL、字节数、SHA-256、integrity 和固定版本。
-5. 删除本地下载文件，确认其不会进入 Git。
-7. 执行 Desktop 打包契约测试和两个平台的真实构建。
-6. 提交 manifest、说明和代码变更，不提交 tgz。
+1. Query the stable version of `@openai/codex@latest`.
+2. Download the official platform packages for macOS arm64, macOS x64, and Windows x64.
+3. Verify the version, platform, and SHA-512 integrity in npm metadata.
+4. Upload the original platform packages to OSS and verify anonymous downloads; update the OSS URL, byte count, SHA-256, integrity, and pinned version in the manifest.
+5. Delete local downloads and confirm they will not enter Git.
+7. Run Desktop packaging contract tests and real builds on both platforms.
+6. Commit the manifest, documentation, and code changes; do not commit tgz files.
 
-## 验证
+<a id="验证"></a>
+## Verification
 
 ```bash
 cd apps/desktop
@@ -139,4 +141,4 @@ cd ../..
 pnpm ops cd build local
 ```
 
-Windows 制品按 [`scripts/BUILD.md`](../../BUILD.md) 的 Velopack 个人安装链路完成构建与实机验收；契约测试不替代安装验收。
+Build and acceptance-test Windows artifacts on a device using the Velopack personal installation flow in [`scripts/BUILD.md`](../../BUILD.md); contract tests do not replace installation acceptance.

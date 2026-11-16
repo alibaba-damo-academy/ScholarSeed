@@ -1,27 +1,27 @@
 # scholarseed-dsh
 
-书深为 **DeepSeek Harness (DSH)** 保留的独立 Adapter 包，尚未接入可运行的 Harness。
+An independent Adapter package reserved by ScholarSeed for **DeepSeek Harness (DSH)**; it is not yet connected to a runnable Harness.
 
-## 为什么存在
+<a id="为什么存在"></a>
+## Why It Exists
 
-保留明确的厂商接入边界。未来实现与 Codex 相同的公开 Provider/Session ABI，
-仅依赖 `scholarseed-runtime`，不依赖 Serve 或 Desktop，不复用已删除的自研 Harness。
+It preserves a clear vendor integration boundary. A future implementation will use the same public Provider/Session ABI as Codex, depend only on `scholarseed-runtime`, avoid Serve and Desktop dependencies, and not reuse the removed in-house Harness.
 
-## 当前状态：能力显式不可用
+<a id="当前状态能力显式不可用"></a>
+## Current Status: Capabilities Explicitly Unavailable
 
-本包没有 Provider、Session 或 `scholarseed_runtime.providers` entry point。
-旧 `RuntimeProfile` 占位实现已移除，不能将其误认为新 ABI 的实现。当前 DSH 会话、
-工具、审批等能力均未支持，不提供模拟运行或空成功响应，也不：
+This package has no Provider, Session, or `scholarseed_runtime.providers` entry point.
+The old `RuntimeProfile` placeholder implementation has been removed and must not be mistaken for an implementation of the new ABI. DSH sessions, tools, approvals, and other capabilities are currently unsupported. No simulated execution or empty success response is provided, and the package does not:
 
-- 把接口压成 Codex 与 DSH 的最低公共子集；
-- 用假实现让 `unsupported` 看起来可用。
+- reduce the interface to the lowest common denominator between Codex and DSH;
+- use a fake implementation to make `unsupported` appear usable.
 
-`product.json` 中 `runtimes.dsh.enabled` 为 `false`。保持此状态；仅安装本包不会
-使 Gateway 发现可运行的 DSH。若提前启用，启动配置检查会报告缺少 Provider。
+`runtimes.dsh.enabled` in `product.json` is `false`. Keep it that way; installing this package alone will not make the Gateway discover a runnable DSH. If enabled prematurely, startup configuration checks will report the missing Provider.
 
-## 接通后要做什么
+<a id="接通后要做什么"></a>
+## What to Do When Connecting It
 
-1. 在本包实现 `scholarseed_runtime.contract` 定义的 Provider/Session 和真实原生事件翻译；
-2. 在包元数据注册 `scholarseed_runtime.providers` 工厂，声明真实支持的能力和不支持原因；
-3. 验证发现、会话、事件、审批和恢复，完成真实产品验收；
-4. 验收后再启用产品配置。不得通过保留旧协议转发层或假 Harness 跳过接入工作。
+1. Implement the Provider/Session defined by `scholarseed_runtime.contract` in this package, along with translation of real native events;
+2. Register a `scholarseed_runtime.providers` factory in package metadata and declare the capabilities actually supported and reasons for unsupported capabilities;
+3. Verify discovery, sessions, events, approvals, and recovery, and complete real product acceptance;
+4. Enable the product configuration only after acceptance. Do not skip integration work by retaining an old-protocol forwarding layer or a fake Harness.

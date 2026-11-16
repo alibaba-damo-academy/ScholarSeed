@@ -1,131 +1,87 @@
-# 资源导入与任务中心
+<a id="资源导入与任务中心"></a>
+# Resource Import and Task Center
 
-## 适用范围与职责
+<a id="适用范围与职责"></a>
+## Scope and Responsibilities
 
-修改资料复制/关联导入、后台任务进度、取消/重试或任务中心时读取本页。
-本页承接旧资源导入设计中的有效职责和决策理由；区分当前源码机制与目标约束，
-不把历史测试结果当作当前产品验收。
+Read this page when changing resource copy/link imports, background task progress, cancellation/retry, or the task center.
+It carries forward valid responsibilities and decision rationale from the old resource-import design. It distinguishes current source mechanisms from target constraints and does not treat historical test results as current product acceptance.
 
-| Owner | 职责与实际入口 |
+| Owner | Responsibility and Actual Entry Point |
 | --- | --- |
-| Serve Resources | 导入 job 编排、账本和 HTTP/SSE；[API](../../apps/serve/service/resources/api/jobs.py)、[服务](../../apps/serve/service/resources/service/jobs.py)、[持久化](../../apps/serve/service/resources/persistence/jobs.py) |
-| Serve Content | 来源、目标与关联授权边界；[Content](../../apps/serve/service/content/)、[公共内容契约](../../apps/serve/service/platform/content.py)；Resources 不自行拼接项目根或越过该边界操作来源 |
-| Serve 路径/组合 | [产品路径](../../apps/serve/service/paths.py) 持有用户级导入账本位置；[bootstrap](../../apps/serve/service/bootstrap.py) 组合依赖与生命周期 |
-| Desktop Resources | [任务源注册](../../apps/desktop/src/renderer/src/features/resources/feature.tsx)、[API 投影与单任务事件订阅](../../apps/desktop/src/renderer/src/features/resources/imports.ts) |
-| Desktop 任务展示 | [贡献契约](../../apps/desktop/src/renderer/src/contracts/features.ts)、[Provider/列表](../../apps/desktop/src/renderer/src/components/business/Tasks.tsx)、[TaskFeed](../../apps/desktop/src/renderer/src/components/business/taskfeed.ts)；[侧栏入口](../../apps/desktop/src/renderer/src/shell/ActivityRail.tsx)与[通知动作](../../apps/desktop/src/renderer/src/App.tsx)共用 TaskCenter Context，Shell 不拥有导入执行 |
+| Serve Resources | Import job orchestration, ledger, and HTTP/SSE; [API](../../apps/serve/service/resources/api/jobs.py), [service](../../apps/serve/service/resources/service/jobs.py), [persistence](../../apps/serve/service/resources/persistence/jobs.py) |
+| Serve Content | Source, target, and link-authorization boundaries; [Content](../../apps/serve/service/content/), [shared content contract](../../apps/serve/service/platform/content.py). Resources must not construct project roots itself or access sources across this boundary. |
+| Serve paths/composition | [Product paths](../../apps/serve/service/paths.py) owns the user-level import-ledger location; [bootstrap](../../apps/serve/service/bootstrap.py) composes dependencies and lifecycle. |
+| Desktop Resources | [Task-source registration](../../apps/desktop/src/renderer/src/features/resources/feature.tsx), [API projection and per-task event subscription](../../apps/desktop/src/renderer/src/features/resources/imports.ts) |
+| Desktop task display | [Contribution contract](../../apps/desktop/src/renderer/src/contracts/features.ts), [Provider/list](../../apps/desktop/src/renderer/src/components/business/Tasks.tsx), [TaskFeed](../../apps/desktop/src/renderer/src/components/business/taskfeed.ts). The [sidebar entry](../../apps/desktop/src/renderer/src/shell/ActivityRail.tsx) and [notification action](../../apps/desktop/src/renderer/src/App.tsx) share TaskCenter Context; Shell does not own import execution. |
 
-Runtime、Adapter、Trace 不拥有产品导入 job。新增任务类型通过 Feature `taskSources`
-注册，不把业务类型分支写入 Shell；展示协议不替代各域的真实执行模型。
+Runtime, Adapter, and Trace do not own product import jobs. Register new task types through Feature `taskSources` rather than adding business-type branches to Shell; the display protocol does not replace each domain's actual execution model.
 
-## 为什么是后台 job，而不是弹窗 loading
+<a id="为什么是后台-job而不是弹窗-loading"></a>
+## Why a Background Job Instead of Dialog Loading
 
-资源导入是有文件系统副作用的长操作。弹窗等待原请求会把交互生命周期误当任务生命周期；
-纯内存任务不能独立保存取消、事件游标和中断事实。持久 job 允许前端切页、切项目后
-重新观察，而不要求 Renderer 持续存在。
+Resource import is a long-running operation with filesystem side effects. Waiting for the original request in a dialog confuses the interaction lifecycle with the task lifecycle; an in-memory task cannot independently retain cancellation, event cursors, or interruption facts. A persistent job lets the frontend observe again after switching pages or projects without requiring the Renderer to remain mounted.
 
-导入账本位于用户级而不是项目级，因为它跨项目聚合且含本机来源和执行事实，
-不能随项目复制到另一台机器。项目内应保留最终资源身份、内容与版本，而不是迁移本机任务来源。
-具体路径和数据库归属见[持久化边界](../architecture/persistence.md)，不另维护路径推导规则。
-本功能不是常驻 daemon；完全退出 App 后继续执行不属于已承诺能力。
+The import ledger is user-level rather than project-level because it aggregates across projects and contains machine-local source and execution facts; it must not be copied to another machine along with a project. A project should retain final resource identity, content, and versions, not migrate machine-local task sources.
+See [persistence boundaries](../architecture/persistence.md) for the specific path and database ownership; do not maintain a separate path-derivation rule.
+This feature is not a persistent daemon. Continuing work after the App exits completely is not a promised capability.
 
-## 当前机制
+<a id="当前机制"></a>
+## Current Mechanism
 
-- 创建入口返回 202 和任务投影；LINK 在 admission 中仍有同步关联预检，不能概括为
-  “返回前绝不访问文件系统”或仅凭 202 证明事件循环无阻塞。
-- 权威状态为 `queued/running/completed/partial/failed/cancelled`；扫描、复制、关联和版本化
-  另属 phase。[域契约](../../apps/serve/service/resources/domain/jobs.py) 是字段真源，
-  不把旧设计的混合状态箭头当实际 Enum。
-- API 按请求 owner 查任务；对外通过 `public_import_job` 派生 `source_names`，不把完整
-  来源执行模型或绝对来源路径复制到通用任务展示协议。
-- Desktop 活跃任务使用带 `after_seq` 的单任务 SSE；TaskFeed 丢弃不增长的 `eventSeq`，
-  停止后递增 generation，使旧快照和订阅结果不再覆盖新会话的任务展示。
-- Provider 在开始、打开和窗口聚焦时刷新快照；fallback 定时检查由 `needsRefresh()`
-  判断未初始化来源或未连接的活跃 watcher。断线收敛不依赖弹层打开，避免后台任务
-  因用户关闭展示而停止更新；旧“仅打开时”条件已被后续终态解耦决策替代。
-- 过期运行 lease 的中断收敛按已完成项目或成功来源区分 `partial/failed`，并记录稳定
-  中断错误；不能把部分成功改写为完成。后续实现存在 LINK/来源结果回执恢复入口，
-  不能把旧“所有恢复一律失败且没有回执”描述泛化到当前所有恢复场景。
+- The creation entry returns 202 and a task projection. LINK still performs a synchronous link preflight during admission, so do not summarize this as “no filesystem access before returning” or infer from 202 alone that the event loop is unblocked.
+- The authoritative states are `queued/running/completed/partial/failed/cancelled`. Scanning, copying, linking, and versioning are separate phases. The [domain contract](../../apps/serve/service/resources/domain/jobs.py) is the source of truth for fields; do not treat the old design's mixed state arrows as the actual Enum.
+- The API looks up tasks by request owner. It derives `source_names` for external use through `public_import_job`, rather than copying the full source execution model or absolute source paths into the shared task-display protocol.
+- Desktop observes active tasks through per-task SSE with `after_seq`. TaskFeed discards `eventSeq` values that do not increase and increments the generation on stop so old snapshots and subscription results cannot overwrite task display in a new session.
+- The Provider refreshes snapshots at startup, when opened, and when the window gains focus. Its fallback timer uses `needsRefresh()` to detect uninitialized sources or active watchers that are not connected. Reconnection convergence does not depend on a popover being open, so a background task does not stop updating when the user closes its display. The old “only while open” condition was superseded by a later decision to decouple terminal state.
+- Interruption convergence for an expired runtime lease distinguishes `partial/failed` according to completed items or successful sources and records a stable interruption error; partial success must not be rewritten as completion. Later implementation added a LINK/source-result-receipt recovery entry point, so do not generalize the old statement that “all recovery always fails and has no receipt” to every current recovery scenario.
 
-## 必须保留的目标约束与验证缺口
+<a id="必须保留的目标约束与验证缺口"></a>
+## Target Constraints and Verification Gaps to Preserve
 
-进度必须来自实际阶段：扫描显示发现数，复制百分比来自字节，关联是授权提交状态，
-版本发现与初始化计数独立。不要计算伪造的跨阶段加权总百分比。复制结束、后端任务
-终态与用户已经看见更新后的资料树是不同事实，不能相互代替。
+Progress must come from actual phases: scanning shows the discovered count, copy percentage comes from bytes, linking reflects authorized commit state, and version discovery and initialization have separate counts. Do not calculate a fabricated weighted percentage across phases. Copy completion, backend task terminal state, and the user seeing an updated resource tree are distinct facts and cannot substitute for one another.
 
-取消意图、执行停止和最终副作用分别验证；重试不能重新发布已成功来源。
-部分成功应显示逐来源结果，出错不能冒充成功；未完成文件清理与已发布文件保留需要
-通过真实文件系统验证，不仅检查任务状态字段。
+Verify cancellation intent, execution stop, and final side effects separately; retries must not republish sources that already succeeded.
+Partial success should show per-source results, and errors must not appear as success. Verify cleanup of incomplete files and retention of published files against a real filesystem, not only task-state fields.
 
-旧需求曾要求资料树读回成功才发布最终完成；后续设计明确改为后端任务终态与前台投影
-解耦。TaskFeed 保留权威终态，Resources 的 `onTerminal` 只失效对应项目 revision，
-面板进入/刷新独立读回。这样后台 A 完成不会强制在 B 或首页加载 A，也不会因资料树
-刷新失败把成功 job 改成失败或 `refreshing`。刷新错误由资料页承接，不能吞掉错误或
-用任务完成证明树已读回。扩展时保持单一账本、项目隔离、单调事件和旧响应 fencing；
-分别验收后台终态与返回项目后的真实资源可见性。
+An old requirement said that final completion should be published only after the resource tree reads back successfully. A later design explicitly decoupled backend task terminal state from the frontend projection. TaskFeed retains the authoritative terminal state, while Resources `onTerminal` only invalidates the corresponding project revision; entering or refreshing the panel performs the read-back independently. Thus, background completion in project A does not force project A to load while the user is in project B or on the home page, and a resource-tree refresh failure does not turn a successful job into `failed` or `refreshing`. The resource page handles refresh errors; do not swallow them or use task completion as proof that the tree was read back. When extending this behavior, preserve a single ledger, project isolation, monotonic events, and fencing of stale responses; accept backend terminal state and real resource visibility after returning to the project separately.
 
-当前任务中心由 [ActivityRail](../../apps/desktop/src/renderer/src/shell/ActivityRail.tsx)
-使用 DOM Popover 呈现；[通知中的查看任务中心](../../apps/desktop/src/renderer/src/App.tsx)
-通过同一 Context 打开它，不是第二个任务 Owner。内置浏览器的 [viewport](../../apps/desktop/src/renderer/src/features/browser/viewport.ts)
-可能因相交浮层投影 `visible: false`；不能声称原生交互任务中心已经交付，不能靠
-提高 CSS 层级、隐藏网页或旧导入截图证明覆盖实时网页的交互正常。
+The current task center is presented using a DOM Popover by [ActivityRail](../../apps/desktop/src/renderer/src/shell/ActivityRail.tsx). [View Task Center in notifications](../../apps/desktop/src/renderer/src/App.tsx) opens the same center through the same Context; it is not a second task Owner. The built-in browser [viewport](../../apps/desktop/src/renderer/src/features/browser/viewport.ts) may project `visible: false` because of an intersecting overlay. Do not claim that a native interactive task center has been delivered, or use increased CSS stacking order, hidden web content, or old import screenshots to prove that interaction over a live webpage works.
 
-## 重名确认与版本化覆盖
+<a id="重名确认与版本化覆盖"></a>
+## Duplicate-Name Confirmation and Versioned Replacement
 
-供需求负责人评审与重复验证的 [COPY 需求恢复草案](imports/requirements.md)
-单独记录候选要求、入口适用范围和待决项；尚未批准，不替代本页现行边界或发布基线。
+The [recovered COPY requirements draft](imports/requirements.md) for requirements-owner review and repeatable verification separately records candidate requirements, applicable entry points, and pending decisions. It is not approved and does not replace the current boundaries or release baseline on this page.
 
-重名处理另有 [同步导入入口](../../apps/serve/service/resources/api/routes.py) 与
-[导入策略 Owner](../../apps/serve/service/resources/service/importer.py)。不能把这个入口的
-两阶段冲突契约自动外推为后台 job 的全部能力；新增或改动调用方时分别检查真实链路。
+Duplicate-name handling also has a [synchronous import entry](../../apps/serve/service/resources/api/routes.py) and an [import-policy Owner](../../apps/serve/service/resources/service/importer.py). Do not automatically generalize this entry point's two-phase conflict contract to every background job capability; when adding or changing callers, inspect each real path separately.
 
-首次 COPY 计划发现冲突时返回 `needs_resolution` 与 `plan_token`，不先执行整批导入。
-确认需要显式决策及幂等键；服务端重算计划、检查冲突项集合和覆盖资格。
-重命名按冻结目标精确创建，不能在目标变化后静默选择另一个名称；过期计划要求重新确认。
-目录冲突不授权合并、递归删除或覆盖。Content 持有路径、稳定读取与精确创建，
-Resources 持有冲突决策和版本政策，Desktop 不自行判断路径或 revision 安全。
+The first COPY plan returns `needs_resolution` and `plan_token` if it finds a conflict; it does not first execute the whole import. Confirmation requires an explicit decision and idempotency key. The server recomputes the plan and checks the conflict set and replacement eligibility.
+Rename creates the exact frozen target; if the target changes, the system must not silently choose another name. An expired plan requires confirmation again.
+A directory conflict does not authorize merging, recursive deletion, or replacement. Content owns paths, stable reads, and exact creation; Resources owns conflict decisions and version policy; Desktop must not decide path or revision safety itself.
 
-文件覆盖必须经过 [版本 writer](../../apps/serve/service/resources/service/history.py) 的
-`commit_versioned_replace`：检查当前快照 revision，先封存准确旧内容，再提交版本化 WRITE。
-直接复制覆盖后等扫描补历史，会让旧字节丢失或产生竞态，因此不能代替此边界。
-幂等重放不能追加重复版本；单文件 mutation 可恢复不等于多文件批次原子提交，
-部分执行不得报告整批成功。旧提案中的回退描述不授权撤销现有代码或删除运行账本。
+File replacement must go through `commit_versioned_replace` in the [version writer](../../apps/serve/service/resources/service/history.py): check the current snapshot revision, archive the exact old content first, then commit the versioned WRITE.
+Replacing by direct copy and waiting for a scan to reconstruct history could lose old bytes or create a race, so it cannot substitute for this boundary.
+Idempotent replay must not append duplicate versions. Recoverable single-file mutation does not make a multi-file batch atomic; partial execution must not be reported as complete success. Rollback descriptions in old proposals do not authorize reverting current code or deleting the runtime ledger.
 
-[ImportDialog](../../apps/desktop/src/renderer/src/features/resources/ImportDialog.tsx) 在同一弹窗
-切换选择与冲突阶段，覆盖资格由服务端投影，忙碌时防重复提交。实现存在不等于当前验收通过；
-修改时还需核验首次冲突零写、目标/来源变化拒绝、重放、目录禁覆盖、旧版本真实读回、
-模态内错误与禁用状态，并结合 [导入契约](../../apps/serve/tests/contract_resource_import.py)
-和真实 Desktop 文件系统操作取证，不用字段或旧截图代替。
+Within the same dialog, [ImportDialog](../../apps/desktop/src/renderer/src/features/resources/ImportDialog.tsx) switches between selection and conflict phases. The server projects replacement eligibility, and the UI prevents duplicate submissions while busy. Implementation does not equal current acceptance. When changing this flow, also verify zero writes on the initial conflict, rejection after target/source changes, replay, disabled replacement for directories, real read-back of old versions, and errors/disabled states within the modal. Gather evidence from the [import contract](../../apps/serve/tests/contract_resource_import.py) and real Desktop filesystem operations; fields or old screenshots are not a substitute.
 
-## 文献附件进入项目资源
+<a id="文献附件进入项目资源"></a>
+## Importing Literature Attachments into Project Resources
 
-附件导入不是通用目录 job，也不是把文献关系加入项目。
-[Literature API](../../apps/serve/service/literature/api/importer.py) 解析精确条目与附件，
-读取来源字节及 revision，经 Content 校验资料根内目标，再调用 Resources 的
-payload 预检/提交端口。来源路径不由 Desktop 提供。
-[附件导入表单](../../apps/desktop/src/renderer/src/features/literature/Import.tsx) 当前只提供
-独立复制与指定文件覆盖；旧方案的附件 LINK/标注共享模式已不在该契约中，不能从
-通用 Resources 支持 LINK 推断附件也可关联。独占文献文件删除后可能消失，项目副本
-不能依赖它的物理路径；文件副本与文献/项目关系不是同一生命周期。
+Attachment import is not a generic directory job and does not add a literature relationship to a project.
+The [Literature API](../../apps/serve/service/literature/api/importer.py) resolves the exact item and attachment, reads source bytes and revision, validates the target under the resource root through Content, and then calls the Resources payload preflight/commit port. Desktop does not provide the source path.
+The [attachment import form](../../apps/desktop/src/renderer/src/features/literature/Import.tsx) currently provides only independent copying and replacement of a specified file. The old attachment LINK/annotation-sharing mode is no longer part of this contract; LINK support in generic Resources does not imply that attachments can also be linked. An exclusive literature file may disappear when deleted, so a project copy cannot depend on its physical path. A file copy and its literature/project relationship do not share the same lifecycle.
 
-预检绑定来源、目标与记录选项；提交要求 token 和幂等键。覆盖名与来源后缀必须匹配，
-批注能力按 PDF 媒体类型判定，非 PDF 不接受记录复制/替换选项。显式替换批注另需确认，
-来源/目标 record_revision 参与冲突校验，不能只核文件名就覆盖。
-字节先提交，PDF 记录随后处理，最后 finish_payload；后续失败返回已写入路径，
-不能声称跨域原子回滚或再次盲写。重放、目标变化、记录冲突、部分成功与重启恢复
-仍需分别验证。旧 copy-to-project 路由仍存在，不能把新表单的两阶段契约外推到所有
-旧调用方；修改入口时核对真实调用链与[API 类型](../../apps/desktop/src/renderer/src/features/literature/api.ts)。
-源码与结构检查不证明实机目录选择、覆盖历史读回或副本删除隔离已通过。
+Preflight binds the source, target, and record options; submission requires a token and idempotency key. A replacement name must match the source suffix. Annotation capability is determined by PDF media type, and non-PDF files do not accept record-copy/replacement options. Replacing annotations explicitly requires confirmation, and source/target `record_revision` values participate in conflict checking; checking only the filename is insufficient to replace a file.
+Bytes are committed first, then PDF records are processed, and finally `finish_payload` runs. A later failure returns the paths already written; this does not provide cross-domain atomic rollback and must not trigger a blind second write. Replay, target changes, record conflicts, partial success, and restart recovery still need separate verification. The old copy-to-project route remains, so do not generalize the new form's two-phase contract to every old caller. When changing an entry point, check the real call chain and [API types](../../apps/desktop/src/renderer/src/features/literature/api.ts).
+Source and structural checks do not prove that directory selection on the actual machine, replacement-history read-back, or deletion isolation of a copy has passed.
 
-## 修改后的验证选择
+<a id="修改后的验证选择"></a>
+## Verification After Changes
 
-- 后端按改动检查 [导入 job 契约](../../apps/serve/tests/contract_resource_import_jobs.py)
-  及受影响 Content/版本恢复契约；先确认当前测试类与执行入口。
-- 前端检查 [导入映射与订阅测试](../../apps/desktop/src/renderer/src/features/resources/imports.test.ts)、
-  [任务契约](../../apps/desktop/src/renderer/src/contracts/tasks.test.ts) 与实际 TaskFeed 测试。
-- 在隔离运行态的真实 Desktop 中复制/关联真实目录，观察阶段、切页/切项目、取消、
-  重试、错误和重启恢复；核对实际文件、资料树与网络事件，逐张检查最终合成截图。
-- 有内置网页时另验任务中心展开/关闭、网页 bounds、滚动/表单/运行状态和输入归属。
-  结构、类型检查或 renderer-only 截图不替代此验收。
+- For backend changes, check the [import job contract](../../apps/serve/tests/contract_resource_import_jobs.py) and affected Content/version recovery contracts; first confirm the current test class and entry point.
+- For frontend changes, check [import mapping and subscription tests](../../apps/desktop/src/renderer/src/features/resources/imports.test.ts), the [task contract](../../apps/desktop/src/renderer/src/contracts/tasks.test.ts), and actual TaskFeed tests.
+- In an isolated runtime, use a real Desktop to copy/link real directories and observe phases, page/project switching, cancellation, retries, errors, and restart recovery. Check actual files, the resource tree, and network events; inspect every final composite screenshot.
+- When an embedded webpage is present, also test task-center opening/closing, webpage bounds, scrolling/forms/runtime state, and input ownership. Structure/type checks or renderer-only screenshots do not replace this acceptance.
 
-本页的验证入口不授权执行产品操作。实施功能时须遵守当次任务授权与适用规则；
-macOS 验收结果不能作为 Windows 产品行为证明。
+The verification entry points on this page do not authorize product operations. When implementing a feature, follow the authorization and applicable rules for that task. macOS acceptance does not prove Windows product behavior.

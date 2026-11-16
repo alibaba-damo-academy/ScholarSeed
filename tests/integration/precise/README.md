@@ -1,13 +1,12 @@
-# precise 集成测试（不在 run_all 门禁内）
+<a id="precise-集成测试不在-runall-门禁内"></a>
+# precise Integration Tests (Not in the run_all Gate)
 
-本目录**未注册**进 `apps/serve/tests/run_all.py`，因此不在 CI 门禁内。原因：目录内仍有
-既有失败（见下），直接注册会让门禁恒红。要入门禁请先修完这些失败并在
-`apps/serve/tests/run_all.py` 登记套件名。
+This directory is **not registered** in `apps/serve/tests/run_all.py` and is therefore outside the CI gate. There are existing failures in this directory (see below); registering it as-is would keep the gate red. To add it to the gate, first fix these failures and register the suite name in `apps/serve/tests/run_all.py`.
 
-## 手动运行
+<a id="手动运行"></a>
+## Manual Run
 
-四段 `PYTHONPATH` 缺一不可（最后一段是本目录；缺了它 `browser_pool_support` 等同目录
-模块导入失败，会把本来 OK 的套件误报成 error）：
+All four `PYTHONPATH` entries are required (the last is this directory; without it, imports of same-directory modules such as `browser_pool_support` fail and incorrectly report an otherwise-OK suite as an error):
 
 ```bash
 SK=skills/community/precise-literature-search
@@ -15,26 +14,23 @@ PYTHONPATH="$SK/scripts:$SK/modules/search:$SK/modules/search/tools:tests/integr
   python3 -m unittest discover -s tests/integration/precise -p "test_*.py"
 ```
 
-纯标准库即可，不需要仓库 venv。套件会起真实子进程与浏览器池槽位，全量约 40–60 秒。
+The standard library alone is sufficient; the repository venv is not required. The suite starts real subprocesses and browser-pool slots and takes about 40–60 seconds in full.
 
-## 基线（2026-09-28，`origin/shushen_release/mvp_v0.2_open_source` = `0623d28e2`）
+<a id="基线2026-09-28originshushenreleasemvpv02opensource--0623d28e2"></a>
+## Baseline (2026-09-28, `origin/shushen_release/mvp_v0.2_open_source` = `0623d28e2`)
 
-71 tests，5 failures，均为既有失败（2026-09-27 以来多次基线一致，见工单 87299389）：
+71 tests, 5 failures, all pre-existing (the baseline has been consistent across multiple runs since 2026-09-27; see work item 87299389):
 
-- `test_paid_pool_integration`：4 例（旧夹具缺少现行运行状态、授权和产品获取失败记录，未进入目标逻辑）
-- `test_browser_pool::test_released_slot_with_executor_lock_uses_wait_path`：1 例
+- `test_paid_pool_integration`: 4 cases (the old fixtures lack current runtime state, authorization, and product acquisition failure records, so they do not reach the target logic)
+- `test_browser_pool::test_released_slot_with_executor_lock_uses_wait_path`: 1 case
 
-## 当前分支复核（2026-09-30，macOS）
+<a id="当前分支复核2026-09-30macos"></a>
+## Current Branch Recheck (2026-09-30, macOS)
 
-付费下载测试改用当前运行状态与授权契约准备夹具后，4 例通过。完整套件在可读取浏览器
-进程信息的环境中运行 118 项，仅上述浏览器池等待路径 1 例失败，另有 1 例平台跳过。
-受限沙箱若禁止调用 `ps`，浏览器相关用例会额外失败，不能与正常环境结果混同。
+After the paid-download tests switched to fixtures prepared using the current runtime-state and authorization contracts, 4 cases passed. The full suite ran 118 tests in an environment able to read browser process information; only the browser-pool wait-path test above failed, and one test was skipped for the platform. In a restricted sandbox that prohibits calling `ps`, browser-related tests may also fail; do not conflate those results with results from a normal environment.
 
-## 历史
+<a id="历史"></a>
+## History
 
-- `test_environment.py` 于 2026-09-28 删除（工单 87299389）：它测的
-  `scripts/environment.py::download_environment()`（白名单 env，避免产品凭据进入
-  Chrome / downloader 子进程）随 balance 重构 `d8e07d813` 被移除，测试未同步，成为恒红死测试。
-- 上述子进程 env 净化能力**目前不在**技能边界：downloader / Chrome 子进程继承沙箱全量 env。
-  现行控制面是沙箱出网与 deny-read（proposal 116 P4）以及 serve 不向沙箱注入桥凭据。
-  是否恢复白名单 env 属独立安全加固议题（另开工单决策），本目录暂不承载该断言。
+- `test_environment.py` was removed on 2026-09-28 (work item 87299389): the `scripts/environment.py::download_environment()` it tested (a whitelisted env that kept product credentials out of Chrome/downloader subprocesses) was removed in balance refactor `d8e07d813`, but the test was not updated and became a permanently failing dead test.
+- The subprocess env-sanitization capability described above is **currently outside** the Skill boundary: downloader/Chrome subprocesses inherit the sandbox's full env. The current controls are sandbox outbound networking and deny-read (proposal 116 P4), plus Serve not injecting bridge credentials into the sandbox. Whether to restore a whitelisted env is a separate security-hardening issue (to be decided in a separate work item); this directory does not assert that behavior for now.

@@ -1,844 +1,367 @@
-# 选区加入对话：快照与来源证据
+<a id="选区加入对话快照与来源证据"></a>
+# Adding a Selection to a Conversation: Snapshots and Source Evidence
 
-修改划词加入对话、选区上下文解析、文献附件加入/预览、文献笔记或来源校验时读取本页。它描述当前机制，
-不是完整工作台需求或产品验收报告；查看器、编辑与版本管理仍由各自 Owner 维护。
+Read this page when changing selection-to-chat behavior, selection-context resolution, literature-attachment import or preview, literature notes, or source verification. It describes the current mechanism and is not a complete workbench requirement or product acceptance report; viewers, editors, and version management are still maintained by their respective owners.
 
-按任务读取相关章节，不要求通读：选区发送看[快照与证据](#两种操作不能混用)，
-输入或响应异常看[附件身份与错误反馈](#选区动作的来源身份与错误反馈)，
-阅读追问看[引用与草稿](#阅读结果追问文献范围与文字草稿)，
-框选/流替换看[图表临时结果](#图表框选与临时结果)，
-翻译调度/页布局看[逐页翻译](#文献逐页翻译与页内分段)。
-涉及模型目录、授权或出站来源时再追加[Serve 对应边界](../architecture/serve.md#模型目录执行键与凭据门禁)。
+Read the relevant sections for the task; reading the entire page is not required. For sending a selection, see [Snapshots and evidence](#两种操作不能混用); for input or response errors, see [Attachment identity and error feedback](#选区动作的来源身份与错误反馈); for follow-up questions about reading, see [Citations and drafts](#阅读结果追问文献范围与文字草稿); for area selection or stream replacement, see [Temporary chart results](#图表框选与临时结果); for translation scheduling and page layout, see [Page-by-page translation](#文献逐页翻译与页内分段). When model catalogs, authorization, or outbound sources are involved, also read [Serve boundaries](../architecture/serve.md#模型目录执行键与凭据门禁).
 
-## 两种操作不能混用
+<a id="两种操作不能混用"></a>
+## The Two Operations Must Not Be Confused
 
-| 操作 | 权威数据与边界 |
+| Operations | Authoritative Data and Boundaries |
 | --- | --- |
-| 选区加入对话后发送 | `SelectionAnchor.snapshot_text` 保存用户加入时的完整正文；发送直接使用冻结文字，不重新读取源文件、比较版本或定位选区 |
-| 解释、翻译、润色及写回 | 按所属动作校验来源、版本、定位和内容；只读动作的受限快照恢复不授予编辑或写回权限，见下文 |
-| 整文件引用 | 遵循所属上下文 Provider 的读取与冻结规则，不自动改为选区快照语义 |
-
-这项区分保证已加入的文字不会因文件修改、移动或删除而改变，同时避免将旧文字
-误用作当前文件的编辑授权。`preview_text` 仅用于展示，不能作为完整正文的替代。
-历史引用缺少完整快照时报告 `selection_snapshot_required`，要求重新选择并加入，
-不回退到读取来源。完整正文仍受 Assistant 上下文容量预算约束，不静默截断为预览。
-
-### 回复期间追加 PDF 选区
-
-同一会话本轮已认领的选区 A 与回复期间新加入的 B 是两种状态：
-[上下文补丁入口](../../apps/serve/service/assistant/api/routes.py)将 PDF anchor 用 JSON
-模式规范化，避免请求模型中的 tuple 与持久化 list 在精确比较时误报修改；
-[上下文 Owner](../../apps/serve/service/assistant/service/context.py)仍保持 A 不可变，
-本轮终态只消费 A，B 留待下一轮认领。待发送区只呈现 B，不把已发送 A 当作新输入；
-真正修改 A 继续返回 `assistant_claimed_refs_immutable`。改变此边界须核
-[API 契约](../../apps/serve/tests/contract_assistant_context.py)及
-[前端投影](../../apps/desktop/src/renderer/src/features/assistant/state.test.ts)，
-并在真实两轮会话中核对待发送区、补丁结果和引用消费；历史 macOS 截图不能证明
-当前版本或 Windows 已验收。
-
-## 资料解释、翻译与润色
-
-[Resources AI 路由](../../apps/serve/service/resources/api/ai.py) 提供独立的
-`/api/resource/ai/explain`、`translate`、`polish` 和任务读取/取消入口，不复用
-Agent Invocation 或文献任务协议。模型可用性与任务身份按实际路由的
-`request_user_id` 校验，不从通用 owner 术语推导所有入口使用同一身份轴。
-请求 source 是项目相对身份与 revision，选中文字快照需符合哈希，未保存草稿
-另带 change_version；翻译必须提供目标语言。字段与限制由该输入契约维护。
-
-[ResourceAIService](../../apps/serve/service/resources/service/ai.py) 先解析选区证据。
-润色资格来自实际 `can_edit`，不只按旧 Markdown/DOCX 格式名单判断；接口返回
-建议，不代替编辑器事务、撤销与显式保存。特定 PDF/旧 DOC 的只读动作在具名
-可恢复错误且冻结快照有效时允许使用快照；不是所有格式、异常或润色的通用回退。
-重复 attempt 不能改变输入/模型绕过幂等，取消 accepted 也不证明上游已停止。
-返回 JSON 与 SSE 的错误/终态分别核验，断流或片段不作为可写回的完成结果。
-验证入口为[资料 AI 契约](../../apps/serve/tests/contract_resource_ai.py)，另需真实
-查看器选区、模型、流关闭及编辑写回验收。
-
-[资料建议窗](../../apps/desktop/src/renderer/src/features/resources/Suggestion.tsx)的翻译
-原文按实际渲染行数决定是否提供三行折叠，原文和译文各有滚动区域；尺寸或视口变化
-由观察器触发位置约束，不能用固定窗口坐标代替。结果复制经
-[剪贴板边界](../../apps/desktop/src/renderer/src/components/primitive/clipboard.ts)：
-Desktop 优先走 preload IPC，普通浏览器保留浏览器权限检查；按钮出现或模型请求完成
-不证明系统剪贴板已写入。定向核[几何契约](../../apps/desktop/src/renderer/src/features/resources/utils.test.ts)
-与[剪贴板契约](../../apps/desktop/src/renderer/src/components/primitive/clipboard.test.ts)，
-真实 Desktop 仍需从成功译文点击复制、读回系统剪贴板，并观察折叠、拖动、窄窗、
-PDF/Markdown 两类选区。旧记录的翻译失败与单次订阅截图不能代替这一成功路径。
-
-[选区宿主](../../apps/desktop/src/renderer/src/features/workbench/Selection.tsx)将建议窗标为
-[文档选区交互区域](../../apps/desktop/src/renderer/src/features/workbench/focus.ts)，
-使窗内按钮的按下事件不会先被外部点击处理清空选区并卸载结果。已完成的非替换
-结果提供复制；润色的显式替换仍走编辑器操作，不由复制按钮代替。修改时核对
-[选区契约](../../apps/desktop/src/renderer/src/features/workbench/selection.test.ts)，
-并在真实 Office/Markdown 选区与成功模型输出后读回剪贴板；历史记录中模型
-不可用导致的未完成验收不能作为此路径通过证明。
-
-解释与翻译在结果提交后可固定建议窗；[选区宿主](../../apps/desktop/src/renderer/src/features/workbench/Selection.tsx)
-在清空高亮后保留同一活动结果与生成状态，附着位置与选区是否仍可见是另一件事。
-主动关闭、取消固定后的外部点击、切换文档或来源 revision 变化仍应结束旧结果；
-不能为了固定浮窗而放宽来源身份校验。变更时核对[生命周期测试](../../apps/desktop/src/renderer/src/features/workbench/selection.render.test.ts)
-及真实生成中、完成后、窄窗与取消固定操作，旧 macOS 截图不代表当前版本或
-Windows 实机结果。
-
-### Impress 选区：PPT 与 PPTX 不共用降级
-
-[Office 选区采集](../../apps/desktop/src/renderer/src/features/workbench/office/selection.js)
-从原生 transferable 获取实际高亮文本，在当前幻灯片唯一定位形状，投影 slide、
-shape 与 UTF-16 范围；歧义时不把整个文本框冒充选区。拖选结束还由
-[frame](../../apps/desktop/src/renderer/src/features/workbench/office/frame.ts)
-显式提交最终选区，不能只依赖拖动中可能缺失的原生变化事件。
-
-[格式分派](../../apps/serve/service/workbench/service/slides.py)将旧二进制 PPT 与
-OOXML PPTX 交给不同处理器：PPTX 从当前权威源解析并复核 slide、shape、范围；
-PPT 不让 OOXML 解析异常代替格式判定，返回需要冻结快照的明确结果。
-[资料动作](../../apps/serve/service/resources/service/ppt.py)仅在源 revision 校验后，
-对解释、翻译接受哈希匹配且长度受限的 PPT 选中文字快照；源过期仍拒绝，润色和
-PPTX 不走此降级。选区加入对话使用本页前述冻结文本发送语义，不等于授权当前源
-上的解释或写回。定向检查分别看
-[Office 选区契约](../../apps/desktop/src/renderer/src/features/workbench/office/selection.test.ts)、
-[PPTX 权威复核](../../apps/serve/tests/contract_pptx.py)与
-[资料 AI 契约](../../apps/serve/tests/contract_resource_ai.py)；还需真实 PPT/PPTX
-局部拖选、菜单与模型动作，旧截图不证明当前或跨平台验收。
-
-### 个人选区提示词与临时要求
-
-[提示词契约](../../apps/desktop/src/prompts.ts)现在按解读、翻译、润色、图表四项保存
-用户可编辑要求；[设置页](../../apps/desktop/src/renderer/src/components/business/AccountPanel.tsx)
-显式保存及逐项恢复默认，[用户偏好](../../apps/desktop/src/preferences.ts)持久化并在缺失、
-空白、非字符串或超过 2000 个 JavaScript 字符单元时回退该项默认值。执行时
-`selectionInstruction` 将对应个人提示词与本次临时要求分别去空白后组合；没有临时要求
-仍可提交。资料建议与文献 PDF 选区的引导组件直接打开设置中的 `prompts` 页，
-不新建另一份提示词配置或页面路由。该文字只影响本次动作输入，不授予扩大文件范围、
-绕过来源/版本校验、改变
-模型能力或改写服务端 JSON/证据约束的权限。文献 PDF 的选区解读/翻译与资料划词
-各按所属动作接线，不能把四项设置外推为所有文献全文任务均消费个人提示词。
-回归先跑[提示词契约](../../apps/desktop/src/prompts.test.ts)，再在真实 Desktop
-分别检查保存重启、逐项恢复、临时要求、资料与文献选区的请求及实际模型结果；
-旧记录中的文献 PDF `generation_failed` 未由设置回读或请求到达证明已经解决。
-
-### 替换确认与不确定结果
-
-[Desktop 应用回调](../../apps/desktop/src/renderer/src/features/workbench/Selection.tsx)
-在执行替换前重新核对选区 fingerprint 与 changeVersion，并把捕获身份传给所属
-编辑器替换能力；这不是磁盘写入许可。保留编辑器事务、撤销和普通保存的版本保护，
-不能将模型建议直接写入源文件或自动保存。
-
-历史资料选区方案明确要求：替换请求超时且未收到编辑器确认时，结果应标为
-“待确认”，不能断言一定未修改，也不能自动重放替换。当前回调区分
-`replacement_timeout` 与其他替换失败；这个错误分支本身不证明编辑器最终状态
-或界面已正确表达不确定性。后续修改须核对编辑器确认协议、实际提示、关闭与迟到
-结果处理，并在真实产品中验证内容、dirty 状态、撤销与显式保存；本页不宣称这些
-路径已验收。
-
-Office 的[运行宿主](../../apps/desktop/src/renderer/src/features/workbench/office/runtime.tsx)
-用 requestId 等待替换确认；超时移除等待项，晚到且无对应等待项的确认被忽略。
-这是调用侧结束等待，不是取消编辑器动作或证明文档未变。不得据此给出“未修改”
-保证；排障应同时检查所属编辑器实际内容与确认事件，不靠延时推测终态。
-
-### 仍需保留的资料动作要求
-
-资料动作绑定本次模型快照、用户要求、来源及动作身份；重试不能静默换模型或计费
-来源。生成前缺模型、凭据或实际所需能力时明确拒绝，不能退化成普通 Agent 请求。
-草稿上下文来自当前编辑器和同文件必要邻近内容，不能拼入磁盘旧稿、其他项目文件、
-聊天历史或网络资料；没有可靠邻近上下文时明确仅基于选区。输入超限不能静默截断。
-
-低延迟策略由所属推理层根据协议和实际模型能力编码，不由 UI、隐藏 reasoning 或
-提示词代替。普通 API 关闭思考与订阅模型采用最低支持等级是不同要求，未知能力
-不能写成已关闭；临时目录及一次 turn 本身也不证明无工具或单次内部模型请求。
-引用 [Serve 的执行与工具隔离边界](../architecture/serve.md#模型目录执行键与凭据门禁)
-核对实际准入；这里记录要求，不宣称所有传输已满足。
-
-历史资料方案限定解释/润色及 Markdown/DOCX 润色，当前契约增加翻译、以实际
-can_edit 判断润色资格。这是范围演进，不能机械恢复旧名单或据代码认定需求已获
-批准。选区限定仍由当前 ResourceScope.SELECTION 和服务入口校验；原提案残留的
-“当前文件解释”描述不能作为新增全文入口的授权。DOCX 复杂跨结构选区须先核对
-编辑器能力，不能用生成成功证明格式保持；未完成输出、取消或晚到结果不得应用。
-
-[动作 SSE 传输](../../apps/serve/service/assistant/api/stream.py) 按请求投影 observer
-事件，再发送 `result` 或安全 `error`；流式响应已发送 headers 后，不能仍按 JSON
-HTTP 状态判断动作成功。[纯模型传输](../../apps/serve/service/inference/transport.py)
-仅转发模型的文本输出，reasoning 不是可写回建议；不再回退到临时 Agent。
-断连收尾屏蔽外层取消、在有限预算内请求取消并排空队列，避免背压阻塞收尾；随后
-取消和等待本地执行 task 需要覆盖 HTTP 清理；此入口不启动原生 Agent 进程。
-取消接口的 `accepted` 及成功请求不是权威终态，必须结合所属调用记录验收。
-
-## Owner 与加入时机
-
-- [平台上下文契约](../../apps/serve/service/platform/context.py) 持有选区锚点；
-  [Desktop 选区入口](../../apps/desktop/src/renderer/src/features/workbench/Selection.tsx)
-  通过原有上下文 ingress 添加引用，不建立第二套上下文 Store。
-- [Workbench Provider](../../apps/serve/service/workbench/service/context.py) 解析项目选区；
-  [Literature Provider](../../apps/serve/service/literature/service/context.py) 解析文献选区。
-  两者的发送分支均读取快照；文献引用及附件仍使用所属领域身份。
-- 未保存的项目编辑先通过编辑控制器保存并取得提交版本；失败时不继续加入。
-  表格查看器仅提供范围描述时，在加入阶段调用所属来源的快照接口取得完整单元格文字。
-  [Workbench 快照 API](../../apps/serve/service/workbench/api/selection.py) 复用来源证据服务，
-  返回正文与证据版本；这个阶段允许读取和校验来源，不是发送阶段的回读。
-
-Markdown 跨标题、格式标记与代码块的可见选区不能通过全文纯文本搜索反推来源。
-[Desktop 映射](../../apps/desktop/src/renderer/src/features/workbench/mapping.ts)从语法叶节点生成有序 UTF-16 源片段，仅为选中内容补齐必要格式控制符；
-[嵌入代码编辑器](../../apps/desktop/src/renderer/src/features/workbench/MarkdownDocument.tsx)同步与统一选区相交的高亮并清除不相交的旧高亮。
-[Serve locator](../../apps/serve/service/workbench/service/context.py)在**加入时**校验片段顺序与边界并拼接来源文字；加入后发送仍只消费冻结 `snapshot_text`，不能把 locator 校验移到发送时重新读取文件。
-定向核对[映射测试](../../apps/desktop/src/renderer/src/features/workbench/sourcemap.test.ts)与[来源契约](../../apps/serve/tests/contract_selection_context.py)，跨编辑器拖选、高亮与实际加入文本仍需真实 Desktop 验收。
-
-## 文献附件文件输入与预览身份
-
-整附件不是选区文本，也不应为二进制文件新增 Assistant 文本上下文类型。
-[Desktop Store](../../apps/desktop/src/renderer/src/store.tsx) 的 `attachActiveFileToAi`
-对当前项目文件仍走已有 file context；文献附件经
-[位置解析](../../apps/desktop/src/renderer/src/features/workbench/api.ts) 按 literature/attachment
-身份请求服务端位置，不在 Renderer 拼目录。当前会话已存在时注册本地文件引用，
-尚无会话时暂存 registrationRequired，发送路径在获得会话后注册，再构建消息输入。
-注册失败或等待期间切会话不能当成功发送；预览文件本身不应强制创建会话。
-项目页签加入对话先核活动文件与助手所属项目一致，再提交项目相对路径的具名
-`file` 引用；文献附件的绝对位置注册是另一条入口，不应把它复用到项目文件以
-绕过项目作用域。树与页签重复添加应由同一上下文 Owner 去重；加入成功不证明
-模型已读取，真实验证需在新旧会话各跑一轮并核来源与最终回答。
-
-文件型 ComposerReference 的 `previewSource` 经
-[Attachments](../../apps/desktop/src/renderer/src/components/primitive/Attachments.tsx)
-传入 FilePreviewTarget；`openFilePreview` 优先使用该显式来源，随后才走 artifact/session/
-runtime 推导。来源为 literature 时切换文献主视图并给标签设置相同导航归属，避免无标签
-预览落在总览。这里是 Renderer 预览身份，不是 Turn 输入中新增的权限字段；历史消息
-没有该身份时不能凭标题或绝对路径伪造 literature/attachment ID。
-
-[Literature 附件 Owner](../../apps/serve/service/literature/service/attachment.py) 的位置读取
-要求所属附件行与托管附件；绝对路径 citation reader 还检查该路径登记于附件行，
-不先 resolve 后授权未登记别名。当前项目文件 link 附件语义已移除，不恢复旧方案中的
-关联附件路径分支。文献位置读取与
-[会话文件注册](../../apps/serve/service/chat/service/sessions.py) 是不同授权边界：后者
-接收 Desktop 选择的本地文件/目录，检查 live session、绝对路径、存在与类型并返回
-reference ID，不仅限文献附件。绝对路径字符串或 UI 预览身份本身不是通用读取许可，
-不能由这些预检推断全部平台的原子 no-follow 安全。
-
-### 选区动作的来源身份与错误反馈
-
-[分析输入 Owner](../../apps/serve/service/literature/service/analysis.py) 的 `read_source`
-在文献请求提供 `attachment_id` 时读取该附件，不回退主附件；缺少该字段时仍存在
-主附件分支，不能宣称全部请求都禁止回退。项目 PDF 使用项目身份与 Content Port，
-不允许同时混入文献身份；资产/路径读取与文献附件读取分别校验。
-
-[分析 API](../../apps/serve/service/literature/api/analysis.py) 在准备边界把内容域错误
-映射为结构化 422：已知缺失内容码归文献缺失，其余归来源无效，内容错误的诊断为空。
-[PDF 请求工具](../../apps/desktop/src/renderer/src/features/workbench/pdf/analysis.ts)
-先读取文本，再解析 JSON；解析失败返回 `pdf_ai_invalid_response`，HTTP 失败时附状态，
-不向用户展示 JSON 解析器异常。成功响应的 JSON 可解析不等于通过业务结构校验；
-该通用请求函数仍直接返回解析结果，不据此承诺空响应或任意对象都被拒绝。
-
-回归须覆盖打开非主附件后实际选区动作、附件丢失的 API 反馈及异常响应的浮层提示。
-[分析契约](../../apps/serve/tests/contract_pdf_analysis.py) 与
-[请求工具契约](../../apps/desktop/src/renderer/src/features/workbench/pdf/analysis.test.ts)
-提供输入选择和错误投影证据，不替代真实阅读器、服务网络和模型回合。
-
-### 托管附件删除与翻译输入故障
-
-当前 [附件文件 Owner](../../apps/serve/service/literature/persistence/files.py) 的
-`managed_object` 用文献身份、内容摘要和 UUID 组成落盘名；相同字节再次导入仍生成
-独立副本。`revision` 是字节的 SHA256 身份，不是物理文件共享许可。因此删除某条
-文献或附件后，所属 API 清理其物理文件与派生索引，不沿用旧内容寻址时代的跨条目
-引用计数方案。删除仅处理托管根内普通文件；项目文件不归此清理入口所有。
-
-不能从命名机制推断历史数据库中任意共享路径都已迁移。遇到全文翻译失败，先核对
-当前附件行、托管文件是否存在、实际请求阶段和错误响应，再区分输入丢失、模型授权
-及输出预算；请求尚未到模型时，增加输出预算不能修复缺失文件。
-既有 [仓储契约](../../apps/serve/tests/contract_literature_store.py) 覆盖相同字节独立
-副本、删除范围和附件删除 API；临时目录契约不替代真实导入、阅读、删除与翻译验收。
-
-相关接线测试见 [resources.test.ts](../../apps/desktop/src/renderer/src/resources.test.ts)；
-其中源码/AST 断言不是产品交互验收。真实回归需分别在无会话及已有会话时加入图片/PDF，
-点击卡片检查 viewer、主视图、标签和实际读取 API，再核对发送注册及失败反馈；
-复制路径、Finder/Explorer 定位还需各自系统桥证据，不恢复废弃 raw 路由规避身份缺失。
-
-## PDF 选区事实与浮层投影
-
-### AI 结果局部选择与原生复制
-
-全局界面默认禁止文本选择，生成结果正文须由对应展示 Owner 显式恢复，
-而不是把整个应用改为可选。[共享 Markdown](../../apps/desktop/src/renderer/src/components/primitive/Markdown.tsx)
-及 PDF 的阅读、摘要、翻译正文使用可选文本；局部选区复制与已有整体复制动作
-不是同一输入，不应互相替代或改变生成接口。
-
-[主窗口菜单](../../apps/desktop/src/main/index.ts) 仅在 Electron 报告非空且可复制的
-文本选区时显示原生 `copy` role；这个接点只属于主窗口，不保证内置网页或隔离
-原生宿主具有相同菜单。Cmd+C / Ctrl+C 使用原生选区复制，不用整体结果覆盖选区。
-
-[Workbench 捕获阶段](../../apps/desktop/src/renderer/src/features/workbench/Dock.tsx)
-先调用 [focus.ts](../../apps/desktop/src/renderer/src/features/workbench/focus.ts)
-判断右键坐标是否处于现有非空 Range 的任一文本矩形：命中时阻止默认选区重定位，
-并跳过该路径的选区清除。只判断“点在正文内”不等价于“点在选区内”；
-右键选区外、左键与空选区不适用此保留规则。其他失焦和工具栏关闭机制仍有各自
-Owner，不能由这一分支推断全部平台、窗口或浮层始终保留选区。
-
-定向入口为 [原生菜单契约](../../apps/desktop/src/main/contextmenu.test.ts) 与
-[选区契约](../../apps/desktop/src/renderer/src/features/workbench/selection.test.ts)；
-源码与几何 helper 断言不能代替真实跨段选择、选区内/外右键及剪贴板读回验收。
-改正文选择或关闭监听时同时检查两端的事件顺序，避免菜单截取文本前先清除选区。
-
-滚动和页面虚拟化不能把临时 DOM Range 当作选区唯一事实。
-[PdfDocument](../../apps/desktop/src/renderer/src/features/workbench/PdfDocument.tsx)
-在拖选期间用 `selectionDragSpan` 保留起始页至当前页的渲染，防止虚拟化改写原生 Range 起点；捕获后再保留 page/text/归一化 quads，`persistedSelectionViewport` 根据最后一页选区与当前
-页面 bounds 投影位置，用末个 quad 的右下角判断锚点是否落在 PDF viewport 和窗口内。
-锚点不可见与选区语义失效不是同一状态；滚动时可移除原生 Range，不应据此删掉
-已经捕获的跨页选区。无对应页面元素时函数返回 null，不能把这一步描述为选区已清除。
-
-[PDF Page](../../apps/desktop/src/renderer/src/features/workbench/pdf/Page.tsx)
-用独立 `pointer-events-none` 标记层画临时选区 quads，避免高亮拦截文本选择或批注
-点击；真实批注有自己的交互层，不能给全部层统一禁用指针事件。
-[通用选区入口](../../apps/desktop/src/renderer/src/features/workbench/Selection.tsx)
-消费 exact 状态、can_select、presentation.visible 与锚点可见性决定是否展示工具栏，
-不通过在通用菜单重做 PDF 几何形成第二套事实。
-
-既有需求是选区/批注锚点离屏时浮层隐藏、返回时恢复，跨页位置以末页为准。
-以上相关分支的存在不证明页面卸载/重挂载、缩放和批注编辑框全生命周期已正确；
-修改时必须在真实 Desktop 第二页划词，滚动到完全离屏再返回，分别核对高亮、
-菜单、批注位置和操作仍可用。PDF 临时选区不是自动落盘的阅读记录，也不替代
-解释/编辑动作的来源证据校验。
-
-## PDF 检查器、笔记保留与侧栏边界
-
-### 稳定资产身份、源状态与记录版本
-
-项目 PDF 的业务身份来自 Content `asset_id`，路径与外部根是可变 locator，内容
-revision 是校验信号；不能以同名或相同字节静默合并独立副本的记录。
-[记录持久化](../../apps/serve/service/workbench/persistence/records.py) 经 Content Port
-定位项目数据库，以资产关联阅读记录，不在 Renderer 另存路径 sidecar 或双写迁移账本。
-文献附件的记录归原附件 Owner，项目资产链接可转交该 Owner，不复制成第二份事实。
-
-[记录服务](../../apps/serve/service/workbench/service/records.py) 在源缺失、失权或冲突时
-仍能投影已保存记录及源状态；尚未初始化且源不可用则明确失败。初始化读取后重新
-核对物理 revision；提交分别检查 expected source revision 与 record revision，不能
-把阅读记录 CAS 当文件移动或原 PDF 字节写入的事务。
-[Content identity](../../apps/serve/service/content/service/identity.py) 持有物理绑定、
-locator 变更与恢复；缺失/授权/冲突不应被 UI 当空记录或重新分配资产来掩盖。
-源恢复、外部根重绑、独立复制与跨设备移动仍须真实验证，不从单一状态分支外推。
-
-当前记录 schema 对非精确列集合报 `workbench_pdf_record_requires_cutover`，不是
-自动兼容历史路径记录或 additive 迁移的证明。更改持久化前先核既有数据与
-[资产保留规范](../architecture/persistence.md)，不得在知识迁移中据旧提案执行清库。
-回归看 [PDF records](../../apps/serve/tests/contract_pdf_records.py) 与
-[Content identity](../../apps/serve/tests/contract_content_identity.py)，并在真实产品验证
-移动后记录、失联与恢复、版本冲突及操作前后原 PDF 字节不变。
-
-### 附件记录与跨库操作的归属
-
-[统一记录契约](../../apps/serve/service/platform/records.py)以owner/scope_id/subject_id
-区分项目资产与文献附件，source_revision和record_revision分别持有原PDF与记录
-版本；它是Serve产品契约，不应搬进Runtime或让Renderer从路径/页面猜存储Owner。
-[附件记录存储](../../apps/serve/service/literature/persistence/reading.py)校验附件实际
-父文献，用附件ID作主键、record revision作CAS；
-[列表投影](../../apps/serve/service/literature/api/catalogue.py)返回具体附件的record_target。
-[Desktop订阅](../../apps/desktop/src/renderer/src/features/workbench/api.ts)按完整目标
-三元组投影更新，不因相同PDF字节合并两个独立Owner。字节写入、记录写入与UI
-订阅更新不是一个跨库原子事务，副本导入的两阶段与部分成功见[导入契约](imports.md#文献附件进入项目资源)。
-
-项目关联不自动复制批注；已有具名资产记录链接可委托原附件Owner，与显式独立
-复制不同。不能据旧方案的“副本独立”删除当前链接能力，也不能从它推导新表单
-支持LINK或所有旧入口会复制快照。附件表非精确schema报requires_cutover，是明确
-不兼容信号，不证明历史整库切换/恢复机制已经交付。旧清空批注和重建表的计划
-不作为今天的数据操作授权；如需处理存量，须另行核实际资产、保留要求、失败恢复
-与精确授权，不能在知识清理中执行，亦不能降级为空记录掩盖错误。
-
-大纲由 [navigation](../../apps/desktop/src/renderer/src/features/workbench/pdf/navigation.ts)
-递归保留子树，单节点 destination 解析失败返回不可跳转状态，不使整树失败；
-查找由活动 PDF 标签的快捷键处理，避免劫持其他可编辑控件。它们已有当前接点，
-不能沿用旧“无快捷键、统一压平层级”的结论，也不以源码证明窄窗口或深层大纲视觉验收。
-
-[批注检查器](../../apps/desktop/src/renderer/src/features/workbench/pdf/Annotation.tsx)
-展示页码、原文、已有批注和三种标记样式，颜色、样式、批注与删除经
-[PdfDocument](../../apps/desktop/src/renderer/src/features/workbench/PdfDocument.tsx)
-的记录提交链；乐观呈现不能伪造已提交 revision，失败回滚、冲突重读仍须保留。
-屏幕标记与[PDF 导出](../../apps/desktop/src/renderer/src/features/workbench/pdf/export.ts)
-分别实现删除线几何；界面有按钮不证明导出正确，两条链分别验收。
-
-移除独立“添加笔记”入口不等于删除协议的 `notes` 数据。新增标记、改颜色/样式和
-添加批注当前携带原 `notes`；删除标记则显式移除关联 excerpt，并过滤无 excerpt 且
-正文为空的 note。因此不能把旧计划“所有提交原样保留 notes”当作当前事实，也不能
-由入口消失推导可清空历史笔记。涉及这些操作时核对关联清理与资产保留要求；源码
-分支并非已证明用户资产无损，本知识治理不授权改数据或重建表。
-
-文献 PDF 的标注侧栏入口取决于 `session.source.kind`，不按文件路径、标题或当前
-主视图推断。打开标注会关闭分析/文档面板；分析的 exclusive-surface 接点会关闭
-标注。呈现条件和入口切换都需核对，不能仅藏住一个面板而保留冲突的活动状态。
-资料库 PDF 仍可通过页内标记检查器操作，不应把“无文献专属侧栏”写成无法批注。
-
-[百分比控件](../../apps/desktop/src/renderer/src/features/workbench/pdf/Scale.tsx)
-区分单击适应模式切换与双击数值编辑：双击取消待执行单击，键盘触发直接切换；
-Enter/失焦提交、Escape 退出编辑。百分比解析及上下限由
-[几何 Owner](../../apps/desktop/src/renderer/src/features/workbench/pdf/geometry.ts)
-维护，提交进入 custom 模式。纯函数测试不证明浏览器事件序列、失焦提交和页面
-位置恢复全部正确；真实回归需覆盖双击不夹带单击、Escape 后不误提交及标签切换。
-
-## 文献 Markdown 笔记：共享编辑与保存边界
-
-当前 [文献详情](../../apps/desktop/src/renderer/src/features/literature/LiteratureDetail.tsx)
-的 `DETAIL_TAB` 与实际 Tabs 为信息、附件、笔记三个页签，不是历史提案的四页签。
-标记列表在选中附件的详情内展示，且当前仅 PDF 附件挂载 `AttachmentMarks`；
-打开标记通过附件身份与页码进入共享阅读器。不能由附件标记可见推断所有 Viewer
-都具有批注能力，也不为匹配旧提案另建标记表或第二套详情业务状态。
-
-文献条目笔记与上节 PDF 阅读记录中的 `notes` 不是同一保存链。
-[详情入口](../../apps/desktop/src/renderer/src/features/literature/LiteratureDetail.tsx) 与
-[阅读面板](../../apps/desktop/src/renderer/src/features/literature/ReaderNotes.tsx)
-复用 [LiteratureNotes](../../apps/desktop/src/renderer/src/features/literature/Notes.tsx) 和
-`NoteEditor`；阅读入口从 `recordTarget.owner` 与 `scope_id` 取得文献身份，不按标题或
-文件路径猜测。保存后按 itemId 发布 `literature-notes-changed`，各入口重新加载，
-不是复制一套笔记业务状态或用事件正文替代服务端数据。
-
-[自动保存 Owner](../../apps/desktop/src/renderer/src/features/literature/autosave.ts)
-在单个编辑实例内串行处理请求：等待已有请求后再提交最新 dirty 草稿；创建回执绑定
-笔记身份，保存期间的新输入保留并沿用回执版本继续保存。它不是跨窗口全局队列。
-版本冲突留下 dirty 草稿与错误，不强制覆盖其他编辑器的新版本。切换笔记/新建通常
-要求 flush 成功，尚无请求的空白新笔记可以直接切换；已有笔记空正文会拒绝保存。
-
-**当前限制不能写成数据保留保证：** `Notes.requestClose` 在保存或导出错误可见时
-直接 `close()`，清空草稿且不等待 flush；已有源码断言还明确固定这一分支。
-无错误时返回才按保存状态等待 flush。卸载 cleanup 发起异步 flush，但 React 不等待
-其完成；不能声称任意关闭、切页或退出均已可靠落盘。保留用户草稿仍是数据安全要求，
-这一差异需要单独的产品修复与真实错误路径验收；文档中的目标约束不表示关闭行为已修复。
-
-[Markdown 导出](../../apps/desktop/src/renderer/src/features/literature/note.ts)
-使用当前编辑草稿：非空标题生成一级标题，原 Markdown 正文与 Unicode 保留；文件名
-清理平台分隔符，经 `saveFileCopy` 打开原生保存链。取消不是成功落盘，也不报写入错误；
-缺少 bridge 或实际写入失败会抛错，由界面呈现。不能把导出等同于笔记已自动保存。
-
-定向入口为 [note 测试](../../apps/desktop/src/renderer/src/features/literature/note.test.ts)：
-身份、标题、序列化与 bridge fixture，以及错误返回的源码断言；它不验证异步竞态、
-真实保存对话框或重启恢复。修改时实际覆盖保存期间继续输入、重复新建、版本冲突、
-错误返回、切换入口及重启；导出须从真实 Desktop 保存后读回文件。历史报告的原生
-对话框验收受阻且截图属于旧运行，不作为当前版本已验收证明。
-
-## 已保存 PDF 批注的 AI 动作边界
-
-已保存标记菜单不是新划词工具栏的同一宿主。
-[PdfDocument](../../apps/desktop/src/renderer/src/features/workbench/PdfDocument.tsx)
-将 mark 的 page/text/quads 显式传给解释/翻译动作后再关闭标记菜单，不能先清空
-共享选区再让请求回读它。[批注检查器](../../apps/desktop/src/renderer/src/features/workbench/pdf/Annotation.tsx)
-截断 mouseup 冒泡，避免 Portal 的菜单事件沿 React 组件树被 PDF viewport 当作
-新选区捕获；Portal 本身不保证隔离这些事件。
-
-[PDF Reading](../../apps/desktop/src/renderer/src/features/workbench/pdf/Reading.tsx)
-使用显式 target 或实时选区构建请求，解释输入先捕获选区，提交时才携带补充要求
-发起任务。request 保存文本、页码、quads 与来源身份；文档身份变化与临时选区变化
-分别清理状态，不能将所有结果窗口统一绑定到 DOM Range 是否仍存在。通用选区
-建议宿主和文献 PDF contribution 的能力、选中态及关闭条件须分别核对，不因一方
-已有 `aria-pressed` 就认定另一方达到相同要求。
-
-历史需求还要求解释输入时保留菜单/选中态、翻译窗内部交互不误关闭，以及右侧
-标注面板拖动调宽。当前 [PdfPanel](../../apps/desktop/src/renderer/src/features/workbench/pdf/Panel.tsx)
-相关呈现只有宽度 token、最大宽度与展开/收缩分支；不能用左侧导航的 ResizablePanel
-证明右侧标注调宽已实现，也不将旧计划的像素值升格为当前规范。这些需求与实际
-验收缺口须在相关修改中单独核验，不能随历史目录删除而消失。
-
-**划词重新生成与原文呈现：** 解释输入与结果窗复用动作模型偏好，翻译与解释结果窗
-均有显式重新生成。Reading 从该动作保存的 request 取 module 与选区，再以当前
-模型、翻译目标构建新请求；retry 保留原文、页码、quads、区域与补充要求，重新
-生成 action/attempt ID。运行中按钮禁用，但按钮启用条件检查通用 lastRequest，
-回调仍须取得该动作 request，不能把启用本身当受理成功证据。
-翻译原文使用按 attempt 身份重建的 Collapsible，默认收起以保留译文可视区域；
-折叠是呈现策略，不裁剪请求原文。批注身份仅在存在 floatingResult 时构造，不能
-用两个空字符串相等推定已添加。实际取消、增量预览、结果替换及偏好重载仍须
-真实验收；旧报告的单次首正文时间与模型盘点不证明当前全部模型联网或普遍提速。
-
-真实回归分别从已保存标记和新划词入口触发解释/翻译，检查请求文本非空、页码
-及坐标属于正确标记、连续切换不串用数据、错误可读，输入焦点与窗口内部点击、
-复制、滚动不误关闭；没有实际模型/产品结果时不报告任务创建或端到端行为通过。
-
-## Bridge 批注上下文与原文证据分权
-
-[引用服务](../../apps/serve/service/assistant/service/citations.py) 的 `pdf_annotations`
-从当前 snapshot 和项目身份解析文件 ref，再向 records Owner 读取，不能由调用者任意
-指定其他项目或原始 RecordTarget。文献分支经
-[文献证据 Owner](../../apps/serve/service/literature/service/evidence.py) 校验项目/全局
-作用域，合并条目笔记和所有 PDF 附件的记录；单附件不可用返回 warnings，不将缺失
-记录冒充空白，也不因主附件可引用而漏掉其他附件的批注。
-
-结果声明 `user_feedback`，按 offset/limit 分页并带记录 revision；它是用户意见，
-不是 PDF 原句证明或可执行指令，不自动生成 citation URL，也不与回答 UTF-16 批注
-合并。论文事实仍须另读来源取得证据。记录读取与 source revision 核验分别判断，
-不能把反馈 revision 当作论文内容未变或事实正确的保证。
-
-[Bridge 路由](../../apps/serve/service/assistant/api/citations.py) 保留活动
-session/snapshot/turn 前后检查及响应大小上限；活动全文策略下 annotations 与 read
-均检查授权。没有活动策略的其他路径仍须分别核验，不因操作只读或标记为反馈就
-扩大范围、默认加载所有记录或绕过原文授权。回归入口为
-[批注契约](../../apps/serve/tests/contract_assistant_annotations.py)，另需真实会话中
-项目/全局作用域、附件错误、分页、过期请求和用户意见不冒充引用的验证。
-
-## PDF 文本物化不签发引用凭证
-
-[物化 Owner](../../apps/serve/service/workbench/service/materialize.py) 当前使用产品
-共享 PDF 文本提取边界，不沿用旧 PyMuPDF 方案。prepare 有界提取带页分隔的 UTF-8
-文本，publish 经 Content Port 的 session artifact scope 发布相对 TXT；目标拒绝
-绝对路径、上级路径、Windows 分隔/驱动或流语义及非 TXT 后缀，冲突不覆盖旧文件。
-错误分别报告源不可用、加密、非法 PDF、缺少文本层和资源上限，不以 TXT 空文件
-代表扫描文档已 OCR。限额与版本以该 Owner 常量为准，不在文档复制数值。
-
-Bridge 在异步 prepare 后重新检查活动轮次才 publish；托管全文被具名
-`ensure_materializable` 拒绝，因为整篇明文落盘会留下读取门禁无法撤回的副本。
-该限制不等于删除所有普通文档物化能力，PDF 到 TXT 与下游句子编号/PaperCard
-处理也是不同职责。返回 digest、revision 和页数不是引用级坐标或 citation receipt；
-事实定位仍通过引用索引完成，不能从 TXT 提取成功推定证据定位成功或权限永久有效。
-
-变更时核对 [物化契约](../../apps/serve/tests/contract_pdf_materialize.py) 的受控发布、
-冲突、非法目标、源故障、活动轮次失效和托管来源拒绝，并验真实 Bridge 使用路径。
-当前源码不证明两平台文件发布或批量 Skill 全链路已验收；旧提案耗时和默认 worker
-数量不作为当前性能与执行契约。
-
-## Markdown 可视选区与源码坐标
-
-### 回答渲染与编辑器映射的独立 Owner
-
-[共享 Markdown](../../apps/desktop/src/renderer/src/components/primitive/Markdown.tsx)
-消费标准语义解析，再经 [source](../../apps/desktop/src/renderer/src/components/markdown/source.ts)
-和 [decorate](../../apps/desktop/src/renderer/src/components/markdown/decorate.ts)
-映射原始 UTF-16 边界、引用及批注。隐藏私有引用标记不能改变后续源码坐标，
-DOM 文字不能直接当原文切片；回答渲染与下述 Workbench 编辑器映射不是同一实现。
-当前跳过 raw HTML，图片呈现为文字占位，外链走产品 openExternal；不恢复手写
-语义 parser、双渲染回退或让 Markdown 内容绕过 Electron 安全边界。
-
-修改需覆盖转义/实体、重复文字、跨块、流式半截私有标记、数学和批注边界。
-纯映射测试不能代替真实拖选及批注操作，也不能凭渲染成功证明坐标正确。
-
-渲染文字省略标题、强调和代码围栏等语法标记，不能把 DOM 文本直接当作原始
-Markdown 的连续切片。[映射 Owner](../../apps/desktop/src/renderer/src/features/workbench/mapping.ts)
-对齐语法叶子与编辑器文字流，返回 start/end、segments 及拼接出的源码文字；
-[MarkdownDocument](../../apps/desktop/src/renderer/src/features/workbench/MarkdownDocument.tsx)
-当前使用 `milkdown-source-map-v3`，不是旧计划的 v2 单连续区间契约。
-完整引用需保留受选内容及必要语法边界，不把跨块范围内所有未选文字都加入引用。
-
-[数学兼容](../../apps/desktop/src/renderer/src/features/workbench/mathematics.ts)
-在规范化分隔符后恢复树位置到原始源码坐标，否则渲染对齐成功也可能定位错源。
-无法取得编辑器精确映射时当前入口仍有既有 DOM 文本/空白匹配回退；不能据纯函数
-返回 null 就宣称整条产品路径完全禁止回退，也不因菜单能显示而认定替换安全。
-替换还核对原编辑器位置、选区 fingerprint 和 changeVersion。
-
-[Serve locator 解码](../../apps/serve/service/workbench/service/context.py) 按 UTF-16
-切片；segments 存在时校验列表数量、顺序、非空与外层范围，再拼接各段。
-坐标单位、拼接文字和版本校验须与 Desktop 一致，不用 Python 字符索引替代。
-这与发送已经冻结的 snapshot_text 是不同阶段：加入/编辑时的定位证据不能转为
-发送时自动回读来源，反之快照可发送也不授予编辑当前文件的权限。
-
-定向纯映射入口为 [sourcemap 测试](../../apps/desktop/src/renderer/src/features/workbench/sourcemap.test.ts)，
-包括重复文字、跨标题/段落、标记/转义、代码块、数学位置和不对齐拒绝。
-测试不覆盖实际 DOM/CodeMirror 端点或真实菜单；修改后仍需真实 Desktop 拖选、加入
-对话及写回验证，不能继承旧计划的跨平台成功声明。
-
-## Markdown 格式快捷栏的单一动作来源
-
-[MarkdownDocument](../../apps/desktop/src/renderer/src/features/workbench/MarkdownDocument.tsx)
-从编辑器 TopBar 的原生 item 建立动作映射，`FORMAT_ACTIONS` 再选取粗体、斜体、
-删除线、链接、行内代码和行内公式的 icon/onRun。划词格式栏是上方工具栏的子集，
-不是独立维护的第二套图标与编辑命令；缺失原生动作直接报错，不静默提供替代行为。
-链接动作经现有 `editDocumentLink` 接点，行内公式复用 `ToggleLatex`。
-
-修改格式快捷栏时同时核对上下方动作、选中态、图标和实际编辑结果；不要仅使图标
-外观相同而留下不同命令。旧记录中的尺寸、测试数量及截图是历史证据，不是当前
-设计 token 或最终验收。当前源码接点不证明所有编辑生命周期和主题效果已通过。
-
-## 阅读结果追问：文献范围与文字草稿
-
-[Reading](../../apps/desktop/src/renderer/src/features/workbench/pdf/Reading.tsx)
-的解释/翻译追问使用 `floatingResult` 中原文、AI 结果、页码和版本生成
-`reading.selectionDraft`；中英文模板都标明 AI 生成内容待核验，不在点击后自动发送。
-它不是新建 PDF 选区 anchor，也不是把结果当成已核实研究事实。
-
-当前 `openDocumentChat` 在有 literatureId 时先 `addContext`：文献稳定 ID、标题、
-`next_turn` 与显式 origin，但不带选区 anchor；只有 accepted_ref_ids 非空才设置
-Composer 草稿并聚焦。无 literatureId 的路径跳过该文献引用步骤。解读面板的继续
-对话也复用这一接点。因此既不能沿用旧“输入框为空、仅选区胶囊”，也不能沿用旧
-“纯结果快照、不再创建结构化引用”的无条件表述。
-
-[Literature Context](../../apps/serve/service/literature/service/context.py) 将无 anchor
-引用解析为条目元数据身份的 tool scope，文字为空、带文献 locator，不自动读 PDF
-全文；有 anchor 的发送分支才消费 snapshot_text。范围引用与结果文字草稿分别
-承担职责，不能从文献胶囊存在推断正文已注入，也不能声称引用受理完全不依赖当前
-条目。动作结果保存的版本仅作为草稿文字，不伪装为当前附件的授权版本。
-
-阅读结果浮窗当前不传 `pinned/onPinnedChange`；通用 FloatingWindow 的固定能力
-仍由其他调用方使用，不删公共能力来改局部外观。旧记录另要求已有标记弹窗移除
-AI 入口，但当前 Annotation/PdfDocument 仍有解释/翻译回调，见本页已保存标记章节。
-这是需求与实现差异，不能靠较新源码自动宣布旧要求取消；修改时向产品 Owner
-确认并分别验收标记与新划词入口，本次不更改产品要求或行为。
-
-[PDF 契约](../../apps/desktop/src/renderer/src/features/workbench/pdf.test.ts) 的追问、
-显式浮窗控制和标记快照案例是源码断言，不能证明异步引用失败、切换期间身份不串用
-或窗口拖动/关闭。真实回归要覆盖文献与项目 PDF、受理拒绝、进入后手动发送、
-结果及引用分别移除、原文件/条目变化与焦点恢复；旧追问成功截图不代表当前路径。
-
-## 回答来源展开与原文跳转
-
-### 图注索引、主动省略与引用连续性
-
-自动证据索引不等于 PDF 全部文字层或手动选区。
-[提取 Owner](../../apps/serve/service/workbench/service/extraction.py) 先依据版面分类
-过滤图表内部区域，再对保留文字分句，保留 caption、原 page/quads 和省略信息；
-不生成图注、不改 PDF bytes，也不宣称 OCR、表格语义或图中数据已理解。索引身份
-包含 source revision 与提取器版本，版本值以源码为准，不复制旧 sentences-v6 描述。
-
-[句子组装](../../apps/serve/service/workbench/service/sentences.py) 将省略断点、图注
-类型和不可用页参与 continuity；[引用窗口](../../apps/serve/service/assistant/service/citations.py)
-不把搜索命中压缩后的列表当新邻接，不跨图注或不同 continuity 组拼接证据。
-否则被删除的图内文字会使本不相邻正文形成虚假的连续引用。
-
-[索引作业](../../apps/serve/service/workbench/service/indexing.py) 区分无 fragments 且
-无 omissions 的无文本层与有主动省略信息的结果，输出 coverage 限制；不能用没有
-返回片段证明整页无文字或全部已读。修改分类、缓存或窗口时，核对
-[版面契约](../../apps/serve/tests/contract_pdf_layout.py) 与
-[PDF 解析](../../apps/serve/tests/contract_pdf_parser.py)，再以实际 PDF 验证图注坐标、
-双栏、旋转、整页背景图、主动省略和历史引用。旧诊断样本与解析成功不证明任意 PDF
-完美识别；识别限制与源版本失效不得隐去。
-
-### PaperCard 原句、独立本地证据与严格定位
-
-[文献证据 Owner](../../apps/serve/service/literature/service/evidence.py) 将 PaperCard
-字段提炼值与 `card_mapping` 指向的原句分开，保留 card/sid/版本身份；不能把提炼值
-当全文原话。卡片 PDF 版本不匹配时退回本地证据路径，不借旧坐标定位新字节。
-读取和历史点击复用[严格锚定 Owner](../../apps/serve/service/literature/domain/anchors.py)：
-仅接受枚举的排版等价与有界连续片段，唯一坐标候选才返回位置。不得以删除数字、
-否定、公式或运算符、模糊最近句或首次命中提高 exact 数量；复杂排版与未定位结果
-仍须诚实保留，坐标定位也不证明结论语义正确。
-
-[本轮读取 Owner](../../apps/serve/service/assistant/service/citations.py) 对有 PDF 但
-含未定位原句的卡片尝试同版本本地索引；命中时本次只给可定位卡片与独立本地片段，
-不把本地片段伪装成卡片 sid 或给历史原句套替代坐标。原卡片和旧回执不改写，
-本地无命中仍可保留未定位卡片。候选发现、卡片登记与本轮实际读取回执是不同事实，
-不能用发现命中或登记成功代替本轮读取与授权。
-
-历史引用打开时从不可变回执投影当前源可用性。缺失或不同字节版本分别保持
-unavailable/changed，不删除旧名称、页码与 quote，也不对另一版本搜索后复用旧坐标。
-最初没有 PDF 的 papercard 回执可在同来源后来补 PDF 后严格查找保存的原句，
-新定位只进入返回投影，不修改原始回执；这不是任意同名文件自动关联机制。
-
-变更以上机制时核对[引用契约](../../apps/serve/tests/contract_citations.py)与实际
-Desktop 原句/高亮、来源删除恢复、错版本、无 PDF 后补 PDF，以及单文档标签复用。
-历史定位数量、旧模型会话与诊断 PDF 集不代表当前全覆盖，OCR、表格语义和复杂
-跨页能力不能仅凭定位器存在宣称通过；本页不复制 Skill 的执行流程。
-
-[Citations](../../apps/desktop/src/renderer/src/features/assistant/Citations.tsx) 使用会话、
-回答身份、回答文本修订与范围解析句柄；不是仅凭编号跳转任意文件。
-来源 `exact` 且允许打开 PDF 时调用 workspace.revealCitation，激活返回的真实标签，
-并记录关闭后返回放大对话的意图，不固定跳回总览。`source_only`、`changed`、
-`unavailable` 或不能打开 PDF 时先显示来源问题，不冒充已定位原文。
-
-来源名称、页码与片段可追溯不同于结论语义正确；句柄过滤的具体边界见
-[Serve 证据规则](../architecture/serve.md#产品指令资产与渐进规则)。修改时分别验证
-多个来源的编号/身份、实际 PDF 激活、引用页/匹配片段、来源改变或不可用反馈，以及
-放大对话返回行为。已有 workspace 契约是状态/加载 fixture，不是实际点击和原生
-网页导航验收；历史两PDF通过不能外推网页跳转、所有格式或当前全量门禁。
-
-## 文献 AI 解读：显式生成与结果可信度
-
-### 直接推理决策与结果发布边界
-
-普通模型动作不等于 Agent Invocation：复用任务身份、幂等、取消和结果投影，但
-不为五项阅读动作另建执行系统或聊天历史。订阅临时 turn 是独立执行策略，不能
-把订阅凭据提取到私有模型端点或静默改用 API Key 计费；实际执行限制见
-[Serve 单轮边界](../architecture/serve.md#单轮模型动作与订阅推理边界)。
-
-历史方案的原始 PDF、整篇单请求和不分段要求已与当前提取文本、页级翻译及长文
-分段机制不同；相关现状和后续限制见下文，不恢复旧门禁或借旧验收批准新能力。
-保留跨版本仍必要的结果安全要求：完整校验后发布，失败/取消不把部分预览当成功，
-来源改变后旧结果不能冒充当前版本，重启不自动重发模型请求以恢复状态。
-
-[结果仓储](../../apps/serve/service/literature/persistence/analysis.py) 当前持久键是
-literature_id/revision/module，并在一次事务内写入提交的模块；invocation_id 是
-记录字段，不是唯一约束。不能据此宣称已经具备历史方案要求的发布幂等、generation
-并发保护或任务状态与结果原子提交。后续改动须分别验证重复发布、竞争刷新、源变化、
-取消及崩溃恢复；全文翻译还须核对语言与页级合并。旧结果保留要求不等于各临时
-浮层都保留旧展示，两种状态分开核验。引用定位只证明原文可定位，不证明推断正确。
-
-[Reading](../../apps/desktop/src/renderer/src/features/workbench/pdf/Reading.tsx)
-的 `toggleInterpretation` 只开关面板，并协调排他面板与自动翻译状态，不直接创建
-解读任务。无结果空态的“生成阅读总结”和结果态的“重新生成”才调用 `run`；模型
-选择等其他任务触发点仍按各自分支核对。不要把旧“首次打开即运行”的交互报告当
-当前要求，也不把打开面板或出现进度预览当作完成结果。
-
-[结果验证 Owner](../../apps/serve/service/literature/service/analysis.py)
-先严格 `json.loads`，仅 JSON 语法错误进入已有 `json-repair` 解析，再走动作所属
-对象/字段/内容校验。恢复语法不等于恢复可信内容，不在 UI 再做另一套解析或用摘要
-替代失败数据。修复失败或不接受的顶层结果走 `pdf_ai_result_rejected`；缺少解读
-模块、总结字段或结构另有具名错误，不能将所有错误都归为一个 rejection code。
-修复日志只记录位置、解析原因与类型，不增加模型全文或文献正文日志。
-
-**证据校验的实际边界：** `verify_evidence` 按页范围与规范化原文定位过滤引用，
-删除无法匹配的条目；没有有效引用或原来已不确定时标记 `uncertain`，不是一律
-拒绝整份结果，也不证明研究结论正确。解读各结构段与模块均进入该接点，不能将
-“结构化结果已返回”写成“每项结论都有可靠证据”。改变这项安全语义需另行确认。
-
-[增量预览](../../apps/serve/service/literature/service/preview.py)
-从部分 JSON 投影可展示文字，解读预览剥离 evidence，只保留相应文本字段；它是
-临时呈现而非终态验证。[Serve 契约](../../apps/serve/tests/contract_pdf_analysis.py)
-有语法修复、字段拒绝、引用过滤与预览案例；
-[Desktop 契约](../../apps/desktop/src/renderer/src/features/workbench/pdf.test.ts)
-检查入口源码，不是实际点击/请求/模型验收。真实回归需分别确认无历史结果打开
-不发任务、显式生成才发任务、重新生成失败反馈、预览与最终结果区分及引用定位。
-旧模型名称、通过数量与截图不替代当前版本验证。
-
-## 文献任务快照流与临时预览
-
-模型已有流式输出不等于阅读界面已有正文反馈。保留结构化结果的理由是译文定位、
-覆盖校验、解读证据与既有任务生命周期；不为更早展示改成未经校验的 Markdown
-终态。Serve invoke 的 observer 累积输出，交给 preview Owner 投影可展示字段，
-仅 running 的当前任务状态接收预览；正式解析、校验与发布仍是另一接点。
-
-[文献 tasks/events](../../apps/serve/service/literature/api/analysis.py) 按当前 Owner
-节奏发送最新任务快照，终态后停止；不是 Agent 会话的持久 sequence 重放流，也
-不是每个 token 的无界队列。不可因此声称断线恢复或服务重启任务持久化已通过。
-图表另用 action_stream/invokeFigure，不因路径同为 SSE 就混用两个协议。
-
-[subscribePdfAiTask](../../apps/desktop/src/renderer/src/features/workbench/pdf/analysis.ts)
-检查 HTTP、stream 类型、task_id 与状态，终态快照后停止；未到终态的 EOF 报
-invalid response，已取消订阅不再投影快照。该接点不完整校验每种 preview/result
-业务结构，不把传输身份检查写成完整数据安全验证。
-生成中的当前正文、增量增长和最终可定位结果须分别验收；SSE 建连、占位文字、
-上一份结果与动画都不是本次首正文。计时到首可见正文不同于上游首 token，
-同次完成时刻的对照不等于旧版本 A/B，更不证明总模型时间下降。
-
-## 长文解读的预算与分段缓存
-
-长文解读的分段属于 [Serve 编译 Owner](../../apps/serve/service/literature/service/analysis.py)
-与 [任务执行 Owner](../../apps/serve/service/literature/api/analysis.py)，不是 Desktop
-提交多份独立总结任务。保留完整原文和物理页码，是选择分段后汇总而非截取前缀的
-原因；中间摘要不直接成为用户可见的最终总结。
-
-`interpretation_input_limit` 把声明的模型窗口减去保留预算，再取产品字符上限；
-声明缺失或不足时使用保守回退。这是字符准入启发式，不是精确 tokenizer 计算或
-供应商绝不会拒绝的保证；即使正文不足产品上限，也可能因模型预算进入分段。
-分组按编译 payload 长度检查，连续页超限时切组，单页也可拆片，保留原页号。
-不能把“50 万字符内单次”脱离实际模型与编译输入条件作为承诺。
-
-分段缓存由独立 [AnalysisStore](../../apps/serve/service/literature/persistence/analysis.py)
-管理，身份包含文献、revision、提示词版本、模型键与编译输入内容哈希。
-命中时收集已有摘要，未命中时调用并校验后发布分段缓存；最终汇总另行执行。
-汇总输入仍可能分组递归缩减，不承诺任意长文都只增加一次汇总调用。
-现有契约可验证预算计算与测试 PDF 的物理页覆盖，不代替真实长篇、缓存重启、
-取消、来源变化与最终结果的产品验收；历史截图和通过数量不作为当前证据。
-
-## 翻译目标语言与偏好边界
-
-[语言 Owner](../../apps/desktop/src/renderer/src/components/business/Language.tsx)
-当前目标目录仅含简体中文与 English；选择器不是可检索的多语言目录。
-自动推断按中文、拉丁、假名与西里尔字符数量判断，不是语言识别模型：英文界面
-遇到英文默认中文，否则英文；其他界面遇到中文默认英文，否则中文。不可识别文本
-默认使用界面对应目标。手动目标优先于推断，不因与原文相同而自动改向。
-
-目标语言读取先取共享 localStorage 键，再取入口旧键；读到有效旧值会写入共享键，
-写入同时更新共享键与该入口键。因此不能承诺全文、文献划词与资料划词的目标语言
-互不覆盖；这也不代表已打开的组件立即同步。模型是另一条偏好路径：资料划词使用
-入口模型键，文献各动作使用产品 Store 的 `literatureAiModels`，不能把两者描述成
-同一套 Language 模型存储。
-
-文献全文换目标清除旧页集并从当前页启动；文献划词仅已有结果或请求时重跑。
-文献模型菜单回调只更新动作模型偏好，不能仅据此承诺换模型必然重生成。
-历史“入口独立、多语言可检索、所有切换立即重跑”的提案与当前实现不完全一致，
-产品目标是否调整须由 Owner 确认，知识迁移不自动批准或修复这些差异。
-现有 translation 测试主要检查目录和源码接点，不替代真实菜单、持久化或重生成验收。
-
-## 图表框选与临时结果
-
-### 请求级流与单一模型调用
-
-[FigureActionService](../../apps/serve/service/literature/service/figure.py) 负责文献来源、
-区域准备与结果元数据，模型执行仍经 AssistantActionService.invoke_compiled；
-图表不维护另一套模型调用或后台轮询协议。[HTTP入口](../../apps/serve/service/literature/api/analysis.py)
-要求 figure 类型与 SSE Accept，先核对当前连接的 image_input，再准备裁剪；
-prepared 事件携带来源修订、页码、矩形与预览，后续使用共享 action_stream。
-完成时重新读取来源并核对修订，不把增量文本当作来源仍有效的最终结果。
-
-[Desktop消费](../../apps/desktop/src/renderer/src/features/workbench/pdf/analysis.ts)
-将 prepared 与当前文本合成预览，output_delta追加、output_completed替换正文，
-仍须等有效 result 与 completed 状态；未完成流不能作为成功结果。
-文献全文翻译及解读的多步任务保留其原有Owner，不因图表使用请求级流而全部改成
-单次调用。UI不轮询也不等于删除 AssistantInvocationStore 的调用身份与诊断记录；
-关闭结果窗、请求取消及供应商实际终止分别核验，accepted不证明执行已结束。
-
-### 框选与展示状态
-
-图表解释的框选模式与结果窗口是独立状态：有效区域进入 `startFigure`，先清除
-当前展示，检查实际模型图片能力，再发起专用流。新请求中断旧 AbortController，
-只接收当前请求身份对应的预览/终态；不是旧顺序队列或多卡归档方案。
-PdfDocument 的命名最小选区阈值限制误点，文档/语言等身份改变时清理当前状态；
-普通滚动不在该身份键中。退出框选与取消正在运行的流不是同一个动作，调用方
-必须明确选择；例如关闭图表结果窗同时取消并退出，不能泛化为所有退出都取消。
-
-[结果仓储](../../apps/serve/service/literature/persistence/analysis.py) 把图表解释与
-公式视为 transient 模块，初始化移除旧模块投影，publish 跳过这些模块；这不等于
-全部通用调用/诊断记录都被删除。不要用旧恢复图表历史卡需求重建第二套持久结果。
-引导/结果显示复用公共浮窗与 HoverCard，实际边缘避让、Esc、连续框选、迟到结果
-和滚动行为仍须在真实阅读器验收，不能由源码模式测试推断输入安全或视觉一致性。
-
-## 文献逐页翻译与页内分段
-
-### 结果与阅读布局
-
-选区新请求开始时清除该类旧结果，Reading 的 `floatingResult` 还在忙碌态强制为空；
-当前任务的流式预览是另一条投影，不把“没有旧结果”理解为生成期间完全无文本。
-这项规则针对浮动动作，不推导为全文翻译必须清除所有已完成页。
-
-[PdfDocument](../../apps/desktop/src/renderer/src/features/workbench/PdfDocument.tsx)
-在统一页轨道中将同页原文与译文组成 `data-page-pair`，共用页面导航，不再建立
-第二个固定翻译面板来做跨滚动器同步。当前译文宽度为原文宽度乘命名列比例，页高
-随 PDF 的 scale 计算；传入 Reading 的已缩放尺寸使用 pageScale=1，不能从旧报告
-推断正文和所有控件仍通过共同 zoom 同比放大。长译文在页内滚动，避免推移后续页对。
-
-开启翻译时适配尺寸仍按原文两倍宽度计算，而实际译文列较窄；该事实不是已经验证
-最优适宽或无溢出的保证。旧“左右等宽”及旧像素数据不作为现行验收标准。修改时
-分别验证页配对、跳页、窄窗、适宽/自定义缩放和页内滚动，勿以源码断言替代实测。
-
-文献翻译/解读以已提取的带页码文本作为 `document_pages`，不因源文件是 PDF 就
-要求模型 `pdf_input`；模型连接仍须有效，图表/公式裁剪的图片附件另校验
-`image_input`。[模型准入](../../apps/serve/service/literature/api/analysis.py) 与
-[实际推理传输](../../apps/serve/service/inference/transport.py) 分别承担对应检查，
-不能删除通用附件能力门禁。当前提取引擎归 [PDF Owner](../../apps/serve/service/platform/pdf.py)，
-不沿用旧 PyMuPDF 实现描述。
-
-页级编译使用 analysis Owner 当前命名预算；旧一次整篇翻译的大输出预算不是当前
-规则。长解读超过输入边界时先分段再汇总，长翻译页分段；其他超限分支仍可失败，
-不是静默截断输入或无限提高上限。字符阈值与输出 token 数不能混用。订阅连接的
-临时推理与禁止工具能力边界见 [Serve 单轮推理](../architecture/serve.md#单轮模型动作与订阅推理边界)。
-
-文献“全文翻译”当前由 [Reading](../../apps/desktop/src/renderer/src/features/workbench/pdf/Reading.tsx)
-前台调度单物理页任务，不是一次整篇模型请求，也不是持久化后台队列。
-[sequence](../../apps/desktop/src/renderer/src/features/workbench/pdf/sequence.ts) 固定从
-开启页到末页再回补前序页，跳过已有译文；忙碌或失败时不提交下一页。页面完成结果
-按页合并，同页重译替换该页，目标语言变化清除当前旧语言页集，不混合展示。
-前台调度状态与已完成页持久结果不同，不能因重启后能读译文就声称队列跨重启续跑。
-
-全文翻译侧栏动作开启自动调度并记录起始页，失败或取消的旧任务状态可在显式
-重新开启时清理；后续 effect 按队列前提提交，不沿用旧“没有结果且没有任何任务才
-首次直接 run”的通用面板规则。解读仍由前面的显式生成入口控制，两种动作不合并。
-
-生成完成也不是发布完成：[分析 API](../../apps/serve/service/literature/api/analysis.py)
-先验证结果，再经 `read_source` 重读请求对应源字节，比较 SHA256 与准备时 revision；
-变化返回 `SOURCE_CHANGED_DURING_GENERATION`，不发布该次结果。该段还在发布前检查
-取消，文献结果才走所属结果仓储。这个观察次序不等于文件校验与结果写入原子化，
-也不证明所有异常都保留旧结果；回归需分别覆盖源改变、删除、取消和实际发布读取。
-
-[编译与验证](../../apps/serve/service/literature/service/analysis.py) 对全文翻译只提供
-目标页文本，清空相邻页 context；长页按该 Owner 的字符阈值顺序分段，不把字符阈值
-当模型 token 上限。划词解释/翻译另有选区与页布局上下文，不套用全文翻译的空 context。
-[任务 API](../../apps/serve/service/literature/api/analysis.py) 顺序汇总页内译块，
-对可重试结构/覆盖错误继续二分直到最小段边界，不能用空译文或摘要填补失败段。
-根尝试保持运行态，整页完成后才进入发布，不把子段成功当该页已保存。
-
-`verify_translation` 检查译块结构与原文定位，`verify_translation_coverage` 对规范化
-原文/译块来源使用序列相似度门槛；它不是译义正确率或每个段落完整性的形式证明。
-改变拆分或重试时保留失败语义，核对目标页号、原文覆盖、取消与发布前来源修订，
-扫描/图片/空白页不能伪造为成功。[持久化合并](../../apps/serve/service/literature/persistence/analysis.py)
-在既有文献结果表的事务内按页覆盖，同语言保留其他页，换语言使用新页集。
-
-[页序测试](../../apps/desktop/src/renderer/src/features/workbench/pdf/sequence.test.ts)
-只证明纯函数排序、跳过和合并；真实验收须检查非首页开启、失败停止、重译保留其他页、
-换语言及重启读回。历史长文缺段报告只验证特定失败页和两种模型，明确未跑完整长篇，
-不能当当前整篇、任意模型或 Windows 通过证据。
-
-## 验证与维护
-
-变更锚点、加入入口、Provider 或证据解析时，同步检查持久化和跨端消费者。
-定向测试入口包括 [Desktop selection 测试](../../apps/desktop/src/renderer/src/features/workbench/selection.test.ts)
-及 [Serve 选区契约](../../apps/serve/tests/contract_selection_context.py)、
-[上下文 Provider 契约](../../apps/serve/tests/contract_context_provider.py) 与
-[完整契约清单](../../apps/serve/tests/run_all.py)，按实际分支确认覆盖，不把领域边界测试
-当作完整选区行为测试。真实 Desktop 验证至少区分加入后修改/删除来源、缺少快照、
-表格范围捕获失败、容量超限与编辑动作证据失效；类型、源码和协议检查不替代这些流程。
-定位到受影响 Owner 后停止扩展阅读；新格式通过原有契约承接，不在 Assistant 按扩展名
-复制读取逻辑。安全或来源校验要求发生变化时先明确影响，不以文档迁移授予产品改动权限。
+| Send after the selection joins the conversation | `SelectionAnchor.snapshot_text` saves the complete text when the user joins; sends directly using frozen text without re-reading the source file, comparing versions or positioning the selection |
+| Interpretation, translation, polishing and writeback | Verify source, version, positioning and content by associated action; restricted snapshot recovery for read-only actions does not grant edit or writeback permissions, see below |
+| Whole file reference | Follow the reading and freezing rules of the context Provider and do not automatically change to selection snapshot semantics |
+
+This distinction ensures that added text will not change if the document is modified, moved, or deleted, and prevents old text from being misused as editing authority for the current document. `preview_text` is for display only and not a substitute for full text. Report `selection_snapshot_required` when a historical reference is missing a full snapshot, requiring a reselect and join without falling back to the read source. The full text is still subject to the Assistant context capacity budget and is not silently truncated to the preview.
+
+<a id="回复期间追加-pdf-选区"></a>
+### Append a PDF Selection During a Reply
+
+In the same session, the claimed constituency A in this round and the newly added B during the reply period are in two states: [Context patch entry](../../apps/serve/service/assistant/api/routes.py) normalizes the PDF anchor in JSON mode to avoid false positive modifications of the tuple and persistence list in the request model during accurate comparison; [Context Owner](../../apps/serve/service/assistant/service/context.py) still maintains A immutable, and only consumes A in the final state of this round, leaving B for the next round of claiming. The area to be sent only displays B, and the sent A is not regarded as a new input; if A is actually modified, it will continue to return `assistant_claimed_refs_immutable`. Changing this boundary requires checking the [API contract](../../apps/serve/tests/contract_assistant_context.py) and [front-end projection](../../apps/desktop/src/renderer/src/features/assistant/state.test.ts), and checking the to-be-sent area, patch results, and reference consumption in a real two-round session; historical macOS screenshots cannot prove that the current version or Windows has been accepted.
+
+<a id="资料解释翻译与润色"></a>
+## Resource Explanation, Translation, and Polishing
+
+[Resources AI routing](../../apps/serve/service/resources/api/ai.py) provides independent `/api/resource/ai/explain`, `translate`, `polish` and task read/cancel entries, without reusing Agent Invocation or document task protocol. Model availability and task identity are checked against the `request_user_id` of the actual route, without deriving from the common owner terminology all entries use the same identity axis. The request source is the relative identity and revision of the project. The selected text snapshot must match the hash. If the draft is not saved, change_version must be included; the target language must be provided for translation. Fields and constraints are maintained by this input contract.
+
+[ResourceAIService](../../apps/serve/service/resources/service/ai.py) first parses the selection evidence. Polishing qualifications come from the actual can_edit, not just the old Markdown/DOCX format list; the interface returns suggestions and does not replace editor transactions, undo and explicit save. Read-only action for specific PDFs/old DOCs to allow snapshots when named recoverable errors are in effect and frozen snapshots are valid; not a universal fallback for all formats, exceptions or polishes. Repeating attempt does not change the input/model to bypass idempotence, and canceling accepted does not prove that the upstream has stopped. The error/final status of returned JSON and SSE are verified separately, and stream interruption or fragments are not considered as completion results that can be written back. The verification entrance is [data AI contract](../../apps/serve/tests/contract_resource_ai.py), which also requires real viewer selection, model, stream closure and edit write-back acceptance.
+
+[Translation of the data suggestion window](../../apps/desktop/src/renderer/src/features/resources/Suggestion.tsx). The original text determines whether to provide three-line folding based on the actual number of rendered lines. The original text and the translated text each have a scrolling area; changes in size or viewport are constrained by the trigger position of the viewer and cannot be replaced by fixed window coordinates. The result is copied through [clipboard boundary](../../apps/desktop/src/renderer/src/components/primitive/clipboard.ts): Desktop takes precedence over preload IPC, and ordinary browsers retain browser permission checks; the button appears or the model request is completed does not prove that the system clipboard has been written. Oriented kernel [Geometry Contract](../../apps/desktop/src/renderer/src/features/resources/utils.test.ts) and [Clipboard Contract](../../apps/desktop/src/renderer/src/components/primitive/clipboard.test.ts), the real Desktop still needs to click to copy from the successful translation, read back the system clipboard, and observe the folding, dragging, narrow window, and PDF/Markdown selections. Translation failures of old records and screenshots of single subscriptions cannot replace this successful path.
+
+[Selection host](../../apps/desktop/src/renderer/src/features/workbench/Selection.tsx) marks the suggestion window as [Document selection interactive area](../../apps/desktop/src/renderer/src/features/workbench/focus.ts), so that the button press event in the window will not be processed by an external click first to clear the selection and unload the result. Completed non-replacement results are copied; polished explicit replacements are still operated by the editor and are not replaced by the copy button. Check the [selection contract](../../apps/desktop/src/renderer/src/features/workbench/selection.test.ts) when modifying, and read back the clipboard after the real Office/Markdown selection and successful model are output; unfinished acceptance caused by the unavailability of the model in the history cannot be used as proof of passing of this path.
+
+Explanation and translation can fix the suggestion window after the result is submitted; [Selection host](../../apps/desktop/src/renderer/src/features/workbench/Selection.tsx) retains the same active result and generation state after clearing the highlight. Whether the attachment position and selection are still visible is another matter. Active closing, external clicks after unpinning, switching documents or source revision changes should still end old results; source authentication cannot be relaxed in order to pin the floating window. Check when changing [life cycle test](../../apps/desktop/src/renderer/src/features/workbench/selection.render.test.ts) and real generation, after completion, narrow window and unpin operation. Old macOS screenshots do not represent the current version or Windows actual results.
+
+<a id="impress-选区ppt-与-pptx-不共用降级"></a>
+### PPT Selection: PPT and PPTX Use Different Fallbacks
+
+[Office selection collection](../../apps/desktop/src/renderer/src/features/workbench/office/selection.js) obtains the actual highlighted text from the native transferable, uniquely positions the shape on the current slide, and projects the slide, shape and UTF-16 range; when ambiguous, the entire text box is not pretended to be a selection. The final selection is also explicitly submitted by [frame](../../apps/desktop/src/renderer/src/features/workbench/office/frame.ts) at the end of the drag selection. You cannot just rely on the native change events that may be missing in the drag.
+
+[Format dispatch](../../apps/serve/service/workbench/service/slides.py) hands the old binary PPT and OOXML PPTX to different processors: PPTX parses and reviews the slide, shape, and range from the current authoritative source; PPT does not allow OOXML parsing exceptions to replace the format determination, and returns a clear result that requires a frozen snapshot. [Data action](../../apps/serve/service/resources/service/ppt.py) only accepts PPT selected text snapshots with hash matching and limited length for interpretation and translation after the source revision is verified; it is still rejected when the source expires, and polishing and PPTX do not undergo this downgrade. Selections joining a conversation use the freeze text sending semantics described previously on this page and do not authorize interpretation or writeback on the current source. For targeted inspections, see [Office selection contract](../../apps/desktop/src/renderer/src/features/workbench/office/selection.test.ts), [PPTX authoritative review](../../apps/serve/tests/contract_pptx.py) and [data AI contract](../../apps/serve/tests/contract_resource_ai.py); real PPT/PPTX partial drag selection, menu and model actions are also required. Old screenshots do not prove current or cross-platform acceptance.
+
+<a id="个人选区提示词与临时要求"></a>
+### Personal Selection Instructions and Temporary Requirements
+
+[The prompt word contract](../../apps/desktop/src/prompts.ts) is now saved in four categories: interpretation, translation, polishing, and diagrams. The user can edit the requirements; [The setting page](../../apps/desktop/src/renderer/src/components/business/AccountPanel.tsx) is explicitly saved and restored to default item by item. [The user prefers](../../apps/desktop/src/preferences.ts) to persist and fall back to the default value when it is missing, blank, non-string, or exceeds 2000 JavaScript character units. When executed, `selectionInstruction` will combine the corresponding personal prompt words and this temporary request with the blanks removed; no temporary requirements can still be submitted. The guidance component of the material suggestion and literature PDF selection directly opens the `prompts` page in the settings without creating another prompt word configuration or page routing. This text only affects the input of this action and does not grant permission to expand the file scope, bypass source/version verification, change model capabilities, or rewrite server-side JSON/evidence constraints. The selection interpretation/translation of document PDF and data delineation are connected according to their respective actions. The four settings cannot be extrapolated to consume individual prompt words for all document full-text tasks. To return, first run [prompt word contract](../../apps/desktop/src/prompts.test.ts), and then check the save restart, item-by-item recovery, temporary requirements, data and document selection requests and actual model results on the real Desktop respectively; the document PDF `generation_failed` in the old record has not been resolved by setting readback or request arrival to prove that it has been resolved.
+
+<a id="替换确认与不确定结果"></a>
+### Replacement Confirmation and Uncertain Results
+
+[Desktop application callback](../../apps/desktop/src/renderer/src/features/workbench/Selection.tsx) rechecks the selection fingerprint and changeVersion before performing the replacement, and passes the capture identity to the owning editor replacement capability; this is not disk write permission. Version protection for editor transactions, undo, and normal saves is retained. Model suggestions cannot be written directly to the source file or automatically saved.
+
+The historical data selection plan clearly requires that: when the replacement request times out and no confirmation is received from the editor, the result should be marked as “待确认”. It cannot be asserted that it has not been modified, nor can the replacement be automatically replayed. The current callback distinguishes `replacement_timeout` from other replacement failures; this error branch itself does not prove that the editor's final state or interface has correctly expressed uncertainty. Subsequent modifications must check the editor confirmation protocol, actual prompts, closing and late result processing, and verify the content, dirty status, undo and explicit save in the real product; this page does not claim that these paths have been accepted.
+
+Office's [run host](../../apps/desktop/src/renderer/src/features/workbench/office/runtime.tsx) uses requestId to wait for confirmation; timeout removes waiting items, and late confirmations without corresponding waiting items are ignored. This is to end the wait on the calling side, not to cancel the editor action or prove that the document has not changed. No “未修改” guarantee shall be given based on this; troubleshooting should simultaneously check the actual content of the editor and the confirmation event, and do not rely on delays to speculate on the final state.
+
+<a id="仍需保留的资料动作要求"></a>
+### Resource Action Requirements That Still Apply
+
+The data action is bound to the current model snapshot, user requirements, source and action identity; retry cannot silently change the model or billing source. Explicitly reject the request when generating the missing model, credentials or actual required capabilities, and cannot degenerate into a normal Agent request. The draft context comes from the current editor and the necessary adjacent content of the same file, and cannot be combined with old drafts on disk, other project files, chat history or network data; when there is no reliable adjacent context, it is only based on the selection. Input exceeding the limit cannot be silently truncated.
+
+The inference layer encodes low-latency strategies according to the protocol and actual model capabilities; the UI, hidden reasoning, and prompt text do not substitute for this. Disabling reasoning for an ordinary API call and using the lowest supported reasoning level for a subscription model are separate requirements. Unknown capabilities must not be described as disabled. A temporary subscription turn does not prove that tools are unavailable or that the provider made only one internal model request. Consult [Serve’s execution and tool isolation boundary](../architecture/serve.md#模型目录执行键与凭据门禁) for actual admission checks. This page records requirements and does not claim that every transport meets them.
+
+The historical resource plan covered explanation and polishing, including Markdown/DOCX polishing. The current contract also includes translation, and polishing eligibility is determined by actual `can_edit`. This is a scope change; neither the old format list nor the presence of code proves that the requirement has been approved. The selection limit is still verified by the current ResourceScope.SELECTION and service entry; the remaining “explanation of the current file” description of the original proposal cannot be used as authorization for the new full-text entry. For complex DOCX selections across structures, first check editor capabilities; a successful generation does not prove that formatting was preserved. incomplete output, canceled or late results shall not be applied.
+
+[Action SSE transmits](../../apps/serve/service/assistant/api/stream.py) according to the request projection observer event, and then sends `result` or security `error`; after the streaming response has sent headers, the success of the action cannot still be judged according to the JSON HTTP status. [Pure model transfer](../../apps/serve/service/inference/transport.py) only forwards the model's text output, reasoning is not writeable back to suggestions; no more fallback to a temporary agent. Disconnection ending blocks outer layer cancellation, requests cancellation within a limited budget, and empties the queue to avoid back pressure blocking the ending; subsequent cancellation and waiting for local execution tasks need to override HTTP cleanup; this entry does not start the native Agent process. Canceling the interface's `accepted` and successful requests are not authoritative final states and must be accepted in conjunction with the associated call records.
+
+<a id="owner-与加入时机"></a>
+## Owners and When Selections Are Added
+
+- [Platform context contract](../../apps/serve/service/platform/context.py) holds selection anchor;
+[Desktop selection entrance](../../apps/desktop/src/renderer/src/features/workbench/Selection.tsx)
+Add a reference through the original context ingress and do not create a second set of context Store.
+- [Workbench Provider](../../apps/serve/service/workbench/service/context.py) parses project selection;
+[Literature Provider](../../apps/serve/service/literature/service/context.py) parses the literature selection.
+Both sending branches read snapshots; document citations and attachments still use the domain identity.
+- Unsaved project editing is first saved through the editing controller and the submitted version is obtained; if it fails, the addition will not continue.
+When the table viewer only provides a range description, the snapshot interface of the source is called during the joining stage to obtain the complete cell text.
+[Workbench snapshot API](../../apps/serve/service/workbench/api/selection.py) reuse source evidence service,
+Return text and proof versions; this phase allows reading and verifying the source, not readback of the send phase.
+
+Markdown visible selections across headings, formatting marks, and code blocks cannot be inferred from full-text plain text searches. [Desktop mapping](../../apps/desktop/src/renderer/src/features/workbench/mapping.ts) generates ordered UTF-16 source fragments from syntax leaf nodes, and only completes necessary format control characters for the selected content; [Embedded code editor](../../apps/desktop/src/renderer/src/features/workbench/MarkdownDocument.tsx) synchronizes highlights that intersect with the unified selection and clears old highlights that do not intersect. [Serve locator](../../apps/serve/service/workbench/service/context.py) verifies the sequence and boundaries of the fragments and splices the source text when **joining**; after joining, sending still only consumes frozen `snapshot_text`, and cannot move the locator verification to re-read the file when sending. Directed verification [mapping test](../../apps/desktop/src/renderer/src/features/workbench/sourcemap.test.ts) and [source contract](../../apps/serve/tests/contract_selection_context.py), cross-editor drag selection, highlighting and actual adding of text still require real Desktop acceptance.
+
+<a id="文献附件文件输入与预览身份"></a>
+## Literature Attachment Input and Preview Identity
+
+The entire attachment is not selection text, and there should be no new Assistant text context type for binary files. [`attachActiveFileToAi` of Desktop Store](../../apps/desktop/src/renderer/src/store.tsx) still has file context for the current project file; the literature attachment is resolved by [Location analysis](../../apps/desktop/src/renderer/src/features/workbench/api.ts) requests the server location according to the identity of literature/attachment, which is not in the Renderer directory. Register the local file reference when the current session already exists, and temporarily store registrationRequired when there is no session. The sending path is registered after obtaining the session, and then the message input is constructed. Sessions that failed to register or are waiting while waiting cannot be sent successfully; the preview file itself should not force session creation. When joining the dialogue on the project tab, first check that the active file is consistent with the project to which the assistant belongs, and then submit the named `file` reference with the relative path of the project; the absolute location registration of the document attachment is another entry and should not be reused in the project file to bypass the project scope. Repeated additions of trees and tabs should be deduplicated by the same context Owner; successful addition does not prove that the model has been read, and true verification requires running one round in the old and new sessions and verifying the source and final answer.
+
+`previewSource` of file type ComposerReference is passed into FilePreviewTarget via [Attachments](../../apps/desktop/src/renderer/src/components/primitive/Attachments.tsx); `openFilePreview` uses this explicit source first, and then uses artifact/session/runtime derivation. When the source is literature, switch to the main view of the document and set the same navigation attribute for the tags to prevent the untagged preview from falling in the overview. This is the Renderer preview identity, not the new permission field in the Turn input; historical message Without this identity, the literature/attachment ID cannot be forged based on the title or absolute path.
+
+[Literature attachment Owner](../../apps/serve/service/literature/service/attachment.py)'s location reading requires the attached attachment line and the managed attachment; the absolute path citation reader also checks that the path is registered in the attachment line, without first resolving and then authorizing the unregistered alias. The current project file link attachment semantics have been removed, and the associated attachment path branch in the old scheme will not be restored. Document location reading is a different authorization boundary than [session file registration](../../apps/serve/service/chat/service/sessions.py): the latter receives the local file/directory selected by the Desktop, checks the live session, absolute path, existence and type and returns the reference ID, not just document attachments. Absolute path strings or UI preview identities themselves are not universal read permissions, and atomic no-follow security across all platforms cannot be inferred from these preflights.
+
+<a id="选区动作的来源身份与错误反馈"></a>
+### Source Identity and Error Feedback for Selection Actions
+
+[Analyzing the `read_source` of the input Owner](../../apps/serve/service/literature/service/analysis.py), the attachment is read when `attachment_id` is provided in the document request, and the main attachment is not rolled back; when this field is missing, the main attachment branch still exists, and it cannot be claimed that all requests are prohibited from rolling back. Project PDF uses project identity and Content Port, and is not allowed to be mixed with document identity at the same time; asset/path reading and document attachment reading are verified separately.
+
+[Analysis API](../../apps/serve/service/literature/api/analysis.py) maps content domain errors to structured 422 at the preparation boundary: known missing content codes are attributed to missing documents, the rest are attributed to invalid sources, and the diagnosis of content errors is empty. [PDF request tool](../../apps/desktop/src/renderer/src/features/workbench/pdf/analysis.ts) first reads text and then parses JSON; if parsing fails, it returns `pdf_ai_invalid_response`. When HTTP fails, a status is attached and JSON parser exceptions are not displayed to the user. The JSON parsability of the successful response does not mean that it passes the business structure verification; the general request function still directly returns the parsing result, and does not promise an empty response or any object will be rejected accordingly.
+
+The regression must cover the actual selection action after opening the non-main attachment, the API feedback of attachment loss, and the floating layer prompt of abnormal response. [Analysis Contract](../../apps/serve/tests/contract_pdf_analysis.py) and [Request Tool Contract](../../apps/desktop/src/renderer/src/features/workbench/pdf/analysis.test.ts) provide input selection and error projection evidence and are not a replacement for real readers, service networks and model rounds.
+
+<a id="托管附件删除与翻译输入故障"></a>
+### Hosted attachment deletion and translation input failure
+
+The `managed_object` of the current [attachment file Owner](../../apps/serve/service/literature/persistence/files.py) uses the document identity, content summary and UUID to form the disk name; the same bytes will still be imported again to generate an independent copy. `revision` is the SHA256 identity of the bytes, not the physical file share permission. Therefore, after deleting a document or attachment, the associated API cleans up its physical files and derived indexes, and does not continue to use the cross-entry reference counting scheme of the old content addressing era. Deletion only processes ordinary files within the managed root; project files are not owned by this cleanup portal.
+
+It cannot be inferred from the naming scheme that any shared paths in the historical database have been migrated. If full-text translation fails, first check whether the current attachment line, the managed file exists, the actual request stage and error response, and then distinguish between input loss, model authorization and output budget; when the request has not yet arrived at the model, increasing the output budget cannot fix the missing files. The existing [warehousing contract](../../apps/serve/tests/contract_literature_store.py) covers the same byte independent copy, deletion range and attachment deletion API; the temporary directory contract does not replace real import, reading, deletion and translation acceptance.
+
+For related wiring tests, see [resources.test.ts](../../apps/desktop/src/renderer/src/resources.test.ts); where the source code/AST assertion is not product interactive acceptance. For true regression, you need to add images/PDFs when there is no session and when there is a session. Click on the card to check the viewer, main view, label and actual reading API, and then check the sending registration and failure feedback; the copy path and Finder/Explorer positioning also need evidence of their respective system bridges, and do not restore abandoned raw routes to avoid identity loss.
+
+<a id="pdf-选区事实与浮层投影"></a>
+## PDF Selection Facts and Floating Layer Projection
+
+<a id="ai-结果局部选择与原生复制"></a>
+### Partial Selection of AI Results and Native Copy
+
+The global interface disables text selection by default, and the generated result text must be explicitly restored by the corresponding display owner instead of making the entire application optional. [Share Markdown](../../apps/desktop/src/renderer/src/components/primitive/Markdown.tsx) and PDF using optional text for reading, summarizing, and translating text; local selection copying and existing overall copying actions are not the same input, and should not replace each other or change the generation interface.
+
+[The main window menu](../../apps/desktop/src/main/index.ts) only displays the native `copy` role when Electron reports a non-empty and copyable text selection; this contact only belongs to the main window and does not guarantee that built-in web pages or isolated native hosts have the same menu. Cmd+C / Ctrl+C uses the native selection to copy without overwriting the selection with the overall result.
+
+[Workbench capture phase](../../apps/desktop/src/renderer/src/features/workbench/Dock.tsx) first calls [focus.ts](../../apps/desktop/src/renderer/src/features/workbench/focus.ts) to determine whether the right-click coordinates are in any text rectangle of the existing non-empty Range: when hit, the default selection is prevented from being repositioned, and the selection clearing of the path is skipped. It is only judged that “点在正文内” is not equivalent to “点在选区内”; this retention rule does not apply to outside the right-click selection, left-click and empty selection. Other defocusing and toolbar closing mechanisms still have their own owners. It cannot be inferred from this branch that all platforms, windows or floating layers always retain the selection.
+
+The directional entrance is [native menu contract](../../apps/desktop/src/main/contextmenu.test.ts) and [selection contract](../../apps/desktop/src/renderer/src/features/workbench/selection.test.ts); source code and geometry helper assertions cannot replace real span selection, right-click inside/outside the selection, and clipboard readback acceptance. Corrected to check the sequence of events at both ends when selecting text or turning off listening, to avoid clearing the selection before menu intercepting text.
+
+Scroll and page virtualization cannot treat temporary DOM Ranges as the only fact about a selection. [PdfDocument](../../apps/desktop/src/renderer/src/features/workbench/PdfDocument.tsx) Use `selectionDragSpan` to retain the rendering from the start page to the current page during drag selection to prevent virtualization from rewriting the native Range starting point; retain page/text/normalized quads after capture. `persistedSelectionViewport` uses the lower right corner of the last quad to determine whether the anchor point falls within the PDF viewport and window based on the projection position of the last page selection and the current page bounds. The invisible anchor point is not the same state as the invalid selection semantics; the native Range can be removed when scrolling, and the captured cross-page selection should not be deleted based on this. The function returns null when there is no corresponding page element. This step cannot be described as the selection has been cleared.
+
+[PDF Page](../../apps/desktop/src/renderer/src/features/workbench/pdf/Page.tsx) Use independent `pointer-events-none` mark layers to draw temporary selection quads to avoid highlighting intercepting text selection or annotation clicks; real annotations have their own interactive layers, and pointer events cannot be disabled uniformly for all layers. [General selection entry](../../apps/desktop/src/renderer/src/features/workbench/Selection.tsx) consumes exact status, can_select, presentation.visible and anchor point visibility to determine whether to display the toolbar, without forming a second set of facts by redoing the PDF geometry in the general menu.
+
+The existing requirement is that the floating layer of the selection/annotation anchor is hidden when it leaves the screen and restored when it returns. The cross-page position shall be based on the last page. The existence of the above related branches does not prove that the entire life cycle of page uninstallation/remounting, zooming and annotation editing boxes has been correct; when modifying, you must mark the words on the second page of the real Desktop, scroll to completely off the screen and then return, and check that the highlight, menu, annotation position and operation are still available. PDF temporary selection is not an automatically placed reading record, nor does it replace source evidence verification for interpretation/editing actions.
+
+<a id="pdf-检查器笔记保留与侧栏边界"></a>
+## PDF Inspector, Note Retention, and Sidebar Boundaries
+
+<a id="稳定资产身份源状态与记录版本"></a>
+### Stable Asset Identity, Source Status, and Record Version
+
+The business identity of the project PDF comes from Content `asset_id`, the path and external root are mutable locators, and the content revision is a checksum; records from independent copies with the same name or the same bytes cannot be silently merged. [Record persistence](../../apps/serve/service/workbench/persistence/records.py) locates the project database through the Content Port, reads the record with asset association, and does not save the Renderer path sidecar or double-write the migration ledger. The record of the document attachment belongs to the owner of the original attachment, and the project asset link can be transferred to the owner and will not be copied into a second fact.
+
+[Record service](../../apps/serve/service/workbench/service/records.py) can still project saved records and source status when the source is missing, lost, or conflicting; it fails explicitly if it has not been initialized and the source is unavailable. Re-check the physical revision after initial reading; commit and check expected source revision and record revision respectively. Reading record CAS cannot be regarded as a transaction of file movement or original PDF byte writing. [Content identity](../../apps/serve/service/content/service/identity.py) holds physical bindings, locator changes and restores; missing/authorized/conflicts should not be masked by UI empty logging or reallocating assets. Source recovery, external root rebinding, independent replication and cross-device movement must still be authenticated and not extrapolated from a single state branch.
+
+The current record schema reports `workbench_pdf_record_requires_cutover` for an inexact column set, which is not a proof of automatic compatibility with historical path records or additive migrations. Before changing the persistence, verify the existing data and [Asset Retention Specification](../architecture/persistence.md), and do not perform database cleanup based on old proposals during knowledge migration. Return to see [PDF records](../../apps/serve/tests/contract_pdf_records.py) and [Content identity](../../apps/serve/tests/contract_content_identity.py), and verify the real product after moving records, loss of connection and recovery, version conflicts, and the original PDF bytes remain unchanged before and after operations.
+
+<a id="附件记录与跨库操作的归属"></a>
+### Attachment Record Ownership and Cross-Library Operations
+
+[Unified record contract](../../apps/serve/service/platform/records.py) uses owner/scope_id/subject_id to distinguish project assets and document attachments. source_revision and record_revision hold the original PDF and record version respectively; it is a Serve product contract and should not be moved into Runtime or let the Renderer guess the storage Owner from the path/page. [Attachment record storage](../../apps/serve/service/literature/persistence/reading.py) verifies the actual parent document of the attachment, using the attachment ID as the primary key and record revision as the CAS; [List projection](../../apps/serve/service/literature/api/catalogue.py) returns the record_target of the specific attachment. [Desktop subscribe to](../../apps/desktop/src/renderer/src/features/workbench/api.ts) by complete target triple projection update, not merging two independent owners due to the same PDF bytes. Byte writing, record writing and UI subscription update are not a cross-database atomic transaction. The two phases of copy import and partial success are shown in [Import contract](imports.md#文献附件进入项目资源).
+
+Project association does not automatically copy comments; existing named asset record links can be entrusted to the original attachment owner, which is different from explicit independent copying. The current link capability cannot be removed based on the old scheme “the copy is independent”, nor can new forms be deduced from it that support LINK or all old entries will be copied to the snapshot. The non-accurate schema report in the attachment table requires_cutover is a clear signal of incompatibility and does not prove that the historical entire database switching/recovery mechanism has been delivered. The old plan of clearing comments and rebuilding tables is not authorized for today's data operations; if the inventory needs to be processed, the actual assets, retention requirements, failure recovery and precise authorization must be separately verified. It cannot be executed in knowledge cleaning, nor can it be downgraded to empty records to cover up errors.
+
+The outline is recursively retained by [navigation](../../apps/desktop/src/renderer/src/features/workbench/pdf/navigation.ts), and a single-node destination parsing failure returns a non-jumpable state, preventing the entire tree from failing; the search is handled by the shortcut key of the active PDF tag to avoid hijacking other editable controls. They already have current contacts, cannot follow the conclusions of the old “no keyboard shortcut and a uniformly flattened hierarchy”, and do not use source code to prove narrow window or deep outline visual acceptance.
+
+[Annotation checker](../../apps/desktop/src/renderer/src/features/workbench/pdf/Annotation.tsx) displays the page number, original text, existing annotations and three mark styles. The color, style, annotation and deletion record submission chain of [PdfDocument](../../apps/desktop/src/renderer/src/features/workbench/PdfDocument.tsx); optimistic presentation cannot forge submitted revisions, and failed rollbacks and conflict rereads must still be retained. The screen mark and [PDF export](../../apps/desktop/src/renderer/src/features/workbench/pdf/export.ts) realize the strikethrough geometry respectively; the buttons on the interface do not prove that the export is correct, and the two chains are accepted separately.
+
+Removing the independent “添加笔记” entry is not equivalent to deleting the `notes` data of the protocol. Adding tags, changing colors/styles, and adding comments currently carry the original `notes`; deleting tags will explicitly remove the associated excerpt, and filter notes without excerpt and empty text. Therefore, the old plan “all submissions preserve notes unchanged” cannot be regarded as the current fact, nor can it be deduced that the historical notes can be cleared from the disappearance of the entrance. Check the associated cleanup and asset retention requirements when these operations are involved; the source code branch has not proven that user assets are intact, and this knowledge governance does not authorize data modification or table reconstruction.
+
+Annotated sidebar entries for document PDFs depend on `session.source.kind` and are not inferred by the file path, title, or current main view. Opening the annotation closes the analysis/document panel; the analysis's exclusive-surface junction closes the annotation. Both presentation conditions and entry switching need to be checked, and you cannot just hide a panel while retaining the conflicting active state. Database PDFs can still be manipulated through the in-page markup inspector, and “no literature-specific sidebar” should not be written as unannotable.
+
+[Percentage control](../../apps/desktop/src/renderer/src/features/workbench/pdf/Scale.tsx) distinguishes between single-click adaptation mode switching and double-clicking value editing: double-clicking cancels the pending click, and the keyboard triggers direct switching; Enter/defocus submission, Escape exits editing. The percentage resolution and upper and lower limits are maintained by [Geometry Owner](../../apps/desktop/src/renderer/src/features/workbench/pdf/geometry.ts), submitted to enter custom mode. Pure function testing does not prove that the browser event sequence, out-of-focus submission, and page position restoration are all correct; true regression needs to cover double-clicking without entraining clicks, no incorrect submission after Escape, and tab switching.
+
+<a id="文献-markdown-笔记共享编辑与保存边界"></a>
+## Documentation Markdown Notes: Shared Editing and Saving Boundaries
+
+The current [document details](../../apps/desktop/src/renderer/src/features/literature/LiteratureDetail.tsx)'s `DETAIL_TAB` and the actual Tabs are three tabs for information, attachments, and notes, not the four tabs for historical proposals. The tag list is displayed in the details of the selected attachment, and currently only the PDF attachment is mounted `AttachmentMarks`; open the tag to enter the shared reader through the attachment identity and page number. It cannot be inferred from the visibility of attachment tags that all Viewers have the ability to annotate, nor should a new tag table or a second set of detailed business status be created to match old proposals.
+
+The document entry notes are not in the same save chain as `notes` in the PDF reading record in the previous section. [Details entry](../../apps/desktop/src/renderer/src/features/literature/LiteratureDetail.tsx) and [Reading panel](../../apps/desktop/src/renderer/src/features/literature/ReaderNotes.tsx) reuse [LiteratureNotes](../../apps/desktop/src/renderer/src/features/literature/Notes.tsx) and `NoteEditor`; the reading entry obtains the document identity from `recordTarget.owner` and `scope_id`, without guessing based on title or file path. After saving, press itemId to publish `literature-notes-changed`, and reload each entry. This does not copy a set of note business status or replace server data with event text.
+
+[Auto-save Owner](../../apps/desktop/src/renderer/src/features/literature/autosave.ts) Processes requests serially within a single editing instance: waits for an existing request before submitting the latest dirty draft; creates a receipt binding note identity, retains new input during saving, and continues to save the receipt version. It is not a cross-window global queue. Version conflicts leave dirty drafts and errors and do not force overwriting of new versions of other editors. Switching notes/creating new ones usually requires a successful flush. Blank new notes that have not yet been requested can be switched directly; existing notes with empty text will be refused to be saved.
+
+**Current restrictions cannot be written as data retention guarantees:** `Notes.requestClose` Directly `close()` when save or export errors are visible, clearing the draft and not waiting for flush; existing source code assertions also explicitly pin this branch. When there is no error, return to the saved state and wait for flush. Uninstalling cleanup initiates an asynchronous flush, but React does not wait for its completion; it cannot be claimed that any shutdown, page cut, or exit has been reliably completed. Retaining user drafts is still a data security requirement, and this difference requires a separate product fix and acceptance of the true error path; the target constraints in the documentation do not indicate that the shutdown behavior has been fixed.
+
+[Markdown export](../../apps/desktop/src/renderer/src/features/literature/note.ts) uses the current editing draft: a non-empty title generates a first-level title, the original Markdown text and Unicode are retained; the file name cleans up the platform delimiter, and opens the native save chain via `saveFileCopy`. Canceling is not a successful placement, nor will a writing error be reported; if the bridge is missing or the actual writing fails, an error will be thrown and presented by the interface. Exporting cannot be equated with notes being saved automatically.
+
+The directed entry is [note tests](../../apps/desktop/src/renderer/src/features/literature/note.test.ts): identity, headers, serialization and bridge fixtures, and source code assertions on error returns; it does not verify asynchronous race conditions, real save dialogs, or restart recovery. When modifying, it actually overwrites continued input during saving, repeated creation, version conflicts, error returns, switching entrances and restarts; exporting must read the file back from the real Desktop after saving. The acceptance of the native dialog box of the historical report is blocked and the screenshots belong to the old run and are not used as proof that the current version has been accepted.
+
+<a id="已保存-pdf-批注的-ai-动作边界"></a>
+## AI Action Boundaries for Saved PDF Annotations
+
+The saved marking menu is not the same host as the new wording toolbar. [PdfDocument](../../apps/desktop/src/renderer/src/features/workbench/PdfDocument.tsx) Explicitly pass the page/text/quads of mark to the interpretation/translation action and then close the mark menu. You cannot clear the shared selection first and then ask the request to read it back. [Annotation Inspector](../../apps/desktop/src/renderer/src/features/workbench/pdf/Annotation.tsx) truncates mouseup bubbling to prevent Portal's menu events from being captured by the PDF viewport as a new selection along the React component tree; Portal itself does not guarantee isolation of these events.
+
+[PDF Reading](../../apps/desktop/src/renderer/src/features/workbench/pdf/Reading.tsx) Use explicit target or real-time selection construction request, interpret the input to capture the selection first, and only carry supplementary requirements when submitting to initiate the task. request saves text, page numbers, quads and source identities; document identity changes and temporary selection changes clean up the status respectively, and all result windows cannot be uniformly bound to the DOM Range to see if it still exists. General selection It is recommended that the capabilities, selected status and closing conditions of the host and document PDF contributions must be checked separately. Just because one party has `aria-pressed` does not mean that the other party meets the same requirements.
+
+Historical requirements also require that the menu/selected state be retained during interpretation input, that the internal interaction of the translation window not be closed accidentally, and that the annotation panel on the right be dragged and widened. The current [PdfPanel](../../apps/desktop/src/renderer/src/features/workbench/pdf/Panel.tsx) related rendering only has width token, maximum width and expand/collapse branches; the ResizablePanel of the left navigation cannot be used to prove that the right label width adjustment has been implemented, nor will the pixel values ​​of the old plan be upgraded to the current specification. The gaps between these requirements and actual acceptance must be verified separately in relevant modifications and cannot disappear when the historical directory is deleted.
+
+**Word regeneration and original text presentation:** Interpretation input and result windows reuse action model preferences, and both translation and interpretation result windows are explicitly regenerated. Reading takes the module and selection from the request saved by the action, and then constructs a new request based on the current model and translation target; retry retains the original text, page number, quads, area and supplementary requirements, and regenerates the action/attempt ID. The button is disabled during operation, but the button enablement condition checks the general lastRequest. The callback still has to obtain the action request, and the enablement itself cannot be used as evidence of successful acceptance. The original text is translated using Collapsible, which is reconstructed according to the identity of the attempt. It is collapsed by default to retain the visible area of ​​the translation; folding is a presentation strategy and the original text of the request is not cropped. The annotation identity is only constructed when a floatingResult is present and cannot be presumed to be equal with two empty strings added. Actual cancellation, incremental preview, result replacement and preference reloading must still be accepted by real experiments; the single first text time and model inventory of the old report do not prove that all models are currently connected to the Internet or that the speed is generally accelerated.
+
+Real regression triggers interpretation/translation from saved tags and new word entries respectively, checks that the request text is not empty, the page number and coordinates belong to the correct tag, continuous switching does not concatenate data, errors are readable, input focus and clicks, copies, and scrolls inside the window do not close by mistake; task creation or end-to-end behavior passing is not reported when there are no actual model/product results.
+
+<a id="bridge-批注上下文与原文证据分权"></a>
+## Bridge Separates Annotation Context from Source Evidence
+
+[`pdf_annotations` of reference service](../../apps/serve/service/assistant/service/citations.py) parses the file ref from the current snapshot and project identity, and then reads it from the records Owner. The caller cannot arbitrarily specify other projects or the original RecordTarget. The document branch passes [document evidence Owner](../../apps/serve/service/literature/service/evidence.py) verification project/global scope, merges entry notes and records of all PDF attachments; warnings are returned when a single attachment is unavailable, missing records are not pretended to be blank, and comments on other attachments are not missed because the main attachment can be referenced.
+
+Result statement `user_feedback`, paginated by offset/limit and with record revision; it is user opinion, not a PDF original sentence proof or executable instruction, does not automatically generate a citation URL, and is not merged with the answer UTF-16 annotation. The facts of the paper still need to be obtained from other sources to obtain evidence. Record reading and source revision verification are judged separately, and feedback revision cannot be regarded as a guarantee that the content of the paper has not changed or that the facts are correct.
+
+[Bridge routing](../../apps/serve/service/assistant/api/citations.py) retains active session/snapshot/turn pre- and post-checks and response size upper limit; both annotations and read under the active full-text policy check authorization. Other paths without active policies must still be verified separately, and the scope will not be expanded, all records will be loaded by default, or the original authorization will not be bypassed because the operation is read-only or marked as feedback. The return entry is [Annotation contract](../../apps/serve/tests/contract_assistant_annotations.py), and verification of project/global scope, attachment errors, paging, expired requests and user opinions not impersonating references in the real session is also required.
+
+<a id="pdf-文本物化不签发引用凭证"></a>
+## PDF Text Materialization Does Not Issue Citation Credentials
+
+[Materialized Owner](../../apps/serve/service/workbench/service/materialize.py) Currently using the product Shared PDF text extraction boundaries, does not follow the old PyMuPDF scheme. prepare bounded extraction of page-delimited UTF-8 text, publish publish relative TXT via the Content Port's session artifact scope; target rejects absolute paths, parent paths, Windows delimited/driver or streaming semantics and non-TXT suffixes, conflicts do not overwrite old files. The errors report that the source is unavailable, encrypted, illegal PDF, missing text layer and resource limit respectively. An empty TXT file does not mean that the scanned document has been OCRed. The quota and version are based on the Owner constant, and the values ​​are not copied in the document.
+
+Bridge rechecks the activity round after asynchronous prepare before publishing; hosting the full text is rejected by the named `ensure_materializable`, because the entire plain text will leave a copy that cannot be withdrawn by the read gate. This restriction does not amount to removing all normal document materialization capabilities, PDF to TXT is also a separate responsibility from downstream sentence numbering/PaperCard processing. The returned digest, revision, and page number are not citation-level coordinates or citation receipts; fact location is still completed through the citation index, and it cannot be inferred that the evidence location is successful or the permission is permanently valid from the TXT extraction.
+
+Check [materialized contract](../../apps/serve/tests/contract_pdf_materialize.py)'s controlled releases, conflicts, illegal targets, source failures, active round failures, and managed source rejections when making changes, and verify the true Bridge usage path. The current source code does not prove that the files on the two platforms have been released or that the batch Skill full link has been accepted; the time consumption and default number of workers of the old proposal do not serve as the current performance and execution contract.
+
+<a id="markdown-可视选区与源码坐标"></a>
+## Markdown Visual Selection and Source Coordinates
+
+<a id="回答渲染与编辑器映射的独立-owner"></a>
+### Answer Rendering and Editor Mapping Independent Owner
+
+[Shared Markdown](../../apps/desktop/src/renderer/src/components/primitive/Markdown.tsx) consumes standard semantic parsing, and then maps raw UTF-16 boundaries, quotes and annotations via [source](../../apps/desktop/src/renderer/src/components/markdown/source.ts) and [decorate](../../apps/desktop/src/renderer/src/components/markdown/decorate.ts). Hiding private reference tags cannot change subsequent source code coordinates, and DOM text cannot be directly used as original text slices; answer rendering and the following Workbench editor mapping are not the same implementation. Currently, raw HTML is skipped, images are rendered as text placeholders, and the external link is the product openExternal; it does not restore handwritten semantic parser, double rendering fallback, or allow Markdown content to bypass Electron security boundaries.
+
+Modifications need to cover escape/entity, repeated text, spanning blocks, flowing half private tags, math and comment boundaries. Pure mapping testing cannot replace real drag selection and annotation operations, nor can it prove that the coordinates are correct based on successful rendering.
+
+Rendered text omits syntax marks such as titles, emphasis, and code fences, and cannot treat DOM text directly as a continuous slice of the original Markdown. [Mapping Owner](../../apps/desktop/src/renderer/src/features/workbench/mapping.ts) aligns the syntax leaves with the editor text stream, returning start/end, segments and spliced ​​source text; [MarkdownDocument](../../apps/desktop/src/renderer/src/features/workbench/MarkdownDocument.tsx) currently uses `milkdown-source-map-v3`, not the v2 single continuous interval contract of the old plan. A complete quote must retain the selected content and necessary grammatical boundaries, and do not include all unselected text in the cross-block range.
+
+[Mathematically compatible](../../apps/desktop/src/renderer/src/features/workbench/mathematics.ts) restores the tree position to the original source coordinates after normalizing the delimiters, otherwise the wrong source may be positioned even if the rendering alignment is successful. When the exact mapping of the editor cannot be obtained, the current entry still has existing DOM text/blank matching fallback; it cannot be declared that the entire product path is completely prohibited from being rolled back based on a pure function returning null, nor is it considered safe to replace because the menu can be displayed. Replacement also checks the original editor location, selection fingerprint, and changeVersion.
+
+[Serve locator decodes](../../apps/serve/service/workbench/service/context.py) and slices it according to UTF-16; when segments exist, it checks the number, order, non-empty and outer range of the list, and then splices each segment. Coordinate units, splicing text, and version checking must be consistent with Desktop and not replaced by Python character indexing. This is a different stage than sending a frozen snapshot_text: the location evidence when joining/editing cannot be converted into an automatic readback source when sending, and conversely the snapshot can be sent without granting permission to edit the current file.
+
+Directed pure mapping entry is [sourcemap tests](../../apps/desktop/src/renderer/src/features/workbench/sourcemap.test.ts), including duplicate text, cross headings/paragraphs, tags/escapes, code blocks, math position and misalignment rejections. The test does not cover the actual DOM/CodeMirror endpoints or real menus; after modification, real Desktop drag-and-select, join dialog and write-back verification are still required, and the cross-platform success claims of the old plan cannot be inherited.
+
+<a id="markdown-格式快捷栏的单一动作来源"></a>
+## Single source of actions for Markdown formatting shortcut bar
+
+[MarkdownDocument](../../apps/desktop/src/renderer/src/features/workbench/MarkdownDocument.tsx) creates action mapping from the native item of the editor TopBar, `FORMAT_ACTIONS` then selects the icon/onRun of bold, italic, strikethrough, link, inline code and inline formula. The word delineation format bar is a subset of the upper toolbar and is not a second set of icons and editing commands maintained independently. If the native action is missing, an error will be reported directly and alternative behavior will not be provided silently. The link action passes through the existing `editDocumentLink` contact, and the inline formula reuses `ToggleLatex`.
+
+When modifying the format shortcut bar, check the upper and lower actions, selected status, icons and actual editing results at the same time; do not just make the icons look the same but leave different commands. Dimensions, test quantities, and screenshots in old records are historical evidence, not current design tokens or final acceptance. The current source code point does not prove that all editing life cycles and theme effects have been passed.
+
+<a id="阅读结果追问文献范围与文字草稿"></a>
+## Questioning the Reading Results: Literature Scope and Text Draft
+
+[Reading](../../apps/desktop/src/renderer/src/features/workbench/pdf/Reading.tsx)’s explanation/translation inquiry uses the original text, AI results, page numbers and versions of `floatingResult` to generate `reading.selectionDraft`; both Chinese and English templates indicate that the AI-generated content needs to be verified and will not be automatically sent after clicking. It is not a new PDF selection anchor, nor is it treating the results as verified research fact.
+
+Currently `openDocumentChat` first `addContext` when there is literatureId: document stable ID, title, `next_turn` and explicit origin, but without selection anchor; Composer draft is set and focused only when accepted_ref_ids is non-empty. Paths without literatureId skip the literature citation step. Interpretation panel continuation dialogue also reuses this contact point. Therefore, neither the old “an empty input with only a selection chip” nor the unconditional expression of the old “a result-only snapshot with no structured reference” can be used.
+
+[Literature Context](../../apps/serve/service/literature/service/context.py) parses unanchored references into the tool scope of the item metadata identity. The text is empty, with a document locator, and does not automatically read the PDF full text; only the sending branch with anchor consumes snapshot_text. Scope citations and resulting text drafts are separate responsibilities, and it cannot be inferred from the existence of the bibliography capsule that the main text has been injected, nor can it be claimed that citation acceptance is completely independent of the current entry. The version saved as a result of the action is only used as draft text and does not pretend to be the authorized version of the current attachment.
+
+The reading result floating window currently does not pass `pinned/onPinnedChange`; the fixed capabilities of the general FloatingWindow are still used by other callers, and the public capabilities are not deleted to change the local appearance. Old records also require the existing mark pop-up window to remove the AI ​​entry, but the current Annotation/PdfDocument still has interpretation/translation callbacks, see the Saved Marks section on this page. This is a difference between requirements and implementation. You cannot rely on newer source code to automatically announce the cancellation of old requirements. When making modifications, confirm with the product owner and accept the mark and new entry respectively. Product requirements or behaviors will not be changed this time.
+
+[PDF Contract](../../apps/desktop/src/renderer/src/features/workbench/pdf.test.ts)'s interrogation, explicit float control and marked snapshot cases are source code assertions and cannot prove asynchronous reference failure, identity not being used during switching or window dragging/closing. True regression needs to cover document and project PDF, acceptance and rejection, manual sending after entering, removal of results and references respectively, original file/entry changes and focus restoration; the successful screenshots of old inquiries do not represent the current path.
+
+<a id="回答来源展开与原文跳转"></a>
+## Answer Source Expansion and Navigation to Source Text
+
+<a id="图注索引主动省略与引用连续性"></a>
+### Figure indexing, active omission, and citation continuity
+
+Automatic evidence indexing is not equivalent to PDF full text layers or manual selections. [Extract Owner](../../apps/serve/service/workbench/service/extraction.py) First filter the internal area of ​​the chart according to the layout classification, then segment the retained text, retain caption, original page/quads and omitted information; do not generate legends, do not change PDF bytes, and do not claim that OCR, table semantics or data in the figure have been understood. The index identity includes source revision and extractor version. The version value is based on the source code and does not copy the old sentences-v6 description.
+
+[Sentence assembly](../../apps/serve/service/workbench/service/sentences.py) will omit breakpoints, legend types, and unavailable pages participating in continuity; [Quote window](../../apps/serve/service/assistant/service/citations.py) will not treat the compressed list of search hits as new adjacencies, and will not splice evidence across legends or different continuity groups. Otherwise, the deleted text in the figure will form a false continuous reference in the non-adjacent text.
+
+[Index job](../../apps/serve/service/workbench/service/indexing.py) distinguishes text-less layers with no fragments and no omissions from results with active omission of information, and outputs coverage restrictions; no returned fragments cannot be used to prove that the entire page has no text or that all pages have been read. When modifying categories, caches, or windows, check [layout contract](../../apps/serve/tests/contract_pdf_layout.py) and [PDF parsing](../../apps/serve/tests/contract_pdf_parser.py), and then use the actual PDF to verify legend coordinates, double columns, rotation, full-page background images, active omissions, and historical references. Old diagnostic samples and successful parsing do not prove perfect recognition of any PDF; recognition limitations and invalid source versions must not be hidden.
+
+<a id="papercard-原句独立本地证据与严格定位"></a>
+### PaperCard original sentence, independent local evidence and strict positioning
+
+[Documentary evidence Owner](../../apps/serve/service/literature/service/evidence.py) separates the extracted value of the PaperCard field from the original sentence pointed to by `card_mapping`, retaining the card/sid/version identity; the extracted value cannot be used as the full text original sentence. When the card PDF version does not match, the local evidence path is returned and the old coordinates are not used to locate the new bytes. Read and history click multiplexing [strictly anchored Owner](../../apps/serve/service/literature/domain/anchors.py): Only accepts typesetting equivalents of the enum and bounded contiguous fragments, unique coordinate candidates before returning the position. It is not allowed to increase the exact number by deleting numbers, negation, formulas or operators, fuzzy nearest sentences or first hits; complex layout and unpositioned results must still be retained honestly, and coordinate positioning does not prove that the conclusion is semantically correct.
+
+[This round of reading Owner](../../apps/serve/service/assistant/service/citations.py) tries to use the same version of the local index for cards that have PDFs but contain unlocated original sentences; when hitting, only positionable cards and independent local fragments are given this time, and local fragments are not disguised as card sid or historical original sentences are given alternative coordinates. The original card and old receipt will not be overwritten, and unlocated cards can still be retained if there is no local hit. Candidate discovery, card registration and the actual read receipt of this round are different facts, and the discovery hit or registration success cannot be used to replace the reading and authorization of this round.
+
+Historical references are opened projecting the current source availability from immutable receipts. Missing or different byte versions remain unavailable/changed respectively. The old name, page number and quote are not deleted, nor are the old coordinates reused after searching for another version. Papercard receipts that initially do not have a PDF can be searched strictly for the saved original sentence after adding the PDF from the same source. The new positioning only enters the return projection and does not modify the original receipt; this is not an automatic association mechanism for any file with the same name.
+
+When changing the above mechanism, check [reference contract](../../apps/serve/tests/contract_citations.py) and actual Desktop original sentence/highlight, source deletion recovery, wrong version, no PDF suffix PDF, and single document tag reuse. Historical positioning numbers, old model sessions, and diagnostic PDF sets do not represent full current coverage, and OCR, table semantics, and complex cross-page capabilities cannot be claimed based on the presence of locators alone; this page does not replicate the Skill's execution process.
+
+[Citations](../../apps/desktop/src/renderer/src/features/assistant/Citations.tsx) uses session, answer identity, answer text revision, and range parsing handles; instead of jumping to arbitrary files just by number. Source `exact` and allows calling workspace.revealCitation when opening a PDF, activating the real label returned, and recording the intention to return to the zoom dialog after closing, without fixed jump back to the overview. When `source_only`, `changed`, `unavailable` or the PDF cannot be opened, the source problem will be displayed first, and the original text will not be pretended to have been located.
+
+The source name, page number and fragment traceability are different from the semantic correctness of the conclusion; the specific boundaries of handle filtering are found in [Serve Evidence Rules](../architecture/serve.md#产品指令资产与渐进规则). Separately verify multiple source numbers/identities, actual PDF activation, referencing pages/matching fragments, source changed or unavailable feedback, and zoom dialog return behavior when modifying. The existing workspace contract is a state/loading fixture, not actual clicks and native web page navigation acceptance; historical two PDF passes cannot extrapolate web page jumps, all formats, or current full access control.
+
+<a id="文献-ai-解读显式生成与结果可信度"></a>
+## Literature AI Interpretation: Explicit Generation and Result Reliability
+
+<a id="直接推理决策与结果发布边界"></a>
+### Direct inference decision-making and result release boundaries
+
+Ordinary model actions are not equal to Agent Invocation: reuse task identity, idempotence, cancellation and result projection, but do not build an additional execution system or chat history for the five reading actions. Subscription temporary turn is an independent execution strategy and cannot extract subscription credentials to private model endpoints or silently switch to API Key billing; for actual execution restrictions, see [Serve single-turn boundary](../architecture/serve.md#单轮模型动作与订阅推理边界).
+
+The original PDF, entire single request, and non-segmentation requirements of the historical solution are different from the current text extraction, page-level translation, and long text segmentation mechanisms; the relevant status quo and subsequent restrictions are shown below, and the old access control or the new ability to borrow and accept approval will not be restored. Security requirements for retaining results that are still necessary across versions: publish after complete verification, failure/cancellation does not treat partial preview as success, old results cannot pretend to be the current version after the source is changed, restart does not automatically resend model requests to restore the state.
+
+[Result warehouse](../../apps/serve/service/literature/persistence/analysis.py) The current persistent key is literature_id/revision/module, and is written to the submitted module within a transaction; invocation_id is a record field, not a unique constraint. It cannot be claimed to have the release idempotence, generation concurrency protection, or atomic commit of task status and results required by the historical scheme. Subsequent changes must be verified separately for repeated publishing, competing refreshes, source changes, cancellations, and crash recovery; full-text translation must also check language and page-level merging. The requirement to retain old results does not mean that each temporary floating layer retains the old display, and the two states are verified separately. Reference location only proves that the original text can be located, but does not prove that the inference is correct.
+
+[Reading](../../apps/desktop/src/renderer/src/features/workbench/pdf/Reading.tsx)'s `toggleInterpretation` only switches the panel on and off, and coordinates the exclusive panel and automatic translation status, without directly creating an interpretation task. Only “生成阅读总结” in the empty result state and “重新生成” in the result state call `run`; other task trigger points such as model selection are still checked according to their respective branches. Do not consider the interactive report of the old “run immediately on first open” as a current requirement, nor do you consider opening a panel or showing a progress preview as a completed result.
+
+[Result verification Owner](../../apps/serve/service/literature/service/analysis.py) first strictly `json.loads`, only JSON syntax errors will enter the existing `json-repair` parsing, and then perform object/field/content verification to which the action belongs. Restoring syntax does not mean restoring trusted content. It does not require another set of parsing in the UI or replacing failed data with digests. Repair failed or unacceptable top-level results through `pdf_ai_result_rejected`; missing interpretation modules, summary fields, or structures have other named errors, and all errors cannot be grouped into one rejection code. The repair log only records the location, analysis reason and type, and does not add the full text of the model or the document text log.
+
+**Actual boundaries of evidence verification:** `verify_evidence` filters citations by page range and normalized source-text position, removing entries that cannot be matched; it marks the result `uncertain` when no valid citations remain or the source itself is uncertain. It does not reject the entire result, nor does it prove that the research conclusion is correct. Each structured segment and module passes through this check; “a structured result was returned” must not be restated as “every conclusion has reliable evidence.” Changing this security semantics requires additional confirmation.
+
+[Incremental preview](../../apps/serve/service/literature/service/preview.py) can display text from part of the JSON projection, and the interpretation preview strips evidence and only retains the corresponding text field; it is a temporary presentation rather than a final state verification. [Serve contract](../../apps/serve/tests/contract_pdf_analysis.py) has syntax fixes, field rejection, reference filtering and preview cases; [Desktop contract](../../apps/desktop/src/renderer/src/features/workbench/pdf.test.ts) checks the entry source code, not the actual click/request/model acceptance. Real regression requires respectively confirming that there is no historical result when opening the task, not sending the task, explicitly generating the task, regenerating failure feedback, distinguishing between preview and final results, and reference positioning. The old model name, number of passes and screenshots do not replace the current version verification.
+
+<a id="文献任务快照流与临时预览"></a>
+## Literature Task Snapshot Flow and Temporary Preview
+
+The fact that the model has streaming output does not mean that the reading interface has text feedback. The reasons for retaining structured results are translation positioning, coverage verification, interpretation evidence and the existing task life cycle; it is not changed to an unverified Markdown final state for earlier display. The accumulated output of the observer of Serve invoke is handed over to the preview owner to project the displayable fields. Only the current task status of running receives the preview; formal analysis, verification and release are still another contact point.
+
+[Literature tasks/events](../../apps/serve/service/literature/api/analysis.py) sends the latest task snapshot at the cadence owned by the current implementation and stops after the final state; it is not a persistent sequence-replay stream of the Agent session or an unbounded queue for every token. Persistence of recovery after disconnection or service restart has not been established. Figure actions use `action_stream`/`invokeFigure` instead. Do not mix the two protocols just because both paths use SSE.
+
+[subscribePdfAiTask](../../apps/desktop/src/renderer/src/features/workbench/pdf/analysis.ts) checks HTTP, stream type, `task_id`, and status, and stops after the final-state snapshot; EOF before a final state reports an invalid response, and the subscription is no longer projected. This entry point does not fully verify every preview/result business structure, and the transmission-identity check is not a complete data-security verification. Acceptance must separately cover the generated current text, its incremental growth, and the final result's source positioning. SSE connection establishment, placeholder text, previous results, and animation are not the first text of the current task. The visible text at the end of the timing is different from the upstream first token. Comparing completion times on the same task is not the old-version A/B comparison and does not prove that total model time decreased.
+
+<a id="长文解读的预算与分段缓存"></a>
+## Budget and segmented caching for long text interpretation
+
+The segments of long article interpretation belong to [Serve compilation Owner](../../apps/serve/service/literature/service/analysis.py) and [task execution Owner](../../apps/serve/service/literature/api/analysis.py), not Desktop submission of multiple independent summary tasks. Retaining the complete original text and physical page numbers is the reason why we choose to summarize after segmentation instead of intercepting prefixes; the intermediate summary does not directly become the final summary visible to users.
+
+`interpretation_input_limit` subtracts the reserved budget from the declared model window, then applies the product's character limit; it uses a conservative fallback when the declaration is missing or insufficient. This is a character-admission heuristic, not an exact tokenizer calculation or a guarantee that the vendor will never reject the request. Even text below the product cap may be segmented because of the model budget. Grouping is checked against compiled payload length. When consecutive pages exceed the limit, the group is split; a single page can also be split into pieces while retaining its original page number. “A single request within 500,000 characters” is not a promise independent of the actual model and compiled input conditions.
+
+The staging cache is managed by a separate [AnalysisStore](../../apps/serve/service/literature/persistence/analysis.py), whose identity includes document, revision, prompt word version, model key and compile input content hash. When there is a hit, the existing summary is collected. When there is a miss, it is called and verified before publishing the segmented cache; the final summary is executed separately. Summary input may still be grouped and recursively reduced, and it is not promised that only one summary call will be added for any long text. The existing contract verifiable budget calculation and physical page coverage of the test PDF do not replace the product acceptance of the actual feature, cache restarts, cancellations, source changes and final results; historical screenshots and passed numbers are not used as current evidence.
+
+<a id="翻译目标语言与偏好边界"></a>
+## Translation Target Language and Preference Boundaries
+
+[Language Owner](../../apps/desktop/src/renderer/src/components/business/Language.tsx): the current target directory contains only Simplified Chinese and English; the selector is not a searchable multilingual directory. Automatic inference counts Chinese, Latin, Kana, and Cyrillic characters; it is not a language-recognition model. In the English interface, English text defaults to Chinese and other text to English; in other interfaces, Chinese text defaults to English and other text to Chinese. Unrecognizable text defaults to the target corresponding to the interface language. Manual targets take precedence over inference and are not changed automatically when they match the source text.
+
+When reading the target language, the shared `localStorage` key is checked first, followed by the entry-specific legacy key. A valid legacy value is copied to the shared key; writes update both the shared key and that entry's key. Therefore, the target languages for full-text translation, literature selection, and resource selection may overwrite one another; this does not mean already-open components synchronize immediately. Model preferences use a separate path: resource selection uses its entry model key, while literature actions use `literatureAiModels` in the product Store. These are not the same Language model-preference store.
+
+Changing the target language for literature full-text translation clears the old page set and starts from the current page; literature selection actions run only when there is already a result or when rerun is requested. The literature model-menu callback only updates the action's model preference, so it does not guarantee regeneration with the new model. The historical proposal for “a separate entry point, searchable in multiple languages, with an immediate rerun on every switch” does not fully match the current implementation. The Owner must confirm whether the product goals should change. Knowledge migration does not automatically approve or fix these differences. The existing translation test mainly checks the directory and source-code touchpoints; it does not replace acceptance of the real menu, persistence, or regeneration behavior.
+
+<a id="图表框选与临时结果"></a>
+## Chart Region Selection and Temporary Results
+
+<a id="请求级流与单一模型调用"></a>
+### Request-level streaming vs. single model invocation
+
+[FigureActionService](../../apps/serve/service/literature/service/figure.py) owns literature sources, region preparation, and result metadata. Model execution still goes through `AssistantActionService.invoke_compiled`; figure actions do not maintain a separate model-call or background-polling protocol. The [HTTP entry](../../apps/serve/service/literature/api/analysis.py) requires the figure type and SSE `Accept`, checks `image_input` for the current model connection, and then prepares the crop. The `prepared` event carries the source revision, page number, rectangle, and preview; subsequent events use the shared `action_stream`. On completion, reread the source and check its revision; do not treat incremental text as a final result while assuming the source is still valid.
+
+[Desktop consumes](../../apps/desktop/src/renderer/src/features/workbench/pdf/analysis.ts) to synthesize the preview with prepared and current text, append output_delta, and replace the text with output_completed. It still has to wait for the valid result and completed status; uncompleted streams cannot be regarded as successful results. The multi-step task of document full-text translation and interpretation retains its original owner and is not changed to a single call because the chart uses request-level flow. Not polling the UI does not mean deleting the calling identity and diagnostic records of AssistantInvocationStore; closing the result window, request cancellation and actual termination of the supplier are verified separately, and accepted does not prove that the execution has ended.
+
+<a id="框选与展示状态"></a>
+### Region Selection and Display State
+
+The region-selection mode for figure explanation and the result window are independent states: the selected region is passed to `startFigure`, the current display is cleared first, the model's actual image capability is checked, and then a dedicated stream starts. A new request interrupts the previous `AbortController` and accepts only the preview/final state matching the current request identity; it does not use the old sequential queue or multi-card archive design. The named minimum-selection threshold in `PdfDocument` limits accidental clicks. Current state is cleared when the document or language identity changes; ordinary scrolling is not part of that identity. Exiting region-selection mode and canceling a running stream are different actions, and the caller must choose explicitly. For example, closing the figure-result window cancels the stream and exits selection, but that behavior must not be generalized to every exit.
+
+[Result repository](../../apps/serve/service/literature/persistence/analysis.py) treats chart interpretation and formulas as transient modules, initializes to remove old module projections, and publish skips these modules; this does not mean that all common call/diagnostic records are deleted. Don't rebuild a second set of persistent results with old recovery chart history card requirements. The guidance/result display reuses the public floating window and HoverCard. The actual edge avoidance, Esc, continuous box selection, late result and scrolling behavior must still be accepted in the real reader. Input safety or visual consistency cannot be inferred from source code mode testing.
+
+<a id="文献逐页翻译与页内分段"></a>
+## Page-by-Page Literature Translation and In-Page Segmentation
+
+<a id="结果与阅读布局"></a>
+### Results and Reading Layout
+
+When a new request for a selection starts, old results of that type are cleared, and Reading's `floatingResult` is forced to be empty while busy. The current task's streaming preview is a separate projection; “no old result” does not mean there is no text at all during generation. This rule applies to floating actions and does not imply that full-text translation must clear all completed pages.
+
+[PdfDocument](../../apps/desktop/src/renderer/src/features/workbench/PdfDocument.tsx) places the original text and translation for the same page in `data-page-pair` on one page track and shares page navigation; it no longer creates a second fixed translation panel to synchronize separate scrollers. The current translation width is the original-text width multiplied by the named column ratio, and page height is calculated using the PDF scale. The scaled size passed to Reading uses `pageScale=1`; the old report does not establish that the main text and all controls still scale proportionally through shared zoom. Long translations scroll within the page so they do not push later page pairs down.
+
+When translation is enabled, the fitting size is still calculated as twice the width of the original text, but the actual translation column is narrower; this fact is not a guarantee that the optimal fitting width has been verified or that there is no overflow. Old “左右等宽” and old pixel data are not used as current acceptance criteria. When modifying, verify page pairing, page jump, narrow window, appropriate width/custom scaling and in-page scrolling respectively. Do not use source code assertions instead of actual measurements.
+
+Document translation and interpretation use extracted, page-numbered text as `document_pages`. The model does not need `pdf_input` just because the source file is a PDF; the model connection must still be valid, and image attachments cropped for figures or formulas are separately checked through `image_input`. [Model admission](../../apps/serve/service/literature/api/analysis.py) and [inference transport](../../apps/serve/service/inference/transport.py) own those checks, respectively; the general attachment-capability gate must not be removed. The current extraction engine belongs to the [PDF Owner](../../apps/serve/service/platform/pdf.py), not the old PyMuPDF implementation described in earlier plans.
+
+Page-level compilation uses the current named budget of the analysis Owner; the large output budget of the old full-length translation is not the current rule. When a long interpretation exceeds the input boundary, it is first segmented and then summarized, and long translation pages are segmented; other over-limit branches can still fail, instead of silently truncating the input or infinitely increasing the upper limit. Character thresholds and output token numbers cannot be mixed. For the boundaries of temporary reasoning and prohibited tool capabilities of subscription connections, see [Serve single-round reasoning](../architecture/serve.md#单轮模型动作与订阅推理边界).
+
+The document “全文翻译” is currently dispatched by [Reading](../../apps/desktop/src/renderer/src/features/workbench/pdf/Reading.tsx) to schedule a single physical page task in the foreground, not an entire model request, nor a persistent background queue. [sequence](../../apps/desktop/src/renderer/src/features/workbench/pdf/sequence.ts) is fixed from the opening page to the last page and then fills in the previous pages, skipping the existing translations; the next page is not submitted when busy or failed. Page completion results: merge by page, retranslate the same page to replace the page, target language changes clear the current old language page set, and do not mix the display. The foreground scheduling status is different from the persistence result of the completed page. Just because the translation can be read after restarting, the queue cannot be claimed to continue running across restarts.
+
+The full-text translation sidebar action enables automatic scheduling and records the start page. The status of old failed or canceled tasks can be cleared when explicitly restarted; subsequent effects are submitted according to the queue premise, and the general panel rules of the old “run directly the first time only when there is no result and no task” are not used. Interpretation is still controlled by the previous explicit generation entry, and the two actions are not merged.
+
+Generation finishing is not the same as publishing. The [Analysis API](../../apps/serve/service/literature/api/analysis.py) first verifies the result, then rereads the corresponding source bytes through `read_source` and compares their SHA256 with the revision captured during preparation. A mismatch returns `SOURCE_CHANGED_DURING_GENERATION`, and that result is not published. Cancellation is also checked before publication; document results then go to the corresponding result store. This order of checks does not make source verification and result writes atomic, nor does it prove that every exception preserves old results. Regression must separately cover source changes, deletion, cancellation, and reads of actually published results.
+
+[Compilation and verification](../../apps/serve/service/literature/service/analysis.py) only provides the target page text for full-text translation, and clears the adjacent page context; long pages are segmented in the order of the owner's character threshold, and the character threshold is not used as the upper limit of the model token. There are also selection and page layout contexts for word delineation/translation, and the empty context of full-text translation is not applied. [Task API](../../apps/serve/service/literature/api/analysis.py) Sequentially summarize in-page translation blocks, continue bisecting for retryable structures/coverage errors up to the minimum segment boundary, fail segments cannot be filled with empty translations or summaries. The root attempts to keep the running state, and enters publishing only after the entire page is completed, and does not regard the success of the subsection as the page has been saved.
+
+`verify_translation` checks translation block structure and source text positioning, and `verify_translation_coverage` uses a sequence similarity threshold for normalized source text/translation block sources; it is not a formal proof of translation accuracy or completeness of each paragraph. Change to retain failure semantics when splitting or retrying, check target page number, original text coverage, cancellation and pre-publish source revision, scans/images/blank pages cannot be faked as success. [Persistent merge](../../apps/serve/service/literature/persistence/analysis.py) overwrites the existing document result table by page within the transaction, retains other pages in the same language, and uses a new page set when changing languages.
+
+[The page order test](../../apps/desktop/src/renderer/src/features/workbench/pdf/sequence.test.ts) only proves pure function sorting, skipping and merging; real experiments require checking non-homepage opening, failure to stop, retranslation to retain other pages, language change and restart readback. The missing paragraph report of historical long articles only verifies specific failed pages and two models. It is clear that the complete long article has not been run and cannot be used as evidence that the current entire article, any model or Windows passed.
+
+<a id="验证与维护"></a>
+## Verification and maintenance
+
+When changing anchors, adding portals, providers, or evidence parsing, persistence and cross-end consumers are checked synchronously. The directional test entrance includes [Desktop selection test](../../apps/desktop/src/renderer/src/features/workbench/selection.test.ts) and [Serve selection contract](../../apps/serve/tests/contract_selection_context.py), [Context Provider contract](../../apps/serve/tests/contract_context_provider.py) and [complete contract list](../../apps/serve/tests/run_all.py), confirm coverage according to the actual branch, and do not treat the domain boundary test as a complete selection behavior test. Real Desktop verification at least distinguishes between post-join modified/deleted sources, missing snapshots, table range capture failures, capacity overruns, and invalid evidence of edit actions; type, source code, and protocol checks do not replace these processes. Stop extended reading after locating the affected Owner; the new format is inherited through the original contract, and the reading logic is not copied by extension in the Assistant. When security or source verification requirements change, the impact should be clarified first, and product modification permissions should not be granted based on document migration.
