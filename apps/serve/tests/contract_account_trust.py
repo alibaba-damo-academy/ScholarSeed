@@ -575,7 +575,7 @@ def test_revocations_off_request_path() -> None:
 def _local_user_id() -> str:
     """建一个真本地用户：verify_token 要求 token 的 user_id 在 auth.json 里有用户记录。"""
     users = UserRepository()
-    return str(users.create("dual@example.test", "local-password")["user_id"])
+    return str(users.create("dual@alibaba-inc.com", "local-password")["user_id"])
 
 
 def _protected_app(trust: AccountTrust) -> TestClient:

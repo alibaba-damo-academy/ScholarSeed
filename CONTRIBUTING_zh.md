@@ -67,7 +67,23 @@ python -m service.cli.plugins check ./paper-reading-notes-0.1.0.zip
 
 分享前审阅生成代码，排除 API Key、密码、签名凭据、`.env`、登录缓存和私有科研数据，保留 [Apache-2.0 许可证](LICENSE)及适用的第三方声明。分享插件本身不等于替其他用户安装，也不等于自动发布到市场。
 
+[developer-docs/](developer-docs/README_zh.md) 面向扩展开发者，存放公开指南与离线页面；
+仓库架构和工程知识仍在 [docs/](docs/index.md) 维护。
+
 ## 环境准备
+
+源码仓自带公开工程知识：先读 [AGENTS.md](AGENTS.md)、相关局部规则、[知识索引](docs/index.md)
+和[Skill 归属](docs/skills/README.md)。独立克隆与原生 Git worktree 不需要内部文档父仓或配对 SHA。
+从源码根运行 `pnpm ops ci check docs workspace`、`pnpm ops ci check docs desktop` 和
+`pnpm ops ci check skills product --mode source`，并执行本次改动适用的测试与真实验收。
+内部平台账号不是公开开发、检查和评审的前提。
+
+Git 将软链接检出为占位文件时（例如 `core.symlinks=false`），先执行 `pnpm ops pre repair links`
+和 `pnpm ops pre doctor --scope links`，再运行组件规范与 Skill 检查。修复核对 Git 中的目标，
+遇到冲突即停止，不改全局 Git 配置。
+
+项目规则使用 `AGENTS.md`。开发 Skill 与发现配置由文档内源仓维护，不随源码分发；
+个人宿主配置放在仓库外。
 
 | 工具 | 要求 |
 | --- | --- |
@@ -265,7 +281,7 @@ pnpm --dir apps/desktop run typecheck
 
 按修改范围选择测试，并在真实应用中操作受影响流程。构建或类型检查成功，不代表模型调用、登录或工具执行已通过。真实模型测试需自行配置有权限的凭据，并可能产生费用。
 
-科研技能源码位于 `skills/community/`，通过 `pnpm ops cd build local --target skills` 构建。开发者预览版插件接口见[插件指南](doc/plugins.zh.md)。
+科研技能源码位于 `skills/community/`，通过 `pnpm ops cd build local --target skills` 构建。开发者预览版插件接口见[插件指南](developer-docs/plugins.zh.md)。
 
 ## 打包
 

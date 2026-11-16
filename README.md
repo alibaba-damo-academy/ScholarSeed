@@ -359,6 +359,8 @@ Planned work is separate from the current capabilities above. Scope and availabi
 | In-workbench LaTeX editor with library citation support | Planned |
 | Linux build | Exploring |
 
+Plugins are currently in developer preview. See the [plugin guide](developer-docs/plugins.md) for development and installation.
+
 ### ScholarStack — Reusable research knowledge · Coming soon
 
 Research often requires revisiting the same papers and reconstructing earlier comparisons. ScholarStack explores how to organize source-grounded facts, domain concepts, and cross-paper syntheses into reusable research assets, with provenance and scope preserved.
@@ -368,6 +370,8 @@ The [ScholarStack paper](https://arxiv.org/abs/2609.23735v3), *Layered Research 
 **ScholarStack has not yet been fully integrated into this repo.** Today's workbench keeps project materials and conversations available for later use; systematic reuse through ScholarStack's structured assets is coming-soon work.
 
 ---
+
+The AI invokes these operations following the Skill; ScholarSeed checks the current project scope and permissions. Cards do not inherit all application permissions or automatically approve sensitive actions. See the [plugin API guide](developer-docs/plugins/api.md) for available operations.
 
 ## Community & contributing
 

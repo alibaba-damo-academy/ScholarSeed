@@ -13,7 +13,7 @@ const { parseNodeEvents, nodeReporterArgs } = require('./events.cjs')
 const EXTERNAL_CASES = require('./external-cases.json')
 const QUARANTINE = require('./quarantine.json')
 const { NODE_ARGS, TEST_CONCURRENCY, NATIVE_TEST_FILES, unitTestFiles, expandTestGlob } = require('../../apps/desktop/scripts/ci/test.cjs')
-const { CONTRACT_FILES } = require('../../apps/desktop/scripts/ci/pretest.cjs')
+const { CONTRACT_FILES, STANDARDS_ARGS } = require('../../apps/desktop/scripts/ci/pretest.cjs')
 
 const ROOT = path.resolve(__dirname, '../..')
 const DESKTOP = path.join(ROOT, 'apps', 'desktop')
@@ -384,9 +384,9 @@ function planStages(platform, skillHubEnvironment = process.env, { profile = 'fu
       args: ['-m', 'service.cli.prebundle', '--verify-source'],
       env: { PYTHONPATH: [ROOT, SERVE].join(path.delimiter) },
       dependsOn: 'skills-source-build' },
-    { id: 'python-public-projection', kind: 'python', cwd: ROOT,
-      args: [...PYTEST_ARGS, 'scripts/cd/public/__tests__/test_sync.py',
-        'scripts/cd/public/__tests__/test_tooling.py'], reportKind: 'pytest' }
+    { id: 'python-public-engineering', kind: 'python', cwd: ROOT,
+      args: [...PYTEST_ARGS, 'scripts/ci/docs/__tests__/test_check.py',
+        'scripts/ci/docs/__tests__/test_public.py'], reportKind: 'pytest' }
   ]
   if (platform === 'darwin') {
     stages.push({ id: 'python-run-all', kind: 'python', cwd: SERVE,
@@ -460,6 +460,8 @@ function planStages(platform, skillHubEnvironment = process.env, { profile = 'fu
       path.relative(ROOT, path.resolve(DESKTOP, filename)).split(path.sep).join('/'))]
     stages.push({ id: 'desktop-toolchain', kind: 'node', cwd: ROOT,
       args: ['scripts/pre/toolchain.cjs', 'check'] })
+    stages.push({ id: 'desktop-standards', kind: 'node', cwd: DESKTOP,
+      args: [...STANDARDS_ARGS], reportKind: 'node-summary' })
     stages.push({ id: 'desktop-i18n-test', kind: 'node', cwd: DESKTOP,
       args: ['--test', 'scripts/ci/localization/__tests__/*.test.mjs'], reportKind: 'node-summary' })
     stages.push({ id: 'desktop-i18n-check', kind: 'node', cwd: DESKTOP,
@@ -483,12 +485,14 @@ function planStages(platform, skillHubEnvironment = process.env, { profile = 'fu
       'scripts/shared/__tests__/source.test.cjs',
       'scripts/shared/__tests__/examples.test.cjs',
       'scripts/shared/__tests__/preparation.test.cjs',
-      'scripts/cd/public/__tests__/acceptance.test.cjs',
-      'scripts/ci/docs/__tests__/commands.test.cjs',
-      'scripts/cd/public/__tests__/npm.test.mjs', 'scripts/ci/__tests__/test.test.cjs', 'scripts/ci/__tests__/affected.test.mjs',
+      'scripts/ci/docs/__tests__/commands.test.cjs', 'scripts/ci/docs/__tests__/structure.test.mjs',
+      'apps/desktop/eval-scenarios/frozen/frozen.test.mjs',
+      'scripts/__tests__/ownership.test.cjs', 'scripts/ci/__tests__/test.test.cjs', 'scripts/ci/__tests__/affected.test.mjs',
       'scripts/cd/__tests__/package.test.cjs', 'scripts/cd/__tests__/distribution.test.cjs', 'scripts/ci/__tests__/verdict.test.cjs', 'scripts/ci/__tests__/model.test.cjs',
       'scripts/ci/__tests__/events.test.cjs', 'scripts/ci/__tests__/transport.test.cjs', 'scripts/ci/__tests__/smoke.test.cjs',
       'scripts/ci/__tests__/skillhub.test.cjs', 'scripts/ci/__tests__/progress.test.cjs', 'scripts/ci/__tests__/diagnostics.test.cjs',
+      'apps/desktop/scripts/ci/__tests__/standards.test.mjs',
+      'apps/desktop/src/renderer/src/features/workbench/office/local-fonts.test.cjs',
       ...NATIVE_TEST_FILES.map(filename =>
         path.relative(ROOT, path.resolve(DESKTOP, filename)).split(path.sep).join('/'))],
     timeoutMs: 0,

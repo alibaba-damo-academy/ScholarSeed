@@ -17,11 +17,17 @@ const CONTRACT_FILES = Object.freeze([
   'scripts/cd/__tests__/toolchain.test.cjs',
 ])
 
+const STANDARDS_ARGS = Object.freeze([
+  '--experimental-transform-types', '--test', 'scripts/ci/__tests__/standards.test.mjs',
+])
+
 function invocations(forwarded = []) {
   return [
     [TOOLCHAIN, 'check'],
     ['--test', ...CONTRACT_FILES],
-    [TOOLCHAIN, 'run', 'i18n:test', ...forwarded],
+    [...STANDARDS_ARGS],
+    [TOOLCHAIN, 'run', 'i18n:test'],
+    [TOOLCHAIN, 'run', 'i18n:check', ...forwarded],
   ].map((args) => ({ executable: process.execPath, args }))
 }
 
@@ -39,7 +45,7 @@ function main({ launch = spawnSync, argv = process.argv.slice(2) } = {}) {
   return 0
 }
 
-module.exports = { TOOLCHAIN, CONTRACT_FILES, invocations, main }
+module.exports = { TOOLCHAIN, CONTRACT_FILES, STANDARDS_ARGS, invocations, main }
 if (require.main === module) {
   try {
     process.exitCode = main()

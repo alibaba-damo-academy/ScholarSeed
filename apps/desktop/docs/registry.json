@@ -1,0 +1,239 @@
+{
+  "documents": [
+    {
+      "path": "architecture/PDFE.md",
+      "sources": ["preview/catalog.ts", "preview/hierarchy.ts", "preview/Navigation.tsx", "preview/collaboration.ts", "preview/Console.tsx", "preview/home.ts", "preview/service.ts", "preview/files.ts", "src/main/pdfe.ts", "src/preload/pdfe.ts", "docs/architecture/preview.md", "docs/work/pdfe.md"],
+      "enforcedBy": ["pnpm ops ci check docs workspace", "pnpm ops ci check docs desktop", "artifact-specific runtime acceptance remains required"]
+    },
+    {
+      "path": "work/pdfe.md",
+      "sources": ["preview/catalog.ts", "preview/Console.tsx", "preview/collaboration.ts", "preview/Navigation.tsx", "docs/architecture/preview.md"],
+      "enforcedBy": ["pnpm ops ci check docs desktop", "role-task host evidence remains required"]
+    },
+    {
+      "path": "architecture/preview.md",
+      "sources": [
+        "vite.web.config.ts",
+        "vite.preview.config.ts",
+        "scripts/shared/styles.cjs",
+        "preview/catalog.ts",
+        "preview/home.ts",
+        "preview/hierarchy.ts",
+        "preview/Header.tsx",
+        "preview/Navigation.tsx",
+        "preview/Controls.tsx",
+        "preview/accounts.ts",
+        "preview/Divider.tsx",
+        "preview/collaboration.ts",
+        "preview/service.ts",
+        "src/pdfe.ts",
+        "src/main/pdfe.ts",
+        "src/preload/pdfe.ts",
+        "scripts/dev/pdfe.mjs",
+        "preview/native.spec.mjs",
+        "preview/native.config.ts",
+        "src/renderer/src/main.tsx",
+        "src/renderer/src/features/home/HomeOverview.tsx",
+        "src/renderer/src/app/composition.tsx",
+        "src/renderer/src/browser.ts",
+        "src/renderer/src/api.ts"
+      ],
+      "enforcedBy": [
+        "pnpm ops ci check docs desktop",
+        "pnpm ops ci test integration --scope desktop --suite preview-contract",
+        "pnpm ops ci test integration --scope desktop --suite preview-ui",
+        "pnpm ops ci check preview-bundle"
+      ]
+    },
+    {
+      "path": "work/plan/preview.md",
+      "sources": [
+        "docs/architecture/preview.md",
+        "package.json",
+        "playwright.config.ts"
+      ],
+      "enforcedBy": [
+        "pnpm ops ci check docs desktop",
+        "independent plan review; product milestones remain in progress"
+      ]
+    },
+    {
+      "path": "work/preview-contracts.md",
+      "sources": ["preview/service.ts", "preview/files.ts", "src/renderer/src/api.ts"],
+      "enforcedBy": ["pnpm ops ci check docs desktop", "pnpm ops ci test integration --scope desktop --suite preview-contract", "independent source review"]
+    },
+    {
+      "path": "architecture/renderer.md",
+      "sources": [
+        "src/renderer/src/contracts/features.ts",
+        "src/renderer/src/app/composition.tsx"
+      ],
+      "enforcedBy": [
+        "scripts/ci/__tests__/standards.test.mjs",
+        "pnpm ops ci check types desktop"
+      ]
+    },
+    {
+      "path": "architecture/ownership.md",
+      "sources": [
+        "src/main",
+        "src/preload",
+        "src/renderer/src"
+      ],
+      "enforcedBy": [
+        "scripts/ci/__tests__/standards.test.mjs",
+        "pnpm ops ci check types desktop"
+      ]
+    },
+    {
+      "path": "design/foundations.md",
+      "sources": [
+        "postcss.config.cjs",
+        "scripts/shared/styles.cjs",
+        "src/renderer/src/design",
+        "scripts/ci/css.mjs",
+        "scripts/ci/css.baseline.json",
+        "scripts/ci/css.exceptions.json"
+      ],
+      "enforcedBy": [
+        "scripts/shared/__tests__/styles.test.cjs",
+        "scripts/ci/__tests__/standards.test.mjs"
+      ]
+    },
+    {
+      "path": "design/components.md",
+      "sources": [
+        "src/renderer/src/components/ui/registry.ts",
+        "src/renderer/src/components/ui/index.ts",
+        "scripts/ci/reuse.mjs"
+      ],
+      "enforcedBy": [
+        "scripts/ci/__tests__/reuse.test.mjs",
+        "scripts/ci/__tests__/standards.test.mjs"
+      ]
+    },
+    {
+      "path": "design/interaction.md",
+      "sources": [
+        "src/renderer/src/components/ui/README.md",
+        "src/renderer/src/components/ui"
+      ],
+      "enforcedBy": [
+        "src/renderer/src/components/ui.render.test.ts",
+        "apps/desktop/e2e"
+      ]
+    },
+    {
+      "path": "quality/testing.md",
+      "sources": [
+        "package.json",
+        "scripts/shared/native.cjs",
+        "scripts/ci/native-contract.cjs",
+        "e2e",
+        "src/main/shoot.ts",
+        "src/main/drive.ts"
+      ],
+      "enforcedBy": [
+        "pnpm ops ci test --scope desktop",
+        "pnpm ops ci check types desktop",
+        "apps/desktop/e2e"
+      ]
+    },
+    {
+      "path": "design/mastergo.md",
+      "sources": [
+        "docs/design/foundations.md",
+        "src/renderer/src/components/ui/registry.ts"
+      ],
+      "enforcedBy": [
+        "pnpm ops ci check docs desktop",
+        "independent evidence review"
+      ]
+    },
+    {
+      "path": "../DESIGN.md",
+      "sources": [
+        "docs/design/mastergo.md",
+        "docs/design/foundations.md"
+      ],
+      "enforcedBy": [
+        "pnpm ops ci check docs desktop"
+      ]
+    },
+    {
+      "path": "design/assets.md",
+      "sources": [
+        "src/renderer/src/components/ui/registry.ts",
+        "src/renderer/src/components/business",
+        "src/renderer/src/components/primitive",
+        "src/renderer/src/components/examples/ComponentsPage.tsx"
+      ],
+      "enforcedBy": [
+        "scripts/ci/__tests__/standards.test.mjs",
+        "scripts/ci/__tests__/reuse.test.mjs",
+        "pnpm ops ci check types desktop"
+      ]
+    },
+    {
+      "path": "work/plan/infrastructure.md",
+      "sources": [
+        "src/renderer/src/design",
+        "src/renderer/src/components/ui",
+        "scripts/ci/standards.mjs"
+      ],
+      "enforcedBy": [
+        "pnpm ops ci check docs desktop",
+        "independent evidence review"
+      ]
+    },
+    {
+      "path": "design/alignment.md",
+      "sources": [
+        "src/renderer/src/components/ui",
+        "src/renderer/src/components/examples/ComponentsPage.tsx",
+        "docs/design/tooling.md"
+      ],
+      "enforcedBy": [
+        "pnpm ops ci check docs desktop",
+        "independent evidence review"
+      ]
+    },
+    {
+      "path": "design/vibe-coding.md",
+      "sources": [
+        "DESIGN.md",
+        "src/renderer/src/design/layout.css"
+      ],
+      "enforcedBy": [
+        "pnpm ops ci check docs desktop",
+        "pnpm ops ci test --scope desktop"
+      ]
+    },
+    {
+      "path": "design/visual-gate.md",
+      "sources": [
+        "scripts/ci/visual.mjs",
+        "scripts/ci/__tests__/visual.test.mjs"
+      ],
+      "enforcedBy": [
+        "pnpm ops ci check docs desktop",
+        "pnpm ops ci test --scope desktop"
+      ]
+    },
+    {
+      "path": "design/migration-report.md",
+      "sources": [
+        "DESIGN.md",
+        "src/renderer/src/components/business/AccountPanel.tsx"
+      ],
+      "enforcedBy": [
+        "pnpm ops ci check docs desktop"
+      ]
+    }
+  ],
+  "generated": [
+    "_generated/components.md",
+    "_generated/tokens.md",
+    "_generated/debt.md"
+  ]
+}

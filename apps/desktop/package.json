@@ -32,6 +32,8 @@
     "preview:web": "node scripts/dev/runner.cjs modules vite preview --config vite.web.config.ts",
     "preshoot": "node ../../scripts/pre/toolchain.cjs check",
     "shoot": "electron-vite build && electron .",
+    "docs:check": "node --experimental-transform-types scripts/ci/standards.mjs --check",
+    "docs:write": "node --experimental-transform-types scripts/ci/standards.mjs --write",
     "typecheck": "node scripts/ci/types.cjs",
     "lint": "eslint src/ --max-warnings 305",
     "lint:fix": "eslint src/ --fix",

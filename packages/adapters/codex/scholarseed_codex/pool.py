@@ -972,9 +972,11 @@ class CodexHostPool:
                     sandbox_resources=self._sandbox_resources,
                     sandbox_recovery=self._sandbox_recovery,
                     startup_scope=partial(self._mcp.startup, host_id) if self._mcp else None,
-                    runtime_descriptors=resource_lease.runtime_descriptors
-                    if isinstance(resource_lease, ProcessResourceLease)
-                    else None,
+                    runtime_descriptors=(
+                        resource_lease.runtime_descriptors
+                        if isinstance(resource_lease, ProcessResourceLease)
+                        else None
+                    ),
                 )
                 if self._mcp is not None:
                     self._mcp.register(host_id, host)

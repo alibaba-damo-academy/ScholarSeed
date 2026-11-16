@@ -21,7 +21,7 @@ const INTERFACES = {
   'ci check lint': { usage: 'ci check lint python|desktop [--fix]', ci: 'Python check only' },
   'ci check docs': { usage: 'ci check docs workspace|desktop [--mode full|structure|report] [--write] [--strict] [--record PATH]', defaults: { mode: 'full' } },
   'ci check i18n': { usage: 'ci check i18n [--mode check|gaps] [--generate] [--base REF]', defaults: { mode: 'check' }, ci: 'check only' },
-  'ci check skills': { usage: 'ci check skills product|host [--mode source|links]', ci: 'host links only' },
+  'ci check skills': { usage: 'ci check skills product [--mode source]' },
   'ci check preview-report': { usage: 'ci check preview-report FILE|-', stdin: 'only explicit -' },
   'ci format': { usage: 'ci format [PATH...] [--check|--write]', defaults: { write: false }, ci: 'original Python format recipe' },
   'ci test': { usage: 'ci test [TYPE] --scope SCOPE [--suite SUITE] | ci test --profile quality | ci test --affected', ci: 'Desktop coverage or tooling localization only' },
@@ -51,7 +51,7 @@ const COMMANDS = [
   ['ci check lint', 'Check Python or Desktop lint; only Desktop supports --fix', 'quality', ['temporary-write']],
   ['ci check docs', 'Check workspace documents or Desktop standards; explicit write mode is Desktop-only', 'documentation', ['temporary-write', 'report-write']],
   ['ci check i18n', 'Check localization assets, report gaps or explicitly generate derived assets', 'localization', ['temporary-write']],
-  ['ci check skills', 'Check product source/manifests or host Skill content and references', 'skills', ['probe']],
+  ['ci check skills', 'Check product Skill source and manifests', 'skills', ['probe']],
   ['ci check ui', 'Report native-control reuse without rewriting budgets or baselines', 'desktop-ui', []],
   ['ci check preview-bundle', 'Verify production artifacts exclude the simulated workbench', 'desktop-preview', ['probe']],
   ['ci check preview-report', 'Read declared test associations; not execution or acceptance results', 'desktop-preview', []],
@@ -209,7 +209,6 @@ function check(argv) {
     }
     if (scope === 'desktop') return task('ci check lint desktop', [desktop(args['--fix'] ? 'lint:fix' : 'lint')])
   }
-  if (target === 'docs' || target === 'ui' || target === 'skills' && rest[0] === 'host') unsupported('This check belongs to the private development repository')
   if (target === 'docs') {
     if (!rest.length) return { help: true, command: 'ci check docs' }
     const [scope, ...flags] = rest
@@ -241,21 +240,9 @@ function check(argv) {
     if (!rest.length) return { help: true, command: 'ci check skills' }
     const [scope, ...flags] = rest
     const args = options(flags, { '--mode': String })
-    const mode = args['--mode'] || (scope === 'host' ? 'links' : 'source')
+    const mode = args['--mode'] || 'source'
     if (scope === 'product' && mode === 'source') return task('ci check skills product', [workspace('skillsVerify')])
-    if (scope === 'host' && mode === 'links') return task('ci check skills host', [node('.agents/skills/knowledge-governance/scripts/skill-links.mjs', ['--root', '.']),
-      node('.agents/skills/knowledge-governance/scripts/migration.test.mjs', [], { test: true }),
-      node('.agents/skills/llm-evaluation-run/scripts/capture.test.mjs', [], { test: true }),
-      node('scripts/shared/__tests__/record.test.cjs', [], { test: true }),
-      node('.agents/skills/llm-evaluation-run/scripts/contract.test.mjs', [], { test: true }),
-      node('.agents/skills/skillhub-evaluation/scripts/*.test.cjs', [], { test: true }),
-      node('.agents/skills/deep-research/scripts/route.test.mjs', [], { test: true }),
-      node('.agents/skills/design-solution/scripts/route.test.mjs', [], { test: true }),
-      node('.agents/skills/knowledge-governance/scripts/check.test.mjs', [], { test: true }),
-      node('.agents/skills/knowledge-governance/scripts/skill-links.test.mjs', [], { test: true }),
-      node('.agents/skills/task-retrospective/scripts/inventory.test.mjs', [], { test: true }),
-      node('.agents/skills/windows-remote/scripts/generate.test.mjs', [], { test: true }),
-      node('scripts/ci/docs/__tests__/structure.test.mjs', [], { test: true })], { contexts: ['local', 'ci'] })
+    if (scope === 'host') unsupported('Development host Skills are maintained in the private documentation repository')
     unsupported('Unsupported Skill owner/mode')
   }
   if (target === 'ui' && !rest.length) return task('ci check ui', [node('apps/desktop/scripts/ci/reuse.mjs')])
@@ -280,7 +267,6 @@ function tests(argv) {
     if (Object.keys(args).some(key => key !== 'positional') || args.positional.length) invalid('Smoke is a fixed collection without selection overrides')
     return task('ci test smoke', [node('scripts/ci/smoke.cjs')])
   }
-  if (args['--profile'] === 'quality') unsupported('The full quality workflow belongs to the private development repository')
   if (args['--profile']) {
     if (type || args['--profile'] !== 'quality' || args.positional.length || Object.keys(args).some(key => !['positional', '--profile', '--with-external', '--strict', '--result'].includes(key))) invalid('Invalid quality profile combination')
     return task('ci test --profile quality', [node('scripts/ci/test.cjs', [...(args['--with-external'] ? ['--with-external'] : []), ...(args['--strict'] ? ['--strict'] : []), ...(args['--result'] ? ['--result', args['--result']] : [])])])
@@ -371,7 +357,6 @@ function cd(argv) {
   if (args['--build-number'] && !/^\d{12}$/.test(args['--build-number'])) invalid('--build-number requires YYYYMMDDHHMM')
   if (kind === 'local' && ['--team-id', '--windows-publisher', '--update-base-url'].some(key => args[key])) unsupported('Local builds do not accept distribution signing or update configuration')
   const forwarded = BUILD_VALUES.flatMap(key => args[key] ? [key, args[key]] : [])
-  if (workflow === 'package-acceptance') unsupported('Package acceptance belongs to the private development repository')
   if (workflow === 'package-acceptance') {
     if (stage !== 'installer' || BUILD_VALUES.some(key => key !== '--result' && args[key])) unsupported('Package acceptance requires the unchanged host installer recipe')
     return task('cd build local', [node('scripts/cd/package.cjs', args['--result'] ? ['--result', args['--result']] : [])])

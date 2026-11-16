@@ -434,7 +434,9 @@ async def exercise() -> None:
         pdf_version = versions.history(project.id, "resources/pdf-before.pdf")[0]
         renamed_pdf = content.rename(project.id, "resources/pdf-before.pdf", "pdf-edited.pdf")
         current_pdf = content.snapshot(project.id, renamed_pdf.path)
-        edited_pdf_bytes = build_pdf(*(PageFixture() for _ in range(5)), title="modified after move")
+        edited_pdf_bytes = build_pdf(
+            *(PageFixture() for _ in range(5)), title="modified after move"
+        )
         content.apply_bytes(
             project.id,
             renamed_pdf.path,

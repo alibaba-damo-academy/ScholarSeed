@@ -239,7 +239,6 @@ PREDICTION_PROMPT = (
     "Do not use tools or perform actions. Do not introduce permissions or commitments. "
     "Use at most 500 characters. Return no text if there is no useful next message."
 )
-HTTP_ACCEPTED = 202
 HTTP_BAD_REQUEST = 400
 HTTP_NOT_FOUND = 404
 HTTP_CONFLICT = 409
@@ -4033,12 +4032,8 @@ class SessionService:
             self._settings.set_runtime_model(target)
         if apply_now and live is not None:
             try:
-                await self._prepare_turn(live, purpose=ResourcePurpose.SESSION)
+                await self.prepare_turn(live, purpose=ResourcePurpose.SESSION)
             except Exception as error:
-                conflict = getattr(error, "safe_error", "") == RESOURCE_HOST_CONFIGURATION_CONFLICT
-                if conflict and self._schedule_reconfiguration(live):
-                    # The drain can finish only after this request releases its activity lease.
-                    return {"ok": True, **self.model(session_id)}, HTTP_ACCEPTED
                 return (
                     {
                         **_runtime_failure_payload(error, operation="model_switch"),
@@ -4154,21 +4149,20 @@ class SessionService:
                 self._schedule_reconfiguration(live)
             raise
 
-    def _schedule_reconfiguration(self, live: LiveSession) -> bool:
+    def _schedule_reconfiguration(self, live: LiveSession) -> None:
         try:
             if not self._runtime.reconfiguration_supported:
-                return False
+                return
             record = self._access.get(live.id)
             if record is None:
-                return False
-            operation = self._reconfigure_host(
+                return
+            self._reconfigure_host(
                 live.id,
                 SessionPrincipal(record.principal_id),
                 actor_id=live.user_id,
                 request_id=str(uuid.uuid4()),
                 model_id=self.model(live.id)["model_id"],
             )
-            return operation["state"] == CommandState.ACCEPTED.value
         except Exception as error:
             self._logger.warning(
                 "runtime_host_reconfiguration_not_scheduled session_id=%s failure_type=%s code=%s",
@@ -4176,7 +4170,6 @@ class SessionService:
                 type(error).__name__,
                 getattr(error, "safe_error", "") or RESOURCE_HOST_CONTEXT_REQUIRED,
             )
-            return False
 
     async def _prepare_turn(
         self,

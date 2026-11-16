@@ -102,9 +102,12 @@ test('authorization preview renders localized diagnostics and preserves the fort
                 reasons: ['Reason ' + id], abstract: 'Abstract ' + id, sources: [], access: 'unknown'}))};
             const View = props => React.createElement(SearchSurface, {...props, actions: {
               receipts: new Map(),
-              Join: ({papers}) => React.createElement(React.Fragment, null,
+              Join: ({papers, selection}) => React.createElement(React.Fragment, null,
                 React.createElement('output', { id: 'joinable-count' }, papers.length),
-                React.createElement('output', { id: 'joinable' }, papers.map(paper => paper.paper_id).join(','))),
+                React.createElement('output', {
+                  id: 'joinable',
+                  'data-selection': selection ? selection.count + '/' + selection.total : undefined,
+                }, papers.map(paper => paper.paper_id).join(','))),
               openSource: async () => undefined
             }});
             return renderToStaticMarkup(React.createElement(I18nextProvider,
@@ -199,21 +202,21 @@ test('authorization preview renders localized diagnostics and preserves the fort
       assert.doesNotMatch(markup, /范围与交付|receipt-preview|artifact-more-actions/)
     })
     await context.test(
-      'joined rows show a locked check without counting toward the selection',
+      'joined rows count as checked but cannot be submitted again',
       () => {
         const mixed = renderSearchReport(undefined, 'zh', 'precise-search', [], ['one'])
         assert.match(mixed, /aria-checked="true" aria-label="选择 Paper one"[^>]*disabled=""/)
         assert.match(mixed, /aria-checked="true" aria-label="选择 Paper two"[^>]*role="checkbox"/)
         assert.doesNotMatch(mixed, /aria-label="选择 Paper two"[^>]*disabled=""/)
         assert.match(mixed, /<output id="joinable-count">1<\/output>/)
-        assert.match(mixed, /<output id="joinable">two<\/output>/)
+        assert.match(mixed, /<output id="joinable" data-selection="2\/2">two<\/output>/)
 
         const joined = renderSearchReport(undefined, 'zh', 'precise-search', [], ['one', 'two'])
         assert.match(
           joined,
           /aria-checked="false" aria-label="选择当前筛选的全部结果"[^>]*disabled=""/
         )
-        assert.match(joined, /<output id="joinable"><\/output>/)
+        assert.match(joined, /<output id="joinable" data-selection="2\/2"><\/output>/)
       }
     )
     await context.test('approval receipts preserve the server-owned decision source', () => {
@@ -276,6 +279,7 @@ test('authorization preview renders localized diagnostics and preserves the fort
     )
     assert.match(renderReport('zh', { origin: 'research-idea-citations' }), /实际引用文献/)
     assert.match(citedResults, /<output id="joinable-count">2<\/output>/)
+    assert.match(citedResults, /<output id="joinable" data-selection="2\/2">one,two<\/output>/)
     assert.match(citedResults, /Paper two|Reason two/)
     assert.doesNotMatch(citedResults, /Abstract one|Abstract two|>摘要</)
     const pendingNode = renderNode()
@@ -512,16 +516,17 @@ test('authorization preview renders localized diagnostics and preserves the fort
     const diagnostic = 'agentic-search used degraded retrieval (source_mode=web_only)'
     const chinese = render('zh', [diagnostic])
     assert.match(chinese, /检索结果/)
-    assert.match(chinese, /Paper 2/)
+    assert.match(chinese, /data-testid="receipt-preview"[\s\S]*title="Paper 2">Paper 2</)
     assert.doesNotMatch(chinese, /本次仅使用网页来源检索|agentic-search|source_mode/)
     for (const status of ['authorized', 'rejected', 'unknown']) {
       const receipt = render('zh', [], { status, selectedIds: ['paper:1'] })
       assert.match(receipt, /检索结果/)
-      assert.match(receipt, /Paper 1/)
+      assert.match(receipt, /data-testid="receipt-preview"[\s\S]*title="Paper 1">Paper 1</)
       assert.doesNotMatch(receipt, /待授权文献/)
     }
     const english = render('en', [diagnostic])
-    assert.match(english, /Search results/)
+    assert.match(english, /aria-label="Open search results"/)
+    assert.match(english, /Papers found: 40/)
     assert.doesNotMatch(english, /agentic-search|source_mode|web_only/)
     const unknown = render('zh', ['private-tool raw_parameter=private-value'])
     assert.match(unknown, /检索结果/)
@@ -539,7 +544,8 @@ test('authorization preview renders localized diagnostics and preserves the fort
     assert.match(englishReport, /Result limit: 1 paper/)
     assert.doesNotMatch(englishReport, /年份|不限|本轮结果上限/)
     const englishCard = render('en', [], undefined, criteriaData)
-    assert.match(englishCard, /Search results/)
+    assert.match(englishCard, /aria-label="Open search results"/)
+    assert.match(englishCard, /Papers found: 40/)
     assert.doesNotMatch(englishCard, /年份|不限/)
     assert.match(renderReport('zh', criteriaData), /年份：2023–不限/)
     assert.match(render('zh', [], undefined, criteriaData), /检索结果/)
