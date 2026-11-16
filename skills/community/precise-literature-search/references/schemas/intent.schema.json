@@ -95,7 +95,8 @@
     "confirmation_source": {
       "enum": [
         "user_explicit",
-        "auto_delegated"
+        "auto_delegated",
+        "request_clear"
       ]
     }
   }

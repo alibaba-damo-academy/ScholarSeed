@@ -27,6 +27,26 @@ from service.platform.latency import (
 
 
 class LatencyContract(unittest.IsolatedAsyncioTestCase):
+    async def test_valid_correlations_retain_the_lifecycle_without_global_debug(self):
+        scope = self.scope()
+        scope["headers"].append((DIAGNOSTIC_HEADER, b"a" * 32))
+        with self.assertLogs(LOGGER_NAME, level=logging.INFO) as records:
+            with RequestLatency(scope) as observation:
+                observation.headers(200)
+        rows = [json.loads(record.getMessage()) for record in records.records]
+        self.assertEqual([row["event"] for row in rows], ["received", "headers", "finished"])
+        self.assertTrue(all(row["client_request_id"] == "a" * 32 for row in rows))
+        self.assertTrue(all(record.levelno == logging.INFO for record in records.records))
+        for secret in ("/private/secret-session", "private-token", "private-credential"):
+            self.assertNotIn(secret, json.dumps(rows))
+
+    async def test_invalid_correlations_do_not_enable_info_observation(self):
+        scope = self.scope()
+        scope["headers"].append((DIAGNOSTIC_HEADER, b"private-invalid-id"))
+        with self.assertNoLogs(LOGGER_NAME, level=logging.INFO):
+            with RequestLatency(scope) as observation:
+                observation.headers(200)
+
     def scope(self):
         return {
             "type": "http",

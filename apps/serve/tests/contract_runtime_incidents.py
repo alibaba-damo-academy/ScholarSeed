@@ -399,6 +399,61 @@ class RuntimeIncidentContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(calls), 1)
         await asyncio.wait_for(activities.wait_execution_drained(), 1)
 
+    async def test_permission_continuation_uses_requested_locale(self) -> None:
+        activities = Activities()
+        app = FastAPI()
+        app.state.activities = activities
+        sessions = SimpleNamespace(
+            require_access=lambda *_args: None,
+            align_metering_identity=lambda *_args: None,
+            is_readonly=lambda _session_id: False,
+            set_mode=AsyncMock(
+                side_effect=lambda *_args, **_kwargs: (
+                    {
+                        "ok": True,
+                        "mode": "ask",
+                        "continuation": {
+                            "submission_id": "permission-submission",
+                            "interrupt_generation": 1,
+                        },
+                    },
+                    200,
+                )
+            ),
+        )
+        turns = SimpleNamespace(post=AsyncMock(return_value=({"ok": True}, 200)))
+        mount_session_routes(
+            app,
+            sessions=sessions,
+            turns=turns,
+            events=SimpleNamespace(),
+            artifacts=SimpleNamespace(),
+            credentials=SimpleNamespace(),
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            for locale, expected in (
+                ("zh-CN", "继续刚才中断的任务。先核对已完成操作和产物，不重复已产生副作用的步骤。"),
+                (
+                    "en",
+                    "Continue the interrupted task. First check completed actions and outputs; do not repeat steps that have already caused side effects.",
+                ),
+            ):
+                with self.subTest(locale=locale):
+                    response = await client.post(
+                        f"/api/serve/sessions/{PRODUCT_SESSION_ID}/mode",
+                        json={
+                            "mode": "ask",
+                            "application": "interrupt_continue",
+                            "continuation_context": {"locale": locale},
+                        },
+                    )
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(response.json()["continued"], True)
+                    self.assertEqual(turns.post.await_args.args[1]["input"][0]["text"], expected)
+                    self.assertEqual(turns.post.await_count, (1 if locale == "zh-CN" else 2))
+
     async def test_permission_continuation_rejects_changed_origin(self) -> None:
         self.live.last_submission_id = "permission-submission"
         self.catalog.set_policy(PRODUCT_SESSION_ID, OWNER, "ask")

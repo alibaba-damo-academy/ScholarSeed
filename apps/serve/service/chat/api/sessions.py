@@ -63,6 +63,7 @@ from service.chat.service.sessions import (
     SESSION_LIST_MAX_LIMIT,
     SESSION_PERMISSION_CONTINUATION_TEXT,
     PermissionApplication,
+    SessionListTiming,
     SessionService,
 )
 from service.chat.service.turns import TurnService
@@ -75,6 +76,7 @@ from service.identity.utils import (
     require_host_process,
 )
 from service.platform.activity import ActivityDomain
+from service.platform.latency import requestLatency
 from service.platform.limits import ATTACHMENT_MAX_BYTES, UPLOAD_CHUNK_BYTES
 from service.platform.passive_events import passive_events
 
@@ -359,6 +361,7 @@ def mount_session_routes(
                 HTTP_422_UNPROCESSABLE_CONTENT, SESSION_LIST_CURSOR_INVALID
             ) from error
         try:
+            observation = requestLatency(request.scope)
             return await sessions.list(
                 limit,
                 request_principal(request),
@@ -369,6 +372,10 @@ def mount_session_routes(
                 cursor=cursor,
                 archived=archived,
                 include_last_agent_reply=include_last_agent_reply,
+                timing=SessionListTiming.create(
+                    observation.requestId if observation else None,
+                    observation.clientRequestId if observation else None,
+                ),
             )
         except SessionListCursorError as error:
             raise HTTPException(
@@ -1113,13 +1120,17 @@ def mount_session_routes(
                 if status == HTTP_OK and continuation:
                     context = body.get("continuation_context")
                     context = context if isinstance(context, Mapping) else {}
+                    locale = context.get("locale")
+                    locale = locale.split("-")[0].lower() if isinstance(locale, str) else "zh"
                     result, result_status = await turns.post(
                         session_id,
                         {
                             "input": [
                                 {
                                     "type": InputKind.TEXT.value,
-                                    "text": SESSION_PERMISSION_CONTINUATION_TEXT,
+                                    "text": SESSION_PERMISSION_CONTINUATION_TEXT.get(
+                                        locale, SESSION_PERMISSION_CONTINUATION_TEXT["zh"]
+                                    ),
                                 }
                             ],
                             **{

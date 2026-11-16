@@ -98,7 +98,6 @@ MCP_BRIDGE_SCOPE = "current_conversation_product_configuration"
 MCP_PLAN_EFFECT = "prepare"
 MCP_APPLY_EFFECT = "configure"
 TASK_ACTIVATE_ROUTE = BRIDGE_ROUTE_PREFIX + "task/activate"
-CONFIRM_SEARCH_START_OPERATION = "confirm-search-start"
 HISTORY_ROUTE_PREFIX = BRIDGE_ROUTE_PREFIX + "history/"
 ARTIFACT_PUBLISH_ROUTE = BRIDGE_ROUTE_PREFIX + "artifact/publish"
 DISPLAY_CARD_ROUTE = BRIDGE_ROUTE_PREFIX + "display-card"
@@ -127,7 +126,6 @@ BLOCKING_OPERATIONS = frozenset(
         ("literature", "acquire"),
         ("literature", "fulltext"),
         ("literature", "authorize"),
-        ("literature", CONFIRM_SEARCH_START_OPERATION),
         ("literature", "import-identifier"),
         ("search", "run"),
         (GENERATION_CAPABILITY, GENERATION_RUN_OPERATION),
@@ -1086,7 +1084,6 @@ BRIDGE_REQUESTS.update(
 
 LITERATURE_ROUTE_PREFIX = BRIDGE_ROUTE_PREFIX + "literature/"
 LITERATURE_RESULT_ROUTE = LITERATURE_ROUTE_PREFIX + "result"
-CONFIRM_SEARCH_START_ROUTE = LITERATURE_ROUTE_PREFIX + CONFIRM_SEARCH_START_OPERATION
 LITERATURE_REVIEW_ROUTE = LITERATURE_ROUTE_PREFIX + "review"
 LITERATURE_ACQUIRE_ROUTE = LITERATURE_ROUTE_PREFIX + "acquire"
 LITERATURE_RECEIPT_ROUTE = LITERATURE_ROUTE_PREFIX + "receipt"
@@ -1094,15 +1091,6 @@ ACQUIRE_MAX_PAPERS = 5
 ACQUIRE_PAPER_ID_CHARS = 128
 ACQUIRE_IDENTIFIER_CHARS = 512
 ACQUIRE_TITLE_CHARS = 512
-
-
-class LiteratureSearchStart(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-
-class LiteratureSearchStartResult(BaseModel):
-    ok: Literal[True]
-    disposition: Literal["start", "defer"]
 
 
 class LiteratureResultPublish(BaseModel):
@@ -1288,7 +1276,6 @@ LITERATURE_REQUESTS: dict[str, type[BaseModel]] = {
     LITERATURE_IMPORT_OPERATION: LiteratureImport,
     **LITERATURE_READING_REQUESTS,
     "result": LiteratureResultPublish,
-    CONFIRM_SEARCH_START_OPERATION: LiteratureSearchStart,
     "review": LiteratureReviewPublish,
     "acquire": LiteratureAcquire,
     "receipt": LiteratureReceipt,
@@ -1301,7 +1288,6 @@ LITERATURE_ROUTES = {
     "authorize": LITERATURE_ROUTE_PREFIX + "authorize",
     ANNOTATIONS_OPERATION: LITERATURE_ROUTE_PREFIX + ANNOTATIONS_OPERATION,
     "result": LITERATURE_RESULT_ROUTE,
-    CONFIRM_SEARCH_START_OPERATION: CONFIRM_SEARCH_START_ROUTE,
     "review": LITERATURE_REVIEW_ROUTE,
     "acquire": LITERATURE_ACQUIRE_ROUTE,
     "receipt": LITERATURE_RECEIPT_ROUTE,
@@ -1320,19 +1306,6 @@ BRIDGE_REQUESTS[("literature", LITERATURE_IMPORT_OPERATION)] = BridgeOperation(
     effect=PUBLICATION_IMPORT_EFFECT,
     approval=NO_APPROVAL,
     response_type=LiteratureImportResult,
-)
-BRIDGE_REQUESTS[("literature", CONFIRM_SEARCH_START_OPERATION)] = BridgeOperation(
-    LiteratureSearchStart,
-    CONFIRM_SEARCH_START_ROUTE,
-    summary="Show the product-owned precise literature search start confirmation.",
-    guidance=(
-        "Call with an empty request before initializing a precise literature search run. "
-        "Wait for the current turn's decision; do not relay or recreate the card. "
-        "Only disposition=start permits initialization. This does not confirm search scope "
-        "or grant full-text access."
-    ),
-    approval=USER_CONFIRM,
-    response_type=LiteratureSearchStartResult,
 )
 
 TAXONOMY_GLOBAL_SCOPE = "global_literature_tags"

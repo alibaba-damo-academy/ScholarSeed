@@ -22,7 +22,12 @@ from service.chat.constants import (
     PRODUCT_EVENT_ARTIFACT_PUBLISHED,
     PRODUCT_EVENT_FILE_CHANGED,
     PRODUCT_EVENT_MESSAGE_DELTA,
+    PRODUCT_EVENT_MESSAGE_QUEUED,
+    PRODUCT_EVENT_MESSAGE_UPDATED,
     PRODUCT_EVENT_REASONING_DELTA,
+    PRODUCT_EVENT_RUNTIME_INCIDENT,
+    PRODUCT_EVENT_SEND_NOW_REJECTED,
+    PRODUCT_EVENT_SEND_NOW_SUBMITTED,
     PRODUCT_EVENT_SESSION_STATE,
     PRODUCT_EVENT_TOOL_COMPLETED,
     PRODUCT_EVENT_TOOL_OUTPUT_DELTA,
@@ -33,6 +38,7 @@ from service.chat.constants import (
     PRODUCT_EVENT_USER_MESSAGE,
     PRODUCT_EVENT_VERSION,
     PRODUCT_EVENT_VERSION_V1,
+    RESOURCE_BASELINE_FAILED,
     USER_MESSAGE_BINDING_ADMITTED,
     USER_MESSAGE_BINDING_BOUND,
     USER_MESSAGE_BINDING_CANCELLED,
@@ -104,6 +110,17 @@ FORK_HISTORY_KINDS = frozenset(
     }
 )
 WORKSPACE_INITIAL_SEQUENCE = 0
+LOCAL_REJECTION_EVENTS = frozenset(
+    {
+        WORKSPACE_BOUND_EVENT,
+        PRODUCT_EVENT_MESSAGE_QUEUED,
+        PRODUCT_EVENT_MESSAGE_UPDATED,
+        PRODUCT_EVENT_SEND_NOW_SUBMITTED,
+        PRODUCT_EVENT_SEND_NOW_REJECTED,
+        PRODUCT_EVENT_SESSION_STATE,
+        PRODUCT_EVENT_RUNTIME_INCIDENT,
+    }
+)
 WORKSPACE_ORIGIN_UNAVAILABLE = "session_workspace_origin_unavailable"
 CONTENT_REJECTION_CODES = frozenset(
     {
@@ -1098,24 +1115,31 @@ class ProductEventStore:
     def last_agent_reply_at(self, session_id: str) -> float | None:
         """Timestamp of the latest nonempty user-visible assistant message."""
 
-        with (
-            self._snapshot() as connection,
-            closing(
-                self._rows(
-                    connection,
-                    session_id=session_id,
-                    kinds=(PRODUCT_EVENT_MESSAGE_DELTA,),
-                )
-            ) as rows,
-        ):
-            return max(
-                (
-                    record.created_at
-                    for row in rows
-                    if str((record := self._record(row)).payload.get("delta") or "").strip()
-                ),
-                default=None,
-            )
+        return self.last_agent_reply_times((session_id,))[session_id]
+
+    def last_agent_reply_times(self, session_ids: Sequence[str]) -> dict[str, float | None]:
+        if not session_ids:
+            return {}
+        timestamps: dict[str, float | None] = {}
+        with reader(self._database) as connection:
+            connection.execute("BEGIN")
+            for session_id in dict.fromkeys(session_ids):
+                with closing(
+                    self._rows(
+                        connection,
+                        session_id=session_id,
+                        kinds=(PRODUCT_EVENT_MESSAGE_DELTA,),
+                    )
+                ) as rows:
+                    timestamps[session_id] = max(
+                        (
+                            record.created_at
+                            for row in rows
+                            if str((record := self._record(row)).payload.get("delta") or "").strip()
+                        ),
+                        default=None,
+                    )
+        return timestamps
 
     def recovery_snapshot(self, session_id: str, turn_id: str) -> dict[str, Any]:
         with (
@@ -1691,6 +1715,89 @@ class ProductEventStore:
             if len(page) < MAXIMUM_REPLAY_LIMIT:
                 return runs
             sequence = page[-1].product_seq
+
+    def restore_local_rejection(self, session_id: str, queued_message_id: str) -> bool:
+        with self.transaction() as connection:
+            source = SessionCatalogStore.local_rejection_source(
+                connection, session_id, queued_message_id
+            )
+            if source is None:
+                return False
+            binding, _generation, operation_seq, _configuration, watermark = source
+            with closing(self._rows(connection, session_id=session_id)) as rows:
+                records = tuple(self._record(row) for row in islice(rows, MAXIMUM_REPLAY_LIMIT + 1))
+            if not records or len(records) > MAXIMUM_REPLAY_LIMIT:
+                return False
+            catalog = connection.execute(
+                f"SELECT last_product_seq FROM {SESSION_CATALOG_TABLE} WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            if (
+                records[-1].product_seq != catalog["last_product_seq"]
+                or watermark != records[-1].product_seq
+            ):
+                return False
+            submitted = rejected = 0
+            pending_submission = False
+            for sequence, record in enumerate(records, start=WORKSPACE_INITIAL_SEQUENCE + 1):
+                if (
+                    record.product_seq != sequence
+                    or record.schema_version
+                    not in (PRODUCT_EVENT_VERSION_V1, PRODUCT_EVENT_VERSION)
+                    or record.kind not in LOCAL_REJECTION_EVENTS
+                    or record.runtime_id != binding.runtime_id
+                    or record.vendor_thread_id not in ("", binding.opaque_session_ref)
+                    or record.vendor_turn_id
+                    or record.vendor_item_id
+                ):
+                    return False
+                if record.kind == WORKSPACE_BOUND_EVENT:
+                    if sequence != WORKSPACE_INITIAL_SEQUENCE + 1 or record.vendor_thread_id:
+                        return False
+                elif sequence == WORKSPACE_INITIAL_SEQUENCE + 1:
+                    return False
+                if record.kind in (
+                    PRODUCT_EVENT_MESSAGE_QUEUED,
+                    PRODUCT_EVENT_MESSAGE_UPDATED,
+                    PRODUCT_EVENT_SEND_NOW_SUBMITTED,
+                    PRODUCT_EVENT_SEND_NOW_REJECTED,
+                ):
+                    if record.payload.get("queued_message_id") != queued_message_id:
+                        return False
+                if record.kind == PRODUCT_EVENT_MESSAGE_QUEUED and (
+                    submitted or record.vendor_thread_id
+                ):
+                    return False
+                if record.kind == PRODUCT_EVENT_SEND_NOW_SUBMITTED:
+                    current = record.payload.get("operation_seq")
+                    if (
+                        pending_submission
+                        or not isinstance(current, int)
+                        or isinstance(current, bool)
+                        or current <= submitted
+                        or record.vendor_thread_id != binding.opaque_session_ref
+                    ):
+                        return False
+                    submitted = current
+                    pending_submission = True
+                elif record.kind == PRODUCT_EVENT_SEND_NOW_REJECTED:
+                    if (
+                        record.payload.get("operation_seq") != submitted
+                        or record.vendor_thread_id != binding.opaque_session_ref
+                    ):
+                        return False
+                    if pending_submission:
+                        if record.payload.get("safe_error") != RESOURCE_BASELINE_FAILED:
+                            return False
+                        rejected = submitted
+                        pending_submission = False
+                    elif not rejected:
+                        return False
+            if pending_submission or not rejected or rejected != operation_seq:
+                return False
+            return SessionCatalogStore.restore_local_rejection(
+                connection, session_id, queued_message_id, source
+            )
 
     def rejected_turns(
         self, session_id: str, vendor_thread_id: str = "", *, through_seq: int | None = None

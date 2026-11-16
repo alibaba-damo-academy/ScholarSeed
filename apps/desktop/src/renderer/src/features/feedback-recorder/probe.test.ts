@@ -442,7 +442,13 @@ test('recording correlates only its own Serve fetches and preserves request sema
   await windowTarget.fetch('http://127.0.0.1:8000/not-api', externalInit)
   assert.equal(calls[1]?.init, externalInit)
   assert.equal(calls[2]?.init, externalInit)
+  const suppliedCorrelation = '0123456789abcdef0123456789abcdef'
+  await windowTarget.fetch('http://127.0.0.1:8000/api/serve/sessions', {
+    headers: { [API_DIAGNOSTIC_HEADER]: suppliedCorrelation },
+  })
+  assert.equal(new Headers(calls[3]?.init?.headers).get(API_DIAGNOSTIC_HEADER), suppliedCorrelation)
   await new Promise((resolve) => setTimeout(resolve, 10))
+  assert.ok([...requests.values()].some((request) => request.correlationId === suppliedCorrelation))
   const own = [...requests.values()].find((request) => request.correlationId)
   assert.equal(own?.correlationId, correlation)
   assert.equal(own?.timing?.state, 'unavailable')

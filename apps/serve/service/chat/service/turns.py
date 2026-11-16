@@ -62,6 +62,7 @@ from service.chat.constants import (
     QUEUED_ASSISTANT_REFERENCES,
     QUEUED_DISPLAY_TEXT,
     QUEUED_REFERENCES,
+    RESOURCE_BASELINE_FAILED,
     RUNTIME_CAPABILITY_UNAVAILABLE,
     SESSION_ARCHIVED_ERROR,
     SESSION_TERMINATED,
@@ -189,7 +190,6 @@ QUEUED_RECONCILE_APPLIED = "applied"
 QUEUED_RECONCILE_NOT_APPLIED = "not_applied"
 QUEUED_RECONCILE_STILL_UNKNOWN = "still_unknown"
 QUEUED_SUBMISSION_NOT_APPLIED = "queued_submission_not_applied"
-RESOURCE_BASELINE_FAILED = "resource_baseline_failed"
 RESOURCE_BASELINE_PERMISSION_DENIED = "resource_baseline_permission_denied"
 RESOURCE_DELIVERY_FAILED = "resource_delivery_failed"
 TURN_SETTLEMENT_POLL_SECONDS = 1.0
@@ -870,6 +870,19 @@ class TurnService:
 
         try:
             preparation = None
+            if self._events is not None:
+                async with live.lifecycle_lock:
+                    if (
+                        self._sessions.get(live.id) is live
+                        and not live.closing
+                        and not live.interrupting
+                        and not live.terminated
+                        and live.runtime_session is None
+                        and live.runtime_driver is None
+                        and not live.pending_hil_snapshot()
+                        and not live.ledger.uncertainty_snapshot()
+                    ):
+                        self._events.restore_local_rejection(live.id, request_id)
             if queued.purpose == QUEUE_PURPOSE_RECOVERY and self._prepare is not None:
                 recovery = queued.body.get(RECOVERY_SOURCE)
                 if self.recovery is not None:

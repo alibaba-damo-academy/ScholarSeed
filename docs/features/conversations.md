@@ -33,6 +33,20 @@ The [product Store](../../apps/desktop/src/renderer/src/store.tsx) keeps the Com
 
 The [AI panel](../../apps/desktop/src/renderer/src/features/assistant/AiPanel.tsx) resolves the current assistant project from the product Store. Only in full-screen mode with the sidebar hidden does it show a breadcrumb for the project name or global literature scope, avoiding duplication with the sidebar. The project name is truncated to visible characters according to the [heading rules](../../apps/desktop/src/renderer/src/features/assistant/heading.ts); a hoverable, focusable Tooltip provides the full name. Docked or floating panels do not add this title. It is a foreground scope hint, not a substitute for session and source authorization. When changing it, check the [heading contract](../../apps/desktop/src/renderer/src/features/assistant/heading.test.ts) and real Desktop behavior for sidebar visibility, project switching, global literature, narrow windows, and keyboard focus. Old screenshots are not current acceptance evidence.
 
+<a id="locally-rejected-first-message-retry--首条消息本地拒绝后的重发"></a>
+### Locally Rejected First-Message Retry
+
+The queue records submission intent before local admission and retains the `BOUND`
+fence for crashes and unknown outcomes. A user retry of the same first-message
+queue can regain `UNSUBMITTED` eligibility only if the complete supported event log
+proves local resource-baseline rejection before any admitted user message or native
+turn. Event replay and the binding, generation, operation, configuration and cursor
+checks share one write transaction. The existing empty-thread replacement path
+preserves the product session, original queue and input. It leaves submitted history
+intact and requires the user to initiate the retry. Missing evidence, forks or imports,
+side input, execution, uncertainty, HIL and concurrent state changes retain their
+existing recovery fences.
+
 <a id="完成后的恢复等待与连续发送"></a>
 ### Recovery Wait After Completion and Consecutive Sends
 
