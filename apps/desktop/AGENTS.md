@@ -1,87 +1,96 @@
-# apps/desktop 工作约定
+<a id="appsdesktop-工作约定"></a>
+# apps/desktop Working Rules
 
-本文件是进入 Desktop 子系统后的导航入口。详细规范的唯一权威位于
-[`docs/`](docs/README.md)；动态组件、token 与债务数量以源码和生成库存为准。
-只编辑实际的 `AGENTS.md`，不要维护另一份规则副本。
+This file is the navigation entry point for the Desktop subsystem. The sole authority for detailed
+specifications is [`docs/`](docs/README.md); dynamic component, token, and debt counts are determined
+by source code and generated inventories. Edit only the actual `AGENTS.md`; do not maintain a duplicate
+copy of these rules.
 
-## 开始前必读
+<a id="开始前必读"></a>
+## Read Before Starting
 
-- 改 renderer feature、shell、状态或组合前，读 [`docs/architecture/renderer.md`](docs/architecture/renderer.md) 与 [`docs/architecture/ownership.md`](docs/architecture/ownership.md)。涉及页面、面板、组件或交互视觉时，再读[组件复用、归属及棘轮契约](docs/design/components.md)，并使用 `ui-component-reuse` skill / `npm run ui-find Q="<意图>"`。
-- 改样式、token 或 UI 组件：读 [`docs/design/foundations.md`](docs/design/foundations.md)、[`docs/design/components.md`](docs/design/components.md) 与 [`docs/design/interaction.md`](docs/design/interaction.md)，并先使用 `ui-component-reuse` skill / `npm run ui-find Q="<意图>"`。
-- 改 main、preload、IPC、测试或验收：读 [`docs/quality/testing.md`](docs/quality/testing.md)，涉及边界时同时读 renderer/ownership 规范。
-- 改 package scripts、生命周期或 TypeScript 配置：先读[工程脚本接口](docs/quality/testing.md#工程脚本接口)与[检查归属](docs/quality/testing.md#typescript-检查归属)，再核实际配方、唯一清单及消费者。
-- 改主窗口 CSP、Session 响应回调或退出竞争：必须读[主窗口 CSP 生命周期](docs/architecture/ownership.md#主窗口-csp-生命周期)，不通过移除策略或吞异常绕过问题。
+- Before changing a renderer feature, shell, state, or composition, read [`docs/architecture/renderer.md`](docs/architecture/renderer.md) and [`docs/architecture/ownership.md`](docs/architecture/ownership.md). For pages, panels, components, or interaction visuals, also read the [component reuse, ownership, and ratchet contract](docs/design/components.md), and use the `ui-component-reuse` skill / `npm run ui-find Q="<意图>"`.
+- Before changing styles, tokens, or UI components, read [`docs/design/foundations.md`](docs/design/foundations.md), [`docs/design/components.md`](docs/design/components.md), and [`docs/design/interaction.md`](docs/design/interaction.md), and first use the `ui-component-reuse` skill / `npm run ui-find Q="<意图>"`.
+- Before changing main, preload, IPC, tests, or acceptance, read [`docs/quality/testing.md`](docs/quality/testing.md); when boundaries are involved, also read the renderer/ownership specifications.
+- Before changing package scripts, lifecycle, or TypeScript configuration, first read the [engineering script interfaces](docs/quality/testing.md#工程脚本接口) and [check ownership](docs/quality/testing.md#typescript-检查归属), then verify the actual recipes, canonical inventory, and consumers.
+- Before changing the main-window CSP, Session response callbacks, or quit races, you must read the [main-window CSP lifecycle](docs/architecture/ownership.md#主窗口-csp-生命周期); do not bypass the problem by removing the policy or swallowing exceptions.
 
-- 国际化、文案资源、语言偏好或编辑器语言联动：先读 [`docs/architecture/i18n.md`](docs/architecture/i18n.md) 与[接入规范](docs/architecture/localization.md)，遵循已锁定的 i18next / react-i18next 方案；按[验证规范](docs/quality/testing.md)核对本次验收，不将历史计划或勾选状态作为当前实现与验收证明。
+- For internationalization, copy resources, language preferences, or editor-language integration, first read [`docs/architecture/i18n.md`](docs/architecture/i18n.md) and the [integration specification](docs/architecture/localization.md), and follow the locked i18next / react-i18next approach. Check this task's acceptance according to the [verification specification](docs/quality/testing.md); do not use historical plans or checked boxes as proof of current implementation or acceptance.
 
-## 高频硬约束
+<a id="高频硬约束"></a>
+## Frequent Hard Constraints
 
-- 修改 `package.json` 中的依赖、`overrides` 或安装配置时，默认使用仓库指定的 Node/pnpm，同步维护 `pnpm-lock.yaml`，并保留 npm 兼容所需的 `package-lock.json`；不能只依赖已有 `node_modules` 的测试结果。按[测试与验收规范](docs/quality/testing.md)执行两条安装路径的锁文件校验，确认干净检出能安装后再交付。
-- 后续新增、修改、联调功能时遵循[国际化接入规范](docs/architecture/localization.md)：新增/修改可见文案及本次触及 UI 单元的直接相关历史文案同步补齐中英资源、参数和校验；涵盖 aria/tooltip/错误/toast。不得因改一个文件就扩大到整页，不覆盖无关修改；只读任务或用户禁止页面修改时不扩大授权。运行 根目录 `pnpm ops ci check i18n --base <ref>` 与适用真实验证，禁止新增旧字典消费者。用户内容、协议、日志和代码不翻译。
+- When changing dependencies, `overrides`, or installation configuration in `package.json`, use the Node/pnpm versions specified by the repository by default, update `pnpm-lock.yaml` in sync, and retain `package-lock.json` for npm compatibility. Do not rely only on test results from an existing `node_modules`. Follow the [testing and acceptance specification](docs/quality/testing.md) to check lockfiles through both installation paths, and deliver only after confirming a clean checkout can install.
+- For subsequently added, modified, or integrated features, follow the [internationalization integration specification](docs/architecture/localization.md): add or update Chinese and English resources, parameters, and validation for new or changed visible copy and directly related historical copy in the UI units touched by this task; this includes aria labels, tooltips, errors, and toasts. Do not expand a one-file change to the entire page or overwrite unrelated changes. Do not expand authorization for read-only tasks or when the user prohibits page changes. Run the root command `pnpm ops ci check i18n --base <ref>` and applicable real verification. Do not add consumers of the legacy dictionary. Do not translate user content, protocols, logs, or code.
 
 
-- 消费域只能从 `components/ui` barrel 导入 UI 能力；禁止深导入 UI 实现。
-- `components/ui` 不得依赖 app、shell、feature、业务组件、API 或 store；业务变化通过 contracts/feature contributions 组合。
-- 页面禁止新增原生 `button/input/select/textarea/table`；不得手写 SVG 图标或在 feature 内自造同类设计系统组件。
-- 复用棘轮逐文件 counts 只能降低，未列文件预算为零；禁止扩大 `reuse.policy.json` 或手改 `reuse.baseline.json` 凑绿，缺能力按[组件 Owner 契约](docs/design/components.md)扩展与登记。
-- 页面开发先查[组件资产与复用指南](docs/design/assets.md)及[自动资产列表](docs/_generated/components.md)，复用前核对 props、依赖和运行示例。
-- 无业务稿件的新页面先按 [Vibe Coding 页面契约](docs/design/vibe-coding.md) 选择页面类型和 `Page` 组合；PageBody 不得与宿主重复创建滚动容器。
-- 自有页面/组件能用 Tailwind CSS 表达的样式全部使用 Tailwind；手写选择器 CSS 仅用于必要的第三方内部样式覆盖。设计 token/字体/必要 keyframes 由 design 持有；边界与存量迁移见[样式规范](docs/design/foundations.md)。
-- CSS新增/更改规则由身份棘轮约束；必要第三方覆盖须在 `scripts/ci/css.exceptions.json` 精确登记容器、选择器、库、原因和验证方式，不能扩大历史库存。
-- 后续页面开发仅整改本次新增或修改的相关 UI，不要求重写整页，不扩大到其他 owner；基础代码合并不会自动迁移页面。
-- 新视觉值使用 `--vds-*` token；禁止新增固定颜色、固定 Tailwind 色或纯视觉 inline style。动态几何与用户数据值须说明来源。
-- 浮层层级按 `design/zindex.css` 语义角色选择：项目/视图导航使用 `--vds-z-inline-flyout`，局部命中控件使用 `--vds-z-local-control`，常驻工作区面板/会话内滚动控制/回退确认分别使用 `--vds-z-surface-panel`、`--vds-z-scroll-control`、`--vds-z-session-confirm`，嵌套危险确认使用 `AlertDialog` 与 dialog family 的嵌套 token；禁止页面私有裸 z-index，新增引用须能由 `visual.mjs` 解析到真实 token 定义。
-- renderer 不得获得 Node/Electron 能力；能力沿 main → preload → typed renderer contract 暴露。
-- 文档状态词必须区分 `current`、`required`、`gap`、`advisory`，不得把目标状态写成当前能力。
+- Consumer domains may import UI capabilities only from the `components/ui` barrel; deep imports of UI implementations are prohibited.
+- `components/ui` must not depend on app, shell, feature, business components, APIs, or stores; compose business changes through contracts/feature contributions.
+- Pages must not add native `button/input/select/textarea/table` elements; do not hand-code SVG icons or create equivalent design-system components inside a feature.
+- Per-file counts in the reuse ratchet may only decrease; files not listed have a budget of zero. Do not expand `reuse.policy.json` or hand-edit `reuse.baseline.json` to make checks pass. Extend and register missing capabilities according to the [component Owner contract](docs/design/components.md).
+- Before page development, consult the [component assets and reuse guide](docs/design/assets.md) and [generated asset list](docs/_generated/components.md); before reuse, verify props, dependencies, and running examples.
+- For a new page without a product design, first choose its page type and `Page` composition according to the [Vibe Coding page contract](docs/design/vibe-coding.md); PageBody must not create a scroll container that duplicates the host's.
+- Use Tailwind for all styles in owned pages/components that Tailwind can express; hand-written selector CSS is only for necessary overrides of third-party internals. Design owns design tokens, fonts, and necessary keyframes; see the [styling specification](docs/design/foundations.md) for boundaries and existing-style migration.
+- CSS rule additions/changes are constrained by the identity ratchet. Precisely register necessary third-party overrides in `scripts/ci/css.exceptions.json`, including the container, selector, library, reason, and verification method; do not expand the historical inventory.
+- Subsequent page development must fix only related UI added or modified in this task; it does not require a whole-page rewrite and must not expand to other owners. Merging base code does not automatically migrate pages.
+- Use `--vds-*` tokens for new visual values; do not add fixed colors, fixed Tailwind colors, or purely visual inline styles. State the source of dynamic geometry and user-data values.
+- Choose overlay stacking by semantic role in `design/zindex.css`: use `--vds-z-inline-flyout` for project/view navigation, `--vds-z-local-control` for local hit controls, `--vds-z-surface-panel`, `--vds-z-scroll-control`, and `--vds-z-session-confirm` respectively for persistent workspace panels, in-session scroll controls, and fallback confirmation; use `AlertDialog` and nested tokens from the dialog family for nested destructive confirmation. Pages must not use private bare z-index values, and `visual.mjs` must resolve every new reference to a real token definition.
+- The renderer must not receive Node/Electron capabilities; expose capabilities through main → preload → typed renderer contract.
+- Document status terms must distinguish `current`, `required`, `gap`, and `advisory`; do not describe a target state as a current capability.
 
-## 跨平台构建硬约束
+<a id="跨平台构建硬约束"></a>
+## Cross-Platform Build Hard Constraints
 
-修改 main、打包脚本、Runtime 组装、文件系统或子进程启动时，必须同时检查 macOS 与 Windows：
+When changing main, packaging scripts, Runtime assembly, the filesystem, or subprocess startup, check both macOS and Windows:
 
-- 用 `path.join` / `path.resolve` 构造路径，用 `path.delimiter` 构造 `PATH`，解析命令输出时兼容 LF 与 CRLF。
-- 不得假设命令没有扩展名；分别确认 `.exe`、`.cmd`、`.bat` 的启动方式，且不得把不可信参数交给 shell。
-- 目标 Python 的命令目录通过该解释器的 `sysconfig.get_path("scripts")` 获取，不得假设它与 `python.exe` 同目录。
-- 不得以宿主 Python、宿主 npm、宿主 PATH 或源码目录证明安装包内 Runtime 可用。
-- 文件权限按普通文件/可执行文件语义归一化，不得直接用 Windows 的 POSIX mode 表象做完整性判断。
-- 修改上述逻辑时补充 macOS/Windows 行为矩阵和对应契约测试。Windows 验证至少运行 根目录 `pnpm ops cd build local --platform win32 --arch x86_64`，确认 Velopack Setup/full 生成且 `release-result.json` 为 `status: passed`。
-- `electron-builder` 精确锁定版本，不要写成 `^` 范围。新版本的 dmg-builder 默认运行时下载 dmgbuild；本仓库将 `dmgbuild==1.6.7` 锁为 macOS 构建期依赖，DMG 入口必须验证本地程序并设置 `CUSTOM_DMGBUILD_PATH`，缺失时拒绝构建而不是联网回退。不要仅凭上游源码分支声称 `hdiutil` 错误码 `16` 的强制卸载已生效；需真实故障验证。
-- DMG 容量与拷贝失败由 `scripts/image.py` 持有；修改该路径先读[构建指南](../../docs/runbooks/build.md)，执行 `node --test apps/desktop/scripts/image.test.cjs` 并验证真实镜像，不以 DMG 校验和合法证明内容完整。
+- Construct paths with `path.join` / `path.resolve`, construct `PATH` with `path.delimiter`, and support both LF and CRLF when parsing command output.
+- Do not assume commands have no extension; verify the startup method for `.exe`, `.cmd`, and `.bat` separately, and never pass untrusted arguments to a shell.
+- Obtain the target Python's command directory through that interpreter's `sysconfig.get_path("scripts")`; do not assume it is in the same directory as `python.exe`.
+- Do not use the host Python, host npm, host PATH, or source directory to prove that the packaged Runtime works.
+- Normalize file permissions according to regular-file/executable semantics; do not directly use Windows' POSIX mode representation to determine integrity.
+- When changing the above logic, add a macOS/Windows behavior matrix and corresponding contract tests. Windows verification must at minimum run the root command `pnpm ops cd build local --platform win32 --arch x86_64`, confirm that Velopack Setup/full artifacts are generated, and confirm `release-result.json` has `status: passed`.
+- Pin the exact `electron-builder` version; do not use a `^` range. Newer dmg-builder versions download dmgbuild at runtime by default; this repository pins `dmgbuild==1.6.7` as a macOS build-time dependency. The DMG entry point must verify the local executable and set `CUSTOM_DMGBUILD_PATH`; if it is missing, refuse to build instead of falling back to a network download. Do not claim that forced unmount for `hdiutil` error code `16` works based only on an upstream source branch; verify it with a real failure.
+- `scripts/image.py` owns DMG capacity and copy failures. Before changing that path, read the [build guide](../../docs/runbooks/build.md), run `node --test apps/desktop/scripts/image.test.cjs`, and verify a real image; a valid DMG checksum does not prove that its contents are complete.
 
-## 设计对齐
+<a id="设计对齐"></a>
+## Design Alignment
 
 - Public design requirements and mappings live in `docs/architecture/design-map.md`; read the relevant states and constraints before changing UI.
 - Use [design tooling](docs/design/tooling.md) and the public `ui-component-reuse` skill. A private design service is optional, never a prerequisite.
 - Distinguish current behavior, confirmed requirements, gaps and advisory guidance. Design evidence and static checks do not prove real product acceptance.
 
-## Windows 更新权限维护
+<a id="windows-更新权限维护"></a>
+## Windows Update Privilege Maintenance
 
-- Windows 安装和更新由固定版本 Velopack 管理，仅交付个人安装 Setup EXE，暂不支持全局安装，不构建或分发 MSI；macOS 保留 Squirrel.Mac。修改此边界先读 [Windows 更新契约](updater/README.md#windows-velopack)。
-- 更新包必须通过离线签名、完整成员清单和路径预检；在线候选授权与安装身份一致。官方 Velopack 持有应用替换；独立薄 helper 在提权后使用安装根下的 packages 暂存，准备缺失组件并由原用户协调器恢复启动。不得恢复旧应用 store、健康回滚或常驻恢复器。
-- Windows 的 Python、TeX Live、PowerShell、Codex、Office 按签名清单独立下载 ZIP；Setup/full/delta 仅携带程序和 runtime.json，首次安装需要联网。组件按独立版本在安装根 runtime 下展开和复用。首次展开验证完整库存，已有版本核对身份、完成凭据及关键入口；不能把快速复用描述为全盘损坏检测。macOS 布局保持不变。
-- 更新前先 quiesce，并确认本应用拥有的 backend/runtime 进程族已经退出。交接前失败恢复原版本运行；不做健康失败回滚、不迁移旧更新目录。
-- 不按进程名杀进程，不清理其他安装仍可能使用的共享 runtime 组件；仅当前清单不足以授权回收共享组件。
-- 正式签名和上传仅由 CI 执行。本地未签名安装、单测或框架探针不能作为正式签名更新/UAC 验收。
-- 真机需覆盖个人安装、delta/full、runtime 退出恢复、卸载和路径/签名拒绝。源码检查不能代替安装后的产品启动与截图。
+- Windows installation and updates are managed by a pinned Velopack version. Deliver only the per-user Setup EXE; system-wide installation is not currently supported, and do not build or distribute MSI. macOS retains Squirrel.Mac. Before changing this boundary, read the [Windows update contract](updater/README.md#windows-velopack).
+- Update packages must pass offline signature verification, complete member-manifest checks, and path preflight; authorization of an online candidate must match the installation identity. Official Velopack owns application replacement. A separate thin helper uses the `packages` staging area under the installation root after elevation, prepares missing components, and lets the original user's coordinator resume startup. Do not restore the old application store, health rollback, or resident recovery service.
+- On Windows, download Python, TeX Live, PowerShell, Codex, and Office as separate ZIPs according to signed manifests. Setup/full/delta packages carry only the application and `runtime.json`; the first installation requires network access. Expand and reuse components under `runtime` in the installation root by their independent versions. On first expansion, verify the complete inventory; for existing versions, check identity, completion receipts, and key entry points. Do not describe fast reuse as a full-disk corruption check. Keep the macOS layout unchanged.
+- Before updating, quiesce and confirm that the backend/runtime process families owned by this application have exited. If handoff fails, resume the original version; do not perform health-failure rollback or migrate old update directories.
+- Do not kill processes by name or clean up shared Runtime components that another installation might still use; the current manifest alone does not authorize reclaiming shared components.
+- Only CI performs official signing and upload. Local unsigned installations, unit tests, or framework probes cannot count as acceptance of officially signed updates/UAC.
+- Real machines must cover per-user installation, delta/full updates, Runtime exit recovery, uninstall, and path/signature rejection. Source inspection cannot replace launching the installed product and capturing screenshots.
 
-## Windows 公司元数据
+<a id="windows-公司元数据"></a>
+## Windows Company Metadata
 
-- 控制面板 Publisher 与 EXE CompanyName 使用 `package.json` 的 `author.name`：`Alibaba Damo (Hangzhou) Technology Co., Ltd.`；不改变证书 Subject 或自动更新签名校验。
-- electron-builder 的作者规范化会将括号视为 URL，即使 author 是对象也会截断名称；`build.cjs` 必须通过规范化后的 `extraMetadata.author` 透传原始对象。
+- Control Panel Publisher and EXE CompanyName use `author.name` from `package.json`: `Alibaba Damo (Hangzhou) Technology Co., Ltd.`; do not change the certificate Subject or automatic-update signature verification.
+- electron-builder's author normalization treats parentheses as a URL and truncates the name, even when author is an object; `build.cjs` must pass through the original object via normalized `extraMetadata.author`.
 
-## 完成前
+<a id="完成前"></a>
+## Before Completion
 
-- 更新后的 CDP 参数由 `src/main/debuglaunch.ts` 统一校验，只保留显式合法的本机端口，无参数不开启调试，不透传任意 argv。Windows 在 `receipt.update.lock` 中随 user-data-dir 传递；macOS 经 `relaunch.ts` 一次性上下文保存，由 `index.ts` 在 app ready 前恢复，显式新端口/pipe 优先。定向测试：`node --experimental-transform-types --test src/main/debuglaunch.test.ts src/main/relaunch.test.ts`。真实 Squirrel 升级需源、目标均包含该协议；Windows 需原生实机验证，单测与 Electron 探针不替代安装版验收。
+- Updated CDP arguments are validated centrally by `src/main/debuglaunch.ts`; retain only explicitly valid local ports, do not enable debugging when no argument is supplied, and do not pass through arbitrary argv. On Windows, pass them with user-data-dir in `receipt.update.lock`; on macOS, save them in one-time context through `relaunch.ts` and restore them in `index.ts` before the app is ready, with an explicitly supplied new port/pipe taking priority. Focused tests: `node --experimental-transform-types --test src/main/debuglaunch.test.ts src/main/relaunch.test.ts`. A real Squirrel upgrade requires both source and target versions to include this protocol; Windows requires native hardware verification. Unit tests and Electron probes do not replace acceptance of the installed build.
 
-- Windows 托盘无响应先取 `$SCHOLARSEED_HOME/logs/window.log`，默认在用户主目录 `.scholarseed/logs/`；同时确认主进程是否仍存在。该文件只在带窗口诊断的版本首次触发相关操作后创建。不得用单元测试中的事件触发或 macOS 窗口恢复证明 Windows 系统托盘已验收。
-- Windows 托盘图标使用 `resources/windows.ico` / `windows-tray.ico`；用 `Tray.setContextMenu` 绑定原生右键菜单，确保窗口隐藏时无需等待渲染进程回复即可选择退出。菜单展开期间收到的快照在关闭后应用，保留当次菜单项的点击行为。
+- For an unresponsive Windows tray, first collect `$SCHOLARSEED_HOME/logs/window.log`, normally under `.scholarseed/logs/` in the user's home directory; also confirm whether the main process still exists. This file is created only after the first relevant operation is triggered in a build with window diagnostics. Do not use events triggered in unit tests or macOS window restoration as proof that the Windows system tray has passed acceptance.
+- Use `resources/windows.ico` / `windows-tray.ico` for the Windows tray icon. Bind the native context menu with `Tray.setContextMenu`, so Quit can be selected while the window is hidden without waiting for a renderer response. Apply snapshots received while the menu is open after it closes, preserving the click behavior of the menu items shown at that time.
 
-- 窗口关闭确认由 `src/main/tray.ts` 持有请求和系统动作，通过 `src/window.ts` 的 IPC 契约交给 `src/renderer/src/shell/Close.tsx` 组合统一 UI；不要重新引入固定尺寸的 data URL HTML 弹窗。平台矩阵见 `docs/architecture/ownership.md`。定向检查：`node --experimental-transform-types --test src/main/tray.test.ts src/main/menu.test.ts`；真实关闭验收：构建后 `npx playwright test e2e/close.spec.ts --project=smoke`，不能使用会绕过关闭逻辑的 `--drive` / headless 启动证明关闭行为。
+- Window-close confirmation requests and system actions are owned by `src/main/tray.ts` and passed through the IPC contract in `src/window.ts` to compose the shared UI in `src/renderer/src/shell/Close.tsx`; do not reintroduce a fixed-size data URL HTML dialog. See `docs/architecture/ownership.md` for the platform matrix. Focused check: `node --experimental-transform-types --test src/main/tray.test.ts src/main/menu.test.ts`. Real close acceptance: after building, run `npx playwright test e2e/close.spec.ts --project=smoke`; do not use `--drive` / headless startup that bypasses close logic to prove close behavior.
 
 ```bash
-# 在仓库根目录执行
+# Run from the repository root
 pnpm ops ci check docs desktop
 pnpm ops ci test --scope desktop
 pnpm ops ci check types desktop
 ```
 
-规范、源码或门禁变化时运行 根目录 `pnpm ops ci check docs desktop --write` 更新派生库存，再运行上述检查。该命令不会改 baseline；baseline 只能在独立、明确审查的债务收紧变更中更新，不得用于掩盖新增债务。
+When specifications, source, or gates change, run the root command `pnpm ops ci check docs desktop --write` to update generated inventories, then run the checks above. This command does not change the baseline; update the baseline only in a separate, explicitly reviewed debt-reduction change, and never use it to conceal newly added debt.

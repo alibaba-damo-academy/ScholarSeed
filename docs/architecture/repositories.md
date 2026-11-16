@@ -20,8 +20,12 @@ that the publication boundary is safe. Forward corrections preserve existing com
 shared history or merge unreviewed private document history into a public branch. Publication requires
 content, dependency and historical review independently of a successful internal push.
 
-## 中文摘要
+<a id="中文摘要"></a>
+## Summary
 
-源码仓自带公开工程知识和产品门禁；开发 Skill、内部补充、工作日志和原始证据由内源仓维护。
-按内容及消费者拆分混合材料，不按目录一刀切。日常开发支持独立克隆与原生 worktree，
-不强制绑定父仓或文档 SHA；发布、验收及复现记录才绑定精确版本。历史投影只是中间审计材料。
+The source repository includes public engineering knowledge and product gates. Development Skills,
+internal supplements, work logs, and raw evidence are maintained in the internal source repository.
+Split mixed materials by content and consumers rather than applying a blanket directory rule. Daily
+development supports independent clones and native worktrees without requiring a parent repository
+or documentation SHA. Only release, acceptance, and reproduction records pin exact versions.
+Historical projections are intermediate audit material only.

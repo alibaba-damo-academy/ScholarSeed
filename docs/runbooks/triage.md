@@ -1,73 +1,79 @@
-# 症状级知识路由
+<a id="症状级知识路由"></a>
+# Symptom-Based Knowledge Routing
 
-本页供症状或失败现象已明确时按关键词查找；只将问题路由到实际 Owner 正文，正文与证据仍以链接目标为准。一般开发从根 [知识索引](../index.md) 按任务定位，不预先读取本页。这里不授权启动产品、读取用户正文、迁移数据或修改权限。
+Use this page to search by keyword when the symptom or failure is already clear. It routes issues only to the actual Owner documents; the linked documents remain authoritative for their content and evidence. For general development, use the task to navigate from the root [knowledge index](../index.md) rather than reading this page in advance. This page does not authorize starting the product, reading user content, migrating data, or changing permissions.
 
-## 身份、会话与授权
+<a id="身份会话与授权"></a>
+## Identity, Sessions, and Authorization
 
-- 登录/退出后技能凭据、排队消息撤权或继承环境问题：读[受管执行凭据的实际准入](../architecture/serve.md#受管执行凭据的实际准入)。真实账号身份、会话所有权与模型密钥分开，失败不回退旧授权，记录不含秘密值。
-- 登出后文献综述/精准检索任务续做出现 `task_context_missing`、`login_required` 或错误工作区：读[登录后产品任务恢复](../architecture/serve.md#登录后产品任务恢复)。保存的绑定不是跨轮授权，重新登录也不自动使旧租约有效。
-- 项目切换串会话、历史检索或当前对象自动引用：读[会话隔离与上下文](../features/conversations.md)。范围授权先于历史匹配，自动引用与显式引用分开，前台导航不等于后台任务终止。
-- 页签点击或首次引导关闭后输入草稿丢失：读[草稿与导航边界](../features/conversations.md#页签导航不得回写过期输入草稿)；导航只提交所属字段。
-- 首轮完成后发送按钮持续禁用或 `recovery_pending` 未解除：读[完成后的恢复等待与连续发送](../features/conversations.md#完成后的恢复等待与连续发送)，不要直接清空恢复保护。
-- 排队发送因项目文件权限拒绝或基线读取失败：读[资源基线读取权限失败](../features/conversations.md#资源基线读取权限失败)；先核对来源授权，不把失败卡当作模型回合结果。
-- 回复期间追加 PDF 选区、误报 `assistant_claimed_refs_immutable` 或下一轮引用串用：读[回复期间追加 PDF 选区](../features/selections.md#回复期间追加-pdf-选区)，保留本轮认领引用的不可变边界。
-- 授权卡跨轮次失效、答复后假 running、全文续跑：读[授权等待与跨轮次续跑](streams.md#授权等待与跨轮次续跑)。
-- 审批模式选择值与实际策略不一致、热切未确认：读[权限选择意图与原生生效确认](streams.md#权限选择意图与原生生效确认)。
-- 子代理等待、进度归属或摘要内容边界：读[子代理进度](streams.md#子代理进度的可信性与未解决内容边界)。
-- 内容拒绝后的原生线程恢复与审计历史：读[可见历史与模型恢复历史](streams.md#可见审计历史与模型恢复历史)。
-- 回答模型标签漂移、引用编号/位置或来源信任：读[回答元数据与引用证据](streams.md#回答元数据与引用证据)。
-- 工具仍运行、取消回执与原生进程回收不一致：读[中断后的原生终端回收](streams.md#中断后的原生终端回收)。
+- Skill credentials after sign-in/sign-out, revocation of queued messages, or inherited-environment issues: read [Actual admission of managed-execution credentials](../architecture/serve.md#受管执行凭据的实际准入). Real account identity, session ownership, and model keys are separate; failures do not fall back to old authorization, and records contain no secret values.
+- After sign-out, literature-review or precision-search tasks resume with `task_context_missing`, `login_required`, or the wrong workspace: read [Product-task recovery after sign-in](../architecture/serve.md#登录后产品任务恢复). A saved binding is not authorization across turns, and signing in again does not automatically make an old lease valid.
+- Sessions, history search, or automatic references to the current object are mixed up after switching projects: read [Session isolation and context](../features/conversations.md). Scope authorization takes precedence over history matching; automatic references and explicit references are separate; foreground navigation does not mean a background task has terminated.
+- An input draft is lost after clicking a tab or closing the first-run guide: read [Draft and navigation boundaries](../features/conversations.md#页签导航不得回写过期输入草稿); navigation commits only the fields it owns.
+- The Send button remains disabled after the first turn completes, or `recovery_pending` does not clear: read [Post-completion recovery wait and consecutive sends](../features/conversations.md#完成后的恢复等待与连续发送). Do not clear recovery protection directly.
+- A queued send is denied by project-file permissions or baseline reading fails: read [Resource-baseline read permission failures](../features/conversations.md#资源基线读取权限失败); first check source authorization, and do not treat a failed card as a model-turn result.
+- A PDF selection is appended during a reply, `assistant_claimed_refs_immutable` is reported incorrectly, or references leak into the next turn: read [Appending a PDF selection during a reply](../features/selections.md#回复期间追加-pdf-选区), preserving the immutable boundary of references claimed for the current turn.
+- An authorization card expires across turns, the UI falsely shows running after a reply, or a full-text task resumes: read [Authorization waits and continuation across turns](streams.md#授权等待与跨轮次续跑).
+- The selected approval mode does not match the effective policy, or a hot switch is unconfirmed: read [Permission-selection intent and confirmation of native application](streams.md#权限选择意图与原生生效确认).
+- A subagent is waiting, progress ownership is unclear, or summary-content boundaries are in question: read [Subagent progress](streams.md#子代理进度的可信性与未解决内容边界).
+- Native-thread recovery and audit history after a content rejection: read [Visible audit history and model recovery history](streams.md#可见审计历史与模型恢复历史).
+- Model labels drift in an answer, citation numbers or positions are wrong, or source trust is in question: read [Answer metadata and citation evidence](streams.md#回答元数据与引用证据).
+- A tool is still running, or cancellation acknowledgments do not match native-process cleanup: read [Native terminal cleanup after interruption](streams.md#中断后的原生终端回收).
 
-## 文献、资源与检索
+<a id="文献资源与检索"></a>
+## Literature, Resources, and Search
 
-- 文献分类树、项目导航、同级重名或分类/标签删除：读[文献分类与项目作用域](../features/catalogue.md)。项目身份归 Content，删除分类不删除文献；旧开发期清库要求不构成当前数据删除授权。
-- 文献列表拖入 PDF、项目落点或混合文件失败隔离：读[文献 PDF 文件拖放](../features/catalogue.md#文献-pdf-文件拖放)，不要误入 Resources 目录 job。
-- 文献批量同步题录、限流后重试或取消后仍有在途写回：读[题录元数据批量同步](../features/catalogue.md#题录元数据批量同步)；批量不自动确认标题模糊命中，进度面板与应用进程生命周期不同。
-- 资料树首次加载、分页、刷新、版本能力或列表慢请求：读[资料知识任务导航](../features/resources.md#按任务读取)，再选加载、版本、审阅或格式章节；定点能力观察不等于整个请求没有激活/遍历成本，旧性能报告不作为当前延迟或实机通过证明。
-- Office 文档停在“分配编辑器”、WASM 预热失败或重试后仍不可见：读[Office 生命周期与绘制就绪门禁](../features/resources.md#office-生命周期与格式处理器是两个维度)；区分运行时就绪、文档加载事件与绘制 ACK。
-- Markdown 纸宽、源码查找遮挡、外部链接、文内锚点或保存引用跳转：读[Markdown 阅读与链接](../features/resources.md#markdown-阅读与链接)，不沿用已退出的三档纸宽截图。
-- 文件标签串项目、离焦自动保存或审阅重复提交：读[资源知识任务导航](../features/resources.md#按任务读取)中的项目工作区与批次终态；文件审阅不走文献综述流程，UI 状态不能替代落盘或业务终态证据。
-- 划词加入对话、选区发送或来源证据：读[选区快照边界](../features/selections.md)；发送快照与解释/编辑的来源校验不是同一操作。
-- PPT/PPTX 局部拖选变成整框、旧 PPT 解释失败或 PPTX 错用快照：读[Impress 选区与格式分派](../features/selections.md#impress-选区ppt-与-pptx-不共用降级)，区分旧 PPT 受限只读降级与 PPTX 权威源复核。
-- 文献附件加入对话、无会话预览或标签导航异常：读[选区知识](../features/selections.md)附件章节；分别核对文件消息输入、Renderer 预览身份与服务端本地文件授权，不误走复制导入或文献综述流程。
-- 文献笔记共享编辑、保存竞态或 Markdown 导出：读[笔记保存边界](../features/selections.md#文献-markdown-笔记共享编辑与保存边界)；区分条目笔记与 PDF 阅读记录，不从错误返回或任意退出推定草稿已保存。
-- 文献 AI 解读首次打开、显式生成或模型 JSON 结果：读[解读结果边界](../features/selections.md#文献-ai-解读显式生成与结果可信度)；语法修复、字段有效、引用定位与临时预览是不同证明。
-- 选区翻译读错附件、缺失文件或非 JSON 报错：读[来源身份与错误反馈](../features/selections.md#选区动作的来源身份与错误反馈)；物理删除再读[独占附件副本](../features/selections.md#托管附件删除与翻译输入故障)。框选覆盖、取消或迟到结果读[图表临时结果](../features/selections.md#图表框选与临时结果)；全文任务调度、页对布局和发布前源校验读[逐页翻译](../features/selections.md#文献逐页翻译与页内分段)。
-- 资料审阅成功后落点错误：读[审阅完成与导航](../features/resources.md#审阅成员终态与批次投影)；业务完成、内存同步和标签导航分别核验。
-- 科研结果入库和 Agent 授权全文读取：[文献结果与全文边界](../features/downloads.md)。
-- 全网搜索重复执行、降级阶段或搜索证据：读[单次执行与阶段证据](../features/resources.md#全网搜索的单次执行与阶段证据)。
-- 搜索栏断线、恢复或删除任务：读[搜索栏任务生命周期](../features/downloads.md#搜索栏任务与对话结果是不同生命周期)。
-- 对话检索结果展示、状态或入库混淆：读[结果展示与入库边界](../features/downloads.md#检索结果展示不等于下载或入库)。
-- 同任务跨回合全文同意、异任务误复用：读[全文同意与有效范围](../features/downloads.md#全文同意与有效授权范围)。
-- PaperCard 原句、独立本地证据或 PDF 精确定位：读[原句与定位边界](../features/selections.md#papercard-原句独立本地证据与严格定位)。
-- 文献综述激活、历史工作区或产物读取：读[综述安全边界](../features/review.md)及其产品 Skill/Serve Owner；业务问题不需要加载全部通用 Skill 发现知识。
+- Literature category trees, project navigation, duplicate names among siblings, or category/tag deletion: read [Literature categories and project scope](../features/catalogue.md). Project identity belongs to Content; deleting a category does not delete literature. Old development-time requests to clear a database do not authorize deleting current data.
+- Dragging a PDF into a literature list, project drop targets, or isolation of mixed-file failures: read [Dragging and dropping literature PDF files](../features/catalogue.md#文献-pdf-文件拖放); do not route this into a Resources-directory job.
+- Bulk synchronization of literature metadata, retries after rate limiting, or writes still in flight after cancellation: read [Bulk synchronization of bibliographic metadata](../features/catalogue.md#题录元数据批量同步). Bulk operations do not automatically confirm ambiguous title matches; the progress panel and application-process lifecycle are different.
+- First load, pagination, refresh, version capabilities, or slow list requests in the resource tree: read [Resource knowledge-task navigation](../features/resources.md#按任务读取), then choose the section on loading, versions, review, or formats. Observing a targeted capability does not mean the overall request has no activation/traversal cost; old performance reports do not prove current latency or success on a real device.
+- An Office document remains at “分配编辑器” (the UI text “Assign editor”), WASM warm-up fails, or the document remains invisible after retry: read [Office lifecycle and rendering-readiness gates](../features/resources.md#office-生命周期与格式处理器是两个维度). Distinguish runtime readiness, document-load events, and rendering ACKs.
+- Markdown page width, source-search occlusion, external links, in-document anchors, or saved-reference navigation: read [Markdown reading and links](../features/resources.md#markdown-阅读与链接); do not reuse screenshots of the retired three-width layout.
+- File tabs point to the wrong project, blur triggers auto-save, or review submissions are duplicated: read the project workspace and batch-terminal-state sections in [Resource knowledge-task navigation](../features/resources.md#按任务读取). File review does not use the literature-review flow, and UI state cannot replace persisted-state or business-terminal-state evidence.
+- Adding selected text to a conversation, sending a selection, or source evidence: read [Selection snapshot boundaries](../features/selections.md). The send snapshot and source validation for explanation/editing are different operations.
+- A partial PPT/PPTX drag selection becomes a whole-box selection, legacy PPT explanation fails, or PPTX incorrectly uses a snapshot: read [Impress selection and format dispatch](../features/selections.md#impress-选区ppt-与-pptx-不共用降级), distinguishing the restricted read-only fallback for legacy PPT from authoritative-source revalidation for PPTX.
+- Adding a literature attachment to a conversation, previewing without a session, or abnormal tab navigation: read the attachment section of [Selection knowledge](../features/selections.md). Check file-message input, Renderer preview identity, and server-side local-file authorization separately; do not route into copy/import or literature-review flows.
+- Shared editing of literature notes, save races, or Markdown export: read [Note-saving boundaries](../features/selections.md#文献-markdown-笔记共享编辑与保存边界). Distinguish item notes from PDF reading records; do not infer that a draft was saved from an error response or arbitrary exit.
+- First open of AI interpretation for literature, explicit generation, or model JSON results: read [Interpretation-result boundaries](../features/selections.md#文献-ai-解读显式生成与结果可信度). Syntax repair, valid fields, citation location, and temporary preview are different forms of evidence.
+- A selection translation reads the wrong attachment, a file is missing, or an error is not JSON: read [Source identity and error feedback](../features/selections.md#选区动作的来源身份与错误反馈); for physical deletion, also read [Exclusive attachment copies](../features/selections.md#托管附件删除与翻译输入故障). For selection-box coverage, cancellation, or late results, read [Temporary chart results](../features/selections.md#图表框选与临时结果). For full-text task scheduling, facing-page layout, and pre-publication source validation, read [Page-by-page translation](../features/selections.md#文献逐页翻译与页内分段).
+- A resource review succeeds but navigates to the wrong place: read [Review completion and navigation](../features/resources.md#审阅成员终态与批次投影); verify business completion, in-memory synchronization, and tab navigation separately.
+- Ingesting research results and Agent authorization to read full text: [Literature results and full-text boundaries](../features/downloads.md).
+- Duplicate execution of web-wide search, degraded stages, or search evidence: read [Single execution and stage evidence](../features/resources.md#全网搜索的单次执行与阶段证据).
+- Search-bar disconnection, recovery, or task deletion: read [Search-bar task lifecycle](../features/downloads.md#搜索栏任务与对话结果是不同生命周期).
+- Confusion about displaying, tracking, or ingesting conversation search results: read [Display results versus ingestion boundaries](../features/downloads.md#检索结果展示不等于下载或入库).
+- Reusing full-text consent across turns of the same task, or mistakenly reusing it for another task: read [Full-text consent and valid scope](../features/downloads.md#全文同意与有效授权范围).
+- PaperCard original wording, independent local evidence, or precise PDF location: read [Original wording and location boundaries](../features/selections.md#papercard-原句独立本地证据与严格定位).
+- Activating a literature review, using a historical workspace, or reading its artifacts: read [Literature-review safety boundaries](../features/review.md) and its product Skill/Serve Owner. A business issue does not require loading all general Skill-discovery knowledge.
 
-## Desktop 与平台
+<a id="desktop-与平台"></a>
+## Desktop and Platforms
 
-- 反馈录制丢最后一步、暂停/停止或探针恢复：读[探针所有权与停止快照](../../apps/desktop/docs/architecture/ownership.md#反馈录制的探针所有权与停止快照)；分别核验输入过滤、网络正文、截图和诊断日志，不以历史提交成功证明当前安全或实机通过。
-- 反馈上报、诊断包、会话归属或上游错误：读[Serve 反馈上报边界](../architecture/serve.md#反馈上报与诊断包边界)；本地契约测试不证明上游当前部署或真实提交。
-- 工作台缓存、标签回收或资源释放：读[驻留与释放边界](../../apps/desktop/docs/architecture/ownership.md#工作台驻留与资源释放)，不将历史状态机或缓存预算当作当前实现。
-- 退出重开后页面、设置子页、活动文档或停靠会话未恢复：读[Renderer 上次位置与目录校验](../../apps/desktop/docs/architecture/renderer.md#current--required--gap--advisory)；保存导航指针不等于持久化未保存内容。
-- 内置浏览器、原生浮层、CDP 或浏览器产品开关：读[Desktop 浏览器约束](../../apps/desktop/docs/browser.md)，区分源码状态与真实验收。
-- 后台准备更新、激活、恢复或候选 Provider 启动：读[Desktop 更新兼容边界](../../apps/desktop/updater/README.md#windows-velopack)；准备完成、重启授权、排空与健康提交不是同一证明。
-- 跨平台路径、权限、进程、缓存/Temp/workspace 或归档问题：先读[跨平台开发与验收](development.md#跨平台开发与验收)，再定位实际代码 Owner；不放宽安全校验。
+- Feedback recording misses the final step, pause/stop behavior, or probe recovery: read [Probe ownership and stop snapshots](../../apps/desktop/docs/architecture/ownership.md#反馈录制的探针所有权与停止快照). Verify input filtering, network payloads, screenshots, and diagnostic logs separately; a successful historical submission does not prove current safety or success on a real device.
+- Feedback submission, diagnostic bundles, session ownership, or upstream errors: read [Serve feedback-submission boundaries](../architecture/serve.md#反馈上报与诊断包边界). Local contract tests do not prove the current upstream deployment or a real submission.
+- Workbench caching, tab reclamation, or resource release: read [Residency and release boundaries](../../apps/desktop/docs/architecture/ownership.md#工作台驻留与资源释放); do not treat historical state machines or cache budgets as the current implementation.
+- A page, settings subpage, active document, or docked session is not restored after quitting and reopening: read [Renderer last location and directory validation](../../apps/desktop/docs/architecture/renderer.md#current--required--gap--advisory). Saving a navigation pointer does not persist unsaved content.
+- Built-in browser, native overlays, CDP, or browser product switches: read [Desktop browser constraints](../../apps/desktop/docs/browser.md), distinguishing source state from real acceptance.
+- Background update preparation, activation, recovery, or candidate Provider startup: read [Desktop update-compatibility boundaries](../../apps/desktop/updater/README.md#windows-velopack). Preparation completion, restart authorization, draining, and health commitment are different evidence.
+- Cross-platform paths, permissions, processes, cache/Temp/workspace, or archive issues: first read [Cross-platform development and acceptance](development.md#跨平台开发与验收), then locate the actual code Owner. Do not relax security checks.
 
-## Serve、Runtime 与出网
+<a id="serveruntime-与出网"></a>
+## Serve, Runtime, and Egress
 
-- 模型连接保存或启停失败：读[连接准入](../architecture/serve.md#模型连接保存与启停准入)；个人模型能力和代理差异读[个人连接声明](../architecture/serve.md#个人连接的能力声明)，网关来源拒绝读[出站来源](../architecture/serve.md#出站来源与目的地)。不因普通聊天可用就跳过动作模态、低延迟策略或来源检查。
-- 模型列表刷新、连接快照或 Codex Host 复用：读[连接域模型与 Host 边界](../architecture/serve.md#连接域模型快照与-codex-host-共享)。
-- HTTP 200 后瞬时失败、是否能重试：读[流内失败重试窗口](streams.md#流内瞬时失败的重试窗口)。
-- 观察读取被持久化拖慢、backlog 与终态顺序：读[观察接收与临时暂存](streams.md#原生观察接收投影与临时暂存)。
-- EOF/终态混淆、delta 聚合或工具前缀转换：读[观察面与终态](streams.md#观察面与终态)与[聚合边界](streams.md#聚合不是协议降级)。会话、权限和流证据取数流程只维护在[Engineering guide](../../packages/damoatrace/README.md)；本表不授权启动产品、读取用户正文或修改权限。
-- 连接地址、检索传输或发行来源变化：读[出网与凭据边界](../architecture/network.md)，区分目标可配置与接收方授权；旧出网清单不是当前零泄漏证明。
-- Codex 固定制品、完整 vendor 载荷或 DMG 工具联网回退：读[构建 Owner 的内置制品](build.md#内置制品)及构建前提。
-- 品牌或包名切换涉及旧用户目录：读[路径真源与启动投影](../architecture/persistence.md#1-路径真源与启动投影)；不沿历史计划自动执行迁移。
-- 科研结论的事实/综合/推断分类与证据缺失：读[科研证据规则](../../skills/community/academic-research-guidance/references/evidence.md)；加载与常驻指令归属见[Product instructions](../../apps/serve/service/chat/prompts/baseInstructions.md)。规则存在或引用可追溯不证明结论正确。
+- Saving or starting/stopping a model connection fails: read [Connection admission](../architecture/serve.md#模型连接保存与启停准入). For personal-model capabilities and proxy differences, read [Personal connection declarations](../architecture/serve.md#个人连接的能力声明); for gateway-origin rejection, read [Outbound origins](../architecture/serve.md#出站来源与目的地). Do not skip action-mode, low-latency-policy, or origin checks just because ordinary chat works.
+- Model-list refresh, connection snapshots, or Codex Host reuse: read [Connection-scoped models and Host boundaries](../architecture/serve.md#连接域模型快照与-codex-host-共享).
+- Transient failure after HTTP 200 and whether it can be retried: read [In-stream transient-failure retry window](streams.md#流内瞬时失败的重试窗口).
+- Observation reads slowed by persistence, backlog, or terminal-event ordering: read [Observation receipt and temporary staging](streams.md#原生观察接收投影与临时暂存).
+- Confusion between EOF and terminal state, delta aggregation, or tool-prefix conversion: read [Observation surface and terminal state](streams.md#观察面与终态) and [Aggregation boundaries](streams.md#聚合不是协议降级). Procedures for retrieving session, permission, and stream evidence are maintained only in the [Engineering guide](../../packages/damoatrace/README.md); this table does not authorize starting the product, reading user content, or changing permissions.
+- Connection-address, retrieval-transport, or distribution-origin changes: read [Egress and credential boundaries](../architecture/network.md), distinguishing configurable destinations from recipient authorization. An old egress inventory does not prove zero leakage today.
+- Fixed Codex artifacts, complete vendor payloads, or DMG tool network fallback: read [Build Owner's bundled artifacts](build.md#内置制品) and the build prerequisites.
+- A brand or package-name switch involving old user directories: read [Path source of truth and startup projection](../architecture/persistence.md#1-路径真源与启动投影); do not automatically perform migrations from historical plans.
+- Missing evidence or classification of research conclusions as fact/synthesis/inference: read [Research evidence rules](../../skills/community/academic-research-guidance/references/evidence.md); ownership of loading and persistent instructions is described in [Product instructions](../../apps/serve/service/chat/prompts/baseInstructions.md). The existence of a rule or traceable citation does not prove a conclusion is correct.
 
-## 开发与验证
+<a id="开发与验证"></a>
+## Development and Verification
 
-- CI 绿色含跳过、隔离或验证范围不明：读[CI 模式与质量结论](development.md#ci-模式临时隔离与质量结论)，先核对原始报告和实际模式。
-- 选择验证层级、编辑循环 affected、提交/发布门或 CI 提速：读[验证分层与 CI 编排器](development.md#验证分层与-ci-编排器)；GitLab 离散 job 与 `ci:test` 编排器职责不同。
-- Desktop 打包出现重复 `node_modules`、asar 闭包失败或把 `ws` 声明为运行时依赖：读[Electron 入口闭包](build.md#electron-入口闭包与浏览器驱动-node)；`build` 通过不替代 `package:check`。
+- CI is green but includes skips, isolation, or an unclear verification scope: read [CI modes and quality conclusions](development.md#ci-模式临时隔离与质量结论), first checking the original report and actual mode.
+- Choosing verification levels, affected edit cycles, commit/release gates, or CI speedups: read [Verification layers and the CI orchestrator](development.md#验证分层与-ci-编排器). Discrete GitLab jobs and the `ci:test` orchestrator have different responsibilities.
+- Desktop packaging has duplicate `node_modules`, an asar-closure failure, or declares `ws` as a runtime dependency: read [Electron entry closure](build.md#electron-入口闭包与浏览器驱动-node); a passing `build` does not replace `package:check`.
 
-定位到 Owner 正文后按当前源码、适用契约和真实验证要求继续；本表的路由与提醒不代替产品验收，也不证明链接目标的现状已核验。
+After locating the Owner document, continue using current source, applicable contracts, and real-verification requirements. This table's routing and reminders do not replace product acceptance and do not prove that linked documents have been checked for current accuracy.

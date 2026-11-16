@@ -7,7 +7,8 @@ Product Skills remain in [`skills/community/`](../../skills/community/).
 See [packaging and discovery boundaries](../architecture/skills.md),
 the [development guide](../../CONTRIBUTING.md) and [developer documentation](../../developer-docs/README.md).
 
-## 中文
+<a id="中文"></a>
+## Chinese
 
-开发 Skill、宿主说明及流程导航只在文档内源仓维护，不作为公开源码开发的必需依赖。
-产品 Skill 继续由源码仓管理；产品打包、发现与验收门禁不因开发 Skill 内迁而取消。
+Development Skills, host instructions, and workflow navigation are maintained only in the documentation source repository and are not required dependencies for public source development.
+Product Skills remain managed by the source repository. Product packaging, discovery, and acceptance gates are not removed because development Skills moved to the documentation repository.

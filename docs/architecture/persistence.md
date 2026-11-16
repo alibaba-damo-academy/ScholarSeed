@@ -1,13 +1,13 @@
 ---
 id: docs-persistence
-title: "持久化边界：路径 Owner、项目数据库与用户资产保留"
+title: "Persistence Boundaries: Path Owners, Project Databases, and User Asset Retention"
 doc_type: architecture
 category: architecture
 status: active
 date: 2026-10-10
 updated: 2026-10-17
 keywords: [architecture, persistence, session, trace, runtime]
-summary: "按数据是否随项目迁移决定持久化层级；路径由各 Owner 定义，项目库统一解析与连接，迁移保留用户资产。"
+summary: "Choose persistence scope based on whether data moves with a project; paths are defined by their Owners, project databases share resolution and connection rules, and migrations preserve user assets."
 code_refs:
   - "apps/serve/service/paths.py"
   - "apps/serve/service/brand.py"
@@ -26,61 +26,48 @@ code_refs:
   - "apps/desktop/scripts/cd/build.cjs"
 ---
 
-# 持久化边界
+<a id="持久化边界"></a>
+# Persistence Boundaries
 
-本页用于新增或修改持久化、核对路径归属和迁移安全。它解释机制与不变量，不是迁移脚本或固定操作流程。源码核验说明当前实现，不代表真实产品、故障恢复或跨平台验收通过；验收边界见第 6 节。跨域知识归属按[知识体系规范](knowledge.md)维护。
+Use this page when adding or changing persistence, checking path ownership, or reviewing migration safety. It explains mechanisms and invariants; it is not a migration script or fixed procedure. Source inspection describes the current implementation and does not prove real-product behavior, recovery, or cross-platform acceptance; see Section 6 for acceptance boundaries. Maintain cross-domain knowledge ownership according to the [Knowledge Architecture Standard](knowledge.md).
 
-## 1. 路径真源与启动投影
+<a id="1-路径真源与启动投影"></a>
+## 1. Path Sources of Truth and Startup Projection
 
-| Owner | 当前契约与原因 |
+| Owner | Current contract and rationale |
 | --- | --- |
-| Serve：[`service/paths.py`](../../apps/serve/service/paths.py) | 产品用户根由 `global_home()` 读取 `SCHOLARSEED_HOME`，缺省由 `brand.default_home()` 选择 `~/.scholarseed`。产品业务路径不进入 Runtime，不在业务代码重新拼 `Path.home()`。 |
-| 产品入口：[`service/brand.py`](../../apps/serve/service/brand.py) | `apply_runtime_defaults()` 在路径消费者导入前用 `setdefault` 投影 Trace home、ledger root 与 Codex home；显式环境配置不覆盖。路径常量会在导入时求值，事后改环境不是可靠的重新配置。包名变化不构成迁移既有用户目录或数据库的理由。 |
-| Trace：[`damoatrace/paths.py`](../../packages/damoatrace/damoatrace/paths.py) | `TracePaths` 持有 `DAMOATRACE_HOME` 与 `DAMOATRACE_LEDGER_ROOT`；独立运行默认 `~/.damoatrace`。产品入口提供缺省产品根，但不把 Trace 实现收进 Serve。 |
-| Codex Adapter：[`environment.py`](../../packages/adapters/codex/scholarseed_codex/environment.py) | `runtime_home()` 读取 `SCHOLARSEED_CODEX_HOME`，独立使用默认 `~/.codex`；产品缺省投影用户根下 `codex/`。Adapter 不依赖 `service.*`，存储配置还需遵守其 `runtime_storage_roots()` 契约。 |
-| Runtime：[`包 README`](../../packages/runtime/README.md) | 公共契约与 Gateway 不解析产品 home、不初始化用户目录；不得恢复旧 `DAMOAGENT_HOME` 转发或 Harness 路径层。 |
+| Serve: [`service/paths.py`](../../apps/serve/service/paths.py) | The product user root is read from `SCHOLARSEED_HOME` by `global_home()`; when unset, `brand.default_home()` selects `~/.scholarseed`. Product business paths do not belong in Runtime, and business code must not reconstruct them with `Path.home()`. |
+| Product entry point: [`service/brand.py`](../../apps/serve/service/brand.py) | Before path consumers are imported, `apply_runtime_defaults()` uses `setdefault` to project the Trace home, ledger root, and Codex home; explicit environment configuration is not overridden. Path constants are evaluated at import time, so changing the environment afterward is not a reliable reconfiguration method. A package-name change is not a reason to migrate existing user directories or databases. |
+| Trace: [`damoatrace/paths.py`](../../packages/damoatrace/damoatrace/paths.py) | `TracePaths` owns `DAMOATRACE_HOME` and `DAMOATRACE_LEDGER_ROOT`; standalone use defaults to `~/.damoatrace`. The product entry point supplies a default product root, but does not move the Trace implementation into Serve. |
+| Codex Adapter: [`environment.py`](../../packages/adapters/codex/scholarseed_codex/environment.py) | `runtime_home()` reads `SCHOLARSEED_CODEX_HOME` and defaults to `~/.codex` when used independently; the product projects `codex/` under the user root by default. The Adapter does not depend on `service.*`; its storage configuration must also follow the `runtime_storage_roots()` contract. |
+| Runtime: [`包 README` (package README)](../../packages/runtime/README.md) | Public contracts and the Gateway do not resolve the product home or initialize user directories. Do not restore the old `DAMOAGENT_HOME` forwarding or Harness path layer. |
 
-旧 `VEDA_*` 产品环境变量前缀已废弃，不作为新配置入口；产品根使用 `SCHOLARSEED_HOME`，Trace 与 Codex 保留各自 Owner 的变量。仓库的 [`lint.py`](../../scripts/ci/lint.py) 阻止跟踪文件重新引入旧前缀；[`build.cjs`](../../apps/desktop/scripts/cd/build.cjs) 中保留的 `VEDA_DESKTOP_DEFAULT_CONFIG` 仅用于拒绝旧输入，不代表兼容支持。历史文字或负向测试中的旧名不能作为运行时配置依据，新增变量应先核对实际读取 Owner。
+The old `VEDA_*` product environment-variable prefix is deprecated and is not a new configuration entry point. The product root uses `SCHOLARSEED_HOME`; Trace and Codex retain variables owned by their respective Owners. The repository's [`lint.py`](../../scripts/ci/lint.py) prevents tracked files from reintroducing the old prefix. `VEDA_DESKTOP_DEFAULT_CONFIG`, retained in [`build.cjs`](../../apps/desktop/scripts/cd/build.cjs), is used only to reject old input and does not indicate compatibility support. Old names in historical text or negative tests are not a basis for runtime configuration. Check the Owner that actually reads a variable before adding one.
 
-工作区不是用户状态根。[`bootstrap.resolve_workspace_root()`](../../apps/serve/service/bootstrap.py) 是唯一解析 Owner：产品设置优先，其次 `SCHOLARSEED_DEFAULT_WORKSPACE`，再取调用方注入的目录，缺省进程 cwd。不得恢复已移除的 `DEFAULT_WORKSPACE_DIR` 导入时常量或为隔离测试改优先级；不同入口各算一次会让日志、注册与实际使用的根漂移。
+The workspace is not the user-state root. [`bootstrap.resolve_workspace_root()`](../../apps/serve/service/bootstrap.py) is the sole resolution Owner: product settings take precedence, followed by `SCHOLARSEED_DEFAULT_WORKSPACE`, then the directory injected by the caller, and finally the process cwd. Do not restore the removed import-time `DEFAULT_WORKSPACE_DIR` constant or change precedence for test isolation. Resolving it independently at different entry points would cause the roots used by logs, registration, and actual operations to drift.
 
-### Desktop 启动选择与下次启动指针
+<a id="desktop-启动选择与下次启动指针"></a>
+### Desktop Startup Selection and Next-Startup Pointer
 
-Chromium 的 `sessionData` 由同一 Storage Owner 在创建 Session 前冻结。默认有效
-`userData`（Electron `appData` 下的当前应用名）继续使用既有账号级、按凭据 lane
-划分的 session 目录，保留现有登录态、缓存和浏览器 partitions；自定义有效 profile
-使用自身 `userData` 下按 lane 划分的 session 目录，不再被重定向到另一个 profile
-的共享目录。此规则不依赖测试 Home、工作区或 CDP 端口；更新恢复后的有效 profile
-也经过同一选择。历史共享数据不自动复制、迁移或删除，不能推断它属于某个自定义
-profile。路径规范化只用于默认 profile 分类，不替代原生 pin/lineage 与重解析点准入。
+Chromium `sessionData` is frozen by the same Storage Owner before the Session is created. The default valid `userData` (the current application name under Electron `appData`) continues to use the existing account-level session directory partitioned by credential lane, preserving existing sign-in state, caches, and browser partitions. A custom valid profile uses a session directory partitioned by lane under its own `userData` and is no longer redirected to another profile's shared directory. This rule does not depend on the test Home, workspace, or CDP port; a valid profile restored by an update follows the same selection. Historical shared data is not copied, migrated, or deleted automatically, and must not be assumed to belong to a particular custom profile. Path normalization is used only to classify the default profile; it does not replace native pin/lineage or reparse-point admission.
 
-[storage Owner](../../apps/desktop/src/main/storage.ts) 先选择、经启动检查后发布冻结
-快照；消费者的 `desktopHome()` 只读该快照，不在后端重启或环境变化时重解析。
-当前选择按显式环境、userData 指针、默认值裁决；原生启动观察还须核对实际路径与
-来源身份，不能把字符串规范化当安全目录资格。先选择不等于准入或已发布。
+The [storage Owner](../../apps/desktop/src/main/storage.ts) selects first, then publishes a frozen snapshot after startup checks; consumers' `desktopHome()` reads only that snapshot and does not resolve the path again after a backend restart or environment change. Selection precedence is explicit environment, the `userData` pointer, then the default. Native startup observation must also verify the actual path and source identity; string normalization does not establish that a directory is safe to use. Selection does not itself mean admission or publication.
 
-当前非 Windows 首启高级选择由 `canCommitDataHome` 限定，并在副作用前消费一次性
-选择权；提交指针仅影响下次启动，不迁移已有数据库、运行 writer 或供应商私有数据。
-发布成功后持久化收据可能失败，不能无依据重复选择第二个目录。Windows 不提供该
-运行期指针入口，不由此批准改注册表或用户配置。默认项目容器根与用户 home 分开，
-打包与开发分支也分别核验，不用旧提案“同父目录”规则覆盖显式 workspace 设置。
+The current first-run advanced selection on non-Windows is constrained by `canCommitDataHome` and consumes a one-time selection before side effects. Committing the pointer affects only the next startup; it does not migrate existing databases, active writers, or vendor-private data. A persistence receipt may fail after successful publication; do not select a second directory without a basis. Windows does not provide this runtime pointer entry point, which does not authorize changing the registry or user configuration. The default project-container root is separate from the user home. Verify packaged and development branches separately, and do not use the old proposal's “same parent directory” rule to override explicit workspace settings.
 
-修改此边界需验证启动前序、指针/环境冲突、失败和重启、原生观察及存量资产保留；
-当前代码存在不证明跨进程数据域准入或 legacy 排他迁移已通过。本页不授予迁移权限。
+Changes to this boundary require verification of startup ordering, pointer/environment conflicts, failures and restarts, native observation, and preservation of existing assets. The presence of current code does not prove that cross-process data-domain admission or exclusive legacy migration has passed. This page does not grant migration authority.
 
-产品身份或包名切换不是用户数据迁移授权：不得在启动时因旧目录存在而自动复制、
-移动、合并或覆盖其内容，也不引入双写或旧入口转发来掩盖路径归属。
-若确需迁移，另行明确授权、来源与目标、冲突和数据保留规则，并以显式、可审计的
-离线操作验证；本页不提供或证明该迁移工具已存在。旧名出现在负向测试、历史输入
-或必要兼容读取中不等于恢复旧运行 Owner，不能以全仓字符串零命中替代边界验证。
+Changing product identity or package name does not authorize user-data migration. At startup, do not automatically copy, move, merge, or overwrite content because an old directory exists, and do not introduce dual writes or forwarding from an old entry point to obscure path ownership. If migration is necessary, separately establish authorization, source and target, conflict handling, and data-retention rules, then verify it through an explicit, auditable offline operation. This page neither provides nor proves the existence of such a migration tool. Old names in negative tests, historical input, or necessary compatibility reads do not restore an old runtime Owner; a repository-wide zero-match result is not a substitute for verifying the boundary.
 
-Codex Adapter 只接受宿主显式提供的远程模型连接。`prepare_codex_runtime_home()` 只准备线程存储，不解析、复制或刷新个人 `auth.json`，不继承个人模型 provider 配置。已有认证文件不迁移、不删除；托管进程使用 `ephemeral` 禁止持久凭据回退。thread 恢复只走官方 App Server API，不把读取供应商私有数据库或复制 rollout 作为恢复方案；这些机制由 Adapter 维护，不在 Serve 自造兼容路径。
+The Codex Adapter accepts only remote model connections explicitly supplied by the host. `prepare_codex_runtime_home()` prepares thread storage only; it does not parse, copy, or refresh a personal `auth.json`, and does not inherit personal model-provider configuration. Existing authentication files are neither migrated nor deleted; managed processes use `ephemeral` to prevent fallback to persistent credentials. Thread restoration uses only the official App Server API; reading a vendor-private database or copying a rollout is not a recovery strategy. The Adapter owns these mechanisms; Serve must not invent a compatibility path.
 
-`paths.storage_instance_id()` 对规范化持久化根计算不可逆指纹，用于客户端核对 loopback 后端是否属于同一存储 profile；健康响应不暴露原路径。这不单独证明业务可用、授权或恢复成功。
+`paths.storage_instance_id()` computes an irreversible fingerprint of the normalized persistence root so the client can check whether the loopback backend belongs to the same storage profile; health responses do not expose the original path. This alone does not prove business availability, authorization, or successful recovery.
 
-## 2. 用户级状态及隔离理由
+<a id="2-用户级状态及隔离理由"></a>
+## 2. User-Level State and Reasons for Isolation
 
-### 跨进程协调与旧目录退役
+<a id="跨进程协调与旧目录退役"></a>
+### Cross-Process Coordination and Retirement of the Old Directory
 
 Desktop and standalone Serve share the account-level registry. On macOS each
 slot uses a permanent file with a nonblocking `flock`; on Windows each slot uses
@@ -89,17 +76,10 @@ both lookup and acquisition. Reclaiming a macOS slot removes its mapping and
 keeps its lock file available for reuse. A preexisting macOS byte-range binding
 blocks admission so that both protocols cannot grant access to the same data.
 
-macOS 与 Windows 的 Desktop 和独立 Serve 默认使用账号级
-`.scholarseed-locks-v2`。SQLite 写事务串行化槽位分配和回收。macOS 对每个
-`slot-<编号>` 文件使用非阻塞 `flock`，Windows 对共享文件使用原生字节范围锁。
-分配在持有事务时完成原生锁获取。回收在同一事务内确认独占锁和持久
-引用，再删除槽位映射。释放租约时尝试回收，重新绑定目录时分批检查崩溃遗留的槽位。
-固定绑定文件和 SQLite 主库均校验物理文件身份。macOS 槽位文件保留供编号复用，
-注册表拒绝旧的字节范围绑定。目录下的进程族和未完成变更记录
-仍保留各自的恢复规则。
+Desktop and standalone Serve on macOS and Windows use the account-level
+`.scholarseed-locks-v2` by default. SQLite write transactions serialize slot allocation and reclamation. macOS uses a nonblocking `flock` on each `slot-<编号>` (`slot-<number>`) file; Windows uses a native byte-range lock on the shared file. The native lock is acquired while the allocation transaction is held. Reclamation verifies the exclusive lock and persistent references in the same transaction, then deletes the slot mapping. Releasing a lease attempts reclamation; rebinding a directory checks crash-left slots in batches. Physical file identity is verified for both the fixed binding file and the SQLite main database. macOS slot files are retained for reuse of their numbers, and the registry rejects old byte-range bindings. Process families under the directory and incomplete change records retain their respective recovery rules.
 
-macOS 的 Serve 将已准入的存储占用描述符传给 Codex app-server。继承描述符的子进程
-保有对应锁直到关闭描述符或退出。Windows 继续使用现有 Job 对象管理运行时进程族。
+Serve on macOS passes the admitted storage occupancy descriptor to the Codex app-server. A child process that inherits the descriptor holds the corresponding lock until it closes the descriptor or exits. Windows continues to use the existing Job object to manage the runtime process family.
 
 On Windows and macOS, Desktop and Serve remove the account-level
 `.scholarseed-coordination` directory at startup before using
@@ -109,499 +89,235 @@ An older version may recreate the directory
 while the new version runs, and their locks cannot coordinate concurrent access.
 Standalone Serve on Linux continues to use the original coordination protocol.
 
-Windows 和 macOS 的 Desktop 与 Serve 启动时删除账号级
-`.scholarseed-coordination`，再使用 `.scholarseed-locks-v2`。
-旧目录不存在时直接继续。删除遇到文件系统错误时记录日志并继续启动，下次启动重试。
-旧版可以在新版运行期间
-重建旧目录，两套锁无法协调并发访问。Linux 独立 Serve 继续使用原协调协议。
+At startup, Desktop and Serve on Windows and macOS remove the account-level
+`.scholarseed-coordination` (the legacy directory), then use `.scholarseed-locks-v2`.
+If the legacy directory is absent, startup continues. If deletion encounters a filesystem error, startup logs the failure and continues; the next startup retries cleanup. An older version may recreate the old directory while the new version runs, and the two lock protocols cannot coordinate concurrent access. Standalone Serve on Linux continues to use the original coordination protocol.
 
-实现入口见 [Desktop 注册表](../../apps/desktop/native/registry.cjs)、
-[Serve 注册表](../../apps/serve/service/platform/registry.py) 和
-[离线清理](../../apps/serve/service/platform/retirement.py)。
+Implementation entry points: [Desktop registry](../../apps/desktop/native/registry.cjs), [Serve registry](../../apps/serve/service/platform/registry.py), and [offline cleanup](../../apps/serve/service/platform/retirement.py).
 
-完整路径清单以 [`service/paths.py`](../../apps/serve/service/paths.py) 为准；以下按用途路由，不维护另一份可枚举常量表。日志 `SYSTEM_LOG` 位于产品根的 `logs/scholarseed.log`；Trace 的 `app`、`trace`、`metrics` 子目录由 `TracePaths` 决定。历史 agents、packs、daemon、REPL 目录存在不证明产品仍提供旧 Harness 能力。
+Use [`service/paths.py`](../../apps/serve/service/paths.py) as the complete path inventory; the table below routes by purpose and is not a second enumerable constants list. The `SYSTEM_LOG` log is at `logs/scholarseed.log` under the product root; `TracePaths` determines Trace's `app`, `trace`, and `metrics` subdirectories. The existence of historical agents, packs, daemon, or REPL directories does not prove that the product still provides the old Harness capabilities.
 
-| 状态 | 常量与 Owner | 必须保留的区分 |
+| State | Constants and Owner | Distinctions that must be preserved |
 | --- | --- | --- |
-| 操作记录、会话与项目身份 | `SERVICE_ACTIONS_DB`、`SESSION_CATALOG_DB`、`CONTENT_DB`；各业务 persistence 模块 | 产品操作 envelope 不是 Trace；跨项目会话目录与项目身份属于用户根，不能随单项目复制。 |
-| 会话执行文件 | `SESSION_RUNTIME_DIR`、`SESSION_OUTPUT_DIRNAME`、`SESSION_ATTACHMENT_DIRNAME`；chat 域 | 会话目录包含 `outputs/` 与 `attachments/`；其他产物布局继续查 Owner，不自行从目录名推断可恢复性。 |
-| 桌面登录交接 | `DESKTOP_HANDOFF_DB`；[`identity/persistence/handoff.py`](../../apps/serve/service/identity/persistence/handoff.py) | 带租约 claim 与一次性 code 生命周期短、写入频繁，独立于长期会话目录。调用 `transaction(..., private=True)`；不把明文 code 放入项目库。 |
-| 连接配置与产品偏好 | `CONFIG_PATH` 对比 `SERVE_SETTINGS_FILE` | `config.json` 是模型/provider 连接配置，`service/settings.json` 是产品偏好；不能混写默认权限等偏好。 |
-| 认证、记忆、技能和项目列表 | `AUTH_FILE`、`CREDENTIALS_FILE`、`USER_MEMORY_CONFIG_FILE`、`USER_MEMORY_DIR`、`SERVICE_SKILL_STATE_FILE`、`SERVICE_PROJECTS_FILE` | 基础 HTTP 认证、CLI 凭据、用户记忆、技能开关与跨项目列表各有 Owner；本地 HTTP 认证不等于模型授权。 |
-| 技能内容与测试会话 | `SERVICE_SKILLS_DIR`、`SERVICE_BUNDLED_SKILLS_DIR`、`SERVICE_CASES_DIR` | 用户 `skills/` 可变；随包技能来自代码内 `capabilities/skills/`，不是 home 状态，不能把用户技能复制进包。`test_sessions/` 是测试状态，不是正式会话恢复依据。 |
-| 文献数据 | `SERVICE_LITERATURE_DATABASE`、`SERVICE_LITERATURE_FILES_DIR`；[`literature/persistence/store.py`](../../apps/serve/service/literature/persistence/store.py) | 当前文献 store 默认用户级 SQLite。不能继续把旧 `.scholarseed/literature.json` 写成该 store 的现行落盘。 |
+| Operation records, sessions, and project identity | `SERVICE_ACTIONS_DB`, `SESSION_CATALOG_DB`, `CONTENT_DB`; business persistence modules | The product operation envelope is not Trace. Cross-project session directories and project identity belong under the user root and must not be copied with a single project. |
+| Session execution files | `SESSION_RUNTIME_DIR`, `SESSION_OUTPUT_DIRNAME`, `SESSION_ATTACHMENT_DIRNAME`; chat domain | Session directories contain `outputs/` and `attachments/`. Check the Owner for other artifact layouts; do not infer recoverability from directory names. |
+| Desktop sign-in handoff | `DESKTOP_HANDOFF_DB`; [`identity/persistence/handoff.py`](../../apps/serve/service/identity/persistence/handoff.py) | A leased claim and one-time code have short lifetimes and frequent writes, separate from long-lived session directories. Call `transaction(..., private=True)`; do not put a plaintext code in a project database. |
+| Connection configuration and product preferences | `CONFIG_PATH` versus `SERVE_SETTINGS_FILE` | `config.json` contains model/provider connection configuration; `service/settings.json` contains product preferences. Do not mix in preferences such as default permissions. |
+| Authentication, memory, skills, and project list | `AUTH_FILE`, `CREDENTIALS_FILE`, `USER_MEMORY_CONFIG_FILE`, `USER_MEMORY_DIR`, `SERVICE_SKILL_STATE_FILE`, `SERVICE_PROJECTS_FILE` | Basic HTTP authentication, CLI credentials, user memory, skill toggles, and the cross-project list each have an Owner. Local HTTP authentication is not model authorization. |
+| Skill content and test sessions | `SERVICE_SKILLS_DIR`, `SERVICE_BUNDLED_SKILLS_DIR`, `SERVICE_CASES_DIR` | User `skills/` is mutable. Bundled skills come from code under `capabilities/skills/`; they are not home state, and user skills must not be copied into the package. `test_sessions/` is test state, not a basis for production session recovery. |
+| Literature data | `SERVICE_LITERATURE_DATABASE`, `SERVICE_LITERATURE_FILES_DIR`; [`literature/persistence/store.py`](../../apps/serve/service/literature/persistence/store.py) | The current literature store defaults to user-level SQLite. Do not continue documenting the old `.scholarseed/literature.json` as the store's current on-disk representation. |
 
-**文献共享与项目投影：** 同一 `literature_id` 可关联多个项目，项目关联由文献
-Repository 的 `literature_projects` 管理，不以项目切换创建第二份题录权威源。
-目录分类另按全局/项目作用域管理，不能把共享对象等同于无范围限制。
-[counts 路由](../../apps/serve/service/literature/api/catalogue.py) 先核对项目 scope，
-再读取该项目 view；项目列表、计数、详情与导航上下文须分别保持范围。
-[仓储契约](../../apps/serve/tests/contract_literature_store.py) 验证同 ID 的跨项目投影，
-不证明所有 UI 入口、附件/阅读记录或已打开标题会即时同步；真实回归需比较项目 A、
-B 与全局的对象和附件身份、笔记/标注及刷新后结果。一次健康模型回合只证明连接，
-不能替代同步验收；历史无冲突副本报告也不代表任意新导入都做自动去重。
+**Literature sharing and project projection:** The same `literature_id` can be associated with multiple projects. The literature Repository manages project associations in `literature_projects`; switching projects does not create a second authoritative bibliographic record. Folder classification separately uses global/project scopes; a shared object is not thereby unrestricted. The [counts route](../../apps/serve/service/literature/api/catalogue.py) checks project scope before reading that project's view. Project lists, counts, details, and navigation context must each preserve scope. The [repository contract](../../apps/serve/tests/contract_literature_store.py) verifies cross-project projection for the same ID; it does not prove immediate synchronization across every UI entry point, attachment/reading record, or open title. Real regression must compare object and attachment identities, notes/annotations, and results after refresh across projects A and B and the global view. A healthy model turn proves only connectivity and cannot replace synchronization acceptance; a historical report of conflict-free copies does not mean that arbitrary new imports are automatically deduplicated.
 
-`paths.service_deny_read_roots()` 逐文件收集业务库及其 WAL/SHM 边车，并包括专属私有目录；只保护主库会遗漏最新写入。不能直接 deny 整个 `SERVICE_DIR`，其中还包含受控桥和会话工作目录。新增状态时检查这一消费者及真正的授权边界，不能以路径命名代替访问控制。
+`paths.service_deny_read_roots()` collects business databases and their WAL/SHM sidecars file by file, and includes dedicated private directories; protecting only the main database would miss the latest writes. Do not deny the entire `SERVICE_DIR`, which also contains the controlled bridge and session working directories. When adding state, check this consumer and the actual authorization boundary; path naming is not access control.
 
-文献 L1 的存储接口复用 `literature/persistence/analysis.py` 的已有 AI 结果和分段表。
-提取检查点按文献、文件修订及附件 ID 绑定；summary 保存完整结果，metadata 查询仅
-投影资格字段。已知旧 producer 的阅读深度误标只在读取投影修正，原始 JSON 不回写。
-写入显式列名以保留已有额外列；不增加独立数据库或在启动时重提取。文献域的
-`reading_state()` 仅判定结构和源版本，不代表证据质量、综述准入或新消费流程已验收。
+The Literature L1 storage interface reuses existing AI results and segmentation tables in `literature/persistence/analysis.py`. Extraction checkpoints are bound to the literature item, file revision, and attachment ID; `summary` stores the complete result, while metadata queries project only eligibility fields. A known reading-depth mislabel from an old producer is corrected only in the read projection; the original JSON is not rewritten. Writes use explicit column names to preserve existing extra columns. No separate database is added and no re-extraction occurs at startup. The literature domain's `reading_state()` determines only structure and source version; it does not establish evidence quality, review eligibility, or acceptance of a new consumer flow.
 
-### Windows 私有配置与运行目录权限
+<a id="windows-私有配置与运行目录权限"></a>
+### Windows Private Configuration and Runtime Directory Permissions
 
-SYSTEM、Administrators 和 OWNER RIGHTS 的身份统一由 `service.platform.windows`
-通过 Windows `CreateWellKnownSid` 获取，目录准入与私有校验复用同一来源；当前用户
-从进程令牌读取，不配置机器或用户 SID 白名单。身份来源共用不意味着授权策略合并。
+The identities for SYSTEM, Administrators, and OWNER RIGHTS are obtained uniformly by `service.platform.windows` through Windows `CreateWellKnownSid`; directory admission and private checks use the same source. The current user is read from the process token; no machine or user SID allowlist is configured. Sharing an identity source does not merge authorization policies.
 
-Windows 普通产品数据（userData 指针、home、协调记录、会话、日志及配置）以当前
-进程实际 open/read/create/write/lock 权限为准，不再对既有目录和文件额外执行其他 SID
-或 owner 排他性审计；不会仅因共享继承规则停止启动。真实拒绝访问仍失败，启动不以
-自动改写既有 ACL 恢复访问。新建对象保留显式私有描述符。PRIVATE 是产品记录/并发域
-角色，不再表示 Windows 跨账号隔离保证：操作系统已授权的写者可以修改数据和协调记录。
+For ordinary product data on Windows (the `userData` pointer, home, coordination records, sessions, logs, and configuration), the effective permissions are the current process's actual open/read/create/write/lock permissions. Existing directories and files are no longer subjected to an additional exclusivity audit for other SIDs or the owner; startup does not stop solely because permissions are shared through inheritance. Actual access denial still fails, and startup does not restore access by automatically rewriting existing ACLs. Newly created objects retain an explicit private descriptor. PRIVATE is a product-record/concurrency-domain role, not a guarantee of cross-account isolation on Windows: writers authorized by the operating system can modify the data and coordination records.
 
-显式 `windows.validate_private`、保护操作及 sandbox 的专属权限契约仍存在；安装树的
-原生 INSTALLATION 角色和 Python InstallationBinding 继续检查根、内部目录及种子文件，
-不会因普通数据策略放宽而降级。程序签名、组件资格、提权清理不继承普通数据权限。
+The dedicated permission contracts for explicit `windows.validate_private`, protected operations, and the sandbox remain. The native INSTALLATION role and Python InstallationBinding for the installation tree continue to check the root, internal directories, and seed files; they are not weakened by the relaxed ordinary-data policy. Code signing, component eligibility, and privileged cleanup do not inherit ordinary-data permissions.
 
-身份、重解析点、硬链接、锁、原子发布及不确定释放检查保持；macOS/POSIX 原规则不变。
-原生 ACL 和数据操作由 `contract_lease`、`contract_browser_storage` 等定向契约覆盖；
-本轮按用户要求仅轻量验证、不打包，不以契约测试证明安装后完整产品验收。
+Identity, reparse-point, hard-link, lock, atomic-publication, and uncertain-release checks remain; macOS/POSIX rules are unchanged. Targeted contracts such as `contract_lease` and `contract_browser_storage` cover native ACL and data operations. For this round, only lightweight verification is requested and no package build is performed; contract tests do not prove full post-install product acceptance.
 
-### 会话正文与定时维护
+<a id="会话正文与定时维护"></a>
+### Session Bodies and Scheduled Maintenance
 
-高频流式事件由 `chat/persistence/blocks.py` 持有，位置使用路径 Owner 的
-`SESSION_BLOCK_SUFFIX`。SQLite 每块记录序号范围、已提交文件范围、校验摘要和幂等筛选摘要；
-不会为每个增量再建立事件行或正文摘要行。块内保留原始事件序号、全局身份、时间、幂等键及
-完整可逆正文。回答的累计快照在同块、同消息身份且确为扩展时保存前缀引用和后缀；改写、
-清空或缩短保存完整值。思考和工具输出的原始增量保持原语义。编码大小、展开大小及事件数
-均有界；大单值独立成块并受原单值限制。
+High-frequency streaming events are owned by `chat/persistence/blocks.py`; their location uses the path Owner's
+`SESSION_BLOCK_SUFFIX`. For each block, SQLite records the sequence range, committed file range, verification digest, and idempotency-filter digest;
+SQLite records each block's sequence range, committed file range, verification digest, and idempotency-filter digest; it does not create another event row or body-digest row for every increment. Blocks retain original event sequence numbers, global identity, timestamps, idempotency keys, and fully reversible bodies. A cumulative answer snapshot stores a prefix reference and suffix only when it extends the same message identity in the same block; rewrites, clears, and shortened values are stored in full. Original increments for reasoning and tool output retain their semantics. Encoded size, expanded size, and event count are all bounded; a large single value gets its own block and remains subject to the original single-value limit.
 
-写入追加新帧、同步文件后才允许 SQL 事务提交块范围与会话游标；未提交尾部不可回放。
-快照读取绑定已提交范围：并发追加或回滚尾部时重新核验已读范围摘要，允许合法尾部变化，
-但拒绝文件身份替换、已提交范围缩短或正文改写。
-块文件按会话隔离，物理追加顺序与逻辑事件序号分别校验，允许存量定时迁移与新事件交错。
-幂等筛选只用于缩小候选范围，仍比较原始键和完整事件，不能把哈希命中视为业务相等。
-`ProductEventStore` 统一合并块和稀疏状态事件，保持任意序号重连、分页及恢复投影。
-`session_artifact_source` 仅保存资产实际引用的来源身份；新引用须在同事务核实真实事件，
-更新检查也验证来源，不能因块迁移触发原事件外键的资产级联删除。
+Writes append a new frame and sync the file before the SQL transaction may commit the block range and session cursor; an uncommitted tail cannot be replayed. Snapshot reads are bound to the committed range: if a concurrent append or tail rollback occurs, the digest of the range already read is checked again. Valid tail changes are allowed, but file-identity replacement, a shortened committed range, or a rewritten body is rejected.
+Block files are isolated per session; physical append order and logical event sequence numbers are checked separately, allowing existing data migration to interleave with new events. Idempotency filtering only narrows candidates; the original key and complete event are still compared, so a hash match is not treated as business equality. `ProductEventStore` merges blocks and sparse state events while preserving reconnects from any sequence number, pagination, and recovery projections. `session_artifact_source` stores only source identities actually referenced by artifacts. A new reference must verify the real event in the same transaction, and update checks verify the source as well; block migration must not trigger cascading artifact deletion through the original event foreign key.
 
-块目录的持久 namespace token、文件名及完整文件头共同证明文件归属。独占维护仅在没有
-已提交块引用时清理相符文件；未知文件、缺失或损坏的 namespace 保留并报错。
+The persistent namespace token, filename, and complete file header jointly establish ownership of a block directory. Exclusive maintenance cleans up a matching file only when there are no committed block references; unknown files and missing or corrupted namespaces are retained and reported as errors.
 
-`chat/persistence/journal.py` 持有稀疏状态事件和会话状态的正文 JSONL，位置由 paths 的
-`SESSION_BODY_SUFFIX` 在会话库同目录推导专用目录，并由 `service_deny_read_roots()` 保护。
-SQLite 保存 generation、内容摘要、偏移、长度、提交边界及各业务表的显式引用列；事件 ID、序号、
-幂等键、时间和运行身份不变。新写正文先落盘同步，再在同一 SQL 事务内提交引用；
-回滚留下的尾部不属于已提交历史。读取校验摘要、边界及固定文件身份，损坏明确失败。
-队列、审批、历史前缀和恢复事件经各自 Owner 还原，不使用全局 row_factory 隐式转换。
+`chat/persistence/journal.py` owns the body JSONL for sparse state events and session state. Its location is derived by paths from
+`SESSION_BODY_SUFFIX` to derive a dedicated directory alongside the session database; `service_deny_read_roots()` protects it. SQLite stores the generation, content digest, offset, length, commit boundary, and explicit reference columns for each business table; event IDs, sequence numbers, idempotency keys, timestamps, and runtime identity remain unchanged. New body content is written and synced to disk before its reference is committed in the same SQL transaction; a tail left by rollback is not committed history. Reads verify the digest, boundaries, and fixed file identity, and fail explicitly on corruption. Each Owner restores queues, approvals, history prefixes, and recovery events; no implicit conversion through a global `row_factory` is used.
 
-启动只初始化必要 schema，不搬迁历史正文、不扫描碎片、不执行 VACUUM。
-`chat/service/maintenance.py` 首次等待 15 分钟，之后按同一周期检查。检查持有共享运行期资格，
-在有预算的只读快照中查找待迁移数据、可回收 SQLite 空间、正文日志待回收项和无引用事件块；
-探测使用的临时表留在内存。无工作或探测繁忙、超预算时不关闭准入、不排空常驻进程。
-只有探测到候选工作，组合根才以 `Activities.begin_if_idle()` 原子关闭准入，再排空附件和资源、
-seal 全部 lease 并取得原生排他目录资格；写入前在独占资格下重新检查候选条件。
-存量流式事件按有界批次迁入块，完整核对后才删除旧行；其他内联正文迁入正文日志后清空原列。
-忙时或预算耗尽留待下次，存量批次未完成时缩短重试间隔，
-维护结束重新取得正常目录资格后恢复准入。迁移未完成时 60 秒后重试；2 秒预算只约束迁移循环，
-不是整个准入关闭时长的上限。组合根记录排空、封闭及总耗时。退出等待已启动的实际 IO 完成。
+Startup initializes only the required schema; it does not migrate historical bodies, scan fragments, or run VACUUM.
+`chat/service/maintenance.py` waits 15 minutes before its first check and checks at the same interval thereafter. A check holds shared runtime admission and uses a budgeted read-only snapshot to look for data to migrate, reclaimable SQLite space, body-log entries eligible for reclamation, and unreferenced event blocks. Temporary tables used for probing remain in memory. If there is no work, or probing is busy or over budget, admission is not closed and resident processes are not drained.
+Only when candidate work is found does the composition root atomically close admission with `Activities.begin_if_idle()`, drain attachments and resources, seal all leases, and obtain native exclusive directory admission. It rechecks candidate conditions under exclusive admission before writing. Existing streaming events are migrated to blocks in bounded batches; old rows are deleted only after full verification. Other inline bodies are moved to the body log, after which their original columns are cleared. Busy or over-budget work is deferred; the retry interval is shortened while an existing batch remains incomplete. Admission is restored after maintenance regains normal directory admission. If migration remains incomplete, it retries after 60 seconds. The 2-second budget constrains only the migration loop, not the total time admission may remain closed. The composition root records drain, sealing, and total durations. Shutdown waits for actual IO that has already started to finish.
 
-仅迁移结束后才考虑物理回收。DBSTAT 页内空隙加 freelist 达到既定阈值时检查磁盘空间，
-执行 SQLite 原子 VACUUM 与 checkpoint；SQL 进度预算可以中断重写，但文件系统同步
-不是硬实时操作。未知无主键表与稀疏 sqlite_sequence rowid 仍跳过回收，保留用户资产。
-正文日志按 generation 回收：先持久化 staging 清单，复制并验证存活引用、同步新文件，
-再原子提交新索引和 generation；提交后只清理 retired 清单中的文件。清理校验文件头
-nonce 和身份，不扫描删除未知文件。失败与中断不发布半成品，保留清单；无法验证文件头归属时
-保留文件并报错，需要人工核实，不能声称所有中断均可自动清理。
-更新检查使用明确原库路径验证受目录资格保护的外部正文；journal Owner 检查所有索引
-边界及文件身份，各业务 reader 逐条验证有效引用正文，避免重复全量读取。
-预览不新建或迁移正文文件。
+Physical reclamation is considered only after migration completes. When DBSTAT page gaps plus freelist reach the established threshold, disk space is checked and SQLite atomic VACUUM and checkpoint are run. The SQL progress budget can interrupt the rewrite, but filesystem synchronization is not a hard real-time operation. Unknown tables without primary keys and sparse `sqlite_sequence` rowids continue to be skipped for reclamation, preserving user assets. Body logs are reclaimed by generation: first persist a staging manifest, copy and verify live references, sync the new file, then atomically commit the new index and generation. After commit, clean up only files in the retired manifest. Cleanup verifies the file-header nonce and identity and does not scan for and delete unknown files. A failure or interruption does not publish an incomplete artifact and leaves the manifest in place. If file-header ownership cannot be verified, retain the file and report an error for manual verification; do not claim that every interruption can be cleaned up automatically.
+Update checks use the explicit original database path to validate external bodies protected by directory admission. The journal Owner checks every index boundary and file identity; each business reader validates each referenced body, avoiding repeated full reads. Previews do not create or migrate body files.
 
-启动来源发现使用一次显式只读批次：入口与出口验证全部已占用目录绑定，批内仍由原生
-文件操作检查权限、身份和大小。临时读取视图不授予写入、不能嵌套或在退出后使用；
-批内失败拒绝整次结果，释放状态不确定时保留原始异常并停止后续释放。资格不跨发现
-迭代缓存，配置解码顺序与每文件限额保持不变。
+Startup source discovery uses one explicit read-only batch. At entry and exit, it validates every occupied directory binding; within the batch, native file operations still check permissions, identity, and size. A temporary read view grants no write access, cannot be nested, and cannot be used after exit. Any failure inside the batch rejects the entire result; if release state is uncertain, preserve the original exception and stop further releases. Admission is not cached across discovery iterations, and configuration-decoding order and per-file limits remain unchanged.
 
-供应商私有 JSONL 由 Adapter 的公开恢复接口管理；Trace 保持授权、脱敏和保留期限，
-两者不能代替产品完整事件。相同诊断正文的进一步引用复用尚未完成，不能声称所有
-供应商和诊断副本已消除。上述源码契约也不代表 Windows/macOS 真实更新已验收。
+Vendor-private JSONL is managed through the Adapter's public recovery interface. Trace retains its authorization, redaction, and retention limits; neither replaces complete product events. Further reference reuse for identical diagnostic bodies is not complete, so do not claim that all vendor and diagnostic copies have been eliminated. The source contracts above do not mean real updates on Windows/macOS have passed acceptance.
 
-启动源检查遇到 SQLite 边车身份变化时，不接收该次快照。只有主库身份保持不变、
-所有现存文件仍满足单链接普通文件约束时，错误才带有可重新观察的分类；原生目录
-资格 Owner 完整释放后，启动流程最多进行三次完整获取与检查，每次从全部发现源开始。
-持续变化、主库替换、孤立边车、格式错误或释放不确定仍失败关闭。该机制不复用
-失败快照、不跳过边车检查，也不以只读开库不会产生 WAL/SHM 变化为前提。
+If startup source inspection encounters a SQLite sidecar identity change, that snapshot is rejected. An error is classified as re-observable only when the main-database identity is unchanged and every existing file still satisfies the single-link regular-file constraint. Once the native directory-admission Owner has fully released its admission, startup may perform at most three complete acquisitions and checks, each starting from all discovery sources. Persistent changes, main-database replacement, orphaned sidecars, malformed formats, or uncertain release still fail closed. This mechanism does not reuse a failed snapshot, skip sidecar checks, or assume that opening a database read-only cannot change WAL/SHM state.
 
-运行期只读 schema 检查通过 `inspect_database()` 丢弃正常边车回收期间的失败观察。
-普通边车的 `lstat()` 短暂返回零链接时只标记需要重新观察，不将该文件当作已验证对象。
-重读关闭本次连接、保持主库身份一致且次数有界；不重试业务写入、工具调用或整个事件批次。
-主库零链接、硬链接、非普通文件与重解析点仍拒绝，严格启动/更新检查仍交完整资格重取。
+Runtime read-only schema checks use `inspect_database()` to discard failed observations made during normal sidecar reclamation. If `lstat()` briefly reports zero links for an ordinary sidecar, it only marks the file for re-observation; the file is not treated as verified. A reread closes the current connection, preserves the main-database identity, and is bounded in count. It does not retry business writes, tool calls, or an entire event batch. A main database with zero links, a hard link, a non-regular file, or a reparse point is still rejected; strict startup/update checks still require reacquiring full admission.
 
-## 3. 项目级数据：随项目迁移的资产
+<a id="3-项目级数据随项目迁移的资产"></a>
+## 3. Project-Level Data: Assets That Move with a Project
 
-### 新会话工作目录与 Agent 产物
+<a id="新会话工作目录与-agent-产物"></a>
+### Working Directories for New Sessions and Agent Artifacts
 
-新建项目会话以登记项目根为执行 cwd，不再为每个会话创建 `sessions/<ID>`
-工作目录。Agent 按产品指令自行选择 `output/<可读名称>/`，处理已有容器、重名及
-冲突；后端不预分配该目录，也不每回合注入固定输出路径。显示标题更新不移动文件，
-每回合上下文读取最新标题；实际产物位置与归属以会话工具事件和显式发布记录为准。
-产物 API 的相对路径以项目 cwd 为基准；文档内部相对引用的语义以文档目录为基准，
-但现有 session-artifact Markdown 预览尚不支持解析相对图片及普通相对文件跳转。
+New project sessions use the registered project root as their execution cwd; they no longer get a `sessions/<ID>` working directory each. The Agent chooses `output/<可读名称>/` (`output/<readable-name>/`) according to product instructions and handles existing containers, duplicate names, and conflicts. The backend does not preallocate this directory or inject a fixed output path on every turn. Updating the display title does not move files; each turn's context uses the latest title. Actual artifact location and ownership are determined by session tool events and explicit publication records. Relative paths in the artifact API are based on the project cwd; the meaning of relative references inside a document is based on the document's directory, but the current session-artifact Markdown preview does not yet resolve relative images or ordinary relative-file links.
 
-项目 cwd 会话的 `output_root` 保留为执行根契约值，不代表一个独占产物子目录，
-不得据此枚举整个项目为本会话产物或递归清理项目。删除会话保留未能证明独占归属的
-项目工作文件；发布快照仍按既有 Owner 清理。附件通过 `paths.session_attachment_root()`
-保留会话级位置。既有会话继续使用保存的 cwd；本改动不迁移历史资产。
+For a project-cwd session, `output_root` remains an execution-root contract value; it does not denote a dedicated artifact subdirectory. Do not use it to enumerate the whole project as this session's artifacts or recursively clean the project. Deleting a session preserves project work files whose exclusive ownership cannot be proven; published snapshots are still cleaned up by their existing Owner. Attachments retain their session-level location through `paths.session_attachment_root()`. Existing sessions continue to use their saved cwd; this change does not migrate historical assets.
 
-项目根 cwd 会话 fork 只分叉对话，保留共享项目文件及历史引用原位，不复制项目目录、
-不重写既有路径，也不自动创建文件快照或首次编辑副本。修改共享原文件会影响其他
-引用它的会话；另存副本由用户要求及 Agent 操作决定。继承的私有附件保留原会话
-身份，并沿已提交引用校验访问，不能将模型上下文中的任意路径当作授权。
-非项目私有 cwd 会话仍使用原有复制流程；旧数据缺少来源身份时不扩大附件访问。
+Forking a project-root-cwd session forks only the conversation. Shared project files and historical references remain in place; the project directory is not copied, existing paths are not rewritten, and no file snapshot or first-edit copy is created automatically. Editing a shared original file affects other sessions that reference it; saving a copy depends on the user's request and the Agent's action. Inherited private attachments retain their original session identity, and access is checked against committed references; an arbitrary path in model context is not authorization. Non-project sessions with private cwd continue to use the existing copy flow. If old data lacks source identity, attachment access is not widened.
 
-旧项目会话保留独立 cwd，fork 经 Content 的会话逻辑根分配独立目录，并沿既有复制与
-历史路径映射接续；不能只因属于同一个项目就跳过复制。转项目也保持独立目录布局，
-不把存量会话隐式切换为项目根 cwd；既有来源事件与文件保留，不自动搬迁历史资产。
+Legacy project sessions retain their separate cwd. A fork uses Content's session logical root to assign a separate directory and continues through the existing copy and historical path-mapping behavior; being in the same project is not a reason to skip copying. Moving a session to another project also retains the separate-directory layout and does not implicitly switch an existing session to the project-root cwd. Existing source events and files are retained; historical assets are not migrated automatically.
 
-删除会话前，事件 Owner 检查其他会话继承消息中的来源身份与文件引用；仍被引用时
-保留来源的工作目录和私有附件目录，不扩大引用访问权限。该保留跨父、子删除及多代
-继承生效；发布快照仍走独立引用清理。当前不自动回收已删除来源在最后引用消失后的
-保留目录，避免以无可靠所有权账本的扫描删除用户数据；这不是存储完全回收的保证。
+Before deleting a session, the event Owner checks source identities and file references in messages inherited by other sessions. If they are still referenced, the source working directory and private attachment directory are retained without widening reference access. This retention applies across parent/child deletion and multiple generations of inheritance; published snapshots still use their separate reference cleanup. Currently, a retained directory from a deleted source is not automatically reclaimed after its last reference disappears. This avoids deleting user data through a scan without a reliable ownership ledger; it is not a guarantee of complete storage reclamation.
 
-判定问题：**用户把项目整个拷到另一台机器，这份数据是否该跟着走？** 应随项目走的数据属于 `<项目>/.scholarseed/service/`；跨项目登记、凭据、技能状态、用户偏好与聚合索引属于用户级。项目根是 Content 登记的单个项目，不是工作区容器根。
+Decision question: **If the user copies the whole project to another machine, should this data go with it?** Data that should move with the project belongs under `<项目>/.scholarseed/service/` (`<project>/.scholarseed/service/`); cross-project registration, credentials, skill state, user preferences, and aggregate indexes are user-level. The project root is one project registered by Content, not the workspace-container root.
 
-`PROJECT_DB_RELATIVE` 指向项目级 `project.sqlite3`；每项目单库、多域分表，表名带域前缀。理由是避免业务域增多时在用户项目里堆积库文件，并统一连接纪律；schema 与迁移仍归各业务域，不另造通用 schema 注册平台或 ORM。
+`PROJECT_DB_RELATIVE` points to the project-level `project.sqlite3`: one database per project with tables for multiple domains, whose names carry domain prefixes. This avoids accumulating database files in the user's project as business domains are added and keeps connection discipline uniform. Schema and migrations remain owned by each business domain; do not create a generic schema-registration platform or ORM.
 
-新建项目以本次原生 exclusive mkdir 的身份取得局部子树资格，祖先保留 intent，
-不排空无关运行会话或释放已有目录集合。创建计划与 nonce 先入库，凭据和项目存储
-在新子树独占范围初始化；读回身份、凭据与 schema，并保留新增 writer 资格后才登记。
-已有目录不能走此新建资格；中断创建的恢复仍走原维护流程。`DomainOwner` 统一持有
-原集合与增量资格，关闭不确定时停止后续释放。源码与契约不替代两平台真实验收。
+Creating a project obtains local-subtree admission through the identity of this operation's native exclusive mkdir; ancestors retain their intent, and unrelated running sessions are not drained or existing directory sets released. The creation plan and nonce are recorded first. Credentials and project storage are initialized within the exclusive scope of the new subtree; registration occurs only after reading back identity, credentials, and schema, while retaining the added writer admission. Existing directories cannot use this creation admission; recovery from interrupted creation continues through the original maintenance flow. `DomainOwner` holds both the original set and incremental admissions; if closure is uncertain, it stops further releases. Source code and contracts do not replace real acceptance on both platforms.
 
-项目移除及中断移除的恢复只修改用户级登记和关联，保留项目目录、文件及会话资产。
-它们在普通资源租约内串行完成，不主动进入更新的全局排空，不关闭现有目录资格。
-已持有的资格继续保护在途读取和执行，直到下一次正常维护重新发现目录集合或退出时
-安全释放；移除登记不等于磁盘目录已释放。真正更新期间仍遵守维护写入准入保护。
+Project removal and recovery from interrupted removal modify only user-level registration and associations, preserving the project directory, files, and session assets. They run serially under an ordinary resource lease; they do not initiate the update's global drain or close existing directory admissions. Existing admissions continue to protect in-flight reads and execution until the next normal maintenance rediscovers the directory set or safely releases it at exit. Removing a registration does not mean that the disk directory has been released. During an actual update, maintenance write-admission protection still applies.
 
-取消关联只撤销内容登记，不删除源文件，也不立即释放已有物理目录资格。组合根在
-普通资源租约内检查目标项目及共享源目录的运行挂载、准备中的会话和独立调用；
-忙碌或原生释放结果不确定时返回 `root_busy`，不进入全局排空。相关空闲挂载经运行
-Owner 安全释放后，重新检查异步等待期间新增的使用者，并在不再等待的临界段提交
-撤权；后续回合仍按当前可写根重新准入。资格保留至正常全局维护或退出时释放，
-不会借取消关联中断无关会话或关闭更新所需的完整排空保护。
+Unlinking revokes the content registration only: it does not delete source files or immediately release existing physical-directory admission. Under an ordinary resource lease, the composition root checks active mounts, sessions being prepared, and independent calls for the target project and shared source directory. If either is busy or the native release result is uncertain, it returns `root_busy` without starting a global drain. After the runtime Owner safely releases relevant idle mounts, it checks again for users added during the asynchronous wait and commits revocation in a critical section that does not wait. Subsequent turns are admitted against the currently writable roots. Admission remains until normal global maintenance or exit releases it; unlinking does not interrupt unrelated sessions or disable the full drain protection required for updates.
 
-已有目录接入按目标子树取得普通排他资格，仅准备、检查和初始化该项目存储；交接为
-正常 writer 后重新核对目录身份与 schema，保留增量资格再登记，不排空无关会话或
-释放原集合。已有 writer 的祖先/子目录重叠与其他进程占用仍由原生资格拒绝，不能
-借用 exclusive mkdir 凭据或回退全局排空。重复接入已登记目录先核验保留资格与可用性。
-登记失败后仅在权威登记库确认目标未发布时释放本次增量资格；已提交或无法确认时
-保留保护。关闭不确定时也保留 Owner，不继续释放其他资格。
-新建与接入的同步 IO 通过 `Activities.finish`/`to_thread` 执行，租约及串行等待覆盖
-真实线程收尾；HTTP 断开不授权提前关闭目录资格。操作日志按 operation ID 分别记录
-受理、排队、执行、总耗时和各阶段耗时、目录验证次数，失败保留阶段及错误类型。
+Attaching an existing directory obtains ordinary exclusive admission for the target subtree and only prepares, checks, and initializes that project's storage. After handoff to a normal writer, it rechecks directory identity and schema, retains the incremental admission, and then registers; unrelated sessions are not drained and the original set is not released. Native admission still rejects overlap between an existing writer and an ancestor/child directory, as well as occupation by another process. Do not borrow exclusive-mkdir credentials or fall back to a global drain. Reattaching an already registered directory first verifies retained admission and availability. After registration fails, release this operation's incremental admission only if the authoritative registry confirms that the target was not published; retain protection if it was committed or the result is uncertain. If closure is uncertain, retain the Owner and do not continue releasing other admissions.
+Synchronous IO for creation and attachment runs through `Activities.finish`/`to_thread`; the lease and serial wait cover actual thread completion. An HTTP disconnect does not authorize early release of directory admission. Operation logs record acceptance, queueing, execution, total and per-stage durations, and directory-verification counts by operation ID; failures retain the stage and error type.
 
-`.scholarseed` 的真源是 [`content/domain/model.py`](../../apps/serve/service/content/domain/model.py) 的 `PROJECT_STATE_DIRNAME`，`paths.py` 从其派生相对路径，不重复字面量。`IGNORED_NAMES` 排除产品状态目录，避免 LEGACY 布局资料根等于项目根时将业务库显示为用户资料。
+The source of truth for `.scholarseed` is `PROJECT_STATE_DIRNAME` in [`content/domain/model.py`](../../apps/serve/service/content/domain/model.py); `paths.py` derives the relative path from it rather than repeating the literal. `IGNORED_NAMES` excludes the product-state directory so that, when the LEGACY layout's data root equals the project root, the business database is not shown as user content.
 
-### 路径和连接约束
+<a id="路径和连接约束"></a>
+### Path and Connection Constraints
 
-- 项目业务库绝对路径只能从 `ContentPort.resolve(project_id, PROJECT_DB_RELATIVE)` 获得；公开协议见 [`platform/content.py`](../../apps/serve/service/platform/content.py)，实现见 [`content/service/port.py`](../../apps/serve/service/content/service/port.py) 与 [`space.py`](../../apps/serve/service/content/service/space.py)。项目身份、挂载、边界检查只由 Content 解释，不在业务域自行拼根。
-- `resolve()` 返回字符串路径，不是原子文件操作或自动授予写入权限。需要目录固定、原生 no-follow、资格/并发保护时必须使用所属 Content/platform 存储边界；不能把 `Path.resolve()` 后的检查当成跨平台防竞争保证。
-- 开库复用 [`persistence/project.py`](../../apps/serve/service/persistence/project.py) 的 `connect` / `transaction`。项目调用方使用 `ProjectDatabasePath` 时带入已授权项目根栅栏；用户级库传 Owner 的 `Path`。本模块不解析 project_id，也不依赖业务域；它同时服务用户级和项目级 SQLite，现名不意味着仅能打开项目库。
-- 库文件按需创建，项目创建不预建空 `project.sqlite3`。`connect()` 才创建父目录和库，配置 WAL、同步、外键与有界锁等待；初始化 BUSY 重试仅限事务前并释放连接。`transaction()` 成功提交、异常回滚、始终关闭；直接 `connect()` 的调用方也必须关闭，`with connection` 本身不关连接。
-- `reader()` 始终以 `mode=ro` 检查，不因 hot journal 自动提权为可写。Trace 启动仅将精确 `SQLITE_READONLY_ROLLBACK` 记录为待恢复状态，复用排他目录维护调用 `recover_database()`：检查既有主库和 sidecar 绑定，以 `mode=rw` 让 SQLite 正常回滚，再由 Trace Owner 重检格式与完整性。该原语不建库、不迁移、不改变 journal mode，不是更新预览或普通读者的写入许可；其他错误仍失败。
-- 不放凭据、跨项目索引或需要跨项目聚合查询的数据。跨项目生命周期与随项目迁移的资产不能混为一库。
+- The absolute path of a project business database may be obtained only through `ContentPort.resolve(project_id, PROJECT_DB_RELATIVE)`. The public protocol is in [`platform/content.py`](../../apps/serve/service/platform/content.py); implementations are in [`content/service/port.py`](../../apps/serve/service/content/service/port.py) and [`space.py`](../../apps/serve/service/content/service/space.py). Only Content interprets project identity, mounts, and boundary checks; business domains must not construct roots themselves.
+- `resolve()` returns a path string; it is not an atomic file operation and does not automatically grant write permission. When directory pinning, native no-follow behavior, or admission/concurrency protection is needed, use the owning Content/platform storage boundary. A check after `Path.resolve()` is not a cross-platform guarantee against races.
+- Reuse `connect` / `transaction` from [`persistence/project.py`](../../apps/serve/service/persistence/project.py) to open databases. A project caller using `ProjectDatabasePath` supplies the authorized project-root fence; a user-level database supplies the Owner's `Path`. This module does not resolve `project_id` or depend on a business domain. It serves both user-level and project-level SQLite databases; its current name does not mean it can open only project databases.
+- Database files are created on demand; project creation does not pre-create an empty `project.sqlite3`. Only `connect()` creates the parent directory and database, and configures WAL, synchronization, foreign keys, and bounded lock waits. Initialization retries on BUSY only before the transaction and releases the connection. `transaction()` commits on success, rolls back on exceptions, and always closes; callers using `connect()` directly must also close the connection, because `with connection` does not close it.
+- `reader()` always checks using `mode=ro` and does not automatically elevate to writable mode because of a hot journal. At Trace startup, only the exact `SQLITE_READONLY_ROLLBACK` is recorded as pending recovery, then `recover_database()` runs under exclusive directory maintenance: it checks the existing main database and sidecar bindings, lets SQLite perform its normal rollback using `mode=rw`, and then the Trace Owner rechecks format and integrity. This primitive does not create a database, migrate it, or change journal mode; it is not write permission for an update preview or an ordinary reader. Other errors still fail.
+- Do not store credentials, cross-project indexes, or data requiring cross-project aggregate queries here. Cross-project lifecycle data and assets that move with a project must not be combined into one database.
 
-## 4. 迁移保留用户资产
+<a id="4-迁移保留用户资产"></a>
+## 4. Migrations Preserve User Assets
 
-### Owner-local schema revisions / 按 Owner 管理结构版本
+<a id="owner-local-schema-revisions--按-owner-管理结构版本"></a>
+### Owner-Local Schema Revisions
 
-The session catalog now keeps an owner-local revision receipt, separate from
-client release numbers and event payload versions. `persistence/revisions.py`
-provides a contiguous forward migration chain over the caller's SQLite connection;
-`chat/persistence/catalog.py` owns the declarations, historical recognition and
-migration steps. This does not version other session owners, project databases,
-Trace or vendor databases automatically.
+The session catalog keeps a separate schema-revision receipt, distinct from client release numbers and event-body versions. `persistence/revisions.py` runs a contiguous forward-migration chain on the caller's SQLite connection; `chat/persistence/catalog.py` owns schema declarations, historical recognition, and migration steps. This mechanism does not automatically version other session Owners, project databases, Trace, or vendor databases.
 
-会话目录持有独立的结构版本记录，与客户端发布号、事件正文版本分开。
-`persistence/revisions.py` 在调用方 SQLite 连接上执行连续的前向迁移链；
-`chat/persistence/catalog.py` 持有结构声明、历史识别和迁移步骤。本机制不会自动
-为其它会话 Owner、项目库、Trace 或供应商数据库打版本。
+An unversioned database can enter migration as revision 0 only after passing the existing structural validator. Migration, revalidation, and revision-receipt publication share one transaction, and any failed step rolls it back. Current revisions still receive strict checks and known maintenance. A valid receipt above the client's supported range blocks initialization, and Desktop explicitly asks the user to upgrade. Malformed receipts and unknown structures produce separate errors; they are not guessed to mean an outdated version. No downgrade is provided, and a version change does not directly rebuild tables.
 
-An unversioned database is revision zero only after the existing structural
-validator accepts it. Migration and receipt publication share a transaction;
-failed steps or failed convergence roll both back. Current revisions still run
-strict checks and known maintenance. Future receipts stop initialization and
-Desktop asks the user to upgrade. Malformed receipts and unknown structures fail
-with their own diagnostics, never with an invented upgrade diagnosis. No downgrade
-or version-driven table rebuild is provided.
+The first revision accepts only session-catalog shapes that were previously supported. Future schema changes must add an explicit revision and parent step, preserve established migration steps, and verify old and new readers and rollback. Revision metadata is not an integrity signature; previously shipped clients that do not know this protocol cannot gain this protection retroactively. An update preview uses the dedicated layout-only inspector only when **full row digests match**; if they differ, it must pass the actual receipt and perform the full inspection. An empty revision table in a real database is still invalid.
 
-无版本库只有在原结构校验通过后才能作为 revision 0 进入迁移。迁移、复检与版本
-记账属于同一事务，任一步失败都回滚。当前版本仍执行严格检查和已知维护；高于
-客户端支持范围的合法记录阻止初始化，Desktop 明确提示升级。损坏记录或未知结构
-单独报错，不猜测为版本过旧。不提供降级，也不因版本号变化直接重建表。
-
-The first revision adopts only previously supported catalog shapes. Future schema
-changes must add an explicit revision and parent step, preserve established steps,
-and test old/current/future readers and rollback. Revision metadata is not an
-integrity signature. Previously shipped clients unaware of the protocol cannot
-retroactively acquire this guard. In update previews, equal *full row digests*
-permit the explicit layout-only inspector; different rows require the real receipt
-and the full inspector. An empty receipt table in a real database is invalid.
-
-首个 revision 仅接纳此前已支持的会话目录结构。后续结构变化必须新增明确的版本与
-父版本步骤、保持既有迁移步骤稳定，并验证新旧读者及回滚。版本记录不是完整性签名；
-已发布且不认识该协议的旧客户端不能追溯获得保护。更新预演仅在**完整行摘要相同**
-时使用专用结构检查；摘要不同必须传递实际记录并完整检查。真实库中的空版本表仍非法。
-
-Decision: reuse native SQLite rather than introduce Alembic/SQLAlchemy for this
-milestone. Alembic can share an application connection, but it would still need
-our admission, strict recognition, row preservation and preview integration.
-Its SQLite batch rebuilding is not a substitute for these guards. Reevaluate
-Alembic when multiple owners need a shared branching revision graph or when the
-persistence boundary moves to SQLAlchemy. See the
-[Alembic connection recipe](https://alembic.sqlalchemy.org/en/latest/cookbook.html#sharing-a-connection-across-one-or-more-programmatic-migration-commands)
-and [SQLite batch behavior](https://alembic.sqlalchemy.org/en/latest/batch.html).
-
-本阶段复用原生 SQLite。Alembic 可共享应用连接，但仍需接入现有准入、严格识别、
-数据保留及预演协议，SQLite batch 重建也不能替代这些保护。多个 Owner 需要共同的
-分支版本图，或持久化层转向 SQLAlchemy 时，再评估直接接入。定向验证入口为
-`contract_revisions`、`contract_session_catalog`、`contract_sqlite_preview` 和
-Desktop `failure.test.ts`；它们不替代真实启动与跨平台验收。
+For this milestone, reuse native SQLite rather than introducing Alembic/SQLAlchemy. Alembic can share an application connection, but it would still need to integrate with existing admission, strict recognition, row preservation, and preview protocols; SQLite batch rebuilding does not replace these protections. Reevaluate direct adoption if multiple Owners need a shared branching revision graph or the persistence boundary moves to SQLAlchemy. See the [Alembic connection recipe](https://alembic.sqlalchemy.org/en/latest/cookbook.html#sharing-a-connection-across-one-or-more-programmatic-migration-commands) and [SQLite batch behavior](https://alembic.sqlalchemy.org/en/latest/batch.html). Targeted verification entry points are `contract_revisions`, `contract_session_catalog`, `contract_sqlite_preview`, and Desktop `failure.test.ts`; they do not replace real startup and cross-platform acceptance.
 
 
-### 工作目录 Python 环境
+<a id="工作目录-python-环境"></a>
+### Working-Directory Python Environment
 
-用户 Python 的依赖环境按会话实际执行 `cwd` 绑定，而不是按登记项目或共享
-App Server 进程的启动目录绑定。Serve `paths.task_python_root()` 是唯一目录解析口，
-环境位于该目录的 `.scholarseed/python/venv`；同 cwd 复用，不同 cwd 默认独立，
-无项目会话遵循同一规则。已有用户 `.venv` 不覆盖、不接管。
+The dependency environment for user Python is bound to the session's actual execution `cwd`, not the registered project or the shared App Server process's startup directory. Serve `paths.task_python_root()` is the sole path resolver; the environment is at `.scholarseed/python/venv` under that directory. The same cwd reuses its environment; different cwds are independent by default. Sessions without a project follow the same rule. An existing user `.venv` is neither overwritten nor taken over.
 
-后端 `platform.python.prepare_commands()` 仅通过原生目录句柄和 no-follow IO 发布
-固定命令别名，不在用户目录中高权限运行 venv/ensurepip。首次工具执行经产品固定
-引导入口，在 Codex 实际工具权限边界内创建不继承产品 site-packages 的 venv；
-解释器准备完成后发布原格式的环境身份记录，普通执行不要求安装 pip。
-新建 macOS 环境通过标准 venv 解释器链接复用当前基础执行体；仅允许固定解释器
-别名链到当前基础解释器，父目录与普通文件 IO 的 no-follow 边界不变。Windows
-仍使用复制解释器。已有完整复制环境按原身份复用，不静默转换；历史失败残留不自动恢复。
-`pip`、`pip3` 和普通 `python -m pip` 在同一安装锁内检查任务 pip，缺失时才运行
-ensurepip；已有 pip 不自动重装或升级，解释器探测与引导失败仍明确返回错误。
-环境身份记录不表示 pip 已安装，旧完整记录继续兼容；pip 引导失败不使已就绪的
-普通解释器失效。缺损、身份变化或无身份记录的部分创建均
-明确失败，不自动删除或回退产品/系统 Python；重建需显式处理已有目录及依赖记录。
-该 venv 依赖本机基础解释器，不是可随项目复制到另一机器的资产，产品升级导致
-基础路径或版本变化时需重新准备，不能宣称已与产品升级生命周期完全解耦。
+The backend's `platform.python.prepare_commands()` publishes fixed command aliases only through native directory handles and no-follow IO; it does not run venv/ensurepip with elevated permissions in a user directory. The first tool execution uses the product's fixed bootstrap entry point to create a venv that does not inherit product site-packages, within Codex's actual tool-permission boundary. Once the interpreter is ready, it publishes an environment identity receipt in the original format; ordinary execution does not require pip to be installed.
+New macOS environments reuse the current base executable through standard venv interpreter symlinks; only a fixed interpreter-alias chain to the current base interpreter is allowed, and the no-follow boundary for parent directories and regular-file IO is unchanged. Windows still copies the interpreter. Existing complete copied environments are reused with their original identity, without silent conversion; historical failed remnants are not automatically repaired. `pip`, `pip3`, and ordinary `python -m pip` check for task pip under the same installation lock and run ensurepip only when it is missing. Existing pip is not automatically reinstalled or upgraded; interpreter probing and bootstrap failures still return explicit errors. The environment identity receipt does not mean pip is installed, and existing complete receipts remain compatible. Failure to bootstrap pip does not invalidate an ordinary interpreter that is already ready. Partial creations that are incomplete, have changed identity, or lack an identity receipt fail explicitly; they do not automatically delete data or fall back to product/system Python. Rebuilding requires explicit handling of the existing directory and dependency records.
+This venv depends on the machine's base interpreter and is not an asset that can be copied with a project to another machine. It must be prepared again if a product upgrade changes the base path or version; do not claim it is fully decoupled from the product-upgrade lifecycle.
 
-Task Python keeps its cwd-bound venv isolated from product site-packages. Its existing
-identity receipt is published when the interpreter is ready; ordinary execution does
-not require pip. The supported pip aliases and `python -m pip` check for pip under the
-installation lock and bootstrap it only when missing, without upgrading an existing
-installer. Probe/bootstrap errors remain failures, but do not invalidate a ready
-interpreter. Existing complete receipts remain compatible; incomplete or changed
-environments still fail closed without deleting data or falling back to product Python.
-New macOS environments use standard venv interpreter symlinks to the selected base
-executable, with strict interpreter-alias validation and unchanged parent-directory
-and regular-file no-follow checks. Windows continues to copy interpreters. Existing
-complete copied environments are reused without conversion; historical failed
-environments are not automatically repaired.
+The environment is projected into the session through the existing tool-environment contract; the backend and shared App Server process environments do not change with cwd. Fixed aliases `python`/`python3`/`pip`/`pip3` and `SCHOLARSEED_TASK_PYTHON` all run through the lazy bootstrap entry point; the interpreter actually used by user code remains the venv for its cwd. A session rebinds when its cwd is formally changed; `cd` within one Shell command does not switch it implicitly. User scripts and installations use the working-directory Python. Ordinary `pip` and `python -m pip` share a nonblocking installation lock and fail explicitly when it is busy; do not describe direct user invocation of an interpreter or a third-party installer as serialized too.
+The product-Python skill entry point accepts only scripts within the fixed bundled root whose files are in the build-frozen inventory and pass digest verification. The source of truth is the source lock written by the compiler to `.scholarseed.json.inventory`, containing product defaults and reviewed dependencies. The `.scholarseed-package.json` generated in the same build must also match the bytes derived from the receipt, but it is not the admission source of truth. If the receipt is missing, rebuild the product pack. Do not trust a shell's self-reported builtin identity; arbitrary `-c` or module execution is not accepted. Native v0.3 sessions do not pass Bridge credentials to the shell; do not widen native Bridge permissions to the shell for this purpose. If the host explicitly provides Bridge context, perform additional live admission checks. Without that context, only the reviewed-package boundary is guaranteed; this command entry point is not guaranteed to enforce the session's dynamically changing enabled/disabled state. A venv isolates dependencies; it is not an operating-system security sandbox, and the existing full-permission mode does not add a product-directory write-protection guarantee. Implementation and deterministic contracts do not replace real product acceptance on both platforms.
 
-环境通过既有工具环境契约投影到会话；后端和共享 App Server 的进程环境不随 cwd
-改变。`python`/`python3`/`pip`/`pip3` 固定别名及 `SCHOLARSEED_TASK_PYTHON` 均经惰性
-引导入口执行；用户代码实际解释器仍是 cwd 对应 venv。正式切换 cwd 的会话重新绑定，单条 Shell 内 `cd` 不隐式切换。用户脚本和
-安装使用工作目录 Python；常规 `pip` 和 `python -m pip` 共享非阻塞安装锁，忙时明确失败，
-不把用户直接调用解释器或第三方安装器也描述为已串行化。
-产品 Python 的技能入口只接受固定 bundled 根内、构建冻结 inventory 的文件集合与摘要
-校验通过的脚本；真源为编译器写入 `.scholarseed.json.inventory` 的 source lock，包含产品
-默认文件与审核依赖；同次生成的 `.scholarseed-package.json` 也须匹配收据推导的字节，
-但不作为准入真源。缺收据时要求重建产品 pack，
-不相信 shell 自报的 builtin 身份，不接受任意 `-c` 或模块执行。v0.3 原生会话不向
-shell 下发 Bridge 凭据；不得为此把原生 Bridge 权限扩大到 shell。若宿主显式提供
-Bridge 上下文，则额外执行实时准入；无此上下文时仅保证受审包边界，不保证通过
-该命令入口强制执行会话的动态启停状态。venv 是依赖隔离，不是操作系统安全沙箱，既有全权限
-模式不额外增加产品目录防写保证。实现与确定性契约不替代两平台真实产品验收。
-
-### 会话目录与项目身份分别保存
+<a id="会话目录与项目身份分别保存"></a>
+### Session Directory and Project Identity Are Stored Separately
 
 [`SessionService._new_paths()`](../../apps/serve/service/chat/service/sessions.py)
-返回运行目录、项目绑定与输出根三项；未绑定项目使用用户级会话目录，绑定项目
-先经 [`SessionWorkspaceService`](../../apps/serve/service/chat/service/workspaces.py)
-确认已登记项目根及 principal 资格，再委托产品输出目录 provider。恢复消费持久化
-路径，不按当前页面、目录名或进程 cwd 重新猜测项目。项目业务库仍由 Content
-解析，不随会话输出目录另建一份。
+returns three values: the runtime directory, project binding, and output root. An unbound session uses a user-level session directory. A project-bound session first uses [`SessionWorkspaceService`](../../apps/serve/service/chat/service/workspaces.py) to confirm the registered project root and principal eligibility, then delegates to the product output-directory provider. Recovery consumes the persisted path and does not guess the project again from the current page, directory name, or process cwd. Content still resolves the project business database; another copy is not created in the session output directory.
 
-默认 cwd 和输出根是位置契约，不是文件系统权限隔离。资料位置由 Content 映射，
-LEGACY 布局不能硬写成固定 resources 子目录；模型指令也不能声称目录提示已经
-强制禁止越界。实际访问策略、沙箱和数据授权仍分别由其 Owner 校验。
+The default cwd and output root are location contracts, not filesystem permission isolation. Content maps data locations; a LEGACY layout must not be hardcoded as a fixed `resources` subdirectory. Model instructions must not claim that a directory hint forcibly prevents access outside the directory. The respective Owners still validate actual access policy, sandboxing, and data authorization.
 
-项目 schema 用 `CREATE TABLE IF NOT EXISTS` 与幂等增量 `ALTER`；禁止版本号或列集合差异驱动的整表重建。不能丢弃旧行、额外列和用户资产来获得“干净 schema”，遇不兼容身份 schema 应明确拒绝而非猜测身份或静默压成只读。
+Project schemas use `CREATE TABLE IF NOT EXISTS` and idempotent incremental `ALTER`; a version number or column-set difference must not drive a full-table rebuild. Do not discard old rows, extra columns, or user assets to get a “clean schema.” If an identity schema is incompatible, reject it explicitly rather than guessing identity or silently downgrading to read-only.
 
-当前会话目录同样不是“列不同就重建”的反例。[`SessionCatalogStore._migrate_catalog()`](../../apps/serve/service/chat/persistence/catalog.py) 检查 `session_id`、`principal_id`、`created_at`，缺失时抛错；`_add_catalog_columns()` 仅补缺失字段，`_migrate_catalog()` 另外回填空 `output_root` 与零值 `updated_at`，保留既有行与额外列。新增字段的兼容默认值可能包含 `LEGACY_READONLY`，不等于把所有既有行强制降级。
+The current session catalog is likewise not a counterexample that “different columns mean rebuild.” [`SessionCatalogStore._migrate_catalog()`](../../apps/serve/service/chat/persistence/catalog.py) checks `session_id`, `principal_id`, and `created_at`, and raises an error if any are missing. `_add_catalog_columns()` adds only missing fields; `_migrate_catalog()` also backfills empty `output_root` and zero-valued `updated_at`, preserving existing rows and extra columns. A compatibility default for a new field may include `LEGACY_READONLY`; that does not mean every existing row is forcibly downgraded.
 
-该结论限定主目录增量迁移：同一 Owner 还包含外键/约束修复和受保护的 `rebuild_table` 等机制，不能由 `_migrate_catalog()` 推断全库从不执行任何表修复。新增 schema 约束需核对业务 Owner 的数据保留、失败回滚与兼容性契约，不借通用连接底座批准任意重建。
+This conclusion is limited to incremental migration of the main catalog. The same Owner also includes foreign-key/constraint repair and protected mechanisms such as `rebuild_table`; `_migrate_catalog()` does not establish that no table repair ever occurs anywhere in the database. For a new schema constraint, check the business Owner's data-retention, failure-rollback, and compatibility contracts. Do not use the generic connection foundation to authorize arbitrary rebuilds.
 
-Assistant 上下文、引用凭据与模型调用表的启动检查允许未来版本增加普通可空列，
-或带非空字面量默认值的必填列；既有字段及约束仍按当前 Owner 的声明核验。
-额外列不触发重建，补齐当前缺失列和修复已知旧外键时也保留其声明与数据。
-当前兼容类型为 TEXT、INTEGER、REAL、BLOB、NUMERIC，默认值限字符串、数值及
-可空列的 NULL；生成列、表达式默认值、新增约束及必填无默认值列仍明确拒绝。
-引用凭据写入显式列名，避免新增列造成 VALUES 数量不匹配。这是增量结构兼容，
-不是任意版本降级保证，也不授权删除不认识的列或吞掉启动校验错误。
-多列不能掩盖缺列：缺少当前必需字段仍拒绝启动且不写库。只有 Owner 已登记的
-升级迁移可先补齐对应字段，迁移后必须再次通过完整校验；缺列状态本身不算兼容。
+Startup checks for Assistant context, reference credentials, and model-call tables allow a future version to add ordinary nullable columns or required columns with nonempty literal defaults; existing fields and constraints are still checked against the current Owner's declarations. Extra columns do not trigger rebuilding, and their declarations and data are preserved when current missing columns are added or known old foreign keys repaired. Currently compatible types are TEXT, INTEGER, REAL, BLOB, and NUMERIC. Defaults are limited to strings, numbers, and NULL for nullable columns; generated columns, expression defaults, new constraints, and required columns without defaults are explicitly rejected. Reference credentials are written with explicit column names to avoid a VALUES-count mismatch when a column is added. This is incremental schema compatibility, not a guarantee of arbitrary version downgrade, and it does not authorize deleting unknown columns or swallowing startup-validation errors.
+Multiple columns cannot mask a missing one: startup is still rejected, without writing to the database, when a currently required field is absent. Only an upgrade migration registered by the Owner may add the corresponding field first, and the complete validation must pass again after migration; a missing-column state is not itself compatible.
 
-### 旧审阅数据读取不等于恢复旧运行 Owner
+<a id="旧审阅数据读取不等于恢复旧运行-owner"></a>
+### Reading Legacy Review Data Does Not Restore the Legacy Runtime Owner
 
-[Resources 迁移持久化](../../apps/serve/service/resources/persistence/migration.py)
-保留旧 `documents_change_sets/files` 的读取与来源摘要，用于未切换用户审阅状态；
-不能因 Documents 运行 Owner 已删除就顺带删用户旧表或迁移入口。
-“只读旧输入”限定旧表，不代表整个迁移流程无写入：迁移结果与解决回执写入
-Resources 自己的账本，来源变化、证据或冲突有具名拒绝状态，不能手工改状态跳过。
+[Resources migration persistence](../../apps/serve/service/resources/persistence/migration.py)
+retains read access to legacy `documents_change_sets/files` and their source summaries for user review states that have not been switched over;
+Do not delete a user's old tables or the migration entry point just because the Documents runtime Owner has been removed. “Read-only legacy input” applies to the old tables; it does not mean the migration flow is write-free. Migration results and resolution receipts are written to Resources' own ledger. Source changes, evidence, or conflicts have named rejection states and must not be bypassed by manually changing state.
 
-`protected_history` 为尚未解决的旧审阅保留关联历史 Version 和整份 Delivery；
-整份保护的理由是删除任一成员 Version 可能导致 Delivery 被清理，不能只保护
-当前目标文件就认为迁移证据仍完整。这里只承接读到的保护机制与原因，不证明全部
-GC/迁移/恢复路径已验收。迁移服务经 Content 与 VersionStore 协作，不恢复第二套
-Documents API、原生 DOCX redline 或旧前端工作区。
+`protected_history` retains the associated historical Version and the entire Delivery for unresolved legacy reviews. The whole Delivery is protected because deleting any member Version may cause the Delivery to be cleaned up; protecting only the current target file does not preserve complete migration evidence. This records the protection mechanism and rationale found in the source; it does not prove that all GC, migration, or recovery paths have passed acceptance. The migration service works through Content and VersionStore; it does not restore a second Documents API, native DOCX redlining, or the old frontend workspace.
 
-[旧 Owner 边界契约](../../apps/serve/tests/contract_review_boundary.py) 同时检查源码、
-路由、Desktop fixture/测试注册等删除边界；[迁移契约](../../apps/serve/tests/contract_review_migration.py)
-另管旧资产切换。删除运行注册与保留用户迁移必须分别验证，旧符号在负向测试或
-只读迁移中出现不等于旧运行链仍存在；不要为静态零命中删掉保护用户数据的分支。
+The [legacy Owner boundary contract](../../apps/serve/tests/contract_review_boundary.py) checks deletion boundaries across source, routes, Desktop fixtures, and test registration. The [migration contract](../../apps/serve/tests/contract_review_migration.py) separately covers cutover of legacy assets. Removing runtime registration and retaining user-data migration must be verified separately. A legacy symbol in a negative test or read-only migration does not mean the old runtime chain still exists; do not delete a user-data protection branch to achieve zero static matches.
 
-### PDF 记录的独立身份与旧格式边界
+<a id="pdf-记录的独立身份与旧格式边界"></a>
+### Independent Identity of PDF Records and Legacy-Format Boundaries
 
-[项目 PDF 记录服务](../../apps/serve/service/workbench/service/records.py) 以 Content
-的稳定 asset identity 访问[项目记录表](../../apps/serve/service/workbench/persistence/records.py)，
-记录 revision 与 PDF source revision 分别校验；它们不是同目录 JSON 文件的读写。
-已有共享记录链接时委托相应 RecordTarget Owner，不能把所有文献标注都描述成项目
-本地表，也不能按旧路径为已关联文献创建第二份权威记录。
+The [project PDF record service](../../apps/serve/service/workbench/service/records.py) uses Content's stable asset identity to access the [project record table](../../apps/serve/service/workbench/persistence/records.py); record revision and PDF source revision are checked separately. These operations do not read or write a JSON file beside the PDF. When a shared record link exists, delegate to the corresponding RecordTarget Owner. Do not describe all literature annotations as project-local table data or create a second authoritative record for already-linked literature based on an old path.
 
-共享的 `RecordTarget(owner, scope_id, subject_id)` 和 codec 属于 Serve 的
-[中立产品契约](../../apps/serve/service/platform/records.py)，不归 Runtime 或某个
-业务 repository。Desktop 的[具名端点登记](../../apps/desktop/src/renderer/src/features/workbench/api.ts)
-按目标 Owner 路由；文献端点包含 literature 与 attachment 身份。附件粒度避免同一
-文献多 PDF 串记录，内容 hash 或路径相同不能替代业务身份；共享 codec 也不是共享
-大 Store、双写或数据库反向依赖的许可。历史切换计划里的清空重建授权不能继承为
-当前开发权限，现有用户资产保留要求仍生效。
+The shared `RecordTarget(owner, scope_id, subject_id)` and codec are Serve's [neutral product contract](../../apps/serve/service/platform/records.py), not owned by Runtime or a business repository. Desktop's [named endpoint registration](../../apps/desktop/src/renderer/src/features/workbench/api.ts) routes by target Owner; literature endpoints include literature and attachment identities. Attachment-level identity prevents multiple PDFs for the same literature item from sharing records. A matching content hash or path cannot replace business identity. A shared codec is not permission to create a shared large Store, dual-write, or reverse database dependencies. Authorization in a historical cutover plan to clear and rebuild cannot be carried forward as current development permission; the requirement to preserve existing user assets remains in effect.
 
-旧方案曾将新记录称作“v2”，当前协议的版本值以
-[platform/records.py](../../apps/serve/service/platform/records.py) 的 `SCHEMA_VERSION`
-为准，当前为1，结构为 marks/comments/notes；历史名称不能代替协议值。
-点评论是版本1内的加性变体：`style=comment`、`point=[x,y]` 使用页内归一化坐标
-（含0与1边界），同时固定 `quads=[]`、`text=""`；评论正文仍由 comments 关联 mark_id。
-它不伪造文本选区，不作为原文证据或解释输入。文本标记仍保留原三种样式与完整坐标、
-正文和关联记录；不迁库或重写存量记录。新 codec 可读历史文本记录，但旧客户端
-不支持新 style，不能声明双向兼容。源修订变化同样投影 stale，保存仍需记录和源双重 CAS。
-导出绘制点标记并嵌入完整规范记录；重新导入依已有 Owner 初始化规则，重复导出先移除
-同源的可还原绘制层，不累积点标记。普通 PDF 阅读器所见点图形不是可编辑的原生评论。
-`decode_records` 拒绝不支持版本或无有效列表的输入，不负责转换旧 annotations 结构。
-旧相邻 sidecar 不作为当前记录来源，但这不意味着首次读取一定为空：服务可从
-[PDF 内嵌的规范附件](../../apps/serve/service/platform/pdf.py) 初始化，且重查源 revision
-和读取字节一致性。内嵌读取不恢复第三方原生标注；无效/不支持的内嵌记录日志提示后
-返回空规范记录，不把这一读取策略推广为 API 写入允许坏数据。
+An old proposal called the new records “v2”; the current protocol version is defined by
+`SCHEMA_VERSION` in [platform/records.py](../../apps/serve/service/platform/records.py), currently 1, with the structure marks/comments/notes; historical names do not replace the protocol value. Point comments are an additive variant within version 1: `style=comment` and `point=[x,y]` use page-normalized coordinates (including the 0 and 1 boundaries), with `quads=[]` and `text=""`; the comment body is still associated through `comments.mark_id`. A point comment does not fabricate a text selection and is not original-text evidence or interpretive input. Text marks retain the original three styles, full coordinates, body, and association records; existing records are not migrated or rewritten. The new codec can read historical text records, but old clients do not support the new style, so bidirectional compatibility must not be claimed. A source-revision change is likewise projected as stale; saving still requires a dual CAS on the record and source revision.
+Export draws the point mark and embeds the complete canonical record. Reimport follows the existing Owner initialization rules; repeated exports first remove the recoverable drawing layer from the same source and do not accumulate point marks. The point graphic shown by an ordinary PDF reader is not an editable native comment. `decode_records` rejects unsupported versions or input without a valid list; it does not convert the old annotations structure. An adjacent legacy sidecar is not a current record source, but that does not mean the first read is necessarily empty: the service may initialize from the [canonical attachment embedded in the PDF](../../apps/serve/service/platform/pdf.py), while rechecking source revision and byte consistency. Embedded reading does not restore third-party native annotations. Invalid or unsupported embedded records produce a log notice and return an empty canonical record; this read policy must not be generalized into permission for API writes to accept invalid data.
 
-当前表 schema 检查要求现有列集合精确等于 `PDF_RECORD_COLUMNS`，差异会抛出
-`workbench_pdf_record_requires_cutover`。这与旧计划“允许闲置 migrated_from 列保留”
-不同；本治理未证明 cutover 已完成，也未授权删列、重建或丢弃用户记录。
-额外列和旧资产的保留目标继续生效，遇冲突由存储 Owner 核验并设计处理，不把
-拒绝分支写成兼容迁移已通过。现有[Workbench 契约](../../apps/serve/tests/contract_file_workbench.py)
-含忽略旧相邻文件和拒绝旧载荷的检查；测试存在不证明真实 PDF 读写已验收。
+The current table-schema check requires the existing column set to equal `PDF_RECORD_COLUMNS` exactly; a difference raises `workbench_pdf_record_requires_cutover`. This differs from the old plan to “allow an unused `migrated_from` column to remain.” This governance work has not established that cutover is complete and does not authorize dropping columns, rebuilding, or discarding user records. The goal of preserving extra columns and legacy assets remains in effect. If there is a conflict, the storage Owner must verify it and design a resolution; do not describe the rejection branch as a passed compatibility migration. The existing [Workbench contract](../../apps/serve/tests/contract_file_workbench.py) checks that old adjacent files are ignored and old payloads rejected; the existence of those tests does not prove that real PDF reads and writes passed acceptance.
 
-## 5. 私有数据与跨平台限制
+<a id="5-私有数据与跨平台限制"></a>
+## 5. Private Data and Cross-Platform Limitations
 
-### 原生目录能力而非跨平台裸 fd
+<a id="原生目录能力而非跨平台裸-fd"></a>
+### Native Directory Capabilities, Not Cross-Platform Raw File Descriptors
 
-[`platform/storage.py`](../../apps/serve/service/platform/storage.py) 的
-`DirectoryHandle` 持有 POSIX descriptor 或 Windows native handles，统一承担
-关闭与目录操作。Content 解释项目身份和 containment，平台层解释 no-follow、
-发布、替换及句柄生命周期；业务层不能把 raw directory fd 当跨平台契约。
+`DirectoryHandle` in [`platform/storage.py`](../../apps/serve/service/platform/storage.py) holds a POSIX descriptor or Windows native handles and provides a common interface for closure and directory operations. Content interprets project identity and containment; the platform layer interprets no-follow behavior, publication, replacement, and handle lifetime. Business code must not treat a raw directory fd as a cross-platform contract.
 
-当前 Windows 目录打开使用 reparse-point 标志、句柄属性拒绝 reparse，并且不
-允许 DELETE sharing；这不是 `Path.resolve/lstat` 后再操作的安全等价物。
-`DirectoryHandle.sync()` 仅在有 POSIX descriptor 时执行 fsync，不能宣称 Windows
-具有相同目录掉电持久性。发布/替换的部分完成、恢复和资源关闭须按实际操作核验，
-不由旧提案或单平台测试推定全平台已通过；缺少原生安全能力应明确拒绝，不能用
-缺失 flag 的零值回退削弱边界。
+Current Windows directory opens use reparse-point flags, reject reparse points based on handle attributes, and do not allow DELETE sharing. This is not security-equivalent to operating after `Path.resolve/lstat`. `DirectoryHandle.sync()` calls fsync only when a POSIX descriptor is available; do not claim Windows has the same directory power-loss durability. Partial completion of publication/replacement, recovery, and resource closure must be verified against actual operations; do not infer cross-platform success from an old proposal or a single-platform test. If native security capabilities are unavailable, reject explicitly rather than weakening the boundary with zero-valued fallback flags.
 
-Windows 显式私有权限校验（不是普通数据读取）的 owner 允许当前用户 SID；也允许内置 Administrators SID，
-前提是当前进程 token 的组列表包含该 SID。UAC deny-only 标记不消除这里的成员身份，
-因为这项检查兼容提权进程创建的对象，owner 判断本身不授予读写权。DACL 的可信主体与
-登录会话只读例外统一遵循上文「Windows 私有配置与运行目录权限」；普通 Users、
-Everyone、其他 owner 和空 DACL 继续拒绝。
-新建对象仍显式使用当前用户 owner。macOS/POSIX 的 uid 与私有 mode 检查不变。
-该策略由 [`platform/windows.py`](../../apps/serve/service/platform/windows.py) 实现，
-[`权限契约`](../../apps/serve/tests/contract_permissions.py) 覆盖原生描述符和成员判断；
-确定性契约不代替最终 Desktop 构建的真实对话验收。
+For explicit Windows private-permission checks (not ordinary data reads), the owner may be the current user's SID. The built-in Administrators SID is also allowed if it appears in the current process token's group list. A UAC deny-only marker does not remove membership for this check, which accommodates objects created by elevated processes; the owner check itself grants no read/write access. Trusted DACL principals and the read-only exception for the sign-in session follow the “Windows Private Configuration and Runtime Directory Permissions” section above. Ordinary Users, Everyone, other owners, and an empty DACL continue to be rejected. New objects still explicitly use the current user as owner. macOS/POSIX uid and private-mode checks are unchanged. This policy is implemented in [`platform/windows.py`](../../apps/serve/service/platform/windows.py); the [`权限契约` (permissions contract)](../../apps/serve/tests/contract_permissions.py) covers native descriptors and membership checks. Deterministic contracts do not replace real conversation acceptance in the final Desktop build.
 
-### 不可变产物对象与临时文件所有权
+<a id="不可变产物对象与临时文件所有权"></a>
+### Immutable Artifact Objects and Temporary-File Ownership
 
-[Content 快照](../../apps/serve/service/content/service/snapshot.py) 先从受控 source
-descriptor 捕获临时字节，比较读取前后签名及可选预期哈希；对象发布由持久 claim
-与 copy lock 管理，通过 `copy_descriptor_exclusive` 创建独立对象，再读回检查 marker
-和字节并完成 claim。当前不是把 staging rename 为对象，也不是与 staging 共享 inode；
-这样后续工作文件或临时文件改动不会隐式改写发布快照。
+The [Content snapshot](../../apps/serve/service/content/service/snapshot.py) first captures temporary bytes from a controlled source descriptor and compares signatures before and after reading, along with an optional expected hash. Object publication is managed by a persistent claim and copy lock: `copy_descriptor_exclusive` creates an independent object, which is then read back to verify its marker and bytes and complete the claim. The current implementation neither renames staging into the object nor shares an inode with staging; later changes to a working file or temporary file therefore cannot implicitly rewrite the published snapshot.
 
-收尾先比较临时名称与打开 descriptor 的设备/inode 身份，确认仍是自己持有的临时
-文件后 unlink，finally 关闭 descriptor。其他 Content 路径仍可能使用
-[native 发布](../../apps/serve/service/content/service/native.py) 的消耗语义，不能把旧
-Windows rename staging 修复直接当作当前快照算法，或机械迁移其清理判断。
-恢复、损坏与新对象归属由快照 claim/marker 处理，不从可变工作文件静默修复坏对象。
+At cleanup, the temporary name is first compared with the open descriptor's device/inode identity. The name is unlinked only if it still refers to the temporary file owned by this operation; the descriptor is closed in `finally`. Other Content paths may still use the consumption semantics of [native publication](../../apps/serve/service/content/service/native.py). Do not treat an old Windows fix for renaming staging as the current snapshot algorithm, or mechanically transfer its cleanup checks. Snapshot claim/marker state handles recovery, corruption, and ownership of new objects; a corrupt object is not silently repaired from a mutable working file.
 
-[快照契约](../../apps/serve/tests/contract_artifact_snapshots.py) 包含独立文件、坏对象
-拒绝和 prepared claim 恢复用例。源码及测试正文不代表跨平台存储验收已执行；
-修改该机制时仍需分别核验原生复制、句柄关闭、崩溃恢复与不可变字节。
+The [snapshot contract](../../apps/serve/tests/contract_artifact_snapshots.py) includes cases for independent files, rejecting corrupt objects, and recovering prepared claims. Source and test code do not mean cross-platform storage acceptance has been run. When changing this mechanism, separately verify native copying, handle closure, crash recovery, and immutable bytes.
 
-#### 目录产物快照 v1
+<a id="目录产物快照-v1"></a>
+#### Directory Artifact Snapshot v1
 
-Desktop 会话的 `artifact/publish` 接受已存在的文件或目录；一次性调用入口仍只支持文件。
-`VerifiedArtifactContent.kind` 显式区分 `file` 与 `directory`，旧文件记录缺少此字段时
-默认为 `file`，既有文件字节、摘要与 publication 身份不变，不需要重建数据库。
+Desktop sessions' `artifact/publish` accepts an existing file or directory; the one-shot invocation entry point still supports files only.
+`VerifiedArtifactContent.kind` explicitly distinguishes `file` and `directory`; legacy file records that lack this field
+default to `file`. Existing file bytes, digests, and publication identity remain unchanged; no database rebuild is needed.
 
-目录对象是 canonical UTF-8 JSON manifest，不是 ZIP，也不是对可变源目录的引用。
-v1 manifest 包含 `version: 1`、`total_size` 与按 POSIX 相对路径排序的 `entries`。
-每个成员保留 `path`、`kind`；文件另含 `sha256`、`size`、`media_type`，字节存于
-同一不可变对象库，所有空目录均保留。目录 handle 的 `sha256`、`size` 指 manifest
-本身的摘要和字节数；`total_size` 才是所有成员文件字节之和。
+The directory object is a canonical UTF-8 JSON manifest, not a ZIP archive or a reference to a mutable source directory.
+The v1 manifest contains `version: 1`, `total_size`, and `entries` sorted by POSIX relative path.
+Each entry retains `path` and `kind`; files additionally contain `sha256`, `size`, and `media_type`, and their bytes are stored in the same immutable object store. All empty directories are preserved. The directory handle's `sha256` and `size` refer to the manifest's own digest and byte count; `total_size` is the sum of all member-file bytes.
 
-Content 通过平台 `DirectoryHandle` 逐层 no-follow 遍历，拒绝符号链接、Windows
-junction/reparse point 及特殊文件。捕获前后完整目录清单和文件/目录签名必须一致；
-发现并发变化便拒绝整个目录 publication，不交付部分清单。现行限制为 2048 个成员、
-32 层相对路径和 128 MiB 文件总量；存储忙错误沿用有界重试，源变化不静默重试为新版本。
-失败时可能留下尚未被 publication 引用的内容寻址对象，不能据此宣称交付成功或删除
-其他 publication 仍引用的对象。
+Content traverses each level without following links through the platform `DirectoryHandle`, rejecting symbolic links, Windows junctions/reparse points, and special files. The complete directory listing and file/directory signatures must match before and after capture; any concurrent change rejects the entire directory publication, with no partial manifest delivered. Current limits are 2048 entries, 32 levels of relative path, and 128 MiB total file size. Storage-busy errors use the existing bounded retry; source changes are not silently retried as a new version. A failure may leave content-addressed objects that are not referenced by a publication; this does not mean delivery succeeded and does not permit deleting objects still referenced by other publications.
 
-`GET /api/serve/sessions/{session_id}/artifacts/{artifact_id}/entries` 经原会话归属校验后
-返回 `artifact_id`、`kind`、manifest 摘要和 v1 清单。`GET` / `HEAD` 同一产物的
-`raw?member=<清单中的精确相对路径>` 只读该版本文件对象，并标记不可编辑；路径穿越、
-未知成员和目录成员不能当作文件读取。历史读取不访问原目录，源文件删除或改写不改变
-已发布成员。成员不是独立 publication，不继承父目录的文件编辑或引用解析资格。
+After validating ownership by the original session, `GET /api/serve/sessions/{session_id}/artifacts/{artifact_id}/entries` returns `artifact_id`, `kind`, the manifest digest, and the v1 manifest. `GET` / `HEAD` on `raw?member=<清单中的精确相对路径>` (`raw?member=<exact relative path from the manifest>`) for the same artifact reads only the versioned file object and marks it non-editable. Path traversal, unknown entries, and directory entries cannot be read as files. Historical reads do not access the original directory, and deletion or modification of source files does not change published entries. An entry is not an independent publication and does not inherit the parent directory's file-editing or reference-resolution eligibility.
 
-目录的普通 `raw` / `content`、导出、保存、导入和编辑等 file-only 操作明确拒绝
-`session_artifact_directory_operation_unsupported`，不把 manifest 当作用户文件下载。
-[Publication 回收](../../apps/serve/service/chat/service/publication.py) 在删除前展开剩余
-publication 的 manifest 引用集；同 scope 内仍被任意目录或文件 publication 引用的
-成员对象必须保留，最后一个引用删除后才可连同 manifest 回收。相关机制契约位于
-[快照测试](../../apps/serve/tests/contract_artifact_snapshots.py)、
-[出版测试](../../apps/serve/tests/contract_artifact_publications.py) 与
-[会话产物测试](../../apps/serve/tests/contract_session_artifacts.py)，不替代最终跨平台产品验收。
+File-only operations on a directory, including ordinary `raw` / `content`, export, save, import, and edit, explicitly reject with `session_artifact_directory_operation_unsupported`; the manifest is not downloaded as a user file. Before deletion, [Publication reclamation](../../apps/serve/service/chat/service/publication.py) expands the manifest reference sets of remaining publications. Member objects still referenced within the same scope by any directory or file publication must be retained. They can be reclaimed with the manifest only after the last reference is deleted. Related mechanism contracts are in the [snapshot tests](../../apps/serve/tests/contract_artifact_snapshots.py), [publication tests](../../apps/serve/tests/contract_artifact_publications.py), and [session artifact tests](../../apps/serve/tests/contract_session_artifacts.py); they do not replace final cross-platform product acceptance.
 
-`private=True` 为明文凭据库请求私有目录/文件权限并启用 `secure_delete`。现行 `_restrict_mode()` 是 best-effort，失败会被忽略；Windows `chmod` 没有 POSIX owner/group/other 语义。不得把该参数描述成已证明的访问隔离、ACL 配置或彻底擦除保证；仅本机账户访问的安全目标不因 best-effort 实现而解除，凭据保护仍需核对操作系统和平台存储边界。
+`private=True` requests private directory/file permissions for a plaintext credential database and enables `secure_delete`. The current `_restrict_mode()` is best-effort and ignores failures; Windows `chmod` has no POSIX owner/group/other semantics. Do not describe this parameter as proven access isolation, ACL configuration, or guaranteed complete erasure. The security goal of access limited to the local account remains in effect despite the best-effort implementation; credential protection still needs to be checked against the operating system and platform storage boundary.
 
-| 平台 | 源码机制与验收边界 |
+| Platform | Source mechanism and acceptance boundary |
 | --- | --- |
-| macOS / POSIX | 请求私有 mode；文件路径解析与实际 IO 的竞争仍需所属原生存储边界。mode 请求不等于权限或崩溃恢复实测。 |
-| Windows | `_restrict_mode()` 不建立 POSIX 权限等价；ACL/profile 隔离、junction/reparse 拒绝与句柄生命周期需实际平台核验。macOS 结果不能外推 Windows。 |
+| macOS / POSIX | Requests a private mode; races between file-path resolution and actual IO still require the owning native storage boundary. Requesting a mode is not proof of permissions or crash-recovery behavior. |
+| Windows | `_restrict_mode()` does not establish POSIX-equivalent permissions. ACL/profile isolation, junction/reparse rejection, and handle lifetime require verification on the actual platform. macOS results cannot be generalized to Windows. |
 
-测试只能创建或选择隔离运行状态（home、workspace、registry、session、数据库、快照），并使用公开启动/配置路径。禁止为测试改生产优先级、添加 test-only 分支、配置回落或覆盖用户真实数据。路径便利不能取代安全资格检查。
+Tests may create or select isolated runtime state (home, workspace, registry, session, database, snapshot) and use public startup/configuration paths. Do not change production precedence, add test-only branches, add configuration fallbacks, or overwrite real user data for tests. Path convenience cannot replace security-admission checks.
 
-## 6. Owner、维护触发与验证入口
+<a id="6-owner维护触发与验证入口"></a>
+## 6. Owners, Maintenance Triggers, and Verification Entry Points
 
-路径/默认投影由 Serve `paths.py` / `brand.py` 维护；项目身份和解析由 Content 维护；连接与事务原语由 `persistence/project.py` 维护；schema、迁移与数据意义由实际业务 persistence Owner 维护；Trace 与 Codex 路径回各自包。新增持久化先决定所有权和迁移层级，再改所属真源，不能在共享层加入业务流程。
+Serve `paths.py` / `brand.py` maintain paths and default projections; Content maintains project identity and resolution; `persistence/project.py` maintains connection and transaction primitives; the actual business persistence Owner maintains schema, migrations, and data semantics; Trace and Codex paths belong to their respective packages. Before adding persistence, decide ownership and migration scope, then change the owning source of truth; do not add business flows to a shared layer.
 
-当路径常量、默认投影或环境键、工作区解析、项目库位置、schema、连接/权限语义、会话文件布局、日志/Trace 子目录、Adapter 状态或跨平台安全边界变化时维护本页；同时检查路径消费者、资料扫描、沙箱 deny roots、客户端存储 profile 与受影响恢复契约。数量与完整 inventory 从源码获取，不手写固定计数。
+Update this page when path constants, default projections or environment keys, workspace resolution, project-database locations, schema, connection/permission semantics, session-file layout, log/Trace subdirectories, Adapter state, or cross-platform security boundaries change. Also check path consumers, data scans, sandbox deny roots, client storage profiles, and affected recovery contracts. Derive counts and the complete inventory from source; do not write fixed counts by hand.
 
-- 项目路径、惰性、资料树排除与连接纪律：[`contract_project_database.py`](../../apps/serve/tests/contract_project_database.py)。
-- 会话 schema 兼容与迁移：[`contract_session_catalog.py`](../../apps/serve/tests/contract_session_catalog.py)；连接/事务行为另查 [`contract_persistence.py`](../../apps/serve/tests/contract_persistence.py)，交接查 [`contract_desktop_handoff_local.py`](../../apps/serve/tests/contract_desktop_handoff_local.py)。按实际改变选择套件，登记入口是 [`tests/run_all.py`](../../apps/serve/tests/run_all.py)。
-- 真实业务变更需要重启后的会话打开与真实回合、创建/读写/重命名/替换/删除、恢复及安全拒绝等受影响产品流程，保留最终运行状态截图并打开检查。仅 healthz、文件存在或测试汇总不能替代业务验收；认证与模型配置必须保留。入口与前提见[根规则](../../AGENTS.md)及 [Desktop 调试 工程规范](../runbooks/development.md)。未执行这些流程时，不能宣称产品或跨平台行为已验收。
-- 文档结构检查可使用[知识治理检查器](../../scripts/ci/docs/structure-check.mjs)对明确文件清单执行。它检查链接、锚点与 code_refs 等可定位性，不证明源码语义、产品行为或独立复核通过。
+- Project paths, laziness, data-tree exclusions, and connection discipline: [`contract_project_database.py`](../../apps/serve/tests/contract_project_database.py).
+- Session-schema compatibility and migrations: [`contract_session_catalog.py`](../../apps/serve/tests/contract_session_catalog.py); for connection/transaction behavior, also check [`contract_persistence.py`](../../apps/serve/tests/contract_persistence.py); for handoff, check [`contract_desktop_handoff_local.py`](../../apps/serve/tests/contract_desktop_handoff_local.py). Select suites based on the actual changes; the registration entry point is [`tests/run_all.py`](../../apps/serve/tests/run_all.py).
+- Real business changes require affected product flows, such as opening a session after restart and completing a real turn, create/read/write/rename/replace/delete, recovery, and security rejection. Retain and open the final runtime-state screenshots for inspection. `healthz`, file existence, or a test summary alone cannot replace business acceptance; authentication and model configuration must be preserved. Entry points and prerequisites are in the [root rules](../../AGENTS.md) and [Desktop Debugging Engineering Standard](../runbooks/development.md). If these flows were not run, do not claim product or cross-platform behavior has passed acceptance.
+- For a documentation-structure check, run the [knowledge governance checker](../../scripts/ci/docs/structure-check.mjs) against an explicit file list. It checks discoverability such as links, anchors, and `code_refs`; it does not prove source semantics, product behavior, or independent review.

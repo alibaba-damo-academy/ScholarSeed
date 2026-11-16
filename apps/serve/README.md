@@ -1,10 +1,13 @@
-# apps/serve — 书深产品后端
+<a id="appsserve--书深产品后端"></a>
+# apps/serve — ScholarSeed Product Backend
 
-FastAPI 后端与产品组合根，distribution 为 `scholarseed`，namespace 为 `service`。
+FastAPI backend and product composition root. The distribution is `scholarseed`, and the namespace is `service`.
 
-## 职责与边界
+<a id="职责与边界"></a>
+## Responsibilities and Boundaries
 
-### L1 extraction protocol / L1 提取协议
+<a id="l1-extraction-protocol--l1-提取协议"></a>
+### L1 Extraction Protocol
 
 Literature material extraction and AI reading share the block contract, parser and
 bounded recovery in `service/literature/service/comprehension.py`. Material extraction
@@ -14,20 +17,18 @@ field-allowlisted content recovery. Syntax-only recovery omits originals and ima
 missing blocks cannot enter that path. Valid compatible assets are reused without
 re-extraction. The final L1 structure and downstream consumers remain unchanged.
 
-文献材料提取与 AI 解读共用 `service/literature/service/comprehension.py` 的区块契约、
-解析器和有界恢复。材料提取只生成 `card`、`common_fields`、`source_map`；AI 解读先输出
-读物，再解析同样的尾部。共享 L1 内核继续负责语义校验及字段白名单内容恢复。仅语法修复
-不发送原文和图像，缺区块不能走该路径。有效兼容资产不重提；最终 L1 结构及下游消费不变。
+Literature material extraction and AI reading share the block contract, parser, and bounded recovery in `service/literature/service/comprehension.py`. Material extraction generates only `card`, `common_fields`, and `source_map`; AI reading emits the reading first, then parses the same tail. The shared L1 kernel remains responsible for semantic validation and field-allowlisted content recovery. Syntax-only repair does not send original text or images, and missing blocks cannot use this path. Valid compatible assets are not re-extracted; the final L1 structure and downstream consumption remain unchanged.
 
-- `bootstrap.py:create_app` 装配业务域；`chat/api/routes.py:create_chat_app` 装配会话服务。
-- 管理项目、资料、文献、工作台、上下文、会话、凭据、技能、产物和 SSE。
-- `chat/service/adapters.py` 解析产品 manifest；`chat/runtime/selection.py` 将产品启用策略应用于 Runtime Gateway 发现的 Provider。
-- `chat/runtime/` 将产品状态与 Runtime 公共契约组合，投影并持久化产品事件。
-- Runtime contract/Gateway、Codex 执行器和 Trace 分别由独立包拥有；Serve wheel 只打包 `service`。
+- `bootstrap.py:create_app` composes business domains; `chat/api/routes.py:create_chat_app` composes the session service.
+- Manages projects, materials, literature, workbench, context, sessions, credentials, skills, artifacts, and SSE.
+- `chat/service/adapters.py` parses the product manifest; `chat/runtime/selection.py` applies product enablement policy to Providers discovered by the Runtime Gateway.
+- `chat/runtime/` combines product state with the public Runtime contract, then projects and persists product events.
+- Runtime contract/Gateway, the Codex executor, and Trace are owned by separate packages; the Serve wheel packages only `service`.
 
-跨业务域协议位于 `platform/`，实现由组合根注入。项目路径经 `ContentPort` 解析；项目业务库统一通过 `persistence/project.py` 打开。
+Cross-domain protocols live in `platform/`, and implementations are injected by the composition root. Project paths are resolved through `ContentPort`; project business databases are opened uniformly through `persistence/project.py`.
 
-## Thread completion accounting / 线程完成计数
+<a id="thread-completion-accounting--线程完成计数"></a>
+## Thread Completion Accounting
 
 `Activities.observe_thread` and `Activities.to_thread` release their reservations
 in the worker's `finally`, before publishing its result or exception. Completion
@@ -37,12 +38,10 @@ of a still-running worker. An observation barrier grants no execution admission
 during maintenance; neither callback scheduling nor an extra event-loop tick is
 a completion receipt.
 
-`Activities.observe_thread` 和 `Activities.to_thread` 在线程的 `finally` 中释放计数，
-先完成清理，再发布结果或异常。完成回调保留为未开始工作时的幂等清理兜底，并取回
-无人等待的异常。取消等待协程不释放仍在运行线程的计数。观察屏障不授予维护期间
-的新执行权限；回调调度或额外等待一轮事件循环都不能作为真实工作完成的证明。
+`Activities.observe_thread` and `Activities.to_thread` release the count in the worker's `finally`, completing cleanup before publishing its result or exception. Completion callbacks remain an idempotent cleanup fallback for work that never starts and retrieve unobserved exceptions. Cancelling the awaiting coroutine does not release the count for a worker that is still running. An observation barrier grants no new execution admission during maintenance; callback scheduling or waiting for another event-loop tick is not proof that the actual work has completed.
 
-## Task archive consent / 任务归档确认
+<a id="task-archive-consent--任务归档确认"></a>
+## Task Archive Consent
 
 The archive request accepts `stop_running`. When false, the session owner uses its
 existing locked idle check and never enters the stop/activation path. Work that
@@ -50,11 +49,10 @@ still needs stopping returns `409 session_archive_stop_required`, so the client
 must obtain explicit stop consent. Omitted values preserve existing callers;
 restoring an archive does not stop work. The strict stop and drain checks remain unchanged.
 
-归档请求的 `stop_running=false` 只允许沿既有加锁空闲检查直接归档，不进入停止或激活路径。
-仍需停止工作时返回 `409 session_archive_stop_required`，由客户端重新取得明确停止确认。
-省略字段保留既有调用语义；恢复归档不停止工作。原有严格停止与排空检查不变。
+An archive request with `stop_running=false` permits direct archival only after the existing locked idle check; it does not enter the stop or activation path. If work still needs to be stopped, the response is `409 session_archive_stop_required`, and the client must obtain explicit consent to stop. Omitting the field preserves existing caller semantics; restoring an archive does not stop work. The existing strict stop and drain checks are unchanged.
 
-## HTTP diagnostic correlation / HTTP 诊断关联
+<a id="http-diagnostic-correlation--http-诊断关联"></a>
+## HTTP Diagnostic Correlation
 
 During feedback recording, Desktop adds an opaque, per-fetch diagnostic ID only
 to its configured Serve API. Serve validates the ID and records it separately
@@ -79,43 +77,32 @@ enabled, no request UUID, worker-limiter lookup or periodic request timer is use
 thresholds default to 500 ms. Loop lag measures lateness beyond the 250 ms sampling
 deadline, not total blocking duration; an absent warning cannot rule out a stall.
 
-反馈录制期间，Desktop 只向已配置的 Serve API 添加逐 fetch 随机诊断 ID。Serve 严格校验，
-与自身请求 ID 分开记录；该 ID 不授予认证或执行权限。只有响应已对同一来源授予 CORS
-访问时，才允许该诊断请求读取详细 Resource Timing。录制可能额外触发 CORS 预检，
-不能把发送前的全部等待都标作连接排队。
+During feedback recording, Desktop adds a random per-fetch diagnostic ID only to its configured Serve API. Serve validates it strictly and records it separately from its own request ID; this ID grants neither authentication nor execution permission. The diagnostic request may read detailed Resource Timing only when the response has already granted CORS access to the same origin. Recording may trigger an additional CORS preflight; do not label all pre-send waiting as connection queuing.
 
-DEBUG 日志开启时，外层 ASGI lifespan 持有循环心跳和有界 watchdog 线程。停顿记录
-事件 ID 及最多十二层文件基名、函数名、行号，不记录局部变量、源码或完整路径。
-恢复和请求记录携带事件时间，覆盖请求进入 ASGI 前的停顿。身份阶段时间戳和线程池
-token／等待者的采样峰值需与浏览器发送时间一起判断，不能代替后者。原现场超时
-归因仍未确认；限制和操作方法见开发手册。
+With DEBUG logging enabled, the outer ASGI lifespan owns a loop heartbeat and a bounded watchdog thread. A stall records an episode ID and at most twelve frame basenames, function names, and line numbers; it never records local variables, source text, or full paths. Recovery and request records carry episode timing, including stalls before the request enters ASGI. Identity-phase timestamps and sampled worker-pool token/waiter peaks complement browser transmission timing; they do not replace it. The historical timeout attribution remains unconfirmed; see the development runbook for limitations and operating instructions.
 
-请求创建时启用 DEBUG 或 WARNING 才启动请求采样；WARNING 保留慢响应头、循环迟到和
-异常诊断。两级均关闭时，不生成请求 UUID、不查询工作线程 limiter，也不启动逐请求
-定时器。路由前 `received.route` 为 null；后续记录使用路由模板，无匹配路由的响应
-使用 `unmatched`。慢响应头和循环迟到阈值分别持有，默认均为 500 ms。循环迟到是相对
-250 ms 采样截止点的超时量，不是阻塞总时长；没有告警不能排除停顿。
+Request sampling starts only if DEBUG or WARNING is enabled when the request is created; WARNING retains slow-header, loop-lag, and error diagnostics. If both levels are disabled, no request UUID is generated, the worker limiter is not queried, and no per-request timer is started. Before routing, `received.route` is null; later records use the route template, or `unmatched` for a response without a classified route. Slow-header and loop-lag thresholds are independent and default to 500 ms each. Loop lag measures lateness past the 250 ms sampling deadline, not total blocking duration; the absence of a warning does not rule out a stall.
 
-## 入口
+<a id="入口"></a>
+## Entry Points
 
-| 命令 | 作用 |
+| Command | Purpose |
 | --- | --- |
-| `scholarseed` / `scholarseed-desktop` | 启动 Electron 桌面产品 |
-| `scholarseed-serve` | 启动后端，默认绑定本机回环地址 |
-| `scholarseed-bridge` | 宿主已提供认证作用域时使用的兼容 CLI；普通 Agent 使用 `scholarseed_bridge` 模型工具 |
+| `scholarseed` / `scholarseed-desktop` | Launch the Electron desktop product |
+| `scholarseed-serve` | Launch the backend, bound to the local loopback address by default |
+| `scholarseed-bridge` | Compatibility CLI for use when the host has provided an authenticated scope; ordinary Agents use the `scholarseed_bridge` model tool |
 
 The wheel retains this CLI. Desktop bundles place its relocatable launcher in
 `backend/compat/`, outside the Agent PATH; other launchers remain in `backend/bin/`.
 Compatibility callers must supply a valid host-owned scope. The CLI does not supply
 model callback identity and cannot replace operations that require it. Never copy credentials.
 
-wheel 保留该 CLI；Desktop 可搬迁启动器位于不进入 Agent PATH 的 `backend/compat/`，
-其他启动器仍在 `backend/bin/`。兼容调用方必须已有宿主提供的有效作用域；CLI 不提供模型
-callback 身份，不能代替要求该身份的操作，不要复制凭据。
+The wheel retains this CLI. Desktop bundles place its relocatable launcher in `backend/compat/`, outside the Agent PATH; other launchers remain in `backend/bin/`. Compatibility callers must have a valid host-provided scope. The CLI does not provide model callback identity and cannot replace operations that require it. Do not copy credentials.
 
-Desktop 固定以 `auth-mode=off`、`ownership-axis=machine` 启动；独立 Serve 支持显式认证模式。模型连接的凭据与本地 HTTP 访问模式独立。
+Desktop always starts with `auth-mode=off` and `ownership-axis=machine`; standalone Serve supports an explicitly configured authentication mode. Model connection credentials are independent of the local HTTP access mode.
 
-## Responses Summary Dialects / Responses 摘要方言
+<a id="responses-summary-dialects--responses-摘要方言"></a>
+## Responses Summary Dialects
 
 The model bridge normalizes reasoning-text events only for connection/model pairs
 that explicitly declare `responses_reasoning_summary` in the bundled capability
@@ -124,108 +111,43 @@ contract, not a model-name heuristic. Requests, gateway forwarding, other models
 and the Adapter's non-public reasoning filter remain unchanged. Keep the declaration
 consistent if the connection's upstream response semantics change.
 
-模型桥只对随包能力表明确声明 `responses_reasoning_summary` 的连接/模型坐标转换
-推理文本事件。该声明描述此连接的公开摘要响应契约，不按模型名字猜测。请求、网关转发、
-其它模型及 Adapter 的非公开推理过滤保持不变；连接的上游响应语义改变时须同步维护声明。
+The model bridge normalizes reasoning-text events only for connection/model pairs that explicitly declare `responses_reasoning_summary` in the bundled capability registry. The declaration describes that connection's public-summary response contract; it is not inferred from the model name. Requests, gateway forwarding, other models, and the Adapter's non-public reasoning filter remain unchanged. Keep the declaration consistent if the connection's upstream response semantics change.
 
-## 匿名技能广场
+<a id="匿名技能广场"></a>
+## Anonymous Skill Marketplace
 
-`capabilities/service/clawhub.py` 持有在线市场读取与下载契约，默认连接
-`https://scholarseed.damo.alibaba.com/skillhub/`。启动时可通过 `SCHOLARSEED_CLAWHUB_URL` 指定另一个
-HTTP/HTTPS base URL，可带无歧义子路径，尾斜杠统一去除；不接受查询参数、fragment、URL 内凭据、
-点路径、编码路径分隔符或空白。所有初始列表、搜索、详情、版本及下载请求保留 base path；
-下载 Location 按当前请求 URL 解析；仅来自该 base 的后端根相对 `/api/v1/skills/...` 跳转
-补回 base path，已带前缀的路径不重复添加。其他根相对路径、绝对 URL 和白名单下载保持原解析规则，
-信任校验仍比较 origin 而非 base path，不将来源等价集合用于下载授权。
-只使用网关后端接口，不依赖 SkillHub 前端或修改集群配置。修改部署环境后重启应用，
-不覆盖用户账号、模型或技能配置。HTTP 不能保证传输完整性，生产服务应使用 HTTPS。
+`capabilities/service/clawhub.py` owns the online marketplace read and download contract and connects to `https://scholarseed.damo.alibaba.com/skillhub/` by default. At startup, `SCHOLARSEED_CLAWHUB_URL` can specify another HTTP/HTTPS base URL with an unambiguous subpath; trailing slashes are removed consistently. Query parameters, fragments, credentials in the URL, dot segments, encoded path separators, and whitespace are not accepted. All initial listing, search, detail, version, and download requests preserve the base path. Download `Location` is resolved against the current request URL; only backend root-relative `/api/v1/skills/...` redirects from that base have the base path restored, and an existing prefix is not duplicated. Other root-relative paths, absolute URLs, and allowlisted downloads retain their existing resolution rules. Trust checks still compare the origin, not the base path, and source-equivalence sets are not used to authorize downloads.
+Use only the gateway backend API; do not depend on the SkillHub frontend or modify cluster configuration. Restart the application after changing the deployment environment. Do not overwrite user account, model, or skill configuration. HTTP cannot guarantee transport integrity; production services should use HTTPS.
 
-Desktop 经既有设备技能桥访问 `/api/capabilities/skills/marketplace` 的列表、详情及
-固定版本安装路由；仅使用宿主本机能力，不需要账号登录，不向市场传递该能力或
-书深身份。独立 Serve 仍遵循自身认证策略，不能从匿名远端读取推断所有本机 API 公开。
+Desktop accesses the listing, detail, and fixed-version installation routes at `/api/capabilities/skills/marketplace` through the existing device skill bridge. It uses only host-local capabilities, requires no account login, and does not pass that capability or ScholarSeed identity to the marketplace. Standalone Serve still follows its own authentication policy; anonymous remote reads do not imply that all local APIs are public.
 
-此部署的匿名 ClawHub 兼容接口返回 `nextCursor`，下一页请求以 `page` 参数传回，
-并提供关键词搜索、技能详情及下载。`namespace--slug` 兼容身份解码后读取对应
-namespace 的公开版本元数据，未带命名空间的身份使用 `global`。服务实现或协议变化
-需要核对该契约，不回退到旧构建用 Registry 的登录/Token 流程。
+This deployment's anonymous ClawHub-compatible API returns `nextCursor`, which is passed back as the `page` parameter in the next-page request; it also provides keyword search, skill details, and downloads. After decoding the compatible `namespace--slug` identity, the service reads the public version metadata for that namespace; identities without a namespace use `global`. Verify this contract if the service implementation or protocol changes; do not fall back to the old build's Registry login/Token flow.
 
-下载保留服务自行发放的匿名 Cookie，同源跳转后只允许 HTTPS 下载主机白名单。
-`SCHOLARSEED_CLAWHUB_DOWNLOAD_HOSTS` 可用逗号分隔覆盖默认 OSS 主机
-`deep-rd.oss-cn-hangzhou.aliyuncs.com`；跨域请求清除 Cookie，不转发任何用户凭据。
-请求、JSON 和归档都有超时/体积/跳转限制；可疑或恶意标记拒绝安装，缺扫描不当作安全。
-远端正文只展示，不执行脚本或声明的操作。
+Downloads retain the anonymous Cookie issued by the service; after same-origin redirects, only HTTPS download hosts on the allowlist are permitted. `SCHOLARSEED_CLAWHUB_DOWNLOAD_HOSTS` accepts a comma-separated override for the default OSS host `deep-rd.oss-cn-hangzhou.aliyuncs.com`. Cross-origin requests clear the Cookie and forward no user credentials. Requests, JSON, and archives have timeout, size, and redirect limits. Suspicious or malicious markings cause installation to be rejected; a missing scan is not treated as safe. Remote content is displayed only; scripts and declared actions are not executed.
 
-安装复用用户技能安装器，拒绝跨平台路径穿越、符号链接与同名覆盖，在用户技能根的
-`.origin.json` 保存市场地址、slug 与版本，经现有原生 inventory 配置链刷新发现。
-安装渠道与包内上游来源独立：上传、广场安装、创建及 GitHub 导入入口在产品技能状态中
-记录 `installationSources`，列表以 `installationSource` 返回。上传 ZIP 自带的旧
-`.origin.json` 不改变本次上传渠道；无可信历史记录返回 `unknown`，不按缺少来源记录
-推断为上传。删除用户技能同时清除该渠道记录，系统预置卡片始终展示“官方”。
-安装项属于“我添加的”，不混入随包技能，也不绕过其后续依赖或第三方授权要求。
-“我添加的”按界面语言读取已映射 SkillHub 来源的元数据，标题复用其 `displayName`，
-与技能广场保持一致；远端缺少标题或不可用时保留本地名称，不改写技能身份及安装记录。
-内置 `find-skill` 以部署中的 `skillhub-registry` 为原型，保留上游来源，使用模型工具
-`scholarseed_bridge` 的 `skill/search`、`detail`、`list`、`document` 读取市场和本机技能。
-`install`、`enable`、`disable`、`update`、`delete` 复用同一 capabilities 管理服务，
-不要求安装外部 CLI，不开放模型指定的 registry、安装目录或远端发布。
-写操作必须经过当前回合的真实确认卡，并在执行前重查权限与上下文；同回合相同
-`client_op_id` 重试复用已完成回执，换目标或参数必须换 ID。安装使用固定版本，
-升级检查原来源与预期旧版本，预置不可删除、必需技能不可停用的约束不变。
-写入后应通过 `skill/list` 核对本地状态，不把安装、启用、当前可用和当前回合已加载混同。
-只有来源地址与 slug 一致才显示已安装；Serve 提供 `registryAliases`，仅将旧默认
-`http://120.26.99.45` 与新默认地址视为同一目录（忽略尾斜杠），避免切换后重复安装。
-其他环境覆盖地址、同源不同子路径保持独立，不按主机名或技能名称合并；旧来源记录不重写，
-新安装记录规范化后的完整 base URL。来源等价不扩大下载 origin 或白名单信任。
+Installation reuses the user skill installer and rejects cross-platform path traversal, symlinks, and overwriting an existing name. It stores the marketplace URL, slug, and version in `.origin.json` at the user skill root, then refreshes discovery through the existing native inventory configuration chain.
+Installation channel and the package's upstream source are independent. The upload, marketplace-install, creation, and GitHub-import entry points record `installationSources` in product skill state; listings return `installationSource`. An old `.origin.json` inside an uploaded ZIP does not change the channel of that upload. If no trusted history exists, return `unknown`; do not infer that an item was uploaded because its source record is missing. Deleting a user skill also removes its channel record. System-provided cards always display “官方” (“Official”).
+Installed items belong under “我添加的” (“Added by me”), are not mixed with bundled skills, and do not bypass later dependency or third-party authorization requirements. “我添加的” reads metadata from mapped SkillHub sources in the UI language and reuses their `displayName` as the title, keeping it consistent with the marketplace. If the remote title is missing or unavailable, retain the local name; do not change the skill identity or installation record.
+The built-in `find-skill` is based on the deployed `skillhub-registry`, retains upstream sources, and uses the `scholarseed_bridge` model tool's `skill/search`, `detail`, `list`, and `document` operations to read marketplace and local skills. `install`, `enable`, `disable`, `update`, and `delete` reuse the same capabilities management service. No external CLI installation is required, and the model cannot choose a registry or installation directory or publish remotely.
+Write operations must pass through a real confirmation card in the current turn and recheck permissions and context before execution. Retrying the same `client_op_id` in the same turn reuses the completed receipt; a different target or parameters require a new ID. Installation uses a fixed version. Updates check the original source and expected previous version. The constraints that preinstalled skills cannot be deleted and required skills cannot be disabled remain unchanged.
+After writing, verify local state through `skill/list`; do not conflate installed, enabled, currently available, and loaded in the current turn. An item is shown as installed only when both source URL and slug match. Serve provides `registryAliases`, treating only the old default `http://120.26.99.45` and the new default address as the same registry (ignoring trailing slashes) to prevent duplicate installation after switching. Other environment-overridden addresses and different subpaths on the same origin remain distinct; do not merge by hostname or skill name. Existing source records are not rewritten; new installation records store the normalized full base URL. Source equivalence does not expand download-origin or allowlist trust.
 
-技能归属展示复用包内与 SKILL.md 同目录的 `registry.json`，不是 SkillHub 发布账号。
-广场列表按 namespace、原生 slug 和已发布版本读取版本文件；详情读取选中版本。
-Serve 统一投影 authors 与 GitHub 来源，卡片作者栏显示可点击的 owner/repo，
-原作者声明、技能目录、revision 与改编类型在详情展示。已安装项直接读取本地登记，
-不复制作者到 `.origin.json`，不为旧安装联网补全；缺失、无效或读取失败不会回退到发布者。
-登记只用于展示，不证明作者身份，也不改变标签、审核或安装准入。远端文件受体积和并发
-限制，逐项失败不影响其余目录；不为展示下载整包或访问 GitHub API。
+Skill ownership display reuses the bundled `registry.json` located alongside `SKILL.md`; it does not use the SkillHub publishing account. Marketplace listings read version files by namespace, native slug, and published version; details read the selected version. Serve projects authors and GitHub sources consistently. The card's author field shows a clickable owner/repo, while the original author declaration, skill directory, revision, and adaptation type appear in the details. Installed items read local registration directly; authors are not copied into `.origin.json`, and old installations are not enriched over the network. Missing, invalid, or unreadable registration does not fall back to the publisher. Registration is for display only; it does not prove author identity or change tagging, review, or installation admission. Remote files have size and concurrency limits; a per-item failure does not affect other directories. Do not download the whole package or access the GitHub API just to display this information.
 
-本地上传先经 `POST /api/capabilities/skills/upload/preview` 校验并读取 name、description、
-正文、版本及作者，预览不创建安装记录；用户确认后调用原 upload 路由并重新校验。
-只接受 SKILL.md 或根目录／唯一一级目录内含唯一 SKILL.md 的 ZIP；必填 name、description
-和说明正文。上传不限制 ZIP 压缩文件大小，但仍限制说明文档、展开体积和条目数量，拒绝
-路径越界、特殊／加密文件及重复路径。上述校验和预算仍覆盖 macOS 元数据；通过校验后，
-预览与安装共同排除 `__MACOSX` 目录、`.DS_Store` 和 `._` 前缀的 AppleDouble 文件，
-不将其计作技能目录或写入安装结果，其他隐藏文件保留。相同稳定 name 冲突不覆盖；运行时状态同步失败
-删除本次新增安装，不触碰已有技能。产品默认策略不再锁定 fast-search，所有内置技能可停用。
+Local uploads are first validated through `POST /api/capabilities/skills/upload/preview`, which reads the name, description, body, version, and author; preview does not create an installation record. After user confirmation, the original upload route is called and validation runs again.
+Only a `SKILL.md` file or a ZIP containing exactly one `SKILL.md` at the root or within one unique top-level directory is accepted. The name, description, and instruction body are required. There is no limit on the compressed ZIP size, but limits still apply to the instruction document, expanded size, and entry count; path traversal, special/encrypted files, and duplicate paths are rejected. These checks and budgets also cover macOS metadata. After validation, preview and installation both exclude `__MACOSX` directories, `.DS_Store`, and AppleDouble files prefixed with `._`; these are not counted as skill directories or written into the installation result. Other hidden files are retained. A collision with the same stable name does not overwrite. If runtime-state synchronization fails, delete this newly added installation without touching existing skills. The product's default policy no longer locks `fast-search`; all built-in skills can be disabled.
 
-上传预览仅按技能根目录是否同时存在 `.scholarseed-package.json` 和
-`.scholarseed-plugin.json` 区分卡片插件包，不解析两者内容。上传弹窗不展示技能详情预览，
-也不显示独立的插件检查按钮；普通技能点击安装直接安装，插件点击安装自动检查后显式授权。
-缺少包清单时，上传仅安装普通技能，不保留可被宿主发现的插件声明，也不加载卡片。
-仅有包清单不触发插件校验；同时声明两者时，卡片安装必须经过既有插件校验与权限确认，
-不能通过普通上传绕过。普通上传仍校验 SKILL.md、解压安全和同名冲突。
+Upload preview classifies a card-plugin package only by whether both `.scholarseed-package.json` and `.scholarseed-plugin.json` exist at the skill root; it does not parse their contents. The upload dialog does not show a skill-details preview or a separate plugin-check button. Clicking Install on an ordinary skill installs it directly; clicking Install on a plugin runs the automatic checks and then requires explicit authorization.
+If the package manifest is missing, the upload installs only an ordinary skill, retains no plugin declaration discoverable by the host, and loads no card. A package manifest alone does not trigger plugin validation. When both manifests are present, card installation must pass the existing plugin checks and permission confirmation and cannot bypass them through ordinary upload. Ordinary uploads still validate `SKILL.md`, extraction safety, and name conflicts.
 
-Desktop 反馈由 Main 直接提交远端，不依赖 Serve 存活。`POST /api/serve/feedback/bundle`
-复用反馈附件校验、会话作用域与日志预算，只返回诊断 ZIP，不创建托管凭据或提交远端。
-独立 Web/Serve 的原提交接口保持不变；Desktop 收集失败时明确降级为部分诊断。
+Desktop feedback is submitted remotely by Main directly and does not depend on Serve being available. `POST /api/serve/feedback/bundle` reuses feedback attachment validation, session scope, and log budgets; it returns only a diagnostic ZIP and neither creates managed credentials nor submits remotely. The existing submission endpoint for standalone Web/Serve remains unchanged. If Desktop collection fails, the result is explicitly downgraded to partial diagnostics.
 
-会话目录 `GET /api/serve/sessions` 保留每页最多 500 条，按最后活跃时间倒序、同时间戳按会话 ID 排序。
-响应的 `next_cursor` 非空时，保持原 scope/project/query 并传入 `cursor` 继续读取；空值表示结束。
-游标只标记排序位置，每页仍重新执行归属与项目校验；非法游标返回 422。
-`total` 保持既有有界候选批次数语义，不代表全库总量。分页不提供并发修改时的冻结快照。
+The session listing `GET /api/serve/sessions` retains a maximum of 500 entries per page, sorted by last-active time descending, with session ID as the tie-breaker for equal timestamps. When `next_cursor` in the response is nonempty, preserve the original scope/project/query and pass `cursor` to continue reading; an empty value means the listing is finished. The cursor marks only a sort position; ownership and project checks are rerun on each page. An invalid cursor returns 422. `total` retains its existing bounded-candidate-batch semantics and does not represent the total number in the entire database. Pagination does not provide a frozen snapshot during concurrent modifications.
 
-会话分支复用 `POST /api/serve/sessions/open`：仅传 `fork_session_id` 时固定创建时的产品事件水位；
-另传 `fork_turn_id` 时截到指定的已完成回复。分支请求不允许覆盖项目、模型或权限字段。
-完成回复优先使用原生分支；整会话及非原生历史截点复用受控历史初始化，不自动提交模型回合。
-独立 workspace 路径在新分支激活前复制源会话工作目录的当前文件，保留相对路径；
-不复制运行时私有目录、凭据、环境文件与依赖缓存，不跟随符号链接或 Windows reparse point。
-复制失败不激活新分支；共享项目目录路径不复制文件，源与分支继续使用同一活目录；
-运行中的源仅允许在同一共享项目目录内，从明确已完成的原生回复分叉；无起点、未完成起点、
-非原生历史回填及需要独立文件复制时仍拒绝。复用源生命周期锁，目标资源准入前释放，
-并在复制前及目标激活后的历史事务前重验来源身份、工作目录、原生绑定与固定完成水位。
-失败的新分支关闭并归档，不作为可续跑会话暴露。文件内容取分叉时的当前状态，
-不是所选历史回复时的版本，不回滚源文件。历史导入与产物关联在同一事务提交，
-独立 workspace 内已提交附件和可变产物重新绑定到独立副本，分支修改、删除不改变源文件；
-共享项目目录中的附件和可变产物继续引用共享文件，分支修改、删除会影响同一文件；
-已发布或目录外产物保留只读引用。旧分支不自动迁移。草稿、待发送引用、运行任务及队列不继承；
-归档源沿用现有拒绝规则。
-这些协议与源码约束不代替真实 Desktop、模型和跨会话续聊验收。
+Session branching reuses `POST /api/serve/sessions/open`: when only `fork_session_id` is provided, the product-event watermark from session creation is fixed; when `fork_turn_id` is also provided, the branch is cut at the specified completed response. A branch request cannot override project, model, or permission fields. Prefer a native fork for a completed response. Whole-session forks and non-native history cut points reuse controlled history initialization and do not automatically submit a model turn.
+For an independent workspace path, copy the current files from the source session's working directory before activating the new branch, preserving relative paths. Do not copy runtime-private directories, credentials, environment files, or dependency caches, and do not follow symlinks or Windows reparse points. A copy failure prevents branch activation. Shared project-directory paths do not copy files; the source and branch continue to use the same live directory. A running source may fork only from an explicitly completed native response within the same shared project directory. Forks without a starting point, with an incomplete starting point, with non-native history backfill, or requiring independent file copies remain rejected. Reuse the source lifecycle lock, release it before target resource admission, and revalidate source identity, working directory, native binding, and fixed completion watermark before copying and before the history transaction after target activation.
+Failed new branches are closed and archived, not exposed as resumable sessions. File contents reflect their current state at fork time, not their state at the selected historical response; source files are not rolled back. Commit history import and artifact association in the same transaction. In an independent workspace, rebind submitted attachments and mutable artifacts to independent copies so branch modifications and deletions do not affect source files. In a shared project directory, attachments and mutable artifacts continue to refer to shared files, so branch modifications and deletions affect the same files. Published or out-of-directory artifacts retain read-only references. Existing branches are not migrated automatically. Drafts, pending-send references, running tasks, and queues are not inherited. Existing rejection rules apply to archived sources.
+These protocols and source constraints do not replace acceptance of real Desktop behavior, real model calls, or cross-session continuation.
 
 Running sources may fork only through an explicitly completed native turn in the same shared
 project workspace. Forks without a turn, incomplete turns, non-native history imports and
@@ -239,7 +161,8 @@ artifacts to independent copies before activation. Shared workspace forks do not
 changes and deletions affect the same shared files. Independent copies retain the private-file,
 symlink and Windows reparse-point exclusions; copy failure prevents activation.
 
-## External single-file reads / 项目外单文件读取
+<a id="external-single-file-reads--项目外单文件读取"></a>
+## External Single-File Reads
 
 `resource/read-external` accepts one absolute local file path and bounded text/base64
 chunks. It uses the existing product HIL ledger: `ask` waits for a decision;
@@ -253,53 +176,22 @@ Cancellation invalidates outstanding access. No parent-directory permission, wri
 persistent mount or unscoped source URL is created. File replacement fails closed.
 `resource/read` remains project-relative and directs absolute paths to this operation.
 
-`resource/read-external` 接受单个本地绝对路径，按限量文本/base64 分块读取。
-沿用产品 HIL 台账：`ask` 等待用户选择；`safe_auto` 对当前用户消息明确指定的
-普通文档路径自动批准，其他情况询问；隐藏或敏感路径不进入文档自动批准策略。
-完全访问模式免除人工确认，但不跳过受保护路径和文件身份检查，产品私有文件仍禁止读取。
-允许与拒绝绑定当前执行及具体文件版本；分块复用决定，换文件、换轮或会话重启不继承。
-取消任务使访问失效；不授予父目录/写入权限，不登记永久挂载，不生成无范围来源链接。
-文件被替换时安全失败。`resource/read` 保持项目相对路径语义，绝对路径应改用新操作。
+`resource/read-external` accepts one absolute local path and reads bounded text/base64 chunks. It reuses the product HIL ledger: `ask` waits for a user decision; `safe_auto` automatically approves ordinary document paths explicitly named in the current user message and asks otherwise. Hidden or sensitive paths are not eligible for automatic document approval. Full-access mode skips manual confirmation but not protected-path or file-identity checks; product-private files remain forbidden. Grants and denials are bound to the current execution and exact file version. Chunks reuse the decision, but it is not inherited by another file, turn, or restarted session. Cancellation invalidates access. The operation grants no parent-directory or write permission, creates no persistent mount, and generates no unscoped source link. File replacement fails closed. `resource/read` retains project-relative path semantics; absolute paths should use this new operation.
 
-## 全文授权桥
+<a id="全文授权桥"></a>
+## Full-Text Authorization Bridge
 
-综述任务激活读取请求中精确绑定的 `sources.refs`，由文献域批量准备原始摘要和题录。
-`SelectedSources` 复用有限预算的元数据补全，通过题录版本和项目归属 CAS 只回写可信空缺，
-在任务工作区发布不可变清单，单篇/多篇选择沿用 `selected-sources/v2`；含集合的选择使用
-`selected-sources/v3`，同时保留原集合引用、事务内展开的项目成员及版本绑定。返回清单引用、
-哈希和就绪/待补/重复计数，集合成员不通过逐篇上下文枚举替代。
-精确选择不触发整个项目候选补全；无选中文献的发现任务沿用现有候选池。
-Skill 一次消费激活响应，原选 refs 保留，只有就绪唯一论文抵扣补检目标。
-缺摘要、身份歧义、版本冲突和网络失败保留各自诊断，待补提示使用非阻塞消息。
-检索适配冻结语料后，重新激活沿用原清单；文库后续编辑供新任务使用。
+On activation, a literature-review task reads the exact `sources.refs` bound to its request, and the literature domain prepares the original abstracts and bibliographic records in a batch. `SelectedSources` reuses metadata completion within a bounded budget and writes back only trusted gaps, using bibliography versions and project-ownership CAS. It publishes an immutable manifest in the task workspace. Single- and multi-paper selections continue to use `selected-sources/v2`; selections containing collections use `selected-sources/v3`, preserving original collection references, project members expanded within the transaction, and version bindings. It returns the manifest reference, hash, and counts for ready, missing, and duplicate items; collection members are not replaced by enumerating each paper in context.
+An exact selection does not trigger completion of all project candidates; discovery tasks without selected literature continue to use the existing candidate pool. The Skill consumes the activation response once and retains the original refs; only a unique ready paper counts toward the follow-up search target. Missing abstracts, identity ambiguity, version conflicts, and network failures retain their separate diagnostics; missing-item prompts are nonblocking messages. Once retrieval adaptation freezes the corpus, reactivation uses the same manifest; later library edits are for new tasks.
 
-Quick 的检索检查点只确认摘要语料，返回 `not_required`，不建立全文授权或导出 L1。
-Standard 在同一最终语料检查点登记实际 `literature:`、`paper:` 和来源 artifact 范围，
-一次问题覆盖该批范围；读取和资产导出仍核对各自有效 grant。已有原文、兼容 L1 和
-LaTeX/PDF 获取均在此之后，拒绝授权保留原任务和成果，摘要替代需用户另行选择。
+Quick's retrieval checkpoint confirms only the abstract corpus, returns `not_required`, and neither establishes full-text authorization nor exports L1. At the same final-corpus checkpoint, Standard records the actual `literature:`, `paper:`, and source-artifact scopes; one question covers that batch. Reads and asset exports still check their own valid grants. Access to existing source text, compatible L1, and LaTeX/PDF acquisition all happen afterward. If authorization is denied, preserve the original task and results; the user must separately choose to use abstracts as a substitute.
 
-项目不再预建固定的 `literature/`。产物文献导入由文献域直接写全局题录和独立附件，
-项目关联仍由全局文献仓储维护，不再发布额外项目文件副本。导入的已准入字节暂存于
-现有操作台账，完成后清除暂存内容；重试不重新读取可变源文件。历史已完成回执保留
-原资产身份，旧待完成操作只读取经过 Content 校验的暂存或已登记文件，不重新发布。
-已有项目 `literature/`、`文献/` 不自动删除或搬迁；保留旧文献根的项目继续按原布局读取。
+Projects no longer pre-create a fixed `literature/` directory. Artifact literature imports write global bibliography records and separate attachments directly through the literature domain. Project associations remain maintained by the global literature repository; no extra project-file copy is published. Admitted imported bytes are staged in the existing operation ledger and cleared after completion; retries do not reread mutable source files. Historical completed receipts retain the original asset identity. Old pending operations read only staged content validated by Content or registered files; they do not publish again. Existing project `literature/` and `文献/` directories are not automatically deleted or moved. Projects retaining an old literature root continue to read it in its original layout.
 
-`literature/authorize` 与综述检索检查点共用 Assistant 授权 Owner 的
-`authorize_sources`：发布产品 HIL 并等待真实决策，不把待确认的 `question`
-交给模型转述。模型工具与 CLI 将全文授权登记为长等待操作，不设固定读取超时，
-由用户决策或任务取消结束等待；连接、写入及普通请求的超时限制保持不变。
-全文授权在所有权限模式下都必须由用户手动确认，普通工具的自动批准策略不受影响。
-文献管理的 `literature/fulltext` 同样先经过此授权门，确认前不下载或挂载 PDF；
-无研究任务时使用当前回合的精确文献库来源范围，不伪造任务或沿用其他回合授权。
-文献库下载复用可查看、勾选具体论文的范围卡；空选不可确认。
-确认来源由服务端真实回答入口写入，历史缺失来源的记录不显示为用户手动确认。
-历史无可信手动来源的批准不再作为有效许可，使用前需重新确认；原始 HIL 回答不改写。
-手动确认（包括无组件的标准问题）仅接受既有受信宿主回答通道；未提供宿主能力时安全拒绝。
-响应的 `ok` 不等于授权；只有 `disposition=authorized` 时，
-`granted_refs` 中的文献才可继续读取。已决范围复用原决策，新增范围仍需授权。
-授权等待后重新核对调用作用域与任务身份，逐篇读取仍独立检查授权，不自动激活任务、
-猜测授权类型或放宽托管全文访问限制。确定性回归见 `tests/contract_literature_bridge.py`
-及 `tests/contract_fulltext_gate.py`；真实模型与 Desktop 验收另行执行。
+`literature/authorize` and the literature-review retrieval checkpoint share the Assistant authorization Owner's `authorize_sources`: publish product HIL and wait for a real decision; do not pass a pending `question` to the model for paraphrasing. Model tools and the CLI register full-text authorization as a long-wait operation with no fixed read timeout; waiting ends on a user decision or task cancellation. Timeout limits for connections, writes, and ordinary requests remain unchanged.
+Full-text authorization requires manual user confirmation in every permission mode; ordinary tool auto-approval policy is unaffected. Literature management's `literature/fulltext` also passes through this authorization gate; do not download or mount a PDF before confirmation. Without a research task, use the exact literature-library source scope for the current turn; do not fabricate a task or reuse authorization from another turn. Library downloads reuse a scope card where users can inspect and select specific papers; an empty selection cannot be confirmed.
+The server records confirmation provenance through the actual answer entry point. Historical records missing provenance are not displayed as manual user confirmation. Approvals without a trusted historical manual source are no longer valid grants and require reconfirmation; original HIL answers are not rewritten. Manual confirmation, including standard questions without a component, is accepted only through the existing trusted-host response channel; fail closed when that host capability is unavailable.
+Response `ok` does not mean authorization. Only when `disposition=authorized` may literature in `granted_refs` continue to be read. Reuse the original decision for an already decided scope; new scope still requires authorization. After waiting for authorization, recheck the call scope and task identity. Reads of individual papers still check authorization independently. Do not automatically activate a task, guess the authorization type, or relax hosted full-text access restrictions. Deterministic regression coverage is in `tests/contract_literature_bridge.py` and `tests/contract_fulltext_gate.py`; real-model and Desktop acceptance are performed separately.
 
 Full-text consent always requires a real manual response through the existing trusted-host
 channel, including standard questions without a component. Ordinary tool auto-approval is
@@ -311,337 +203,141 @@ Only the server records manual approval provenance. Historical automatic or unve
 require new confirmation without rewriting their original HIL answers, and are never presented
 as a manual user confirmation. Missing host authority fails closed.
 
-整条文献作为显式任务引用时，其所属附件可通过 `literature/read` 的
-`attachment_id` 按需读取；仅打开或选中某个附件时不据此授权其他附件。
-`literature/list` 返回全部关联附件标识，`readable/error` 仍只描述主 PDF。
-PDF 沿用页码与片段引用；UTF-8 文本附件使用 `start_page=1/end_page=1` 和
-字符 `offset/limit` 分段返回，`next_offset` 为空表示读完。文本来源链接回到
-所属文献附件列表，不伪装为 PDF 片段引用；其他格式明确返回不支持。
+When an entire literature item is an explicit task reference, its attachments can be read on demand using `attachment_id` in `literature/read`; opening or selecting one attachment does not authorize other attachments. `literature/list` returns identifiers for all associated attachments, while `readable/error` still describes only the primary PDF. PDFs retain page and excerpt references. UTF-8 text attachments are returned in chunks using `start_page=1/end_page=1` and character-based `offset/limit`; an empty `next_offset` means reading is complete. Text source links lead back to the attachment list for the literature item and are not presented as PDF excerpt references. Other formats explicitly return unsupported.
 
-## 文献文件名测试边界
+<a id="文献文件名测试边界"></a>
+## Literature Filename Test Boundary
 
-文件名规则由 [domain/utils.py](service/literature/domain/utils.py) 持有，
-[contract_filenames](tests/contract_filenames.py) 在显式审计作用域内装载
-[filenames](tests/filenames.py) 并执行全部4项业务用例，使用独立字面量预期与输入不变断言，
-不构建项目、数据库或运行时；故意替换错误清洗规则时原断言必须失败。
-入口拒绝业务用例的skip/expectedFailure；[logic guard](tests/logic.py) 同时覆盖模块装载
-与执行，异常退出恢复审计激活状态和bytecode设置，负向测试核验导入、后续分支及入口接线。
-该设施检查Python审计事件，不是安全沙箱；业务用例文件不作为独立测试入口。
-在 `apps/serve` 下用 `../../.venv/bin/python -m tests.contract_filenames` 可独立执行。
+Filename rules are owned by [domain/utils.py](service/literature/domain/utils.py). Under an explicitly enabled audit scope, [contract_filenames](tests/contract_filenames.py) loads [filenames](tests/filenames.py) and runs all 4 business cases, using independent literal expectations and assertions that inputs remain unchanged. It does not build the project, database, or runtime; deliberately substituting an incorrect sanitization rule must fail the original assertions. The entry point rejects `skip`/`expectedFailure` for business cases. [logic guard](tests/logic.py) covers both module loading and execution, restores audit activation state and bytecode settings after exceptional exits, and uses negative tests to verify imports, subsequent branches, and entry-point wiring. This facility checks Python audit events; it is not a security sandbox. The business-case file is not a standalone test entry point. From `apps/serve`, it can be run independently with `../../.venv/bin/python -m tests.contract_filenames`.
 
-套件登记在 [run_all](tests/run_all.py)，定向执行不代表完整 CI 或真实 Desktop 验收。
-首次会话启动只有匹配 reservation 的 `RuntimeOpenNotAppliedError` 才能回到可重试状态。
-Catalog 按 session、attempt、OPENING 且无原生 binding/vendor 身份原子重置，保留原消息及
-attempt 记录；下一次重试生成新 attempt。真正未知结果、取消、清理失败和历史
-OPEN_UNKNOWN 不自动清除；数据库提交失败也不解除打开围栏。
+The suite is registered in [run_all](tests/run_all.py); a targeted run does not represent full CI or real Desktop acceptance. On first session startup, only a `RuntimeOpenNotAppliedError` matching the reservation can return the session to a retryable state. The Catalog atomically resets the session, attempt, and OPENING state only when there is no native binding/vendor identity, preserving the original message and attempt record; the next retry creates a new attempt. Genuine unknown outcomes, cancellations, cleanup failures, and historical `OPEN_UNKNOWN` states are not cleared automatically. A database commit failure also does not remove the open fence.
 Queue reads and failure events expose unknown-open retry restrictions separately through
 `retry_blocked_error`, retaining the original `safe_error`. Send admission refuses the
 uncertain state. Status checks read durable facts even for cold sessions; they return
 `still_unknown` without activation, fence clearing or replay. Without not-applied proof,
 the UI directs users to diagnostics; checking status does not promise automatic recovery.
 
-队列读取及失败事件通过 `retry_blocked_error` 单独投影未知开会话的重发限制，保留
-原始 `safe_error`。普通发送/重发在准入阶段拒绝该状态；状态核对只读取持久化事实，
-冷会话同样返回 `still_unknown`，不激活原生会话、不清除围栏、不重放消息。
-没有未应用证明时仅引导反馈诊断；核对不等于已经具备自动恢复能力。
+Queue reads and failure events project retry restrictions for sessions with an unknown open separately through `retry_blocked_error`, retaining the original `safe_error`. Ordinary send/retry admission rejects this state. Status checks read only durable facts; cold sessions also return `still_unknown` without activating the native session, clearing the fence, or replaying messages. Without proof that the open was not applied, the UI only directs users to feedback diagnostics; checking status does not mean automatic recovery is available.
 
-同一 Turn 提交的传输未知与进程退出未知按精确会话、命令和代次归一为一个待结算边界，
-优先保留提交歧义 incident 的权威恢复关联；两份原始 Trace 均保留。重复报告不解除
-未知围栏，不伪造终态；其他身份或矛盾终态仍拒绝。Gateway 消费失败立即记录脱敏
-类型和投影序号并停止，不跳过失败事件；正常消费恢复不等于人工确认闭环已验收。
-已闭合旧未知的晚到报告不得覆盖后续轮状态，也不清除另一轮的活动身份。
+For a single Turn submission, transport-unknown and process-exit-unknown outcomes are normalized into one pending-settlement boundary by exact session, command, and generation. The authoritative recovery association from the ambiguous-submission incident takes precedence; both original Trace records are retained. Duplicate reports do not remove the unknown fence or fabricate a terminal state; other identities or conflicting terminal states remain rejected. On Gateway consumption failure, immediately record a redacted type and projection sequence and stop; do not skip the failed event. Resuming normal consumption does not mean the manual-confirmation loop has passed acceptance. A late report for an already closed old unknown must not overwrite a later turn's state or clear another turn's active identity.
 
-运行中的崩溃恢复先核对原生历史：已完成补回结果且不重发，已中断继续未完成任务，
-仍未知则按产品策略授权一次原输入重试，接受可能重复执行的风险。旧结果不改成成功或
-未提交，自动授权独立记录，不伪装用户确认。Serve 复用原生确认票据和精确 ledger CAS，
-只解除本次 TURN 围栏，保留 HIL、其他操作未知、取消、维护及配置检查。每原始回合只
-创建一个持久关联后继，后继再崩溃不生成无限恢复链，启动不扫描历史未知批量重发。
-恢复后继复用原冻结上下文及原认领，完成后结算原一次性材料；不能重新冻结而静默丢失
-已认领材料。实际 Windows 产品验收及尚未验证项见任务记录，不以此机制说明代替验收。
+For a crash during execution, first check native history: restore the result without resending if the turn completed; continue the unfinished task if it was interrupted; if it remains unknown, product policy authorizes one retry of the original input, accepting the risk of duplicate execution. Do not change the old result to successful or unsubmitted. Record automatic authorization separately; do not present it as user confirmation. Serve reuses the native confirmation ticket and exact ledger CAS, removing only this TURN fence while retaining HIL, other unknown operations, cancellation, maintenance, and configuration checks. Create only one durably associated successor per original turn; another crash in the successor does not create an infinite recovery chain, and startup does not scan and bulk-resend historical unknowns. The recovery successor reuses the original frozen context and claim, then settles the original one-time material on completion; it must not silently lose already claimed material by freezing again. See the task record for actual Windows product acceptance and remaining unverified items; this mechanism description does not replace acceptance.
 
-声明 `turn_confirmation` 的执行器在 UI 风险确认时先经 Gateway 排空观察、取得精确
-确认票据并核验投影水位，执行器确认后才按 generation/incident CAS 更新产品账本。
-确认凭据与原始 RuntimeEvent 保留在 uncertainty payload，DB 或事件发布失败可按同一
-目标幂等重试；持久 typed 确认的补发布不重新触碰原生状态。旧产品-only 确认不被推定为
-原生安全证明。HTTP 仍返回 unknown_outcome=true，风险确认不改变旧提交的未知结果。
+For an executor that declares `turn_confirmation`, a UI risk confirmation first waits for Gateway drain observation, obtains the exact confirmation ticket, and verifies the projection watermark. Only after executor confirmation does it update the product ledger using generation/incident CAS. The confirmation credential and original RuntimeEvent remain in the uncertainty payload. A database or event-publication failure can be retried idempotently against the same target; republishing a durable typed confirmation does not touch native state again. An old product-only confirmation is not assumed to prove native safety. HTTP still returns `unknown_outcome=true`; risk confirmation does not change the unknown result of the old submission.
 
-## 项目启动边界
+<a id="项目启动边界"></a>
+## Project Startup Boundary
 
-项目注册表完全为空时，启动恢复完成后通过常规受控创建流程在生效工作区目录下创建
-`书深默认项目`（MANAGED 子目录），而不是把工作区容器登记为项目。已归档项目仍算已有项目，
-因此仅归档不会在下次启动时生成替身；删除只移除登记并保留本机文件，若注册表随后仍为空，
-再次启动会在不覆盖旧目录的位置新建默认项目。
+When the project registry is completely empty, after startup recovery completes, create `书深默认项目` (“ScholarSeed Default Project”) as a `MANAGED` subdirectory under the effective workspace directory through the normal controlled creation flow. Do not register the workspace container as a project. Archived projects still count as existing projects, so archiving alone does not create a substitute on the next startup. Deletion removes only the registration and preserves local files; if the registry is still empty afterward, the next startup creates a new default project in a location that does not overwrite the old directory.
 
-`POST /api/serve/sessions/open` 接受成对的 `fork_session_id` / `fork_turn_id`，
-不能混入模型、权限或恢复覆盖字段。Serve 验证源访问、完成轮与当前原生绑定，
-继承项目及模型/权限选择，用现有 activation 建立新任务，再导入截点前的用户/
-助手文本与完成轮事件；不复制队列、审批或产物写入头。源任务及项目文件不回退，
-新的原生结果不确定时仍由原有 OPEN_UNKNOWN 边界处理，不自动重复创建。
+`POST /api/serve/sessions/open` accepts `fork_session_id` and `fork_turn_id` as a pair and cannot include model, permission, or recovery-override fields. Serve validates source access, the completed turn, and the current native binding; inherits project and model/permission selections; creates a new task through the existing activation flow; and then imports user/assistant text and completed-turn events up to the cut point. It does not copy queues, approvals, or artifact-write heads. The source task and project files are not rolled back. If the new native result is uncertain, the existing `OPEN_UNKNOWN` boundary handles it; creation is not repeated automatically.
 
-MCP 首次盘点必须同时满足宿主工具链已就绪与工作台准入已开放。等待工具链回执时，
-由 lifespan 拥有的后台任务继续等待，不阻塞 Serve 启动，也不提前发布失败配置。
-工具链准入失败不发布 MCP；退出时取消并收尾该等待任务，不能在应用关闭后继续盘点。
+The first MCP inventory requires both a ready host toolchain and open workbench admission. While waiting for the toolchain receipt, a lifespan-owned background task continues waiting without blocking Serve startup or publishing a failed configuration prematurely. MCP is not published if toolchain admission fails. On shutdown, cancel and finish that waiting task; inventory must not continue after the application closes.
 
-普通原生启动器仅检查客户端核心目录，检查结果以 `projects_deferred=true` 明确标记
-项目尚未检查；这一结果不能用于更新迁移或初始化项目存储。Serve 按项目检查登记位置、
-项目数据库和外部授权目录，失败时保留登记与失败原因，禁止该项目的业务 I/O，继续启动
-其他项目。一次启动内的失败资格不会因目录重新出现而自动变为可用，重新启动后重新检查。
+The ordinary native launcher checks only the client core directory; the result explicitly sets `projects_deferred=true` to indicate that projects have not been checked. This result cannot be used for update migration or project-storage initialization. Serve checks each project's registered location, project database, and external authorization directory. On failure, it preserves the registration and failure reason, prohibits business I/O for that project, and continues starting other projects. A project's failed eligibility during one startup does not automatically become available if the directory reappears; it is checked again after restart.
 
-创建、移除及授权恢复先标记各项目的恢复状态，再由受生命周期管理的队列执行。同一项目
-恢复保持顺序，失败保留待恢复记录和不可用原因；其他项目可以继续提交操作。恢复上下文
-仅能越过本项目的“恢复中”状态，不能越过真实权限或存储故障。更新检查仍要求完整项目
-快照及迁移证明，不把普通启动中的项目隔离当作更新兼容性通过。
+Creation, removal, and authorization recovery first mark each project's recovery state, then run through a lifecycle-managed queue. Recovery for the same project remains ordered. On failure, retain the pending recovery record and reason for unavailability; other projects can continue accepting operations. Recovery context can bypass only this project's “recovering” state, not actual permission or storage failures. Update checks still require a complete project snapshot and migration proof; project isolation during ordinary startup does not count as passing update compatibility.
 
-项目目录使用 `project` 角色，由操作系统检查读取、列举、创建等实际操作权限，允许既有
-沙箱共享 ACL，不删改 ACL，也不要求项目所有可写主体都属于客户端私有信任名单。
-配置、凭据、协调器及更新控制数据仍使用 `private` 角色。两种角色都保留目录身份、
-no-follow/reparse 及原生句柄释放检查；共享同一根的私有数据不能被项目声明降级。
+Project directories use the `project` role, with the operating system checking permissions for actual operations such as reading, listing, and creating. Existing shared sandbox ACLs are allowed; ACLs are not modified, and every principal that can write to the project need not be on the client's private trust list. Configuration, credentials, coordinators, and update-control data continue to use the `private` role. Both roles retain directory-identity, no-follow/reparse, and native-handle release checks. Private data sharing the same root cannot be downgraded by declaring it a project.
 
-## Windows 打包配置源
+<a id="windows-打包配置源"></a>
+## Windows Packaged Configuration Source
 
-Windows 个人安装的打包默认配置源使用精确只读安装绑定：组合根同时核对已加载
-模块、运行解释器与默认配置的同根安装布局，原生层保留全部祖先句柄与身份，
-安装根及内部每层仍严格检查 ACL。安装根之外的位置风险不作为私有数据目录授权。
-该能力只读 `defaults/config.json`，不允许写入、创建、删除或回收，也不能在路径替换
-后重新建立信任。普通私有数据、外部配置源及项目权限规则不变；不支持该绑定的
-guardian 路径明确拒绝，不降级授权。这不是全用户安装或额外的签名真实性证明。
+The packaged default configuration source for a Windows per-user installation uses an exact, read-only installation binding: the composition root verifies that the loaded module, running interpreter, and default configuration share the same installation root; the native layer retains every ancestor handle and identity; and ACLs are still checked strictly at the installation root and each level below it. Risks at locations outside the installation root do not authorize private-data directories. This capability reads only `defaults/config.json`; it does not allow writing, creating, deleting, or recycling, and trust cannot be re-established after path replacement. Rules for ordinary private data, external configuration sources, and project permissions are unchanged. Guardian paths that do not support this binding are explicitly rejected without downgrading authorization. This is not a per-machine installation or additional proof of signature authenticity.
 
-## Windows 会话目录属性权限
+<a id="windows-会话目录属性权限"></a>
+## Windows Session Directory Attribute Permissions
 
-默认会话继续使用 Home/service/sessions/会话ID，不迁移新旧会话。组合根仅将
-Home、service、sessions 三个产品目录交给沙箱权限准备，增加目录自身非继承的
-读取属性权限；不递归授权、不开放目录列举或私有文件内容，不改 UAC。
-私有目录校验接受这种精确元数据授权，文件及继承/内容权限仍严格拒绝。
-Home/projects 仍由 Trace ledger 检索使用，不改作会话工作区。
-## 启动健康与能力
+Default sessions continue to use Home/service/sessions/session-ID; neither old nor new sessions are migrated. The composition root passes only the three product directories Home, service, and sessions to sandbox permission preparation, adding non-inheritable read-attributes permission to each directory itself. It does not grant permissions recursively, expose directory listing or private file contents, or change UAC. Private-directory validation accepts this exact metadata permission; file permissions and inherited/content permissions remain strictly rejected. Home/projects remains in use for Trace ledger lookup and is not repurposed as the session workspace.
+<a id="启动健康与能力"></a>
+## Startup Health and Capabilities
 
-后台 Runtime readiness 预热同时等待工具链回执与工作台准入，不能在私有通道认证及
-工具链回执完成前抢先启动物理探测；工作台准入不代表 HTTP listener 已就绪。公开 readiness 在工具链准备或失败时直接报告
-对应安全状态，不先启动探测再覆盖结果；默认工具链已就绪的独立 CLI 保持原行为。
-生命周期持有并收尾等待任务，等待期间不占执行租约；实际探测前重新取得 root STARTUP
-准入，维护期间不抢跑或互等。关闭时取消并等待实际探测收尾；鉴权、健康截止和失败关闭规则不放宽。
+Background Runtime readiness warmup waits for both the toolchain receipt and workbench admission. It must not start physical probing before private-channel authentication and the toolchain receipt are complete; workbench admission does not mean the HTTP listener is ready. When the toolchain is preparing or has failed, public readiness reports the corresponding safe state directly instead of starting a probe and overwriting its result. A standalone CLI whose toolchain is ready by default retains its existing behavior. The lifecycle owns and finishes the waiting task; it holds no execution lease while waiting. Before probing, it reacquires root STARTUP admission and neither races ahead nor waits on itself during maintenance. On shutdown, cancel the task and wait for the actual probe to finish; authentication, health deadlines, and fail-closed rules are not relaxed.
 
-`/api/healthz/backend` 仅报告基础服务、实例身份及存储准入，不等待 AI 探测；
-`/api/healthz` 保留完整 Runtime 就绪诊断。两者均受 STARTUP 准入保护，维护期不放行。
-会话目录的 `readiness: null` 表示尚未探测，不是执行授权；创建、打开和发送仍使用原有能力校验。
-独立 CLI 在组合与存储资格成功后，将只读 Skill Python 验证与 Runtime 就绪探测并行执行；
-PATH 仍在主线程提交且早于 HTTP 开放。预热任务由 RuntimeService 持有，
-启动失败和退出均等待实际探测收尾。此拆分不证明模型认证或真实回合已成功。
+`/api/healthz/backend` reports only basic service, instance identity, and storage admission, without waiting for AI probing. `/api/healthz` retains full Runtime readiness diagnostics. Both are protected by STARTUP admission and are unavailable during maintenance. `readiness: null` in the session listing means probing has not happened; it is not execution authorization. Creation, opening, and sending still use the existing capability checks. After composition and storage eligibility succeed, the standalone CLI runs read-only Skill Python validation in parallel with Runtime readiness probing. PATH is still committed on the main thread before HTTP opens. RuntimeService owns the warmup task and waits for the actual probe to finish on startup failure and shutdown. This separation does not prove model authentication or a successful real turn.
 
-应用启动时，身份已确定的 UI 模型目录初始化调度共享执行 Host 预热，不等首次发消息，
-也不通过 healthz 轮询反复启动。等待 workbench/工具链时不持执行租约，条件满足后
-重新取得 root RUNTIME 准入；身份环境改变则放弃该次预热，后续初始化可重试。
-预热不创建产品会话或原生 Thread，使用正常模型连接及凭据投影，准备锁不跨容量等待。
-健康 Host 在全部附件释放后继续驻留；已附着 Thread 有产品订阅或执行树未确认空闲时
-不自动撤销订阅。无订阅且完整空闲时及时 detach，由原生独自等待默认30分钟再卸载。
-被动历史 SSE 不隐式启动或恢复执行；已 detached 的 Thread 经正常授权执行需求加载。
-显式维护/退出仍负责排空及真实资源收尾，未取消 Windows 准入与原生制品门禁。
-Serve 启动不猜测匿名执行主体，避免登录前的预热锁住错误共享域。执行 Host 配置
-冲突在资源准入阶段明确拒绝，经既有会话/队列出口呈现；不触发附件压力回收、不
-重试到另一 Host，也不自动拉起确认或重启。预热收到 `RESTART_REQUIRED` 只记录
-需要重启，不误记为 host_ready。用户等待任务完成后，通过明确确认的整应用退出/
-重启及既有排空切换配置；本轮未新增原地热切换入口。
-CONTROL 通过真实请求主体、实际模型和完整启动意图复用 EXECUTION Host；技能、模型、
-MCP 盘点不另起 Host，配置冲突明确拒绝。Skill 缓存按主体、经核验 Host 身份/代次和
-cwd 分区，每次命中前重新校验启动意图。会话普通读取及 Thread 级 enablement 不触发
-全局强制刷新；配置写入和显式刷新须通过共享空闲围栏，未知写入要求明确恢复/重启。
-MCP 设置仍要求宿主授权，桥接仍验证当前会话/回合；运行时盘点前额外校验共享主体
-启动上下文。启动阶段只提交已有管理配置，不以匿名身份启动盘点进程。
-本轮按要求暂停测试与真实 Desktop 验收，不能据此宣布生命周期验收通过。
+At application startup, initializing the UI model directory after identity is known schedules warmup of the shared execution Host; it does not wait for the first message or repeatedly start warmup through healthz polling. While waiting for workbench/toolchain readiness, it holds no execution lease. Once conditions are met, it reacquires root RUNTIME admission. If the identity environment changes, that warmup attempt is abandoned and a later initialization can retry. Warmup creates no product session or native Thread. It uses the normal model connection and credential projection, and its preparation lock does not span capacity waits.
+A healthy Host remains resident after all attachments are released. A Thread that remains attached is not automatically unsubscribed while it has a product subscription or its execution tree is not confirmed idle. When it has no subscription and is fully idle, detach promptly; the native layer then waits on its own for the default 30 minutes before unloading. Passive history SSE does not implicitly start or resume execution; a detached Thread is loaded on demand for normally authorized execution. Explicit maintenance/shutdown still drains and finishes actual resources and does not remove Windows admission or native artifact gates.
+Serve startup does not guess an anonymous execution principal, preventing pre-login warmup from locking the wrong shared domain. Execution Host configuration conflicts are explicitly rejected at resource admission and surfaced through existing session/queue exits. They do not trigger attachment-pressure reclamation, retry on another Host, or automatically launch a confirmation or restart. If warmup receives `RESTART_REQUIRED`, it records that a restart is needed and does not incorrectly mark `host_ready`. After waiting tasks finish, the user switches configuration through an explicitly confirmed full-application exit/restart and the existing drain process; this change adds no in-place hot-switch entry point.
+CONTROL reuses the EXECUTION Host through the real request principal, actual model, and complete startup intent. Skill, model, and MCP inventories do not start another Host; configuration conflicts are explicitly rejected. The Skill cache is partitioned by principal, verified Host identity/generation, and cwd, and startup intent is revalidated before every cache hit. Ordinary session reads and Thread-level enablement do not trigger a global forced refresh. Configuration writes and explicit refreshes must pass through the shared idle fence; an unknown write requires explicit recovery/restart. MCP settings still require host authorization, and the bridge still validates the current session/turn; shared-principal startup context is additionally checked before runtime inventory. Startup commits only existing managed configuration and does not launch inventory processes as an anonymous principal.
+Testing and real Desktop acceptance were paused for this iteration as requested; lifecycle acceptance cannot be declared passed.
 
-托管 Desktop 可用 `--await-toolchain` 将 TeX 准备从基础 HTTP 前置拆为 AI 执行前置。
-该模式必须使用私有父子进程控制；一次性布尔回执不携带环境或路径。TeX 路径、字体
-及缓存环境在 Python 创建前冻结，准备失败或控制通道在回执前断开均禁止 AI 执行，
-不回退宿主 TeX。版本探测仍并行；模型/技能盘点等待，资源进程创建再次检查准入。
-这是所有 AI 执行共用的保守门槛，不是按技能精确判断 TeX 依赖。重新启动重做准备。
+Managed Desktop can use `--await-toolchain` to move TeX preparation from a prerequisite for basic HTTP to a prerequisite for AI execution. This mode must use private parent/child process control; the one-time Boolean receipt carries no environment or path. TeX paths, fonts, and cache environment are frozen before Python is created. A preparation failure or control-channel disconnect before the receipt prevents AI execution; it does not fall back to host TeX. Version probing remains parallel; model/skill inventory waits, and resource-process creation checks admission again. This is a conservative gate shared by all AI execution, not a skill-specific determination of TeX dependencies. Preparation is repeated after restart.
 
-## 崩溃后的安全续作
+<a id="崩溃后的安全续作"></a>
+## Safe Continuation After a Crash
 
-Adapter 只重建执行器、恢复同 Thread 并提供权威历史；产品 `RecoveryService` 在宿主证据
-完整时，经原持久队列创建一次新的系统续作命令，不重发旧 `turn/start` 或工具，也不调用
-人工 UNKNOWN 确认。自动续作自身再次崩溃不会自动接龙；此前已完成的原轮只对账。
+Adapter only rebuilds the executor, restores the same Thread, and provides authoritative history. When host evidence is complete, the product `RecoveryService` creates one new system continuation command through the original durable queue; it does not resend the old `turn/start` or tools and does not invoke manual UNKNOWN confirmation. If the automatic continuation itself crashes again, it does not automatically chain another continuation; the previously completed original turn is only reconciled.
 
-模型桥在实际向客户端暴露任何工具输出、或向上游授予未知托管工具执行权之前持久记账。
-未知/分片/超限输出保守阻断；没有完整桥接证据不能从历史“未看到工具”推断没有副作用。
-用户授权的只读 `web_search` 请求仅在组合根登记的精确 Responses 端点和既定声明字段下
-允许有界重复查询，可能重复收费，不代表上游尚未执行。Bridge 不跟随重定向，不接受
-模型自报 trusted 标记；任意兼容端点、未知参数、MCP 或嵌套托管工具无此豁免。
-即使是 `web_search_call`，实际工具输出仍保守阻断原轮自动续作。
+The model bridge records durable state before actually exposing any tool output to the client or granting an upstream unknown hosted tool permission to execute. Unknown, fragmented, or oversized output conservatively blocks recovery; without complete bridge evidence, the absence of a tool in history cannot establish that there were no side effects. A user-authorized, read-only `web_search` request may be repeated a bounded number of times only for the exact Responses endpoint registered by the composition root and the established declaration fields. It may incur duplicate charges and does not prove that the upstream request has not already executed. Bridge does not follow redirects or accept a `trusted` marker reported by the model. Arbitrary compatible endpoints, unknown parameters, MCP, and nested hosted tools receive no such exemption. Even for `web_search_call`, actual tool output conservatively blocks automatic continuation of the original turn.
 
-进程退出先封住旧流并撤销、关闭、等待其真实 HTTP 消费者；同 Thread 恢复后，还须等待
-原执行、资源准备与队列结算 Owner 完成。仅精确 client/native 身份的 interrupted 历史、
-完整空闲执行树、无未知操作/HIL、无用户取消/新输入/主体/模型/权限/维护变化才准入。
-原用户消息的 admitted→bound 是同一意图；只有 client、正文、引用及上下文快照版本完全
-一致的绑定更新才允许，不能让绑定投影误判成新输入，也不能只凭相同 client 放行新正文。
-UNKNOWN 对账按持久队列和明确提交身份定型，单边冒充与命名空间碰撞保持未知。
+On process exit, first seal the old stream, revoke and close it, and wait for its actual HTTP consumer. After restoring the same Thread, also wait for the original execution, resource-preparation, and queue-settlement Owners to finish. Admission requires all of the following: interrupted history with exact client/native identity; a fully idle execution tree; no unknown operation/HIL; and no change in user cancellation, new input, principal, model, permissions, or maintenance state. The original user's message moving from admitted to bound is the same intent. A binding update is allowed only when client, body, references, and context-snapshot version match exactly; a binding projection must not be mistaken for new input, and matching client identity alone cannot admit a new body. UNKNOWN reconciliation is determined by the durable queue and explicit submission identity; one-sided impersonation and namespace collisions remain unknown.
 
-续作提交在 Runtime `TURN_ADMISSION` 能力下绑定代次、活动修订、水位和同步产品授权，
-Adapter 与原生 writer 实际写入前复核；上游注册、目的地、协议或主体变化也撤销该授权。
-维护、关闭、用户新消息或取消不会在等待后悄悄启动旧续作。续作显示为系统状态而非普通
-用户消息，实时、历史、取消及队列均不展示内部提示。由崩溃对账得到的 interrupted 携带
-process_exit 原因，不误报用户主动停止；Turn 终态不代替 Adapter 宣布整个进程恢复。
-恢复状态也是新轮的显示边界，保留 admitted 起始序号，另记绑定更新序号；历史合并按
-会话事件序号及普通用户/恢复轮边界放置旧状态，避免将旧崩溃显示为续作再次失败。
+Continuation submission binds generation, active revision, watermark, and synchronized product authorization under the Runtime `TURN_ADMISSION` capability. Adapter and the native writer recheck immediately before writing; changes to upstream registration, destination, protocol, or principal also revoke this authorization. Maintenance, shutdown, a new user message, or cancellation cannot silently start an old continuation after waiting. The continuation is displayed as system state, not an ordinary user message; live views, history, cancellation, and queues do not expose internal prompts. An interrupted state derived from crash reconciliation carries the `process_exit` reason, avoiding a false report that the user stopped it. A terminal Turn state does not replace Adapter declaring the whole process restored. Recovery state also marks the display boundary of the new turn: retain the admitted start sequence and record the binding-update sequence separately. Merge history by session-event sequence and ordinary-user/recovery-turn boundaries so an old crash is not displayed as a second failure of the continuation.
 
-macOS 与 Windows 采用相同授权、持久队列和写前围栏；进程退出与真实产品流程分别验收。
-受控故障不冒充 Windows.Globalization.dll 原生故障复现，也不代表该 DLL 根因已修复。
+macOS and Windows use the same authorization, durable queue, and pre-write fence; process exit and the real product flow are accepted separately. A controlled fault is not a reproduction of a native `Windows.Globalization.dll` failure and does not mean that DLL's root cause has been fixed.
 
-## 历史目录续载
+<a id="历史目录续载"></a>
+## Historical Session Listing Continuation
 
-`GET /api/serve/sessions` 可显式传入非负 `offset`（首批为 `0`），沿既有身份、Runtime
-和项目/未归属过滤后的稳定候选序列续读。`limit` 仍是本批返回上限；`next_offset`
-指向下一条未消费命中的候选位置，`null` 明确表示耗尽。搜索保留标题、正文及定位信息，
-不再只检查前 500 个候选；仅为当前返回批次构建完整行。此模式的 `total` 是范围候选数，
-不是搜索命中数，客户端不得据此或可见行数推算后续位置。
+`GET /api/serve/sessions` accepts an explicit nonnegative `offset` (the first batch uses `0`) to continue through the stable candidate sequence after the existing identity, Runtime, and project/unassigned filters. `limit` remains the maximum number returned in this batch. `next_offset` points to the next unconsumed matching candidate; `null` explicitly means the sequence is exhausted. Search retains titles, bodies, and location information and no longer checks only the first 500 candidates; complete rows are built only for the current returned batch. In this mode, `total` is the number of candidates in scope, not the number of search matches. Clients must not infer later positions from it or from the number of visible rows.
 
-省略 `offset` 保留旧调用的上限和 `total` 语义，不返回 `next_offset`。新续载客户端
-必须拒绝缺失、非法或不前进的位置，不能将旧服务响应静默当作耗尽。位置不提供跨请求
-快照；并发新增、删除和更新时间变化可能移动记录，已知目录变化应重取首批并在追加时去重。
-这一实现复用完整授权范围的目录元数据读取，成本随目录规模增长，未新增存储或索引。
-契约入口为 `contract_session_listing`；真实 Desktop 与目标平台验收另行完成。
+Omitting `offset` preserves the old call's limit and `total` semantics and does not return `next_offset`. New continuation clients must reject missing, invalid, or non-advancing positions; they must not silently treat a response from an old service as exhaustion. Positions do not provide a cross-request snapshot. Concurrent additions, deletions, and activity-time changes may move records; when a directory change is known, fetch the first batch again and deduplicate while appending. This implementation reuses directory-metadata reads across the full authorized scope, so cost grows with directory size; no storage or index was added. The contract entry point is `contract_session_listing`; real Desktop and target-platform acceptance are performed separately.
 
-## Trace 启动边界
+<a id="trace-启动边界"></a>
+## Trace Startup Boundary
 
-普通 Serve、原生 `--startup` 及升级兼容性检查仅获得 Trace 目录资格并检查 SQLite 索引，
-不枚举、读取或散列历史 JSONL；快照以 `history=deferred` 明确表示历史尚未检查，
-而不是完整校验通过。历史追加不参与启动或升级检查的收敛判断。
-已获资格并确认 Trace 目录不存在时保留 `history=complete` 的空证据，不创建目录；
-这只证明该次快照无历史，不等同于检查了后来新增的诊断记录。
+Ordinary Serve, native `--startup`, and upgrade-compatibility checks only establish eligibility for the Trace directory and inspect the SQLite index; they do not enumerate, read, or hash historical JSONL. The snapshot explicitly uses `history=deferred` to indicate that history has not been checked, not that full validation passed. Historical appends do not participate in startup or upgrade-check convergence. When eligibility is established and the Trace directory is confirmed absent, retain empty evidence with `history=complete` without creating the directory; this proves only that the snapshot had no history, not that diagnostic records added later were checked.
 
-升级不迁移原始 Trace、旧 context ledger 或 FTS 索引，不做历史全量审计或整库复制；
-原始历史和旧账本均明确标为延迟检查。候选写入格式仍通过 `trace-write-formats` 互验，
-业务数据库迁移投影、目录资格及索引未知格式拒绝不变。显式完整审计仍遵守原有预算，
-但不再是升级准入条件。升级通过不证明全部旧诊断数据可解释。
+Upgrade does not migrate original Trace data, old context ledgers, or FTS indexes, and does not perform a full historical audit or copy the entire database; original history and old ledgers are explicitly marked for deferred checking. Candidate write formats are still cross-validated through `trace-write-formats`. Business-database migration projections, directory eligibility, and rejection of unknown index formats are unchanged. An explicitly requested full audit still follows its existing budget but is no longer an upgrade-admission condition. Passing upgrade does not prove that all old diagnostic data is interpretable.
 
-Trace 查询、全文索引及内容改写在消费边界拒绝不支持的诊断格式，查询时权限、I/O
-或编码错误明确失败，不冒充无历史。旧账本的实际生命周期投影在按需查询时执行。
-已安装旧 source inspector 仍执行它自己的检查；新 candidate 不会修改或绕过旧二进制，
-只有两端都采用新边界才解除旧 source 的全量扫描限制。
+Trace queries, full-text indexing, and content rewriting reject unsupported diagnostic formats at the consumption boundary. Permission, I/O, or encoding errors during a query fail explicitly; they are not presented as an absence of history. The actual lifecycle projection of old ledgers runs on demand when queried. An installed old source inspector continues to run its own checks; a new candidate does not modify or bypass the old binary. The old source's full-scan limit is removed only when both sides use the new boundary.
 
-启动日志的 `bytes_read=0` 仅指历史 JSONL，不代表 SQLite 或其他启动域没有 I/O。
-索引只读检查遇到 SQLite 明确的 `SQLITE_READONLY_ROLLBACK` 时，仅记录待恢复状态。
-普通启动通过既有原生排他目录维护，以 `mode=rw` 打开既有索引并让 SQLite 回滚，
-随后重新只读检查并证明启动快照收敛；不手动删除 journal、重建索引或调整权限。
-原生启动预检不写入，升级兼容性预览和显式完整审计仍拒绝未恢复的索引。
-其他权限、IO、损坏和格式错误不会被归为可恢复，文件绑定变化亦明确失败。
-首次实际写入 Trace 时，现有内容配额维护仍可能扫描历史；本层解耦不改变保留策略，
-不删除历史、不重建索引，也不将这项写入成本描述为已消除。
+`bytes_read=0` in startup logs refers only to historical JSONL; it does not mean SQLite or other startup domains performed no I/O. If the read-only index check encounters SQLite's explicit `SQLITE_READONLY_ROLLBACK`, it records only a pending-recovery state. Ordinary startup uses existing native exclusive-directory maintenance, opens the existing index with `mode=rw` so SQLite can roll it back, then checks it read-only again and proves that the startup snapshot converged. It does not manually delete journals, rebuild the index, or change permissions. Native startup preflight performs no writes; upgrade-compatibility previews and explicit full audits still reject an unrecovered index. Other permission, I/O, corruption, and format errors are not classified as recoverable, and file-binding changes fail explicitly. On the first actual Trace write, existing content-quota maintenance may still scan history. This decoupling does not change retention policy, delete history, rebuild the index, or claim to eliminate that write cost.
 
-### 初始化与停止的绑定边界
+<a id="初始化与停止的绑定边界"></a>
+### Binding Boundary Between Initialization and Stop
 
-首次原生初始化成功但产品尚未领取任何提交时，绑定持久化为 `unsubmitted`。
-停止仍取消未提交消息，并等待受保护初始化和清理结束；等待期间保持
-`interrupting`，不能将取消请求当作已完成。Windows 回合前刷新、空闲回收或
-重启之后，这种有明确未提交证据的绑定走现有 CAS 替换，新建空原生线程，
-保留产品会话和取消记录，不把取消消息作为原生历史重放。
+When initial native initialization succeeds but the product has not claimed any submission, persist the binding as `unsubmitted`. Stop still cancels the unsubmitted message and waits for protected initialization and cleanup to finish; remain in `interrupting` while waiting and do not treat the cancellation request as completed. After a pre-turn refresh, idle reclamation, or restart on Windows, a binding with explicit evidence that it was unsubmitted follows the existing CAS replacement and creates an empty native Thread. Preserve the product session and cancellation record; do not replay the cancelled message as native history.
 
-领取消息进入 `submitting` 与绑定转为 `bound` 在同一事务完成，先于任何可能的
-原生执行。跨过此边界即不再视为空线程；未知提交、已有历史和旧版本的 `bound`
-绑定仍按原身份恢复，不能因缺少 turn ID 或恢复错误自动重建。未确认的 open
-仍为 `open_unknown`，不以初始化完成标记补造可恢复证明。
-macOS 正常驻留附件继续复用；仅重新激活明确未提交的附件时采用上述替换。
-状态不读取原生私有数据库或 rollout，不改变官方 Codex 制品。
+Claiming a message into `submitting` and changing the binding to `bound` happen in the same transaction, before any possible native execution. Once this boundary is crossed, it is no longer considered an empty Thread. Unknown submissions, existing history, and old-version `bound` bindings are still restored under their original identities; they are not rebuilt automatically because a turn ID is missing or recovery failed. An unconfirmed open remains `open_unknown`; an initialization-complete marker does not fabricate proof that recovery is safe. On macOS, normally resident attachments continue to be reused; the replacement above is used only when reactivating an attachment explicitly known to be unsubmitted. State does not read native private databases or rollout data and does not modify official Codex artifacts.
 
-## 技能与发行
+<a id="技能与发行"></a>
+## Skills and Distribution
 
-### Windows 内置工具访问
+<a id="windows-内置工具访问"></a>
+### Windows Built-in Tool Access
 
-打包 Windows 还通过 `platform/recovery.py` 连接安装内受编译策略约束的原生助手。
-该恢复端口与工具 RX admission 分开，绑定发现并冻结的 Runtime storage roots；
-Adapter 在已有资源租约/启动锁内传入实际 Home、版本和 executable。恢复不读取凭据，
-不迁移自定义目录、不向 renderer 提供任意提权 API。输出有界且只允许固定结果类型，
-原始 stderr 不进入产品日志；取消必须等助手终态，不能把取消请求当作权限操作结束。
-实际 Windows UAC、权限隔离和对话恢复仍需原生安装版验收。
+Packaged Windows also uses `platform/recovery.py` to connect to a native helper inside the installation that is constrained by a compiled policy. This recovery port is separate from tool RX admission and is bound to discovered, frozen Runtime storage roots. Adapter passes the actual Home, version, and executable under the existing resource lease/startup lock. Recovery does not read credentials, migrate custom directories, or expose an arbitrary privilege-escalation API to the renderer. Output is bounded and limited to fixed result types; raw stderr is not included in product logs. Cancellation must wait for the helper's terminal state; a cancellation request is not proof that the permission operation has ended. Actual Windows UAC, permission isolation, and conversation recovery still require acceptance on a native packaged installation.
 
-恢复失败时只消费固定 schema 的 `stage`、`reason` 与可选数值 `system_error`，
-校验白名单后写入 `windows_sandbox_recovery`；不记录原生自由文本、路径或未知字段。
-`ancestor_profile`、`ancestor_product`、`ancestor_codex` 区分祖先检查；`elevation`
-区分 `cancelled`、`access_denied` 等实际结果，不从通用非零退出码推断用户取消。
-`metadata` 单独标识元数据目录及日志准备失败，不再与后续 target 检查混淆。
+On recovery failure, consume only the fixed-schema `stage`, `reason`, and optional numeric `system_error`, validate them against an allowlist, and write them to `windows_sandbox_recovery`; do not record native free text, paths, or unknown fields. `ancestor_profile`, `ancestor_product`, and `ancestor_codex` distinguish ancestor checks. `elevation` distinguishes actual results such as `cancelled` and `access_denied`; do not infer user cancellation from a generic nonzero exit code. `metadata` separately identifies metadata-directory and log-preparation failures so they are not confused with subsequent target checks.
 The `metadata` stage identifies metadata-directory/log preparation failures
 separately from subsequent target validation, without logging native free text.
-异常/超量输出记录为 `transport`，无法启动助手记录为 `helper_launch`。
-worker 的数值系统码可能未传回；日志中的 `system_error=0` 表示无可用数值，不能
-解释为操作成功。安装版必须同时包含新的 helper 与宿主消费者。
+Exceptional or oversized output is recorded as `transport`; failure to start the helper is recorded as `helper_launch`. The worker's numeric system code may not be returned. In logs, `system_error=0` means no numeric value is available and must not be interpreted as a successful operation. The packaged installation must contain both the new helper and its host consumer.
 
-打包 Desktop 由实际安装/组件路径 Owner 投影固定工具资源声明。Serve 在 Provider
-配置时冻结，`platform/toolchain.py` 核对其与实际解释器、产品模块所在位置一致，
-不接受模型/会话路径，不扫描 PATH 或用户技能；打包 Windows 缺清单及外部 override
-明确拒绝，独立 Serve/开发模式不自动授予工具目录权限。
-Windows 无内置资产清单时仍注入空资产的资源准备对象，绑定已准入 workspace 后，
-在原生沙箱 ready 时准备该 workspace 自身的非继承属性读取权限。此步骤与工具 RX
-清单独立，避免 PowerShell 路径解析因 workspace 元数据不可读而丢失当前位置；
-不递归扩权；账户内项目的必要祖先另按下述属性策略准备，不改变会话文件的删除权限。workspace 已有的
-沙箱写权限予以保留；工具资产仍严格拒绝超过 RX 的沙箱权限。元数据准备沿用
-Adapter 的已审定版本门禁（当前 0.159.0、0.163.0）；开发模式的其他版本现在也会明确拒绝，
-须单独完成版本审定，不绕过门禁。
-该准备不覆盖工作区之外的私有祖先目录；若这些目录拒绝沙箱读取属性，
-PowerShell 仍可能无法解析当前位置。此时应选择祖先可解析的工作区位置，
-不能把初始化 ready 当作 cwd 或文件操作已经验收通过，也不自动扩大祖先权限。
+For packaged Desktop, the Owner of the actual installation/component paths projects the fixed tool-resource declaration. Serve freezes it when configuring the Provider; `platform/toolchain.py` verifies that it matches the actual interpreter and product-module locations. Model/session paths are not accepted, and PATH and user skills are not scanned. Packaged Windows explicitly rejects a missing manifest or external override; standalone Serve/development mode does not automatically grant tool-directory permissions.
+On Windows, even without a built-in asset manifest, a resource-preparation object with an empty asset set is injected. After binding the admitted workspace, when the native sandbox is ready, it prepares non-inheritable read-attributes permission on that workspace itself. This is independent of the tool RX manifest and prevents PowerShell path resolution from losing the current location because workspace metadata is unreadable. Permissions are not expanded recursively. Necessary ancestors for projects within the account are prepared separately under the attribute policy below; permissions for deleting session files are unchanged. Existing sandbox write permissions on the workspace are retained, while tool assets continue to be rejected strictly if their sandbox permissions exceed RX. Metadata preparation uses Adapter's approved-version gate (currently 0.159.0 and 0.163.0); other development-mode versions are now explicitly rejected too and require separate version approval rather than bypassing the gate.
+This preparation does not cover private ancestor directories outside the workspace. If those directories deny sandbox attribute reads, PowerShell may still be unable to resolve the current location. In that case choose a workspace location whose ancestors can be resolved. Do not treat initialization readiness as acceptance of cwd or file operations, and do not automatically expand ancestor permissions.
 
-名单限内置 `backend/bin`、当前 Python 发行树、组件布局的冻结 `backend/pylibs`，
-以及已声明的 PowerShell、Electron/Node 和 TeX 组件；
-平铺布局的产品模块已位于 Python 树。`platform/access.py` 向已存在的本机沙箱组
-按安装阶段已完成的固定资源准入 SID 绑定动态元数据权限；固定工具树由安装 Owner
-检查和赋权，Serve 不遍历或修复它们。对经运行解释器和产品模块双重校验的安装根内父目录，仅增加
-不继承的目录查询权限（列目录、读属性、同步），以支持 Windows 长路径查找；对组合根
-解析的工作区目录仅增加不继承的读属性权限，以支持 PowerShell 定位及文件操作。
-不增加写权限，不授权安装根之外的祖先。目录/文件通过固定
-no-reparse 句柄预检，保留 owner、控制位和其他 ACE；拒绝未知类型、链接和读取/执行
-拒绝项。每个根独立协调，部分根完成后其他根失败时，已新增 RX 保留并记录，不用旧
-DACL 覆盖回滚。授权持久且沙箱组共享，不在会话退出时移除；新增/替换资产须随产品
-重启重新准备。跨进程 mutex 仅协调产品写者，不保证任意外部管理员并发 ACL 操作的事务性。
-Desktop 将安装准入的真实本机 SID 通过 `SCHOLARSEED_TOOL_PRINCIPAL` 注入；固定资源
-声明缺少有效 SID 时启动拒绝，不回退会话期全树检查。动态元数据授权之前解析实际
-沙箱组 SID 并与准入绑定比较，不匹配则拒绝，不在对话中修复旧安装。每代原生沙箱
-就绪检查以及工作区、父目录的动态权限准备保持不变。独立 Serve/开发模式没有固定
-资源声明时仅准备已准入工作区的属性权限；固定资源或安装目录缺少准入 SID 仍明确拒绝。
-不支持安装资产或其 ACL 热修改；更新须排空并重启产品并重新完成安装准入。
-Desktop 在已校验 TeX 资源准备成功后，通过私有认证 ParentControl 通道一次性传递
-版本、归档 SHA-256 和字体目录描述；就绪状态与描述同时生效，失败或未收到描述时拒绝执行。
-资源描述只提供配置数据，不授权额外路径或变更 Windows 固定资源准入。
-macOS 与 Windows 会话组合将 TeX/XDG 缓存放到该会话的 `.tool-cache/texlive` 并在启动工具前
-通过 no-reparse 句柄准备目录，新目录继承会话 ACL，已有目录权限保持不变；
-fontconfig 保留内置与系统字体目录，在会话内按内容摘要生成独立配置；拒绝链接和已有不同内容，
-不覆盖用户文件。通过 Thread 执行环境传递配置及缓存，不污染共享 Host 启动环境；同时设置 Windows TeX Live 的
-`XE_FONTCONFIG_PATH` / `XE_FC_CACHEDIR`，避免其退回安装目录缓存。缓存不复用 Desktop Home
-下的写入路径，不增加工具目录或 Home 的沙箱写权限。
+The allowlist is limited to built-in `backend/bin`, the current Python distribution tree, frozen `backend/pylibs` in component layout, and declared PowerShell, Electron/Node, and TeX components. In flat layout, product modules are already in the Python tree. `platform/access.py` binds dynamic metadata permissions to the fixed-resource admission SID established during installation for the existing local sandbox group. The installer Owner checks and grants permissions to fixed tool trees; Serve does not traverse or repair them. For parent directories inside an installation root verified against both the running interpreter and product module, add only non-inheritable directory-query permissions (list directory, read attributes, synchronize) to support Windows long-path lookup. For the workspace directory resolved by the composition root, add only non-inheritable read-attributes permission to support PowerShell location and file operations. Do not add write permission or authorize ancestors outside the installation root. Preflight directories/files using fixed no-reparse handles, preserving owner, control bits, and other ACEs; reject unknown types, links, and read/execute deny entries. Coordinate each root independently. If some roots succeed before another fails, retain and record the newly added RX permissions; do not roll back by overwriting with an old DACL. Authorization is persistent and shared by the sandbox group; do not remove it at session exit. New or replaced assets require preparation again after product restart. The cross-process mutex coordinates product writers only; it does not guarantee transactionality with concurrent ACL operations by arbitrary external administrators.
+Desktop injects the real local SID admitted during installation through `SCHOLARSEED_TOOL_PRINCIPAL`. If a fixed-resource declaration lacks a valid SID, startup is rejected; there is no fallback to a session-time full-tree check. Before dynamic metadata authorization, resolve the actual sandbox-group SID and compare it with the admission binding; reject a mismatch and do not repair an old installation during a conversation. Per-generation native-sandbox readiness checks and dynamic preparation of workspace and parent-directory permissions remain unchanged. Standalone Serve/development mode without a fixed-resource declaration prepares only attribute permissions for the admitted workspace; a missing admission SID for fixed resources or the installation directory is still explicitly rejected. Hot modification of installed assets or their ACLs is unsupported; updates require draining and restarting the product and repeating installation admission.
+After validated TeX resource preparation succeeds, Desktop passes the version, archive SHA-256, and font-directory description once through the private authenticated ParentControl channel. Readiness and the description take effect together; execution is rejected on failure or if the description is not received. The resource description supplies configuration data only; it does not authorize extra paths or change Windows fixed-resource admission.
+The macOS and Windows session composition places TeX/XDG caches in that session's `.tool-cache/texlive` and prepares the directory before launching tools using no-reparse handles. New directories inherit the session ACL; existing directory permissions remain unchanged. fontconfig retains bundled and system font directories and generates a session-specific configuration based on content digests; it rejects links and existing content that differs and does not overwrite user files. Configuration and caches are passed through the Thread execution environment without polluting shared Host startup environment. Windows TeX Live also receives `XE_FONTCONFIG_PATH` / `XE_FC_CACHEDIR` to prevent fallback to installation-directory caches. Caches do not reuse writable paths under Desktop Home and do not add sandbox write permissions to tool directories or Home.
 
-当前原生版本准入由 Adapter 控制。源码与本机契约测试不代替 Windows 原生 ACL、
-真实帮我审批搜索、不可写及发现隔离验收；未完成这些验收不能宣称产品修复通过。
+Current native-version admission is controlled by Adapter. Source code and local contract tests do not replace acceptance of native Windows ACLs, real “Help me approve” search, non-writability, and discovery isolation. The product fix cannot be declared passed until these checks are completed.
 
-内置工具探针失败使用 `windows_sandbox_tool_probe_failed`，与资源权限准备失败的
-`windows_sandbox_tool_access_failed` 分开；普通进程非零退出不解释为 Win32 权限错误。
-编译失败或 PDF 校验失败时，在该次随机 `verification` 目录中保留
-`scholarseed-probe-result.json`，包含实际退出码及 stdout/stderr 各最多 64 KiB 的尾部、
-截断标记；缺失或非法字段不补造。此文件与已有编译日志一起保留，目录位置沿既有
-后端日志回查，需要随问题反馈另行提供，不自动加入反馈包。原始输出不进入普通日志、
-异常消息或界面；新文件拒绝覆盖及链接路径，留存失败仍传播原始预检错误。
-成功预检继续清理随机目录；超时及原生结果未知仍保持未知结果语义，不提示安全重发。
+Built-in tool probe failures use `windows_sandbox_tool_probe_failed`, separate from resource-permission preparation failures, which use `windows_sandbox_tool_access_failed`. A generic nonzero process exit is not interpreted as a Win32 permission error. If compilation or PDF validation fails, retain `scholarseed-probe-result.json` in that run's random `verification` directory. It contains the actual exit code, up to 64 KiB of the tail of each of stdout and stderr, and a truncation marker; missing or invalid fields are not fabricated. Keep this file alongside existing compilation logs. Find its directory through existing backend logs; it must be provided separately with a problem report and is not automatically added to the feedback package. Raw output is not placed in ordinary logs, exception messages, or the UI. The new file refuses overwrites and link paths; a retention failure still propagates the original preflight error. Successful preflight continues to clean up the random directory. Timeouts and unknown native results retain unknown-result semantics and do not suggest that safe resending is possible.
 
-`capabilities/skills/` 是从仓库 `skills/community/` 离线编译的生成物，不手工维护。根 `desktop` dependency group 与 `uv.lock` 冻结随包 Python 依赖；技能 provision 只安装已审查本地 wheels，不另行解析依赖。用户技能不进入产品包。
+`capabilities/skills/` is generated by offline compilation from the repository's `skills/community/` and is not maintained manually. The root `desktop` dependency group and `uv.lock` freeze the bundled Python dependencies; skill provisioning installs only reviewed local wheels and does not resolve dependencies separately. User skills are not included in the product package.
 
-安装和验证入口见 [根 README](../../README.md)，安装包流程见 [构建指南](../../docs/runbooks/build.md)。
+See the [root README](../../README.md) for installation and verification entry points, and the [build guide](../../docs/runbooks/build.md) for the packaged-installation workflow.
 
-本地插件作者的离线描述、检查与打包入口见 [插件作者契约](service/capabilities/README.md)。当前仅提供离线检查，不代表桌面隔离预览、安装确认或原生能力接入已完成。
-项目会话的资源准备接收本次执行 cwd，不在共享实例上保存可变路径。Windows 只为
-OS 账户目录以下、实际 cwd 以上的必要祖先添加非继承读取属性权限，确保 Documents
-等私有目录下 PowerShell 能解析当前位置。先固定完整链并预检，再授权；不跟随链接、
-不忽略 deny 或实际链缺失、不递归扫描。账户目录自身及账户外项目不自动扩权，固定
-工具与官方沙箱工作区读写策略不变；macOS 不执行该 ACL 准备。
+See the [plugin author contract](service/capabilities/README.md) for offline description, checking, and packaging entry points for local plugin authors. Only offline checks are currently provided; this does not mean Desktop isolated preview, installation confirmation, or native capability integration is complete.
+Project-session resource preparation receives the cwd for the current execution and does not store mutable paths on a shared instance. On Windows, add non-inheritable read-attributes permission only to necessary ancestors below the OS account directory and above the actual cwd, so PowerShell can resolve the current location under private directories such as Documents. First pin and preflight the complete chain, then grant permissions. Do not follow links, ignore deny entries, or tolerate a missing segment in the actual chain; do not scan recursively. Do not automatically expand permissions for the account directory itself or projects outside the account. Fixed-tool and official sandbox-workspace read/write policies remain unchanged; macOS does not perform this ACL preparation.
 
-Windows 诊断反馈在用户同意附带日志时，额外从产品 Codex Home 的 `.sandbox/`
-读取当前 UTC 日期及前两天的固定 `sandbox.YYYY-MM-DD.log`。每份只读取末尾 128 KiB，
-最多保留 64 个疑似失败行的分类/数值系统码与 SHA-256，摘要上限 64 KiB；无文件、
-不可读、截断均显式标注。分类为文本线索，不证明根因。目录和叶子经文件系统 Owner
-以 no-follow 方式打开，拒绝 reparse/链接与多硬链接，不创建目录、不修复权限。
-反馈包只包含 `feedback/sandbox-summary.json`，不含原始命令、路径、异常正文，
-不读取 `.sandbox-secrets`。macOS 跳过此来源；诊断授权关闭时不采集。
-完整安装版的真实失败→落盘→反馈 ZIP 链路待 CI 包在 ecs-win4 验收。
+When the user agrees to attach logs to Windows diagnostic feedback, also read the fixed `sandbox.YYYY-MM-DD.log` files for the current UTC date and previous two days from the product Codex Home `.sandbox/` directory. Read only the last 128 KiB of each file. Retain at most 64 suspected-failure lines as categories/numeric system codes and SHA-256 values, with a summary limit of 64 KiB; explicitly mark missing, unreadable, or truncated files. Categories are textual clues and do not prove root cause. The filesystem Owner opens directories and leaf files without following links, rejecting reparse points/links and multiple hard links; it does not create directories or repair permissions. The feedback package contains only `feedback/sandbox-summary.json`; it excludes raw commands, paths, and exception bodies and does not read `.sandbox-secrets`. macOS skips this source; do not collect it when diagnostic consent is disabled. The real failure-to-disk-to-feedback-ZIP path in a fully packaged installation still needs acceptance using the CI package on ecs-win4.
 
-恢复 helper 的装载阶段只声明绝对路径，是否需要调用仍由 Adapter 的受审版本准入
-决定；未使用的 helper 缺失不阻断运行时发现。实际 CreateProcess 失败按 helper_launch
-阶段记录数值系统码，不记录原始路径，也不推断用户取消授权；版本准入集合未扩展。
+The recovery helper's load phase declares only an absolute path; whether it needs to be called is still determined by Adapter's reviewed version admission. A missing unused helper does not block runtime discovery. An actual `CreateProcess` failure records the numeric system code at the `helper_launch` stage; it does not record the raw path or infer that the user cancelled authorization. The version-admission set has not been expanded.
 
 ## Session-bound structured writing
 
@@ -659,9 +355,7 @@ are published as deliverables. The Highlights to Insights source and writing ins
 
 Generation requests may use `output_format: "markdown"` without `schema`. The runtime then streams plain Markdown; optional literal hidden-marker delimiters in the preview configuration keep workflow provenance out of displayed text. Structured requests continue to require their schema.
 
-## 模型连接变更回执
+<a id="模型连接变更回执"></a>
+## Model Connection Change Receipts
 
-删除连接与启停连接只返回脱敏连接库存；OAuth 删除继续携带远程撤销未确认警告。
-模型目录的维护准入、凭据刷新及默认模型选择由独立目录读取承担，不作为已落盘
-连接变更的成功条件。Desktop 先应用库存，再独立刷新模型菜单；变更请求失败时
-只读核对库存，不自动重放写操作。库存读取失败保留已有内容与明确错误，不能解释为空库存。
+Deleting, enabling, or disabling a connection returns only the redacted connection inventory; OAuth deletion continues to include a warning when remote revocation is unconfirmed. Maintenance admission for the model catalog, credential refresh, and default-model selection are handled by a separate catalog read and are not conditions for a persisted connection change to succeed. Desktop applies the inventory first, then refreshes the model menu independently. If a change request fails, it performs a read-only inventory check and does not automatically replay the write. If inventory reading fails, retain existing content and report the explicit error; do not interpret the failure as an empty inventory.

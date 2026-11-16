@@ -1,298 +1,291 @@
 ---
 id: arch-knowledge-principles
-title: "项目知识体系：设计原则与治理规范"
+title: "Project Knowledge System: Design Principles and Governance Standards"
 doc_type: architecture
 category: architecture
 status: active
 date: 2026-09-01
 updated: 2026-10-14
 keywords: [architecture, scholarseed, skill, toolchain]
-summary: "以 AI 精确定位、渐进理解和快捷执行为目标：AGENTS 管必读约束与路由，docs 管知识与决策，Skill 管流程，工具管确定性执行；规定开发回写和定期治理边界。"
+summary: "Aims to help AI locate information precisely, understand it progressively, and act efficiently: AGENTS governs mandatory constraints and routing, docs governs knowledge and decisions, Skills govern workflows, and tools govern deterministic execution; defines boundaries for development write-backs and periodic governance."
 code_refs:
   - "AGENTS.md"
   - "apps/desktop/docs/README.md"
   - "scripts/"
 ---
 
-# 项目知识体系设计与治理
+<a id="项目知识体系设计与治理"></a>
+# Project Knowledge System Design and Governance
 
-## 1. 定位、目标与适用场景
+<a id="1-定位目标与适用场景"></a>
+## 1. Purpose, Goals, and Applicable Situations
 
-本页规定项目知识的组织、发现、维护与治理原则，不承担日常开发任务的执行编排。目标是让 AI 与开发者准确定位所需信息、按需理解约束、快捷调用工具，并把有效经验回写到正确 Owner。历史清理是降低检索噪声的手段，不是目标本身。
+This page defines principles for organizing, discovering, maintaining, and governing project knowledge. It does not orchestrate routine development tasks. Its goal is to help AI and developers locate needed information accurately, understand constraints as needed, invoke tools efficiently, and write useful experience back to the correct Owner. Historical cleanup is a means of reducing retrieval noise, not an end in itself.
 
-任务有效性优先：先保证知识、Owner、安全与验证前提正确，再减少无关读取和返工；流程、目录或调用数量不能替代实际任务结果。知识发现与辅助流程闭环、真实效果评测、历史目录退出是可分别验收和交付的三个面，不要求互相等待全部完成；局部阻塞不阻止无依赖成果交付，但阶段通过不等于整体完成，不免除其他必需验收。
+Task effectiveness comes first: ensure that knowledge, ownership, safety, and verification prerequisites are correct before reducing irrelevant reads and rework; workflows, directories, or invocation counts cannot substitute for actual task outcomes. Closing the loop on knowledge discovery and supporting workflows, evaluating real-world effectiveness, and retiring historical directories are three independently verifiable and deliverable areas; they need not wait for one another to be fully completed. A local blocker does not prevent delivery of independent results, but passing a stage does not mean the overall work is complete or waive other required acceptance.
 
-知识治理、调整知识组织或入口时读取本页；普通开发仅在判断知识归属、补充决策或处理规范冲突时按需读取，不要求每个任务完整加载。本页不替代适用的 `AGENTS.md`，不自动启动定期任务，也不授予修改、删除或外部操作权限。
+Read this page when governing knowledge or changing its organization or entry points. Routine development only needs to consult it as needed to determine knowledge ownership, add decisions, or resolve conflicts between standards; every task is not required to load it in full. This page does not replace applicable `AGENTS.md` files, automatically start periodic tasks, or grant permission to modify, delete, or perform external operations.
 
-当前实现以源码、配置和实际验证结果为依据。文档用于解释与导航；文件名、日期、ID、`active`、`implemented` 或历史成功声明都不能证明内容有效。发现规范与实现冲突时核对原因并报告，不以代码现状自动取消安全约束。
+The current implementation is established by source code, configuration, and actual verification results. Documents explain and provide navigation; filenames, dates, IDs, `active`, `implemented`, or historical claims of success do not prove that content is valid. When a standard conflicts with the implementation, investigate and report why; do not automatically waive safety constraints based on the code's current state.
 
-## 2. 职责边界与组织方式
+<a id="2-职责边界与组织方式"></a>
+## 2. Responsibility Boundaries and Organization
 
-**AGENTS 管必读约束与路由，docs 管知识与决策，Skill 管任务流程，工具管确定性执行，工作记录管工作概要。**
+**AGENTS governs mandatory constraints and routing; docs governs knowledge and decisions; Skills govern task workflows; tools govern deterministic execution; work records provide work summaries.**
 
-| 层次 | 职责 | 不应承担 |
+| Layer | Responsibilities | Should not handle |
 | --- | --- | --- |
-| 根 `AGENTS.md` | 每次任务必须知道的项目边界、安全与授权规则、最小路由和停止条件 | 领域实现细节、长篇操作流程、历史流水 |
-| 局部 `AGENTS.md` | 对该目录工作必须遵守的约束及领域入口 | 重复根规则或其他 Owner 的知识 |
-| `docs/` 与领域文档 | 当前机制、接口、不变量、限制、决策理由、验证依据 | 第二套固定执行流程或运行态记录 |
-| 内源仓的开发 Skill | 任务触发、输入、步骤与分支、渐进加载、工具选择、验收和停止条件；不是公开源码前提 | 复制领域知识、凭空增加授权 |
-| 工具、脚本、CLI 与 MCP | 确定性查询、操作及检查，提供明确输入输出和失败语义 | 隐含业务决策、绕过权限、充当知识权威 |
-| `work-records/` | 本次计划、Prompt、完成事项、验证结论与剩余问题的简明概要 | 逐轮流水、详细审计、原始证据或中间产物；自动成为当前能力证明 |
+| Root `AGENTS.md` | Project boundaries, safety and authorization rules, minimal routing, and stop conditions that every task must know | Domain implementation details, lengthy operating procedures, historical logs |
+| Local `AGENTS.md` | Constraints that must be followed when working in that directory and domain entry points | Duplicating root rules or knowledge owned by others |
+| `docs/` and domain documents | Current mechanisms, interfaces, invariants, limitations, decision rationale, and verification basis | A second fixed execution workflow or runtime-state records |
+| Development Skills in the source repository | Task triggers, inputs, steps and branches, progressive loading, tool selection, acceptance, and stop conditions; not a prerequisite for public source development | Duplicating domain knowledge or inventing authorization |
+| Tools, scripts, CLI, and MCP | Deterministic queries, operations, and checks, with explicit inputs, outputs, and failure semantics | Implicit business decisions, bypassing permissions, acting as the authority on knowledge |
+| `work-records/` | Concise summaries of this work's plan, Prompt, completed items, verification conclusions, and open issues | Per-turn logs, detailed audits, raw evidence or intermediate artifacts; automatically proving current capabilities |
 
-必读规则按“缺少它是否会使任何任务越界或误操作”判定，不按出现频率判定。只适用于特定目录或任务的内容放入局部入口、docs 或 Skill，保留可发现的路由；不得为缩短入口丢失安全规则。
+Determine whether a rule is mandatory by asking whether omitting it could cause any task to exceed its scope or take an incorrect action, not by how often it appears. Put content that applies only to a specific directory or task in a local entry point, docs, or a Skill, and preserve discoverable routing; never lose a safety rule merely to shorten an entry point.
 
-项目知识优先按功能与代码 Owner 组织，根 docs 提供统一知识地图，并承载真正跨领域的共享知识。功能入口按改动范围链接共享契约、客户端与后端知识；机制、约束、决策理由和验证依据优先就近维护，不默认按 architecture、runbooks、decisions 分散同一领域知识。已有有效的子系统 docs 或包 README 通过导航接入，不强制迁移或复制；仅在内容规模和独立维护需要时拆页，目录按需建立。文档解释“是什么、为什么、有哪些约束”，Skill 编排“当前任务按什么步骤执行”；同一流程不得维护两份正文，Skill 引用对应命令与机制说明。
+Organize project knowledge primarily by feature and code Owner. Root docs provides a unified knowledge map and holds genuinely cross-domain shared knowledge. Feature entry points link to shared contracts and client- and server-side knowledge according to the change scope. Maintain mechanisms, constraints, decision rationale, and verification basis near their Owners by default, rather than scattering one domain's knowledge across architecture, runbooks, and decisions. Connect valid existing subsystem docs or package READMEs through navigation; do not force migration or duplication. Split pages only when content size and independent maintenance needs justify it, and create directories as needed. Documents explain “what it is, why, and what constraints apply”; Skills orchestrate “the steps for the current task.” Do not maintain two copies of the same workflow; have the Skill refer to the relevant commands and mechanism descriptions.
 
-### 知识组织架构图
+<a id="知识组织架构图"></a>
+### Knowledge Organization Diagram
 
-下图对应当前仓库的知识入口，而非待创建的目录模板。先从根规则或匹配的 Skill
-直达实际 Owner；Owner 不明时才查 `docs/index.md`。症状排障需要更细路由时再查
-`docs/runbooks/triage.md`。只建立实际需要的页面，不为符合图形迁移或复制正文。
+The diagram below shows the knowledge entry points in the current repository; it is not a directory template to create. Navigate directly from the root rules or a matching Skill to the actual Owner first; consult `docs/index.md` only when the Owner is unclear. Consult `docs/runbooks/triage.md` when symptom-based troubleshooting needs finer routing. Create only pages that are actually needed; do not migrate or duplicate content merely to match the diagram.
 
 ```text
-项目根目录/
-├── AGENTS.md                         全局必读约束与知识路由
+project root/
+├── AGENTS.md                         Global mandatory constraints and knowledge routing
 ├── docs/
-│   ├── index.md                      按任务与 Owner 路由；不复制正文
+│   ├── index.md                      Routes by task and Owner; does not duplicate body text
 │   ├── architecture/
-│   │   ├── knowledge.md              知识体系设计与治理原则
-│   │   ├── ownership.md              跨系统边界、依赖与 Owner
-│   │   └── …                         其他共享架构契约
-│   ├── runbooks/                     开发交付、流诊断与可选症状路由
-│   └── features/                     当前功能知识；由 index.md 指向适用页
-├── apps/<应用>/、packages/<包>/        按代码 Owner 就近维护的知识
-│   ├── AGENTS.md                     局部必读约束与知识入口
-│   ├── README.md                     应用或包的使用与公共边界
-│   └── docs/                         保留有效领域文档，由根索引链接
-├── scripts/                          跨领域共享工具；领域工具归所属 Owner
-└── work-records/                     计划、Prompt 与工作概要，不存中间产物
+│   │   ├── knowledge.md              Knowledge system design and governance principles
+│   │   ├── ownership.md              Cross-system boundaries, dependencies, and Owners
+│   │   └── …                         Other shared architecture contracts
+│   ├── runbooks/                     Development delivery, flow diagnostics, and optional symptom routing
+│   └── features/                     Current feature knowledge; index.md points to applicable pages
+├── apps/<应用>/、packages/<包>/        Knowledge maintained near the code Owner
+│   ├── AGENTS.md                     Local mandatory constraints and knowledge entry point
+│   ├── README.md                     App or package usage and public boundaries
+│   └── docs/                         Valid domain docs linked from the root index
+├── scripts/                          Cross-domain shared tools; domain tools belong to their Owner
+└── work-records/                     Plans, Prompts, and work summaries; no intermediate artifacts
 ```
 
-根 [docs/index.md](../index.md) 是任务与 Owner 的精简发现入口，不是所有正文的集中存放点。
-症状级路由集中在[诊断表](../runbooks/triage.md)，仅在症状明确时按需加载；它只链接 Owner
-正文，不承载第二份机制规范。一个主题在 `docs/features/` 或现有 Owner 文档中选择一个正文位置，
-其他入口只链接；功能知识不再按架构、排障、决策类型分别复制。共享工程规范也不复制到每个功能目录。
-跨功能决策归共同 Owner，功能内部决策就近记录，只有确需独立维护时拆成专题页。
+Root [docs/index.md](../index.md) is a concise discovery entry point by task and Owner, not a central repository for all body text.
+Symptom-based routing is centralized in the [diagnostic table](../runbooks/triage.md) and loaded as needed only when the symptoms are clear; it links only to the Owner's body text and does not contain a second copy of mechanism standards. Choose one body-text location for each topic, either in `docs/features/` or an existing Owner document; other entry points link to it. Do not copy feature knowledge separately by architecture, troubleshooting, or decision type. Do not copy shared engineering standards into every feature directory either.
+Cross-feature decisions belong to the shared Owner; record feature-internal decisions near the feature, and split them into a topic page only when independent maintenance is truly needed.
 
-下文的 `features/<功能>/index.md`、`requirements.md`、`evaluation.md` 和
-`technical/` 是复杂功能**需要拆分时**的可选结构，不表示当前仓库已有这些文件。
-当前扁平功能页有效时继续使用；先由 `docs/index.md` 路由到现有正文，只有需求、
-评测与技术方案确有不同维护 Owner 或阅读边界时再按需拆分。
+The `features/<功能>/index.md`, `requirements.md`, `evaluation.md`, and
+`technical/` structures below are optional when a complex feature **needs to be split**; they do not imply that these files currently exist in the repository.
+Continue using a flat feature page when it works. Route to the existing body text from `docs/index.md` first, and split it as needed only when requirements, evaluation, and technical plans truly have different maintenance Owners or reading boundaries.
 
-功能知识分为产品要求、评测依据与技术方案三个层次。产品经理维护 `requirements.md`，记录已确认、待确认和取消的要求，以稳定需求编号关联场景与验收标准；不能用当前实现替代产品目标。评测负责人维护 `evaluation.md`，关联需求编号，说明正常、异常、边界与安全场景，以及可观察的判定依据和实际测试入口；单次执行结论以概要记录，详细执行证据保留在本地忽略目录。开发者维护技术方案，关联相关需求与评测要点，区分当前已落地机制、待实现设计和未验收范围。角色表示知识职责，不自动授予 AI 修改需求或评测标准的权限。
+Feature knowledge has three layers: product requirements, evaluation basis, and technical plans. The product manager maintains `requirements.md`, recording confirmed, pending, and canceled requirements and linking scenarios to acceptance criteria with stable requirement IDs; the current implementation must not replace product goals. The evaluation owner maintains `evaluation.md`, links requirement IDs, and describes normal, abnormal, boundary, and security scenarios, observable decision criteria, and actual test entry points; record each run's conclusions as a summary and keep detailed execution evidence in a local ignored directory. Developers maintain technical plans, link relevant requirements and evaluation points, and distinguish mechanisms already implemented from designs awaiting implementation and scope not yet accepted. These roles assign knowledge responsibilities; they do not automatically grant AI permission to modify requirements or evaluation standards.
 
-入口用简短当前状态和读取路由区分已落地机制、仍适用要求与未验收缺口，历史过程通过工作记录链接追溯；不在入口维护执行流水，不把历史成功声明当成当前能力。
+Entry points use a concise current status and reading route to distinguish implemented mechanisms, still-applicable requirements, and acceptance gaps. Trace historical process through links to work records; do not maintain execution logs at entry points or treat historical success claims as current capabilities.
 
-简单功能使用单一 `technical.md`；当整体协作与局部实现确需分别维护时，改为 `technical/index.md` 与 `technical/<owner>.md`，不同时维护两套正文。整体方案只记录职责边界、协作关系与共享契约，各 Owner 文档记录所属模块内部机制、约束、失败语义及验证依据。`desktop`、`serve` 是当前项目 Owner 示例，其他模块按实际归属命名，不笼统归为客户端或后端；不涉及的 Owner 不建页。已有 Owner 文档足够时直接链接，不新增重复实现说明。
+Use a single `technical.md` for a simple feature. When overall collaboration and local implementation truly need separate maintenance, use `technical/index.md` and `technical/<owner>.md`; do not maintain both body-text structures at once. The overall plan records only responsibility boundaries, collaboration relationships, and shared contracts. Each Owner document records the internal mechanisms, constraints, failure semantics, and verification basis of its module. `desktop` and `serve` are examples of current project Owners; name other modules according to their actual ownership rather than grouping them broadly as client or server. Do not create pages for Owners that are not involved. Link to existing Owner documents when they suffice; do not add duplicate implementation descriptions.
 
-关键决策紧邻对应方案记录：当前选择、理由、否决方案、必要约束和重新评估条件。跨端决策放整体方案，局部决策放对应 Owner 文档，不默认新增 `design.md` 或 `decisions.md`；只有重大决策确需独立维护或跨功能引用时才拆页，并由所属入口链接。
+Record key decisions alongside the corresponding plan: the current choice, rationale, rejected alternatives, necessary constraints, and conditions for reevaluation. Put cross-platform decisions in the overall plan and local decisions in the corresponding Owner document. Do not add `design.md` or `decisions.md` by default; split out a page only when a major decision truly needs independent maintenance or cross-feature references, and link it from the owning entry point.
 
-修改 Desktop 时读取适用通用规范、相关产品要求与评测要点、整体方案中适用的契约及 Desktop 技术知识；纯展示调整只追加与其有关的要求和评测，不扫描全部需求。修改 IPC、API、数据结构或安全边界时，再读取受影响 Owner 的知识与实现，不能因“只改客户端”省略跨端不变量。各分支按任务选择，不要求全部加载；没有匹配 Skill 时沿 Owner 入口处理。
+When modifying Desktop, read the applicable general standards, relevant product requirements and evaluation points, applicable contracts in the overall plan, and Desktop technical knowledge. For a purely visual adjustment, add only the related requirements and evaluation points; do not scan all requirements. When changing IPC, APIs, data structures, or security boundaries, also read the knowledge and implementation of affected Owners; “client-only” work does not exempt cross-platform invariants. Select each branch according to the task; do not load everything. When no Skill matches, follow the Owner entry point.
 
-### 各层读取与更新规则
+<a id="各层读取与更新规则"></a>
+### Read and Update Rules by Layer
 
-下表是组织架构的维护契约，不是要求每次执行全部步骤。示例路径尚不存在时使用实际 Owner 入口，不创建空壳或假定已有正文。读取规则不增加操作权限；更新触发表示必须检查知识影响，实际写入仍受本次授权约束。
+The table below is a maintenance contract for the organizational structure, not a requirement to perform every step on every occasion. If an example path does not exist, use the actual Owner entry point; do not create a shell or assume body text exists. Reading rules do not add operational permissions. An update trigger means the knowledge impact must be checked; any actual write remains subject to the authorization for the current task.
 
-| 知识位置 | 何时读取、读取范围 | 何时更新、更新范围 |
+| Knowledge location | When and what to read | When and what to update |
 | --- | --- | --- |
-| 根 `AGENTS.md` | 每次任务使用已加载的全局规则；正文未变化且上下文完整时不重复读取 | 全局必读边界、安全规则或路由变化时更新；领域细节不提升为全局必读 |
-| 局部 `AGENTS.md` | 进入其作用域工作前读取适用规则，不默认读取其他目录指南 | 本目录硬约束、Owner 或入口变化时更新；不复制根规则 |
-| 根 `docs/index.md` | Owner 或知识位置不明时按意图查索引；Skill 已给出有效直达链接时不绕回全库导航 | 新增、迁移、删除知识页或调整 Owner 时更新链接与必要摘要，不复制正文 |
-| `docs/runbooks/triage.md` | 仅当问题症状或失败现象已明确、需要细粒度路由时查对应条目 | 目标 Owner 正文或锚点变化时更新路由；不复制机制、安全规则或验收正文 |
-| `architecture/knowledge.md` | 知识治理、组织调整或归属判断时读取相关原则，普通开发不强制加载 | 治理原则、分层职责或维护规则经确认变化时更新，不记单次清理结果 |
-| 系统地图及共享工程文档 | 涉及跨域边界、对应技术栈或共享命令时读取相关契约 | 系统职责、依赖、共用规范、命令前提或失败语义变化时由对应 Owner 更新 |
-| 功能 `index.md` | 首次定位功能、判断当前状态或选择需求、评测与 Owner 阅读范围时读取 | 功能范围、真实状态、维护职责或知识路由变化时同步导航，不复制正文或把未验收能力写成已完成 |
-| `requirements.md` | 修改产品行为、评测或方案时读取相关需求与适用验收标准 | 产品经理确认需求变更后更新状态与编号关联；同步检查受影响评测和方案，未经授权不改产品目标 |
-| `evaluation.md` | 设计方案、选择验证或评估能力时读取相关场景与判定依据 | 需求、风险或验证能力变化时由评测负责人更新并检查需求覆盖；不通过降低标准掩盖失败，不复制单次结果 |
-| `technical.md` 或 `technical/index.md` | 读取当前整体方案及适用的职责边界、共享协议和跨端不变量 | 开发者按确认方案与真实实现更新；契约变化核对全部消费者，关联需求和评测，不单端自行放宽 |
-| `technical/<owner>.md` 与技术专题 | 修改所属 Owner 时读取其机制、局部决策与验证入口；契约受影响时追加其他 Owner 的必要知识 | 对应模块机制、限制、决策或验证依据变化时由开发者更新；同步整体方案中受影响的契约，不复制其他模块内部事实 |
-| 应用/包 README 与局部 docs | 按根索引或 Skill 链接读取实际 Owner 正文；独立使用包时读取其公共使用契约 | 所属应用或包的公共接口、机制、使用前提或限制变化时就近更新，不向顶层复制 |
-| `SKILL.md` 与 `references/` | 匹配任务时读取流程；references 只在对应步骤需要时加载 | 触发条件、步骤、读取路由、工具调用或验收规则变化时更新；指向知识正文，不复制机制与决策 |
-| 工具脚本及调用契约 | 执行前确认参数、前提、权限、副作用和失败处理；帮助不足或排障时才进一步读实现 | 参数、输出、退出状态、副作用或平台行为变化时由工具 Owner 同步实现、说明、测试及 Skill 调用点 |
-| 工作记录 | 恢复任务或了解已完成工作时读取概要，不默认加载历史过程 | 阶段完成或计划变化时更新概要；详细证据留本地忽略目录，保留原失败，不把概要改写成当前规范 |
+| Root `AGENTS.md` | Use the loaded global rules for each task; do not reread unchanged body text when context is complete | Update when global mandatory boundaries, safety rules, or routing change; do not promote domain details to global mandatory rules |
+| Local `AGENTS.md` | Read applicable rules before working in its scope; do not read guides for other directories by default | Update when this directory's hard constraints, Owner, or entry point changes; do not copy root rules |
+| Root `docs/index.md` | Search by task intent when the Owner or knowledge location is unclear; do not return to the full-library navigation when a Skill gives a valid direct link | Update links and necessary summaries when knowledge pages are added, moved, removed, or their Owners change; do not duplicate body text |
+| `docs/runbooks/triage.md` | Consult the relevant entry only when the problem symptoms or failure are clear and finer routing is needed | Update routing when the target Owner's body text or anchor changes; do not copy mechanism, safety, or acceptance content |
+| `architecture/knowledge.md` | Read relevant principles for knowledge governance, organizational changes, or ownership decisions; routine development is not required to load it | Update when governance principles, layered responsibilities, or maintenance rules change by agreement; do not record one-off cleanup results |
+| System maps and shared engineering documents | Read relevant contracts when work involves cross-domain boundaries, the corresponding technology stack, or shared commands | The corresponding Owner updates them when system responsibilities, dependencies, shared standards, command prerequisites, or failure semantics change |
+| Feature `index.md` | Read when first locating a feature, checking its current status, or choosing the requirements, evaluation, and Owner scope to read | Update navigation when feature scope, actual status, maintenance responsibility, or knowledge routing changes; do not duplicate body text or describe unaccepted capabilities as complete |
+| `requirements.md` | Read relevant requirements and applicable acceptance criteria when changing product behavior, evaluation, or a plan | After the product manager confirms a requirements change, update statuses and ID links; check affected evaluation and plans; do not change product goals without authorization |
+| `evaluation.md` | Read relevant scenarios and decision criteria when designing a plan, selecting verification, or evaluating capability | When requirements, risks, or verification capabilities change, the evaluation owner updates it and checks requirement coverage; do not hide failures by lowering standards or duplicate one-off results |
+| `technical.md` or `technical/index.md` | Read the current overall plan and applicable responsibility boundaries, shared protocols, and cross-platform invariants | Developers update it according to the confirmed plan and actual implementation; when contracts change, check all consumers and link requirements and evaluation; do not relax them independently on one platform |
+| `technical/<owner>.md` and technical topic pages | When modifying an Owner, read its mechanisms, local decisions, and verification entry points; add necessary knowledge from other Owners when their contracts are affected | Developers update it when the module's mechanisms, limitations, decisions, or verification basis change; sync affected contracts in the overall plan and do not copy other modules' internal facts |
+| App/package READMEs and local docs | Read the actual Owner's body text through root-index or Skill links; read the public usage contract when using a package independently | Update near the source when the app or package's public interface, mechanisms, usage prerequisites, or limitations change; do not copy them to a higher level |
+| `SKILL.md` and `references/` | Read the workflow for a matching task; load references only when the corresponding step needs them | Update when triggers, steps, reading routes, tool calls, or acceptance rules change; point to knowledge body text rather than copying mechanisms and decisions |
+| Tool scripts and invocation contracts | Before execution, confirm parameters, prerequisites, permissions, side effects, and failure handling; read implementation further only when help is insufficient or troubleshooting | When parameters, outputs, exit status, side effects, or platform behavior change, the tool Owner syncs implementation, documentation, tests, and Skill call sites |
+| Work records | Read the summary to resume work or learn what is complete; do not load historical process by default | Update the summary when a phase completes or the plan changes; keep detailed evidence in a local ignored directory, retain original failures, and do not rewrite summaries as current standards |
 
-同一改动涉及多个层次时，只更新受影响的正文与路由，不机械更新全部文件。并发治理同一知识页时明确唯一写入者，其他任务返回建议与证据；写入前核对当前内容和差异，避免覆盖他人修改。
+When one change affects multiple layers, update only the affected body text and routing; do not mechanically update every file. When multiple tasks govern the same knowledge page concurrently, designate one writer and have other tasks return recommendations and evidence. Before writing, check the current content and diff to avoid overwriting someone else's changes.
 
-知识更新与相应实现或流程变更一并验证：检查事实依据、适用范围、链接和消费者；涉及 Skill、工具或产品行为时执行其对应验收。交付说明列出已更新知识、无需更新的理由或尚待核验的缺口；未授权写入时报告更新建议，不静默留下过期知识或擅自改动。
+Verify knowledge updates together with the corresponding implementation or workflow changes: check factual basis, scope, links, and consumers; perform the corresponding acceptance when Skills, tools, or product behavior are involved. Delivery notes list the knowledge updated, reasons no update was needed, or gaps still requiring verification. When writing is unauthorized, report the proposed update; do not silently leave outdated knowledge or change it without authorization.
 
-功能开发的设计决策回写是交付的组成部分，不是可选收尾：机制、接口、不变量、否决方案或验证依据发生变化时，对应 Owner 文档的决策记录必须随之更新，代码或流程变更合并即触发这项检查，缺回写视为交付未完成。`proposal`、`wiki/` 与 `work-records/` 是规划、历史与本地协作材料，不替代 Owner 知识真源；决策被接受后须把耐久部分迁入对应 Owner 正文并由索引路由，不把草案位置或被忽略目录当成已沉淀知识。缺陷、挂死与回归归缺陷跟踪，不写进知识正文。
+Writing design decisions back during feature development is part of delivery, not optional cleanup: when mechanisms, interfaces, invariants, rejected alternatives, or verification basis change, update the decision record in the corresponding Owner document. A code or workflow change triggers this check when merged; missing write-back means delivery is incomplete. `proposal`, `wiki/`, and `work-records/` are planning, historical, and local collaboration materials; they do not replace the Owner's knowledge source of truth. Once a decision is accepted, move its durable content into the corresponding Owner body text and route to it from the index; do not treat a draft location or ignored directory as established knowledge. Track defects, hangs, and regressions in defect tracking, not in knowledge body text.
 
-每项知识只维护一个正文真源，导航与索引只保存摘要和链接。入口按实际存在的 Owner 文档路由，不根据目标目录推定迁移已完成。Desktop 从 [局部文档入口](../../apps/desktop/docs/README.md) 定位规范，Runtime 从 [包 README](../../packages/runtime/README.md) 定位契约，Trace 从 [包内指南](../../packages/damoatrace/AGENTS.md) 定位约束。
+Maintain only one body-text source of truth for each knowledge item; navigation and indexes hold only summaries and links. Route entry points to actual existing Owner documents; do not infer that migration is complete from a target directory. Locate Desktop standards through its [local documentation entry point](../../apps/desktop/docs/README.md), Runtime contracts through the [package README](../../packages/runtime/README.md), and Trace constraints through its [package guide](../../packages/damoatrace/AGENTS.md).
 
-项目规则直接维护在各级 `AGENTS.md`。开发 Skill 与宿主发现链接由文档内源仓维护，不在源码仓复制或建立转发入口；公开工程命令不依赖这些内部资产。
+Maintain project rules directly in the `AGENTS.md` files at each level. Maintain development Skills and host discovery links in the internal documentation source repository; do not copy them into the source repository or create forwarding entry points there. Public engineering commands do not depend on these internal assets.
 
-## 3. 知识发现与渐进加载
+<a id="3-知识发现与渐进加载"></a>
+## 3. Knowledge Discovery and Progressive Loading
 
-适用入口与匹配 Skill 决定读取路径，而不是要求所有任务遍历相同文档链：
+Applicable entry points and matching Skills determine the reading path; not every task is required to traverse the same document chain:
 
-1. 使用已加载的适用 `AGENTS.md`，核对任务范围、授权与目录边界。相同正文不因别名或符号链接重复读取；文件已变化或上下文不足时重新核对。
-2. 根据任务意图与 Skill 的触发说明选择适用流程，先读其必要说明。没有匹配 Skill 时直接按 Owner 入口处理，不为一次性小任务强制新建 Skill。
-3. 按当前步骤加载必要 docs：先查路径、标题、摘要或元数据，再读相关正文；依赖安全约束或完整协议时充分读取，不能用片段断章取义。
-4. 定位当前源码、配置和验证入口后执行授权动作。仅在需要追因、核验历史决策或排障时扩展到历史记录与外部材料。
-5. 达到当前步骤的信息要求后停止扩展；执行中出现新问题再有界补读。定位成功不意味着跳过后续实现、验证或安全要求。
+1. Use the applicable `AGENTS.md` files already loaded to check task scope, authorization, and directory boundaries. Do not reread identical body text because of aliases or symbolic links; check again if a file has changed or context is insufficient.
+2. Select the applicable workflow based on task intent and the Skill's trigger description, and first read its required instructions. If no Skill matches, follow the Owner entry point directly; do not require a new Skill for a one-off small task.
+3. Load necessary docs for the current step: first check paths, titles, summaries, or metadata, then read relevant body text. Read fully when relying on safety constraints or a complete protocol; do not take excerpts out of context.
+4. Locate the current source, configuration, and verification entry points, then perform authorized actions. Expand to historical records and external materials only when tracing causes, verifying historical decisions, or troubleshooting.
+5. Stop expanding once the current step's information requirements are met; read additional material within bounds if new issues arise during execution. Successful discovery does not waive subsequent implementation, verification, or safety requirements.
 
-Skill 应说明每阶段读取哪些知识、何时追加读取及何时停止，链接领域正文而不是复制。其 references 可保存流程专属模板和调用示例，不建立另一套架构规范。工具可用性以实时清单、帮助与调用结果核实；配置文件存在不证明 MCP 已连接，也不证明接口或授权有效。
+Skills should state what knowledge to read at each phase, when to read more, and when to stop, and link to domain body text rather than copying it. Their references may contain workflow-specific templates and invocation examples, but must not establish another set of architecture standards. Verify tool availability against the live inventory, help, and invocation results; the presence of a configuration file does not prove that MCP is connected or that an interface or authorization is valid.
 
-AGENTS、docs 与 Skill 表达要求和执行约定，不代替工具参数校验、权限/沙箱、
-状态机或并发控制的实际执行机制。交接应保留具体产物、来源、适用条件与未决项；
-自然语言摘要和提示词遵守声明不能证明隔离、独立复核或合并后验证已经完成。
+AGENTS, docs, and Skills express requirements and execution conventions; they do not replace actual enforcement mechanisms for tool parameter validation, permissions/sandboxing,
+state machines, or concurrency control. Handoffs should preserve concrete artifacts, sources, applicable conditions, and open items; a natural-language summary or a prompt's claim of compliance does not prove that isolation, independent review, or post-merge verification has been completed.
 
-入口治理同时检查宿主实际加载边界：记录适用入口的字节数、符号链接拓扑、宿主版本及可核实的指令加载设置，并通过真实宿主证据判断哪些约束已加载、哪些需要补读。文件长度、链接检查通过或别名去重都不能证明自动注入完整，也不将字节数换算为 token 或预设所有宿主使用相同上限。发生截断或证据不足时明确缺口，在相关动作前补读必要约束；不得把缺失规则视为失效。
+Entry-point governance also checks the host's actual loading boundaries: record the byte counts and symbolic-link topology of applicable entry points, host version, and verifiable instruction-loading settings; use evidence from the real host to determine which constraints were loaded and which need to be read separately. File length, passing link checks, or alias deduplication do not prove complete automatic injection. Do not convert byte counts to tokens or assume all hosts use the same limit. When truncation occurs or evidence is insufficient, state the gap and read necessary constraints before the relevant action; do not treat missing rules as invalid.
 
-读取成本不等于命令数：同时核对范围、返回量、重复或无关内容、失败与返工。先定位路径再读取具名片段，查询范围与返回量受当前任务约束；输出超出处理能力时说明不完整并定向补读，不能用片段省略必要安全或完整协议。仅出现截断字样不证明工具实际截断，记录原始工具结果和上游退出状态，不以管道末项成功隐藏失败。
+Reading cost is not the same as command count: also check scope, output volume, duplicate or irrelevant content, failures, and rework. Locate paths before reading named excerpts, and constrain query scope and output volume to the current task. If output exceeds processing capacity, state that it is incomplete and read targeted additional material; do not use excerpts to omit necessary safety rules or complete protocols. The mere appearance of truncation wording does not prove the tool actually truncated output. Record the raw tool result and upstream exit status; do not let a successful final pipeline command hide a failure.
 
-缩短入口时先按作用域区分全局停止条件、局部硬约束与按需知识，将后两者交给实际 Owner，并保留任务可发现的路由。迁移前后核对规则覆盖与典型任务读取路径，独立复核不能只比较文件大小；不得通过删除安全规则、扩大宿主配置或复制多份正文取得表面上的短入口。实际宿主尚未复测时，只报告结构整改，不宣称加载问题已解决或开发效率已提升。
+When shortening entry points, first distinguish global stop conditions, local hard constraints, and on-demand knowledge by scope; place the latter two with their actual Owners while preserving task-discoverable routing. Before and after migration, check rule coverage and reading paths for representative tasks; independent review cannot compare only file sizes. Do not create superficially shorter entry points by deleting safety rules, broadening host configuration, or duplicating body text. Until the actual host has been retested, report only structural remediation; do not claim loading problems are resolved or development efficiency has improved.
 
-可重复、确定性的动作优先复用现有工具。工具契约说明输入、输出、前置条件、副作用、权限、退出状态与失败处理；执行流程由 Skill 选择和检查，不把脚本当作不透明黑盒。跨系统工具放共享 Owner，领域脚本归所属模块或 Skill；不要仅因复用诉求创建通用平台。
+Prefer existing tools for repeatable, deterministic actions. Tool contracts describe inputs, outputs, prerequisites, side effects, permissions, exit status, and failure handling; Skills select and check execution workflows, and scripts must not be treated as opaque black boxes. Put cross-system tools under a shared Owner and domain scripts under their module or Skill; do not create a general-purpose platform solely to promote reuse.
 
-## 4. 知识内容与决策要素
+<a id="4-知识内容与决策要素"></a>
+## 4. Knowledge Content and Decision Elements
 
-架构与设计文档补充代码不能清晰表达的方案意图：目标、职责划分、关键选择与取舍、
-必须保持的边界，以及何时重新决策。目标、总体方案和决策前置，必要源码依据与验证
-入口简要后置；源码用于核验现状和识别差距，不按文件、类或函数翻译成文档骨架，
-也不复制 Skill 执行步骤。优先让人容易确认方案，让 AI 能判断实施位置与演进方向。
+Architecture and design documents supplement intent that code cannot clearly express: goals, division of responsibilities, key choices and tradeoffs,
+boundaries that must be preserved, and when to revisit decisions. Put goals, the overall plan, and decisions first, followed briefly by necessary source-code basis and verification
+entry points. Use source code to verify the current state and identify gaps; do not turn files, classes, or functions into a document skeleton,
+or copy Skill execution steps. Prioritize making the plan easy for people to confirm and helping AI determine where to implement and how to evolve it.
 
-保留单位是对后续开发有用的信息，不是原文件。保留内容必须具有当前用途和可核对依据：
+The unit to retain is information useful for future development, not the original file. Retained content must have a current purpose and verifiable basis:
 
-- 当前职责、依赖方向、接口、数据所有权和真实运行机制。
-- 仍有效的安全约束、跨平台差异、失败一致性与不变量。
-- 当前可用的开发、验证、构建、交付和排障知识。
-- 当前技术决策的必要理由与反例，防止重复已证实的错误路线。
-- 能力限制、未验证范围及风险，避免把缺口写成保证。
+- Current responsibilities, dependency direction, interfaces, data ownership, and actual runtime mechanisms.
+- Safety constraints, cross-platform differences, failure consistency, and invariants that remain valid.
+- Currently usable knowledge for development, verification, builds, delivery, and troubleshooting.
+- Necessary rationale and counterexamples for current technical decisions, to prevent repeating approaches proven wrong.
+- Capability limitations, unverified scope, and risks, to avoid stating gaps as guarantees.
 
-现行文档按需要说明职责与非目标、机制、约束、限制、源码与验证入口、维护 Owner 及更新触发。Owner 使用实际包或模块，不根据 Git 作者推定。不手写源码可枚举的数量；观测数据注明版本、时间、环境和不可外推范围。代码存在不等于真实验收通过。
+Current documents explain, as needed, responsibilities and non-goals, mechanisms, constraints, limitations, source and verification entry points, maintenance Owner, and update triggers. Use the actual package or module as the Owner; do not infer ownership from Git authors. Do not manually state counts that can be enumerated from source code. Identify the version, time, environment, and limits on generalization for observational data. The existence of code does not mean real acceptance has passed.
 
-决策记录按复杂度选择要素，不强制套用长模板：**问题与适用条件 → 当前选择 → 关键取舍及否决方案 → 必要理由与不变量 → 当前限制 → 重新评估条件 → 源码与验证依据**。机制与理由优先在同一 Owner 文档维护，只有无法自然承接时才独立建短决策页。
+Choose decision-record elements according to complexity; do not require a long template: **Problem and applicability conditions → current choice → key tradeoffs and rejected alternatives → necessary rationale and invariants → current limitations → reevaluation conditions → source and verification basis**. Prefer maintaining mechanisms and rationale in the same Owner document; create a separate short decision page only when they cannot naturally fit there.
 
-历史提案只有部分理由仍有效时，提炼有效信息即可，不要求保留整篇。外部研究仅保留实际支撑决策的来源与必要论据，不能把论文结论写成产品能力。未实现方案不进入当前架构；仍确认的需求与风险用简明当前事项和 Owner 追踪。
+When only some of a historical proposal's rationale remains valid, extract the useful information; keeping the entire proposal is not required. Retain only sources and necessary arguments from external research that actually support a decision; do not describe a paper's conclusions as product capabilities. Plans that have not been implemented do not belong in the current architecture; track still-confirmed requirements and risks as concise current items with their Owners.
 
-提炼出的摘要、教训与复核结论保留来源、适用条件及待核验限制；不能用摘要覆盖原始
-失败证据，或把模型自评、投票多数与置信度阈值当成真实行为核验。读取命中不证明
-约束已加载或行动已遵守。选择文本、索引或关系图先证明实际发现缺口与维护收益，
-不因外部系统采用某种格式就新建记忆运行时、图谱或第二套知识服务。
+For extracted summaries, lessons, and review conclusions, retain their sources, applicability conditions, and limitations still needing verification. Do not use summaries to overwrite raw
+failure evidence, or treat model self-evaluation, a voting majority, or confidence thresholds as verification of actual behavior. A successful retrieval does not prove
+that a constraint was loaded or followed. Before choosing text, indexes, or relationship graphs, demonstrate an actual discovery gap and maintenance benefit; do not create a memory runtime, graph, or second knowledge service merely because an external system uses a particular format.
 
-### Markdown 图片引用
+<a id="markdown-图片引用"></a>
+### Markdown Image References
 
-新增或修改仓库 Markdown 中的本地图片引用时，路径统一显式以 `./` 开头，并相对于该 Markdown 文件解析：同目录用 `![说明](./reference.png)`，子目录用 `./assets/image.png`，跨级用 `./../assets/image.png`。HTML 图片的本地 `src` 同样遵守；不写裸文件名、仓库根绝对路径或开发者工作树路径。核目标文件存在，并验证发布站点按文档相对路径解析，不靠图片路径形式宣称已验证线上展示。
+When adding or modifying local image references in repository Markdown, always make paths explicitly start with `./` and resolve them relative to that Markdown file: use `![说明](./reference.png)` (where the alt text means “description”) in the same directory, `./assets/image.png` for a subdirectory, and `./../assets/image.png` across directory levels. The same applies to local `src` values for HTML images. Do not use a bare filename, an absolute repository-root path, or a developer worktree path. Check that the target file exists and verify that the published site resolves the path relative to the document; the path format alone does not prove that online rendering was verified.
 
-外部 HTTPS 图片保留其来源地址，不为满足本地路径格式擅自下载。仅在本机展示且不提交的运行报告按客户端渲染契约使用绝对本地图片路径，不作为仓库需求/设计文档的写法。规则适用于后续触及的引用，不批量改写历史冻结输入或原报告。
+Preserve the source URL of external HTTPS images; do not download them without authorization just to satisfy the local-path format. Runtime reports displayed only locally and not committed use absolute local image paths according to the client rendering contract; do not use that convention for repository requirements or design documents. Apply this rule to references touched in future work; do not bulk-rewrite frozen historical inputs or original reports.
 
-## 5. 开发过程中的知识回写
+<a id="5-开发过程中的知识回写"></a>
+## 5. Knowledge Write-Back During Development
 
-`work-records/` 只保存计划、Prompt 和工作概要：做了什么、验证结论、提交或 MR
-位置及尚未解决的问题。记录随阶段汇总，不按每轮、每个文件或每次工具调用新建
-报告。详细审计、迁移清单、复核全文、运行日志、截图和候选快照等中间产物保留在
-已忽略的本地任务目录，不进入 Git；概要可标明证据位置与缺失边界，但不能依赖
-本地文件充当团队唯一恢复说明。有效长期知识归实际 Owner 的 docs，不借清理
-覆盖原始失败证据或把未验证结果改为通过。
+`work-records/` stores only plans, Prompts, and work summaries: what was done, verification conclusions, commit or MR
+locations, and unresolved issues. Summarize records by phase; do not create a report for each turn, file, or tool invocation. Keep intermediate artifacts such as detailed audits, migration inventories, full review text, runtime logs, screenshots, and candidate snapshots in an ignored local task directory, outside Git. A summary may point to evidence and identify gaps, but local files must not be the team's sole recovery instructions. Durable knowledge belongs in the actual Owner's docs; cleanup must not overwrite raw failure evidence or turn an unverified result into a pass.
 
-以下变化触发知识影响检查，而不是要求每次代码修改都新增文档：
+The following changes trigger a knowledge-impact check; they do not require a new document for every code change:
 
-- 职责、依赖、公共契约、数据所有权、安全边界或能力限制发生变化。
-- 启动、验证、构建或交付命令的前提、参数、输出或失败处理发生变化。
-- 发现失效知识、缺失决策理由或可重复的排障经验。
-- 同类任务反复出现，可复用步骤或确定性动作尚未被 Skill、工具覆盖。
+- Responsibilities, dependencies, public contracts, data ownership, security boundaries, or capability limitations change.
+- Prerequisites, parameters, outputs, or failure handling for startup, verification, build, or delivery commands change.
+- Outdated knowledge, missing decision rationale, or repeatable troubleshooting experience is discovered.
+- Similar tasks recur and reusable steps or deterministic actions are not yet covered by a Skill or tool.
 
-先定位现有 Owner，再决定更新位置：必读约束与路由回写 AGENTS，机制和理由回写 docs，执行步骤回写 Skill，确定性动作回写工具；工作记录只概述验证结论与证据位置，单次原始证据保留在已忽略的本地任务目录。已有正文覆盖时更新它，不新增重复页；Skill 或工具变更遵守其实际维护与验证规则。
+Locate the existing Owner before deciding where to update: write mandatory constraints and routing back to AGENTS, mechanisms and rationale to docs, execution steps to a Skill, and deterministic actions to tools. Work records only summarize verification conclusions and evidence locations; retain one-off raw evidence in an ignored local task directory. Update existing body text when it covers the topic; do not create duplicate pages. Follow the actual maintenance and verification rules for Skill or tool changes.
 
-回写区分已核验事实、设计约束、推断与未验证事项。保留凭据准入与撤权、用户数据保留、平台安全差异、原生网页与产品浮层、流消费与取消终态、制品与更新权限等必要理由。未完成验收与安全风险必须承接为可追踪事项，不能随旧记录清理而消失。
+Write-backs distinguish verified facts, design constraints, inferences, and unverified matters. Preserve necessary rationale concerning credential admission and revocation, user-data retention, platform security differences, native web pages and product overlays, stream consumption and cancellation terminal states, and artifact and update permissions. Unfinished acceptance and security risks must be carried forward as trackable items; cleanup of old records must not make them disappear.
 
-现存 PRD 的 Requirement ID / Check ID 在所属需求内唯一、稳定且不可复用；评测引用
-所属需求已有 ID，技术方案不自建产品 ID。同一份 Evaluation 契约只声明一个环境；
-Check / Scenario 标识在约定作用域内唯一，每个 Check 必须可追溯到所属 PRD 的
-Requirement ID 或 Check ID。Evaluation 机器契约只声明 Observation 要求；Test
-不得成为唯一通过依据，确定性校验不得包含产品语义判定规则。迁移文档只承接
-已确认的要求与关联，不擅自改产品目标、降低评测标准或将目标、差距写成当前事实。
+Requirement IDs / Check IDs in an existing PRD must be unique and stable within their requirements, and must never be reused. Evaluations reference IDs already present in the corresponding requirements; technical plans do not create product IDs of their own. Each Evaluation contract declares only one environment;
+Check / Scenario identifiers are unique within their defined scope, and every Check must trace to a
+Requirement ID or Check ID in its corresponding PRD. Evaluation machine contracts declare only Observation requirements. A
+Test must not be the sole basis for passing, and deterministic checks must not include product-semantic decision rules. Document migration carries forward only
+confirmed requirements and links; it must not change product goals, lower evaluation standards, or state goals or gaps as current facts without authorization.
 
-## 6. 定期治理、权限边界与验收
+<a id="6-定期治理权限边界与验收"></a>
+## 6. Periodic Governance, Permission Boundaries, and Acceptance
 
-定期治理仅由明确授权的任务或调度触发，不设定周期或默认全库扫描。治理受本次工作区、范围、读写模式及外部动作权限约束；历史命令和授权不继承。本节定义判定、权限与验收原则，执行顺序只由[治理 工程规范](knowledge.md)维护。
+Periodic governance is triggered only by an explicitly authorized task or schedule; no interval or default whole-repository scan is established. Governance is constrained by the current task's workspace, scope, read/write mode, and permissions for external actions; past commands and authorizations do not carry over. This section defines decision, permission, and acceptance principles. The execution order is maintained only in the [governance engineering standard](knowledge.md).
 
-选定范围可能涉及过期事实、重复真源、失效链接与源码锚点、入口和 Skill 路由、工具契约、遗漏决策及当前风险。未读范围和证据缺口必须披露，不以抽样宣称全库完成。
+The selected scope may cover outdated facts, duplicate sources of truth, broken links and source anchors, entry points and Skill routing, tool contracts, missing decisions, and current risks. Disclose unread scope and evidence gaps; do not claim repository-wide completion based on sampling.
 
-按风险选择相称验收与独立复核。同类、同 Owner 的小改可合为一个有界任务及一轮规格与安全质量复核，避免逐行编排；删除、安全边界与工具契约变化单独核对相应影响。合并复核不降低必读约束、Owner 责任、证据完整性或真实宿主/产品验收要求，不因流程简化扩大权限。
+Select acceptance and independent review in proportion to risk. Small changes of the same type and Owner may be combined into one bounded task and one specification and safety-quality review, avoiding line-by-line orchestration; check the impacts of deletions, security-boundary changes, and tool-contract changes separately. Combined review does not lower mandatory constraints, Owner responsibilities, evidence completeness, or real-host/product acceptance requirements, and workflow simplification does not expand permissions.
 
-效果比较先核宿主、环境、工具与输入前提，再冻结独立判据；分开记录环境、知识、工具、证据状态。只有合法可比输入才比较收益，缺基线不强造对照；原题、标准、冻结与原始失败按版本保留，新协议另版核验，不覆盖旧证据或追认通过。正确性硬门槛先于效率，样本有限时明确结论边界，不以平均分掩盖严重错误。
+Before comparing effectiveness, check host, environment, tools, and input prerequisites, then freeze independent criteria; record environment, knowledge, tool, and evidence status separately. Compare benefits only for inputs that can legitimately be compared; do not fabricate a control when no baseline exists. Preserve original tasks, standards, freezes, and raw failures by version; verify a new protocol as a separate version rather than overwriting old evidence or retroactively declaring a pass. Correctness is a hard gate before efficiency. State the limits of conclusions when samples are small; do not let averages obscure serious errors.
 
-效率比较区分准备、知识构建/更新与任务执行的成本，说明冷启动、复用次数和统计
-分母；把工作前移到写入或预处理不等于成本消失。不能仅用每次查询的 token、检索
-延迟或外部 QA 分数证明全生命周期提效与真实行动正确。摘要的任务保真不等于
-无损归档；必要原始证据与失败语义仍按其 Owner 和保留规则维护。
+Efficiency comparisons distinguish the costs of preparation, knowledge construction/updates, and task execution, and state cold-start costs, reuse counts, and statistical
+denominators; moving work earlier into authoring or preprocessing does not make its cost disappear. Per-query tokens, retrieval
+latency, or external QA scores alone cannot prove lifecycle-wide efficiency gains or correct real actions. A summary that preserves task intent is not the same as
+lossless archiving; maintain necessary raw evidence and failure semantics according to their Owners and retention rules.
 
-| 分类 | 判定 | 处理 |
+| Category | Decision | Handling |
 | --- | --- | --- |
-| 保留 | 当前用途、依据与真源明确 | 就近维护，补必要路由与更新触发 |
-| 提炼 | 原稿过时或冗长，但有有效理由或不变量 | 先承接到当前 Owner，再按授权清理原稿 |
-| 重写 | 必要入口含错误事实、失效命令或重复流程 | 按当前依据修正内容，不仅改路径 |
-| 删除候选 | 无独有开发价值，或有效信息已承接 | 核对消费关系后按授权删除，不默认新增 archive |
-| 待核验 | 用途、消费者或实现关系不明 | 标明缺口，不把候选当作批准清单 |
+| Retain | Current purpose, basis, and source of truth are clear | Maintain near the source; add necessary routing and update triggers |
+| Extract | The original is outdated or verbose but contains valid rationale or invariants | First carry them into the current Owner's docs, then clean up the original as authorized |
+| Rewrite | A necessary entry point contains incorrect facts, obsolete commands, or duplicate workflows | Correct the content based on current evidence, not just the path |
+| Deletion candidate | No unique development value, or valid information has already been carried forward | Check consumption relationships, then delete as authorized; do not add an archive by default |
+| Needs verification | Purpose, consumers, or implementation relationship is unclear | Mark the gap; do not treat candidates as an approved deletion list |
 
-历史提案、研究快照、日报及已结束的 prompt/plan/result 不因“曾经有用”永久保留；必要信息承接后可按授权退出，历史版本通过 Git 追溯。被引用只说明迁移影响，不证明保留价值；没人链接也不证明无人消费。
+Historical proposals, research snapshots, daily reports, and completed prompt/plan/result files are not kept permanently just because they were “once useful.” After necessary information has been carried forward, they may be retired as authorized; use Git to trace historical versions. Being referenced indicates migration impact, not retention value; having no links does not prove that nothing consumes the item.
 
-与当前代码和开发决策无关的历史研究，在确认当前用途、消费者与必要约束后可
-按授权整篇删除；无需为清理逐篇重做外部研究或迁移完整报告。历史互链不能成为
-整组永久保留理由，缺少源码引用也不是无关证明。关系不明先保留为待核验，仍有效
-的决策依据只提炼必要部分到实际 Owner，不新建历史归档或记忆服务。
+Historical research unrelated to current code and development decisions may be deleted in full as authorized after confirming its current purpose, consumers, and necessary constraints;
+there is no need to redo external research item by item or migrate entire reports just to clean them up. Historical cross-links are not
+a reason to retain an entire set permanently, and the absence of source references does not prove irrelevance. When relationships are unclear, retain an item as needing verification. Extract only the necessary parts of decision rationale that remain valid into the actual Owner's docs; do not create historical archives or a memory service.
 
-文档验证依据失效、更新条件已触发或维护 Owner 无法确认内容时，不得继续保持
-`active`：在授权范围内更新并核验，或降级为 `draft`、标记 `superseded` 并链接替代正文，
-或按删除规则退出。未获写权时报告状态失效与所需处理，不将该页作为已核验的当前规范。
+When a document's verification basis is invalid, an update condition has been triggered, or its maintenance Owner cannot confirm its contents, it must not remain
+`active`: update and verify it within the authorized scope, or downgrade it to `draft`, mark it `superseded` and link to replacement body text,
+or retire it under the deletion rules. Without write permission, report the invalid status and required handling; do not treat the page as a verified current standard.
 
-Markdown 不都属于普通知识页：产品 Skill、Prompt 与参考模块可能是运行输入或打包载荷；政策、协议、许可证、第三方 notices、测试 fixture、操作契约按实际用途维护。生成库存保留生成源与检查机制，派生索引不成为正文权威。清理前核对正文价值、运行消费、链接、ID、导航、脚本与门禁，遵守资源、合规和数据保留要求。
+Not all Markdown files are ordinary knowledge pages: product Skills, Prompts, and reference modules may be runtime inputs or packaged payloads; maintain policies, protocols, licenses, third-party notices, test fixtures, and operational contracts according to their actual purposes. For generated inventories, retain the generation source and checking mechanism; derived indexes do not become the authority for body text. Before cleanup, check body-text value, runtime consumption, links, IDs, navigation, scripts, and gates, and follow resource, compliance, and data-retention requirements.
 
-治理验收同时检查正确性与可发现性：
+Governance acceptance checks both correctness and discoverability:
 
-- 导航层数、文档行数、目录数量和历史告警总量不是单独的成功判据；不为满足固定
-  “三跳”或数量阈值增建模板/索引、隐去必要约束或降低门禁。先核验代表任务的
-  正确 Owner、知识及验证前提，再依据可比真实宿主证据判断效率。
+- Navigation depth, document line counts, directory counts, and total historical warnings are not standalone success criteria. Do not add templates/indexes, conceal necessary constraints, or lower gates just to meet a fixed
+  “three hops” or numeric threshold. First verify the correct Owner, knowledge, and verification prerequisites for representative tasks;
+  then judge efficiency from comparable evidence from the real host.
 
-- 相对链接、源码锚点、ID 关联与导航有效，正文只有一个真源；检查工具须覆盖实际知识目录，明确未覆盖范围。
-- 按受影响的典型任务核对“入口 → 适用 Skill（如有）→ 必要 docs → 源码与工具 → 验证”的查找路径，避免循环路由、无界扫描和无必要重复读取。
-- 文档改动运行对应文档检查；Skill、工具或产品行为变化另做实际宿主调用或产品验收，不能用链接检查代替。
-- Skill 与工具的实际验收须按变更涉及的契约核验成功、拒绝和失败路径：从 transcript、工具事件及实际产物确认允许的读写范围、退出或错误结果、部分执行后的状态与缺口。失败、超时、证据缺失或部分写入不能报告为成功；未能真实验证的路径保留为未验收，不以单元 fixture 或笼统“输出正常”补齐。
-- 迁移删除核对前后清单和消费者；红色门禁用同命令基线比较，区分旧问题与新增回归。
-- 根据真实读取与调用证据评估效率；没有前后对照，不宣称节省时间或提升百分比。目录迁移、篇幅缩短和数量下降不独自证明提效。
+- Relative links, source anchors, ID associations, and navigation are valid, and each body has only one source of truth; checking tools must cover actual knowledge directories and state any uncovered scope.
+- For representative affected tasks, check the lookup path “entry point → applicable Skill (if any) → necessary docs → source and tools → verification” to avoid circular routing, unbounded scanning, and unnecessary repeated reads.
+- Run the corresponding documentation checks for document changes. Skill, tool, or product-behavior changes also require actual host invocations or product acceptance; link checks are not a substitute.
+- Actual acceptance for Skills and tools must verify success, denial, and failure paths against the contracts affected by the change. Use transcripts, tool events, and actual artifacts to confirm permitted read/write scope, exit or error results, and the resulting state and gaps after partial execution. Failures, timeouts, missing evidence, or partial writes must not be reported as success. Paths not verified in a real environment remain unaccepted; unit fixtures or a generic statement that “output looks normal” cannot fill the gap.
+- For migration and deletion, check before/after inventories and consumers. Compare red gates against a baseline using the same command to distinguish pre-existing issues from new regressions.
+- Evaluate efficiency from evidence of real reads and invocations; without a before/after comparison, do not claim time savings or a percentage improvement. Directory migration, shorter documents, and reduced counts do not by themselves prove efficiency gains.
 
-整改仅执行授权范围，报告已处理项、证据、未处理项及阻塞。发现问题不自动授权批量删除、产品改动、安装工具、修改用户配置、提交、推送、合并或发布。
+Perform remediation only within the authorized scope, and report completed items, evidence, outstanding items, and blockers. Finding a problem does not automatically authorize bulk deletion, product changes, tool installation, user-configuration changes, commits, pushes, merges, or releases.
 
-### 当前检查范围
+<a id="当前检查范围"></a>
+### Current Check Scope
 
-元数据 schema 的真源是 [frontmatter](../../scripts/ci/docs/frontmatter.py)，受控词表是
-[keywords](../../scripts/ci/docs/keywords.yaml)，别名与关键词校验由
-[vocabulary](../../scripts/ci/docs/vocabulary.py) 持有；知识页不再复制字段、状态枚举或词表。
-新增或调整知识按实际 Owner 与用途归属，不沿用旧 Wiki 静态站、固定架构骨架或
-“只对 architecture 同步”的历史约定；仍有效的要求、机制、风险与消费者都需核对更新。
+The source of truth for the metadata schema is [frontmatter](../../scripts/ci/docs/frontmatter.py); the controlled vocabulary is [keywords](../../scripts/ci/docs/keywords.yaml); and alias and keyword validation is owned by [vocabulary](../../scripts/ci/docs/vocabulary.py). Knowledge pages must not duplicate fields, status enums, or vocabularies.
+Assign new or revised knowledge according to actual Owner and purpose; do not carry forward the old Wiki static site, a fixed architecture skeleton, or the historical convention of “syncing only architecture.” Check updates against requirements, mechanisms, risks, and consumers that remain valid.
 
-根 `pnpm ops ci check docs workspace` 使用 [`scripts/ci/docs/check.py`](../../scripts/ci/docs/check.py)，
-按实际应用/包 Owner、具名必需入口和用途排除发现当前工作树中的根/局部 docs、
-README、AGENTS 与开发边界页，输出精确清单；不只检查带元数据的正文，也不把 HEAD
-代替未提交内容。缺必需入口、空清单、读取失败或越界非零退出。
-对声明 frontmatter 的正文检查完整 schema、受控关键词、全清单真源 ID/related 与
-解析后的源码引用；复用原结构工具检查各逻辑入口的相对链接上下文。
-旧 Wiki 站点检查与生成命令已移除，不再生成目录；当前知识门禁统一使用 `pnpm ops ci check docs workspace`。
-本门禁不扫描旧根 Wiki、工作记录、本地计划缓存、产品 Prompt/Skill、许可证、fixture
-或第三方资源；它们按实际 Owner 另行验证。Desktop 的局部 `docs:check/docs:write`
-继续持有生成库存等独立契约，根门禁不替代其检查，更不证明正文语义与真实宿主通过。
-开发 Skill 的链接与宿主调用由内源仓单独验证；公开源码门禁不检出这些内部资产，
-也不将缺少内部宿主当成跳过产品、架构或工程检查的理由。
+The root `pnpm ops ci check docs workspace` command uses [`scripts/ci/docs/check.py`](../../scripts/ci/docs/check.py).
+It discovers root/local docs, READMEs, AGENTS files, and development-boundary pages in the current worktree according to actual app/package Owners, named required entry points, and purpose-based exclusions, then outputs an exact inventory. It checks more than just body text with metadata and does not substitute HEAD
+for uncommitted content. A missing required entry point, empty inventory, read failure, or out-of-scope item exits nonzero.
+For body text declaring frontmatter, it checks the full schema, controlled keywords, source-of-truth IDs/related links across the full inventory, and resolved source references; it reuses the existing structure tool to check relative-link context for each logical entry point.
+Checks and generation commands for the old Wiki site have been removed, and it no longer generates an index. The current knowledge gate is uniformly `pnpm ops ci check docs workspace`.
+This gate does not scan the old root Wiki, work records, local plan cache, product Prompts/Skills, licenses, fixtures,
+or third-party assets; these are validated separately by their actual Owners. Desktop's local `docs:check/docs:write`
+continues to own independent contracts such as generated inventories. The root gate does not replace those checks, nor does it prove that body text is semantically correct or that a real host passed.
+Links and host invocations for development Skills are verified separately in the internal source repository. Public source gates do not check out these internal assets,
+and the absence of an internal host is not a reason to skip product, architecture, or engineering checks.
 
-需验证本次提案记录时，可用 `pnpm ops ci check docs workspace --record <work-records内的明确md路径>`；
-多份记录重复具名选项。它同次检查完整当前知识与这些记录，不递归扫描历史；指定记录
-须有有效 frontmatter，是规范的仓库相对普通 Markdown 文件，且叶与祖先无链接或
-reparse。联合清单共享元数据、关键词、ID/related、源码引用与结构规则；显式路径和
-错误反映于输出回执，检查不会写入文件或将草案升格为当前知识。
+To verify this proposal's records, use `pnpm ops ci check docs workspace --record <work-records内的明确md路径>`;
+repeat the named option for multiple records. The command checks the complete current knowledge set and those records together; it does not recursively scan history. Each specified record
+must have valid frontmatter, be an ordinary Markdown file at a canonical repository-relative path, and have no links or
+reparse points in its leaf or ancestors. The combined inventory shares metadata, keyword, ID/related, source-reference, and structure checks. Explicit paths and
+errors are reflected in the output receipt; the check does not write files or promote drafts to current knowledge.
 
-有界整改的显式文件最小结构检查仍使用
-[Engineering guide](../../scripts/ci/docs/structure-check.mjs)：
-`node scripts/ci/docs/structure-check.mjs <明确文件清单>`。
-它只读显式清单，检查清单内重复 ID、常规内联相对链接、Markdown 标题锚点、
-正文 HTML `a` 元素的非空 quoted `id/name` 锚点与
-frontmatter 的列表型仓库相对 `code_refs`；不递归检查全部链接正文，不检查外部 URL、
-引用式链接、其他 HTML 自定义锚点、完整 YAML schema、全库 ID/related、需求覆盖或语义。
-HTML 锚点值精确匹配，标签和属性名大小写不敏感；frontmatter、代码示例、注释及
-script/style 文本不作为 HTML 导航目标，不将最小提取器描述成完整 HTML 渲染解析。
-清单与执行结果随本次记录保存；缺文件或检查错误非零退出，不默认全库扫描。
-本页 `arch-knowledge-principles` 是唯一治理正文。旧 `arch-knowledge` ID 属于历史导航，
-不是现行发现入口；如发现仍消费该 ID 的工具，核对其真实契约并迁移消费者，不能为
-兼容历史索引永久保留旧 Wiki stub。根 `docs:check` 的扫描范围不包括该旧导航。
-实际源码、授权与任务读取路径仍需人工核验，Skill 变化需真实宿主调用，产品变化需真实产品流。
+For bounded remediation, the minimal structure check on an explicit file list still uses the
+[Engineering guide](../../scripts/ci/docs/structure-check.mjs):
+`node scripts/ci/docs/structure-check.mjs <明确文件清单>`.
+It reads only the explicit inventory and checks duplicate IDs within it, ordinary inline relative links, Markdown heading anchors,
+nonempty quoted `id/name` anchors on body HTML `a` elements, and list-valued repository-relative `code_refs` in
+frontmatter. It does not recursively check all linked body text, external URLs,
+reference-style links, other custom HTML anchors, the full YAML schema, repository-wide IDs/related links, requirements coverage, or semantics.
+HTML anchor values must match exactly; tag and attribute names are case-insensitive. Frontmatter, code examples, comments, and
+script/style text are not treated as HTML navigation targets. Do not describe the minimal extractor as a full HTML rendering parser.
+Save the inventory and execution result with this task's record. Missing files or check errors exit nonzero; a whole-repository scan is not the default.
+This page's `arch-knowledge-principles` is the sole governance body text. The old `arch-knowledge` ID is historical navigation,
+not a current discovery entry point. If a tool is found to still consume that ID, verify its actual contract and migrate the consumer; do not permanently retain the old Wiki stub for
+compatibility with historical indexes. The root `docs:check` scan does not include that old navigation.
+Actual source code, authorization, and task reading paths still require human verification. Skill changes require real host invocation, and product changes require a real product flow.

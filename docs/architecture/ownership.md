@@ -1,55 +1,51 @@
-# 跨系统职责与发行边界
+<a id="跨系统职责与发行边界"></a>
+# Cross-System Ownership and Distribution Boundaries
 
-需要判断跨包改动归属、允许的依赖方向或公共协议消费者时读取本页。
-已经确定 Owner 后转到对应包入口，不为补上下文通读历史提案。
-本页只维护跨系统边界；各包的 ABI、实现细节和实际命令不在这里复制。
-源码存在不代表功能或发行已验收；验收结论须核对对应产品与制品证据。
+Read this page when determining ownership of cross-package changes, permitted dependency directions, or consumers of public protocols.
+Once the Owner is clear, go to that package's entry point; do not read historical proposals just to fill in context.
+This page maintains only cross-system boundaries; package ABIs, implementation details, and actual commands are not duplicated here.
+The presence of source code does not mean a feature or distribution has been accepted; acceptance conclusions must be checked against evidence from the relevant product and artifacts.
 
-## 按改动快速定位
+<a id="按改动快速定位"></a>
+## Quick Routing by Change
 
-| 改动 / 问题 | 先读 | 边界提示 |
+| Change / question | Read first | Boundary note |
 | --- | --- | --- |
-| 跨包契约、Provider 发现、依赖方向 | 下方[系统地图与依赖图](#当前仓库地图)、[Runtime README](../../packages/runtime/README.md)、实际 Adapter README 与[Serve 组合边界](serve.md) | 先确定契约 Owner 与消费者；不要把厂商协议或产品策略下沉到通用 Runtime |
-| 产品 API、会话、身份、路径或数据 | [Serve AGENTS](../../apps/serve/AGENTS.md)、[Serve 架构](serve.md)、[持久化边界](persistence.md) | 产品组合及路径由 Serve 持有，按具体业务域追加源码和测试 |
-| Trace 记录、查询或诊断 | [DamoATrace AGENTS](../../packages/damoatrace/AGENTS.md)、[Engineering guide](../../packages/damoatrace/README.md) | Trace 是只读诊断 Owner；产品事件投影仍属于 Serve |
-| Desktop 内部职责、renderer / main / IPC | [Desktop 文档入口](../../apps/desktop/docs/README.md)、[Desktop ownership](../../apps/desktop/docs/architecture/ownership.md) | Desktop 内部细分以局部 Owner 为准，不在本页复制 |
-| 发行、安装包、公开准备或制品 | [构建指南](../runbooks/build.md)、[公开准备说明](repositories.md) | 源码目录、发布包边界与外部发布授权是不同问题 |
-| 开发 Skill、产品 Skill 或 Prompt | [Skill 边界](skills.md)、[Product instructions](../../apps/serve/service/chat/prompts/baseInstructions.md) | 文档内源仓的开发 Skill 是开发流程真源，`skills/community/` 是产品资产；不得互相替代 |
+| Cross-package contracts, Provider discovery, dependency direction | [System map and dependency graph below](#当前仓库地图), [Runtime README](../../packages/runtime/README.md), the relevant Adapter README, and [Serve composition boundary](serve.md) | Identify the contract Owner and consumers first; do not move vendor protocols or product policy into the generic Runtime |
+| Product APIs, sessions, identity, paths, or data | [Serve AGENTS](../../apps/serve/AGENTS.md), [Serve architecture](serve.md), [persistence boundaries](persistence.md) | Serve owns product composition and paths; add source and tests in the specific business domain |
+| Trace recording, queries, or diagnostics | [DamoATrace AGENTS](../../packages/damoatrace/AGENTS.md), [Engineering guide](../../packages/damoatrace/README.md) | Trace is the read-only diagnostics Owner; product event projection remains with Serve |
+| Desktop internal ownership, renderer / main / IPC | [Desktop documentation entry point](../../apps/desktop/docs/README.md), [Desktop ownership](../../apps/desktop/docs/architecture/ownership.md) | Follow local Owners for Desktop's internal divisions; do not duplicate them here |
+| Distribution, installers, public preparation, or artifacts | [Build guide](../runbooks/build.md), [public preparation notes](repositories.md) | Source directories, distribution-package boundaries, and authorization for external publication are separate concerns |
+| Development Skills, product Skills, or Prompts | [Skill boundaries](skills.md), [Product instructions](../../apps/serve/service/chat/prompts/baseInstructions.md) | Development Skills in the documentation source repository are the source of truth for development workflows; `skills/community/` contains product assets. They must not substitute for each other. |
 
-快速阅读约定：本页提供跨系统职责、依赖和决策边界；上表链接到具体 Owner，机制、配置、验证命令及产品验收留在这些 Owner。普通单 Owner 改动直接从根索引或已匹配 Skill 进入，不需通读本页。
+Reading shortcut: this page covers cross-system ownership, dependencies, and decision boundaries. The links above lead to specific Owners, where mechanisms, configuration, verification commands, and product acceptance are documented. For an ordinary change owned by one area, go directly through the root index or a matching Skill; this page need not be read in full.
 
-## 当前仓库地图
+<a id="当前仓库地图"></a>
+## Current Repository Map
 
-| 位置 / Owner | 主要职责与契约 | 不负责 / 禁止越界 | 深入入口 |
+| Location / Owner | Primary responsibilities and contracts | Not responsible for / boundaries not to cross | Further reading |
 | --- | --- | --- | --- |
-| `apps/desktop/` | Electron/React 产品前端与本机原生宿主；HTTP/SSE 消费 Serve，原生能力经 main/preload 受控暴露 | 不拥有 Serve 业务或 Python 包边界；Renderer 不直接获得 Node/Electron 能力 | [Desktop 约定](../../apps/desktop/AGENTS.md)、[局部分层](../../apps/desktop/docs/architecture/ownership.md) |
-| `apps/serve/` | `scholarseed` 发行与 `service` namespace；产品配置、用户/项目、凭据、持久化、业务 API/SSE 和组合根 | 不拥有厂商协议实现、通用 Provider 契约或 Trace 存储 | [Serve README](../../apps/serve/README.md)、[bootstrap](../../apps/serve/service/bootstrap.py) |
-| `packages/runtime/` | `scholarseed-runtime` / `scholarseed_runtime`；厂商中立公共 contract、Provider 发现与通用 Gateway | 不实现 Agent loop、产品策略或任何厂商协议；不解析产品用户目录 | [Runtime README](../../packages/runtime/README.md) |
-| `packages/adapters/codex/` | `scholarseed-codex` / `scholarseed_codex`；官方 App Server 原生协议、进程执行、认证发现及权限映射 | 仅依赖 Runtime 公开 contract；不依赖 Serve/Desktop，不拥有产品认证、会话或 UI 逻辑 | [Codex README](../../packages/adapters/codex/README.md) |
-| `packages/adapters/dsh/` | `scholarseed-dsh` / `scholarseed_dsh`；预留独立边界 | 当前没有 Provider/Session 或可运行 entry point，不可描述为已接通能力 | [DSH README](../../packages/adapters/dsh/README.md) |
-| `packages/damoatrace/` | `damoatrace`；独立持有 Trace 记录、存储、路径、查询与诊断入口 | 不依赖 Runtime、Adapter、Serve 或 Desktop；查询不修改产品会话、工具状态或业务记录 | [Trace 约定](../../packages/damoatrace/AGENTS.md) |
-| `skills/` | 产品技能源码与构建输入 | 不是开发宿主工作流 Skill 真源；开发 Skill 只维护于 文档内源仓的开发 Skill | [产品技能适配](../../skills/ADAPTATION.md) |
-| `packages/ui/` | OpenUI 声明式注册/Schema/Renderer；另保留隔离可执行插件的资源 SDK | 声明式只消费注册组件与宿主 scoped ports；可执行代码仅走隔离桥接，不持有业务权限 | [对话 UI 与隔离资源](../../packages/ui/README.md) |
-| `scripts/`、`tests/` | 开发构建工具及跨包集成/发行门禁 | 不作为产品领域业务 Owner；检查通过仅覆盖其明确契约范围 | [构建指南](../runbooks/build.md)、[开发入口](../runbooks/development.md) |
+| `apps/desktop/` | Electron/React product frontend and local native host; consumes Serve over HTTP/SSE, with native capabilities exposed in a controlled way through main/preload | Does not own Serve business logic or Python package boundaries; the Renderer does not receive Node/Electron capabilities directly | [Desktop conventions](../../apps/desktop/AGENTS.md), [local ownership](../../apps/desktop/docs/architecture/ownership.md) |
+| `apps/serve/` | `scholarseed` distribution and `service` namespace; product configuration, users/projects, credentials, persistence, business APIs/SSE, and composition root | Does not own vendor protocol implementations, generic Provider contracts, or Trace storage | [Serve README](../../apps/serve/README.md), [bootstrap](../../apps/serve/service/bootstrap.py) |
+| `packages/runtime/` | `scholarseed-runtime` / `scholarseed_runtime`; vendor-neutral public contracts, Provider discovery, and generic Gateway | Does not implement an Agent loop, product policy, or any vendor protocol; does not resolve product user directories | [Runtime README](../../packages/runtime/README.md) |
+| `packages/adapters/codex/` | `scholarseed-codex` / `scholarseed_codex`; native official App Server protocol, process execution, authentication discovery, and permission mapping | Depends only on Runtime's public contracts; does not depend on Serve/Desktop and does not own product authentication, session, or UI logic | [Codex README](../../packages/adapters/codex/README.md) |
+| `packages/adapters/dsh/` | `scholarseed-dsh` / `scholarseed_dsh`; reserved independent boundary | Currently has no Provider/Session or runnable entry point; do not describe it as an integrated capability | [DSH README](../../packages/adapters/dsh/README.md) |
+| `packages/damoatrace/` | `damoatrace`; independently owns Trace recording, storage, paths, queries, and diagnostics entry points | Does not depend on Runtime, Adapter, Serve, or Desktop; queries do not modify product sessions, tool state, or business records | [Trace conventions](../../packages/damoatrace/AGENTS.md) |
+| `skills/` | Product Skill source and build inputs | Is not the source of truth for host workflow development Skills; development Skills are maintained only in the documentation source repository | [Product Skill adaptation](../../skills/ADAPTATION.md) |
+| `packages/ui/` | OpenUI declarative registration/Schema/Renderer; also retains the resource SDK for isolated executable plugins | Declarative UI consumes only registered components and host-scoped ports; executable code uses only the isolated bridge and holds no business permissions | [Conversation UI and isolated resources](../../packages/ui/README.md) |
+| `scripts/`, `tests/` | Development build tools and cross-package integration/distribution gates | Are not product-domain business Owners; passing checks cover only their explicitly defined contract scope | [Build guide](../runbooks/build.md), [development entry point](../runbooks/development.md) |
 
-根 [pyproject](../../pyproject.toml) 是 `package = false` 的 uv workspace 编排，
-不是一个可安装 wheel。成员的发行名、namespace、依赖和包数据以各自 pyproject 为准；
-Desktop 构建产物不因目录位于 monorepo 而成为 Python 发行内容。
-版本与 workspace 成员变化时更新真实声明，不在本页维护一份版本常量镜像。
+The root [pyproject](../../pyproject.toml) orchestrates a uv workspace with `package = false`; it is not an installable wheel. Each member's distribution name, namespace, dependencies, and package data are defined by its own pyproject. Desktop build artifacts do not become Python distribution contents merely because their directories are in the monorepo.
+When versions or workspace membership change, update the actual declarations; do not maintain a mirrored set of version constants on this page.
 
-历史材料提及的根 `service/`、`ui/veda/`、`work/scholar/`、`account/` 或根子模块布局
-不是当前源码 Owner，须从上表定位现行 `apps/`、`packages/`、`skills/` 与 `tests/`。
-被忽略的 `build/`、`*.egg-info` 与 bytecode 可能留有已删除 Harness 的产物，
-不能视作源码；发行包须由[构建 Owner](../runbooks/build.md)的 `scripts/cd/wheel.py`
-及 wheel 内容门禁验证，不能以工作区残留证明发行边界。
+Historical material referring to root-level `service/`, `ui/veda/`, `work/scholar/`, `account/`, or root submodule layouts does not describe current source Owners. Use the table above to locate the current `apps/`, `packages/`, `skills/`, and `tests/` Owners.
+Ignored `build/`, `*.egg-info`, and bytecode may contain artifacts from the removed Harness and are not source. Verify distribution packages using the [build Owner's](../runbooks/build.md) `scripts/cd/wheel.py` and wheel-content gate; workspace residue is not evidence of distribution boundaries.
 
-Desktop 设计系统只拥有 renderer 通用 UI，不向 Serve 反向暴露 React/Electron 概念。
-官方 UI 包以独立构建的浏览器资源归档随产品后端包数据分发；Serve 只校验、固定和提供
-归档字节，不执行或导入前端源码。宿主 renderer 与官方包运行时分别构建，不能以共享
-构建输入代替独立资源更新。详细组件与依赖约束只维护在 Desktop 局部 docs，
-动态组件/token/债务库存由源码生成，不在跨系统正文复制计数或第二套组件名单。
+The Desktop design system owns only generic renderer UI and does not expose React/Electron concepts back to Serve.
+The official UI package is distributed as a separately built browser-resource archive in the product backend's package data. Serve only validates, pins, and serves the archive bytes; it does not execute or import frontend source. The host renderer and official package runtime are built separately; shared build inputs do not replace independent resource updates. Detailed component and dependency constraints are maintained only in Desktop-local docs. Dynamic component/token/debt inventories are generated from source; do not copy counts or a second component list into cross-system documentation.
 
-## 依赖与组合
+<a id="依赖与组合"></a>
+## Dependencies and Composition
 
 ```text
 Desktop ──产品 HTTP/SSE──> Serve
@@ -58,169 +54,132 @@ Desktop ──产品 HTTP/SSE──> Serve
                             └──已发现 Provider ABI───> Adapter ──公开 contract──> Runtime
 ```
 
-Adapter 不导入 Serve/Desktop；通用 Runtime 不依赖厂商 Adapter 或产品业务；
-Trace 不依赖 Runtime、Adapter 或 Serve。产品策略不能为了代码复用下沉到通用 ABI，
-厂商协议也不能为了便捷直接成为 Serve 的内部调用面。
+Adapters do not import Serve/Desktop; generic Runtime does not depend on vendor Adapters or product business logic; Trace does not depend on Runtime, Adapters, or Serve. Product policy must not be moved into the generic ABI for code reuse, and vendor protocols must not become Serve's internal call surface for convenience.
 
-Provider 发现来自已安装发行包的 `scholarseed_runtime.providers` entry point。
-[Gateway catalog](../../packages/runtime/scholarseed_runtime/gateway/catalog.py) 校验
-factory、ID/别名冲突与 ABI；不通过 import 副作用或第二注册表发现。
-[Serve selection](../../apps/serve/service/chat/runtime/selection.py) 再应用产品 manifest
-的启用/默认策略；配置启用但未安装 Provider 是明确错误，不能造空实现通过。
-安装 Adapter、允许产品使用与业务验收是三个条件，不互相替代。
-DSH 预留包不能被当成已接通能力；不支持的功能应明确 unsupported。
+Provider discovery comes from the installed distribution's `scholarseed_runtime.providers` entry point.
+The [Gateway catalog](../../packages/runtime/scholarseed_runtime/gateway/catalog.py) validates
+factories, ID/alias conflicts, and the ABI; discovery does not use import side effects or a second registry.
+[Serve selection](../../apps/serve/service/chat/runtime/selection.py) then applies the product manifest's
+enabled/default policy. A Provider enabled in configuration but not installed is an explicit error; do not pass by creating a stub implementation.
+Installing an Adapter, allowing the product to use it, and business acceptance are three separate conditions; none substitutes for another.
+The reserved DSH package must not be treated as an integrated capability; unsupported features must be identified as unsupported.
 
-[Binding 校验](../../packages/runtime/scholarseed_runtime/gateway/binding.py) 比较已有绑定
-的厂商身份及已声明协议版本/schema 身份，不解释不透明厂商状态；不能从校验成功
-推断官方私有数据可迁移或可降级。[Driver](../../packages/runtime/scholarseed_runtime/gateway/driver.py)
-保持每个 Runtime session 的单事件消费者，校验序号并关联命令回执/最终结果；
-产品多路投影由 Serve 承接，不另外并发消费同一原生事件流来满足前端订阅。
+The [binding validator](../../packages/runtime/scholarseed_runtime/gateway/binding.py) compares
+an existing binding's vendor identity and declared protocol-version/schema identity; it does not interpret opaque vendor state. Successful validation does not imply that official private data can be migrated or downgraded. The [Driver](../../packages/runtime/scholarseed_runtime/gateway/driver.py)
+maintains a single event consumer for each Runtime session, validates sequence numbers, and associates command acknowledgments with final results.
+Serve handles multi-channel product projections; do not concurrently consume the same native event stream again to satisfy frontend subscriptions.
 
-[RuntimeBinding](../../packages/runtime/scholarseed_runtime/contract/binding.py) 记录产品会话、
-厂商身份、协议与不透明原生引用，不是模型、权限及凭据配置的冻结快照。
-不能用 frozen dataclass 推定全部配置永远不可修改，也不能用配置变化授权迁移
-厂商私有身份。变更仍走实际配置/权限 Owner 的受控契约；数据库迁移从现行 schema
-幂等升级并保留用户资产，不套用历史提案中不同列名的建表语句。
+[RuntimeBinding](../../packages/runtime/scholarseed_runtime/contract/binding.py) records the product session, vendor identity, protocol, and opaque native references; it is not a frozen snapshot of model, permission, or credential configuration.
+Do not infer that all configuration is immutable from a frozen dataclass, or treat configuration changes as authorization to migrate private vendor identity. Changes must still follow the controlled contracts of the actual configuration/permission Owner. Database migrations must upgrade idempotently from the current schema and preserve user assets; do not reuse historical DDL with different column names.
 
-公共依赖边界由发行包和公开协议保证，不取决于名字里是否含品牌。
-用户路径由实际 Owner 解析，见[持久化边界](persistence.md)；Runtime 不推导用户目录。
-Provider 的 storage 声明、目录资格、资源租约与准入/重启许可不同，详细限制只维护在
-Runtime/Adapter/Serve Owner，不能根据 storage 清单或空闲释放回执直接宣称可安全重启。
+Public dependency boundaries are enforced by distribution packages and public protocols, regardless of whether names contain a brand.
+User paths are resolved by the actual Owner; see [persistence boundaries](persistence.md). Runtime does not derive user directories.
+A Provider's storage declaration, directory eligibility, resource lease, and admission/restart permission are distinct. Detailed restrictions are maintained only by Runtime/Adapter/Serve Owners; a storage inventory or idle-release acknowledgment alone cannot establish that restart is safe.
 
-## 决策理由与扩展规则
+<a id="决策理由与扩展规则"></a>
+## Rationale and Extension Rules
 
-### 公共源码与发布就绪不能混同
+<a id="公共源码与发布就绪不能混同"></a>
+### Public Source Must Not Be Confused with Publication Readiness
 
-企业控制面、部署凭据与内部拓扑不属于公共产品发行，不能为便捷联调回填本仓库。
-公开工程知识、开发 Skill、领域约束和门禁随源码一起维护，独立检出及原生 worktree
-不依赖内部父仓。内部系统接线、组织/个人信息、协作补充及工作证据不进入公共正文，
-按[仓库与知识边界](repositories.md)拆分混合内容，不以目录名决定公开范围。
-历史路径投影只是中间审计材料；内部验证成功不授予发布权限，也不证明历史可公开。
+Enterprise control planes, deployment credentials, and internal topology are not part of the public product distribution and must not be copied into this repository for convenient integration testing.
+Public engineering knowledge, development Skills, domain constraints, and gates are maintained with the source; independent checkouts and native worktrees do not depend on an internal parent repository. Internal system wiring, organizational/personal information, collaboration supplements, and work evidence do not belong in public content. Split mixed content according to [repository and knowledge boundaries](repositories.md); directory names do not determine what may be published.
+Historical path projections are intermediate audit material only. Successful internal validation grants no publication permission and does not prove that history is safe to publish.
 
-导出检查 required files、未知二进制与内容规则，只证明对应检查的范围；LICENSE
-存在、哈希匹配或扫描通过不代表第三方代码、字体、图片、技能、模型及二进制的
-再分发权已审查。权属或许可证不明仍是发布待决项，工程提案不能替代法务授权。
-仓库排除用户资产也不等于已审计历史 refs、LFS、缓存及已有克隆；清理当前树不能
-宣称历史秘密消失，凭据处置与历史操作均需另外授权。
+Export checks for required files, unknown binaries, and content rules prove only the scope of those checks. The presence of a LICENSE, matching hashes, or a clean scan does not mean redistribution rights for third-party code, fonts, images, Skills, models, and binaries have been reviewed. Unclear ownership or licensing remains a publication blocker; an engineering proposal cannot replace legal authorization.
+Excluding user assets from the repository does not mean historical refs, LFS, caches, and existing clones have been audited. Cleaning the current tree does not prove historical secrets are gone; credential handling and history operations require separate authorization.
 
-[构建契约](../runbooks/build.md)持有包、签名与安装验收边界。最终制品的依赖
-闭包、许可证、来源与完整性证据不能仅由源码扫描代替；Apple 签名/公证只证明
-相应分发身份，不替代来源追溯。旧方案所选 REUSE、SBOM 格式、SLSA 等级和
-签名技术不能不经当前 Owner 决策就写成已实现门禁；缺少相应证明时明确披露，
-不因旧方案退役取消供应链风险。公开来源构建、真实模型/工具及恢复流程仍需
-各自产品验收，准备仓库同步成功不证明这些已通过。
+The [build contract](../runbooks/build.md) owns package, signing, and installer acceptance boundaries. Source scanning alone cannot replace evidence for the final artifact's dependency closure, licenses, provenance, and integrity. Apple signing/notarization proves only the relevant distribution identity, not provenance. Do not describe REUSE, an SBOM format, an SLSA level, or signing technology selected by an old proposal as an implemented gate without a decision from the current Owner. Disclose missing evidence; retiring an old proposal does not eliminate supply-chain risk. Public-source builds, real models/tools, and recovery flows still require their own product acceptance; successful repository synchronization does not prove they passed.
 
-### Adapter 双向协议与产物观察
+<a id="adapter-双向协议与产物观察"></a>
+### Adapter Bidirectional Protocol and Artifact Observation
 
-产品提交中立模型/权限意图、开发者指令与不透明凭据引用；Adapter 映射原生协议，
-输出 Runtime 事件与 callback。产品身份、审批持久化、SSE 与产物登记仍归 Serve，
-不通过 Adapter 直接输出产品卡片。凭据材料的契约见
-[ModelCredential](../../packages/runtime/scholarseed_runtime/contract/model.py)：短暂使用，
-不得持久化或进入运行证据；具体准入/解析时点由 Owner 契约决定，不概括为每次调用相同。
+The product submits neutral model/permission intent, developer instructions, and opaque credential references. The Adapter maps these to the native protocol and emits Runtime events and callbacks. Product identity, approval persistence, SSE, and artifact registration remain owned by Serve; the Adapter does not emit product cards directly. See the credential-material contract in
+[ModelCredential](../../packages/runtime/scholarseed_runtime/contract/model.py): credentials are used transiently and must not be persisted or included in runtime evidence. The exact admission/resolution point is defined by the Owner contract and must not be generalized as identical for every call.
 
-Codex 的[文件观察](../../packages/adapters/codex/scholarseed_codex/files.py) 排除私有、
-缓存、临时路径以及 `_` 前缀的工作态目录；目录规则让 Skill 存放日志和阶段产物时
-不必修改 Adapter 白名单。交付物不能放在这种工作态目录。仅文件名以 `_` 开头
-（如 `_notes.md`）不触发该目录规则，实际过滤以 Owner 常量与函数为准。
-文件观察、产品登记和界面呈现是不同边界；当前
-[会话活动呈现](../../apps/desktop/src/renderer/src/activity.ts) 的角色过滤不能推广为
-所有产物列表都使用同一过滤条件，也不代表目录规则是文件安全授权。
+Codex's [file observation](../../packages/adapters/codex/scholarseed_codex/files.py) excludes private,
+cached, and temporary paths, as well as work-state directories prefixed with `_`. This directory rule lets Skills store logs and intermediate artifacts without changing the Adapter allowlist. Deliverables must not be placed in such work-state directories. A filename beginning with `_` alone
+(for example, `_notes.md`) does not trigger the directory rule; actual filtering is defined by the Owner's constants and functions.
+File observation, product registration, and UI presentation are separate boundaries. The role filter in current
+[session activity presentation](../../apps/desktop/src/renderer/src/activity.ts) must not be generalized to mean every artifact list uses the same filter, nor does the directory rule grant authorization to access files.
 
-官方会话恢复和认证同步规则直接读 Codex README：不读取/复制私有数据库或 rollout，
-不修改官方二进制；兼容范围由 Adapter 持有，准确打包版本/hash 与更新由 Desktop 持有。
-不在本页复制固定版本或旧实施阶段声明。支持与不支持能力分别核验，不能以占位实现
-或最低公共子集隐藏差异；DSH 保留边界不等于已提供会话能力。
+Read the Codex README for official session recovery and authentication synchronization rules: do not read/copy private databases or rollouts, and do not modify official binaries. The Adapter owns compatibility scope; Desktop owns the exact packaged version/hash and updates.
+Do not duplicate fixed-version or old implementation-stage statements here. Verify supported and unsupported capabilities separately; do not hide differences behind stub implementations or a lowest common denominator. A reserved DSH boundary does not mean session capabilities are provided.
 
-- 公共契约/Gateway、厂商执行、产品组合和证据基础设施分开，才能新增 Adapter 而不改
-  通用发现核心，避免把 Codex 或 Serve 的业务策略变成所有 Provider 的硬编码要求。
-- 删除旧自研 Harness 不等于恢复一组转发包：不重建 `damoagent`、core/work/sdk/bench
-  或旧 facade/第二注册表；真实定义迁到 Owner 后同步消费者，不留下兼容空壳。
-- 目录、发行名和导入名是不同契约。源码迁移不自动授权用户数据迁移、native thread
-  私有恢复或公共包发布；不能复制历史实施方案中的路径与发布许可。
-- 企业控制面、部署资产、DamoCli 与 Lattice 不属于本仓产品代码；只维护本产品需要的
-  消费契约，不带回外部服务拓扑或其他产品的实现和 launcher。
+- Separating public contracts/Gateway, vendor execution, product composition, and evidence infrastructure allows new Adapters without changing the generic discovery core, and prevents Codex or Serve business policies from becoming hard-coded requirements for every Provider.
+- Removing the old custom Harness does not mean restoring forwarding packages: do not recreate `damoagent`, core/work/sdk/bench, or an old facade/second registry. Move real definitions to their Owners and update consumers; do not leave compatibility shells.
+- Directories, distribution names, and import names are different contracts. A source migration does not automatically authorize user-data migration, private native-thread recovery, or public package publication; do not copy paths or publication permissions from historical implementation plans.
+- Enterprise control planes, deployment assets, DamoCli, and Lattice are not product code in this repository. Maintain only the consumer contracts this product needs; do not bring in external service topology or implementations and launchers for other products.
 
-## 验证与维护
+<a id="验证与维护"></a>
+## Verification and Maintenance
 
-### Trace 消费与诊断正文
+<a id="trace-消费与诊断正文"></a>
+### Trace Consumption and Diagnostic Content
 
-Trace 的记录、存储、查询和路径由独立包持有，产品 action 数据只经显式路径或 Port
-接入；查询不得改会话、工具状态或产品记录。内部规则和查询入口直接读
-[包指南](../../packages/damoatrace/AGENTS.md)，诊断编排用
-[Engineering guide](../../packages/damoatrace/README.md)，结论关联真实 evidence/span，
-不绕过其查询契约直接解析存储来取得有利结论。
+Recording, storage, queries, and paths for Trace belong to an independent package. Product action data is connected only through an explicit path or Port; queries must not modify sessions, tool state, or product records. Read internal rules and query entry points in the
+[package guide](../../packages/damoatrace/AGENTS.md), and use the
+[Engineering guide](../../packages/damoatrace/README.md) for diagnostic orchestration. Conclusions must link to real evidence/spans; do not bypass the query contract by parsing storage directly to obtain a favorable conclusion.
 
-诊断正文的采集授权与查询展示是两层控制：CLI 的 `--full` 仅增加字段，
-不等于授权读取正文；`--include-content` 显式选择未过期内容，
-[内容投影](../../packages/damoatrace/damoatrace/recording/content.py) 仍隐藏过期块。
-不能从参数名推断采集已经获准，也不能恢复过期或原本缺失的数据作为验收证据。
-历史品牌环境变量是否保留，以真实配置 Owner 为准，不因旧 Harness 删除机械重命名。
-环境变量契约归实际读取方，不按注入方品牌统一改前缀。产品启动默认值由
-[brand](../../apps/serve/service/brand.py) 在路径消费者导入前投影，使用 setdefault
-保留显式配置；Trace 与 Codex 自有环境契约仍由各自 Owner 解释。旧更名表中的
-DAMOAGENT 名称不构成恢复旧 Harness 或静默兼容双读的理由，更名也不授权目录迁移。
+Collection authorization and query display are two separate controls for diagnostic content: the CLI's `--full` only adds fields; it does not authorize reading content. `--include-content` explicitly selects unexpired content, while the
+[content projection](../../packages/damoatrace/damoatrace/recording/content.py) still hides expired blocks.
+Do not infer that collection was authorized from an option name, and do not restore expired or originally missing data as acceptance evidence.
+Whether historical brand environment variables remain is determined by the actual configuration Owner; do not rename them mechanically because the old Harness was removed.
+Environment-variable contracts belong to the actual reader; do not unify prefixes based on the brand of the injector. Product startup defaults are projected by
+[brand](../../apps/serve/service/brand.py) before path consumers are imported, using `setdefault`
+to preserve explicit configuration. Trace and Codex interpret their own environment contracts through their respective Owners. The `DAMOAGENT` names in an old rename table do not justify restoring the old Harness or silently reading both names for compatibility; renaming does not authorize directory migration.
 
-产品采集策略归 [RecordingService](../../apps/serve/service/chat/service/recording.py)：
-无设置时默认 detailed，明确关闭仍优先；不要将 `RecordingPolicy()` 的 metadata
-冻结哨兵也改为 detailed。[Capture](../../apps/serve/service/chat/runtime/capture.py)
-同时要求本次冻结策略与当前策略 active、revision 相同，默认策略不授权补录历史。
-关闭采集、清理本机正文与已导出包是不同生命周期，不以查询开关替代采集策略。
+Product collection policy belongs to [RecordingService](../../apps/serve/service/chat/service/recording.py):
+the default is detailed when unset, while an explicit opt-out takes precedence. Do not also change the metadata
+freeze sentinel in `RecordingPolicy()` to detailed. [Capture](../../apps/serve/service/chat/runtime/capture.py)
+also requires the policy frozen for this operation to match the current policy's active state and revision. A default policy does not authorize backfilling historical data.
+Disabling collection, clearing local content, and handling exported packages are different lifecycle operations; a query switch does not replace collection policy.
 
-[详细导出](../../apps/serve/service/chat/service/diagnostics.py) 需先预览并明确确认，
-校验签名、用户/会话、策略修订、到期时间与文件 watermark，记录或策略变化需要
-重新确认。Trace 的块/轮/会话/共享容量及保留期限由内容 Owner 持有，不复制成
-产品常量；缺失、截断、到期或淘汰须如实显示，不恢复原本未采集的内容。
-导出快照只有在 [manifest 完整性核验](../../packages/damoatrace/damoatrace/recording/diagnostics.py)
-通过后按 exported_at 投影；普通 JSONL 不因“离线”而绕过正文到期限制。
-默认 detailed 不是外部分享授权，脱敏也不保证所有个人信息已经消失。
+[Detailed export](../../apps/serve/service/chat/service/diagnostics.py) requires preview and explicit confirmation first. It validates the signature, user/session, policy revision, expiration, and file watermark; changes to records or policy require confirmation again. The content Owner controls Trace block/turn/session/shared capacities and retention periods; do not copy them into product constants. Missing, truncated, expired, or evicted content must be shown accurately; do not restore content that was never collected.
+Export snapshots are projected by `exported_at` only after passing [manifest integrity validation](../../packages/damoatrace/damoatrace/recording/diagnostics.py); ordinary JSONL does not bypass content expiration because it is "offline."
+The detailed default is not authorization for external sharing, and redaction does not guarantee that all personal information has been removed.
 
-模型桥接观测属于 [Serve streams](../../apps/serve/service/chat/service/streams.py)，
-不是 Trace 包的模型执行机制。上游 SSE、ASGI send 与消费者解析是不同观察面；
-发送成功、HTTP 200、EOF、事件数下降都不单独证明模型终态成功或端到端提速。
-流转换、脱敏和终态判据见[模型桥接流](../runbooks/streams.md#观察面与终态)，
-修改时在该 Owner 核验，不用 Trace 查询成功代替产品协议验收。
+Model-bridge observation belongs to [Serve streams](../../apps/serve/service/chat/service/streams.py),
+not the Trace package's model-execution mechanism. Upstream SSE, ASGI send, and consumer parsing are separate observation surfaces;
+a successful send, HTTP 200, EOF, or lower event count alone does not prove a successful model terminal state or end-to-end speedup.
+See [model-bridge streams](../runbooks/streams.md#观察面与终态) for stream conversion, redaction, and terminal-state criteria.
+Verify changes with that Owner; a successful Trace query does not substitute for product-protocol acceptance.
 
-产品证据由 [SessionTrace](../../apps/serve/service/chat/runtime/evidence.py) 显式投影，
-当前接点使用独立包的 `EvidenceWriter` 写文件；不能将旧设计中的 Product Evidence
-Journal、outbox 或异步 SQLite Ledger 当成已实现的可靠交付。业务 Owner 的提交、
-原生执行方的确认、Renderer 呈现和 Trace 落盘分别证明，不用日志存在代替业务成功。
-历史事件名或缺失观察也不能证明业务从未发生。
+Product evidence is explicitly projected by [SessionTrace](../../apps/serve/service/chat/runtime/evidence.py);
+the current integration writes files through the independent package's `EvidenceWriter`. Do not treat the Product Evidence
+Journal, outbox, or asynchronous SQLite Ledger in old designs as implemented reliable delivery. The business Owner's commit,
+the native executor's acknowledgment, Renderer presentation, and Trace persistence each prove different things; log presence does not substitute for business success.
+Historical event names or missing observations also cannot prove that a business action never occurred.
 
-当前 Trace batch 记录失败会锁存不完整证据，checkpoint 检查失败计数并调用 writer
-的文件 fsync；失败不得视为可安全释放资源的水位。恢复只表示后续记录重新可写，
-不会补齐此前缺失事件或重执行业务。默认 evidence completeness 为 partial 并列出
-缺口，不能把可查询、正常退出或恢复告警消失当全链关联完整。文件同步源码本身
-不证明跨平台断电恢复、产品事务原子性或全部原生操作呈现已验收。
+In the current Trace batch recorder, a recording failure latches incomplete evidence; the checkpoint checks the failure count and calls the writer's file `fsync`. A failure must not be treated as a watermark at which resources can be safely released. Recovery means only that subsequent recording can resume; it does not fill in previously missing events or rerun business operations. Evidence completeness defaults to `partial` and lists gaps. Queryability, normal exit, or disappearance of a recovery alert does not establish complete end-to-end correlation. The file-sync source code alone does not prove cross-platform power-loss recovery, product transaction atomicity, or acceptance of presentation for all native operations.
 
-### Runtime Gateway 与外部 LLM Gateway
+<a id="runtime-gateway-与外部-llm-gateway"></a>
+### Runtime Gateway and External LLM Gateway
 
-Runtime Gateway 是本仓的 Provider 发现与命令/事件驱动层，不是企业 LLM 网关。
-企业 LLM Gateway 的实现、数据迁移和部署资产由外部企业仓拥有；本仓只维护
-产品配置、认证与模型协议消费。两者名称相似不能成为引入企业实现的理由。
+Runtime Gateway is this repository's Provider discovery and command/event-driven layer, not an enterprise LLM gateway.
+The external enterprise repository owns the enterprise LLM Gateway implementation, data migrations, and deployment assets. This repository maintains only product configuration, authentication, and model-protocol consumption. Similar names do not justify importing the enterprise implementation.
 
-产品启用与连接政策由实际 [product manifest](../../product.json) 和
-[Desktop 资源 manifest](../../apps/desktop/resources/product.json) 声明；不在本页复制
-端点、部署拓扑或凭据。Serve 的[上游调用边界](../../apps/serve/service/chat/service/completions.py)
-持有产品侧连接与调用时凭据处理，Adapter 持有厂商执行协议；不能从 manifest 存在
-推断模型授权或连通性通过，也不能把旧部署文档的分支与命令当作当前操作授权。
+Product enablement and connection policy are declared in the actual [product manifest](../../product.json) and
+[Desktop resource manifest](../../apps/desktop/resources/product.json); do not duplicate
+endpoints, deployment topology, or credentials here. Serve's [upstream call boundary](../../apps/serve/service/chat/service/completions.py)
+owns product-side connections and credentials used at call time, while Adapters own vendor execution protocols. The presence of a manifest does not prove model authorization or connectivity, and branch names or commands in old deployment documents are not current operational authorization.
 
-企业内部实现变更在对应仓库进行；本仓不创建 `llm_gateway/`、`deploy/` 或兼容副本。
-托管账号服务的数据库、管理员 SPA、RBAC 与迁移也不属于本仓；不能把旧 `account/`
-的 PostgreSQL/Alembic 方案用于替换 Serve 的本地业务持久化。本仓仍消费账号服务的
-登录交接和信任协议，[AccountTrust](../../apps/serve/service/identity/service/account.py)
-负责本地验签与吊销缓存，[handoff](../../apps/serve/service/identity/api/handoff.py)
-负责现有交接 API。外部实现退出不等于可删除这些消费者或放宽用户/管理员令牌隔离。
-[发行边界门禁](../../tests/release/contract_package_boundary.py) 包含 Git 跟踪目录检查，
-这与检查本地目录不存在、真实 wheel 闭包及模型调用成功是不同证据，不能相互替代。
-产品侧消费契约或外部仓库归属改变时更新本边界，外部运维流程不复制到本仓。
+Changes to internal enterprise implementations belong in their respective repositories; do not create `llm_gateway/`, `deploy/`, or compatibility copies here.
+The managed account service's database, admin SPA, RBAC, and migrations are also outside this repository. Do not use the old `account/`
+PostgreSQL/Alembic plan to replace Serve's local business persistence. This repository still consumes the account service's
+login handoff and trust protocol: [AccountTrust](../../apps/serve/service/identity/service/account.py)
+handles local signature verification and the revocation cache, while [handoff](../../apps/serve/service/identity/api/handoff.py)
+handles the existing handoff API. Retirement of the external implementation does not mean these consumers can be deleted or user/admin token isolation loosened.
+The [distribution-boundary gate](../../tests/release/contract_package_boundary.py) includes a Git-tracked-directory check;
+that is different evidence from proving that a local directory is absent, verifying the actual wheel closure, or succeeding at a model call. These checks do not substitute for one another.
+Update this boundary if product-side consumer contracts or external repository ownership changes; do not copy external operations procedures into this repository.
 
-公共契约/发现改动选 [Gateway 契约](../../tests/contract_runtime_gateway.py)、
-[Driver 契约](../../tests/contract_runtime_driver.py) 及受影响 Adapter/Serve 消费者。
-发行边界必须检查[真实 wheel 边界](../../tests/release/contract_package_boundary.py)与
-[发行检查](../../tests/release/contract_distribution.py)，不能只 grep 源码树。
-产品组合改动另做真实 Desktop 流；已安装、healthz 或 Provider readiness 不证明业务回合完成。
-这些是按改动选取的验证入口，本知识治理没有执行产品或 wheel 验收。
+For changes to public contracts/discovery, select the [Gateway contract](../../tests/contract_runtime_gateway.py),
+[Driver contract](../../tests/contract_runtime_driver.py), and affected Adapter/Serve consumers.
+Distribution boundaries require checking the [actual wheel boundary](../../tests/release/contract_package_boundary.py) and
+[distribution checks](../../tests/release/contract_distribution.py); grepping the source tree is insufficient.
+Product-composition changes also require a real Desktop flow. Installation, healthz, or Provider readiness does not prove that a business turn completed.
+These are verification entry points selected by change type; this knowledge-maintenance task has not performed product or wheel acceptance.
 
-新增/删除成员、改变 namespace/entry point/依赖方向或跨系统 Owner 时更新本页和
-对应包入口；机制细节回写 Owner，任务证据归 `work-records/`。
-冲突时核验源码、规范、后续决策和验证证据，不把“代码优先”解释为自动取消安全规则。
+Update this page and the relevant package entry point when adding/removing members or changing a namespace, entry point, dependency direction, or cross-system Owner. Record mechanism details with the Owner and task evidence in `work-records/`.
+When sources conflict, verify the code, specifications, later decisions, and validation evidence; do not interpret "code wins" as automatically canceling safety rules.

@@ -1,203 +1,212 @@
-# CI 脚本：目的、分工与使用方式
+<a id="ci-脚本目的分工与使用方式"></a>
+# CI Scripts: Purpose, Responsibilities, and Usage
 
-本目录把已有自动化测试和打包入口串成可追溯的质量流程，**不负责补齐测试覆盖率，也不实现业务功能**。每台 macOS / Windows runner 独立执行、独立判定，不需要跨平台汇总报告。
+This directory connects existing automated test and packaging entry points into a traceable quality workflow. It **does not fill test-coverage gaps or implement business functionality**. Each macOS / Windows runner executes and determines results independently; no cross-platform summary report is required.
 
-当前质量判定边界见[开发与交付入口](../../docs/runbooks/development.md#ci-模式临时隔离与质量结论)。本文描述当前代码行为；实际执行计划以 `test.cjs` 的 `planStages()` 为准，不代表所有平台已完成实机验收。
+See [Development and Delivery Entry Points](../../docs/runbooks/development.md#ci-模式临时隔离与质量结论) for the current quality-determination boundaries. This document describes current code behavior; the actual execution plan is defined by `planStages()` in `test.cjs`. It does not mean every platform has completed on-device acceptance.
 
-## 从哪里开始
+<a id="从哪里开始"></a>
+## Getting Started
 
-在仓库根目录执行，先安装仓库要求的 Node/npm、Desktop 依赖、Python `.venv`、Bun 和受管理的运行工具链。脚本不会代替依赖安装；`ci:test` 入口本身也依赖 Desktop 的 TypeScript。
+Run from the repository root. First install the repository-required Node/npm, Desktop dependencies, Python `.venv`, Bun, and managed runtime toolchain. Scripts do not install dependencies for you; the `ci:test` entry point itself also depends on Desktop TypeScript.
 
-| 命令 | 当前行为 | 适用目的 |
+| Command | Current behavior | Intended use |
 | --- | --- | --- |
-| `pnpm ops ci test smoke` | 执行显式登记的 `smoke-unit` / `smoke-core` 范围，不启用临时隔离 | 快速检查必要逻辑与核心真实数据链路，不替代完整 CI 或发布准入 |
-| `pnpm ops ci test --profile quality` | 离线测试，启用已登记的临时隔离 | 不使用真实模型与 SkillHub，先验证可执行的确定性流程 |
-| `pnpm ops ci test --profile quality --strict` | 离线测试，不启用临时隔离 | 检查隔离项是否可以恢复；仍不运行外部模型与 SkillHub 验收 |
-| `pnpm ops ci test --profile quality --with-external` | 完整配置模式，不启用临时隔离 | 包含已编排的真实模型、SkillHub 验收；缺配置即失败，不自动降级 |
-| `pnpm ops cd build local --workflow package-acceptance` | 完整测试 → 固定冒烟 → 打包 → 新安装包 E2E | 构建交付门禁；只在前置阶段通过后执行下一步 |
-| `pnpm ops cd build release --workflow distribution <构建参数>` | 准备依赖 → Desktop 构建器执行固定冒烟 → 发行安装包 | 发布打包前的冒烟前置检查，不替代完整 CI 或发布验收 |
+| `pnpm ops ci test smoke` | Runs the explicitly registered `smoke-unit` / `smoke-core` scope without temporary isolation | Quickly checks necessary logic and core real-data paths; does not replace full CI or release admission |
+| `pnpm ops ci test --profile quality` | Offline tests with registered temporary isolation enabled | First validates executable deterministic flows without real models or SkillHub |
+| `pnpm ops ci test --profile quality --strict` | Offline tests without temporary isolation | Checks whether isolated items can be restored; still does not run external-model or SkillHub acceptance |
+| `pnpm ops ci test --profile quality --with-external` | Full-configuration mode without temporary isolation | Includes orchestrated real-model and SkillHub acceptance; missing configuration fails, with no automatic downgrade |
+| `pnpm ops cd build local --workflow package-acceptance` | Full tests → fixed smoke → package → new-package E2E | Build-delivery gate; proceeds only after each prerequisite stage passes |
+| `pnpm ops cd build release --workflow distribution <构建参数>` | Prepare dependencies → Desktop builder runs fixed smoke → release package | Smoke prerequisite before release packaging; does not replace full CI or release acceptance |
 
-所有安装包入口在 [Desktop 构建器](../../apps/desktop/scripts/cd/build.cjs) 共用一次固定冒烟；
-没有跳过参数，不复用旧报告。distribution 保留依赖准备，不重复执行冒烟。
-app、backend、dir 及候选目录检查不触发这条门禁。独立冒烟要求预先准备依赖且运行前后
-源码指纹不变（允许起始dirty）；darwin/win32 使用同一显式选择的 Python 与 Node 用例，
-不改变完整 CI 的平台执行计划，不增加平台跳过或放宽判定。
+All package entry points share one fixed smoke run in the [Desktop builder](../../apps/desktop/scripts/cd/build.cjs); there is no skip parameter and old reports are not reused. `distribution` retains dependency preparation and does not run smoke a second time. Checks for `app`, `backend`, `dir`, and candidate directories do not trigger this gate. Standalone smoke requires dependencies to be prepared beforehand and the source fingerprint to remain unchanged before and after the run (the initial state may be dirty). `darwin` and `win32` use the same explicitly selected Python and Node cases; this does not change the full-CI platform execution plan, add platform skips, or relax decisions.
 
-两个入口均支持 `--result <path>` 指定最终 JSON 报告位置，例如：
+Both entry points support `--result <path>` to specify the final JSON report path, for example:
 
 ```sh
 pnpm ops ci test --profile quality --result tmp/quality.json
 pnpm ops cd build local --workflow package-acceptance --result tmp/ci-package.json
 ```
 
-使用根 `pnpm ops` 入口，或显式选择 `--package-manager npm` 的同一入口；CLI建立真实包管理器上下文，子阶段继承其 `npm_execpath`，不伪造 npm 身份。不要直接执行缺少上下文的 `node test.cjs` / `node package.cjs`。安装包验收流程不接受跳过、离线或跨平台打包参数。
+Use the root `pnpm ops` entry point, or that same entry point with `--package-manager npm` explicitly selected. The CLI creates a real package-manager context, and child stages inherit its `npm_execpath`; it does not fake npm identity. Do not directly run `node test.cjs` / `node package.cjs` without the required context. Package-acceptance workflows do not accept skip, offline, or cross-platform packaging parameters.
 
-**完整quality执行前要求 Git 工作树干净。** `ci:test` 会检查开始与结束时的提交和工作树状态；测试期间修改代码不能得到有效的通过结论。指定报告应写入已忽略的产物目录。
+**A clean Git worktree is required before full `quality` execution.** `ci:test` checks the commit and worktree state at both the beginning and end; code changes during tests invalidate a passing conclusion. Write the specified report into an ignored artifact directory.
 
-## 冒烟检查
+<a id="冒烟检查"></a>
+## Smoke Checks
 
-在已完成依赖准备的 checkout 根目录运行 `pnpm ops ci test smoke`（或 `pnpm ops ci`）。允许起始工作区含未提交修改；开始/结束的HEAD、暂存区与实际源码指纹必须一致，运行中不能继续编辑。报告保留真实dirty状态与指纹，不将冒烟结果当作发布准入。先核对仓库要求的 Node、Python `.venv` 与 Desktop 测试依赖；入口不会安装依赖或下载浏览器。缺依赖属于环境失败，不得用跳过必需项替代。入口模块加载前失败可能只有 stderr 和非零退出码，此时旧汇总文件不是本轮结果。
+Run `pnpm ops ci test smoke` (or `pnpm ops ci`) from the root of a checkout whose dependencies are already prepared. The starting worktree may contain uncommitted changes; the starting and ending HEAD, index, and actual source fingerprint must match, and files must not be edited during the run. The report preserves the actual dirty state and fingerprint; do not treat a smoke result as release admission. First verify the repository-required Node, Python `.venv`, and Desktop test dependencies; the entry point does not install dependencies or download browsers. Missing dependencies are an environment failure and must not be replaced by skipping required items. A failure before the entry module loads may produce only stderr and a nonzero exit code; in that case, an old summary file is not a result from this run.
 
-原 `ci:test:quick` 已移除，命令、profile、标记和维护文件统一为 smoke。用例范围与判定规则不变，10分钟仍是性能目标；冒烟不等于只测成功路径，也不是完整 CI 的加速替代版。旧 `quick` profile 和 `tmp/ci-test-quick/` 报告只作历史证据，新入口不会读取、迁移或覆盖它们。
+The former `ci:test:quick` has been removed; the command, profile, markers, and maintenance files are now consistently named smoke. Case scope and decision rules are unchanged, and 10 minutes remains the performance target. Smoke does not mean testing only successful paths and is not a faster substitute for full CI. The old `quick` profile and `tmp/ci-test-quick/` reports are historical evidence only; the new entry point does not read, migrate, or overwrite them.
 
-选择真源为 [smoke.json](smoke.json)，执行由 [smoke.cjs](smoke.cjs) 复用现有 runner 和报告适配器。`smoke-unit` 用固定输入及独立 expected 检查必要逻辑与协议，`smoke-core` 保留真实数据、跨层或安全拒绝链路；具体 Owner、稳定身份、理由、资源、真实/mock 边界与清理责任以清单为准。范围外是**未选中**，不是通过或临时跳过。smoke 不调用真实模型、外部服务或个人凭据，不代表 renderer、原生协调器、安装包或模型效果验收。
+The source of truth for selection is [smoke.json](smoke.json); execution in [smoke.cjs](smoke.cjs) reuses the existing runner and report adapter. `smoke-unit` checks necessary logic and protocols with fixed input and independent expected results. `smoke-core` retains real-data, cross-layer, or security-rejection paths. The manifest defines the specific Owner, stable identity, rationale, resources, real/mock boundary, and cleanup responsibility. Out-of-scope items are **not selected**, not passed or temporarily skipped. Smoke does not call real models, external services, or personal credentials; it does not represent acceptance of the renderer, native coordinator, packages, or model quality.
 
-当前核心选择包括会话产物、schema 修复、文献真实交付、HTTP 活动及启动/退出生命周期，覆盖重开读回、幂等、冲突不覆盖、事务恢复、安全拒绝和主动释放；必要单元范围包括文件命名、副作用守卫、交付投影与 smoke 设施规则。清单中的候选评估解释真实用户链路未选入原因，不能把纯投影逻辑称为真实 renderer 验收。
+Current core selections include session artifacts, schema repairs, real literature delivery, HTTP activity, and startup/shutdown lifecycle. They cover reopen-and-read-back, idempotency, preserving data on conflict, transaction recovery, security rejection, and explicit release. Necessary unit scope includes file naming, side-effect guards, delivery projections, and smoke-infrastructure rules. Candidate evaluations in the manifest explain why real user paths were not selected; pure projection logic must not be described as real renderer acceptance.
 
-文献原42项通过标准 `unittest.load_tests` 保留原身份、代理到原方法的精确选择入口；每个业务方法只在一个新解释器内执行，导入前隔离 Home/TMP/Trace。父代理不是新增业务覆盖，也不重复计数；真实子报告、原始输出与退出状态随 outer case 的 `childObservation` 保存。父 case 耗时包括子解释器编排，真实业务阶段读子报告。独立 Home/文献库与真实连接关闭检查不能由随机项目ID、SQLite事务退出或子进程退出代替；清理检查失败仍失败，不能补关后声称被测资源已自行释放。
+The original 42 literature acceptance cases retain their identities and exact-selection entry point through `unittest.load_tests`; each business method runs in one new interpreter, with Home/TMP/Trace isolated before import. The parent proxy adds no business coverage and is not counted twice. The real child report, raw output, and exit status are stored in the outer case's `childObservation`. Parent-case duration includes subprocess orchestration; read the child report for actual business-stage timing. Independent Home/literature-library and real-connection-close checks cannot be replaced by random project IDs, SQLite transaction exit, or subprocess exit. Cleanup-check failure remains a failure; do not close the resource afterward and claim that the tested resource released itself.
 
-Python 套件以 `requiredCases` 保留必需用例基线；运行前在独立隔离进程中经同一 unittest 入口自动收集全部身份（包括动态、参数化与继承用例），冻结为本轮 `expectedCases`。新增用例自动加入，无需维护总数；缺少必需用例或重复身份在前置阶段失败。收集模式不运行 fixture、用例或预取，报告不含执行结果；执行后仍逐项核对完整集合与通过状态，不能由执行结果反推 expected。新增套件仍须登记 runner 和 smoke 选择；Node 套件仍使用显式 `expectedCases` / `expectedCount`。失效标记、核心漏选、重复身份、意外 skip / retry、收集失败、缺失或截断报告、清理失败都应失败。新增必要场景先说明风险及预算，再实测，不为满足总预算临时缩减覆盖。
+Python suites retain their required-case baseline in `requiredCases`. Before execution, all identities (including dynamic, parameterized, and inherited cases) are automatically collected through the same unittest entry point in an independent isolated process, then frozen as this run's `expectedCases`. New cases are added automatically without maintaining a total count; a missing required case or duplicate identity fails during the prerequisite stage. Collection mode does not run fixtures, tests, or prefetch; its report contains no execution results. After execution, the complete set and pass status are still checked item by item; do not infer `expected` from execution results. New suites must still be registered with the runner and smoke selection; Node suites continue to use explicit `expectedCases` / `expectedCount`. Invalid markers, missing core selections, duplicate identities, unexpected skips/retries, collection failures, missing or truncated reports, and cleanup failures must all fail. State the risk and budget before adding a necessary scenario, then measure it; do not temporarily reduce coverage to meet the overall budget.
 
-smoke 固定汇总为 `tmp/ci-smoke/quality.json`，每轮原始报告和日志保存在独立 `tmp/ci-smoke-*` 目录；固定汇总原子覆盖，同一汇总不允许并发运行。它使用独立 `smoke` profile，不写 `tmp/ci-test/quality.json`，发布质量校验必须拒绝 smoke 报告。消费者同时检查退出码、本轮身份、源码状态、计划/实际结果和证据完整性，不能只读 `verdict`。
+Smoke always writes its summary to `tmp/ci-smoke/quality.json`; each run's raw reports and logs are stored in a separate `tmp/ci-smoke-*` directory. The fixed summary is atomically overwritten, and concurrent runs sharing that summary are prohibited. Smoke uses its own `smoke` profile and does not write `tmp/ci-test/quality.json`; release-quality checks must reject smoke reports. Consumers must check the exit code, this run's identity, source state, planned and actual results, and evidence integrity, not just `verdict`.
 
-命令结束时直接输出 PASS/FAIL、已观测结果的通过/失败/跳过数量（含前置检查）、总耗时和报告绝对路径；汇总在报告写入及锁清理后输出，保留末行 JSON 供机器读取。统计不改变判定规则：缺失结果单独提示，执行器或清理失败即使没有失败用例也仍为 FAIL。尚未取得结果时显示数量未知，不读取并发运行的报告；报告不可用时明确提示不得使用历史文件。终端总耗时包含最终报告写入和锁清理，与 JSON 内报告快照耗时边界不同。
+At command completion, print PASS/FAIL directly, the observed pass/fail/skip counts (including prerequisite checks), total duration, and the report's absolute path. Print the summary after writing the report and cleaning up locks, and retain a final-line JSON object for machine consumption. Statistics do not change decision rules: report missing results separately, and executor or cleanup failure remains FAIL even if no test cases failed. If results are not yet available, show the counts as unknown; do not read a report from a concurrent run. If the report is unavailable, explicitly warn against using a historical file. Terminal total duration includes final report writing and lock cleanup, so its boundary differs from the duration snapshot in the JSON.
 
-### Smoke 运行中进度与隔离用例并发
+<a id="smoke-运行中进度与隔离用例并发"></a>
+### Smoke Progress and Isolated-Case Concurrency
 
-Python 阶段通过独立进度通道实时输出 suite/case 开始、结束和耗时；没有新事件时每 10 秒输出运行时长与活跃用例。原始 stdout/stderr 与逐用例 JSON 仍单独保存，进度文本不参与质量判定。
+The Python stage uses a separate progress channel to report suite/case start, completion, and duration in real time. When no event arrives, it reports elapsed time and active cases every 10 seconds. Raw stdout/stderr and per-case JSON are still stored separately; progress text does not affect quality decisions.
 
-smoke 的并发容量由 `CI_SMOKE_JOBS` 控制（1–12 的整数，未设置时为 8），只改变容量，不改变用例清单、超时、断言或质量门禁。套件并发与用例并发分时使用预算，不能嵌套相乘；容量不是总 OS 进程数，协调器和 fixture 还可能创建子进程。
+Smoke concurrency capacity is controlled by `CI_SMOKE_JOBS` (an integer from 1–12, defaulting to 8 when unset). It changes capacity only, not the case manifest, timeouts, assertions, or quality gates. Suite and case concurrency use their budgets in separate phases; they must not be multiplied through nesting. Capacity is not the total OS process count; the coordinator and fixtures may also create subprocesses.
 
-执行规则如下：
+Execution rules:
 
-- **套件内串行（默认）**：普通 unittest 用例保留原 class/module fixture 与执行顺序；短逻辑用例不额外启动进程。依赖共享 fixture 生命周期的测试不能标为隔离用例。
-- **用例并行（显式选择）**：只有 `run_all.PARALLEL_CASE_SUITES` 中的套件可启用，且其中仅 `IsolatedExecution` 代理可以并行。当前只选择文献交付；每例仍有独立进程、Home、数据库和清理检查。连续的隔离用例组成一组，首次访问才提交；空槽自动接续下一例，报告仍按原顺序交给标准 unittest runner。
-- **串行边界**：普通用例阻断前后并行组，后一组不能提前执行。提前停止时先取消未启动任务，再等待全部已启动子进程并检查清理；未访问的失败也必须传播。
-- **套件独占**：`RUNTIME_BINARY_EXCLUSIVE` 与 `NATIVE_COORDINATOR_EXCLUSIVE` 声明使用真实 runtime 或账号级协调器的套件，在并发批结束后逐个执行。随机 Home 和新进程不能隔离固定端口、注册表键、共享实例或账号级锁；新增此类测试必须登记独占，不靠重试掩盖冲突。启用用例并行的套件也独占套件执行预算。
+- **Serial within a suite (default):** Ordinary unittest cases retain their original class/module fixtures and execution order; short logic cases do not start extra processes. Tests dependent on a shared fixture lifecycle must not be marked as isolated cases.
+- **Parallel cases (explicit selection):** Only suites in `run_all.PARALLEL_CASE_SUITES` may enable this, and only their `IsolatedExecution` proxies may run in parallel. Currently, only literature delivery is selected; each case still has an independent process, Home, database, and cleanup check. Consecutive isolated cases form a group, submitted only when first accessed; an empty slot automatically takes the next case, while reports are still delivered to the standard unittest runner in original order.
+- **Serial boundaries:** An ordinary case blocks parallel groups before and after it; a later group cannot run early. On early stop, first cancel tasks that have not started, then wait for all started subprocesses and check cleanup; failures in unvisited cases must also propagate.
+- **Exclusive suites:** `RUNTIME_BINARY_EXCLUSIVE` and `NATIVE_COORDINATOR_EXCLUSIVE` mark suites that use a real runtime or account-level coordinator. Run them one at a time after the concurrent batch finishes. A random Home and new process cannot isolate fixed ports, registry keys, shared instances, or account-level locks. New tests of this kind must be registered as exclusive; do not mask conflicts with retries. Suites that enable case parallelism also exclusively consume the suite-execution budget.
 
-其他入口默认逐例串行。所有用例原断言、门禁和进程范围检查保留；不跳过、重试或减少用例。
+Other entry points run cases serially by default. Preserve every case's original assertions, gates, and process-scope checks; do not skip, retry, or reduce cases.
 
-并发用例的 `childObservation.executionMs` 包含子进程创建、执行和报告收集，子报告保留真实 setup/test/teardown/cleanup 时间；外层用例时间只表示按序消费结果的等待与清理，不再等于子进程总执行时间。重叠的子进程耗时不能相加作为墙钟时间。
+For concurrent cases, `childObservation.executionMs` includes subprocess creation, execution, and report collection; the child report retains actual setup/test/teardown/cleanup durations. The outer case duration represents only waiting to consume results in order and cleanup; it is no longer equal to total subprocess execution time. Do not add overlapping subprocess durations and call the result wall-clock time.
 
-### 总预算、参考环境与验收
+<a id="总预算参考环境与验收"></a>
+### Total Budget, Reference Environment, and Acceptance
 
-总预算为 900 秒（15 分钟），由 `smoke.json` 的 `budget.targetMs` 唯一持有，为较慢或存在资源争用的宿主保留余量，不保证任意负载下均能通过。仅放宽总墙钟预算，不改变用例清单、并发容量、单项超时、断言、结果完整性或清理门禁。
+The total budget is 900 seconds (15 minutes), owned exclusively by `budget.targetMs` in `smoke.json`. It leaves headroom for slower or resource-contended hosts but does not guarantee a pass under arbitrary load. Only the total wall-clock budget is relaxed; the case manifest, concurrency capacity, per-case timeouts, assertions, result completeness, and cleanup gates do not change.
 
-当前参考宿主为 macOS 15.7.4、11 logical CPU、36 GiB 内存，Node v24.16.0、Python 3.12.13，依赖已预装；宿主**非独占**。Windows 另行验证，不能由 macOS 结果推定通过。依赖安装不计入执行预算，但准备和缓存条件必须公开；不得依赖未声明预热或其他任务的构建产物。
+The current reference host is macOS 15.7.4, 11 logical CPUs, 36 GiB RAM, Node v24.16.0, and Python 3.12.13, with dependencies preinstalled; the host is **not exclusive**. Windows must be verified separately; a macOS result does not imply a pass. Dependency installation is excluded from the execution budget, but preparation and cache conditions must be disclosed. Do not rely on undeclared warm-up or build artifacts from other tasks.
 
-性能结论须来自**同一最终版本连续三次串行执行**，暂停本任务其他重负载验证，记录全部样本而非最快值。每轮从包管理器命令启动至最终报告写入并正常退出，包含前提检查、准备、执行、资源等待及清理，均须不超过 900 秒；到点强杀不是通过。总预算由清单持有，命令在执行/锁清理结束后检查，Desktop 构建器另核完整 smoke 子调用，超限不进入打包；异常收敛即使超过预算也不得省略。锁释放前汇总是快照，最终解锁/退出成本以终态 JSON、退出码和外部墙钟为准。分别记录外部墙钟、报告耗时、退出码、缓存/宿主负载、阶段成本与独立证据目录，保存每轮汇总，避免后轮覆盖前轮样本。未完成这三次实测不得宣称达标；实测数据以交付记录中的最终版本证据为准。
+Performance conclusions must come from **three consecutive serial runs of the same final version**. Pause other heavy validation for this task, and record every sample, not just the fastest. Each run must take no more than 900 seconds from launching the package-manager command through writing the final report and normal exit, including prerequisite checks, preparation, execution, resource waits, and cleanup. Killing the process at the deadline is not a pass. The manifest owns the total budget; the command checks it after execution and lock cleanup, and the Desktop builder separately checks the complete smoke subcall. Packaging does not proceed if the budget is exceeded. Do not omit failure convergence even if it exceeds the budget. A summary before lock release is a snapshot; use terminal JSON, exit code, and external wall-clock time for final unlock/exit cost. Record external wall-clock time, report duration, exit code, cache/host load, stage costs, and a separate evidence directory; preserve each run's summary so later runs do not overwrite earlier samples. Do not claim the target is met until all three runs have been measured; use final-version evidence in the delivery record as the measurement source.
 
-计时读取规则：汇总 `phaseDurations` 分开记录准备/选择、前提报告写入、阶段执行与等待、最终完整性检查/判定；`timingBoundary` 声明最终汇总写入和锁生命周期仍以**外部墙钟**计入。Python opt-in 报告的 suite `timings` 记录队列等待、准备、进程创建、子进程执行与等待、scope 检查、目录清理及失败时 drain；case `timings` 记录 setup、test、teardown、cleanup 与总时长。case 是子进程执行区间的子集，嵌套操作归入外层阶段；并行 suite 时间不能求和冒充整轮墙钟，执行与系统等待也不能虚拆。class/module fixtures 与框架成本保留为明确未分配区间，不能把总耗时残差推断成清理成本。
+Timing interpretation: summary `phaseDurations` separately records preparation/selection, prerequisite-report writing, stage execution and waiting, and final integrity checks/decisions. `timingBoundary` states that final-summary writing and the lock lifecycle still count toward **external wall-clock time**. In opt-in Python reports, suite `timings` records queue waiting, preparation, process creation, child-process execution and waiting, scope checks, directory cleanup, and drain on failure; case `timings` records setup, test, teardown, cleanup, and total duration. A case is a subset of the child-process execution interval, and nested operations are attributed to their outer stage. Do not sum parallel-suite durations and call them whole-run wall time, or artificially split execution from system waits. Keep class/module fixtures and framework costs as an explicit unallocated interval; do not infer cleanup cost from the residual total duration.
 
-最终三轮数值、准备/缓存和宿主负载说明、命令退出证据及对应不可变运行目录记录在本次同一 MR 的累计验收记录，并保留于已忽略的本地归档；不要为回填数字修改已完成三轮采样的源码版本。最终结论必须绑定 commit 和三轮原始证据，早期 M1 或规则测试耗时不能替代最终样本。
+Record the final three-run measurements, preparation/cache and host-load notes, command-exit evidence, and corresponding immutable run directories in the cumulative acceptance record for this same MR; retain them in an ignored local archive. Do not change the source version used for the completed three-run sample merely to backfill numbers. The final conclusion must be tied to the commit and all three original evidence sets; earlier M1 or rule-test timings are not substitutes for final samples.
 
-### 失败排查与追加验证
+<a id="失败排查与追加验证"></a>
+### Failure Diagnosis and Additional Verification
 
-- 先看退出码和本轮汇总，再按失败阶段读原始报告及 stdout / stderr；区分断言失败、环境缺失、超时、runner 错误和清理失败。
-- 检查源码开始/结束状态、清单与实际收集差异、报告摘要及完成标记；不要删除缺项、增加重试或放宽判据让它通过。
-- 各用例独立 home、数据库和工作区；获取资源后立即登记释放，部分初始化失败也须清理，并分别保留原始失败和清理失败。不得靠 GC、强制退出、按进程名杀进程或删除活跃目录清理。
-- 数据/事务/持久化改动追加所属 data 集成；进程、权限、锁、平台/原生改动追加 native 与目标平台验证；renderer/用户交互追加真实 render / E2E；安装包、外部模型、发布要求继续走既有完整入口。
-- 最终整合仍执行 `pnpm ops ci test --profile quality` 核对原计划和报告语义；smoke 通过不能把完整入口的基线失败改称全绿。已存在的无关失败单独登记并对照，不自动扩张本轮范围。
+- First inspect the exit code and this run's summary, then read raw reports and stdout/stderr for the failed stage. Distinguish assertion failures, missing environment prerequisites, timeouts, runner errors, and cleanup failures.
+- Check source state at the beginning and end, differences between the manifest and actual collection, report summaries, and completion markers. Do not delete missing items, add retries, or relax criteria to force a pass.
+- Each case has its own home, database, and workspace. Register resources for release immediately after acquisition; also clean up after partial initialization failures, and preserve original failures separately from cleanup failures. Do not rely on GC, forced exit, killing processes by name, or deleting active directories for cleanup.
+- For data/transaction/persistence changes, add the owning data integration checks; for process, permission, lock, platform/native changes, add native and target-platform verification; for renderer/user interaction, add real render/E2E; package, external-model, and release requirements continue through the existing full entry points.
+- Final integration still runs `pnpm ops ci test --profile quality` to check the original plan and report semantics. A passing smoke run cannot turn a baseline failure in the full entry point into a full green result. Record unrelated existing failures separately for comparison; do not automatically expand this task's scope.
 
-## 为什么拆成这些文件
+<a id="为什么拆成这些文件"></a>
+## Why the Scripts Are Split Across These Files
 
-| 文件 | 职责 | 设计原因 |
+| File | Responsibility | Design rationale |
 | --- | --- | --- |
-| `test.cjs` | 声明平台执行计划，检查前置条件，执行测试，归一化报告并输出 `quality.json` | 各测试框架输出不同；统一在编排层适配，而不让业务测试依赖 CI 规则 |
-| `verdict.cjs` | `judgeRun()` 根据阶段、用例、跳过和证据状态计算 `pass` / `fail` | 将执行与判定分离，用确定性测试验证规则；它是模块，不是独立 CLI |
-| `quality.py` | pytest 插件，输出收集到的用例、结果、子测试、重试次数与收集错误 | 不能只看 pytest 退出码；需要知道是否漏执行、收集失败或重试 |
-| `package.cjs` | 编排构建前测试、既有打包命令、安装包身份校验和安装后 E2E | 发布依赖严格测试证据，不能把源码应用或旧构建的运行结果当成新安装包验收 |
-| `model.cjs` | 准备真实模型配置、检查 Office 语料，隔离 CI 模型 home 并清理临时凭据副本 | 配置是前置条件，不是测试通过的替代物；避免读取或污染开发者运行态 |
-| `skillhub.cjs` | 校验测试 namespace、URL、读写 token 文件、版本清单和 ZIP 摘要，准备独立 cache | 避免错误权限、错误测试空间或漂移的数据包让外部验收产生误判 |
-| `external-cases.json` | 精确登记离线模式允许跳过的真实模型 E2E | 缺外部凭据与产品失败是不同情况；不能允许任意 `skip` |
-| `quarantine.json` | 登记暂时隔离的 suite、阶段、Node / Playwright 用例及原因 | 临时收敛必须显式、可审计、可恢复，不能删除测试或修改生产逻辑凑通过 |
-| `generate-office-corpus.cjs` | 维护者生成固定 DOC / DOCX / XLS 语料与摘要清单 | 生成时依赖 LibreOffice，运行 CI 时直接使用仓库语料，不要求每台机器安装 LibreOffice |
-| `*.test.cjs` | 验证编排、判定、模型数据准备、SkillHub 和安装包校验规则 | CI 自身也可能误报绿色；规则回归与产品用例分开维护 |
+| `test.cjs` | Declares the platform execution plan, checks prerequisites, runs tests, normalizes reports, and writes `quality.json` | Test frameworks produce different outputs; adapt them in the orchestrator rather than making business tests depend on CI rules |
+| `verdict.cjs` | `judgeRun()` calculates `pass` / `fail` from stage, case, skip, and evidence states | Separates execution from decisions so deterministic tests can verify the rules; it is a module, not a standalone CLI |
+| `quality.py` | pytest plugin that reports collected cases, results, subtests, retry counts, and collection errors | The pytest exit code alone is insufficient; we must know whether cases were omitted, collection failed, or retries occurred |
+| `package.cjs` | Orchestrates pre-build tests, the existing packaging command, package-identity checks, and post-install E2E | Release depends on strict test evidence; source-app or old-build results cannot count as acceptance of a new package |
+| `model.cjs` | Prepares real model configuration, checks the Office corpus, isolates the CI model home, and removes temporary credential copies | Configuration is a prerequisite, not a substitute for passing tests; avoid reading or contaminating a developer's runtime state |
+| `skillhub.cjs` | Validates the test namespace, URL, read/write token files, version manifest, and ZIP digest, and prepares an independent cache | Avoid false external-acceptance results caused by incorrect permissions, test space, or drifting packages |
+| `external-cases.json` | Precisely registers real-model E2E cases that offline mode is allowed to skip | Missing external credentials differ from product failure; arbitrary `skip` is not allowed |
+| `quarantine.json` | Registers temporarily quarantined suites, stages, Node / Playwright cases, and reasons | Temporary containment must be explicit, auditable, and reversible; do not delete tests or change production logic to force a pass |
+| `generate-office-corpus.cjs` | Generates the fixed DOC / DOCX / XLS corpus and digest manifest for maintainers | Generation requires LibreOffice, but CI uses the corpus in the repository and does not require LibreOffice on every machine |
+| `*.test.cjs` | Verifies orchestration, decisions, model-data preparation, SkillHub, and package-validation rules | CI itself can falsely report green; maintain rule regressions separately from product cases |
 
-本目录复用 `apps/serve/tests/run_all.py`、Desktop 单元测试与 Playwright 等现有入口，不复制测试实现；安装包启动和操作由 `apps/desktop/e2e/package.spec.ts` 及其 fixtures 持有。
+This directory reuses existing entry points such as `apps/serve/tests/run_all.py`, Desktop unit tests, and Playwright; it does not duplicate test implementations. Package startup and operations are owned by `apps/desktop/e2e/package.spec.ts` and its fixtures.
 
-## 执行链路与平台边界
+<a id="执行链路与平台边界"></a>
+## Execution Flow and Platform Boundaries
 
 ```text
 ci:test
-  前置条件 → skills 源构建/校验 → 当前平台的 Python/Node/Bun 阶段
-           → Desktop build → 源码应用 E2E → 证据检查 → judgeRun → quality.json
+  prerequisites → build/validate Skill sources → current-platform Python/Node/Bun stages
+                → Desktop build → source-app E2E → evidence checks → judgeRun → quality.json
 
 ci:package
-  ci:test --with-external → 严格校验 quality.json
-                         → pnpm ops cd build local → 校验 release-result.json 与安装包摘要
-                         → package 项目 E2E → ci-package.json
+  ci:test --with-external → strictly validate quality.json
+                          → pnpm ops cd build local → validate release-result.json and package digest
+                          → package-project E2E → ci-package.json
 ```
 
-`ci:test` 尽量保留各阶段结果；前置条件或依赖阶段失败时，将受影响阶段记为 blocked，不伪造通过。`ci:package` 则是串行门禁：测试失败不打包，打包失败不运行安装包 E2E。
+`ci:test` preserves results from each stage wherever possible; if prerequisites or a dependency stage fail, affected stages are marked blocked, not falsely passed. `ci:package` is a serial gate: test failure prevents packaging, and packaging failure prevents package E2E.
 
-| 行为 | macOS (`darwin`) | Windows (`win32`) |
+| Behavior | macOS (`darwin`) | Windows (`win32`) |
 | --- | --- | --- |
-| 当前执行计划 | skills、Python 主套件及独立套件、模型/SkillHub 阶段、Desktop 测试与源码 E2E | skills、Desktop 测试与源码 E2E；当前没有编排 macOS 分支下的 Python 主套件和 SkillHub 阶段 |
-| 其他平台原生用例 | 指定 Windows 用例按规则记为不适用 | 指定 macOS 用例按规则记为不适用 |
-| 打包后输入 | 本次构建的 `.dmg` | 本次构建的 `.exe` |
+| Current execution plan | Skills, Python main and standalone suites, model/SkillHub stages, Desktop tests, and source E2E | Skills, Desktop tests, and source E2E; currently does not orchestrate the Python main suite or SkillHub stages from the macOS branch |
+| Other-platform native cases | Designated Windows cases are marked not applicable according to the rules | Designated macOS cases are marked not applicable according to the rules |
+| Post-package input | The `.dmg` built in this run | The `.exe` built in this run |
 
-Linux 不是支持的平台。平台不适用、外部依赖跳过与临时隔离是三种不同规则；不能把 macOS 结果当成 Windows 验收，也不能把当前阶段选择解释为覆盖完整。
+Linux is not a supported platform. Platform not-applicable cases, external-dependency skips, and temporary quarantine are three different rules. Do not treat macOS results as Windows acceptance or interpret the currently selected stages as complete coverage.
 
-## 如何判断成功
+<a id="如何判断成功"></a>
+## Determining Success
 
-正常完成报告输出时，`pass` 对应退出码 `0`，`fail` 对应 `1`。调用方要同时检查退出状态和 JSON；命令在启动或解析参数时失败，也可能没有最终报告。
+When report generation completes normally, `pass` corresponds to exit code `0` and `fail` to `1`. Callers must check both the exit status and JSON; a command may fail during startup or argument parsing and produce no final report.
 
-`test.cjs` 先解析各框架的结果，再交给 `judgeRun()`：
+`test.cjs` first parses each framework's results, then passes them to `judgeRun()`:
 
-- Python 主套件校验 planned / results / omitted 与汇总结论；pytest 校验收集清单、结果和退出状态。
-- Node 阶段解析测试汇总与跳过信息；临时遗漏项单独写入报告。Node 测试参数必须位于测试文件列表之前，避免并发或 skip 参数不生效。
-- Playwright 校验 JSON 结构、全局错误、统计数量与逐用例结果；源码 E2E 显式设置 `--retries=0`，重试结果不算通过。
-- 阶段计划必须完整、有序且不重复；用例结果必须与给定预期集合一致，无重复、遗漏或意外结果。注意：部分阶段的预期用例来自本轮报告，并非独立的全仓库用例库存，不能据此证明覆盖率。
-- 错误退出、超时、缺报告、空执行、未允许的跳过或重试均失败。无逐用例报告的构建类阶段按命令级证据判断，不冒充逐用例覆盖。
-- 运行前后源码必须保持干净且提交不变；已记录的阶段报告 SHA-256 在最终判定时必须一致。
+- The Python main suite checks planned / results / omitted against the summary verdict; pytest checks the collection manifest, results, and exit status.
+- The Node stage parses test summaries and skips; temporary omissions are written separately to the report. Node test options must precede the test-file list so concurrency or skip options take effect.
+- Playwright checks JSON structure, global errors, statistics, and per-case results. Source E2E explicitly sets `--retries=0`; retried results do not count as passes.
+- The stage plan must be complete, ordered, and unique; case results must exactly match the expected set, with no duplicates, omissions, or unexpected results. Note: some stages derive expected cases from this run's report, not an independent inventory of all repository cases; this cannot prove coverage.
+- Error exits, timeouts, missing reports, empty execution, and unallowed skips or retries all fail. Build stages without per-case reports are judged using command-level evidence; do not claim per-case coverage.
+- Source must remain clean and the commit unchanged before and after the run; SHA-256 values recorded for stage reports must still match at final evaluation.
 
-`package.cjs` 不只信任 `quality.verdict`：还校验 full 模式、平台、提交、阶段计划、报告存在性并重新调用判定规则。随后校验构建结果的平台、架构、提交、安装包路径与 SHA-256，并要求安装后的指定主流程 E2E 真正执行并通过。
+`package.cjs` does not trust `quality.verdict` alone: it also checks full mode, platform, commit, stage plan, and report presence, then reruns the decision rules. It next validates the build's platform, architecture, commit, package path, and SHA-256, and requires the designated post-install main-flow E2E to have actually run and passed.
 
-## 报告在哪里、应该读什么
+<a id="报告在哪里应该读什么"></a>
+## Report Locations and What to Read
 
-默认质量汇总写入固定路径，每次执行后覆盖；阶段证据仍保存到独立运行目录：
+By default, the quality summary is written to a fixed path and overwritten after each run; stage evidence remains in a separate run directory:
 
-- `tmp/ci-test/quality.json`：`ci:test` 最终结论（可用 `--result` 指定其他路径）。
-- `tmp/ci-smoke/quality.json`：smoke 独立结论；不接受范围或报告位置覆盖参数，原始证据保留在独立运行目录。
-- `tmp/ci-package-*/ci-package.json`：打包链路最终结论；同目录保存构建前 `quality.json`、`release-result.json` 和安装包 E2E 报告。
-- 阶段 JSON、stdout / stderr 日志保存在运行目录；Playwright 截图与 trace 还需结合 Desktop 的测试产物目录查看。
+- `tmp/ci-test/quality.json`: final `ci:test` result (use `--result` to specify another path).
+- `tmp/ci-smoke/quality.json`: independent smoke result; scope and report-path override options are not accepted, and raw evidence is retained in a separate run directory.
+- `tmp/ci-package-*/ci-package.json`: final packaging-chain result; the same directory contains the pre-build `quality.json`, `release-result.json`, and package E2E report.
+- Stage JSON and stdout/stderr logs are stored in the run directory. Playwright screenshots and traces must also be reviewed with Desktop's test-artifact directory.
 
-入口结束时 stdout 输出包含 `result`、`platform`、`commit`、`verdict` 的 JSON 摘要，进度写入 stderr。**`npm run` 自身会输出命令提示，不能把整个终端输出当作纯 JSON。** 自动化消费者优先读取 `--result` 指定的文件。
+At completion, the entry point writes a JSON summary containing `result`, `platform`, `commit`, and `verdict` to stdout, with progress on stderr. **`npm run` itself prints command instructions, so the entire terminal output is not pure JSON.** Automated consumers should prefer the file specified by `--result`.
 
-`quality.json` 重点字段：`schemaVersion`、`profile`、`validationScope`、`quarantine`、`skips`、`plannedStages`、`sourceClean`、`sourceAtEnd`、`reportsIntact`、`stages`、`failures`。先读失败原因，再查对应阶段报告与日志。
+Important `quality.json` fields: `schemaVersion`, `profile`, `validationScope`, `quarantine`, `skips`, `plannedStages`, `sourceClean`, `sourceAtEnd`, `reportsIntact`, `stages`, and `failures`. Read failure reasons first, then inspect the corresponding stage reports and logs.
 
-默认隔离模式即使得到 `pass`，也只表示 `deterministic_with_declared_quarantine` 范围通过；`--strict` 仍是离线范围。**二者都不是严格打包验收通过。** `quarantine.json` 的 `reviewAfter` 是人工复核日期，当前代码不会到期自动恢复用例。
+Even if default quarantine mode returns `pass`, it means only that the `deterministic_with_declared_quarantine` scope passed; `--strict` is still an offline scope. **Neither means strict package acceptance passed.** `reviewAfter` in `quarantine.json` is a manual-review date; current code does not automatically restore cases when it expires.
 
-## 测试数据与凭据
+<a id="测试数据与凭据"></a>
+## Test Data and Credentials
 
-- **测试 workspace / 用户状态**：由 Desktop fixtures 为用例创建隔离 home、workspace、userData、会话与产物目录；通过公开配置初始化，不能为测试修改生产路径优先级。仓库测试用户状态不等于真实模型授权。
-- **Office**：默认使用 [固定语料](../../apps/desktop/e2e/fixtures/office-corpus/)，校验版本清单与文件摘要。自定义语料同时设置 `SCHOLARSEED_OFFICE_CORPUS`、`SCHOLARSEED_OFFICE_CORPUS_MANIFEST`。仅维护语料时执行 `node scripts/ci/generate-office-corpus.cjs`，审查生成文件和 manifest 后一并提交；不要在每次 CI 中重新生成。
-- **本地完整模式**：需要 `SCHOLARSEED_REAL_HOME` 中的 `config.json`、`model_profiles.json`，以及 `SCHOLARSEED_ACTION_MODEL` 和不同的 `SCHOLARSEED_ALTERNATE_MODEL`。真实测试使用隔离运行态，配置来源仍必须有效。
-- **CI 完整模式**：`CI_PROJECT_DIR` 启用 CI 配置准备；需要 `SCHOLARSEED_CI_MODEL_CONFIG_FILE`、`SCHOLARSEED_CI_MODEL_PROFILES_FILE`。脚本仅复制模型配置和连接配置到临时模型 home，并在结束时清理自己创建的副本；不会删除本地提供的真实 home。无需原生 Codex 凭据；模型配置必须提供可用的显式远程连接。仅复制这两个 JSON 文件不会迁移 ChatGPT OAuth 登录态，订阅验收须在测试实例中完成产品登录。
-- **SkillHub**：当前 macOS 完整模式需要 `SCHOLARSEED_CI_SKILLHUB_CONFIG`、`SCHOLARSEED_CI_SKILLHUB_MANIFEST`、`SCHOLARSEED_CI_SKILLHUB_PACKAGES`、`SCHOLARSEED_CI_SKILLHUB_NAMESPACE`、`SCHOLARSEED_CI_SKILLHUB_URL` 和不同的 `SCHOLARSEED_CI_SKILLHUB_READ_TOKEN_FILE` / `SCHOLARSEED_CI_SKILLHUB_PUBLISH_TOKEN_FILE`。token 必须是仅所有者可读写的普通文件；使用专用测试 namespace。
+- **Test workspace / user state:** Desktop fixtures create an isolated home, workspace, userData, sessions, and artifact directories for each case. Initialize them through public configuration; do not change production path precedence for tests. Repository test user state is not real-model authorization.
+- **Office:** By default, use the [fixed corpus](../../apps/desktop/e2e/fixtures/office-corpus/) and verify its version manifest and file digests. For a custom corpus, set both `SCHOLARSEED_OFFICE_CORPUS` and `SCHOLARSEED_OFFICE_CORPUS_MANIFEST`. To maintain the corpus only, run `node scripts/ci/generate-office-corpus.cjs`, review the generated files and manifest, then commit them together; do not regenerate it on every CI run.
+- **Local full mode:** Requires `config.json` and `model_profiles.json` under `SCHOLARSEED_REAL_HOME`, plus `SCHOLARSEED_ACTION_MODEL` and a different `SCHOLARSEED_ALTERNATE_MODEL`. Real tests use isolated runtime state, but the configuration source must still be valid.
+- **Full CI mode:** `CI_PROJECT_DIR` enables CI configuration preparation; requires `SCHOLARSEED_CI_MODEL_CONFIG_FILE` and `SCHOLARSEED_CI_MODEL_PROFILES_FILE`. The script copies only model and connection configuration into a temporary model home, then removes copies it created at the end; it does not delete a real home provided locally. Native Codex credentials are not required; model configuration must provide a usable, explicit remote connection. Copying only these two JSON files does not migrate ChatGPT OAuth login state; subscription acceptance requires product login in the test instance.
+- **SkillHub:** Current macOS full mode requires `SCHOLARSEED_CI_SKILLHUB_CONFIG`, `SCHOLARSEED_CI_SKILLHUB_MANIFEST`, `SCHOLARSEED_CI_SKILLHUB_PACKAGES`, `SCHOLARSEED_CI_SKILLHUB_NAMESPACE`, `SCHOLARSEED_CI_SKILLHUB_URL`, and distinct `SCHOLARSEED_CI_SKILLHUB_READ_TOKEN_FILE` / `SCHOLARSEED_CI_SKILLHUB_PUBLISH_TOKEN_FILE`. Token files must be ordinary files readable/writable only by their owner; use a dedicated test namespace.
 
-凭据由 runner 的安全文件或本地已有配置提供，不能写入仓库，也不要把包含凭据的临时 home 当作可上传产物。缺真实配置时使用离线入口，而不是 mock 一个“成功模型”作为最终验收。
+Provide credentials through the runner's secure files or existing local configuration. Do not write them to the repository or treat a temporary home containing credentials as an uploadable artifact. If real configuration is missing, use the offline entry point rather than mocking a “successful model” as final acceptance.
 
-## 修改这些脚本时
+<a id="修改这些脚本时"></a>
+## When Changing These Scripts
 
-新增阶段需要同步执行计划、报告适配、依赖关系与规则测试。新增允许跳过项必须精确登记原因；不能用宽泛匹配掩盖失败。不要在 README 维护易漂移的通过数量或宣称全量 CI 已绿。
+When adding a stage, update the execution plan, report adapter, dependencies, and rule tests together. Any newly allowed skip must have a precisely registered reason; broad matching must not hide failures. Do not maintain pass counts that quickly drift in the README or claim that all CI is green.
 
-目录规则回归可从仓库根目录运行：
+Run the directory-rule regressions from the repository root:
 
 ```sh
 node --test scripts/ci/__tests__/test.test.cjs scripts/ci/__tests__/smoke.test.cjs scripts/ci/__tests__/verdict.test.cjs scripts/cd/__tests__/package.test.cjs scripts/ci/__tests__/model.test.cjs scripts/ci/__tests__/skillhub.test.cjs
 node --experimental-transform-types --test apps/desktop/e2e/fixtures/runtime.test.ts apps/desktop/e2e/fixtures/installer.test.ts
 ```
 
-这些是编排与隔离的确定性检查，不替代 `pnpm ops ci test --profile quality`、真实 Desktop 流程或新安装包验收。
+These are deterministic checks of orchestration and isolation; they do not replace `pnpm ops ci test --profile quality`, real Desktop workflows, or acceptance of a newly installed package.
 
-## Chimp 出包与独立 E2E Job
+<a id="chimp-出包与独立-e2e-job"></a>
+## Chimp Packaging and Standalone E2E Job
 
-出包 Job 保留现有命令：
+The packaging job retains the existing command:
 
 ```sh
 libutil build && libutil upload -f libinfo_lock.ini -y
 ```
 
-`&&` 保证出包失败时不执行上传；Job 必须保留该命令的非零退出状态，不在后面追加独立批处理行。现有打包前 smoke/native 门禁仍由构建入口执行，不跳过或放宽检查。
+`&&` ensures upload does not run if packaging fails. The job must preserve the command's nonzero exit status and must not append a separate batch line afterward. Existing pre-package smoke/native gates are still run by the build entry point; do not skip or relax them.
 
-分发仓的验证放在单独的 E2E Job，在分发仓目录执行：
+Run distribution-repository validation in a separate E2E job, from the distribution repository directory:
 
 ```sh
 npm run ci && npm run test-e2e
 ```
 
-E2E Job 仅依赖出包上传 Job 成功后启动，独立报告验证结果。验证失败不改变出包上传 Job 的成功状态，也不能被当作验证通过。`npm run ci` 准备升级基线与测试依赖并运行控制器测试，本身不负责出包或上传。
+Start the E2E job only after the packaging/upload job succeeds, and report validation results separately. Validation failure does not change the packaging/upload job's success status and must not be treated as validation passing. `npm run ci` prepares the upgrade baseline and test dependencies and runs controller tests; it does not package or upload.
 
-外部 Chimp 任务配置不在本仓库；需要在任务配置中拆分 Job 并设置成功依赖。本仓库文档不代表线上配置已经修改，也不需要新增发布入口。
+External Chimp job configuration is outside this repository; split the jobs and set success dependencies in that task configuration. This repository document does not mean the online configuration has been changed, and no new release entry point is needed.

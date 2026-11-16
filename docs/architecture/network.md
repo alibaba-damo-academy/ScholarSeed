@@ -1,260 +1,227 @@
-# 出网与凭据接收方边界
+<a id="出网与凭据接收方边界"></a>
+# Network Egress and Credential Recipient Boundaries
 
-修改连接地址、检索传输、供应链来源或出网配置时读取本页。它提供 Owner 和安全
-核验条件，不是全仓端点清单，也不证明运行时零出网。实际默认值、覆盖优先级和
-启用条件以对应配置及消费者为准，不复制历史主机、固定依赖数量或失效路径。
+Read this page when changing connection addresses, retrieval transport, supply-chain sources, or egress configuration. It identifies Owners and security verification requirements; it is not a repository-wide endpoint inventory and does not prove zero runtime egress. Actual defaults, override precedence, and enablement conditions are defined by the relevant configuration and consumers. Do not copy historical hosts, fixed dependency counts, or obsolete paths.
 
-## 两个独立问题
+<a id="两个独立问题"></a>
+## Two Separate Questions
 
-连接目标可配置，不等于该目标可以接收账号令牌、模型密钥、Cookie 或其他凭据。
-评估变更时分别明确：请求目的和触发条件；地址来源和允许覆盖；凭据来源、接收方、
-重定向/代理/子进程行为；失败与用户可行动的结果。匿名请求也可能暴露标题、标识或
-文档内容，不能把“不带凭据”等同于“不传用户数据”或没有网络安全风险。
+The fact that a connection target is configurable does not mean it is allowed to receive account tokens, model keys, cookies, or other credentials.
+When evaluating a change, separately identify: request purpose and trigger conditions; address source and permitted overrides; credential source and recipient; redirect/proxy/child-process behavior; and failure behavior and actionable outcomes for users. Anonymous requests may still expose titles, identifiers, or document content; "no credentials" does not mean "no user data" or no network-security risk.
 
-**应保留的要求**：凭据只发送到已明确授权的接收方，不因更换默认 URL 自动扩大
-信任；按协议和能力判断业务，不凭主机子串推导密钥或功能。配置地址形状校验、
-HTTPS、访问授权和接收方信任是不同检查，单项通过不能替代其他项。
+**Requirements to preserve**: send credentials only to explicitly authorized recipients; changing a default URL must not automatically expand trust. Determine behavior from protocols and capabilities, not hostname substrings used to infer keys or features. Address-shape validation, HTTPS, access authorization, and recipient trust are separate checks; passing one does not substitute for the others.
 
-## 当前 Owner 与核验起点
+<a id="当前-owner-与核验起点"></a>
+## Current Owners and Verification Entry Points
 
-| 出网面 | 当前起点 | 不能推断的结论 |
+| Egress surface | Current entry points | Conclusions that must not be inferred |
 | --- | --- | --- |
-| 模型连接与个人端点 | [Serve settings API](../../apps/serve/service/chat/api/settings.py)、[模型装配](../../apps/serve/service/chat/service/models.py)、[Settings UI](../../apps/desktop/src/renderer/src/components/business/Settings.tsx) | 供应商表单预置不是默认发请求；接口存在不证明真实凭据/协议连接通过；不得沿用旧“全部路由是 stub”结论 |
-| PaperHub / Brave 技能检索 | [PaperHub 工具](../../skills/community/agentic-search/tools/paperhub.py)、[本地配置](../../skills/community/agentic-search/tools/localconf.py)、[Brave 工具](../../skills/community/agentic-search/tools/brave.py) | Skill 实际源与配置是依据，不能用已不存在的 transport 文件证明固定 origin 白名单 |
-| 文献元数据与全文 | [OpenAlex](../../apps/serve/service/literature/service/openalex.py)、[DOI 全文](../../apps/serve/service/literature/service/fulltext.py)、[失败分类](../../apps/serve/service/literature/service/outcome.py) | 匿名重定向规则不适用于带凭据请求；动态 PDF 主机不等于可接受任意文件或内容 |
-| 更新与发行来源 | [产品配置校验](../../apps/desktop/src/main/product.ts)、[updater](../../apps/desktop/src/main/updater.ts)、[构建契约](../runbooks/build.md) | 更新源改变安装包信任边界；不能为“可替换”取消协议、签名、摘要或平台校验 |
-| 账号验签、吊销与反馈上报 | [AccountTrust](../../apps/serve/service/identity/service/account.py)、[反馈服务](../../apps/serve/service/chat/service/feedback.py) | HTTP 本地认证模式不代表账号令牌有效；反馈日志包是主动出网数据，不因匿名提交就无需审查 |
-| Runtime、Trace 与产品技能发行 | [独立职责](ownership.md)、[Skill 真源](skills.md)与所属包指南 | 产品静态审查不能证明上游二进制零遥测；本地服务与内置资产不代表其全部消费者零出网 |
+| Model connections and custom endpoints | [Serve settings API](../../apps/serve/service/chat/api/settings.py), [model assembly](../../apps/serve/service/chat/service/models.py), [Settings UI](../../apps/desktop/src/renderer/src/components/business/Settings.tsx) | A prefilled provider form does not mean requests are sent by default; an existing API does not prove that real credentials/protocol connections work; do not reuse the obsolete claim that "all routes are stubs" |
+| PaperHub / Brave Skill search | [PaperHub tool](../../skills/community/agentic-search/tools/paperhub.py), [local configuration](../../skills/community/agentic-search/tools/localconf.py), [Brave tool](../../skills/community/agentic-search/tools/brave.py) | The actual Skill source and configuration are authoritative; a removed transport file cannot prove a fixed origin allowlist |
+| Literature metadata and full text | [OpenAlex](../../apps/serve/service/literature/service/openalex.py), [DOI full text](../../apps/serve/service/literature/service/fulltext.py), [failure classification](../../apps/serve/service/literature/service/outcome.py) | Redirect rules for anonymous requests do not apply to credentialed requests; a dynamic PDF host does not mean arbitrary files or content are acceptable |
+| Update and distribution sources | [product configuration validation](../../apps/desktop/src/main/product.ts), [updater](../../apps/desktop/src/main/updater.ts), [build contract](../runbooks/build.md) | Changing an update source changes the installer's trust boundary; do not remove protocol, signature, digest, or platform checks to make the source "replaceable" |
+| Account signature verification, revocation, and feedback submission | [AccountTrust](../../apps/serve/service/identity/service/account.py), [feedback service](../../apps/serve/service/chat/service/feedback.py) | An HTTP local-auth mode does not mean an account token is valid; feedback log bundles are deliberate egress data and still require review when submitted anonymously |
+| Runtime, Trace, and product Skill distribution | [separate ownership](ownership.md), [Skill source of truth](skills.md), and the relevant package guides | Static product review does not prove that upstream binaries have zero telemetry; local services and bundled assets do not mean all their consumers have zero egress |
 
-### 文献全文下载预算
+<a id="文献全文下载预算"></a>
+### Literature Full-Text Download Budget
 
-文献领域的 [transport](../../apps/serve/service/literature/service/transport.py)
-持有连接、读取停滞和总预算。全文单篇共享300秒，包含DOI查询以及派生arXiv到DOI回退；
-普通元数据查询仍限制为10秒，连接和读取停滞各5秒。不得将read超时当成整个下载时限。
+The literature domain's [transport](../../apps/serve/service/literature/service/transport.py)
+owns the connection, read-idle, and total budgets. A single full-text item shares a 300-second budget, including the DOI lookup and derived arXiv-to-DOI fallback; ordinary metadata queries remain limited to 10 seconds, with 5 seconds each for connection and read-idle. Do not treat the read timeout as the total download duration.
 
-同步业务入口仍在原有活动线程或FastAPI线程池执行，内部异步网络使用可取消的总预算作用域，
-覆盖响应头、重定向响应体和正文；仅在chunk之间检查无法约束HTTPX内部的重定向读取。
-请求相位按剩余预算钳制，回退不重置总预算，完整PDF通过校验后才发布；不缓存半文件，
-不自动重试或续传。五篇顺序批次可接近25分钟，不将单篇预算描述为整批预算。
+Synchronous business entry points still execute on their existing worker thread or FastAPI thread pool. Internal asynchronous network operations use a cancellable total-budget scope covering response headers, redirect response bodies, and the body; checks only between chunks cannot constrain redirect reads performed internally by HTTPX.
+Each request phase is capped by the remaining budget. Fallback does not reset the total budget, and a complete PDF is published only after validation; partial files are not cached, and there is no automatic retry or resume. A sequential batch of five papers can approach 25 minutes; do not describe a per-item budget as a batch budget.
 
-连接/读取/总预算超时和上游408/504使用`FULLTEXT_TIMEOUT`，API状态504，
-Desktop使用中英文超时文案；404、无主PDF地址等仍保留各自原有分类。
-预算约束网络操作，不宣称硬终止操作系统DNS线程及所有进程清理调用；
-确定性契约通过不证明原Windows网络条件下的实际下载结果。
+Connection/read/total-budget timeouts and upstream 408/504 use `FULLTEXT_TIMEOUT` with API status 504; Desktop displays the timeout message in Chinese and English. A 404, missing primary PDF address, and similar cases retain their existing classifications.
+The budget constrains network operations; it does not guarantee hard termination of operating-system DNS threads or every process-cleanup call. Passing deterministic contracts does not prove actual download results under the original Windows network conditions.
 
-## Desktop 本地与发行凭据配置
+<a id="desktop-本地与发行凭据配置"></a>
+## Desktop Local and Distribution Credential Configuration
 
-[产品资源](../../apps/desktop/resources/product.json) 的 credential_profiles 分开声明
-local/mock_keychain 与 distribution/system_keychain 及各自存储命名空间。
-[Main 配置](../../apps/desktop/src/main/index.ts) 设置 sessionData 与 refresh namespace，
-local 追加开发密钥开关，system 配置遇到该开关明确拒绝；
-[刷新凭据 Owner](../../apps/desktop/src/main/auth-refresh.ts) 在 safeStorage 加密不可用时
-不持久化非空 token。开发密钥不等于系统密钥保护，不能为了避免提示将发行配置
-改为 mock，也不能由账号可选、本地 HTTP auth-off 推定刷新凭据或模型认证不需要。
-源码分支不是签名发行或真实登录/续期验收；命名空间隔离不授权迁移或删除旧用户资产。
+[Product resources](../../apps/desktop/resources/product.json) declare credential_profiles separately for
+local/mock_keychain and distribution/system_keychain, along with their respective storage namespaces.
+[Main configuration](../../apps/desktop/src/main/index.ts) sets sessionData and the refresh namespace,
+adds the development-key switch for local configuration, and explicitly rejects that switch in system configuration;
+the [refresh-credential Owner](../../apps/desktop/src/main/auth-refresh.ts) does
+not persist a nonempty token when safeStorage encryption is unavailable. A development key is not equivalent to system key protection. Do not change distribution configuration to mock to avoid prompts, and do not infer from optional accounts or local HTTP auth-off that refresh credentials or model authentication are unnecessary.
+A source-code branch is not acceptance evidence for a signed distribution or real sign-in/refresh. Namespace isolation does not authorize migration or deletion of old user assets.
 
-## 社区认证入口与历史身份保留
+<a id="社区认证入口与历史身份保留"></a>
+## Community Authentication Entry Points and Historical Identity Retention
 
-[身份provider目录](../../apps/serve/service/identity/catalog.py)当前只装配本地认证；
-[认证策略](../../apps/serve/service/identity/service/policy.py)统一接受off/local/account/auto，
-非法旧SSO模式显式拒绝，不匿名降级、不制造本地密码，也不恢复BUC兼容入口。
-托管账号交接和AccountTrust仍是独立消费者，移除企业provider不取消它们。
+[The identity-provider catalog](../../apps/serve/service/identity/catalog.py) currently assembles only local authentication;
+[the authentication policy](../../apps/serve/service/identity/service/policy.py) accepts off/local/account/auto uniformly.
+Invalid legacy SSO modes are explicitly rejected; there is no anonymous fallback, no fabricated local password, and no restored BUC compatibility entry point.
+Managed-account handoff and AccountTrust remain independent consumers; removing the enterprise provider does not remove them.
 
-[用户存储](../../apps/serve/service/identity/persistence/users.py)的has_users仍按已有
-用户集合判断；无salt/password_hash的历史身份不能用口令登录，但不能为清理入口
-而删除用户、未知字段或批量失效token。知识/测试迁移不得删除auth.json取得隔离。
-[Desktop启动Owner](../../apps/desktop/src/main/backend.ts)固定off/machine；这是本机
-项目与会话跨登录账号的产品归属，不是账号令牌有效、模型授权成功或外部Serve部署
-安全配置的证明。独立Serve的auto/local/account语义仍由实际AuthPolicy持有。
-修改这些接点须核对历史资产保留、旧入口拒绝、现有本地/账号交接和真实产品回合；
-[社区认证契约](../../apps/serve/tests/contract_community_auth.py)的fixture不替代实机验收。
+`has_users` in [user storage](../../apps/serve/service/identity/persistence/users.py) still checks the existing
+user collection. Historical identities without salt/password_hash cannot sign in with a password, but do not delete users, unknown fields, or invalidate tokens in bulk just to clean up entry points. Knowledge/test migrations must not delete auth.json to obtain isolation.
+[The Desktop startup Owner](../../apps/desktop/src/main/backend.ts) fixes off/machine; this defines product ownership for local
+projects and sessions across signed-in accounts. It does not prove account-token validity, successful model authorization, or secure configuration of an external Serve deployment. The actual AuthPolicy still owns auto/local/account semantics for standalone Serve.
+Changes to these integration points must check retention of historical assets, rejection of old entry points, existing local/account handoff, and a real product turn. Fixtures in the
+[community authentication contract](../../apps/serve/tests/contract_community_auth.py) do not substitute for real-device acceptance.
 
-## 模型表单预置的接收方登记
+<a id="模型表单预置的接收方登记"></a>
+## Recipient Registry for Model-Form Presets
 
-[Serve 模型表单预置接收方登记](../../apps/serve/docs/network.md) 是唯一登记表；
-私有网络审查正文不复制主机列表。该表仅用于审查和契约校验，不是运行时出网
-白名单，也不代替用户对自定义端点的授权。
+[The Serve model-form preset recipient registry](../../apps/serve/docs/network.md) is the sole registry;
+the private network-review text does not duplicate its host list. This table is for review and contract validation only. It is not a runtime egress allowlist and does not replace user authorization for custom endpoints.
 
-本地预置的凭据提示不是“回环地址免凭据”的业务规则；不得按地址形状取消
-候选连接的凭据或协议检查。模型目录由候选连接的
-[probe Owner](../../apps/serve/service/chat/service/probe.py) 请求 `/models`，不是
-这里的静态模型名清单；目录查询自身不持久化、不切换当前选择，也不证明会话可用。
+The credential hint in local presets is not a business rule that "loopback addresses need no credentials"; do not skip
+credential or protocol checks for candidate connections based on address shape. The model catalog is fetched from `/models` by the candidate connection's
+[probe Owner](../../apps/serve/service/chat/service/probe.py); it is not a static list of model names here. Catalog lookup does not persist data, change the current selection, or prove that a session is usable.
 
-## Codex 模型传输不能一概视为本机桥
+<a id="codex-模型传输不能一概视为本机桥"></a>
+## Codex Model Transport Must Not Be Treated Uniformly as a Local Bridge
 
-[模型装配](../../apps/serve/service/chat/service/models.py) 将部分连接注册到 Serve
-完成桥，再把回环地址交给 Codex；当前触发条件还涉及推理、账号令牌和网关归属，
-不能仅按 URL 后缀说明全部桥接行为。桥接路径与直连路径的代理语义不同：前者
-只投影桥接目标的代理豁免，后者保留外部上游代理语义。
+[Model assembly](../../apps/serve/service/chat/service/models.py) registers some connections with Serve's
+completion bridge, then passes a loopback address to Codex. Current trigger conditions also involve reasoning, account tokens, and gateway ownership; URL suffixes alone do not describe all bridge behavior. Proxy semantics differ between bridged and direct paths: the former projects only the proxy bypass for the bridge target, while the latter preserves external upstream-proxy semantics.
 
-直连分支仍声明 Responses 协议，存在 API key 时通过命名环境变量交给执行器；
-自定义头也有独立环境投影。因此旧“所有真实地址与凭据永不出 Serve 进程”的
-概括不能当安全保证。修改传输时核验所选分支、秘密投影与接收方，不将桥接路径
-的约束外推到直连；Adapter 不应自行推导产品网关身份。真实网络与子进程验证仍
-须按所属 Owner 完成，静态装配分支不证明执行器实际请求或上游安全。
+The direct branch still declares the Responses protocol and, when an API key is present, passes it to the executor through a named environment variable; custom headers also have a separate environment projection. Therefore, the old generalization that "all real addresses and credentials never leave the Serve process" is not a security guarantee. When changing transport, verify the selected branch, secret projection, and recipient; do not extend bridged-path constraints to direct paths. An Adapter must not infer product gateway identity on its own. The relevant Owner must still perform real network and child-process verification; a static assembly branch does not prove the executor's actual requests or upstream safety.
 
-## 用量与积分的消费边界
+<a id="用量与积分的消费边界"></a>
+## Usage and Credit Consumption Boundaries
 
-企业网关拥有计费、额度和积分核销；本仓的模型调用、关联标识与错误投影不是
-第二套余额账本。历史每日额度、注册赠送金额、有效期和部署策略不作为当前默认值，
-也不授权在本仓实现外部发放/结算或按本地 token 估算覆写服务端余额。
+The enterprise gateway owns billing, quotas, and credit redemption. This repository's model calls, correlation identifiers, and error projections are not a second balance ledger. Historical daily quotas, signup credits, expiration periods, and deployment policies are not current defaults; they do not authorize implementing external issuance/settlement here or overriding server-side balances with local token estimates.
 
-[CompletionBridge](../../apps/serve/service/chat/service/completions.py) 的注册保留
-session 标识，turn 标识按调用获取，两者不能混成同一维度；当前桥对已登记的
-credit_balance_exhausted 输出产品错误信封，并保留上游 HTTP 状态，不证明全部
-协议、直连或外部网关的真实计费行为已验收。
-[ModelService.usage](../../apps/serve/service/chat/service/models.py) 当前返回零 token
-和空 cost 的占位形状，不是实际零消费、积分余额或计价依据。
-修改这些消费者时核对实际接收方、身份/会话/轮次关联与错误脱敏；不得把计量用的
-历史 fail-open 建议用于鉴权，更换公网 origin 也不授权把 Cookie/令牌透传给模型厂商。
+Registration in [CompletionBridge](../../apps/serve/service/chat/service/completions.py) retains
+the session identifier; a turn identifier is obtained per call, and the two must not be conflated. The current bridge emits the product error envelope for a registered `credit_balance_exhausted` and preserves the upstream HTTP status; this does not prove that real billing behavior has been accepted for all protocols, direct connections, or external gateways.
+[ModelService.usage](../../apps/serve/service/chat/service/models.py) currently returns a placeholder shape with zero tokens
+and an empty cost; this is not evidence of zero actual spend, a credit balance, or a pricing basis.
+When changing these consumers, verify the actual recipient, identity/session/turn correlation, and error redaction. Do not apply historical fail-open metering proposals to authentication, and do not treat a public-origin change as authorization to forward cookies/tokens to model vendors.
 
-## 托管 MCP 与内置浏览器是独立边界
+<a id="托管-mcp-与内置浏览器是独立边界"></a>
+## Managed MCP and the Built-In Browser Have Separate Boundaries
 
-[Codex Adapter 指南](../../packages/adapters/codex/README.md) 与
-[isolation Owner](../../packages/adapters/codex/scholarseed_codex/isolation.py) 管理
-托管 App Server 的发现环境和最高优先级配置；MCP 声明在该边界置空，不继承
-用户 Home 或项目 cwd 的配置。派生 shell 回投用户目录与托管进程发现隔离不是
-同一件事，不能把它概括成所有子进程没有网络或所有宿主没有 MCP。
+The [Codex Adapter guide](../../packages/adapters/codex/README.md) and
+[isolation Owner](../../packages/adapters/codex/scholarseed_codex/isolation.py) manage
+the managed App Server's discovery environment and highest-priority configuration. MCP declarations are cleared at this boundary; configuration from the user's Home or project cwd is not inherited. Redirecting a spawned shell to the user's directory is separate from isolating managed-process discovery; do not generalize this to mean that all child processes have no network or all hosts lack MCP.
 
-[MCP 控制映射](../../packages/adapters/codex/scholarseed_codex/mcp.py) 声明查询、
-资源读取、OAuth 登录、reload 和直接工具调用等能力，但配置写入与 trust 不支持。
-有协议映射不证明当前配置了服务、工具实际可用或联网已验收；本项目开发使用的
-Codex CLI/MCP 配置也不应被托管产品隔离规则覆盖。
+The [MCP control mapping](../../packages/adapters/codex/scholarseed_codex/mcp.py) declares
+capabilities such as queries, resource reads, OAuth sign-in, reload, and direct tool calls, but does not support configuration writes or trust. A protocol mapping does not prove that a service is configured, tools actually work, or network access has been accepted. The Codex CLI/MCP configuration used for development on this project must also not be overridden by managed-product isolation rules.
 
-内置浏览器不是旧 Harness 的未实现 `capabilities.browser` 配置。当前产品使用
-manifest 的 `features.browser`，默认关闭；网络隔离、外部受限 CDP、Agent 授权、
-凭据会话与原生浮层各有独立约束，直达
-[Desktop 浏览器正文](../../apps/desktop/docs/browser.md)。源码和说明存在不代表
-全部平台或真实产品验收完成，也不授权在知识治理中修改开关或用户运行实例。
+The built-in browser is not the unimplemented `capabilities.browser` configuration from the old Harness. The current product uses
+`features.browser` in the manifest and disables it by default. Network isolation, externally restricted CDP, Agent authorization,
+credential sessions, and native overlays each have separate constraints; see the
+[Desktop browser documentation](../../apps/desktop/docs/browser.md). The existence of source and documentation does not mean acceptance is complete on all platforms or in the real product, nor does it authorize changing the switch or a user's running instance as part of knowledge maintenance.
 
-## 必须保留的当前缺口
+<a id="必须保留的当前缺口"></a>
+## Current Gaps That Must Remain Explicit
 
-当前 PaperHub 工具从环境读取 `SCHOLARSEED_API_KEY` 并附加 Bearer 头，目标来自
-`PAPERHUB_URL` / 本地配置；配置规范化仅对指定公共主机将 HTTP 改为 HTTPS，
-保留自定义/隧道地址。已核对请求分支使用 urllib 默认 opener 或仅替换 ProxyHandler
-的 opener，不能据此证明存在固定凭据 origin 白名单或禁用认证重定向。
-旧网络页的这两项保证不应继续作为现行安全事实。此处记录实现与要求的缺口，
-不批准扩大凭据接收方，也不在知识治理任务内擅自修改产品技能或传输策略。
+The current PaperHub tool reads `SCHOLARSEED_API_KEY` from the environment and attaches a Bearer header. The target comes from
+`PAPERHUB_URL` / local configuration. Configuration normalization changes HTTP to HTTPS only for specified public hosts,
+while preserving custom/tunnel addresses. The verified request branches use urllib's default opener or an opener that only replaces ProxyHandler; this does not prove a fixed credential-origin allowlist or disabled authenticated redirects.
+The two guarantees stated on the old network page must not continue to be treated as current security facts. This section records the gap between implementation and requirements; it does not authorize expanding credential recipients or changing product Skills or transport policy as part of knowledge maintenance.
 
-## 权限意图与审批身份
+<a id="权限意图与审批身份"></a>
+## Permission Intent and Approval Identity
 
-权限意图属于 Runtime 中立契约，厂商策略映射归
-[Codex permission](../../packages/adapters/codex/scholarseed_codex/permission.py)。
-`ask` 与 `safe_auto` 都使用 workspace-write/on-request，区别是 USER 与 AUTO_REVIEW
-审批者；不能只比较 sandbox 或将“替我审批”解释为扩大可写根、网络和受保护路径。
-完全访问是独立的 danger-full-access/never 策略，不是自动审批的别名。
-审批字段传参、界面模式与实际工具授权是不同证据，修改映射需真实越界操作、
-转人工、拒绝及恢复验证，不以三档文案或契约 fixture 宣称完整权限验收。
+Permission intent is a Runtime-neutral contract; vendor policy mapping belongs to
+[Codex permission](../../packages/adapters/codex/scholarseed_codex/permission.py).
+Both `ask` and `safe_auto` use workspace-write/on-request; they differ in whether USER or AUTO_REVIEW
+is the approver. Do not compare only sandbox settings or interpret "approve for me" as expanding writable roots, network access, or protected paths.
+Full access is a separate danger-full-access/never policy, not an alias for automatic approval.
+Approval-field propagation, UI mode, and actual tool authorization are different kinds of evidence. Changes to the mapping require verification of real boundary-crossing operations, handoff to a human, rejection, and recovery; three-tier labels or contract fixtures do not establish complete permission acceptance.
 
-## 全文门禁与沙箱是不同边界
+<a id="全文门禁与沙箱是不同边界"></a>
+## Full-Text Gates and Sandbox Are Separate Boundaries
 
-### 固定域名放行与命令升级不互相替代
+<a id="固定域名放行与命令升级不互相替代"></a>
+### Fixed-Domain Allowlisting and Command Escalation Do Not Substitute for Each Other
 
-[产品默认授权解析](../../apps/serve/service/chat/active.py)读取manifest中的
-`default_permission.allowed_network_domains`，只接受精确小写主机名；当前根与
-Desktop资源manifest声明同一个固定主机，不从可覆盖的服务URL推导新授权。
-[会话组合](../../apps/serve/service/chat/runtime/composition.py)将域名传给中立
-PermissionIntent，内部read_only不投影该集合。产品来源归产品Owner，Adapter
-只负责宿主映射，不能在厂商实现里硬编码业务来源或静默忽略限制。
+[Product default-authorization resolution](../../apps/serve/service/chat/active.py) reads
+`default_permission.allowed_network_domains` from the manifest and accepts only exact lowercase hostnames. The current root and
+Desktop resource manifests declare the same fixed host; new authorization is not derived from an overridable service URL.
+[Session composition](../../apps/serve/service/chat/runtime/composition.py) passes the domains to the neutral
+PermissionIntent; internal read_only does not project this set. Product origins belong to the product Owner. The Adapter
+only maps to the host and must not hard-code business origins or silently ignore restrictions in vendor implementations.
 
-[Codex原生profile](../../packages/adapters/codex/scholarseed_codex/permission.py)
-合成精确域名和具名本地socket授权；network mode的`full`字段不等于域名表为`*`，
-后者只由显式network_access生成。生成profile不证明真实代理、子代理继承、
-重绑定或Windows出网已验收；固定主机放行也不授予重定向主机、浏览器、MCP或
-托管搜索的独立出网权限。凭据接收方与数据传输仍需各自校验。
+[The native Codex profile](../../packages/adapters/codex/scholarseed_codex/permission.py)
+combines exact hostnames with named local-socket authorization. The `full` field in network mode does not mean the domain table is `*`;
+the latter is generated only by explicit network_access. A generated profile does not prove acceptance of real proxy behavior, subagent inheritance,
+rebinding, or Windows egress. Allowlisting a fixed host also does not grant separate egress permission to redirect hosts, browsers, MCP, or
+managed search. Credential recipients and data transfers still require their own checks.
 
-ask/safe_auto的原生批准针对整条升级命令，而非仅该域名或网络请求；升级可涉及
-文件与网络执行边界，不将会话改成完全访问、不永久登记获批主机。保留默认命令
-受限网络与审批失败语义。历史deny-read导致升级未生效的调查解释了取消硬读限制
-的取舍，不构成恢复已撤回PaperHub Bridge迁移或放开全部网络的授权。
-修改时分别验证名单内默认请求、名单外默认拒绝、批准后的实际目标响应和后续
-默认请求仍受限；不能将代理CONNECT成功、配置生成或历史截图当作现版验收。
+Native approval for ask/safe_auto covers the entire escalated command, not only that domain or network request. Escalation may cross
+file and network execution boundaries; it does not change the session to full access or permanently register an approved host. Preserve default command
+network restrictions and approval-failure semantics. The historical investigation into deny-read preventing escalation from taking effect explains the tradeoff in removing hard read restrictions; it does not authorize restoring the withdrawn PaperHub Bridge migration or opening all network access.
+For changes, verify separately that allowlisted requests work by default, non-allowlisted requests are denied by default, the actual target responds after approval, and later default
+requests remain restricted. A successful proxy CONNECT, generated configuration, or historical screenshot is not acceptance of the current version.
 
-全文授权及获取/读取接点见[下载 Owner](../features/downloads.md#全文同意与有效授权范围)，
-不在网络页维护第二份授权流程。
-[Serve 会话策略](../../apps/serve/service/chat/runtime/permission.py) 当前仅在内部
-`read_only` 模式提供 `deny_read_roots`；`ask`、`safe_auto` 不提供这些硬读限制。
-[Runtime 契约](../../packages/runtime/scholarseed_runtime/contract/permission.py) 已有该字段，
-[Codex Adapter](../../packages/adapters/codex/scholarseed_codex/permission.py) 只在 macOS
-沙箱 profile 投影 deny，非 macOS 不投影，全权模式也不建立该 profile。
-因此不能沿用旧“Runtime 无读路径字段”或“所有 macOS 产品模式均隔离托管全文”的结论。
+See the [Download Owner](../features/downloads.md#全文同意与有效授权范围) for full-text authorization and retrieval/read entry points;
+do not maintain a second authorization flow on the network page.
+The [Serve session policy](../../apps/serve/service/chat/runtime/permission.py) currently provides `deny_read_roots` only in the internal
+`read_only` mode; `ask` and `safe_auto` do not provide these hard read restrictions.
+The [Runtime contract](../../packages/runtime/scholarseed_runtime/contract/permission.py) already has this field;
+the [Codex Adapter](../../packages/adapters/codex/scholarseed_codex/permission.py) projects deny only in the macOS
+sandbox profile. It does not project it on non-macOS, and that profile is not created in full-access mode.
+Therefore, do not reuse the old conclusions that "Runtime has no read-path field" or "all macOS product modes isolate managed full text."
 
-受保护路径来自[产品路径 Owner](../../apps/serve/service/paths.py)，不能 deny 整个
-service 根目录而误伤 socket 与会话工作区；数据库及 WAL 等派生面也要核对。
-历史内置 profile、自定义 profile、不同版本与非交互 Windows 探针各有适用范围，
-不能将超时或一个系统版本的失败归纳为所有 Windows 不支持，更不能由配置字段存在
-宣称真实工具不可绕过。核验时固定实际版本、模式、输入通道、目标路径、工具执行方
-与平台，并保留运行时启动和恢复结果；知识治理不自行更改沙箱策略或用户配置。
+Protected paths come from the [product path Owner](../../apps/serve/service/paths.py). Do not deny the entire
+service root and inadvertently block sockets or session workspaces; also check derived surfaces such as databases and WAL files.
+Historical built-in profiles, custom profiles, different versions, and non-interactive Windows probes each have their own scope.
+Do not generalize a timeout or a failure on one OS version into a claim that all Windows versions are unsupported; nor does a configuration field prove that real tools cannot bypass it. For verification, pin the actual version, mode, input channel, target path, tool executor,
+and platform, and retain runtime startup and recovery results. Knowledge maintenance must not change sandbox policy or user configuration.
 
-## 文献取回的决策与验证
+<a id="文献取回的决策与验证"></a>
+## Literature Retrieval Decisions and Verification
 
-当前 DOI 全文查询只采用 OpenAlex `primary_location.pdf_url`，不暗中改判其他候选；
-查询与取回不重试，保留交互式按钮的来源一致性与限流语义。请求客户端不显式装配
-账号认证头，下载可带来源 Referer；不能把匿名概括成完全没有请求头或用户信息。
-取回后检查媒体类型、大小、PDF 魔数与解析结果，不把 HTTP 成功当作可用全文。
-未找到、无法访问和限流通过所属 outcome 分类，不能合并为无行动提示的网络错误。
+Current DOI full-text lookup uses only OpenAlex `primary_location.pdf_url` and does not silently select another candidate. Lookup and retrieval are not retried, preserving the source consistency and rate-limit semantics of the interactive button. The request client does not explicitly set account-authentication headers; downloads may include a source Referer. Do not describe anonymous requests as having no headers or user information at all.
+After retrieval, check the media type, size, PDF magic bytes, and parse result; an HTTP success does not mean the full text is usable.
+Not found, inaccessible, and rate-limited outcomes retain their respective classifications; do not merge them into a network error with no actionable guidance.
 
-外呼超时由 [transport Owner](../../apps/serve/service/literature/service/transport.py)
-按载荷形状分两类持有（普通数据 JSON/BibTeX 与二进制 PDF 流），三个相位各自具名，
-数值不在本页复制第二份。httpx 只执行 connect 与 read（read 是相邻字节的空闲上限，
-不是下载总时长），没有总时钟，所以 total 由调用方执行：async 腿用 `asyncio.timeout`
-包住单次请求，sync 流式腿在 chunk 之间核对 monotonic 截止点后主动收手（线程无法被
-打断）。超时与「没有回应」同类，折进既有 outcome 分类，不新增用户可见失败码；将来
-若加入重试，重试预算必须落在 total 之内，不能放大实际耗时。
+Outbound-call timeouts are owned by [transport Owner](../../apps/serve/service/literature/service/transport.py),
+which defines two payload-shape classes (ordinary JSON/BibTeX data and binary PDF streams) and names each of the three phases;
+do not duplicate the values here. httpx enforces only connect and read (read is the idle limit between adjacent bytes,
+not the total download duration), and has no total clock. The caller enforces total: the async path wraps each request in `asyncio.timeout`,
+and the sync streaming path checks the monotonic deadline between chunks and stops itself (threads cannot be
+interrupted). Timeouts are treated like "no response" and folded into existing outcome classifications; no new user-visible failure code is added. If retries are added later,
+their budget must fit within total and must not increase actual elapsed time.
 
-## 单条题录查询与覆盖通道
+<a id="单条题录查询与覆盖通道"></a>
+## Single-Record Lookup and Supplementary Channel
 
-[papermeta API](../../apps/serve/service/literature/api/papermeta.py) 按 DOI、arXiv、
-标题的顺序选择唯一非空**题录**查询维度；题录腿失败不换来源。标识符由
-[bibliography](../../apps/serve/service/literature/service/bibliography.py) 取公开 BibTeX，
-标题由 OpenAlex 检索，均不装配账号凭据。请求仍向上游发送论文标识或标题；
-匿名不等于不传用户数据。BibTeX 客户端允许重定向，不能将该行为推广到带凭据请求。
+[The papermeta API](../../apps/serve/service/literature/api/papermeta.py) selects exactly one nonempty **bibliographic-record** lookup dimension in this order: DOI, arXiv,
+then title; a failed record lookup does not switch sources. Identifiers are used by
+[bibliography](../../apps/serve/service/literature/service/bibliography.py) to fetch public BibTeX;
+titles are searched through OpenAlex. Neither attaches account credentials. Requests still send a paper identifier or title upstream;
+anonymous does not mean that no user data is sent. The BibTeX client allows redirects; do not generalize this behavior to credentialed requests.
 
-未被选中的标识符并不作废：请求体可以同时带 DOI 与 arXiv 号，题录腿照旧只打中选维度
-一个来源，其余标识符只作为下述摘要补充腿的备用来源。它们不改变维度选择，也不参与
-「标题首条命中要用户确认」的判断。
+An identifier that was not selected is not discarded: the request body may include both a DOI and an arXiv ID. The record-lookup leg still contacts only the source for the selected dimension; other identifiers serve only as fallback sources for the abstract-supplementation leg below. They do not change dimension selection or affect the rule that the user must confirm whether the first title match is the same paper.
 
-标题检索地址与 mailto 参数由 OpenAlex Owner 的 `OPENALEX_SEARCH_URL`、
-`OPENALEX_MAILTO` 配置决定；地址形状校验不是接收方信任或 HTTPS 强制保证。
-`PAPER_META_TIMEOUT` 由 API Owner 解析，三种维度共用；非正数、非有限数或无法
-解析的值退回源码默认值，不在此维护第二份默认值清单。该通道只覆盖这一次外呼的
-total 预算，connect 与 read 两个相位固定由上述 transport Owner 的普通数据常量给出，
-不接受环境覆盖。
+The OpenAlex Owner configures the title-search URL and mailto parameter through `OPENALEX_SEARCH_URL` and
+`OPENALEX_MAILTO`; URL-shape validation is not recipient trust or a guarantee that HTTPS is enforced.
+The API Owner parses `PAPER_META_TIMEOUT`, shared by all three dimensions. A nonpositive, nonfinite, or unparseable value falls back to the source-code default; do not maintain a second list of defaults here. This setting controls only the total budget for this outbound call. The connect and read phases are fixed by the ordinary-data constants in the transport Owner above
+and cannot be overridden by the environment.
 
-标识符腿取回的 BibTeX 不带 `abstract` 时（arXiv 的公开 BibTeX 从不带，doi.org 只有部分
-出版商带），bibliography Owner 会沿一条**身份链**依次补打 Crossref（`api.crossref.org`）
-或 arXiv Atom API（`export.arxiv.org`），拿到第一段非空摘要就停。链由
-[identity Owner](../../apps/serve/service/literature/service/identity.py) 的
-`identity_chain` 生成，顺序就是可信度顺序：题录维度自己（**不折叠**——出版商的 Crossref
-记录优先于任何预印本来源）→ 该标识折叠出的 arXiv 号（`10.48550/arXiv.*` 这类 arXiv 自注册
-DOI 里就带着）→ 记录上另一个已知标识。去重按去版本号的键，所以同一篇论文的 `v2` 与无
-版本号形态不会各打一次上游，派生出的无版本号形态优先；标题不是标识符，不进链；链上的
-脏标识只跳过不抛——一个坏值不许把已经拿到题录的同步打成失败。两个接收方同样匿名、同样
-允许重定向，请求里只带论文标识。
+When the BibTeX retrieved by the identifier leg has no `abstract` (public arXiv BibTeX never includes one, while only some doi.org
+publishers do), the bibliography Owner makes supplementary requests along an **identity chain**, in order, to Crossref (`api.crossref.org`)
+or the arXiv Atom API (`export.arxiv.org`), and stops at the first nonempty abstract. The chain is generated by
+`identity_chain` in the [identity Owner](../../apps/serve/service/literature/service/identity.py).
+Its order is the trust order: the record's own lookup dimension (**do not fold it**—the publisher's Crossref
+record takes precedence over any preprint source) → the arXiv ID folded from that identifier (included in self-registered arXiv
+DOIs such as `10.48550/arXiv.*`) → another known identifier on the record. Deduplication uses versionless keys, so `v2` and the unversioned
+form of the same paper do not each trigger an upstream request; the derived unversioned form takes priority. A title is not an identifier and is excluded from the chain. Malformed identifiers in the chain are skipped rather than raised—one bad value must not make a synchronous lookup fail after its bibliographic record was already retrieved. Both recipients are anonymous, both allow redirects, and requests carry only the paper identifier.
 
-这一腿是**可选增强**：超时、非 200、正文形状不对或解析失败都只降级成「没有摘要」，不得让
-已经取到题录的查询失败，也不得覆盖 BibTeX 自带的摘要。它**只填空、不择优**：Crossref 已经
-给出摘要时，arXiv 一跳都不许打；反过来，回退拿到的可能是预印本版摘要而不是出版本版，
-这一取舍是明确接受的（缺摘要对用户没有价值，而版本差异由详情里的 DOI 与 arXiv 号自证）。
-整条链与题录腿共用同一个 `PAPER_META_TIMEOUT` 总预算——截止点在进入标识符腿时算好，链上
-所有跳合计不超支，预算耗尽就放弃剩下的候选，不给该通道偷偷翻倍。Crossref 的摘要是 JATS
-片段，其中 `<title>` 是出版商的小节标题（常写成 `Abstract`）而不是正文，落库前必须去掉；
-前缀未声明命名空间是常态，所以不能假定片段是良构 XML。
+This leg is an **optional enhancement**: a timeout, non-200 response, unexpected body shape, or parse failure degrades only to "no abstract." It must not fail a lookup whose bibliographic record was already retrieved, nor overwrite an abstract included in the BibTeX. It **fills a blank; it does not choose the best**: if Crossref already returned an abstract, do not make even one arXiv request. Conversely, a fallback may return a preprint-version abstract rather than the published-version abstract; this tradeoff is explicitly accepted (an absent abstract has no value to the user, and the DOI and arXiv ID in the details show the version difference).
+The entire chain and the record-lookup leg share one `PAPER_META_TIMEOUT` total budget. The deadline is set when entering the identifier leg; all hops in the chain combined must stay within it. When the budget is exhausted, abandon the remaining candidates; do not quietly double the budget for this channel. Crossref abstracts are JATS fragments, where `<title>` is a publisher section heading (often `Abstract`), not the body, and must be removed before storage. Undeclared prefixes are common, so do not assume the fragment is well-formed XML.
 
-查询不等于入库。标题首条命中仍需用户确认是否同一篇；字段归一化与入库职责
-分开。上游限流保留可行动的 429 失败语义，不能因统一错误展示而混同普通失败。
-确定性依据见 [papermeta 契约](../../apps/serve/tests/contract_literature_papermeta.py)；
-fixture 不证明真实网络、凭据安全或产品验收通过。
+Lookup is not insertion. The user must still confirm whether the first title match is the same paper; field normalization and insertion are
+separate responsibilities. Preserve the actionable 429 failure semantics for upstream rate limiting; a unified error display must not conflate it with ordinary failures.
+See the [papermeta contract](../../apps/serve/tests/contract_literature_papermeta.py) for deterministic evidence;
+fixtures do not prove real-network behavior, credential safety, or product acceptance.
 
-## 身份缓存与反馈失败边界
+<a id="身份缓存与反馈失败边界"></a>
+## Identity Caching and Feedback Failure Boundaries
 
-### 桌面登录交接与本机协调
+<a id="桌面登录交接与本机协调"></a>
+### Desktop Sign-In Handoff and Local Coordination
 
-新版 Desktop 发起登录时，仅在 `127.0.0.1` 监听一个系统分配的临时端口。
-账号服务按新版协议把浏览器导航送回该端口的 `/auth/callback`；Desktop 校验
-`state` 后，经独立交换入口提交 S256 PKCE verifier。成功、取消、替换或过期
-关闭监听。新版不探测或回退到旧登录协议，也不注册旧登录 scheme；系统通知使用
-独立 scheme。0.3.1 仍用原网页入口、`scholarseed://` 和原授权码交换接口。
+When the new Desktop initiates sign-in, it listens only on `127.0.0.1` at a system-assigned ephemeral port.
+The account service follows the new protocol to navigate the browser back to `/auth/callback` on that port. After validating
+`state`, Desktop submits the S256 PKCE verifier through a separate exchange endpoint. Success, cancellation, replacement, or expiration
+closes the listener. The new version does not probe or fall back to the legacy sign-in protocol, and does not register the old sign-in scheme; system notifications use
+a separate scheme. Version 0.3.1 still uses the original web entry point, `scholarseed://`, and original authorization-code exchange endpoint.
 
 New Desktop releases bind an ephemeral listener to `127.0.0.1` for each sign-in.
 The browser navigates to its `/auth/callback` endpoint, and Desktop validates the
@@ -262,84 +229,83 @@ state before exchanging the code with its S256 PKCE verifier. This flow does not
 fall back to the legacy login scheme; native notifications use a separate scheme.
 Desktop 0.3.1 retains its existing web, deep-link, and code-exchange endpoints.
 
-[DesktopHandoff](../../apps/desktop/src/main/handoff.ts)区分浏览器登录、code交换、
-客户端采纳与结果回报；网页登录或发出深链不证明客户端采纳成功。只允许一次
-在飞交换，start/cancel推进代次，迟到结果不能覆盖新意图；终结失败才清state，
-传输异常保留可重试意图直到过期。在飞交换期间不从协调库取另一个code，避免
-原子消费后丢弃。采纳结果回报需要已获得的token，且为异步操作；客户端采纳
-不等于上游已确认回报，交换失败也不能伪造有凭据的完成回执。
+[DesktopHandoff](../../apps/desktop/src/main/handoff.ts) distinguishes browser sign-in, code exchange,
+client adoption, and result reporting; web sign-in or dispatching a deep link does not prove successful client adoption. Only one
+exchange may be in flight. start/cancel advances the generation, and a late result cannot overwrite a new intent. Clear state only on terminal failure;
+transport errors preserve the retryable intent until it expires. Do not fetch another code from the coordination store while an exchange is in flight, to avoid
+discarding a code after atomic consumption. Reporting adoption requires an already obtained token and is asynchronous; client adoption
+does not mean the upstream has confirmed the report, and an exchange failure must not fabricate an authenticated completion receipt.
 
-[本机协调传输](../../apps/desktop/src/main/handoff-local.ts)与
-[Serve端点](../../apps/serve/service/identity/api/handoff.py)只处理同一产品用户根
-中的旧版深链跨实例转交，不控制操作系统将深链投给哪个应用，也不解决深链未到达机器。
-`/api/auth/handoff/`免普通认证但各端点要求宿主身份，不能因loopback或auth-off
-取消此闸。无claim、过期或自投统一返回orphaned，不能扩大成state存在性查询。
+[Local coordination transport](../../apps/desktop/src/main/handoff-local.ts) and the
+[Serve endpoint](../../apps/serve/service/identity/api/handoff.py) handle only legacy deep-link handoff across instances
+within the same product user root. They do not control which application the operating system delivers a deep link to, nor solve cases where a deep link never reaches the machine.
+`/api/auth/handoff/` is exempt from ordinary authentication, but every endpoint requires host identity; loopback or auth-off must not
+remove this gate. Missing claims, expired claims, and self-handoff all return orphaned; do not extend this to a state-existence query.
 
-[租约库](../../apps/serve/service/identity/persistence/handoff.py)校验state/owner，
-renew在事务内续租并条件取走code、清空code列；进程重启不沿用旧owner身份。
-传输失败与服务明确无主不同：前者有界重试，后者停止协调，内存深链路径仍保留。
-不同`SCHOLARSEED_HOME`不共享该库，不承诺跨用户根互通；库及私有事务归属见
-[持久化说明](persistence.md)。code/token是凭据，不进入日志、普通快照或项目库。
-客户端、协议与库测试分别覆盖机制，不代替多实例投递、重启、过期、失败回报与
-实际凭据采纳的真实产品验收；云端状态与限流由外部账号服务Owner核验。
+The [lease store](../../apps/serve/service/identity/persistence/handoff.py) validates state/owner;
+renewal extends the lease within a transaction, conditionally takes the code, and clears the code column. A process restart does not reuse the old owner identity.
+A transport failure differs from an explicit server response that no owner exists: the former gets bounded retries, while the latter stops coordination and preserves the in-memory deep-link path.
+Different `SCHOLARSEED_HOME` roots do not share this store, and cross-user-root interoperability is not promised. See
+[persistence documentation](persistence.md) for store ownership and private transactions. Codes/tokens are credentials and must not enter logs, ordinary snapshots, or the project database.
+Client, protocol, and store tests cover mechanisms separately; they do not replace real-product acceptance of multi-instance delivery, restart, expiration, failure reporting, and
+actual credential adoption. The external account-service Owner verifies cloud status and rate limits.
 
-AccountTrust 按账号服务 JWKS 验签，同时校验必要 claim、令牌类型与吊销集合；
-issuer 仅在明确配置时追加校验，不把它留空描述为已验证签发者字段。
-已缓存的签名公钥可离线使用，缺少可用公钥则拒绝，不能用网络故障替代有效签名。
-用户与管理员令牌类型必须分开，签名使用同一密钥不等于权限相同。
+AccountTrust verifies signatures using the account service's JWKS and also checks required claims, token type, and the revocation set.
+It checks issuer only when explicitly configured; an empty issuer setting must not be described as a verified issuer claim.
+Cached signing keys may be used offline. If no usable key is available, reject the token; a network failure cannot stand in for a valid signature.
+User and administrator token types must remain separate; using the same signing key does not make their permissions equivalent.
 
-吊销响应的 `revoked_at`、`expires_at` 与本地刷新时钟是不同契约：增量游标回退
-重叠窗口并按 jti 合并，缺少有效到期值时保留记录，不能猜测 TTL 提前淘汰。
-当前 `_prune_expired_locked` 使用 `self._clock() - DECODE_LEEWAY_S` 比较响应到期值，
-而默认 clock 为 `time.monotonic`；不能直接把它与 JWT 的 epoch 秒视为同一时间轴，
-或宣称缓存已可靠按过期时间回收。时钟域与验签 leeway 必须一起核验；本次仅记录
-源码差异，未实测上游时间值或调整身份安全实现。
+`revoked_at`, `expires_at`, and the local refresh clock in revocation responses are different contracts: the incremental cursor moves back through
+an overlap window and entries are merged by jti. When a valid expiration value is missing, retain the record; do not guess a TTL and evict it early.
+The current `_prune_expired_locked` compares the response expiration value against `self._clock() - DECODE_LEEWAY_S`,
+while the default clock is `time.monotonic`. Do not treat it as the same time axis as JWT epoch seconds,
+or claim that cache entries are reliably pruned by expiration. Verify the clock domain and signature-validation leeway together. This task only records
+the source discrepancy; it has not measured upstream timestamps or changed identity-security behavior.
 
-吊销刷新失败沿用已有集合，是可用性与撤权及时性的取舍，不是严格的撤权最大延迟
-保证。稳态刷新还受请求触发和上游成功返回影响；持续失败时不能声称最多一个刷新
-周期便生效。当前冷启动失败路径没有成功装载集合时，拉取返回空结果后仍以现有集合
-判定；不把源码注释“等待首拉”追认为已实现失败关闭。修改这些语义属于身份安全
-Owner 的独立任务，本次只保留差异，不批准放宽或更改策略。
+When revocation refresh fails, the existing set is retained. This is a tradeoff between availability and timely revocation, not a guarantee of a strict maximum revocation delay.
+Steady-state refresh also depends on requests triggering it and the upstream returning successfully; during ongoing failures, do not claim that revocation takes effect within at most one refresh
+interval. On the current cold-start failure path, if no set was loaded successfully, a fetch returning an empty result still leads to a decision based on the existing set. Do not reinterpret the source comment "wait for initial fetch" as implemented fail-closed behavior. Changes to these semantics are a separate task for the identity-security
+Owner; this page records the discrepancy only and does not authorize weakening or changing the policy.
 
-反馈由 Serve 收集用户选择的图片/诊断并提交，默认服务与更新地址需核对，但反馈
-另允许环境和本地配置覆盖。已核对提交分支使用传入的 API key 作 Bearer 身份，
-不上传用户 JWT 来替代；接收方信任仍需单独核验，地址覆盖不是授权证明。
-日志包有文件排除与独立容量边界，不能因此宣称所有内容自动脱敏或无需检查实际
-上报字段。错误保留上游状态和诊断，不把“没有请求成功”说成匿名反馈已接收。
+Serve collects and submits images/diagnostics selected by the user. Verify default service and update addresses; feedback also allows environment and local-configuration overrides. The verified submission branch uses the supplied API key as Bearer identity
+and does not upload a user JWT instead. Recipient trust still requires separate verification; an address override is not proof of authorization.
+Log bundles have file exclusions and a separate capacity boundary, but this does not mean all contents are automatically redacted or that actual
+report fields need no inspection. Errors preserve upstream status and diagnostics; do not describe an unsuccessful request as anonymously received feedback.
 
-反馈的会话失败摘要与原日志包是两份不同的证据边界：build_log_bundle先生成原包，
-仅include_trace且有session_id时追加受限事件摘要，超总预算则返回原包并记录摘要
-缺口，不挤掉原附件。摘要从该会话Trace读取指定事件与字段，报告匹配数量和截断；
-不是完整Trace，也不能从HTTP429反推额度或供应商真实原因。调用层仍须校验会话
-访问权限，打包函数的session_id参数与勾选记录不独立证明授权。诊断字段不改变
-重试策略、终态或前端错误卡；禁止为补齐证据重新采集供应商原文、URL或用户输入。
+The feedback session-failure summary and original log bundle have separate evidence boundaries: `build_log_bundle` first creates the original bundle;
+only when include_trace is enabled and session_id is present does it append a limited event summary. If the total budget is exceeded, it returns the original bundle and records the summary
+gap without displacing original attachments. The summary reads specified events and fields from that session's Trace and reports match count and truncation;
+it is not a complete Trace, and HTTP 429 cannot reveal quota or the vendor's actual reason. The calling layer must still check session
+access permissions; the bundler's session_id argument and checkbox record do not independently prove authorization. Diagnostic fields do not change
+retry policy, terminal state, or frontend error cards. Do not recollect vendor raw text, URLs, or user input to fill evidence gaps.
 
-## 本地资产与安装期网络不能混算
+<a id="本地资产与安装期网络不能混算"></a>
+## Local Assets and Installation-Time Network Must Be Counted Separately
 
-Office frame 当前指向随包 `/office/` 资产，字体通过 npm CSS 导入，引文样式由
-产品 Skill 的本地 registry 引用 vendored 文件。资产清单中的来源 URL 不自动成为
-运行时请求，但这些静态事实也不能证明整个查看器、文件或第三方运行时零出网。
-验证必须覆盖实际加载路径、构建产物和运行时请求，不能只搜索几个 SDK 名字。
-这些本地资产的变更不得静默引入远端下载、字体、样式或遥测依赖；如需新增出网，
-先取得对应范围授权并记录来源、数据与验证依据。防回退检查应覆盖实际消费及产物，
-不沿用旧页未在当前测试中找到的 CDN 断言，也不把缺少断言视为允许新增出网。
-入口分别为 [Office frame](../../apps/desktop/src/renderer/src/features/workbench/office/frame.ts)、
-[字体导入](../../apps/desktop/src/renderer/src/main.tsx) 与
-[引文样式 registry](../../skills/community/literature-review/lib/citation_styles.py)。
+The Office frame currently points to the bundled `/office/` assets, fonts are imported through npm CSS, and citation styles reference vendored files through
+the product Skill's local registry. Source URLs in an asset inventory do not automatically become runtime requests, but these static facts also do not prove that the entire viewer, files, or third-party runtimes have zero egress.
+Verification must cover actual loading paths, build artifacts, and runtime requests; searching for a few SDK names is insufficient.
+Changes to these local assets must not silently introduce remote-download, font, stylesheet, or telemetry dependencies. If new egress is needed,
+obtain authorization for the relevant scope first and record the source, data, and verification evidence. Regression checks must cover actual consumption and artifacts;
+do not reuse CDN assertions from an old page that current tests do not contain, and do not treat missing assertions as permission to add egress.
+The entry points are [Office frame](../../apps/desktop/src/renderer/src/features/workbench/office/frame.ts),
+[font imports](../../apps/desktop/src/renderer/src/main.tsx), and the
+[citation-style registry](../../skills/community/literature-review/lib/citation_styles.py).
 
-内置技能从仓库源码离线编译；用户通过 API 安装技能是另一路径，当前
-[安装路由](../../apps/serve/service/capabilities/api/routes.py) 的仓库地址校验限定公开
-GitHub HTTPS 地址并构造 raw manifest URL。不能因内置 pack 离线而称所有技能操作
-无网络，也不为支持其他源而跳过包校验、版本与信任边界。
+Built-in Skills are compiled offline from repository source. User-installed Skills through the API use a separate path; the current
+[installation route](../../apps/serve/service/capabilities/api/routes.py) validates repository addresses to allow public
+GitHub HTTPS addresses and constructs a raw manifest URL. Offline compilation of the built-in pack does not mean that all Skill operations are
+network-free, and support for other sources does not justify skipping package, version, or trust-boundary checks.
 
-Trace server 默认监听回环，但其 CLI 可选择 host；“默认本地”不是不可改变的隔离
-保证。具体路径、存储和证据规则沿独立包 Owner，不恢复旧 `index.sqlite3` 或 Harness
-路径描述。构建/安装还可能访问锁定依赖与制品来源，跟运行时下载分开核验；
-遵循构建指南与锁文件，不照搬旧固定 registry 数量，不擅自换源、重生成 lock 或安装工具。
+The Trace server listens on loopback by default, but its CLI can select a host; "local by default" is not an immutable isolation
+guarantee. Follow the independent package Owner for paths, storage, and evidence rules; do not restore references to the old `index.sqlite3` or Harness
+paths. Builds/installations may also access locked dependencies and artifact sources; verify those separately from runtime downloads.
+Follow the build guide and lockfile. Do not copy an old fixed registry count, switch sources, regenerate the lockfile, or install tools without authorization.
 
-## 更新与停止条件
+<a id="更新与停止条件"></a>
+## Update and Stop Conditions
 
-新增出网或更改来源时，在所属机制正文记录目的、配置、数据/凭据、失败、安全与
-验证边界，本页只维护发现路由和跨 Owner 要求。涉及秘密、代理、重定向或供应链的
-变更需独立复核及真实路径验证；静态搜索、fixture 与健康探针不证明实际无泄漏。
-找到实际调用和授权 Owner 后停止扩展，不修改用户凭据、配置或生产行为来获得测试通过。
+When adding egress or changing a source, document its purpose, configuration, data/credentials, failure behavior, security, and
+verification boundaries in the owning mechanism's documentation. This page maintains only discovery routes and cross-Owner requirements. Changes involving secrets, proxies, redirects, or supply chains
+require separate review and real-path verification; static searches, fixtures, and health probes do not prove the absence of actual leaks.
+Stop expanding the investigation once the actual call site and authorization Owner are identified. Do not modify user credentials, configuration, or production behavior to make tests pass.

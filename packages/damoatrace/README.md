@@ -1,30 +1,28 @@
 # DamoATrace
 
-DamoATrace 独立拥有 trace 契约、记录、查询、证据投影、导出与本地可视化。仓库发布
-`damoatrace` distribution 和同名 Python namespace。
+DamoATrace independently owns trace contracts, recording, querying, evidence projections, exports, and local visualization. The repository publishes the `damoatrace` distribution and a Python namespace with the same name.
 
-## 代码架构
+<a id="代码架构"></a>
+## Code Architecture
 
-| 目录 | 职责 |
+| Directory | Responsibility |
 | --- | --- |
-| `damoatrace/contract/` | Trace 自有数据契约，无 Runtime 或 Adapter 依赖 |
-| `damoatrace/recording/` | 记录构造、写入和敏感信息脱敏 |
-| `damoatrace/paths.py` | 独立路径配置，产品通过显式配置接入 |
-| `damoatrace/cli/` | 可组合的 session/event/LLM/tool/error/span 查询命令与输出格式 |
-| `damoatrace/data/` | trace store、usage 聚合与显式 action database 读取 |
-| `damoatrace/evidence/` | turn digest、context lifecycle 与 model-visible working set 投影 |
-| `damoatrace/search/` | trace 全文检索 |
-| `damoatrace/server/` | 本地只读 HTTP server 与单页 Web UI |
-| `damoatrace/tests/` | package boundary、distribution 与真实 CLI 查询合同 |
+| `damoatrace/contract/` | Trace-owned data contracts, with no Runtime or Adapter dependencies |
+| `damoatrace/recording/` | Record construction, writing, and sensitive-information redaction |
+| `damoatrace/paths.py` | Independent path configuration; products integrate through explicit configuration |
+| `damoatrace/cli/` | Composable session/event/LLM/tool/error/span query commands and output formats |
+| `damoatrace/data/` | Trace store, usage aggregation, and explicit action database reads |
+| `damoatrace/evidence/` | Turn digest, context lifecycle, and model-visible working-set projections |
+| `damoatrace/search/` | Full-text trace search |
+| `damoatrace/server/` | Local read-only HTTP server and single-page Web UI |
+| `damoatrace/tests/` | Package boundary, distribution, and real CLI query contracts |
 
-DamoATrace 使用自身 trace contract 与本地 trace 数据，不参与 agent runtime 的
-session、tool 或业务状态写入。业务 action database 通过 `--actions-db` 或
-`DAMOATRACE_ACTIONS_DB` 显式传入。
+DamoATrace uses its own trace contract and local trace data; it does not write agent runtime sessions, tools, or business state. Pass a business action database explicitly through `--actions-db` or `DAMOATRACE_ACTIONS_DB`.
 
-## 安装与使用
+<a id="安装与使用"></a>
+## Installation and Usage
 
-要求 Python 3.12+。声明的运行依赖为 DuckDB 与 filelock，具体版本约束以
-[`pyproject.toml`](pyproject.toml) 为准；不依赖 `damoagent`、`scholarseed-runtime`、Adapter 或 Serve。
+Python 3.12+ is required. Declared runtime dependencies are DuckDB and filelock; see [`pyproject.toml`](pyproject.toml) for the specific version constraints. There are no dependencies on `damoagent`, `scholarseed-runtime`, Adapter, or Serve.
 
 ```bash
 python -m pip install damoatrace
@@ -40,34 +38,24 @@ damoatrace export --session <session-id>
 damoatrace serve
 ```
 
-所有查询命令也可通过 `python -m damoatrace ...` 调用。
+All query commands can also be invoked with `python -m damoatrace ...`.
 
-## 索引启动检查
+<a id="索引启动检查"></a>
+## Startup Index Checks
 
-`TraceIndex.inspect_readonly()` 用调用方已获资格的只读事务检查格式标记、FTS5 结构与列，
-拒绝 trigger/view、未知版本及明确损坏，再执行有时间预算的 SQLite `quick_check(1)`。
-自身预算中断返回 `incomplete_budget`，不是损坏，也不是完整校验通过；其他 SQLite 错误仍传播。
-该路径不复制整库、不修改索引或原始历史，Serve 普通启动记录其范围和结果。
+`TraceIndex.inspect_readonly()` uses a caller-authorized read-only transaction to check format markers, FTS5 structure, and columns; it rejects triggers/views, unknown versions, and explicit corruption, then runs SQLite `quick_check(1)` within a time budget. If its own budget interrupts the check, it returns `incomplete_budget`, which means neither corruption nor a successful full check; other SQLite errors still propagate. This path does not copy the entire database or modify the index or raw history. Serve records its scope and result during ordinary startup.
 
-`TraceIndex.inspect_startup()` 保留为显式完整审计：在有界私有快照中执行实际初始化、
-重置及 FTS 一致性检查，超预算明确失败。普通 SQLite 检查结果不证明 FTS 倒排索引全量一致，
-不能声称完整 FTS 一致性。完整审计仍明确报告预算不足，不用作产品升级准入条件。
+`TraceIndex.inspect_startup()` remains an explicit full audit: it performs actual initialization, reset, and FTS consistency checks on a bounded private snapshot, and fails explicitly if it exceeds the budget. An ordinary SQLite check does not prove that the full FTS inverted index is consistent, so do not claim full FTS consistency. The full audit also reports insufficient budget explicitly and is not a product-upgrade admission condition.
 
-Serve 启动与升级将 JSONL 和旧 context ledger 历史检查标记为延迟执行，不扫描历史正文；这不表示历史格式
-已获认可。查询与全文索引消费内容时验证格式，不支持的版本明确失败，不能静默跳过
-或返回陈旧索引结果。查询权限、I/O、编码错误明确传播，不作为空历史成功返回；未标记的
-旧事件仍按既有读取契约处理。内容改写仍在实际写入前完成格式预检。产品启动边界见
+Serve startup and upgrades defer checks of JSONL and legacy context ledger history and do not scan historical bodies; this does not mean the historical formats have been approved. Queries and full-text indexing validate formats when consuming content. Unsupported versions fail explicitly; they are not silently skipped and stale index results are not returned. Query permission, I/O, and encoding errors propagate explicitly rather than being reported as successful empty history; unmarked legacy events continue to follow the existing read contract. Content rewrites still undergo format preflight before actual writes. See the
 [Serve README](../../apps/serve/README.md#trace-启动边界)。
 
-FTS 查询的源目录/文件不存在时返回不可用，由调用方重新扫描正本，不能继续返回旧索引
-命中。权限、其他 I/O、编码和未知格式错误仍明确失败。query CLI 对这些失败输出 stderr
-诊断并以退出码 `1` 结束，不输出成功 envelope 或 traceback；独立 digest/context/server
-入口不属于本次 query CLI 错误呈现范围。
+When an FTS query's source directory/file is missing, the query reports that it is unavailable. The caller must rescan the source of truth; the query must not keep returning old index hits. Permission, other I/O, encoding, and unknown-format errors still fail explicitly. The query CLI prints diagnostics to stderr and exits with code `1` for these failures; it does not output a success envelope or traceback. The separate digest/context/server entry points are outside the error-presentation scope of this query CLI.
 
-## 开发与验证
+<a id="开发与验证"></a>
+## Development and Validation
 
-以下 npm 命令从 monorepo 根目录运行。安装/格式化会改变环境或源码，须符合本次任务授权；
-只读调查或文档整改不因本清单自动获得执行权限。
+Run the following npm commands from the monorepo root. Installation/formatting changes the environment or source and must be within the authorization for the current task; this list does not itself authorize running them for read-only investigation or documentation work.
 
 ```bash
 pnpm ops pre install python
@@ -78,7 +66,4 @@ pnpm ops ci test --scope trace --with-format-check
 pnpm ops cd build local --target trace
 ```
 
-`damoatrace:wheel` 由根 `scripts/shared/workspace.cjs` 先执行 workspace 安装，再在本包目录
-构建 wheel 并执行 `twine check`，不上传包。仅构建时可在本包目录执行 `python -m build --wheel`；
-它不执行上述发行元数据检查，也不证明干净安装后的 CLI 查询可用。根 pyproject
-只编排 workspace，不能从根执行裸 wheel 命令来代替本包构建。
+`damoatrace:wheel` first runs workspace installation through the root `scripts/shared/workspace.cjs`, then builds a wheel in this package directory and runs `twine check`; it does not upload the package. To build only, run `python -m build --wheel` in this package directory. That command does not run the distribution metadata checks above or prove that CLI queries work after a clean install. The root pyproject only orchestrates the workspace; a bare wheel command from the root cannot replace building this package.
