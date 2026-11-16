@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from enum import Enum
-from contextlib import AbstractContextManager
 from typing import Protocol, runtime_checkable
 
 from scholarseed_runtime.contract.command import OpenSessionRequest, ResumeSessionRequest

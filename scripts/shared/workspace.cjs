@@ -179,6 +179,30 @@ function createWorkspace(directory = path.resolve(__dirname, '../..'), environme
   }
 
 
+  const DOCS_TIMEOUT = 120000
+
+  function docsCheck(args) {
+    checkNode(REPO)
+    const lease = leases.acquire({ mode: 'read', resources: [path.resolve(REPO, environment.VENV || DEFAULT_VENV)] })
+    let result
+    try {
+      result = spawnSync(pythonPath(), ['-m', 'scripts.ci.docs.check', '--node-executable', process.execPath, ...args], {
+        cwd: REPO, env: environment, stdio: 'inherit', shell: false, windowsHide: true, timeout: DOCS_TIMEOUT
+      })
+    } finally {
+      if (!result?.signal) lease.release()
+      else console.error(`[workspace] Documentation checker shutdown was not confirmed; environment lease retained at ${lease.directory}`)
+    }
+    if (result.error) throw new Error(`docs gate startup/timeout failure: ${result.error.message}`)
+    if (result.signal) throw new Error(`docs gate signal: ${result.signal}`)
+    if (result.status !== 0) {
+      const error = new Error('Documentation checking failed')
+      Object.assign(error, { exitCode: result.status ?? 1, origin: 'child', code: 'CHILD_EXIT' })
+      throw error
+    }
+    return result.status
+  }
+
   function installCmd(remove) {
     const candidates = process.platform === 'win32' ? [] : ['/opt/homebrew/bin', '/usr/local/bin', path.join(os.homedir(), '.local/bin'), path.join(os.homedir(), 'bin')]
     const venv = environment.VENV ?? DEFAULT_VENV
@@ -256,7 +280,7 @@ function createWorkspace(directory = path.resolve(__dirname, '../..'), environme
     const [command, ...args] = argv
     switch (command) {
       case 'all': await install(); skillsInstall(); desktopTask('build'); config(true); break
-      case 'ui-find': run(process.execPath, ['--experimental-transform-types', '.agents/skills/ui-component-reuse/scripts/find.mjs', environment.Q || args.join(' ')]); break
+      case 'ui-find': run(process.execPath, ['--experimental-transform-types', 'apps/desktop/scripts/ci/find.mjs', environment.Q || args.join(' ')]); break
       case 'run': runBinary('scholarseed'); break
       case 'desktop': desktop(); break
       case 'trace-ui': runBinary('damoatrace', ['serve'], { DAMOATRACE_HOME: environment.SCHOLARSEED_HOME || DEFAULT_HOME }); break
@@ -270,7 +294,7 @@ function createWorkspace(directory = path.resolve(__dirname, '../..'), environme
   }
 
   return { main, install, checkPython, skillsInstall, skillsVerify, dependencyWheels, damoatraceContract,
-    damoatraceWheel, config, runBinary, serve, clean, lint, pythonTypecheck, serveTests,
+    damoatraceWheel, config, runBinary, serve, docsCheck, clean, lint, pythonTypecheck, serveTests,
     serveContracts, desktopSmoke }
 }
 

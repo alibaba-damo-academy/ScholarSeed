@@ -121,12 +121,14 @@ for (const skill of skills) {
     }
   })
 
-  test(`${skill}: compact result receipt navigates by bound card identity and keeps retry`, async () => {
+  test(`${skill}: result receipt previews papers and retries bound navigation`, async () => {
     const { page, frame, context, errors } = await openCard(skill, 'results')
     try {
       const receipt = frame.getByTestId('artifact-open')
       await expect(frame.getByTestId('receipt-toggle')).toHaveCount(0)
-      await expect(frame.getByTestId('receipt-preview')).toHaveCount(0)
+      const preview = frame.getByTestId('receipt-preview')
+      await expect(preview).toBeVisible()
+      await expect(preview.getByRole('listitem').first()).toBeVisible()
       await expect(frame.getByRole('button', { name: /打开文献：/ })).toHaveCount(0)
       await context.evaluate(() => { window.fixture.rejectNext = true })
       await receipt.click()
@@ -356,7 +358,7 @@ test('review composition keeps outline display and artifact operations without q
     await expect(receipt.getByRole('button')).toHaveCount(2)
     await expect(outline.frame.getByTestId('receipt-preview')).toHaveCount(0)
     await expect(outline.frame.getByTestId('artifact-more-actions')).toHaveCount(0)
-    await receipt.getByRole('button', { name: '打开', exact: true }).press('Enter')
+    await receipt.getByRole('button', { name: '打开综述详情', exact: true }).press('Enter')
     assert.deepEqual(await outline.context.evaluate(() => window.fixture.calls), [{ action: 'open-results', values: {} }])
     assert.equal(outline.component.actions.find(action => action.id === 'open-results')?.capability, 'navigation.open')
     await expect(outline.frame.getByRole('alert')).toHaveCount(0)

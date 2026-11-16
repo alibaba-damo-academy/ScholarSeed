@@ -248,7 +248,7 @@ Python environment for a mode.
 The Skill source is this directory. Keep the version, generated package manifest,
 and product dependencies consistent. Build-time file inventories are generated,
 not committed or edited by hand. Repository maintainers follow the prebundle
-procedure in [ADAPTATION.md](../../ADAPTATION.md).
+procedure in the repository’s `skills/ADAPTATION.md`.
 
 On macOS use the bound `slr`; on Windows use the bound `slr.cmd` or product
 Python argument arrays. Resolve relative paths against their explicit workspace;
