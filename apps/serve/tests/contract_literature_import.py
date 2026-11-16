@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import base64
+import json
 import sqlite3
 import tempfile
+import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -28,6 +30,8 @@ from service.literature.domain.model import (
     MAX_BATCH_RECORDS,
     LiteratureError,
 )
+from service.literature.persistence.analysis import AnalysisStore
+from service.literature.persistence.assets import MaterialAssets
 from service.literature.persistence.files import LiteratureFileBatch, managed_object
 from service.literature.persistence.imports import IMPORT_TABLE, ImportState, LiteratureImports
 from service.literature.persistence.store import (
@@ -44,6 +48,7 @@ from service.literature.schema import (
     LiteratureView,
 )
 from service.literature.service import zotero
+from service.literature.service.analysis import ActionKind, AnalysisRequest, prepare
 from service.literature.service.arxiv import ArxivDownloadError, normalize_arxiv_id
 from service.literature.service.attachment import (
     ARXIV_ALREADY_ATTACHED,
@@ -60,8 +65,11 @@ from service.literature.service.importer import (
 )
 from service.literature.service.pdf import LiteraturePdf
 from service.platform.activity import Activities
+from service.platform.citations import LITERATURE_STORAGE, PDF_INDEX_STATE
 from service.platform.content import RootKind
+from service.platform.http_activity import ServeApplication
 from service.workbench.domain.model import WorkbenchFormatPolicy
+from service.workbench.service.indexing import PdfIndexService
 
 BIB = (
     b"@article{a,title={Admitted research},author={Ada Researcher},"
@@ -84,6 +92,249 @@ LITERATURE_FILE_OWNERS = (
 
 
 class LiteratureImportTests(unittest.TestCase):
+    def test_prewarm_and_interpretation_share_running_and_persisted_index(self):
+        payload = pdf_fixture.build_pdf(
+            pdf_fixture.PageFixture(
+                texts=(pdf_fixture.TextFixture(x=40, top=40, text="Original evidence"),)
+            )
+        )
+        receipt = import_from_paths(
+            self.content,
+            self.project.id,
+            (str(self.source("shared.pdf", payload)),),
+            ImportSource.LOCAL_FILE,
+        )
+        repository = LiteratureRepository()
+        item = receipt.items[0]
+        attachment = repository.primary_attachment(item.id)
+        assert attachment is not None
+        request = AnalysisRequest(
+            literature_id=item.id,
+            attachment_id=attachment.id,
+            model_key="test",
+            kind=ActionKind.INTERPRETATION,
+            client_action_id="prewarm",
+            client_attempt_id="prewarm",
+        )
+        started, release, waiting = threading.Event(), threading.Event(), threading.Event()
+        with patch("service.workbench.service.indexing.SERVICE_LITERATURE_DATABASE", self.database):
+            indexes = PdfIndexService(self.content, activities=Activities())
+            original_parser = indexes._run_parser
+            original_index = indexes.index
+
+            def awaited_index(document, *, wait=False):
+                waiting.set()
+                return original_index(document, wait=wait)
+
+            def blocked_parser(*args):
+                started.set()
+                if not release.wait(10):
+                    raise AssertionError("test did not release parser")
+                return original_parser(*args)
+
+            try:
+                with (
+                    patch.object(indexes, "_run_parser", side_effect=blocked_parser) as parser,
+                    patch.object(indexes, "index", side_effect=awaited_index),
+                ):
+                    attachments = LiteratureAttachmentContent(repository)
+                    attachments.prewarm(indexes, item.id, attachment.id)
+                    self.assertTrue(started.wait(5))
+                    attachments.prewarm(indexes, item.id, attachment.id)
+                    with ThreadPoolExecutor(max_workers=1) as executor:
+                        pending = executor.submit(
+                            prepare, request, repository, LiteraturePdf(), indexes=indexes
+                        )
+                        self.assertTrue(waiting.wait(5))
+                        release.set()
+                        prepared = pending.result(timeout=20)
+                    assert prepared.reading is not None
+                    self.assertIn("Original evidence", prepared.reading.content)
+                    self.assertIsNone(prepared.saved_reading)
+                    self.assertEqual(parser.call_count, 1)
+                    warmed = prepare(request, repository, LiteraturePdf(), indexes=indexes)
+                    self.assertTrue(warmed.index_cache_hit)
+                    self.assertEqual(warmed.reading, prepared.reading)
+                    self.assertEqual(parser.call_count, 1)
+            finally:
+                release.set()
+                indexes.close()
+            reopened = PdfIndexService(self.content, activities=Activities())
+            try:
+                with patch.object(
+                    reopened, "_run_parser", side_effect=AssertionError("cache miss")
+                ):
+                    persisted = prepare(request, repository, LiteraturePdf(), indexes=reopened)
+                self.assertTrue(persisted.index_cache_hit)
+                self.assertEqual(persisted.reading, prepared.reading)
+            finally:
+                reopened.close()
+
+    def test_non_pdf_open_does_not_prepare_pdf_index(self):
+        repository = LiteratureRepository()
+        item = LiteratureItem(id="image", title="Image")
+        repository.save_all((item,))
+        app = FastAPI()
+        indexes = Mock()
+        setattr(app.state, PDF_INDEX_STATE, indexes)
+        register_global_routes(app)
+        register_reading_routes(
+            app, repository, LiteratureAttachmentContent(), LiteraturePdf(), WorkbenchFormatPolicy()
+        )
+        with patch("service.literature.api.catalogue.SERVICE_LITERATURE_FILES_DIR", self.files):
+            client = TestClient(app)
+            response = client.post(
+                f"/api/v1/literatures/{item.id}/attachments",
+                files={"file": ("image.png", PNG, "image/png")},
+            )
+        self.assertEqual(response.status_code, 201, response.text)
+        opened = client.get(
+            f"/api/v1/literatures/{item.id}/attachments/{response.json()['id']}/open"
+        )
+        self.assertEqual(opened.status_code, 200, opened.text)
+        indexes.prepare.assert_not_called()
+
+    def test_pdf_import_prepares_committed_attachment_without_waiting(self):
+        indexes = Mock()
+        app = FastAPI()
+        setattr(app.state, PDF_INDEX_STATE, indexes)
+        register_global_routes(app)
+        payload = pdf_fixture.build_pdf(
+            pdf_fixture.PageFixture(texts=(pdf_fixture.TextFixture(x=40, top=40, text="Warm PDF"),))
+        )
+
+        def prepared(document):
+            literature_id, attachment_id = document.path.split("/")
+            stored = LiteratureRepository().attachment(literature_id, attachment_id)
+            self.assertIsNotNone(stored)
+            assert stored is not None
+            self.assertEqual(Path(stored.path).read_bytes(), payload)
+            self.assertEqual(document.payload, payload)
+            self.assertEqual(document.revision, stored.revision)
+            self.assertEqual(document.storage_scope, LITERATURE_STORAGE)
+            self.assertEqual(document.project_id, "")
+
+        indexes.prepare.side_effect = prepared
+        with patch("service.literature.api.catalogue.SERVICE_LITERATURE_FILES_DIR", self.files):
+            response = TestClient(app).post(
+                "/api/v1/imports/pdf", files={"file": ("warm.pdf", payload, "application/pdf")}
+            )
+        self.assertEqual(response.status_code, 201, response.text)
+        indexes.prepare.assert_called_once()
+        indexes.index.assert_not_called()
+
+    def test_pdf_upload_and_open_prewarm_same_document_and_queue_failure_is_nonfatal(self):
+        repository = LiteratureRepository()
+        item = LiteratureItem(id="prewarm", title="Prewarm")
+        repository.save_all((item,))
+        app = FastAPI()
+        indexes = Mock()
+        setattr(app.state, PDF_INDEX_STATE, indexes)
+        register_global_routes(app)
+        register_reading_routes(
+            app, repository, LiteratureAttachmentContent(), LiteraturePdf(), WorkbenchFormatPolicy()
+        )
+        payload = pdf_fixture.build_pdf(pdf_fixture.PageFixture())
+        client = TestClient(app)
+        response = client.post(
+            f"/api/v1/literatures/{item.id}/attachments?primary=true",
+            files={"file": ("warm.pdf", payload, "application/pdf")},
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        indexes.prepare.assert_called_once()
+        uploaded = indexes.prepare.call_args.args[0]
+        indexes.prepare.side_effect = ValueError("pdf_index_busy")
+        response = client.get(
+            f"/api/v1/literatures/{item.id}/attachments/{response.json()['id']}/open"
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(indexes.prepare.call_args.args[0], uploaded)
+        self.assertEqual(indexes.prepare.call_count, 2)
+        indexes.index.assert_not_called()
+
+    def test_open_pdf_during_drain_does_not_require_index_admission(self):
+        activities = Activities()
+        repository = LiteratureRepository()
+        item = LiteratureItem(id="draining", title="Open during drain")
+        repository.save_all((item,))
+        app = ServeApplication(activities=activities)
+        register_global_routes(app)
+        register_reading_routes(
+            app, repository, LiteratureAttachmentContent(), LiteraturePdf(), WorkbenchFormatPolicy()
+        )
+        payload = pdf_fixture.build_pdf(pdf_fixture.PageFixture())
+        with (
+            patch("service.literature.api.catalogue.SERVICE_LITERATURE_FILES_DIR", self.files),
+            patch("service.workbench.service.indexing.SERVICE_LITERATURE_DATABASE", self.database),
+            TestClient(app) as client,
+        ):
+            uploaded = client.post(
+                f"/api/v1/literatures/{item.id}/attachments",
+                files={"file": ("draining.pdf", payload, "application/pdf")},
+            )
+            self.assertEqual(uploaded.status_code, 201, uploaded.text)
+            route = f"/api/v1/literatures/{item.id}/attachments/{uploaded.json()['id']}"
+            indexes = PdfIndexService(self.content, activities=activities)
+            setattr(app.state, PDF_INDEX_STATE, indexes)
+            self.addCleanup(indexes.close)
+            generation = activities.begin()
+            try:
+                opened = client.get(f"{route}/open")
+                self.assertEqual(opened.status_code, 200, opened.text)
+                self.assertEqual(opened.json()["media_type"], "application/pdf")
+                content = client.get(f"{route}/content", headers={"Range": "bytes=0-7"})
+                self.assertEqual(content.status_code, 206, content.text)
+                self.assertEqual(content.content, payload[:8])
+                self.assertEqual(content.headers["etag"], opened.headers["etag"])
+                self.assertFalse(activities.snapshot().counts)
+                self.assertTrue(activities.seal(generation))
+                sealed = client.get(f"{route}/open")
+                self.assertEqual(sealed.status_code, 503, sealed.text)
+                self.assertEqual(sealed.json(), {"detail": "update_maintenance"})
+            finally:
+                activities.resume(generation)
+            reopened = client.get(f"{route}/content")
+            self.assertEqual(reopened.status_code, 200, reopened.text)
+            self.assertEqual(reopened.content, payload)
+
+    def test_explicit_bibliography_import_adopts_cached_pdf_and_machine_asset(self):
+        self.set_cached_material()
+        repository = LiteratureRepository(self.database)
+        self.assertEqual(repository.view("").items, ())
+        source = self.source("cached.bib", b"@article{x,title={Cached paper},doi={10.1000/cached}}")
+        receipt = import_from_paths(
+            self.content, self.project.id, (str(source),), ImportSource.LOCAL_FILE
+        )
+        item = receipt.items[0]
+        attachment = repository.primary_attachment(item.id)
+        self.assertIsNotNone(attachment)
+        linked = AnalysisStore(self.database).reading_l1(
+            item.id, attachment.revision, attachment.id
+        )
+        self.assertEqual(linked["l1"]["card"], {"method": "Cached method"})
+        self.assertEqual(repository.get(item.id).title, "Cached paper")
+
+    def set_cached_material(self):
+        document = pdf_fixture.open()
+        document.new_page()
+        payload = document.tobytes()
+        document.close()
+        revision = managed_object("task", payload, ".pdf").revision.removeprefix("sha256:")
+        store = MaterialAssets(self.database)
+        store.save_source(revision, {"title": "Cached paper", "doi": "10.1000/cached"}, payload)
+        store.save(
+            {
+                "revision": revision,
+                "response_language": "en",
+                "l1": {
+                    "card": {"method": "Cached method"},
+                    "extraction_quality": {"status": "READY"},
+                },
+                "source_snapshot": {"source_revision": "sha256:" + revision, "fragments": {}},
+                "metadata": {"extractor_version": "0.2.5", "schema_version": "l1-reading/v2"},
+            }
+        )
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="literature-import-")
         self.addCleanup(self.temporary.cleanup)
@@ -108,12 +359,8 @@ class LiteratureImportTests(unittest.TestCase):
         registry = ProjectRegistry(str(self.root), catalog)
         self.content = ContentService(registry, catalog, activities=Activities())
         self.project = self.content.create_project("文献准入")
-        self.library = Path(
-            self.content.resolve(
-                self.project.id,
-                self.content.root(self.project.id, RootKind.LITERATURE).path,
-            )
-        )
+        self.library = Path(self.project.root) / "literature"
+        self.library.mkdir()
         self.files = self.root / "literature-files"
         for owner in LITERATURE_FILE_OWNERS:
             owner_patch = patch(f"{owner}.SERVICE_LITERATURE_FILES_DIR", self.files)
@@ -124,6 +371,129 @@ class LiteratureImportTests(unittest.TestCase):
         path = self.root / name
         path.write_bytes(data)
         return path
+
+    def test_import_does_not_create_project_literature_root(self) -> None:
+        project = self.content.create_project("Global library only")
+        directory = Path(project.root) / "literature"
+        self.assertFalse(directory.exists())
+        with self.assertRaises(ContentError):
+            self.content.root(project.id, RootKind.LITERATURE)
+        self.assertFalse(directory.exists())
+        source = self.source("global.bib", BIB)
+        receipt = import_from_paths(
+            self.content, project.id, (str(source),), ImportSource.LOCAL_FILE
+        )
+        self.assertEqual(len(receipt.items), 1)
+        self.assertFalse(directory.exists())
+        self.assertEqual(load_library(project.id).items[0].title, "Admitted research")
+        with closing(connect(self.database)) as connection:
+            state = connection.execute(
+                f"SELECT prepared,attachments FROM {IMPORT_TABLE} WHERE project_id=?",
+                (project.id,),
+            ).fetchone()
+        self.assertEqual(tuple(state), ("[]", "[]"))
+
+    def test_historical_pending_import_reads_stage_or_renamed_asset_without_publishing(
+        self,
+    ) -> None:
+        for published in (False, True):
+            with self.subTest(published=published):
+                with pdf_fixture.open() as document:
+                    document.new_page()
+                    payload = document.tobytes()
+                name = f"old-{published}.pdf"
+                plan = plan_artifact_import(name, name, payload)
+                imports = LiteratureImports(self.content)
+                with patch.object(imports, "finish", side_effect=AssertionError):
+                    imports.reserve(
+                        self.project.id,
+                        plan.operation_id,
+                        plan.fingerprint,
+                        (
+                            (
+                                self.content.read_import_source(
+                                    self.project.id, str(self.source(name, payload))
+                                ),
+                                plan.outcome.items,
+                            ),
+                        ),
+                        0,
+                    )
+                prepared = self.content.prepare_bytes(self.project.id, "literature", name, payload)
+                with closing(connect(self.database)) as connection, connection:
+                    connection.execute(
+                        f"UPDATE {IMPORT_TABLE} SET prepared=?, attachments=? WHERE operation_id=?",
+                        (
+                            json.dumps([asdict(prepared)]),
+                            json.dumps(
+                                [
+                                    {
+                                        "literature_id": plan.outcome.items[0].id,
+                                        "prepared_path": prepared.path,
+                                    }
+                                ]
+                            ),
+                            plan.operation_id,
+                        ),
+                    )
+                if published:
+                    asset = self.content.materialize(prepared)
+                    self.content.rename(self.project.id, asset.path, f"renamed-{name}")
+                with patch.object(
+                    self.content, "materialize", side_effect=AssertionError("no publication")
+                ):
+                    receipt = imports.resume(self.project.id, plan.operation_id, plan.fingerprint)
+                attachment = LiteratureRepository().primary_attachment(receipt.items[0].id)
+                self.assertEqual(Path(attachment.path).read_bytes(), payload)
+                if not published:
+                    self.assertFalse((self.library / name).exists())
+
+    def test_historical_completed_asset_receipt_is_preserved(self) -> None:
+        source = self.source("old.bib", BIB)
+        receipt = import_from_paths(
+            self.content, self.project.id, (str(source),), ImportSource.LOCAL_FILE, "old-completed"
+        )
+        with closing(connect(self.database)) as connection, connection:
+            row = connection.execute(
+                f"SELECT result FROM {IMPORT_TABLE} WHERE operation_id=?", (receipt.operation_id,)
+            ).fetchone()
+            result = json.loads(row["result"])
+            result["asset_ids"] = ["historical-asset"]
+            connection.execute(
+                f"UPDATE {IMPORT_TABLE} SET result=? WHERE operation_id=?",
+                (json.dumps(result), receipt.operation_id),
+            )
+        source.unlink()
+        replay = import_from_paths(
+            self.content, self.project.id, (str(source),), ImportSource.LOCAL_FILE, "old-completed"
+        )
+        self.assertEqual(replay.asset_ids, ("historical-asset",))
+        self.assertEqual(replay.items, receipt.items)
+
+    def test_concurrent_pdf_import_keeps_one_global_attachment(self) -> None:
+        with pdf_fixture.open() as document:
+            document.new_page()
+            payload = document.tobytes()
+        plan = plan_artifact_import("concurrent", "same.pdf", payload)
+        barrier = threading.Barrier(2)
+        commit = LiteratureImports._commit
+
+        def synchronized(imports, *args, **kwargs):
+            barrier.wait(timeout=10)
+            return commit(imports, *args, **kwargs)
+
+        with patch.object(LiteratureImports, "_commit", new=synchronized):
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                receipts = list(
+                    executor.map(
+                        lambda _: import_from_bytes(
+                            self.content, self.project.id, plan, "same.pdf", payload
+                        ),
+                        range(2),
+                    )
+                )
+        self.assertEqual(receipts[0], receipts[1])
+        self.assertEqual(len(list(self.files.glob("*.pdf"))), 1)
 
     def test_bibliography_formats_preserve_metadata_with_independent_identity(self) -> None:
         bib = parse_import("source.BIB", BIB).items[0]
@@ -983,7 +1353,8 @@ class LiteratureImportTests(unittest.TestCase):
                 self.content, self.project.id, (str(source),), ImportSource.LOCAL_FILE
             )
         self.assertEqual(outcome.items[0].title, "Admitted research")
-        self.assertEqual((self.library / source.name).read_bytes(), BIB)
+        self.assertEqual(outcome.items[0].title, "Admitted research")
+        self.assertEqual(list(self.library.iterdir()), [])
 
     def test_explicit_import_read_does_not_authorize_project_read(self) -> None:
         source = self.source("selected.bib", BIB)
@@ -993,7 +1364,7 @@ class LiteratureImportTests(unittest.TestCase):
         with self.assertRaises(ContentError):
             self.content.read_bytes(self.project.id, "../selected.bib")
 
-    def test_real_pdf_is_published_to_the_project_and_owned_by_literature(self) -> None:
+    def test_real_pdf_is_owned_by_global_literature_without_project_copy(self) -> None:
         with pdf_fixture.open() as document:
             document.new_page()
             document.set_metadata({"title": "A readable research document"})
@@ -1007,15 +1378,10 @@ class LiteratureImportTests(unittest.TestCase):
         self.assertEqual(item.title, "A readable research document")
         primary = LiteratureRepository().primary_attachment(item.id)
         assert primary is not None
-        published = self.content.asset(self.project.id, result.asset_ids[0])
-        # 项目里那份照旧发布 (资料库视图与导入台账指着它); 文献附件是自己独占的一
-        # 份托管副本 —— 同样的字节, 不同的文件。
-        self.assertEqual(
-            self.content.read_asset_bytes(self.project.id, result.asset_ids[0])[0], payload
-        )
+        self.assertEqual(result.asset_ids, ())
+        self.assertEqual(list(self.library.iterdir()), [])
         owned = Path(primary.path)
         self.assertTrue(owned.is_relative_to(self.files))
-        self.assertNotEqual(owned, Path(self.content.resolve(self.project.id, published.path)))
         self.assertEqual(owned.read_bytes(), payload)
 
     def test_project_file_rename_never_moves_the_literature_attachment(self) -> None:
@@ -1030,8 +1396,8 @@ class LiteratureImportTests(unittest.TestCase):
         primary = LiteratureRepository().primary_attachment(stored.id)
         assert primary is not None
         note = LiteratureRepository().create_note(stored.id, "User-owned annotation")
-        published = self.content.asset(self.project.id, receipt.asset_ids[0])
-        renamed = self.content.rename(self.project.id, published.path, "renamed.pdf")
+        self.assertEqual(receipt.asset_ids, ())
+        renamed = source.rename(source.with_name("renamed.pdf"))
         resolver = LiteraturePdf()
         self.assertEqual(resolver.read(stored)[0], payload)
         app = FastAPI()
@@ -1061,7 +1427,7 @@ class LiteratureImportTests(unittest.TestCase):
             self.assertEqual(opened.status_code, 200, opened.text)
             self.assertEqual(opened.content, payload)
             # 项目里那份被改名、甚至被删掉, 文献读的始终是自己那份副本。
-            Path(self.content.resolve(self.project.id, renamed.path)).unlink()
+            renamed.unlink()
             self.assertEqual(resolver.read(stored)[0], payload)
             opened = client.get(
                 f"/api/v1/literatures/{stored.id}/attachments/{primary.id}/content",
@@ -1081,8 +1447,10 @@ class LiteratureImportTests(unittest.TestCase):
         receipt = import_from_paths(
             self.content, self.project.id, (str(source),), ImportSource.LOCAL_FILE
         )
-        asset_id = receipt.asset_ids[0]
-        asset = self.content.asset(self.project.id, asset_id)
+        self.assertEqual(receipt.asset_ids, ())
+        created = self.content.create_bytes(self.project.id, "resources", "source.bib", BIB)
+        asset = self.content.identify(self.project.id, created.path).asset
+        asset_id = asset.asset_id
         path = Path(self.content.resolve(self.project.id, asset.path))
         replacement = self.source("replacement.bib", RIS)
 
@@ -1118,7 +1486,7 @@ class LiteratureImportTests(unittest.TestCase):
             )
         self.assertEqual(receipt, replay)
         self.assertEqual(load_library(self.project.id).items, ())
-        self.assertEqual(len(list(self.library.iterdir())), 1)
+        self.assertEqual(list(self.library.iterdir()), [])
 
     def test_concurrent_same_request_commits_one_outcome(self) -> None:
         source = self.source("source.bib", BIB)
@@ -1135,7 +1503,7 @@ class LiteratureImportTests(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=2) as executor:
             receipts = list(executor.map(submit, range(2)))
         self.assertEqual(receipts[0], receipts[1])
-        self.assertEqual(len(list(self.library.iterdir())), 1)
+        self.assertEqual(list(self.library.iterdir()), [])
         self.assertEqual(len(load_library(self.project.id).items), 1)
 
     def test_same_operation_id_is_isolated_between_projects(self) -> None:
@@ -1202,7 +1570,7 @@ class LiteratureImportTests(unittest.TestCase):
             tuple(replace(item, updated_at=0) for item in load_library(self.project.id).items),
             recovered.items,
         )
-        self.assertEqual(len(list(self.library.iterdir())), 1)
+        self.assertEqual(list(self.library.iterdir()), [])
 
     def test_pdf_renamed_after_materialization_is_recovered_at_current_path(self) -> None:
         with pdf_fixture.open() as document:
@@ -1221,8 +1589,7 @@ class LiteratureImportTests(unittest.TestCase):
                     ImportSource.LOCAL_FILE,
                     "rename-recovery",
                 )
-        root = self.content.root(self.project.id, RootKind.LITERATURE).path
-        renamed = self.content.rename(self.project.id, f"{root}/original.pdf", "renamed.pdf")
+        source.rename(source.with_name("renamed.pdf"))
         receipt = import_from_paths(
             self.content,
             self.project.id,
@@ -1233,19 +1600,17 @@ class LiteratureImportTests(unittest.TestCase):
         item = load_library(self.project.id).items[0]
         primary = LiteratureRepository().primary_attachment(item.id)
         assert primary is not None
-        self.assertEqual(
-            self.content.asset(self.project.id, receipt.asset_ids[0]).path, renamed.path
-        )
+        self.assertEqual(receipt.asset_ids, ())
         self.assertTrue(receipt.items[0].has_pdf)
-        self.assertEqual(
-            self.content.read_asset_bytes(self.project.id, receipt.asset_ids[0])[0], payload
-        )
+        self.assertEqual(list(self.library.iterdir()), [])
         self.assertEqual(Path(primary.path).read_bytes(), payload)
 
     def test_bad_preparation_count_is_rejected_before_any_materialization(self) -> None:
         source = self.source("source.bib", BIB)
-        with patch.object(self.content, "materialize", side_effect=ContentError("read_failed")):
-            with self.assertRaises(LiteratureImportError):
+        with patch.object(
+            LiteratureImports, "_commit", side_effect=sqlite3.OperationalError("read_failed")
+        ):
+            with self.assertRaises(LiteratureError):
                 import_from_paths(
                     self.content,
                     self.project.id,
@@ -1276,7 +1641,7 @@ class LiteratureImportTests(unittest.TestCase):
     def test_uncommitted_batch_preparations_are_released_on_failure(self) -> None:
         first = self.source("first.bib", BIB)
         second = self.source("second.ris", RIS)
-        prepare = self.content.prepare_bytes
+        encode = base64.b64encode
         calls = 0
 
         def fail_second(*args, **kwargs):
@@ -1284,9 +1649,11 @@ class LiteratureImportTests(unittest.TestCase):
             calls += 1
             if calls == 2:
                 raise ContentError("write_failed")
-            return prepare(*args, **kwargs)
+            return encode(*args, **kwargs)
 
-        with patch.object(self.content, "prepare_bytes", side_effect=fail_second):
+        with patch(
+            "service.literature.persistence.imports.base64.b64encode", side_effect=fail_second
+        ):
             with self.assertRaises(LiteratureImportError):
                 import_from_paths(
                     self.content,
@@ -1300,19 +1667,19 @@ class LiteratureImportTests(unittest.TestCase):
     def test_partial_materialization_resumes_same_targets_without_source_reads(self) -> None:
         first = self.source("first.bib", BIB)
         second = self.source("second.ris", RIS)
-        materialize = self.content.materialize
+        save = LiteratureRepository.save
         calls = 0
 
-        def interrupt_second(prepared):
+        def interrupt_second(repository, *args, **kwargs):
             nonlocal calls
             calls += 1
             if calls == 2:
-                raise ContentError("read_failed")
-            return materialize(prepared)
+                raise sqlite3.OperationalError("read_failed")
+            return save(repository, *args, **kwargs)
 
         sources = (str(first), str(second))
-        with patch.object(self.content, "materialize", side_effect=interrupt_second):
-            with self.assertRaises(LiteratureImportError):
+        with patch.object(LiteratureRepository, "save", new=interrupt_second):
+            with self.assertRaises(LiteratureError):
                 import_from_paths(
                     self.content, self.project.id, sources, ImportSource.LOCAL_FILE, "recover-batch"
                 )
@@ -1325,9 +1692,7 @@ class LiteratureImportTests(unittest.TestCase):
             )
         self.assertEqual((receipt.added, receipt.skipped, receipt.total), (2, 0, 2))
         self.assertEqual(len({item.id for item in receipt.items}), 2)
-        self.assertEqual(
-            sorted(path.name for path in self.library.iterdir()), ["first.bib", "second.ris"]
-        )
+        self.assertEqual(list(self.library.iterdir()), [])
         persisted = load_library(self.project.id).items
         self.assertTrue(all(item.updated_at == item.added_at for item in persisted))
         self.assertEqual(tuple(replace(item, updated_at=0) for item in persisted), receipt.items)
@@ -1349,8 +1714,10 @@ class LiteratureImportTests(unittest.TestCase):
         repository = LiteratureRepository()
         collection = repository.create_collection("Pending global")
         plan = plan_artifact_import("artifact", "paper.bib", BIB, collection_id=collection["id"])
-        with patch.object(self.content, "materialize", side_effect=ContentError("write_failed")):
-            with self.assertRaises(LiteratureImportError):
+        with patch.object(
+            LiteratureImports, "_commit", side_effect=sqlite3.OperationalError("write_failed")
+        ):
+            with self.assertRaises(LiteratureError):
                 import_from_bytes(self.content, self.project.id, plan, "paper.bib", BIB)
         repository.rename_collection(collection["id"], "Renamed global")
         receipt = LiteratureImports(self.content).resume(
@@ -1401,8 +1768,10 @@ class LiteratureImportTests(unittest.TestCase):
         repository = LiteratureRepository()
         collection = repository.create_collection("Deleted global")
         plan = plan_artifact_import("artifact", "paper.bib", BIB, collection_id=collection["id"])
-        with patch.object(self.content, "materialize", side_effect=ContentError("write_failed")):
-            with self.assertRaises(LiteratureImportError):
+        with patch.object(
+            LiteratureImports, "_commit", side_effect=sqlite3.OperationalError("write_failed")
+        ):
+            with self.assertRaises(LiteratureError):
                 import_from_bytes(self.content, self.project.id, plan, "paper.bib", BIB)
         repository.delete_collection(collection["id"])
         with self.assertRaises(LiteratureError):

@@ -8,6 +8,7 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs'
@@ -21,6 +22,7 @@ import ts from 'typescript'
 import { SquirrelInstallation, readSquirrelHandoff, type SquirrelHandoff } from './squirrel.ts'
 import {
   inspectSquirrelStartup,
+  inspectSquirrelIdle,
   settleSquirrelStartup,
   squirrelAdmission,
   squirrelLaunchSuperseded,
@@ -194,7 +196,8 @@ function harness(home: string, recordPath: string, channel: string, platform = '
     squirrelLaunchSuperseded,
     settleSquirrelStartup,
     inspectSquirrelStartup,
-    inspectSquirrelIdle: async () => true,
+    inspectSquirrelIdle,
+    verifySquirrelReplacement: async () => undefined,
     systemCacheDir: () => home,
     resolve,
     dirname,
@@ -255,6 +258,7 @@ function harness(home: string, recordPath: string, channel: string, platform = '
     toastNative: undefined,
     installApplicationMenu: () => undefined,
     SCHOLARSEED_PROTOCOL: 'fixture',
+    NOTIFICATION_PROTOCOL: 'fixture-notification',
     logWindowLifecycle: () => undefined,
     processIntegrityLevel: () => 'standard',
     startHandoffInboxDrain: () => actions.push('inbox'),
@@ -392,6 +396,7 @@ function launchNative(): DomainNative {
       return `darwin:${'1'.repeat(32)}:${info.ino.toString(16).padStart(16, '0')}:${Math.floor(info.birthtimeMs).toString(16).padStart(16, '0')}:00000000`
     },
     createAt: (pin, name, bytes) => writeFileSync(join(pathOf(pin), name), bytes),
+    replaceAt: (pin, name, bytes) => writeFileSync(join(pathOf(pin), name), bytes),
     createChild: (pin, name) => {
       const path = join(pathOf(pin), name)
       mkdirSync(path)
@@ -501,6 +506,68 @@ test(
       'replacement'
     )
     assert.equal(readFileSync(fixture.path, 'utf8'), fixture.states.failed)
+  }
+)
+
+test(
+  'superseding build revalidates native failure before consuming the old handoff',
+  { skip: MACOS_CONTEXT_FIXTURE_SKIP },
+  async (context) => {
+    const { fixture, observed, startup } = await sourceRecovery(context)
+    const restored = await restoredRecord(fixture.home, fixture.states.downloaded)
+    writeFileSync(fixture.path, JSON.stringify(restored.handoff))
+    const state = join(fixture.home, 'fixture.ShipIt', 'ShipItState.plist')
+    const request = JSON.parse(readFileSync(state, 'utf8'))
+    writeFileSync(
+      state,
+      JSON.stringify({
+        ...request,
+        binding: restored.handoff.binding,
+        bundleIdentifier: 'fixture',
+        installationAuthorized: true,
+        launchAfterInstallation: true,
+        useUpdateBundleName: true,
+      }),
+      { mode: 0o600 }
+    )
+    startup.config.buildNumber = '202611030003'
+    startup.updaterScope.app.getVersion = () => '0.3.2'
+    const target = join(fixture.home, 'target.app')
+    renameSync(target, target + '.previous')
+    mkdirSync(join(target, 'Contents/Frameworks/Squirrel.framework/Resources'), { recursive: true })
+    writeFileSync(
+      join(target, 'Contents/Frameworks/Squirrel.framework/Resources/ShipIt'),
+      'fixture'
+    )
+    startup.updaterScope.inspectSquirrelIdle = inspectSquirrelIdle
+    const decision = await startup.admit(observed.context)
+    assert.equal(decision.admission, 'superseded')
+    startup.updaterScope.verifySquirrelReplacement = async () => {
+      throw new Error('replacement signature changed')
+    }
+    await assert.rejects(
+      startup.updaterScope.exports.completeMacStartupAdmission(() => undefined, decision, observed),
+      /superseded recovery evidence/
+    )
+    assert.equal(existsSync(fixture.path), true)
+    startup.updaterScope.verifySquirrelReplacement = async () => undefined
+    const ack = readFileSync(restored.acknowledgement)
+    rmSync(restored.acknowledgement)
+    await assert.rejects(
+      startup.updaterScope.exports.completeMacStartupAdmission(() => undefined, decision, observed),
+      /superseded recovery evidence/
+    )
+    assert.equal(existsSync(fixture.path), true)
+    writeFileSync(restored.acknowledgement, ack, { mode: 0o600 })
+    await startup.updaterScope.exports.completeMacStartupAdmission(
+      () => undefined,
+      decision,
+      observed
+    )
+    assert.equal(existsSync(fixture.path), false)
+    assert.equal(existsSync(state), true)
+    assert.deepEqual(readFileSync(restored.acknowledgement), ack)
+    assert.equal(startup.actions.filter((action) => action === 'remove-handoff').length, 1)
   }
 )
 

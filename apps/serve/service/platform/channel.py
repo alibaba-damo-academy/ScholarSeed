@@ -1,4 +1,4 @@
-"""Authenticated, bounded transport shared by scoped product clients."""
+"""Authenticated transport shared by scoped product clients."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ import httpx
 from pydantic import BaseModel
 
 from service.platform.vocabulary import (
-    BRIDGE_MAX_REQUEST_BYTES,
     BRIDGE_MAX_RESPONSE_BYTES,
     BRIDGE_SESSION_ENV,
     BRIDGE_SESSION_HEADER,
@@ -19,9 +18,17 @@ from service.platform.vocabulary import (
     BRIDGE_TOKEN_ENV,
     BRIDGE_TOKEN_HEADER,
     INTERNAL_BASE_URL_ENV,
-    JSON_ENCODING,
     LOCAL_SOCKET_BASE_URL,
     LOOPBACK_NAMES,
+)
+
+BRIDGE_CONTEXT_UNAVAILABLE = (
+    "bridge_context_unavailable: this terminal has no authenticated bridge context"
+)
+BRIDGE_CONTEXT_RECOVERY = (
+    "In a ScholarSeed Agent turn, call the scholarseed_bridge model tool with the same "
+    "capability, operation and request. Do not retry this terminal command or copy credentials. "
+    "Outside an Agent turn, stop and return to ScholarSeed."
 )
 
 
@@ -32,8 +39,6 @@ class BridgeResponseError(ValueError):
 
 
 def decode(raw: str, request_type: type[BaseModel]) -> dict:
-    if len(raw.encode(JSON_ENCODING)) > BRIDGE_MAX_REQUEST_BYTES:
-        raise ValueError("bridge_request_too_large")
     return request_type.model_validate(json.loads(raw)).model_dump(exclude_unset=True)
 
 
@@ -43,7 +48,7 @@ def request(route: str, payload: dict, *, blocking: bool = False) -> dict:
     session_id = os.environ.get(BRIDGE_SESSION_ENV, "")
     local_socket = os.environ.get(BRIDGE_SOCKET_ENV, "")
     if (not base_url and not local_socket) or not token or not session_id:
-        raise ValueError("bridge_context_unavailable: run inside a ScholarSeed Agent session")
+        raise ValueError(BRIDGE_CONTEXT_UNAVAILABLE)
     if local_socket:
         base_url = LOCAL_SOCKET_BASE_URL
     address = urlsplit(base_url)

@@ -1,6 +1,6 @@
 ---
 name: pdf-evidence
-version: 0.1.0
+version: 0.1.3
 description: "Read PDFs sent or selected in this turn; discover and read authorized project resource PDFs when no turn reference matches. Cite verified PDF bridge fragments and retrieve their annotations when requested. Not for stored literature catalogue papers, which use project-literature."
 description_zh: "读取本轮发送、选中的 PDF；本轮引用不匹配时发现并读取项目资料库的已授权 PDF。引用已核验的 PDF Bridge 片段，按需读取批注。已存文献库论文使用 project-literature。"
 ---
@@ -31,7 +31,7 @@ authorization to this session and turn; never supply a guessed project, session 
 ## Project resource PDFs
 
 Do not ask the user to upload again merely because the turn-reference list is empty.
-Read the product operations [project resources guide](../scholarseed-product-operations/references/resources.md).
+Read the product operations [project resources guide](../scholarseed-product-operations/references/scholarseed-bridge/guides/resources.md).
 Use `{"capability":"resource","operation":"list","request":{}}` for the logical
 inventory, including authorized linked roots outside the Shared Resources directory.
 Follow `next_cursor` to completion before claiming a unique match; report `warnings`
@@ -42,7 +42,15 @@ readable source and no conflicting selection, read it and answer. With multiple 
 ask which one using their names; do not choose arbitrarily or request a new upload.
 Discovery metadata or a sandbox root alone does not prove content has been read.
 
-Use a supplied real authorized filesystem locator when available. Otherwise read the
+For prose extraction or comparison of project materials, describe and use
+`resource/read-text` with discovered project-relative paths, grouping the requested
+materials into a bounded batch. Respect its pending retry/remove decision; do not
+bypass a failed parse through terminal reads or claim that removal deletes the file.
+Only use returned text, report failures and truncation, and do not invent PDF page
+anchors or citation handles for this extraction.
+
+For a task requiring layout, images or page inspection beyond prose extraction,
+use a supplied real authorized filesystem locator when available. Otherwise read the
 returned project-relative path with `capability=resource`, `operation=read`,
 `encoding=base64`: PDF bytes are not UTF-8 text. Follow bounded byte offsets to `eof`,
 decode the returned chunks into a session-local working copy and parse it with an

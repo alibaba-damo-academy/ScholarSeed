@@ -112,11 +112,17 @@ static NSUInteger Publications(NSString *root, NSMutableSet *parents) {
       NSURL *nextCandidate = SSPreparationCopy(otherSource, otherTarget, nextBinding, NULL); assert(nextCandidate); checks++;
       [parents addObject:nextCandidate.path.stringByDeletingLastPathComponent];
     } else if ([name isEqual:@"target"]) {
+      assert(unlink(next.fileSystemRepresentation) == 0); checks++;
+      assert(SSReadinessPublishBound(source, target, binding, NO, ECANCELED, NULL)); checks++;
       NSString *saved = [target.path stringByAppendingString:@".saved"];
       assert(rename(target.path.fileSystemRepresentation, saved.fileSystemRepresentation) == 0); checks++;
       Bundle(target.path);
-      assert(SSPreparationRecoverFailure(otherSource, otherTarget, nextBinding, &code, NULL) == SSPreparationFailureInvalid); checks++;
-      assert(!SSPreparationCopy(otherSource, otherTarget, nextBinding, NULL)); checks++;
+      assert(SSPreparationRecoverFailure(source, target, binding, &code, NULL) == SSPreparationFailureInvalid); checks++;
+      assert(!SSPreparationCopy(source, target, binding, NULL)); checks++;
+      assert(SSPreparationRecoverFailure(otherSource, target, nextBinding, &code, NULL) == SSPreparationFailureNone); checks++;
+      NSURL *nextCandidate = SSPreparationCopy(otherSource, target, nextBinding, NULL); assert(nextCandidate); checks++;
+      [parents addObject:nextCandidate.path.stringByDeletingLastPathComponent];
+      assert(!SSPreparationCopy(source, target, binding, NULL)); checks++;
     } else if ([name isEqual:@"candidate-live"] || [name isEqual:@"directory-live"]) {
       NSString *changed = [name isEqual:@"candidate-live"] ? [candidate.path stringByAppendingPathComponent:@"Contents"] : candidate.path.stringByDeletingLastPathComponent;
       NSString *saved = [changed stringByAppendingString:@".saved"];

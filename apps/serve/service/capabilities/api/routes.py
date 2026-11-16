@@ -33,7 +33,6 @@ from service.capabilities.service.delivery import (
     read_delivery,
 )
 from service.capabilities.service.descriptor import (
-    PLUGIN_DESCRIPTOR,
     ComponentValidationError,
     PluginComponent,
     validate_component_submission,
@@ -323,11 +322,14 @@ def register_capability_routes(
                             "location": "generated",
                         }
                     fresh = catalog.installation_report(workspace, path, report["sha256"])
+                    if not fresh["valid"]:
+                        return {**state, "report": fresh}
                     candidate = candidates.get(fresh["candidate"], fresh["sha256"])
+                    preview = preview_skill_upload(candidate.payload, path)
                     candidates.entries[fresh["candidate"]] = replace(
                         candidate, delivery_request=request_id
                     )
-                    return {**state, "report": fresh}
+                    return {**state, "report": fresh, "preview": preview}
                 except (ValueError, OSError) as exc:
                     raise HTTPException(409, str(exc)) from exc
             return state
@@ -384,7 +386,7 @@ def register_capability_routes(
             if sorted(grants) != sorted(candidate.report["descriptor"]["capabilities"]):
                 raise ValueError("plugin_consent_mismatch")
             enabled, update = body.get("enable", True), body.get("update", False)
-            if type(enabled) is not bool or type(update) is not bool:
+            if not isinstance(enabled, bool) or not isinstance(update, bool):
                 raise ValueError("plugin_install_options_invalid")
             if candidate.result is not None:
                 if candidate.result["enabled"] != enabled:
@@ -447,6 +449,14 @@ def register_capability_routes(
                         else (previous.disabled_skills | {package.name})
                     ),
                     deleted_skills=previous.deleted_skills - {package.name},
+                    installation_sources={
+                        **previous.installation_sources,
+                        package.name: (
+                            SKILL_INSTALLATION_CREATED
+                            if candidate.source is not None
+                            else SKILL_INSTALLATION_UPLOAD
+                        ),
+                    },
                 )
                 try:
                     with plugin_installation(
@@ -536,7 +546,7 @@ def register_capability_routes(
         if (
             not isinstance(reference, dict)
             or not isinstance(values, dict)
-            or type(revision) is not int
+            or (not isinstance(revision, int) or isinstance(revision, bool))
         ):
             raise HTTPException(422, "component_draft_invalid")
         if components is None:
@@ -589,6 +599,8 @@ def register_capability_routes(
         "/api/capabilities/skills/plugins/action", dependencies=[Depends(require_host_process)]
     )
     async def binding_action(request: Request, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+        if components is None:
+            raise HTTPException(503, "component_registry_unavailable")
         snapshot = await binding_plugin(request, body)
         reference = body["reference"]
         try:

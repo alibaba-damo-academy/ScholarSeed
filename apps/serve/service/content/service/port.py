@@ -27,18 +27,18 @@ from contextlib import AbstractContextManager, ExitStack, contextmanager, nullco
 from contextvars import ContextVar
 from dataclasses import asdict
 from errno import ENOSPC
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, AsyncIterator, BinaryIO, Callable, Iterator
 from uuid import uuid4
 
 from service.content.domain import naming
 from service.content.domain.model import (
-    MANAGED_LITERATURE_ROOT_RELATIVE,
     MANAGED_RESOURCES_ROOT_RELATIVE,
     OWNED_ROOT_KINDS,
     PATH_OUTSIDE_ROOT_ERROR,
     PROJECT_RECOVERY_PENDING,
     PROJECT_STATE_DIRNAME,
+    READ_PERMISSION_DENIED,
     ROOT_UNAVAILABLE_ERROR,
     ContentError,
     ContentReadPermissionError,
@@ -59,6 +59,7 @@ from service.content.service import (
     assets,
     enumeration,
     events,
+    external,
     identity,
     migration,
     repository,
@@ -86,6 +87,7 @@ from service.platform.activity import Activities, ActivityDomain
 from service.platform.content import (
     DISK_FULL_ERROR,
     IMPORT_CANCELLED_ERROR,
+    ArtifactDirectoryManifest,
     ArtifactScope,
     ArtifactScopeKind,
     ArtifactStorageLocation,
@@ -100,6 +102,7 @@ from service.platform.content import (
     ContentImportStage,
     ContentSnapshot,
     ContentWriteReceipt,
+    ExternalFileSnapshot,
     ExternalRootRef,
     FileAssetRef,
     FileEvent,
@@ -167,6 +170,8 @@ def _revision(path: Path) -> str:
         with path.open("rb") as stream:
             for chunk in iter(lambda: stream.read(DIGEST_CHUNK_BYTES), b""):
                 digest.update(chunk)
+    except PermissionError as exc:
+        raise ContentError(READ_PERMISSION_DENIED) from exc
     except OSError as exc:
         raise ContentError("read_failed") from exc
     return f"{REVISION_PREFIX}{digest.hexdigest()}"
@@ -431,12 +436,14 @@ class ProjectRegistry:
             raise ContentError("no_project_selected")
         return self._reference(row)
 
-    def resolve(self, project_id: str | None) -> ProjectRef:
+    def resolve(self, project_id: str | None, *, read_only: bool = False) -> ProjectRef:
         """project_id → 项目引用。None 或 CURRENT 取默认项目。"""
 
         if not project_id or project_id == self.CURRENT:
+            if read_only:
+                raise ContentError("no_project_selected")
             return self.default()
-        row = self._catalog.project(project_id)
+        row = self._catalog.project(project_id, read_only=read_only)
         if row is None:
             # 未登记的 id 明确拒绝而不是静默回落到当前工作区 —— 静默回落会让
             # 调用方以为自己操作的是另一个项目。
@@ -524,11 +531,7 @@ class ProjectRegistry:
         if directory.exists():
             raise ContentError("project_directory_exists")
         try:
-            for relative in (
-                MANAGED_RESOURCES_ROOT_RELATIVE,
-                MANAGED_LITERATURE_ROOT_RELATIVE,
-                PROJECT_STATE_DIRNAME,
-            ):
+            for relative in (MANAGED_RESOURCES_ROOT_RELATIVE, PROJECT_STATE_DIRNAME):
                 (directory / relative).mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             raise ContentError("project_create_failed") from exc
@@ -753,7 +756,7 @@ class ContentService:
 
     # ---- 路径空间 ----
 
-    def _space(self, project_id: str | None) -> space.ProjectSpace:
+    def _space(self, project_id: str | None, *, read_only: bool = False) -> space.ProjectSpace:
         """该项目当前的路径空间 (项目根 + 生效中的虚拟挂载)。
 
         每次调用都重建而不是缓存: 授权与撤销必须**即时**在产品面生效
@@ -761,10 +764,12 @@ class ContentService:
         一个还能写的窗口。重建的成本是一次索引查询。
         """
 
-        project = self._registry.resolve(project_id)
+        project = self._registry.resolve(project_id, read_only=read_only)
         if not project.available:
             raise ContentError(ROOT_UNAVAILABLE_ERROR)
-        return self.project_space(project, self._catalog.external_roots(project.id))
+        return self.project_space(
+            project, self._catalog.external_roots(project.id, read_only=read_only)
+        )
 
     @staticmethod
     def project_space(
@@ -786,10 +791,10 @@ class ContentService:
         )
         return space.ProjectSpace(project, mounts)
 
-    def _identity_space(self, project_id: str) -> space.ProjectSpace:
+    def _identity_space(self, project_id: str, *, read_only: bool = False) -> space.ProjectSpace:
         """Verification-only view that preserves revoked root lineage without write authority."""
 
-        project = self._registry.resolve(project_id)
+        project = self._registry.resolve(project_id, read_only=read_only)
         mounts = tuple(
             space.Mount(
                 mount_path=row.mount_path,
@@ -797,7 +802,9 @@ class ContentService:
                 kind=row.kind,
                 root_id=row.root_id,
             )
-            for row in self._catalog.external_roots(project.id, include_revoked=True)
+            for row in self._catalog.external_roots(
+                project.id, include_revoked=True, read_only=read_only
+            )
         )
         return space.ProjectSpace(project, mounts)
 
@@ -817,8 +824,8 @@ class ContentService:
             excluded_paths=tuple(scope.owned_roots.values()),
         )
 
-    def resolve(self, project_id: str, path: str) -> str:
-        return str(self._space(project_id).absolute(path))
+    def resolve(self, project_id: str, path: str, *, read_only: bool = False) -> str:
+        return str(self._space(project_id, read_only=read_only).absolute(path))
 
     def locate(
         self,
@@ -928,6 +935,8 @@ class ContentService:
             parent, name = scope.open_parent(scope.relative(target))
             payload = read_regular(parent, name, max_bytes)
             return payload, media or DEFAULT_MEDIA_TYPE
+        except PermissionError as exc:
+            raise ContentReadPermissionError(path) from exc
         except OSError as exc:
             raise ContentError("read_failed") from exc
         finally:
@@ -954,15 +963,16 @@ class ContentService:
         return payload, media or DEFAULT_MEDIA_TYPE
 
     def read_asset_bytes(
-        self, project_id: str, asset_id: str, max_bytes: int = MAX_BYTES
+        self, project_id: str, asset_id: str, max_bytes: int = MAX_BYTES, *, read_only: bool = False
     ) -> tuple[bytes, str]:
         with self._activities.enter(ActivityDomain.RESOURCE):
             try:
                 payload, asset = identity.read(
-                    self._space(project_id),
-                    self.resolve(project_id, PROJECT_DB_RELATIVE),
+                    self._space(project_id, read_only=read_only),
+                    self.resolve(project_id, PROJECT_DB_RELATIVE, read_only=read_only),
                     asset_id,
                     max_bytes,
+                    read_only=read_only,
                 )
             except OSError as error:
                 raise ContentError("read_failed") from error
@@ -975,17 +985,25 @@ class ContentService:
                 self._space(project_id), self.resolve(project_id, PROJECT_DB_RELATIVE), path
             )
 
-    def asset_status(self, project_id: str, asset_id: str) -> AssetBinding:
-        with self._activities.enter(ActivityDomain.RESOURCE):
-            resolved_project_id = self._registry.resolve(project_id).id
+    def asset_status(
+        self, project_id: str, asset_id: str, *, read_only: bool = False
+    ) -> AssetBinding:
+        with (
+            self._activities.observe_request()
+            if read_only
+            else self._activities.enter(ActivityDomain.RESOURCE)
+        ):
+            resolved_project_id = self._registry.resolve(project_id, read_only=read_only).id
             active_root_ids = frozenset(
-                row.root_id for row in self._catalog.external_roots(resolved_project_id)
+                row.root_id
+                for row in self._catalog.external_roots(resolved_project_id, read_only=read_only)
             )
             return identity.status(
-                self._identity_space(resolved_project_id),
-                self.resolve(resolved_project_id, PROJECT_DB_RELATIVE),
+                self._identity_space(resolved_project_id, read_only=read_only),
+                self.resolve(resolved_project_id, PROJECT_DB_RELATIVE, read_only=read_only),
                 asset_id,
                 active_root_ids,
+                read_only=read_only,
             )
 
     def rebind_asset(self, project_id: str, source: str, destination: str) -> AssetBinding | None:
@@ -1099,6 +1117,25 @@ class ContentService:
     def validate_prepared(self, prepared: PreparedContent) -> None:
         assets.validate_prepared(prepared)
 
+    def read_prepared(self, prepared: PreparedContent) -> bytes:
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            self.validate_prepared(prepared)
+            try:
+                return assets.read_prepared(self._space(prepared.project_id), prepared)
+            except ContentError as error:
+                if error.code != assets.PREPARED_UNAVAILABLE:
+                    raise
+            asset = self.asset(prepared.project_id, "", creation=prepared)
+            if not asset.asset_id:
+                raise ContentError(assets.PREPARED_CONFLICT)
+            payload, _media = self.read_asset_bytes(prepared.project_id, asset.asset_id)
+            if (
+                len(payload) != prepared.size
+                or hashlib.sha256(payload).hexdigest() != prepared.sha256
+            ):
+                raise ContentError(assets.PREPARED_CONFLICT)
+            return payload
+
     def materialize(self, prepared: PreparedContent) -> FileAssetRef:
         with self._activities.enter(ActivityDomain.RESOURCE):
             self.validate_prepared(prepared)
@@ -1163,6 +1200,12 @@ class ContentService:
     def revision(self, content: bytes) -> str:
         return _bytes_revision(content)
 
+    def external_file_snapshot(self, path: str) -> ExternalFileSnapshot:
+        return external.inspect(path)
+
+    def read_external_file(self, snapshot: ExternalFileSnapshot, offset: int, limit: int) -> bytes:
+        return external.read(snapshot, offset, limit)
+
     def snapshot(self, project_id: str, path: str) -> ContentSnapshot:
         target = self._file(project_id, path)
         try:
@@ -1172,6 +1215,8 @@ class ContentService:
                 can_write = writable(parent, name)
             finally:
                 parent.close()
+        except PermissionError as exc:
+            raise ContentReadPermissionError(path) from exc
         except OSError as exc:
             raise ContentError("read_failed") from exc
         media = guess_media_type(target.name)
@@ -1217,6 +1262,40 @@ class ContentService:
                     mode_bits=stat.S_IMODE(after.st_mode),
                 )
         raise ContentError("file_not_stable")
+
+    def relative_snapshot(
+        self, project_id: str, source: str, revision: str, relative: str, max_bytes: int
+    ) -> StableContentSnapshot:
+        if (
+            not project_id
+            or not revision
+            or not relative
+            or relative.startswith("/")
+            or "\\" in relative
+            or ":" in relative
+            or "\x00" in relative
+            or any(part in {"", ".", ".."} for part in relative.split("/"))
+        ):
+            raise ContentError("path_outside_project")
+        source_buffer = io.BytesIO()
+        original = self.capture_stable(project_id, source, max_bytes, source_buffer)
+        if original.revision != revision:
+            raise ContentError("source_revision_conflict")
+        path = str(PurePosixPath(source).parent / relative)
+        buffer = io.BytesIO()
+        target = self.capture_stable(project_id, path, max_bytes, buffer)
+        current = self.capture_stable(project_id, source, max_bytes, source_buffer)
+        if current.revision != revision:
+            raise ContentError("source_revision_conflict")
+        return StableContentSnapshot(
+            project_id=target.project_id,
+            path=target.path,
+            media_type=target.media_type,
+            content=buffer.getvalue(),
+            revision=target.revision,
+            mtime_ns=target.mtime_ns,
+            mode_bits=target.mode_bits,
+        )
 
     def capture_stable(
         self,
@@ -1343,11 +1422,17 @@ class ContentService:
             location = self.artifact_storage(scope)
             if not path.strip() or Path(path).is_absolute():
                 raise ContentError(snapshot.PATH_INVALID)
-            target = (Path(location.source_root) / path).resolve()
+            relative = Path(path.replace("\\", "/"))
+            if ".." in relative.parts or ":" in path or "\x00" in path:
+                raise ContentError(snapshot.PATH_INVALID)
+            target = Path(location.source_root).expanduser().resolve() / relative
             return snapshot.capture(location, scope, target, expected_sha256=expected_sha256)
 
     def read_artifact(self, content: VerifiedArtifactContent) -> bytes:
         return snapshot.read(self.artifact_storage(content.scope), content)
+
+    def artifact_manifest(self, content: VerifiedArtifactContent) -> ArtifactDirectoryManifest:
+        return snapshot.manifest(self.artifact_storage(content.scope), content)
 
     def remove_artifact(self, content: VerifiedArtifactContent) -> None:
         with self._activities.enter(ActivityDomain.RESOURCE):
@@ -1821,12 +1906,7 @@ class ContentService:
         return resolve_root(self._space(project_id).project, root).relative
 
     def root(self, project_id: str, root: RootKind) -> FileAssetRef:
-        """按种类取根节点, 并保证该目录存在。
-
-        就地创建而不是让调用方处理「根还不存在」: 两个根是**产品拥有**的位置
-        (不是用户随手建的目录), 任何东西要落进去都得先有它。让每个域各自
-        `mkdir` 正是本提案要消掉的第二处文件操作。
-        """
+        """Resolve roots without implicitly creating historical literature directories."""
 
         with self._activities.enter(ActivityDomain.RESOURCE):
             project = self._space(project_id).project
@@ -1845,7 +1925,9 @@ class ContentService:
             try:
                 # Never recursively recreate a project that disappeared after resolution.
                 with directory(
-                    Path(project.root), tuple(Path(location.relative).parts), create=True
+                    Path(project.root),
+                    tuple(Path(location.relative).parts),
+                    create=root is not RootKind.LITERATURE,
                 ):
                     pass
             except OSError as exc:

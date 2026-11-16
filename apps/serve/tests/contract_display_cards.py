@@ -34,20 +34,7 @@ from service.chat.service.cards import (
 )
 from service.chat.service.events import HISTORY_ACTIVITY_EVENT_KINDS, EventService
 from service.cli.bridge import parser
-from service.literature.domain.delivery import (
-    DELIVERY_CARD,
-    delivery_card_slot,
-    validate_delivery_card,
-)
-from service.literature.service.cards import (
-    LITERATURE_REFERENCES_CARD,
-    validate_references_card,
-)
-from service.literature.service.downloads import (
-    DOWNLOADS_CARD,
-    download_card_slot,
-    validate_download_card,
-)
+from service.literature.service.cited import validate_citations
 from service.literature.service.result import SEARCH_CARD, search_card_slot, validate_search_card
 from service.platform.activity import Activities, ActivityDomain
 from service.platform.bridge import (
@@ -65,6 +52,7 @@ from service.platform.vocabulary import (
     BRIDGE_TOKEN_HEADER,
 )
 
+BIBLIOGRAPHY_TEST_CARD = "test-bibliography"
 SESSION_ID = "display-card-session"
 BRIDGE_TOKEN = "display-card-token"
 TURN_ID = "display-card-turn"
@@ -104,19 +92,132 @@ def reference_payload() -> dict:
 
 
 class DisplayCardContract(unittest.TestCase):
+    def test_canvas_display_is_nonblocking_and_interaction_uses_existing_wait_path(self):
+        live, events = self._live()
+        live._skills.components = ComponentRegistry(self.root / "canvas.sqlite3")
+        data = {"format": "html", "version": 1, "source": "<main>Canvas</main>"}
+        display = ComponentInvocation(
+            request_id="canvas-display", title="Canvas", slot="canvas.ui", data=data
+        )
+        result = asyncio.run(live.component_interaction(display, turn_id=TURN_ID, waiting=False))
+        self.assertEqual(result["component"]["component"], "canvas.ui")
+        self.assertEqual(len(events.replay(live.id)), 1)
+        with self.assertRaisesRegex(ValueError, "canvas_interaction_mode_mismatch"):
+            asyncio.run(live.component_interaction(display, turn_id=TURN_ID, waiting=True))
+        request = ComponentInvocation(
+            request_id="canvas-request",
+            title="Canvas decision",
+            slot="canvas.ui",
+            data={**data, "interaction": {"actions": ["submit", "cancel"]}},
+        )
+        with self.assertRaisesRegex(ValueError, "canvas_interaction_mode_mismatch"):
+            asyncio.run(live.component_interaction(request, turn_id=TURN_ID, waiting=False))
+        with patch.object(
+            live.interactions,
+            "request_product_input",
+            new_callable=AsyncMock,
+            return_value={"answers": {"decision": "confirmed"}},
+        ) as wait:
+            answer = asyncio.run(live.component_interaction(request, turn_id=TURN_ID, waiting=True))
+            self.assertEqual(answer, {"answers": {"decision": "confirmed"}})
+            wait.assert_awaited_once()
+            self.assertEqual(wait.call_args.args[0]["component_data"], request.data)
+
+    def test_declarative_display_revisions_share_binding_and_keep_drafts(self):
+        live, events = self._live()
+        live._skills.components = ComponentRegistry(self.root / "declarative.sqlite3")
+        command = ComponentInvocation(
+            request_id="surface",
+            slot="conversation.ui",
+            title="Progress",
+            data={
+                "format": "openui-lang",
+                "version": 1,
+                "source": 'root = Conversation([TextContent("one")])',
+            },
+        )
+        first = asyncio.run(live.component_interaction(command, turn_id=TURN_ID, waiting=False))
+        registry = live._skills.components
+        registry.draft(
+            first["component"],
+            session_id=live.id,
+            user_id=live.user_id,
+            values={"selection": "saved"},
+            expected_revision=0,
+        )
+        second_command = command.model_copy(
+            update={
+                "revision": 1,
+                "data": {**command.data, "source": 'root = Conversation([TextContent("two")])'},
+            }
+        )
+        second = asyncio.run(
+            live.component_interaction(second_command, turn_id=TURN_ID, waiting=False)
+        )
+        self.assertEqual(first["component"], second["component"])
+        self.assertEqual(first["content"]["surface_id"], second["content"]["surface_id"])
+        self.assertEqual(
+            asyncio.run(live.component_interaction(second_command, turn_id=TURN_ID, waiting=False)),
+            second,
+        )
+        self.assertEqual(len(events.replay(live.id)), 2)
+        self.assertEqual(
+            registry.snapshot(second["component"], user_id=live.user_id)["interaction"]["state"],
+            {"selection": "saved"},
+        )
+
+    def test_declarative_display_cannot_request_a_user_decision(self):
+        live, events = self._live()
+        command = ComponentInvocation(
+            request_id="display-only",
+            slot="conversation.ui",
+            title="Display",
+            data={"format": "openui-lang", "version": 1, "source": "root = Conversation([])"},
+        )
+        with self.assertRaisesRegex(ValueError, "component_display_only"):
+            asyncio.run(live.component_interaction(command, turn_id=TURN_ID, waiting=True))
+        self.assertEqual(len(events.replay(live.id)), 0)
+
+    def test_declarative_display_rejects_missing_root_before_publishing(self):
+        live, events = self._live()
+        live._skills.components = ComponentRegistry(self.root / "declarative.sqlite3")
+        chart = 'Conversation([LineChart(["A"], [Series("Duration", [2])])])'
+        command = ComponentInvocation(
+            request_id="chart",
+            slot="conversation.ui",
+            title="Chart",
+            data={"format": "openui-lang", "version": 1, "source": chart},
+        )
+        for source in (
+            chart,
+            "// root = Conversation([])\n" + chart,
+            'caption = "Example:\nroot = Conversation([])\n"\n' + chart,
+            "Conversation([\nroot = Conversation([])\n])",
+        ):
+            with self.subTest(source=source):
+                invalid = command.model_copy(update={"data": {**command.data, "source": source}})
+                with self.assertRaisesRegex(ValueError, "^openui_root_required$"):
+                    asyncio.run(live.component_interaction(invalid, turn_id=TURN_ID, waiting=False))
+        self.assertEqual(len(events.replay(live.id)), 0)
+        repaired = command.model_copy(
+            update={"data": {**command.data, "source": "// Chart\nroot = " + chart}}
+        )
+        asyncio.run(live.component_interaction(repaired, turn_id=TURN_ID, waiting=False))
+        self.assertEqual(len(events.replay(live.id)), 1)
+
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="display-card-")
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.registry = CardRegistry()
-        self.registry.register(LITERATURE_REFERENCES_CARD, validate_references_card)
+        self.registry.register(BIBLIOGRAPHY_TEST_CARD, validate_citations)
 
     def test_cli_uses_single_display_card_command(self) -> None:
         args = parser().parse_args(
             [
                 "display-card",
                 "--json",
-                '{"type":"literature-references","content":{"data":{}}}',
+                '{"type":"test-bibliography","content":{"data":{}}}',
             ]
         )
         self.assertEqual((args.capability, args.operation), ("display-card", "publish"))
@@ -146,6 +247,7 @@ class DisplayCardContract(unittest.TestCase):
         )
         components.resolve.assert_called_once()
         self.assertEqual(first["type"], "plugin-component")
+        self.assertEqual(first["component"], reference)
         self.assertEqual(len(events.replay(SESSION_ID)), 1)
         with self.assertRaisesRegex(ValueError, "component_request_conflict"):
             asyncio.run(
@@ -163,7 +265,9 @@ class DisplayCardContract(unittest.TestCase):
             "fingerprint": "revision-one",
             "descriptor": {
                 "id": "comparison",
-                "components": [{"id": "matrix", "slot": "custom.matrix", "actions": []}],
+                "components": [
+                    {"id": "matrix", "slot": "custom.matrix", "actions": [], "workbench": True}
+                ],
             },
             "files": {"card.js": "first"},
             "scenarios": {},
@@ -175,6 +279,7 @@ class DisplayCardContract(unittest.TestCase):
         )
         first = asyncio.run(live.component_interaction(command, turn_id=TURN_ID, waiting=False))
         reference = first["component"]
+        self.assertIs(reference["workbench"], True)
         registry.draft(
             reference,
             session_id=SESSION_ID,
@@ -200,6 +305,8 @@ class DisplayCardContract(unittest.TestCase):
         )
         self.assertEqual(next_card["component"]["fingerprint"], "revision-two")
         self.assertEqual(len(events.replay(SESSION_ID)), 2)
+        history = EventService({}, ProductEventStore(events.database), SimpleNamespace())
+        self.assertEqual(history.activity_snapshot(SESSION_ID)[0]["data"]["component"], reference)
 
     def test_generic_component_cannot_forge_host_business_card(self) -> None:
         live, _ = self._live()
@@ -219,11 +326,11 @@ class DisplayCardContract(unittest.TestCase):
 
     def test_request_requires_exactly_one_content_source(self) -> None:
         with self.assertRaises(ValueError):
-            DisplayCard.model_validate({"type": LITERATURE_REFERENCES_CARD, "content": {}})
+            DisplayCard.model_validate({"type": BIBLIOGRAPHY_TEST_CARD, "content": {}})
         with self.assertRaises(ValueError):
             DisplayCard.model_validate(
                 {
-                    "type": LITERATURE_REFERENCES_CARD,
+                    "type": BIBLIOGRAPHY_TEST_CARD,
                     "content": {"path": "references.json", "data": {}},
                 }
             )
@@ -246,7 +353,7 @@ class DisplayCardContract(unittest.TestCase):
         }
         schema = json.loads(REFERENCES_SCHEMA.read_text(encoding="utf-8"))
         self.assertTrue(Draft7Validator(schema).is_valid(payload))
-        normalized = self.registry.validate(LITERATURE_REFERENCES_CARD, payload)
+        normalized = self.registry.validate(BIBLIOGRAPHY_TEST_CARD, payload)
         self.assertEqual(len(normalized["references"]), 45)
         self.assertEqual(normalized["schema_version"], "1.0")
         self.assertEqual(len({row["ref_id"] for row in normalized["references"]}), 45)
@@ -263,11 +370,11 @@ class DisplayCardContract(unittest.TestCase):
             {"references": [{"title": "  "}]},
         ):
             with self.assertRaises(DisplayCardError):
-                self.registry.validate(LITERATURE_REFERENCES_CARD, invalid)
+                self.registry.validate(BIBLIOGRAPHY_TEST_CARD, invalid)
 
     def test_display_keeps_long_titles_and_complete_author_lists(self) -> None:
         payload = {"references": [{"title": "Long " * 500, "authors": ["Author"] * 45}]}
-        normalized = self.registry.validate(LITERATURE_REFERENCES_CARD, payload)
+        normalized = self.registry.validate(BIBLIOGRAPHY_TEST_CARD, payload)
         self.assertEqual(normalized["references"][0]["title"], payload["references"][0]["title"])
         self.assertEqual(len(normalized["references"][0]["authors"]), 45)
 
@@ -278,13 +385,13 @@ class DisplayCardContract(unittest.TestCase):
         inline, inline_digest, inline_size = normalize_card(
             self.root,
             self.registry,
-            LITERATURE_REFERENCES_CARD,
+            BIBLIOGRAPHY_TEST_CARD,
             DisplayCardContent(data=payload),
         )
         stored, stored_digest, stored_size = normalize_card(
             self.root,
             self.registry,
-            LITERATURE_REFERENCES_CARD,
+            BIBLIOGRAPHY_TEST_CARD,
             DisplayCardContent(path="references.json"),
         )
         self.assertEqual(inline, stored)
@@ -292,9 +399,9 @@ class DisplayCardContract(unittest.TestCase):
         self.assertEqual(inline_size, stored_size)
 
     def test_card_identity_is_stable_and_turn_scoped(self) -> None:
-        first = card_identity("session", "turn-1", LITERATURE_REFERENCES_CARD, "abc")
-        repeated = card_identity("session", "turn-1", LITERATURE_REFERENCES_CARD, "abc")
-        next_turn = card_identity("session", "turn-2", LITERATURE_REFERENCES_CARD, "abc")
+        first = card_identity("session", "turn-1", BIBLIOGRAPHY_TEST_CARD, "abc")
+        repeated = card_identity("session", "turn-1", BIBLIOGRAPHY_TEST_CARD, "abc")
+        next_turn = card_identity("session", "turn-2", BIBLIOGRAPHY_TEST_CARD, "abc")
         self.assertEqual(first, repeated)
         self.assertNotEqual(first, next_turn)
 
@@ -305,14 +412,14 @@ class DisplayCardContract(unittest.TestCase):
             normalize_card(
                 self.root,
                 self.registry,
-                LITERATURE_REFERENCES_CARD,
+                BIBLIOGRAPHY_TEST_CARD,
                 DisplayCardContent(path="../references.json"),
             )
         with self.assertRaisesRegex(DisplayCardError, "display_card_path_invalid"):
             normalize_card(
                 self.root,
                 self.registry,
-                LITERATURE_REFERENCES_CARD,
+                BIBLIOGRAPHY_TEST_CARD,
                 DisplayCardContent(path="bad\0path.json"),
             )
 
@@ -324,7 +431,7 @@ class DisplayCardContract(unittest.TestCase):
                 normalize_card(
                     self.root,
                     self.registry,
-                    LITERATURE_REFERENCES_CARD,
+                    BIBLIOGRAPHY_TEST_CARD,
                     DisplayCardContent(path=source.name),
                 )
 
@@ -332,7 +439,7 @@ class DisplayCardContract(unittest.TestCase):
         payload = reference_payload()
         payload["references"].append(dict(payload["references"][0]))
         payload["references"].append({"title": "Minimal", "ref_id": "R2"})
-        normalized = self.registry.validate(LITERATURE_REFERENCES_CARD, payload)
+        normalized = self.registry.validate(BIBLIOGRAPHY_TEST_CARD, payload)
         self.assertEqual(len(normalized["references"]), 3)
         handles = [row["ref_id"] for row in normalized["references"]]
         self.assertEqual(len(set(handles)), 3)
@@ -438,14 +545,14 @@ class DisplayCardContract(unittest.TestCase):
         live, events = self._live()
         first = asyncio.run(
             live.display_card(
-                LITERATURE_REFERENCES_CARD,
+                BIBLIOGRAPHY_TEST_CARD,
                 DisplayCardContent(path=source.name),
                 turn_id=TURN_ID,
             )
         )
         repeated = asyncio.run(
             live.display_card(
-                LITERATURE_REFERENCES_CARD,
+                BIBLIOGRAPHY_TEST_CARD,
                 DisplayCardContent(path=source.name),
                 turn_id=TURN_ID,
             )
@@ -463,22 +570,18 @@ class DisplayCardContract(unittest.TestCase):
         reference = {"plugin": "example", "component": "references", "fingerprint": "first"}
 
         async def resolve(slot, *, skill_name="", interaction_id=""):
-            self.assertEqual(slot, "display.literature-references")
+            self.assertEqual(slot, "display.test-bibliography")
             self.assertEqual(skill_name, "example")
             return reference.copy()
 
         live.component_for = resolve
         live._skills = SimpleNamespace(components=Mock())
         content = DisplayCardContent(data=reference_payload(), skill="example")
-        first = asyncio.run(live.display_card(LITERATURE_REFERENCES_CARD, content, turn_id=TURN_ID))
-        repeated = asyncio.run(
-            live.display_card(LITERATURE_REFERENCES_CARD, content, turn_id=TURN_ID)
-        )
+        first = asyncio.run(live.display_card(BIBLIOGRAPHY_TEST_CARD, content, turn_id=TURN_ID))
+        repeated = asyncio.run(live.display_card(BIBLIOGRAPHY_TEST_CARD, content, turn_id=TURN_ID))
         self.assertEqual(first, repeated)
         reference["fingerprint"] = "second"
-        second = asyncio.run(
-            live.display_card(LITERATURE_REFERENCES_CARD, content, turn_id=TURN_ID)
-        )
+        second = asyncio.run(live.display_card(BIBLIOGRAPHY_TEST_CARD, content, turn_id=TURN_ID))
         self.assertNotEqual(first["card_id"], second["card_id"])
         self.assertEqual(first["component"]["fingerprint"], "first")
         reopened = ProductEventStore(events.database)
@@ -531,14 +634,14 @@ class DisplayCardContract(unittest.TestCase):
         first_payload = reference_payload()
         first = asyncio.run(
             live.display_card(
-                LITERATURE_REFERENCES_CARD,
+                BIBLIOGRAPHY_TEST_CARD,
                 DisplayCardContent(data=first_payload),
                 turn_id=TURN_ID,
             )
         )
         repeated = asyncio.run(
             live.display_card(
-                LITERATURE_REFERENCES_CARD,
+                BIBLIOGRAPHY_TEST_CARD,
                 DisplayCardContent(data=first_payload),
                 turn_id=TURN_ID,
             )
@@ -548,7 +651,7 @@ class DisplayCardContract(unittest.TestCase):
             payload["project"] = f"project-{index}"
             asyncio.run(
                 live.display_card(
-                    LITERATURE_REFERENCES_CARD,
+                    BIBLIOGRAPHY_TEST_CARD,
                     DisplayCardContent(data=payload),
                     turn_id=TURN_ID,
                 )
@@ -557,7 +660,7 @@ class DisplayCardContract(unittest.TestCase):
         overflow["project"] = "overflow"
         asyncio.run(
             live.display_card(
-                LITERATURE_REFERENCES_CARD,
+                BIBLIOGRAPHY_TEST_CARD,
                 DisplayCardContent(data=overflow),
                 turn_id=TURN_ID,
             )
@@ -642,7 +745,7 @@ class DisplayCardContract(unittest.TestCase):
             payload["project"] = f"project-{index}"
             asyncio.run(
                 live.display_card(
-                    LITERATURE_REFERENCES_CARD,
+                    BIBLIOGRAPHY_TEST_CARD,
                     DisplayCardContent(data=payload),
                     turn_id=TURN_ID,
                 )
@@ -670,7 +773,7 @@ class DisplayCardContract(unittest.TestCase):
         overflow["project"] = "overflow"
         asyncio.run(
             live.display_card(
-                LITERATURE_REFERENCES_CARD,
+                BIBLIOGRAPHY_TEST_CARD,
                 DisplayCardContent(data=overflow),
                 turn_id=TURN_ID,
             )
@@ -689,31 +792,27 @@ class DisplayCardContract(unittest.TestCase):
                     turn_id=TURN_ID,
                 )
             )
-        with self.assertRaisesRegex(DisplayCardError, "display_card_turn_bytes_exceeded"):
-            asyncio.run(
-                live.display_card(
-                    "product-stage",
-                    DisplayCardContent(
-                        data={"slot": "next-round", "text": "x" * 48_000, "revision": 3}
-                    ),
-                    turn_id=TURN_ID,
-                )
-            )
         asyncio.run(
             live.display_card(
-                LITERATURE_REFERENCES_CARD,
+                "product-stage",
+                DisplayCardContent(
+                    data={"slot": "next-round", "text": "x" * 48_000, "revision": 3}
+                ),
+                turn_id=TURN_ID,
+            )
+        )
+        asyncio.run(
+            live.display_card(
+                BIBLIOGRAPHY_TEST_CARD,
                 DisplayCardContent(data=overflow),
                 turn_id="next-user-turn",
             )
         )
 
-    def test_literature_rounds_and_delivery_batches_keep_independent_snapshots(self) -> None:
-        for card_type, validator, selector in (
-            (SEARCH_CARD, validate_search_card, search_card_slot),
-            (DOWNLOADS_CARD, validate_download_card, download_card_slot),
-            (DELIVERY_CARD, validate_delivery_card, delivery_card_slot),
-        ):
-            self.registry.register(card_type, validator, direct=False, slot=selector)
+    def test_literature_rounds_keep_independent_snapshots(self) -> None:
+        self.registry.register(
+            SEARCH_CARD, validate_search_card, direct=False, slot=search_card_slot
+        )
         live, events = self._live()
         search = {
             "session_id": SESSION_ID,
@@ -728,13 +827,6 @@ class DisplayCardContract(unittest.TestCase):
             "papers": [],
             "warnings": [],
         }
-        downloads = {"session_id": SESSION_ID, "run": "run", "project_id": "project", "papers": []}
-        delivery = {
-            "session_id": SESSION_ID,
-            "delivery_id": "batch-one",
-            "project_id": "project",
-            "count": 19,
-        }
 
         def publish(card_type, value):
             return asyncio.run(
@@ -743,23 +835,14 @@ class DisplayCardContract(unittest.TestCase):
 
         first = publish(SEARCH_CARD, search)
         publish(SEARCH_CARD, {**search, "selection": {"path": "selection.json"}})
-        publish(DOWNLOADS_CARD, downloads)
-        first_delivery = publish(DELIVERY_CARD, delivery)
-        updated_delivery = publish(DELIVERY_CARD, {**delivery, "count": 20})
-        second_delivery = publish(
-            DELIVERY_CARD, {**delivery, "delivery_id": "batch-two", "count": 1}
-        )
         second = publish(SEARCH_CARD, {**search, "round": 2})
         publish(SEARCH_CARD, {**search, "round": 2, "selection": {"path": "selection-2.json"}})
-        publish(DOWNLOADS_CARD, {**downloads, "omitted_papers": 1})
         publish(SEARCH_CARD, search)
         self.assertNotEqual(first["card_id"], second["card_id"])
-        self.assertNotEqual(first_delivery["card_id"], updated_delivery["card_id"])
-        self.assertNotEqual(updated_delivery["card_id"], second_delivery["card_id"])
         reopened = ProductEventStore(events.database)
         records = reopened.replay(SESSION_ID)
-        self.assertEqual(len(records), 10)
-        self.assertEqual(len({record.vendor_item_id for record in records}), 5)
+        self.assertEqual(len(records), 5)
+        self.assertEqual(len({record.vendor_item_id for record in records}), 2)
         self.assertEqual(records[-1].payload["content"], first["content"])
         search_slots = [
             record.vendor_item_id for record in records if record.payload["type"] == SEARCH_CARD
@@ -773,10 +856,6 @@ class DisplayCardContract(unittest.TestCase):
             {**search, "origin": "agentic-search"},
         ):
             self.assertNotEqual(search_card_slot(search), search_card_slot(changed))
-        self.assertNotEqual(
-            delivery_card_slot(delivery),
-            delivery_card_slot({**delivery, "project_id": "other-project"}),
-        )
 
     def test_product_slot_updates_preserve_cumulative_byte_limit_without_count_limit(self) -> None:
         with self.assertRaisesRegex(ValueError, "display_card_slot_requires_product_owner"):
@@ -835,20 +914,19 @@ class DisplayCardContract(unittest.TestCase):
                     turn_id=TURN_ID,
                 )
             )
-        with self.assertRaisesRegex(DisplayCardError, "display_card_turn_bytes_exceeded"):
-            asyncio.run(
-                live.display_card(
-                    "product-slot",
-                    DisplayCardContent(
-                        data={
-                            "slot": "0",
-                            "revision": 3,
-                            "text": "x" * 48_000,
-                        }
-                    ),
-                    turn_id=TURN_ID,
-                )
+        asyncio.run(
+            live.display_card(
+                "product-slot",
+                DisplayCardContent(
+                    data={
+                        "slot": "0",
+                        "revision": 3,
+                        "text": "x" * 48_000,
+                    }
+                ),
+                turn_id=TURN_ID,
             )
+        )
 
     def test_turn_card_byte_budget_is_cumulative(self) -> None:
         live, _events = self._live()
@@ -867,21 +945,20 @@ class DisplayCardContract(unittest.TestCase):
             value["project"] = f"large-{index}"
             asyncio.run(
                 live.display_card(
-                    LITERATURE_REFERENCES_CARD,
+                    BIBLIOGRAPHY_TEST_CARD,
                     DisplayCardContent(data=value),
                     turn_id=TURN_ID,
                 )
             )
         overflow = dict(payload)
         overflow["project"] = "large-overflow"
-        with self.assertRaisesRegex(DisplayCardError, "display_card_turn_bytes_exceeded"):
-            asyncio.run(
-                live.display_card(
-                    LITERATURE_REFERENCES_CARD,
-                    DisplayCardContent(data=overflow),
-                    turn_id=TURN_ID,
-                )
+        asyncio.run(
+            live.display_card(
+                BIBLIOGRAPHY_TEST_CARD,
+                DisplayCardContent(data=overflow),
+                turn_id=TURN_ID,
             )
+        )
 
     def test_route_requires_active_authenticated_turn(self) -> None:
         published = []
@@ -911,13 +988,13 @@ class DisplayCardContract(unittest.TestCase):
         with TestClient(app) as client:
             denied = client.post(
                 "/api/internal/bridge/display-card",
-                json={"type": LITERATURE_REFERENCES_CARD, "content": {"data": {}}},
+                json={"type": BIBLIOGRAPHY_TEST_CARD, "content": {"data": {}}},
             )
             accepted = client.post(
                 "/api/internal/bridge/display-card",
                 headers=headers,
                 json={
-                    "type": LITERATURE_REFERENCES_CARD,
+                    "type": BIBLIOGRAPHY_TEST_CARD,
                     "content": {"data": reference_payload()},
                 },
             )
@@ -926,7 +1003,7 @@ class DisplayCardContract(unittest.TestCase):
                 "/api/internal/bridge/display-card",
                 headers=headers,
                 json={
-                    "type": LITERATURE_REFERENCES_CARD,
+                    "type": BIBLIOGRAPHY_TEST_CARD,
                     "content": {"data": reference_payload()},
                 },
             )
@@ -945,7 +1022,16 @@ class DisplayCardContract(unittest.TestCase):
             bridge_token=BRIDGE_TOKEN,
             publication_turn_id=TURN_ID,
             bridge_activity=owner,
-            component_catalog=Mock(return_value=[{"slot": "custom.matrix"}]),
+            component_catalog=Mock(
+                return_value=[
+                    {
+                        "slot": "custom.matrix",
+                        "title": "Matrix",
+                        "input_schema": {"type": "object"},
+                        "output_schema": {"type": "object"},
+                    }
+                ]
+            ),
             component_ui_catalog=Mock(
                 return_value={
                     "available": True,
@@ -983,7 +1069,7 @@ class DisplayCardContract(unittest.TestCase):
                 client.post(
                     "/api/internal/bridge/component/catalog", headers=headers, json={}
                 ).json()["components"],
-                [{"slot": "custom.matrix"}],
+                [{"slot": "custom.matrix", "title": "Matrix"}],
             )
             caller.component_ui_catalog.assert_not_called()
             discovery = client.post(
@@ -992,7 +1078,44 @@ class DisplayCardContract(unittest.TestCase):
             self.assertEqual(discovery.status_code, 200)
             self.assertEqual(discovery.json()["ui"]["catalog"]["version"], "1.0.3")
             self.assertFalse(discovery.json()["ui"]["authorized"])
-            caller.component_ui_catalog.assert_called_once_with()
+            caller.component_ui_catalog.assert_called_once_with("declarative", "prompt")
+            detailed = client.post(
+                "/api/internal/bridge/component/catalog",
+                headers=headers,
+                json={"slot": "custom.matrix", "include_ui": True, "ui_detail": "schema"},
+            )
+            self.assertEqual(detailed.status_code, 200)
+            self.assertEqual(detailed.json()["components"], caller.component_catalog.return_value)
+            caller.component_ui_catalog.assert_called_with("declarative", "schema")
+            original_components = caller.component_catalog.return_value
+            canvas_definition = {"slot": "canvas.ui", "input_schema": {"type": "object"}}
+            caller.component_catalog.return_value = [*original_components, canvas_definition]
+            canvas_discovery = client.post(
+                "/api/internal/bridge/component/catalog",
+                headers=headers,
+                json={"include_ui": True, "ui_mode": "canvas", "ui_detail": "schema"},
+            )
+            self.assertEqual(canvas_discovery.status_code, 200)
+            self.assertEqual(canvas_discovery.json()["components"], [canvas_definition])
+            caller.component_ui_catalog.assert_called_with("canvas", "schema")
+            caller.component_catalog.return_value = original_components
+            self.assertEqual(
+                client.post(
+                    "/api/internal/bridge/component/catalog",
+                    headers=headers,
+                    json={"slot": "unknown"},
+                ).json()["components"],
+                [],
+            )
+            for invalid in ({"ui_mode": "unknown"}, {"ui_detail": "unknown"}):
+                self.assertEqual(
+                    client.post(
+                        "/api/internal/bridge/component/catalog",
+                        headers=headers,
+                        json=invalid,
+                    ).status_code,
+                    400,
+                )
             self.assertEqual(
                 client.post(
                     "/api/internal/bridge/component/catalog", json={"include_ui": True}

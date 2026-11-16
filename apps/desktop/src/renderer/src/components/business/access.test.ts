@@ -11,9 +11,12 @@ test('account access updates existing subscribers and ignores a stale login resp
   Object.defineProperty(globalThis, 'window', { configurable: true, value: target })
   const requests: Array<(response: Response) => void> = []
   globalThis.fetch = () => new Promise<Response>((resolve) => requests.push(resolve))
-  const snapshots: Array<{ authenticated: boolean; revision: number }> = []
-  const settle = async (): Promise<void> => { await new Promise<void>((resolve) => setImmediate(resolve)) }
-  const respond = (index: number, auth: boolean): void => requests[index](new Response(JSON.stringify({ auth })))
+  const snapshots: Array<{ authenticated: boolean; revision: number; identity: number }> = []
+  const settle = async (): Promise<void> => {
+    await new Promise<void>((resolve) => setImmediate(resolve))
+  }
+  const respond = (index: number, auth: boolean): void =>
+    requests[index](new Response(JSON.stringify({ auth })))
   const stop = watchAccountAccess(true, (snapshot) => snapshots.push(snapshot))
   const secondary: typeof snapshots = []
   const stopSecondary = watchAccountAccess(true, (snapshot) => secondary.push(snapshot))
@@ -29,9 +32,11 @@ test('account access updates existing subscribers and ignores a stale login resp
     await settle()
     assert.equal(snapshots.at(-1)?.authenticated, true)
     const revision = snapshots.at(-1)!.revision
+    const identity = snapshots.at(-1)!.identity
     target.dispatchEvent(new Event(SKILL_CATALOG_CHANGED_EVENT))
     assert.equal(snapshots.at(-1)?.authenticated, true)
     assert.ok(snapshots.at(-1)!.revision > revision)
+    assert.equal(snapshots.at(-1)!.identity, identity)
     target.dispatchEvent(new Event('scholarseed:auth-required'))
     assert.equal(snapshots.at(-1)?.authenticated, false)
     stop()
@@ -39,6 +44,11 @@ test('account access updates existing subscribers and ignores a stale login resp
     const count = snapshots.length
     target.dispatchEvent(new Event('scholarseed:auth-restored'))
     assert.equal(snapshots.length, count)
+    const reopened: typeof snapshots = []
+    const stopReopened = watchAccountAccess(false, (snapshot) => reopened.push(snapshot))
+    assert.equal(reopened.at(-1)?.authenticated, false)
+    assert.ok(reopened.at(-1)!.identity > identity)
+    stopReopened()
   } finally {
     stop()
     stopSecondary()

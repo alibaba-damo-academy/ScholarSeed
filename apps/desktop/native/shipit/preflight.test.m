@@ -61,16 +61,30 @@ static NSUInteger CoverageContracts(void) {
     reset();
     assert(Coverage(@[initial, initial], observe, canonicalize, clock, result) == SSPreparationActivityAbsent); checks++;
     assert([result[@"inventories"] unsignedIntegerValue] == 2 && [observations[@20] unsignedIntegerValue] == 1); checks++;
+    for (NSString *unrelated in @[@"/Applications/Visual Studio Code.app/Contents/Frameworks/Squirrel.framework/Resources/ShipIt",
+        @"/Applications/Target App.app.other/Contents/ShipIt", @"/path/ShipIt"]) {
+        reset(); paths[@20] = unrelated;
+        assert(Coverage(@[initial, initial], observe, canonicalize, clock, result) == SSPreparationActivityAbsent); checks++;
+        assert([result[@"inventories"] unsignedIntegerValue] == 2); checks++;
+        reset(); paths[@20] = unrelated;
+        assert(Coverage(@[initial, initial], observe, ^NSString *(NSString *path) {
+            return [path isEqual:unrelated] ? nil : path;
+        }, clock, result) == SSPreparationActivityUnknown); checks++;
+        reset(); paths[@20] = unrelated;
+        assert(Coverage(@[initial, initial], observe, ^NSString *(NSString *path) {
+            return [path isEqual:unrelated] ? @"/Applications/Target App.app/Contents/Frameworks/Squirrel.framework/Resources/ShipIt" : path;
+        }, clock, result) == SSPreparationActivityActive); checks++;
+    }
     reset();
     assert(Coverage(@[initial, expanded, expanded], observe, canonicalize, clock, result) == SSPreparationActivityAbsent); checks++;
     assert([result[@"inventories"] unsignedIntegerValue] == 3 && [observations[@40] unsignedIntegerValue] == 1); checks++;
     assert([identityReads[@40] unsignedIntegerValue] == 3 && [imageReads[@40] unsignedIntegerValue] == 2 && [observations[@20] unsignedIntegerValue] == 1); checks++;
-    for (NSString *active in @[@"/Applications/Source App.app/Contents/MacOS/App", @"/Applications/Target App.app/Contents/Frameworks/Helper", @"/path/ShipIt"]) {
+    for (NSString *active in @[@"/Applications/Source App.app/Contents/MacOS/App", @"/Applications/Target App.app/Contents/Frameworks/Helper", @"/Applications/Source App.app/Contents/Frameworks/Squirrel.framework/Resources/ShipIt"]) {
         reset(); paths[@40] = active;
         assert(Coverage(@[initial, expanded, expanded], observe, canonicalize, clock, result) == SSPreparationActivityActive); checks++;
         assert([result[@"inventories"] unsignedIntegerValue] == 2 && [observations[@40] unsignedIntegerValue] == 1); checks++;
     }
-    reset(); paths[@20] = @"/path/ShipIt";
+    reset(); paths[@20] = @"/Applications/Target App.app/Contents/Frameworks/Squirrel.framework/Resources/ShipIt";
     assert(Coverage(@[initial, expanded, expanded], observe, canonicalize, clock, result) == SSPreparationActivityActive && [result[@"inventories"] unsignedIntegerValue] == 1); checks++;
     reset();
     NSArray *later = [expanded arrayByAddingObject:Record(Identity(41, 502))];
@@ -134,7 +148,7 @@ static NSUInteger CoverageContracts(void) {
     assert(Coverage(@[initial, expanded, @[Record(root)]], observe, canonicalize, clock, result) == SSPreparationActivityUnknown && [result[@"inventories"] unsignedIntegerValue] == 3); checks++;
     NSMutableArray *many = [initial mutableCopy];
     for (pid_t process = 40; process < 49; process++) [many addObject:Record(Identity(process, 502))];
-    reset(); paths[@48] = @"/path/ShipIt";
+    reset(); paths[@48] = @"/Applications/Target App.app/Contents/Frameworks/Squirrel.framework/Resources/ShipIt";
     assert(Coverage(@[initial, many, many], observe, canonicalize, clock, result) == SSPreparationActivityActive && [observations[@48] unsignedIntegerValue] == 1); checks++;
     assert([result[@"inventories"] unsignedIntegerValue] == 2 && observations.count == 11); checks++;
     reset();
@@ -363,6 +377,17 @@ int main(int argc, const char **argv) {
     fflush(stderr);
     @autoreleasepool {
         if (argc == 4 && !strcmp(argv[1], "--mappings")) return KernelMappingsContract((pid_t)atoi(argv[2]), @(argv[3]));
+        struct proc_regioninfo privateCode = {
+            .pri_protection = VM_PROT_READ | VM_PROT_WRITE | VM_PROT_EXECUTE,
+            .pri_max_protection = VM_PROT_READ | VM_PROT_WRITE | VM_PROT_EXECUTE,
+            .pri_share_mode = SM_PRIVATE_ALIASED,
+        };
+        assert(IsPrivateWritableCode(privateCode));
+        privateCode.pri_share_mode = SM_SHARED_ALIASED;
+        assert(!IsPrivateWritableCode(privateCode));
+        privateCode.pri_share_mode = SM_PRIVATE;
+        privateCode.pri_protection = VM_PROT_READ | VM_PROT_EXECUTE;
+        assert(!IsPrivateWritableCode(privateCode));
         // The ShipIt build runner passes its isolated verification directory.
         assert(argc == 1 || argc == 2);
         NSURL *source = [NSURL fileURLWithPath:@"/Applications/Source App.app"];
@@ -413,7 +438,7 @@ int main(int argc, const char **argv) {
         malformed = observer; malformed.status = 0;
         assert(ClassifyActivity(@[Record(malformed)], 502, 10, source, target, image, canonical, nil) == SSPreparationActivityUnknown); checks++;
         assert(ClassifyActivity(inventory, 502, 10, source, target, image, nil, nil) == SSPreparationActivityUnknown); checks++;
-        for (NSString *executable in @[@"/Applications/Source App.app/Contents/MacOS/App", @"/Applications/Target App.app/Contents/Frameworks/Helper", @"/path/ShipIt"]) {
+        for (NSString *executable in @[@"/Applications/Source App.app/Contents/MacOS/App", @"/Applications/Target App.app/Contents/Frameworks/Helper", @"/Applications/Target App.app/Contents/Frameworks/Squirrel.framework/Resources/ShipIt"]) {
             SSProcessImageRead rewrittenDisplayName = ^NSString *(pid_t process) { return process == 20 ? executable : @"/usr/bin/true"; };
             BOOL (^activeImage)(SSProcessIdentity, NSString **, BOOL *) = ^BOOL(SSProcessIdentity expected, NSString **path, BOOL *exited) {
                 return ObserveImage(expected, stable, rewrittenDisplayName, path, exited);
@@ -424,7 +449,7 @@ int main(int argc, const char **argv) {
             }, nil) == SSPreparationActivityActive); checks++;
         }
         assert(ClassifyActivity(inventory, 502, 10, source, target, image, ^NSString *(NSString *path) { (void)path; return nil; }, nil) == SSPreparationActivityUnknown); checks++;
-        for (NSString *alias in @[@"/Applications/Source App.app/Contents/MacOS/App", @"/different/ShipIt"]) {
+        for (NSString *alias in @[@"/Applications/Source App.app/Contents/MacOS/App", @"/Applications/Target App.app/Contents/Frameworks/Squirrel.framework/Resources/ShipIt"]) {
             assert(ClassifyActivity(inventory, 502, 10, source, target, image, ^NSString *(NSString *path) { (void)path; return alias; }, nil) == SSPreparationActivityActive); checks++;
         }
         SSProcessIdentityRead denied = ^BOOL(pid_t process, SSProcessIdentity *identity, BOOL *present) {
@@ -481,7 +506,7 @@ int main(int argc, const char **argv) {
         SSProcessIdentity saved = other; saved.saved = 502;
         __block BOOL savedObserved = NO;
         BOOL (^savedImage)(SSProcessIdentity, NSString **, BOOL *) = ^BOOL(SSProcessIdentity expected, NSString **result, BOOL *ended) {
-            *ended = NO; *result = expected.process == 30 ? @"/path/ShipIt" : @"/usr/bin/true";
+            *ended = NO; *result = expected.process == 30 ? @"/Applications/Target App.app/Contents/Frameworks/Squirrel.framework/Resources/ShipIt" : @"/usr/bin/true";
             savedObserved = savedObserved || expected.process == 30;
             return YES;
         };

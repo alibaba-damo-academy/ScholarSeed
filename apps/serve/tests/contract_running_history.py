@@ -4,12 +4,23 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
+from unittest.mock import Mock, patch
 
 from scholarseed_runtime.contract import CommandReceipt, CommandState, RuntimeEventKind
 from scholarseed_runtime.contract.history import HistoryEntry
-from service.chat.persistence.catalog import QueuedMessageRecord, QueuedMessageState, SubmissionMode
+from service.chat.constants import PRODUCT_INTERACTION_BLOCKING
+from service.chat.persistence.catalog import (
+    HilStatus,
+    QueuedMessageRecord,
+    QueuedMessageState,
+    SessionCatalogStore,
+    SessionHilRecord,
+    SubmissionMode,
+)
+from service.chat.persistence.events import ProductEventStore
 from service.chat.runtime.live import LiveSession
 from service.chat.service.turns import TurnService
 from service.platform.activity import Activities
@@ -49,9 +60,34 @@ class _QueueCatalog:
     def __init__(self) -> None:
         self.rows: dict[str, QueuedMessageRecord] = {}
         self.pending_settlement: SimpleNamespace | None = None
+        self.pending_interactions: tuple[SessionHilRecord, ...] = ()
+
+    def get(self, _session_id: str) -> None:
+        return None
+
+    def activation(self, _session_id: str) -> None:
+        return None
+
+    def uncertainties(self, _session_id: str) -> tuple:
+        return ()
 
     def pending_turn_settlement(self, _session_id: str) -> SimpleNamespace | None:
         return self.pending_settlement
+
+    def pending_hil(self, _session_id: str, *, blocking_only: bool = True) -> tuple:
+        return tuple(
+            row
+            for row in self.pending_interactions
+            if not blocking_only or row.payload.get(PRODUCT_INTERACTION_BLOCKING, True)
+        )
+
+    def queued_message(self, _session_id: str, queued_message_id: str):
+        return self.rows.get(queued_message_id)
+
+    def restore_queued_submission(self, _session_id: str, queued: QueuedMessageRecord):
+        restored = replace(self.rows[queued.queued_message_id], state=queued.state)
+        self.rows[queued.queued_message_id] = restored
+        return restored
 
     @staticmethod
     def portable_history(_session_id: str) -> tuple:
@@ -101,25 +137,28 @@ def check(name: str, condition: bool, detail: str = "") -> None:
 
 
 def live_with_history(entries: tuple[HistoryEntry, ...] = ()) -> LiveSession:
-    live = object.__new__(LiveSession)
+    events = Mock(spec=ProductEventStore)
+    events.by_key.return_value = None
+    events.model_runs.return_value = {}
+    events.replay.return_value = ()
+    with patch("service.chat.runtime.live.PersistenceWorker"):
+        live = LiveSession(
+            session_id="running-history-contract",
+            runtime_id="codex",
+            runtime_workdir=Path(__file__).parent,
+            project_path=None,
+            output_root=Path(__file__).parent,
+            model_id="test",
+            catalog=cast(SessionCatalogStore, _QueueCatalog()),
+            events=events,
+            artifacts=Mock(),
+            skills=Mock(),
+            logger=Mock(),
+            trace=Mock(),
+        )
     live.adapter = _SteeringAdapter(entries)
     live.runtime_session = live.adapter
-    live.id = "running-history-contract"
-    live._catalog = _QueueCatalog()
-    live._local_history = []
-    live._turn_models = {}
-    live.interrupting = False
-    live.terminating = False
-    live.termination_task = None
-    live._close_task = None
-    live.terminated = False
-    live.current_task = None
-    live.turn_lock = asyncio.Lock()
-    live.steer_lock = asyncio.Lock()
     live.ledger = SimpleNamespace(active_turn_id="", has_unknown_outcome=False)
-    # 这两个都是 LiveSession 上的方法, 直接赋值会被判 method-assign; 按实例打桩用 setattr。
-    # publish 必须一起打掉: record_user_history 会发产品事件, 而这个用 object.__new__
-    # 部分构造出来的 stub 没有 _events / id / runtime_id。
     setattr(live, "trace_turn_input", lambda *_args, **_kwargs: None)
 
     async def _publish(*_args: Any, **_kwargs: Any) -> None:
@@ -215,7 +254,7 @@ def test_side_input_uses_native_same_turn_steering() -> None:
         )
         return await service.post(
             "session",
-            {"queued_message_id": "queued-side"},
+            {"queued_message_id": "queued-side", "expected_turn_id": "active-turn"},
             side=True,
         )
 
@@ -257,13 +296,13 @@ def test_side_input_without_active_turn_fails_closed() -> None:
             activities=Activities(),
         ).post(
             "session",
-            {"queued_message_id": "missing"},
+            {"queued_message_id": "missing", "expected_turn_id": "active-turn"},
             side=True,
         )
     )
     check(
         "steering without an active Codex turn fails without fabricating history",
-        status == 409 and result.get("error") == "turn_not_running" and live.history() == [],
+        status == 200 and result.get("retained") is True and live.history() == [],
         str(result),
     )
 
@@ -280,7 +319,11 @@ def test_side_input_waits_for_pending_settlement() -> None:
             {"session": live},
             SimpleNamespace(error=lambda *_args, **_kwargs: None),
             activities=Activities(),
-        ).post("session", {"queued_message_id": "queued-side"}, side=True)
+        ).post(
+            "session",
+            {"queued_message_id": "queued-side", "expected_turn_id": "active-turn"},
+            side=True,
+        )
     )
     check(
         "pending settlement rejects steering without consuming the queue or publishing history",
@@ -293,12 +336,76 @@ def test_side_input_waits_for_pending_settlement() -> None:
     )
 
 
+def test_steer_keeps_original_target_across_submission() -> None:
+    for transition in ("ended", "stopped", "waiting", "next-turn"):
+        live = live_with_history()
+        queue = cast(_QueueCatalog, live.catalog)
+        live.ledger.active_turn_id = "active-turn"
+        live.catalog.add(
+            "queued-side",
+            {"input": [{"type": "text", "text": "side"}], "client_user_message_id": "side-client"},
+        )
+
+        async def persist(function, *args, **kwargs):
+            return function(*args, **kwargs)
+
+        async def publish(event, *_args, transition=transition, live=live, queue=queue, **_kwargs):
+            if event != "send_now_submitted":
+                return
+            if transition == "ended":
+                live.ledger.active_turn_id = ""
+            elif transition == "stopped":
+                live.interrupting = True
+            elif transition == "waiting":
+                queue.pending_interactions = (
+                    SessionHilRecord(
+                        product_request_id="approval",
+                        session_id=live.id,
+                        vendor_request_id="vendor-approval",
+                        payload={},
+                        vendor_turn_id="active-turn",
+                        vendor_item_id="",
+                        method="",
+                        status=HilStatus.PENDING,
+                        decision=None,
+                        created_at=1.0,
+                        resolved_at=None,
+                    ),
+                )
+            else:
+                live.ledger.active_turn_id = "next-turn"
+
+        setattr(live, "publish", publish)
+        live._persistence = SimpleNamespace(run=persist)
+        result, status = asyncio.run(
+            TurnService(
+                {"session": live},
+                SimpleNamespace(error=lambda *_args, **_kwargs: None),
+                activities=Activities(),
+            ).post(
+                "session",
+                {"queued_message_id": "queued-side", "expected_turn_id": "active-turn"},
+                side=True,
+            )
+        )
+        check(
+            f"{transition} during steering retains the original queue without submitting to another turn",
+            status == 200
+            and result.get("retained") is True
+            and live.catalog.rows["queued-side"].state is QueuedMessageState.QUEUED
+            and not live.adapter.inputs
+            and not live.history(),
+            str(result),
+        )
+
+
 def main() -> int:
     test_live_projection()
     test_cold_resume_projection()
     test_side_input_uses_native_same_turn_steering()
     test_side_input_without_active_turn_fails_closed()
     test_side_input_waits_for_pending_settlement()
+    test_steer_keeps_original_target_across_submission()
     print(f"\ncontract_running_history: PASS {PASS} / FAIL {FAIL}")
     return 1 if FAIL else 0
 

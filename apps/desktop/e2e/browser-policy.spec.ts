@@ -22,12 +22,13 @@ test('real Desktop manages Agent-only site rules in Browser settings', async ({}
     ...preferences,
     onboarding: { seen: Object.fromEntries(ONBOARDING_GROUPS.map(group => [group, true])) }
   }))
-  const desktop = new DesktopSession(runtime, testInfo, { browserEnabled: true })
+  const desktop = new DesktopSession(runtime, testInfo, { browserEnabled: true, browserAdvancedSettings: true })
   await mkdir(ARTIFACTS, { recursive: true })
   try {
     const page = await desktop.launch()
     await openAccountSettings(page)
     await page.getByTestId('account-settings-nav-browser').click()
+    await page.getByRole('button', { name: '高级设置', exact: true }).click()
     const card = page.getByTestId('browser-settings-agent-sites')
     await expect(card).toBeVisible()
     await expect(card.getByText('这些规则仅用于 Agent 读取或操作网站，不影响手动浏览或网站设备权限；普通点击、输入和提交等操作仍按现有审批流程执行。')).toBeVisible()

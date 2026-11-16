@@ -16,6 +16,16 @@ export interface ReviewedPreviewDocument extends PreviewDocumentFormat {
   readonly revisions?: readonly { readonly source: string; readonly sha256: string }[]
 }
 
+export const PREVIEW_PDF_TRANSLATION = {
+  path: 'sample.pdf',
+  page: 1,
+  structureVersion: 'pdf-translation/structure-v1',
+  blocks: [
+    { block_id: 'preview-pdf-heading', source_text: 'Minimal sample PDF', source_quads: [] },
+    { block_id: 'preview-pdf-body', source_text: 'Needle marker for smoke tests.', source_quads: [] },
+  ],
+} as const
+
 export const PREVIEW_DOCUMENTS: readonly ReviewedPreviewDocument[] = [
   { path: 'readme.md', source: '../e2e/fixtures/data/minimal-project/readme.md', sha256: '12c94652feb004036a1dc347801d28c2acaff69d91f54c71c0bb0302051024ea', viewer: 'markdown', processor: null, mediaType: 'text/markdown', editable: true, selectable: true, viewKind: 'preview', revisions: [{ source: './fixtures/readme.modified.md', sha256: '05c692d914fe571d730a168447185c9b38580e1ed1cc6f5fa0f1f652166a853d' }] },
   { path: 'hello.py', source: '../e2e/fixtures/data/minimal-project/hello.py', sha256: '92d4089d5dcacf64242b632c8fea8bac156cdb2dffa43291a7eaca46c32aef5d', viewer: 'code', processor: null, mediaType: 'text/x-python', editable: true, selectable: true, viewKind: 'source' },

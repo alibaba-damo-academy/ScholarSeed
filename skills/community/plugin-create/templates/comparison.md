@@ -1,10 +1,7 @@
-# 方法比较流程模板
+# Method comparison workflow template
 
-按用户领域改写此流程、维度和布局。卡片可改为对比矩阵，不要求保留模板排列。
+Adapt the workflow, dimensions and layout to the user's field. A comparison matrix may replace the card layout.
 
-1. 获取真实资料和用户用途；区分要比较什么与是否允许推荐。
-2. 用 scope 卡确认维度；提供前轮选择，不覆盖 false、空数组或用户取消的要求。
-3. 每个维度记录方法版本、实验条件、原文位置、测量值、单位及可比性。先核原文再填结论。
-4. 用 decision 卡返回有证据的可选后续方向，缺证保持未知，不把缺报告当能力不存在。
-5. revise：保留材料与已知约束，以新修订号再读缺证后比较；finish：按最新范围收尾。
-6. 推荐只依赖用户保留的决定性维度。反证条件必须能推翻相应主张，不反转比较方向。
+1. Confirm the dimensions with the scope card. Treat permission to recommend separately. Prefill prior choices without overriding `false`, empty arrays or withdrawals.
+2. Read the sources and compare versions, experimental conditions, source locations, measured values and units. Mark incomparable values and gaps; state what would refute each decisive claim without reversing comparison direction.
+3. Use the decision card to show evidence-backed next directions. On `revise`, retain sources and constraints and investigate gaps in a new revision. On `finish`, conclude within the latest scope and recommend only if authorized, using only retained decisive dimensions.

@@ -112,6 +112,43 @@ class WorkspaceTest(unittest.TestCase):
         self.assertEqual(result['usable_card_count'],38);self.assertEqual(len(result['steps']),4);self.assertFalse(result['ready_for_outline'])
         self.assertEqual(slr.substitute(['scholarseed-skill-python','example'],self.ws)[0],sys.executable)
 
+    def test_processing_nonretryable_failure_preserves_stop_and_completed_cards(self):
+        self.corpus(3,1)
+        stage={'id':'processing','steps':[['scholarseed-skill-python','fixture']],
+               'writes':[], 'status':{'kind':'trailing_json'}}
+        failure={'status':'FAILED','code':'COMPACT_SCHEMA_INVALID','retryable':False,
+                 'message':'Unknown source sentence ID','location':'_logs/llm/actual-request',
+                 'next_action':'Stop semantic retries and inspect the saved response.'}
+        args=SimpleNamespace(profile='fast',workspace=str(self.ws),stage='processing',dry_run=False,tail=0)
+        stream=io.StringIO()
+        with patch.object(slr,'find_stage',return_value=stage), \
+                patch.object(slr,'run_command',return_value=(1,json.dumps(failure))), \
+                contextlib.redirect_stdout(stream):
+            result_code=slr.cmd_run(args)
+        result=json.loads(stream.getvalue())
+        self.assertEqual(result_code,1)
+        self.assertEqual(result['status'],'FAILED')
+        self.assertEqual(result['usable_card_count'],2)
+        self.assertFalse(result['ready_for_outline'])
+        for key in ('code','message','location','retryable','next_action'):
+            self.assertEqual(result[key],failure[key])
+
+    def test_processing_retryable_failure_keeps_existing_resume_behavior(self):
+        self.corpus(3,1)
+        stage={'id':'processing','steps':[['scholarseed-skill-python','fixture']],
+               'writes':[], 'status':{'kind':'trailing_json'}}
+        failure={'status':'FAILED','code':'MODEL_TRANSPORT_ERROR','retryable':True}
+        args=SimpleNamespace(profile='fast',workspace=str(self.ws),stage='processing',dry_run=False,tail=0)
+        stream=io.StringIO()
+        with patch.object(slr,'find_stage',return_value=stage), \
+                patch.object(slr,'run_command',return_value=(1,json.dumps(failure))), \
+                contextlib.redirect_stdout(stream):
+            result_code=slr.cmd_run(args)
+        result=json.loads(stream.getvalue())
+        self.assertEqual(result_code,1)
+        self.assertEqual(result['status'],'FAILED')
+        self.assertEqual(result['code'],'MODEL_TRANSPORT_ERROR')
+
     def test_approval_requires_response_and_rejects_stale_packet(self):
         from operator_cli import review_packet, approve
         self.corpus(2); configure(self.ws,{'outline_review':'required','publication':{'format':'markdown'}})

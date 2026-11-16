@@ -3,6 +3,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 
 const BROWSER_NODE_RELATIVE = 'backend/browser/node'
+const BROWSER_NODE_LICENSE_RELATIVE = 'backend/browser/LICENSE.node'
 const BUNDLED_PYTHON_RELATIVE = 'backend/python/bin/python3'
 const BROWSER_NODE_ENV = 'PLAYWRIGHT_NODEJS_PATH'
 const NODE_CONFIGURATION_ENV = ['NODE_OPTIONS', 'NODE_PATH']
@@ -26,4 +27,4 @@ function browserEnvironment(environment, resourcesRoot, python, packaged = true)
   return result
 }
 
-module.exports = { BROWSER_NODE_RELATIVE, BUNDLED_PYTHON_RELATIVE, BROWSER_NODE_ENV, browserEnvironment }
+module.exports = { BROWSER_NODE_RELATIVE, BROWSER_NODE_LICENSE_RELATIVE, BUNDLED_PYTHON_RELATIVE, BROWSER_NODE_ENV, browserEnvironment }

@@ -5,7 +5,7 @@ import type { Root, RootContent } from 'mdast'
 import { unified } from 'unified'
 import { VFile } from 'vfile'
 
-import { GFM_PLUGIN } from './gfm.ts'
+import { GFM_PLUGIN } from '../../../../markdown/gfm.ts'
 
 async function renderTree(source: string): Promise<Root> {
   const processor = unified().use(remarkParse).use(GFM_PLUGIN[0], GFM_PLUGIN[1])

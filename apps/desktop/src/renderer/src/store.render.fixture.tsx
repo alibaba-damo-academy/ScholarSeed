@@ -1,14 +1,21 @@
 import React, { useLayoutEffect } from 'react'
+import './styles.css'
 import { createRoot } from 'react-dom/client'
+import { flushSync } from 'react-dom'
 import { I18nextProvider } from 'react-i18next'
 import { createLocalization } from '../../localization/engine'
 import { resources } from '../../localization/resources'
 import type { RendererPreferences } from '../../preferences'
-import { ToastProvider, Toaster } from './components/ui'
+import { Button, ToastProvider, Toaster } from './components/ui'
+import { SessionDropdownMenu } from './components/business/SessionContextMenu'
 import { StoreProvider, useApp, type Store } from './store'
 import { effectiveShortcutBindings } from './shortcuts'
 import { ErrorBoundary } from './app/Error'
 import { ModelMenu } from './components/business/ModelMenu'
+import { Composer } from './components/business/Composer'
+import { ProjectMenu } from './shell/ProjectMenu'
+import { DocumentWorkspaceContext, documentWorkspaces } from './features/workbench/workspace'
+import type { AssistantContextCandidate } from './contracts/assistant'
 
 const localization = createLocalization('zh', resources, { report: () => undefined })
 let disk = structuredClone(window.scholarseed.preferences)
@@ -43,11 +50,30 @@ const probe = {
   patch: (patch: Parameters<Store['set']>[0]) => store.set(patch),
   openSession: (id: string, intent?: Parameters<Store['act']['openSession']>[2]) =>
     store.act.openSession(id, undefined, intent),
+  openDraftSession: (...args: Parameters<Store['act']['openDraftSession']>) =>
+    flushSync(() => store.act.openDraftSession(...args)),
+  loadContext: (id: string) => store.act.loadAiContext(id),
+  forkSession: (id: string, turnId?: string) => store.act.forkSession(id, turnId),
+  draft: (text?: string) => {
+    if (text !== undefined) store.composerDraft.set(text)
+    return store.composerDraft.getSnapshot()
+  },
+  captureContextTarget: () => store.act.captureContextTarget(),
+  addContexts: (...args: Parameters<Store['act']['addContexts']>) => store.act.addContexts(...args),
+  addContext: (candidate: AssistantContextCandidate) => store.act.addContext(candidate),
+  detachContext: (...args: Parameters<Store['act']['detachAiContext']>) =>
+    store.act.detachAiContext(...args),
+  newDraft: (projectId?: string) => flushSync(() => store.act.startPanelDraft({ projectId })),
+  panel: () => flushSync(() => store.act.openPanel('context_added')),
+  project: (projectId: string) => flushSync(() => store.act.selectProject(projectId)),
   returnHome: () => store.act.returnHome(),
+  center: () => flushSync(() => store.act.openProjectCenter()),
+  view: (view: Parameters<Store['act']['openWorkbenchView']>[0]) =>
+    flushSync(() => store.act.openWorkbenchView(view)),
   prompts: (translate: string) =>
     store.act.saveSelectionPrompts({ ...store.state.selectionPrompts, translate }),
   language: (language: 'zh' | 'en') => store.act.setLang(language),
-  draft: (panel: boolean) => (panel ? store.act.startPanelDraft() : store.act.startDraft()),
+  startDraft: (panel: boolean) => (panel ? store.act.startPanelDraft() : store.act.startDraft()),
   release: () => pending.shift()!.resolve(),
   fail: () => pending.shift()!.reject(),
 }
@@ -59,6 +85,7 @@ Object.assign(window.scholarseed, {
     return new Promise<RendererPreferences>((resolve, reject) => {
       const finish = () => {
         disk = structuredClone(value)
+        localStorage.setItem('scholarseed.web.preferences', JSON.stringify(value))
         resolve(structuredClone(disk))
       }
       if (probe.hold)
@@ -91,6 +118,16 @@ function Probe(): React.JSX.Element {
       <output data-testid="model">{state.literatureAiModels.selection_translation}</output>
       <output data-testid="default-model">{state.model}</output>
       <output data-testid="model-error">{JSON.stringify(state.foregroundError)}</output>
+      {Reflect.get(window, 'draftNavigationFixture') === true && (
+        <ProjectMenu onClose={() => undefined} createEntry={false} />
+      )}
+      {Reflect.get(window, 'composerRemovalFixture') === true && (
+        <DocumentWorkspaceContext.Provider
+          value={documentWorkspaces.forProject('annotation-context-fixture')}
+        >
+          <Composer surface="assistant" />
+        </DocumentWorkspaceContext.Provider>
+      )}
       <output data-testid="reasoning-preferences">
         {JSON.stringify(state.reasoningPreferences)}
       </output>
@@ -110,6 +147,9 @@ function Probe(): React.JSX.Element {
             : undefined
         }
       />
+      <SessionDropdownMenu target={{ sessionId: 'other', title: 'Other', inProject: false }}>
+        <Button>任务菜单</Button>
+      </SessionDropdownMenu>
       <Toaster />
     </>
   )

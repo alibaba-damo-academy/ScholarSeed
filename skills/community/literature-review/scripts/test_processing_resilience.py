@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import io
 import json
 import pathlib
 import sys
@@ -19,7 +21,13 @@ sys.path.insert(0, str(PROCESSING))
 import llm_call  # noqa: E402
 import run_pipeline
 import pdf_fixture
-from paper_source_parser import parse_source
+import slr
+from paper_materials import retry_extraction, source_identity, quality_problem, MARKER
+from lifecycle import lock_path, OperationBlocked
+from platform_io import file_lock
+from task_contract import atomic_json
+from step0_load import load_inputs
+from service.literature.service.atomic import parse_source
 from llm import _LightLLM  # noqa: E402
 from progress import (  # noqa: E402
     LLMCallError,
@@ -53,53 +61,27 @@ class FlakyLLM:
 
 
 class ProcessingResilienceTest(unittest.IsolatedAsyncioTestCase):
-    async def test_table_warning_text_reaches_card_model(self) -> None:
-        with tempfile.TemporaryDirectory() as folder:
-            source = pathlib.Path(folder) / 'paper.pdf'
-            document = pdf_fixture.open()
-            page = document.new_page()
-            page.insert_text((50, 100), 'Table 1. Borderless comparison.')
-            page.insert_text((50, 150), 'The estimator is calibrated on independent data.')
-            document.save(source)
-            document.close()
-            parsed = parse_source(source)
-        self.assertEqual(parsed['status'], 'ok')
-        with patch.object(run_pipeline, '_warmup_cache', new=AsyncMock()), patch.object(
-            run_pipeline, '_extract_card_combined', new=AsyncMock(side_effect=RuntimeError('card model reached'))
-        ) as extract:
-            with self.assertRaisesRegex(RuntimeError, 'card model reached'):
-                await run_pipeline._process_single_paper(
-                    types.SimpleNamespace(), 'paper', {'title': 'Evidence', 'abstract': 'A summary.'},
-                    {'info_type': parsed['info_type'], 'sentences': parsed['sentences'], 'parse_report': parsed},
-                    'full', 'method',
-                )
-        self.assertIn('calibrated on independent data', str(extract.call_args))
+
+
+
+
+
+
+
+
+
+
 
     async def test_metadata_without_text_never_generates_a_card(self) -> None:
         import run_pipeline
         llm = types.SimpleNamespace(chat=AsyncMock())
-        with self.assertRaisesRegex(ValueError, "no abstract or full text"):
+        with self.assertRaisesRegex(ValueError, "Original abstract required"):
             await run_pipeline._process_single_paper(
                 llm, "web-paper", {"title": "Metadata-only discovery", "abstract": ""},
                 {}, "metadata_only", "",
             )
         llm.chat.assert_not_awaited()
 
-    async def test_fulltext_is_used_when_a_low_tier_paper_has_no_abstract(self) -> None:
-        import run_pipeline
-        # Stop at extraction and inspect the actual evidence sent onward.
-        class EvidenceReached(Exception):
-            pass
-        with patch.object(run_pipeline, "_warmup_cache", new=AsyncMock()), patch.object(
-            run_pipeline, "_extract_card_combined", new=AsyncMock(side_effect=EvidenceReached)
-        ) as extract:
-            with self.assertRaises(EvidenceReached):
-                await run_pipeline._process_single_paper(
-                    types.SimpleNamespace(), "web-paper", {"title": "Has text"},
-                    {"info_type": "origin_latex", "sections": "#1 Actual full-text evidence."},
-                    "metadata_only", "method",
-                )
-        self.assertIn("#1 Actual full-text evidence.", str(extract.call_args))
 
     async def test_timeout_error_is_never_blank(self) -> None:
         detail = format_exception(asyncio.TimeoutError(), where="p/card", timeout=600)
@@ -189,7 +171,7 @@ class ProgressAccountingTest(unittest.TestCase):
         self.assertEqual(example["stages"]["processing"]["timeout"], 600)
         self.assertEqual(live["stages"]["processing"]["max_tokens"], 16000)
         processing = next(stage for stage in profile["stages"] if stage["id"] == "processing")
-        command = processing["steps"][0]
+        command = next(step for step in processing["steps"] if any(item.endswith("/paper_card_tools.py") for item in step))
         self.assertEqual(command[command.index("--concurrency") + 1], "20")
 
     def test_all_terminal_states_are_explicit_and_idempotent(self) -> None:

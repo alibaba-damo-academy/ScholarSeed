@@ -67,6 +67,7 @@ test('real Desktop asks where to save an embedded browser download', async ({}, 
     await address.press('Enter')
     const probe = () => desktop.app!.evaluate(() => (globalThis as typeof globalThis & { __browserDownloadProbe?: { filename: string; url: string; chain: string[]; result: string } }).__browserDownloadProbe)
     await expect.poll(async () => (await probe())?.filename, { timeout: 30_000 }).toBe(DOWNLOAD_FILENAME)
+    await expect(page.locator('.vds-toaster').getByText('下载中…', { exact: true })).toHaveCount(0)
     const screenshot = await desktop.app!.evaluate(async ({ desktopCapturer }) => {
       const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 1600, height: 1000 } })
       return sources[0]?.thumbnail.toPNG().toString('base64')
@@ -86,6 +87,7 @@ test('real Desktop asks where to save an embedded browser download', async ({}, 
         'end tell')
     }
     await expect.poll(async () => (await probe())?.result, { timeout: 10_000 }).toBe('cancelled')
+    await expect(page.locator('.vds-toaster').getByText('下载中…', { exact: true })).toHaveCount(0)
     await writeFile(join(ARTIFACTS, 'download-probe.json'), JSON.stringify(await probe(), null, 2))
     await expect(page.getByText('网页加载失败，请检查网址或重试。')).toHaveCount(0)
     await expect(address).toHaveValue(HOME_URL)
@@ -191,6 +193,11 @@ test('real Desktop automatically saves without overwriting an earlier download',
     await page.getByRole('dialog', { name: '设置' }).getByRole('button', { name: '关闭', exact: true }).click()
     await restoreBrowser(page)
     const address = page.getByRole('textbox', { name: '网址', exact: true })
+    const initialPath = join(directory, DOWNLOAD_FILENAME)
+    await address.fill(DOWNLOAD_URL)
+    await address.press('Enter')
+    await expect.poll(async () => (await readFile(initialPath).catch(() => Buffer.alloc(0))).byteLength, { timeout: 30_000 }).toBe(DOWNLOAD_BYTES)
+    await expect(page.locator('.vds-toaster').getByText('下载成功', { exact: true })).toBeVisible()
     await address.fill(HOME_URL)
     await address.press('Enter')
     await expect.poll(async () => {
@@ -203,8 +210,8 @@ test('real Desktop automatically saves without overwriting an earlier download',
       const view = window.contentView.children.find(child => 'webContents' in child) as Electron.WebContentsView
       return view.webContents.executeJavaScript('location.origin')
     }), { timeout: 30_000 }).toBe(HOME_ORIGIN)
-    const firstPath = join(directory, DOWNLOAD_FILENAME)
-    const secondPath = join(directory, `${DOWNLOAD_FILENAME} (1)`)
+    const firstPath = join(directory, `${DOWNLOAD_FILENAME} (1)`)
+    const secondPath = join(directory, `${DOWNLOAD_FILENAME} (2)`)
     await desktop.app!.evaluate(({ BrowserWindow }) => {
       const window = BrowserWindow.getAllWindows().find(candidate => candidate.webContents.getURL().startsWith('http:'))!
       const view = window.contentView.children.find(child => 'webContents' in child) as Electron.WebContentsView
@@ -217,9 +224,18 @@ test('real Desktop automatically saves without overwriting an earlier download',
       })
     })
     const probe = () => desktop.app!.evaluate(() => (globalThis as typeof globalThis & { __browserAutoDownloadProbe?: { filename: string; savePath: string; result: string } }).__browserAutoDownloadProbe)
+    const sourceSnapshot = await page.evaluate(() => window.scholarseed.browser.snapshot())
     for (const target of [firstPath, secondPath]) {
-      await address.fill(DOWNLOAD_URL)
-      await address.press('Enter')
+      if (target === firstPath) {
+        await desktop.app!.evaluate(({ BrowserWindow }, url) => {
+          const window = BrowserWindow.getAllWindows().find(candidate => candidate.webContents.getURL().startsWith('http:'))!
+          const view = window.contentView.children.find(child => 'webContents' in child) as Electron.WebContentsView
+          return view.webContents.executeJavaScript(`window.open(${JSON.stringify(url)}, '_blank'); null`)
+        }, DOWNLOAD_URL)
+      } else {
+        await address.fill(DOWNLOAD_URL)
+        await address.press('Enter')
+      }
       await expect.poll(async () => (await probe())?.result, { timeout: 30_000 }).toBe('completed')
       await writeFile(join(ARTIFACTS, 'automatic-probe.json'), JSON.stringify(await probe(), null, 2))
       try { await expect.poll(async () => (await readFile(target).catch(() => Buffer.alloc(0))).byteLength, { timeout: 30_000 }).toBe(DOWNLOAD_BYTES) }
@@ -228,10 +244,15 @@ test('real Desktop automatically saves without overwriting an earlier download',
         throw error
       }
       await expect(address).toHaveValue(HOME_URL)
+      const result = await page.evaluate(() => window.scholarseed.browser.snapshot())
+      expect(result.ok && result.snapshot.tabs.map(tab => tab.tabId)).toEqual(
+        sourceSnapshot.ok && sourceSnapshot.snapshot.tabs.map(tab => tab.tabId)
+      )
     }
     const first = await readFile(firstPath)
     const second = await readFile(secondPath)
     expect(first.equals(Buffer.alloc(DOWNLOAD_BYTES))).toBe(false)
+    expect(first.equals(await readFile(initialPath))).toBe(true)
     expect(second.equals(first)).toBe(true)
     const blobPath = join(directory, 'scholarseed-blob.txt')
     await desktop.app!.evaluate(({ BrowserWindow }) => {

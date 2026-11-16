@@ -73,6 +73,7 @@ const modules: Record<string, string> = {
     export const LIBRARY_PAGE_CLASS = ''
     export const LIBRARY_HEADER_ACTION_CLASS = ''
     export const LIBRARY_TABLE_HEADER_CLASS = ''
+    export const LibraryLoading = () => <div role="status">Loading</div>
     export const LibraryFilter = ({label, value, options, onChange}) => <select aria-label={label} value={value} onChange={event => onChange(event.target.value)}><option value="">All</option>{options.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
     export const LibraryToolbar = ({onRefresh, refreshing, query, onQuery}) => <><input aria-label="Search outputs" value={query} onChange={event => onQuery(event.target.value)}/><button aria-busy={refreshing} onClick={onRefresh}>Refresh</button></>
   `,
@@ -80,7 +81,7 @@ const modules: Record<string, string> = {
   '../../components/primitive': `export const FileFormatIcon = () => null`,
   '../../components/markdown/links': `export const absoluteSessionFilePath = (root, path) => root + '/' + path`,
   '../project/events': `export const subscribeFileEvents = () => () => {}`,
-  './Files': `export const OutputFileLink = ({children, mode, path}) => mode === 'actions' ? <button aria-label={'More ' + path}/> : children`,
+  './Files': `export const OutputFileLink = ({children, mode, path, projectPath}) => mode === 'actions' ? <button aria-label={'More ' + path} data-project-path={projectPath}/> : children`,
   '../../model': `export const artifactIsDeliverable = artifact => artifact.deliverable !== false`,
   '../../drag': `export const writeProjectEntryDrag = () => {}`,
   './Artifacts': `export const ArtifactEntry = () => <button aria-label="Published artifact actions"/>`,
@@ -133,6 +134,51 @@ const plugin: Plugin = {
   },
 }
 
+test('project-cwd output files retain project actions and drag identity', async () => {
+  const server = await servers.create({
+    configFile: false,
+    root: ROOT,
+    plugins: [plugin, react()],
+    cacheKey: 'outputs',
+    optimizeDeps: { noDiscovery: true, include: ['react', 'react-dom/client', 'lucide-react'] },
+    server: { host: '127.0.0.1', port: 0 },
+  })
+  await server.listen()
+  const browser = await chromium.launch({ headless: true, channel: process.env.PLAYWRIGHT_CHANNEL })
+  try {
+    const page = await browser.newPage()
+    await page.goto(`${server.resolvedUrls!.local[0]}__outputs`)
+    await expect
+      .poll(() => page.evaluate(() => (window as unknown as ProbeWindow).probe.pending.length))
+      .toBe(1)
+    await page.evaluate(() =>
+      (window as unknown as ProbeWindow).probe.pending.shift()!({
+        entries: [
+          {
+            session: { session_id: 'first', title: 'Project cwd task' },
+            files: {
+              root: '/project',
+              project_path: '',
+              path: '',
+              items: [{ name: 'output/研究/report.md', dir: false }],
+            },
+          },
+        ],
+      })
+    )
+    await page.getByRole('button', { name: 'Project cwd task', exact: true }).first().click()
+    const actions = page.getByRole('button', { name: 'More output/研究/report.md' })
+    await expect(actions).toHaveAttribute('data-project-path', 'output/研究/report.md')
+    await expect(page.getByRole('row').filter({ has: actions })).toHaveAttribute(
+      'draggable',
+      'true'
+    )
+  } finally {
+    await browser.close()
+    await server.close()
+  }
+})
+
 test('filters without a search query remove empty groups and restore nested files when cleared', async () => {
   const server = await servers.create({
     configFile: false,
@@ -143,7 +189,7 @@ test('filters without a search query remove empty groups and restore nested file
     server: { host: '127.0.0.1', port: 0 },
   })
   await server.listen()
-  const browser = await chromium.launch({ headless: true })
+  const browser = await chromium.launch({ headless: true, channel: process.env.PLAYWRIGHT_CHANNEL })
   try {
     const page = await browser.newPage()
     await page.goto(`${server.resolvedUrls!.local[0]}__outputs`)
@@ -200,7 +246,7 @@ test('output search finishes in-flight traversal and retains matches across repe
     server: { host: '127.0.0.1', port: 0 },
   })
   await server.listen()
-  const browser = await chromium.launch({ headless: true })
+  const browser = await chromium.launch({ headless: true, channel: process.env.PLAYWRIGHT_CHANNEL })
   try {
     const page = await browser.newPage()
     await page.goto(`${server.resolvedUrls!.local[0]}__outputs`)
@@ -330,7 +376,7 @@ test('output catalog finishes its first request during invalidation and retains 
     server: { host: '127.0.0.1', port: 0 },
   })
   await server.listen()
-  const browser = await chromium.launch({ headless: true })
+  const browser = await chromium.launch({ headless: true, channel: process.env.PLAYWRIGHT_CHANNEL })
   try {
     const address = server.httpServer!.address()
     assert.ok(address && typeof address === 'object')

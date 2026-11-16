@@ -7,7 +7,6 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from service.content.domain.model import (
-    MANAGED_LITERATURE_ROOT_RELATIVE,
     MANAGED_RESOURCES_ROOT_RELATIVE,
     PROJECT_STATE_DIRNAME,
     ContentError,
@@ -21,7 +20,6 @@ CREATION_RECEIPT_LIMIT = 1024 * 1024
 CREATION_PROVENANCE_REQUIRED = "project_creation_provenance_required"
 PROJECT_CREATION_DIRECTORIES = (
     MANAGED_RESOURCES_ROOT_RELATIVE,
-    MANAGED_LITERATURE_ROOT_RELATIVE,
     PROJECT_STATE_DIRNAME,
 )
 

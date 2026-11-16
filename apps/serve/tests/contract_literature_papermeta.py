@@ -16,9 +16,11 @@
    Authorization 头, 未登录请求一样 200。
 7. **覆盖通道**: ``OPENALEX_SEARCH_URL`` 只接受落在 ``/works`` 的干净绝对 HTTP(S) 地址,
    ``PAPER_META_TIMEOUT`` 不合法就退回默认。
-8. **摘要补充腿**: 标识符腿拿到的 BibTeX 不带 abstract 时, 按维度补打一次 arXiv Atom
-   API 或 Crossref; 拿不到就降级成「没有摘要」, 绝不把已经成功的同步打成失败, 也绝不
-   覆盖 BibTeX 自带的摘要。
+8. **摘要补充腿**: 标识符腿拿到的 BibTeX 不带 abstract 时, 沿身份链
+   (``identity_chain``: 题录维度自己 → 该标识折叠出的 arXiv → 记录上另一个标识) 依次
+   补打 Crossref 或 arXiv Atom API, 拿到第一段非空摘要就停。整条链共用题录腿的同一个
+   总预算, 任何一环失败只降级成「没有摘要」, 绝不把已经成功的同步打成失败, 也绝不覆盖
+   BibTeX 自带的摘要。补充腿**只填空不择优**: Crossref 已经给了摘要, arXiv 一跳都不许打。
 
  fixture 形状取自 2026-09-20 对 api.openalex.org/works 的真实响应 (W2166273353 与
  W2626778328), 数组已裁剪以便阅读; 预印本一条的 year/abstract 是补上的真实值, 当时
@@ -40,6 +42,7 @@ os.environ["SCHOLARSEED_HOME"] = tempfile.mkdtemp(prefix="papermeta-home-")
 import asyncio  # noqa: E402
 import inspect  # noqa: E402
 import json  # noqa: E402
+import time  # noqa: E402
 import unittest  # noqa: E402
 
 import httpx  # noqa: E402
@@ -54,6 +57,8 @@ from service.literature.api.papermeta import (  # noqa: E402
     QUERY_REQUIRED,
     QUOTA_EXHAUSTED,
     UPSTREAM_FAILED,
+    PaperMetaRequest,
+    abstract_alternates,
     register_papermeta_routes,
     resolve_timeout_seconds,
 )
@@ -63,6 +68,7 @@ from service.literature.service.bibliography import (  # noqa: E402
     ARXIV_QUERY_LIMIT,
     NETWORK_FAILED,
     BibliographyError,
+    _resolve_abstract,
     fetch_bibliography,
     fetch_identifier_bibliography,
 )
@@ -454,11 +460,14 @@ class PaperMetaProxyTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 200, response.text)
-        # doi 赢: 只打 doi.org 这一维, 外加它缺摘要时补打的一次 Crossref;
-        # arXiv 与 OpenAlex 一跳都不许有。
-        self.assertEqual(
-            [request.url.host for request in transport.requests], ["doi.org", "api.crossref.org"]
-        )
+        # doi 赢: **题录腿**只打 doi.org 这一维, arXiv 的 BibTeX 腿 (arxiv.org) 与 OpenAlex
+        # 一跳都不许有。后面两跳是摘要补充腿沿身份链补打的: 单一回复让 Crossref 拿到的
+        # 是 BibTeX 而不是 JSON (没有摘要), 于是再试记录上的 arXiv 号。
+        hosts = [request.url.host for request in transport.requests]
+        self.assertEqual(hosts, ["doi.org", "api.crossref.org", "export.arxiv.org"])
+        self.assertNotIn("arxiv.org", hosts)
+        self.assertNotIn("api.openalex.org", hosts)
+        self.assertEqual(transport.requests[2].url.params["id_list"], "1706.03762")
         self.assertEqual(str(transport.requests[0].url), "https://doi.org/10.7282/T34X59H0")
         self.assertEqual(transport.requests[0].method, "GET")
         self.assertEqual(transport.requests[0].headers["accept"], "application/x-bibtex")
@@ -760,16 +769,24 @@ class RoutingTransport:
         return [request.url.host for request in self.requests]
 
 
+def post_papermeta(
+    replies: dict[str, object], body: dict
+) -> tuple[httpx.Response, RoutingTransport]:
+    """按主机路由回复, 打一次真实的 POST /api/literature/papermeta。"""
+
+    transport = RoutingTransport(replies)
+    app = FastAPI()
+    register_papermeta_routes(app, transport=httpx.MockTransport(transport.handler))
+    return TestClient(app).post(PREFIX, json=body), transport
+
+
 class IdentifierAbstractTests(unittest.TestCase):
     """摘要补充腿: arXiv 取 Atom 的 summary, DOI 取 Crossref 的 abstract, 拿不到就降级。"""
 
     def post(
         self, replies: dict[str, object], body: dict
     ) -> tuple[httpx.Response, RoutingTransport]:
-        transport = RoutingTransport(replies)
-        app = FastAPI()
-        register_papermeta_routes(app, transport=httpx.MockTransport(transport.handler))
-        return TestClient(app).post(PREFIX, json=body), transport
+        return post_papermeta(replies, body)
 
     def test_arxiv_bibtex_without_abstract_is_completed_from_the_atom_feed(self) -> None:
         response, transport = self.post(
@@ -911,6 +928,176 @@ class IdentifierAbstractTests(unittest.TestCase):
                 "arxiv": "https://export.arxiv.org/api/query",
                 "doi": "https://api.crossref.org/works/",
             },
+        )
+
+
+class AbstractChainTests(unittest.TestCase):
+    """摘要补充腿的身份链: 题录维度自己 → 该标识折叠出的 arXiv → 记录上另一个标识。
+
+    链是**填空不是择优**, 所以每个用例都只登记「按序应该打到」的主机: 多打一跳当场
+    KeyError, 顺序不对 hosts 断言就红 —— 不必再写断言去数请求。
+    """
+
+    def test_a_publisher_doi_without_abstract_falls_back_to_the_records_arxiv_id(self) -> None:
+        response, transport = post_papermeta(
+            {
+                "doi.org": httpx.Response(200, text=BIBTEX),
+                # 出版商没向 Crossref 存摘要 —— 这一环拿到 None, 才轮到记录上的 arXiv 号。
+                "api.crossref.org": crossref_payload(),
+                "export.arxiv.org": httpx.Response(200, text=ATOM_FEED),
+            },
+            {"doi": "10.1234/example", "arxiv": "1706.03762"},
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["fields"]["abstract"], ARXIV_ABSTRACT_TEXT)
+        self.assertEqual(transport.hosts, ["doi.org", "api.crossref.org", "export.arxiv.org"])
+        self.assertEqual(transport.requests[2].url.params["id_list"], "1706.03762")
+
+    def test_a_crossref_abstract_stops_before_the_arxiv_fallback(self) -> None:
+        # export.arxiv.org 没登记: 已有出版商摘要还去打预印本, 就是 KeyError。
+        response, transport = post_papermeta(
+            {
+                "doi.org": httpx.Response(200, text=BIBTEX),
+                "api.crossref.org": crossref_payload(CROSSREF_ABSTRACT_MARKUP),
+            },
+            {"doi": "10.1234/example", "arxiv": "1706.03762"},
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["fields"]["abstract"], CROSSREF_ABSTRACT_TEXT)
+        self.assertEqual(transport.hosts, ["doi.org", "api.crossref.org"])
+
+    def test_an_arxiv_registered_doi_derives_its_own_fallback(self) -> None:
+        """``10.48550/arXiv.*`` 里就带着 arXiv 号, 不需要记录上另有一个 arxiv 字段。"""
+
+        response, transport = post_papermeta(
+            {
+                "doi.org": httpx.Response(200, text=BIBTEX),
+                "api.crossref.org": crossref_payload(),
+                "export.arxiv.org": httpx.Response(200, text=ATOM_FEED),
+            },
+            {"doi": "10.48550/arXiv.1706.03762"},
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["fields"]["abstract"], ARXIV_ABSTRACT_TEXT)
+        self.assertEqual(transport.hosts, ["doi.org", "api.crossref.org", "export.arxiv.org"])
+        # 题录腿保留用户写的大小写, 摘要腿走链上的规范身份 (DOI 解析本身大小写不敏感)。
+        self.assertIn("10.48550/arXiv.1706.03762", str(transport.requests[0].url))
+        self.assertEqual(
+            str(transport.requests[1].url),
+            "https://api.crossref.org/works/10.48550/arxiv.1706.03762",
+        )
+        self.assertEqual(transport.requests[2].url.params["id_list"], "1706.03762")
+
+    def test_a_mixed_case_doi_reaches_crossref_exactly_once(self) -> None:
+        """链首恒为题录维度自己: 消费方再前置一次主维度, 同一个 DOI 就会被打两次。"""
+
+        response, transport = post_papermeta(
+            {
+                "doi.org": httpx.Response(200, text=BIBTEX),
+                "api.crossref.org": crossref_payload(),
+                "export.arxiv.org": httpx.Response(200, text=ATOM_FEED),
+            },
+            {"doi": "10.1234/Example", "arxiv": "1706.03762"},
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(transport.hosts, ["doi.org", "api.crossref.org", "export.arxiv.org"])
+        self.assertEqual(
+            str(transport.requests[1].url), "https://api.crossref.org/works/10.1234/example"
+        )
+
+    def test_a_versioned_alternate_does_not_add_a_second_arxiv_hop(self) -> None:
+        """去重按去版本号的键: 派生出的无版本号形态优先, 不为同一篇打两次 arXiv。"""
+
+        _, transport = post_papermeta(
+            {
+                "doi.org": httpx.Response(200, text=BIBTEX),
+                "api.crossref.org": crossref_payload(),
+                "export.arxiv.org": httpx.Response(200, text=ATOM_FEED),
+            },
+            {"doi": "10.48550/arXiv.1706.03762", "arxiv": "1706.03762v2"},
+        )
+
+        self.assertEqual(transport.hosts, ["doi.org", "api.crossref.org", "export.arxiv.org"])
+        self.assertEqual(transport.requests[2].url.params["id_list"], "1706.03762")
+
+    def test_an_invalid_alternate_is_skipped_without_a_third_hop(self) -> None:
+        """脏标识只是「这一环没有」, 不许把已经拿到题录的同步打成 400。"""
+
+        response, transport = post_papermeta(
+            {
+                "doi.org": httpx.Response(200, text=BIBTEX),
+                "api.crossref.org": crossref_payload(),
+            },
+            {"doi": "10.1234/example", "arxiv": "not-an-arxiv-id"},
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertNotIn("abstract", response.json()["fields"])
+        self.assertEqual(transport.hosts, ["doi.org", "api.crossref.org"])
+
+    def test_a_failing_fallback_leg_never_touches_the_other_bibtex_fields(self) -> None:
+        """回退腿的任何意外都只降级成「没有摘要」: 200, 题录字段一个都不能少。"""
+
+        fallback_failures = (
+            httpx.Response(500, text="upstream error"),
+            httpx.Response(429, json={"message": "rate limited"}),
+            httpx.ConnectError("network failure"),
+            httpx.ReadTimeout("timeout"),
+            httpx.Response(200, text="<feed><entry>"),
+            httpx.Response(200, text=ATOM_ERROR_FEED),
+        )
+        for reply in fallback_failures:
+            with self.subTest(reply=reply):
+                response, transport = post_papermeta(
+                    {
+                        "doi.org": httpx.Response(200, text=BIBTEX),
+                        "api.crossref.org": crossref_payload(),
+                        "export.arxiv.org": reply,
+                    },
+                    {"doi": "10.1234/example", "arxiv": "1706.03762"},
+                )
+                self.assertEqual(response.status_code, 200, response.text)
+                fields = response.json()["fields"]
+                self.assertNotIn("abstract", fields)
+                self.assertEqual(fields["title"], "Attention Is All You Need")
+                self.assertEqual(fields["volume"], "7")
+                self.assertEqual(fields["number"], "2")
+                self.assertEqual(fields["publisher"], "Example Publisher")
+                self.assertEqual(
+                    transport.hosts, ["doi.org", "api.crossref.org", "export.arxiv.org"]
+                )
+
+    def test_an_exhausted_budget_stops_before_any_abstract_hop(self) -> None:
+        """整条链共用题录腿进门时算好的截止点: 预算耗尽一跳都不打, 不给总超时翻倍。"""
+
+        transport = RoutingTransport(
+            {"api.crossref.org": crossref_payload(CROSSREF_ABSTRACT_MARKUP)}
+        )
+        abstract = asyncio.run(
+            _resolve_abstract(
+                (("doi", "10.1234/example"), ("arxiv", "1706.03762")),
+                deadline_at=time.monotonic() - 1,
+                transport=httpx.MockTransport(transport.handler),
+            )
+        )
+
+        self.assertIsNone(abstract)
+        self.assertEqual(transport.requests, [])
+
+    def test_only_identifiers_join_the_chain(self) -> None:
+        """title 是模糊检索键不是标识符, 不进链; 空白值也不算「已知标识」。"""
+
+        payload = PaperMetaRequest(
+            doi="10.1234/example", arxiv="1706.03762", title="Attention Is All You Need"
+        )
+        self.assertEqual(abstract_alternates(payload, "doi"), {"arxiv": "1706.03762"})
+        self.assertEqual(abstract_alternates(payload, "arxiv"), {"doi": "10.1234/example"})
+        self.assertEqual(
+            abstract_alternates(PaperMetaRequest(doi="10.1234/example", arxiv="   "), "doi"), {}
         )
 
 

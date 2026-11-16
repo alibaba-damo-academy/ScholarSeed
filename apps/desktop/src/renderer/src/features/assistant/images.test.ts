@@ -10,6 +10,12 @@ import {
 } from './pictures.ts'
 import type { SessionArtifact } from '../../model'
 import { sha256Text } from './anchors.ts'
+import {
+  attachmentImageSource,
+  authorizeAttachmentOriginal,
+  isImageAttachment,
+  partitionAttachments,
+} from './utils.ts'
 
 test('native message wiring shares the gallery and releases resource URLs without granting file authority', () => {
   const renderer = readFileSync(new URL('./Images.tsx', import.meta.url), 'utf8')
@@ -20,14 +26,16 @@ test('native message wiring shares the gallery and releases resource URLs withou
   const sources = readFileSync(new URL('./pictures.ts', import.meta.url), 'utf8')
   assert.match(sources, /reference\.id,\s+reference\.path,\s+reference\.sha256/)
   assert.match(sources, /artifact\.status === 'failed'/)
-  assert.match(renderer, /artifacts.filter\(isImageArtifact\)/)
   assert.match(renderer, /artifactImageAsset\(sessionId, artifact\)/)
-  assert.match(renderer, /ImageBatch.Provider/)
-  assert.match(renderer, /thumbnails=\{false\}/)
-  assert.match(renderer, /batch.select\(identity\)/)
+  assert.match(renderer, /GeneratedImageGallery/)
+  assert.match(renderer, /if \(\!eligibleImage\(artifact\)\) return null/)
   assert.match(attachments, /importAttachmentToResources/)
-  assert.match(attachments, /<SentImages/)
-  assert.match(attachments, /refs=\{files\}/)
+  assert.match(attachments, /<AttachmentImages/)
+  assert.match(
+    attachments,
+    /refs=\{refs\}[\s\S]*sessionId=\{thread\.sessionId \?\? undefined\}[\s\S]*sent/
+  )
+  assert.match(attachments, /<AttachmentFiles[\s\S]*refs=\{files\.map\(\(row\) => row\.ref\)\}/)
 })
 
 test('image layout and gallery share format and lifecycle eligibility', () => {
@@ -46,9 +54,31 @@ test('image layout and gallery share format and lifecycle eligibility', () => {
   assert.equal(isImageArtifact({ ...artifact, name: 'report.txt', path: 'report.txt' }), false)
   assert.equal(isImageArtifact({ ...artifact, name: 'photo.heic', path: 'photo.heic' }), false)
 })
-
 test('only browser-supported images enter the image group', () => {
   assert.equal(imageReference({ type: 'file', id: 'a', title: 'a.png', path: '/a.png' }), true)
+  for (const suffix of ['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg', 'bmp']) {
+    assert.equal(
+      imageReference({
+        type: 'file',
+        id: suffix,
+        title: `plot.${suffix}`,
+        path: `/plot.${suffix}`,
+      }),
+      true
+    )
+  }
+  for (const suffix of ['tif', 'tiff']) {
+    assert.equal(
+      imageReference({
+        type: 'file',
+        id: suffix,
+        title: `plot.${suffix}`,
+        path: `/plot.${suffix}`,
+        mediaType: 'image/tiff',
+      }),
+      false
+    )
+  }
   assert.equal(
     imageReference({
       type: 'file',
@@ -73,6 +103,25 @@ test('sent images retain authenticated source and reject changed bytes or forbid
   Object.assign(globalThis, { window: { scholarseed: { getApiBase: () => 'http://test' } } })
   globalThis.fetch = async (url, init) => {
     calls.push({ url: String(url), credentials: init?.credentials })
+    if (!forbidden && String(url).endsWith('/artifacts/published-id/open'))
+      return Response.json({
+        viewer: 'image',
+        processor: null,
+        content_kind: 'binary',
+        capabilities: {
+          can_preview: true,
+          can_edit: false,
+          can_select: false,
+          can_annotate: false,
+          can_save: false,
+          can_version: false,
+          can_diff: false,
+          pending: [],
+        },
+        media_type: 'image/png',
+        size: 'image bytes'.length,
+        revision: await sha256Text('image bytes'),
+      })
     return new Response(forbidden ? '' : 'image bytes', {
       status: forbidden ? 403 : 200,
       headers: { 'content-type': 'image/png' },
@@ -102,10 +151,16 @@ test('sent images retain authenticated source and reject changed bytes or forbid
       })
     )
     assert.equal(artifact.error, null)
-    assert.equal(
-      calls.at(-1)?.url,
-      'http://test/api/serve/sessions/session-one/artifacts/published-id/raw'
-    )
+    assert.deepEqual(calls.slice(-2), [
+      {
+        url: 'http://test/api/serve/sessions/session-one/artifacts/published-id/open',
+        credentials: 'include',
+      },
+      {
+        url: 'http://test/api/serve/sessions/session-one/artifacts/published-id/raw',
+        credentials: 'include',
+      },
+    ])
     const staleArtifact = await loadImageAsset(
       artifactImageAsset('session-one', {
         artifact_id: 'published-id',
@@ -127,4 +182,89 @@ test('sent images retain authenticated source and reject changed bytes or forbid
     globalThis.fetch = previousFetch
     Object.assign(globalThis, { window: previousWindow })
   }
+})
+
+test('only supported image formats form an ordered image group, without a count cap', () => {
+  for (const extension of ['png', 'jpg', 'jpeg', 'svg', 'webp', 'gif', 'bmp'])
+    assert.equal(
+      isImageAttachment({
+        type: 'file',
+        id: extension,
+        path: `C:\\images\\A.${extension.toUpperCase()}`,
+        title: `A.${extension}`,
+      }),
+      true
+    )
+  for (const extension of ['tiff', 'eps', 'psd', 'heic'])
+    assert.equal(
+      isImageAttachment({
+        type: 'file',
+        id: extension,
+        path: `a.${extension}`,
+        title: `a.${extension}`,
+        mediaType: 'image/unknown',
+      }),
+      false
+    )
+  const refs = Array.from({ length: 23 }, (_, index) => ({
+    type: 'file' as const,
+    id: String(index),
+    title: `${index}.png`,
+    path: `${index}.png`,
+  }))
+  const file = { type: 'file' as const, id: 'pdf', title: 'paper.pdf', path: 'paper.pdf' }
+  const split = partitionAttachments([file, ...refs])
+  assert.deepEqual(
+    split.images.map((row) => row.index),
+    refs.map((_, index) => index + 1)
+  )
+  assert.deepEqual(split.files, [{ ref: file, index: 0 }])
+})
+
+test('attachment preview preserves an explicit authorized source and otherwise uses the session boundary', () => {
+  const ref = { type: 'file' as const, id: 'ref', title: 'photo.png', path: '/project/photo.png' }
+  assert.deepEqual(attachmentImageSource(ref, 'session'), {
+    kind: 'session-file',
+    sessionId: 'session',
+    path: ref.path,
+    mediaType: undefined,
+  })
+  const previewSource = {
+    kind: 'session-file' as const,
+    sessionId: 'upload',
+    path: 'attachments/photo.png',
+  }
+  assert.equal(attachmentImageSource({ ...ref, previewSource }, 'session'), previewSource)
+  assert.deepEqual(attachmentImageSource(ref), {
+    kind: 'runtime-file',
+    path: ref.path,
+    mediaType: undefined,
+  })
+})
+
+test('external actions grant only the exact session file after a successful backend authorization read', async () => {
+  const ref = { type: 'file' as const, id: 'photo', title: 'photo.png', path: '/outside/photo.png' }
+  const grants: string[] = []
+  const grant = async (path: string): Promise<boolean> => {
+    grants.push(path)
+    return true
+  }
+  assert.equal(await authorizeAttachmentOriginal(ref, 'session', async () => false, grant), false)
+  assert.deepEqual(grants, [])
+  assert.equal(await authorizeAttachmentOriginal(ref, 'session', async () => true, grant), true)
+  assert.deepEqual(grants, [ref.path])
+  assert.equal(
+    await authorizeAttachmentOriginal(
+      {
+        ...ref,
+        previewSource: { kind: 'session-file', sessionId: 'session', path: 'another.png' },
+      },
+      'session',
+      async () => true,
+      grant
+    ),
+    false
+  )
+  assert.deepEqual(grants, [ref.path])
+  assert.equal(await authorizeAttachmentOriginal(ref, undefined, async () => true, grant), false)
 })

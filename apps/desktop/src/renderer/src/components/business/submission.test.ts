@@ -18,6 +18,7 @@ test('the real composer effect waits for readiness and submits a project draft o
   const context = {
     React: { useRef: () => consumed, useEffect: (callback: () => void) => callback() },
     state,
+    editing: false,
     surface: 'assistant',
     canSend: true,
     submittingMessage: false,
@@ -38,6 +39,11 @@ test('the real composer effect waits for readiness and submits a project draft o
   assert.equal(submissions, 0)
   assert.equal(state.composerSubmitRequested, true)
   context.canSend = true
+  context.editing = true
+  runInNewContext(effect, context)
+  assert.equal(submissions, 0)
+  assert.equal(state.composerSubmitRequested, true)
+  context.editing = false
   runInNewContext(effect, context)
   runInNewContext(effect, context)
   assert.equal(submissions, 1)

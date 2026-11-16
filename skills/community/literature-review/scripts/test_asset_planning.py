@@ -6,11 +6,15 @@ import asyncio
 import copy
 import json
 import unittest
+import tempfile
 import manuscript as m
 import scripted_generation as generation
 from test_scripted_generation import FakeModel, CONFIG
 import test_manuscript
-from task_contract import configure,atomic_json
+from task_contract import configure,atomic_json,validate_request,read_request
+from task_input import task_input
+from outlining import build_prompt
+from validate_outline import derive_from_task
 from task_fixtures import planned_outline
 from writing_contract import approval_snapshot,require_approval
 from operator_cli import configure_outline
@@ -60,8 +64,7 @@ class AssetPlanTest(unittest.TestCase):
         source=self.ws/'candidate.json';atomic_json(source,value);return m.accept(self.ws,source)
 
     def test_outline_example_preserves_nested_ownership_and_rejects_root_move(self):
-        protocol=generation.OUTLINE_PROTOCOL
-        example,_=json.JSONDecoder().raw_decode(protocol[protocol.index('{"survey_title":"Review"'):])
+        example=self.outline()
         from asset_plan import plan_errors
         from submission_normalization import outline_assets
         self.assertEqual(plan_errors(example,{'p1'}),[])
@@ -79,6 +82,8 @@ class AssetPlanTest(unittest.TestCase):
             {'id':'omit','kind':'forbidden_section','value':{'title':'Abstract'},'verbatim':'No abstract.'}]})
         before=(self.ws/'04_outline/outline.json').read_bytes()
         value=self.outline();value['outline_tree'][1]['tables']=[]
+        value['outline_tree'][0]['figures'][0]['paper_ids']=['P01']
+        value['outline_tree'][0]['subsections'][0]['tables'][0]['paper_ids']=['P01']
         (self.ws/'04_outline/outline.json').unlink()  # Fresh initial outline request.
         author=FakeModel(value)
         with self.assertRaisesRegex(GenerationError,'at least 2'):
@@ -128,3 +133,26 @@ class AssetPlanTest(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main()
+
+
+class AssetCountTransferTest(unittest.TestCase):
+    def test_explicit_counts_reach_outline_context_and_validator(self):
+        with tempfile.TemporaryDirectory() as folder:
+            ws = Path(folder)
+            intent = 'Write a section with exactly 2 figures and 1 table.'
+            configure(ws, {'intent': intent, 'execution': {'mode': 'standard'}, 'output_scope': 'section',
+                'constraints': [
+                    {'id': 'figures', 'kind': 'figure_count', 'value': {'min': 2, 'max': 2}, 'verbatim': 'exactly 2 figures'},
+                    {'id': 'tables', 'kind': 'table_count', 'value': {'min': 1, 'max': 1}, 'verbatim': '1 table'}]})
+            task = task_input(ws)
+            request = read_request(ws)
+            messages, _ = build_prompt(task, request, {'papers': []}, 'markdown')
+            context = json.loads(messages[1]['content'])
+            self.assertEqual(context['task']['constraints'], task['constraints'])
+            limits, _ = derive_from_task(ws)
+            self.assertEqual((limits['min_figures'], limits['max_figures']), (2, 2))
+            self.assertEqual((limits['min_tables'], limits['max_tables']), (1, 1))
+
+    def test_unspecified_counts_remain_automatic(self):
+        request = validate_request({'intent': 'Compare these methods.', 'execution': {'mode': 'standard'}})
+        self.assertEqual(request['constraints'], [])

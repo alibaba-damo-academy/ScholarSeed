@@ -8,8 +8,10 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'lib'))
+from authoring import writing_content, evidence_limits, business_content
 from writing_contract import digest
 from generation_errors import GenerationError, diagnostic
+from paper_materials import evidence_records
 
 PLACEHOLDERS = {'', 'n/a', 'na', 'none', 'null', 'not found', 'not available',
                 'not provided', 'not specified', 'no information found',
@@ -20,11 +22,6 @@ OPTIONAL = {
     'card.theorem_proof.key_assumptions', 'card.metrics.primary_metrics',
     'card.summary.key_themes', 'card.analysis.comparisons',
 }
-# Only operational metadata is excluded from the writing view. Unknown business
-# fields inside card/common_fields are retained, including formulas and results.
-OPERATIONAL = {'source_maps', 'source_map', 'provenance', 'processing_log',
-               'request_log', 'cache_path', 'source_path', 'processing_status',
-               'paperId', 'paper_id'}
 
 
 def read(path):
@@ -72,6 +69,15 @@ def survey_sections(value):
 
 
 def project(record, extra=()):
+    if record.get('evidence_kind') == 'abstract':
+        return {'Original abstract': record['abstract']}, {'Original abstract': 'abstract'}
+    if record.get('evidence_kind') == 'compact':
+        fields={'Source-backed claims': record['card']['claims']}
+        mapping={'Source-backed claims':'card.claims'}
+        if clean(record.get('abstract')):
+            fields={'Original abstract':record['abstract'],**fields}
+            mapping={'Original abstract':'abstract',**mapping}
+        return fields,mapping
     fields, mapping, seen = {}, {}, set()
     def add(label, paths, transform=lambda v: v):
         for path in paths:
@@ -107,15 +113,14 @@ def project(record, extra=()):
     for path in extra:
         paths = [path, 'card.discussion.limitations'] if path == 'common_fields.limitations' else [path]
         add(path, paths)
+    if clean(record.get('abstract')) and record['abstract'] not in fields.values():
+        fields={'Original abstract':record['abstract'],**fields}
+        mapping={'Original abstract':'abstract',**mapping}
+    limits = evidence_limits(record)
+    if limits:
+        fields['Evidence limits'] = limits
+        mapping['Evidence limits'] = 'source_coverage'
     return fields, mapping
-
-
-def writing_content(record):
-    def strip(value):
-        if isinstance(value, dict): return {k: strip(v) for k, v in value.items() if k not in OPERATIONAL}
-        if isinstance(value, list): return [strip(v) for v in value]
-        return value
-    return {k: strip(record[k]) for k in ('abstract', 'common_fields', 'card', 'survey_outline_skeletons') if k in record}
 
 
 def build(ws, view, options=None):
@@ -128,9 +133,9 @@ def build(ws, view, options=None):
     extra = options.get('extra_fields', [])
     if not isinstance(extra, list) or any(not isinstance(p, str) or p not in OPTIONAL for p in extra):
         raise GenerationError('SCHEMA_INVALID', 'extra_fields must use the documented whitelist')
-    cards, keys = read(ws/'03_process/paper_cards.json'), read(ws/'03_process/cite_keys.json')
+    cards, keys = evidence_records(ws), read(ws/'03_process/cite_keys.json')
     if not isinstance(cards, dict) or not cards or not isinstance(keys, dict):
-        raise GenerationError('SCHEMA_INVALID', 'cards and citation index must be nonempty objects')
+        raise GenerationError('SCHEMA_INVALID', 'evidence records and citation index must be nonempty objects')
     selected_path = ws/'02_retrieval/selected_paper.json'
     selected = None
     if selected_path.exists():
@@ -153,10 +158,12 @@ def build(ws, view, options=None):
         if record.get('paperId') not in (None, '', pid):
             raise GenerationError('DUPLICATE_ID', 'record paperId differs from dictionary identity', pid)
         head = {'paper_id': pid, 'cite_key': keys[pid], 'title': record.get('title') or 'Unknown title',
+                'authors': record.get('authors') or (selected.get(pid) or {}).get('authors') or [],
                 'year': record.get('year') or 'unknown', 'paper_type': record.get('paper_type') or 'unknown',
                 'reading_depth': record.get('reading_depth') or 'unknown'}
         fields, mapping = project(record, extra) if view == 'outline' else (writing_content(record), {})
-        papers.append({**head, 'fields': fields, 'field_mapping': mapping})
+        fields = business_content(fields)
+        papers.append({**head, 'fields': fields})
         index[pid] = {**head, 'field_mapping': mapping,
                       'source_pointer': f'03_process/paper_cards.json#/{pid}'}
         lines += [f"## [{keys[pid]}] {head['title']}",

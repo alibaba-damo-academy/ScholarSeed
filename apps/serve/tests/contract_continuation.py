@@ -59,6 +59,7 @@ from service.chat.constants import (
     PRODUCT_EVENT_USER_MESSAGE,
     PRODUCT_SESSION_STATE_IDLE,
     PRODUCT_TURN_OUTCOME_UNKNOWN,
+    USER_MESSAGE_ORIGIN_TURN,
 )
 from service.chat.persistence import blocks, journal
 from service.chat.persistence.catalog import (
@@ -421,6 +422,7 @@ class ContinuationContracts(unittest.IsolatedAsyncioTestCase):
             interrupt_generation=0,
             last_submission_id=CLIENT_ID,
             current_task=None,
+            settlement_recheck=asyncio.Event(),
             resource_task=None,
             waiting_request_id="",
             running=False,
@@ -1719,7 +1721,8 @@ class ContinuationContracts(unittest.IsolatedAsyncioTestCase):
         claim = self.events.by_key(SESSION_ID, recovery_key(CLIENT_ID, RECOVERY_CLAIMED))
         admissions = []
 
-        async def admit(live, body, *, recovery):
+        async def admit(live, body, *, recovery, origin):
+            self.assertEqual(origin, USER_MESSAGE_ORIGIN_TURN)
             admission = await self.recovery.admission(live, recovery, queued.queued_message_id)
             self.assertIsNotNone(admission)
             self.assertEqual(admission.generation, "new-host:1")

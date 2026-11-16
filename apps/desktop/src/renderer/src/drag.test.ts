@@ -139,7 +139,7 @@ test('drag payload detection accepts item and file-list representations', () => 
   assert.equal(
     hasDraggedFiles({
       files: fileList([]),
-      items: [{ kind: 'file' }] as unknown as DataTransferItemList,
+      items: [{ kind: 'string' }, { kind: 'file' }] as unknown as DataTransferItemList,
     }),
     true
   )

@@ -16,6 +16,7 @@ from collections.abc import Awaitable, Callable, Iterable
 from contextlib import AbstractContextManager, ExitStack, asynccontextmanager, contextmanager
 from dataclasses import asdict, dataclass, field, replace
 from enum import StrEnum
+from functools import partial
 from pathlib import Path, PureWindowsPath
 from typing import Mapping, Optional
 
@@ -45,12 +46,14 @@ from service.assistant.service.nextsteps import NEXT_STEPS_CARD, validate_next_s
 from service.assistant.service.resources import AssistantResourceService
 from service.capabilities.api.admission import register_skill_admission
 from service.capabilities.api.management import register_skill_management
+from service.capabilities.service.components import ComponentRegistry
 from service.chat.api.artifacts import register_artifact_routes
 from service.chat.api.browser import register_browser_routes
 from service.chat.api.browserhistory import register_browser_history_routes
 from service.chat.api.browsersearch import register_browser_search_routes
 from service.chat.api.cards import register_card_routes
 from service.chat.api.contracts import register_contract_routes
+from service.chat.api.generation import register_generation_routes
 from service.chat.api.history import register_history_routes
 from service.chat.api.mcp import register_mcp_bridge
 from service.chat.api.plan import register_plan_routes
@@ -89,6 +92,7 @@ from service.chat.service.history import HistoryService
 from service.chat.service.maintenance import (
     SessionMaintenanceService,
     await_storage_maintenance,
+    inspect_session_storage,
     maintain_session_storage,
 )
 from service.chat.service.publication import PublicationService, SessionArtifactStorage
@@ -177,10 +181,9 @@ from service.literature.api.acquire import register_acquire_routes
 from service.literature.api.analysis import register_analysis_routes
 from service.literature.api.catalogue import register_global_routes
 from service.literature.api.curation import register_curation_bridge
-from service.literature.api.delivery import register_delivery_routes
-from service.literature.api.downloads import register_download_routes
 from service.literature.api.evidence import register_card_bridge
 from service.literature.api.gate import FulltextGate
+from service.literature.api.insights import register_insight_routes
 from service.literature.api.papermeta import register_papermeta_routes
 from service.literature.api.reading import register_reading_routes
 from service.literature.api.receipt import register_receipt_routes
@@ -188,37 +191,27 @@ from service.literature.api.result import register_result_routes
 from service.literature.api.review import register_literature_review_routes
 from service.literature.api.search import register_literature_search_routes
 from service.literature.api.taxonomy import register_taxonomy_bridge
-from service.literature.domain.delivery import (
-    DELIVERY_CARD,
-    delivery_card_slot,
-    validate_delivery_card,
-)
-from service.literature.persistence.downloads import prune_download_results
+from service.literature.persistence.analysis import AnalysisStore
 from service.literature.persistence.search import LiteratureSearchService
 from service.literature.persistence.store import LiteratureRepository
 from service.literature.persistence.store import classify_schema as inspect_literature_connection
 from service.literature.persistence.store import connect as connect_literature
 from service.literature.persistence.store import initialize_schema as initialize_literature_schema
 from service.literature.service.attachment import LiteratureAttachmentContent
-from service.literature.service.cards import (
-    LITERATURE_REFERENCES_CARD,
-    validate_references_card,
-)
+from service.literature.service.candidates import complete_candidates, prepare_candidates
+from service.literature.service.confirmation import require_search_plan
 from service.literature.service.context import LiteratureContextProvider
-from service.literature.service.delivery import DeliveryService
-from service.literature.service.downloads import (
-    DOWNLOADS_CARD,
-    download_card_slot,
-    validate_download_card,
-)
 from service.literature.service.evidence import LiteratureEvidenceService
-from service.literature.service.fulltexts import ManagedFulltexts
+from service.literature.service.fulltexts import ManagedFulltexts, task_documents
 from service.literature.service.pdf import LiteraturePdf
 from service.literature.service.queries import LiteratureQueries
 from service.literature.service.records import AttachmentRecords
 from service.literature.service.reference import LiteratureReferenceService
 from service.literature.service.result import SEARCH_CARD, search_card_slot, validate_search_card
+from service.literature.service.reuse import ReadingReuse
 from service.literature.service.review import REVIEW_CARD, validate_review_card
+from service.literature.service.selected import PROVIDED_ONLY, SelectedSources
+from service.literature.service.selected import read_request as selected_request
 from service.literature.service.status import ResultStatusService
 from service.literature.service.taxonomy import LiteratureTaxonomyService
 from service.paths import (
@@ -234,12 +227,14 @@ from service.paths import (
     SCHOLARSEED_HOME,
     SERVE_SETTINGS_FILE,
     SERVICE_BRIDGE_DIR,
+    SERVICE_COMPONENTS_DATABASE,
     SERVICE_DIR,
     SERVICE_LITERATURE_DATABASE,
     SERVICE_PROJECTS_FILE,
     SESSION_CATALOG_DB,
     SESSION_RUNTIME_DIR,
     coordination_root,
+    texlive_cache_directory,
 )
 from service.persistence.documents import DocumentSource
 from service.persistence.preview import (
@@ -268,7 +263,9 @@ from service.platform.content import ArtifactScopeKind, AssetKind, ProjectRef, R
 from service.platform.context import (
     AssistantContextProvider,
     AssistantTurnSnapshot,
+    ContextOrigin,
     ContextRefKind,
+    ProductTaskType,
     SearchScope,
 )
 from service.platform.domains import (
@@ -286,6 +283,8 @@ from service.platform.guardian import from_environment as native_guardian
 from service.platform.local import local_listener
 from service.platform.notifications import ChangeHub
 from service.platform.reclamation import reclaim_coordination
+from service.platform.records import RecordOwner
+from service.platform.registry import REGISTRY_DIRECTORY, RegistryNative, remove_legacy_coordination
 from service.platform.search import register_search_routes
 from service.platform.shutdown import ShutdownStage
 from service.platform.startup import (
@@ -309,6 +308,7 @@ from service.platform.storage import (
     prepare_private_directory,
     restrict_private_directory,
 )
+from service.platform.toolchain import COMPILER_VERSION_PATTERN
 from service.platform.vocabulary import BRIDGE_ROUTE_PREFIX
 from service.platform.web import mount_renderer, register_cross_origin_isolation
 from service.resources.api.ai import register_resource_ai_routes
@@ -379,6 +379,7 @@ from service.workbench.api.routes import register_workbench_routes
 from service.workbench.api.selection import register_selection_action_routes
 from service.workbench.domain.model import WorkbenchFormatPolicy
 from service.workbench.persistence.records import PdfRecordCatalog
+from service.workbench.service.comments import PdfCommentContext
 from service.workbench.service.context import SelectionContextProvider
 from service.workbench.service.indexing import PdfIndexService
 from service.workbench.service.materialize import PdfMaterializer
@@ -432,20 +433,19 @@ def _packaged_windows_path(value: str) -> PureWindowsPath | None:
     return PureWindowsPath(value)
 
 
-def _packaged_config_installation() -> InstallationBinding | None:
+def _packaged_windows_installation_root() -> PureWindowsPath | None:
     if sys.platform != "win32":
         return None
     module = _packaged_windows_path(__file__)
     executable = _packaged_windows_path(sys.executable)
-    source = _packaged_windows_path(os.environ.get(CONFIG_SEED_ENV, "").strip())
-    if module is None or executable is None or source is None:
+    if module is None or executable is None:
         return None
     if len(module.parts) <= len(PACKAGED_SERVICE_PARTS) or PureWindowsPath(
         *module.parts[-len(PACKAGED_SERVICE_PARTS) :]
     ) != PureWindowsPath(*PACKAGED_SERVICE_PARTS):
         return None
     root = module.parents[len(PACKAGED_SERVICE_PARTS) - 1]
-    if root == root.parent or source != root.joinpath(*PACKAGED_SEED_PARTS):
+    if root == root.parent:
         return None
     try:
         relative = executable.relative_to(root)
@@ -459,7 +459,34 @@ def _packaged_config_installation() -> InstallationBinding | None:
         != PureWindowsPath(*PACKAGED_PYTHON_ENTRY)
     ):
         return None
+    return root
+
+
+def _packaged_config_installation() -> InstallationBinding | None:
+    root = _packaged_windows_installation_root()
+    source = _packaged_windows_path(os.environ.get(CONFIG_SEED_ENV, "").strip())
+    if root is None or source != root.joinpath(*PACKAGED_SEED_PARTS):
+        return None
     return InstallationBinding(str(root), PACKAGED_SEED_PARTS[:-1])
+
+
+def _managed_tex_cache_root(value: str) -> str | None:
+    if not value:
+        return None
+    supplied = _packaged_windows_path(value)
+    if (
+        sys.platform != "win32"
+        or supplied is None
+        or not COMPILER_VERSION_PATTERN.fullmatch(supplied.name)
+    ):
+        raise ValueError("invalid managed TeX cache root")
+    installation = _packaged_windows_installation_root()
+    if installation is None:
+        raise ValueError("managed TeX cache requires a packaged Windows runtime")
+    expected = texlive_cache_directory(supplied.name, Path(installation))
+    if supplied != _packaged_windows_path(str(expected)):
+        raise ValueError("managed TeX cache root does not match the runtime store")
+    return str(expected)
 
 
 def _windows_directory_native(guardian: object | None) -> WindowsDirectoryNative:
@@ -793,8 +820,8 @@ class StartupSources:
             add(str(project.root), project.root)
             if project.database is not None:
                 add(str(project.database.parent), project.root)
-        for project in self.unavailable_projects:
-            add(project.anchor, project.root)
+        for unavailableProject in self.unavailable_projects:
+            add(unavailableProject.anchor, unavailableProject.root)
         projects = dict(self.catalog.projects)
         for _, project_id, path, kind in self.catalog.external:
             if project_id in projects:
@@ -952,8 +979,8 @@ def _inspect_startup_sources(
         roots = set(core_roots)
         unavailable_projects: tuple[UnavailableProject, ...] = ()
         unavailable_roots = set()
-        project_qualification_roots = ()
-        external_roots = set()
+        project_qualification_roots: tuple[str, ...] = ()
+        external_roots: set[str] = set()
         project_sources = ProjectStorageSources((), ())
     else:
         with startup_phase("source.project_locations", projects=len(catalog.projects)):
@@ -1032,7 +1059,7 @@ def _inspect_startup_sources(
             roots.difference_update(unavailable_roots)
         # External mounts belong to their project, not to application startup. An
         # unavailable mount blocks that project while preserving the catalog row.
-        external_roots: set[str] = set()
+        external_roots = set()
         project_paths = {project_id: root for project_id, root in catalog.projects}
         for _, project_id, path, kind in catalog.external:
             project_root = project_paths.get(project_id)
@@ -1063,9 +1090,9 @@ def _inspect_startup_sources(
             rejected = {str(root) for root in unavailable_roots}
             for _, project_id, path, kind in catalog.external:
                 if project_paths.get(project_id) in unavailable_roots:
-                    target = str(path.parent if kind is AssetKind.FILE else path)
-                    external_roots.discard(target)
-                    rejected.add(target)
+                    rejectedTarget = str(path.parent if kind is AssetKind.FILE else path)
+                    external_roots.discard(rejectedTarget)
+                    rejected.add(rejectedTarget)
             for source in project_sources.projects:
                 if source.root in unavailable_roots and source.database is not None:
                     rejected.add(str(source.database.parent))
@@ -1412,6 +1439,12 @@ def _startup_sqlite_owners(
                         else owner.initialize_schema
                     ),
                     read_rows,
+                    triggers=(
+                        ProductEventStore.preview_triggers if owner is ProductEventStore else None
+                    ),
+                    inspect_layout=(
+                        SessionCatalogStore.inspect_layout if owner is SessionCatalogStore else None
+                    ),
                 )
                 for name, owner, read_rows in session_owners
             ),
@@ -2159,6 +2192,7 @@ def startup_storage_needs_write(snapshot: StartupSources) -> bool:
         raise RuntimeError("legacy project roots have not been inspected")
     if snapshot.config_seed_source is not None and snapshot.config_seed_data is None:
         raise RuntimeError("config seed source has not been inspected")
+    assert snapshot.trace_projection is not None
     if snapshot.trace_projection.recovery is not None:
         return True
     if snapshot.session_journal is not None and snapshot.session_journal.needs_write:
@@ -2300,6 +2334,7 @@ def initialize_startup_storage(
     if snapshot.config_seed_source is not None and snapshot.config_seed_data is None:
         raise RuntimeError("config seed source has not been inspected")
 
+    assert snapshot.trace_projection is not None
     recover_trace_storage(TRACE_PATHS, snapshot.trace_projection)
 
     def initialize_project(entry: ProjectStartupSource) -> None:
@@ -2313,7 +2348,7 @@ def initialize_startup_storage(
                 if snapshot.isolated_projects and project_failed
                 else None
             )
-            if reason is None:
+            if reason is None or project_failed is None:
                 raise
             project_failed(entry.root, reason)
             _log.warning(
@@ -2400,7 +2435,7 @@ def _bind_writable_roots(app: FastAPI, content: ContentService) -> None:
     if sessions is None:
         return
 
-    def provider(scope: Path) -> tuple[Path, ...]:
+    def roots(scope: Path) -> tuple[Path, ...]:
         project = content.project_for_path(str(scope))
         if project is None or not project.available:
             return ()
@@ -2413,11 +2448,18 @@ def _bind_writable_roots(app: FastAPI, content: ContentService) -> None:
             )
         )
 
-    sessions.bind_writable_roots(provider)
+    def provider(scope: Path) -> tuple[Path, ...]:
+        selected = roots(scope)
+        for root in selected:
+            grant_current_user_directory_access(root)
+        return selected
 
-    def output_directory(scope: Path, session_id: str) -> Path:
+    sessions.bind_writable_roots(provider)
+    sessions.bind_artifact_roots(roots)
+
+    def session_directory(scope: Path, session_id: str) -> Path:
         project = content.project_for_path(str(scope))
-        if project is None:
+        if project is None or not project.available:
             raise ValueError(SESSION_PROJECT_NOT_REGISTERED_ERROR)
         try:
             root = content.root(project.id, RootKind.SESSIONS)
@@ -2428,7 +2470,7 @@ def _bind_writable_roots(app: FastAPI, content: ContentService) -> None:
         except ContentError as error:
             raise ValueError(error.code) from error
 
-    sessions.bind_output_directory(output_directory)
+    sessions.bind_session_directory(session_directory)
 
 
 def _bind_project_recognition(app: FastAPI, content: ContentService) -> None:
@@ -2459,6 +2501,7 @@ def create_app(
     local_bridge_root: Path | None = None,
     runtime_discovery: RuntimeDiscovery | None = None,
     default_project_name: str = DEFAULT_PROJECT_NAME,
+    managed_tex_cache: str = "",
 ) -> FastAPI:
     """Compose chat, capabilities, identity, and the renderer."""
 
@@ -2474,6 +2517,9 @@ def create_app(
     with startup_phase("application.runtime_discovery"):
         runtime_discovery = runtime_discovery or RuntimeDiscovery.discover()
     with startup_phase("storage.native"):
+        native: (
+            DarwinDirectoryNative | LinuxDirectoryNative | WindowsDirectoryNative | RegistryNative
+        )
         if sys.platform == "darwin":
             native = DarwinDirectoryNative()
         elif sys.platform == "win32":
@@ -2483,12 +2529,22 @@ def create_app(
         else:
             raise LeaseError("ERR_LEASE_UNSUPPORTED")
     with startup_phase("storage.coordinator"):
-        coordinator = str(coordination_root())
+        coordination_path = coordination_root()
+        coordinator = str(coordination_path)
+        if coordination_path.name == REGISTRY_DIRECTORY:
+            try:
+                remove_legacy_coordination(coordination_path)
+            except OSError as error:
+                _startup_log.warning(
+                    "legacy coordination cleanup deferred until next startup: %s", error
+                )
+            native = RegistryNative(native, coordination_path)
         pin = native.pin(coordinator, True)
         native.release(pin)
     with startup_phase("storage.reclamation"):
         try:
-            reclaim_coordination(native, coordinator)
+            if coordination_path.name != REGISTRY_DIRECTORY:
+                reclaim_coordination(native, coordinator)
         except OSError as error:
             if getattr(error, "code", None) in {"ERR_LEASE_RELEASE", "ERR_DOMAIN_RELEASE"}:
                 raise
@@ -2497,6 +2553,7 @@ def create_app(
     # another product-owned root shares their pathname.
     with startup_phase("storage.creation_roots"):
         owned, existing = startup_creation_roots(runtime_discovery, local_bridge_root)
+        tex_cache = _managed_tex_cache_root(managed_tex_cache)
     with startup_phase("storage.existing_roots", roots=len(existing)):
         for root in existing:
             pin = native.pin(root, False)
@@ -2572,6 +2629,9 @@ def create_app(
                 recovery_at=admission.recovery_at,
                 recovery_id=admission.recovery_id,
             ),
+            # Short-lived directory writers may still be draining when startup
+            # needs exclusive maintenance. Wait through the native lease owner.
+            busy_timeout=DIRECTORY_LEASE_WAIT_SECONDS,
             prepare_structure=prepare_provider_structure,
             qualification_failure=qualification_failure,
             removed_roots=removed_project_roots,
@@ -2585,6 +2645,13 @@ def create_app(
     # Once composition starts, a constructor can have created a resource whose
     # failure does not establish drain. Unsuccessful composition keeps native
     # qualifications until process death, never an unconditional finally-close.
+    compiler_cache_domain = None
+    if tex_cache is not None:
+        # Installed TeX storage is separate from the user/project inventory.
+        # Keep this shared domain through catalog requalification and shutdown.
+        compiler_cache_domain = Domains(native, coordinator, (tex_cache,))
+        compiler_cache_domain.occupy()
+        compiler_cache_domain.admit()
 
     default_project_task: asyncio.Task[dict[str, object]] | None = None
 
@@ -2605,6 +2672,7 @@ def create_app(
                 name="default-project-after-admission",
             )
 
+    owner = DomainOwner(domains)
     with startup_phase(
         "application.compose", projects=len(snapshot.project_storage), roots=len(snapshot.roots)
     ):
@@ -2623,9 +2691,10 @@ def create_app(
             ownership_axis=ownership_axis,
             local_bridge_root=local_bridge_root,
             runtime_discovery=runtime_discovery,
+            runtime_descriptors=owner.runtime_descriptors if sys.platform == "darwin" else None,
         )
-    owner = DomainOwner(domains)
     app.state.storage_domains = owner
+    app.state.compiler_cache_domain = compiler_cache_domain
     app.state.startup_sources = snapshot
     activities = app.state.activities
     discovery_roots = (str(SCHOLARSEED_HOME.absolute()), str(SERVICE_DIR.absolute()))
@@ -3283,8 +3352,10 @@ def create_app(
                 finally:
                     if released:
                         preparing.close()
-            else:
+            elif isinstance(command, AdoptProject):
                 candidate = Path(command.path).expanduser().absolute()
+            else:
+                raise TypeError("unsupported project recovery command")
 
             def read_candidate(held: DataInspection) -> StartupSources:
                 current = read_current(held)
@@ -3513,7 +3584,9 @@ def create_app(
                 activities.snapshot().phase.value,
             )
 
-    session_maintenance = SessionMaintenanceService(activities, maintain_storage)
+    session_maintenance = SessionMaintenanceService(
+        activities, maintain_storage, probe=lambda: inspect_session_storage(SESSION_CATALOG_DB)
+    )
     app.state.session_maintenance = session_maintenance
 
     def recovery_admission(command: ContentCommand) -> RecoveryAdmission:
@@ -3658,6 +3731,7 @@ def _compose_app(
     ownership_axis: str | None,
     local_bridge_root: Path | None,
     runtime_discovery: RuntimeDiscovery,
+    runtime_descriptors: Callable[[], AbstractContextManager[tuple[int, ...]]] | None = None,
 ) -> FastAPI:
     require_qualified_project_locations(snapshot)
     settings = SettingsService()
@@ -3689,7 +3763,6 @@ def _compose_app(
     resource_retention = ResourceRetentionService(content, settings)
     format_policy = WorkbenchFormatPolicy()
     literature_repository = LiteratureRepository(changes=changes)
-    prune_download_results()
     literature_attachments = LiteratureAttachmentContent(literature_repository)
     attachment_records = AttachmentRecords(literature_attachments, literature_repository)
     annotation_store = PdfRecordStore(
@@ -3731,7 +3804,6 @@ def _compose_app(
 
     def drop_project_links(project_id: str) -> None:
         literature_repository.drop_project_links(project_id)
-        prune_download_results(project_id)
 
     content.bind_project_forget_sink(drop_project_links)
     resource_imports = ResourceImportJobService(
@@ -3750,6 +3822,7 @@ def _compose_app(
         activities=activities,
         runtime_discovery=runtime_discovery,
         notifications=changes,
+        runtime_descriptors=runtime_descriptors,
     )
     app.state.workbench_admission = admission
     app.state.browser_host_client = browser_host_client
@@ -3775,24 +3848,11 @@ def _compose_app(
     literature_references = LiteratureReferenceService(content)
     cards = CardRegistry()
     cards.register(NEXT_STEPS_CARD, validate_next_steps_card)
-    cards.register(LITERATURE_REFERENCES_CARD, validate_references_card)
     cards.register(
         SEARCH_CARD,
         validate_search_card,
         direct=False,
         slot=search_card_slot,
-    )
-    cards.register(
-        DELIVERY_CARD,
-        validate_delivery_card,
-        direct=False,
-        slot=delivery_card_slot,
-    )
-    cards.register(
-        DOWNLOADS_CARD,
-        validate_download_card,
-        direct=False,
-        slot=download_card_slot,
     )
     cards.register(REVIEW_CARD, validate_review_card, direct=False)
     app.state.runtime_service.bind_cards(cards)
@@ -3864,13 +3924,58 @@ def _compose_app(
     )
     app.state.history_service = history
     session_context = SessionContextProvider(history)
-    answer_source = ProductAnswerSource(app.state.product_events)
+    answer_source = ProductAnswerSource(
+        app.state.product_events,
+        ComponentRegistry(SERVICE_COMPONENTS_DATABASE).answer_markdown,
+    )
+    app.state.answer_source = answer_source
     annotation_service = AnswerAnnotationService(assistant_store, answer_source)
 
     def citation_snapshot(session_id: str, turn_id: str) -> AssistantTurnSnapshot | None:
         context = app.state.product_events.turn_context(session_id, turn_id)
         snapshot_id = context.get("assistant_snapshot_id")
-        return assistant_store.snapshot_by_id(session_id, snapshot_id) if snapshot_id else None
+        if snapshot_id:
+            return assistant_store.snapshot_by_id(session_id, snapshot_id)
+        message = app.state.product_events.user_message_for_turn(session_id, turn_id)
+        client_turn_id = message.payload.get("client_turn_id") if message else None
+        return (
+            assistant_store.snapshot_for_turn(session_id, client_turn_id)
+            if client_turn_id
+            else None
+        )
+
+    citation_store = CitationStore(assistant_store.database)
+
+    def inherit_fork_snapshot(
+        source_id: str,
+        target_id: str,
+        payload: Mapping[str, object],
+        connection: sqlite3.Connection,
+    ) -> str | None:
+        snapshot_id = payload.get("assistant_snapshot_id")
+        if snapshot_id:
+            if not isinstance(snapshot_id, str):
+                return None
+            snapshot = assistant_store.snapshot_by_id(source_id, snapshot_id)
+        else:
+            snapshot = assistant_store.snapshot_for_turn(
+                source_id, str(payload.get("client_turn_id") or "")
+            )
+        target_project = project_for_session(target_id)
+        if snapshot is None or snapshot.project_id != (
+            target_project.id if target_project else None
+        ):
+            return None
+        inherited = assistant_store.inherit_snapshot(
+            source_id, target_id, snapshot.snapshot_id, connection
+        )
+        if inherited:
+            citation_store.inherit_snapshot(
+                source_id, snapshot.snapshot_id, target_id, inherited, connection
+            )
+        return inherited
+
+    app.state.session_service.bind_fork_snapshots(inherit_fork_snapshot)
 
     pdf_indexes = PdfIndexService(content, assistant_store.database, activities=activities)
     index_lifespan = app.router.lifespan_context
@@ -3885,24 +3990,26 @@ def _compose_app(
                 await pdf_indexes.aclose()
 
     app.router.lifespan_context = with_pdf_indexes
+    literature_analysis = AnalysisStore(literature_repository.database)
+    literature_evidence = LiteratureEvidenceService(
+        pdf_indexes, literature_repository, records=attachment_records, analysis=literature_analysis
+    )
     app.state.assistant_citations = CitationService(
         answer_source,
         citation_snapshot,
         assistant_store.snapshot_by_id,
-        lambda session_id: project.id if (project := project_for_session(session_id)) else None,
+        lambda session_id: (
+            sessionProject.id if (sessionProject := project_for_session(session_id)) else None
+        ),
         {
             ContextRefKind.FILE: content_context,
             ContextRefKind.SELECTION: content_context,
             ContextRefKind.LITERATURE: literature_context,
         },
         pdf_indexes,
-        CitationStore(assistant_store.database),
+        citation_store,
         AttachmentService(app.state.session_catalog, app.state.product_events),
-        LiteratureEvidenceService(
-            pdf_indexes,
-            literature_repository,
-            records=attachment_records,
-        ),
+        literature_evidence,
         records=annotation_store,
         preview=PdfPreviewService(),
         fulltexts=ManagedFulltexts(),
@@ -3916,17 +4023,26 @@ def _compose_app(
         app.state.fulltext_authorizer, app.state.turn_service, activities=activities
     )
     app.state.runtime_service.bind_activity_observer(app.state.fulltext_gate.observe)
+    comment_context = PdfCommentContext(
+        {
+            RecordOwner.PROJECT_ASSET: annotation_store.peek_target,
+            RecordOwner.LITERATURE_ATTACHMENT: attachment_records.peek_target,
+        }
+    )
     context_providers: dict[ContextRefKind, AssistantContextProvider] = {
         ContextRefKind.FILE: content_context,
         ContextRefKind.DIR: content_context,
         ContextRefKind.LITERATURE: literature_context,
+        ContextRefKind.LITERATURE_COLLECTION: literature_context,
         ContextRefKind.SESSION: session_context,
         ContextRefKind.NOTE: annotation_service,
         ContextRefKind.SELECTION: selection_context,
+        ContextRefKind.PDF_COMMENT: comment_context,
     }
     app.state.content_catalog = catalog
     app.state.content = content
     app.state.pdf_records = annotation_store
+    app.state.pdf_comment_context = comment_context
     # 文献域删除附件时要顺带丢掉由该文件派生的全文索引缓存; 它只认这个端口,
     # 不直接依赖 Workbench 的实现。
     setattr(app.state, PDF_INDEX_STATE, pdf_indexes)
@@ -3934,7 +4050,9 @@ def _compose_app(
         ArtifactScopeKind.SESSION, SessionArtifactStorage(app.state.session_catalog).resolve
     )
     publications = PublicationService(content)
-    app.state.session_service.bind_deletion(SessionDeletion(content, publications).delete)
+    app.state.session_service.bind_deletion(
+        SessionDeletion(content, publications, events=app.state.product_events).delete
+    )
     app.state.runtime_service.bind_publications(publications)
     app.state.artifact_service.bind_content(content)
     app.state.resource_review_migration = resource_review_migration
@@ -3949,6 +4067,7 @@ def _compose_app(
     app.state.resource_importer = resource_importer
     app.state.web_importer = web_importer
     app.state.web_icon_fetcher = web_fetcher
+    app.state.web_preview_fetcher = web_fetcher
     app.state.resource_web_sources = web_sources
     app.state.resource_excerpts = resource_excerpts
     register_cross_origin_isolation(app)
@@ -3957,7 +4076,9 @@ def _compose_app(
     app.state.assistant = AssistantService(
         assistant_store,
         project_for_session=lambda session_id: (
-            project.id if (project := project_for_session(session_id)) is not None else None
+            sessionProject.id
+            if (sessionProject := project_for_session(session_id)) is not None
+            else None
         ),
         providers=context_providers,
         active_document_resolvers={
@@ -4006,21 +4127,21 @@ def _compose_app(
         project_for_session,
         activities=activities,
     )
-    delivery_service = DeliveryService(content, writer, literature_repository)
-    app.state.session_service.bind_task_documents(delivery_service.task_documents)
-    delivery_router = register_delivery_routes(
-        app,
-        app.state.session_service,
-        app.state.session_catalog,
-        delivery_service,
-        project_for_session,
-        activities=activities,
-    )
-    download_router = register_download_routes(
-        app, app.state.session_service, app.state.session_catalog, activities=activities
+    app.state.session_service.bind_task_documents(
+        lambda session_id, project_path: task_documents(
+            content, literature_repository, session_id, project_path
+        )
     )
     receipt_router = register_receipt_routes(
         app, app.state.session_service, app.state.fulltext_authorizer, activities=activities
+    )
+    direct_model = InferenceProvider(app.state.model_service)
+    generation_router = register_generation_routes(
+        app,
+        app.state.session_service,
+        direct_model,
+        activities=activities,
+        resolve_invocation=invocation_service.generation_scope,
     )
     plan_router = register_plan_routes(app, app.state.session_service, activities=activities)
     contract_router = register_contract_routes(app, resolve_artifact_caller, activities=activities)
@@ -4033,10 +4154,71 @@ def _compose_app(
             and snapshot.search_scope is SearchScope.WEB
         ),
         activities=activities,
+        admit_search=require_search_plan,
     )
-    task_router = register_task_routes(app, app.state.session_service, activities=activities)
+
+    selected_sources = SelectedSources(literature_repository, activities)
+
+    async def task_inputs(session_id, workdir, lease, require_current):
+        if lease.task_type is not ProductTaskType.LITERATURE_REVIEW:
+            return {}
+        project = project_for_session(session_id)
+        request = await activities.to_thread(
+            ActivityDomain.BRIDGE, selected_request, workdir, lease.workspace
+        )
+        require_current()
+        live = app.state.session_service.bridge_caller(session_id)
+        snapshot_id = getattr(live, "active_assistant_snapshot_id", "")
+        snapshot = assistant_store.snapshot_by_id(session_id, snapshot_id) if snapshot_id else None
+        explicit_refs = (
+            tuple(
+                f"{item.ref.kind.value}:{item.ref.source_id}"
+                for item in snapshot.items
+                if item.ref.origin is ContextOrigin.EXPLICIT
+                and item.ref.anchor is None
+                and item.ref.kind
+                in (ContextRefKind.LITERATURE, ContextRefKind.LITERATURE_COLLECTION)
+            )
+            if snapshot
+            else ()
+        )
+        if explicit_refs and set(request.get("sources", {}).get("refs", [])) != set(explicit_refs):
+            raise ValueError("selected_sources_context_mismatch")
+        if request.get("sources", {}).get("refs"):
+            return await selected_sources.prepare(
+                project.id if project else "",
+                workdir,
+                lease.workspace,
+                lease.run_id,
+                getattr(live, "active_assistant_revision", 0) or 0,
+                require_current,
+                selected_refs=explicit_refs or None,
+            )
+        if request.get("sources", {}).get("policy") == PROVIDED_ONLY:
+            return {}
+        prepared = await activities.to_thread(
+            ActivityDomain.BRIDGE,
+            prepare_candidates,
+            literature_evidence,
+            project.id if project else None,
+            workdir,
+            lease.workspace,
+            lease.run_id,
+        )
+        require_current()
+        prepared = await complete_candidates(prepared)
+        require_current()
+        return prepared.publish()
+
+    task_router = register_task_routes(
+        app, app.state.session_service, activities=activities, prepare_inputs=task_inputs
+    )
     review_router = register_literature_review_routes(
-        app, app.state.session_service, app.state.fulltext_gate, activities=activities
+        app,
+        app.state.session_service,
+        app.state.fulltext_gate,
+        activities=activities,
+        reading_reuse=ReadingReuse(literature_repository, literature_analysis),
     )
     citation_router = register_citation_bridge(
         app,
@@ -4050,7 +4232,11 @@ def _compose_app(
         content, app.state.session_catalog, app.state.product_events
     )
     app.state.assistant_literature = AssistantLiteratureService(
-        content, app.state.artifact_service, project_for_session, library_projection
+        content,
+        app.state.artifact_service,
+        project_for_session,
+        library_projection,
+        indexes=pdf_indexes,
     )
     # curation 的 fulltext-attach 要把会话 artifact 的字节交给附件域 owner, 所以它显式
     # 依赖 assistant 层 (而不是从 app.state 摸字符串键): 构造顺序因此提前到这里。
@@ -4058,14 +4244,24 @@ def _compose_app(
         app,
         app.state.session_service,
         assistant=app.state.assistant_literature,
+        content=content,
         activities=activities,
+        authorizer=app.state.fulltext_authorizer,
+        catalogue_repository=literature_repository,
     )
+
+    def external_read_user_message(session_id: str, turn_id: str) -> str:
+        message = app.state.product_events.original_user_message_for_turn(session_id, turn_id)
+        return str(message.payload.get("text") or "") if message else ""
+
     resource_bridge_router = register_resource_bridge(
         app,
         app.state.session_service,
         content,
         activities=activities,
         snapshot_by_id=assistant_store.snapshot_by_id,
+        context_provider=content_context,
+        user_message=external_read_user_message,
     )
     agent_imports = ResourceAgentImportCatalog(content)
     content.bind_relocation_sink(agent_imports.relocate)
@@ -4126,10 +4322,9 @@ def _compose_app(
         bridge_router.include_router(card_router)
         bridge_router.include_router(result_router)
         bridge_router.include_router(acquire_router)
-        bridge_router.include_router(delivery_router)
-        bridge_router.include_router(download_router)
         bridge_router.include_router(receipt_router)
         bridge_router.include_router(review_router)
+        bridge_router.include_router(generation_router)
         bridge_router.include_router(plan_router)
         bridge_router.include_router(contract_router)
         bridge_router.include_router(search_router)
@@ -4160,7 +4355,6 @@ def _compose_app(
                     application.state.runtime_service.bind_local_socket(None)
 
         app.router.lifespan_context = lifespan
-    direct_model = InferenceProvider(app.state.model_service)
     app.state.assistant_actions = AssistantActionService(
         assistant_invocations,
         activities=activities,
@@ -4205,9 +4399,17 @@ def _compose_app(
         retention=resource_retention,
         supervisor=version_supervisor,
     )
-    register_global_routes(app)
+    register_global_routes(app, catalogue_repository=literature_repository)
     register_papermeta_routes(app)
     literature_pdf = LiteraturePdf(literature_repository)
+    register_insight_routes(
+        app,
+        repository=literature_repository,
+        attachments=literature_attachments,
+        invocations=invocation_service,
+        models=app.state.model_service,
+        activities=activities,
+    )
     register_reading_routes(
         app,
         literature_repository,
@@ -4255,8 +4457,13 @@ def _compose_app(
         tasks=assistant_invocations,
         models=app.state.model_service,
         pdf=literature_pdf,
+        results=literature_analysis,
         content=content,
         indexes=pdf_indexes,
+        read_citation=partial(
+            app.state.assistant_resources.read_pdf_citation, catalog=app.state.session_catalog
+        ),
+        read_artifact=app.state.artifact_service.read_analysis_document,
     )
     register_workbench_routes(app)
     register_selection_action_routes(app)
@@ -4285,6 +4492,8 @@ def _compose_app(
             account_tokens=getattr(app.state, "account_tokens", None),
             on_logout=app.state.subscriptions.logout,
             on_auth_disabled=app.state.subscriptions.logout_all,
+            execution_identity=app.state.runtime_service.execution_identity,
+            on_retire_execution_scope=app.state.runtime_service.retire_execution_scope,
         )
     except Exception as exc:  # noqa: BLE001 - local product can run without identity setup
         _log.exception("auth_init_error", extra={"failure_type": type(exc).__name__})

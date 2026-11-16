@@ -12,8 +12,9 @@ import {
   paperMetaTitleKey,
   requiresConfirmation,
   selectPaperMetaQuery,
+  paperMetaAlternates,
   type PaperMetaFields,
-  type PaperMetaPayload
+  type PaperMetaPayload,
 } from './metadata.ts'
 
 /**
@@ -32,7 +33,7 @@ const FIELDS: PaperMetaFields = {
   title: 'Dew formation on the surface of biological soil crusts',
   url: 'https://doi.org/10.5194/bg-9-4621-2012',
   volume: '9',
-  year: 2012
+  year: 2012,
 }
 
 /** 预印本命中项: 没有 DOI, 以 arXiv 号与摘要页为准。 */
@@ -42,7 +43,7 @@ const PREPRINT_FIELDS: PaperMetaFields = {
   publication: 'arXiv (Cornell University)',
   title: 'Attention Is All You Need',
   url: 'https://arxiv.org/abs/1706.03762',
-  year: 2017
+  year: 2017,
 }
 
 /**
@@ -85,22 +86,25 @@ function detail(overrides: Partial<LiteratureDetail> = {}): LiteratureDetail {
     pages: null,
     publisher: null,
     address: null,
-    ...overrides
+    ...overrides,
   }
 }
 
 test('doi wins over arxiv and title, arxiv over title, and nothing yields no query', () => {
   assert.deepEqual(
     selectPaperMetaQuery(detail({ doi: '10.1/x', arxiv: '1706.03762', title: 'Attention' })),
-    { dimension: 'doi', value: '10.1/x' }
+    // 题录维度仍只有一个; 落选的 arxiv 作为摘要补充腿的备用标识一起带上。
+    { dimension: 'doi', value: '10.1/x', alternates: { arxiv: '1706.03762' } }
   )
   assert.deepEqual(selectPaperMetaQuery(detail({ arxiv: ' 1706.03762 ', title: 'Attention' })), {
     dimension: 'arxiv',
-    value: '1706.03762'
+    value: '1706.03762',
+    alternates: {},
   })
   assert.deepEqual(selectPaperMetaQuery(detail({ title: TITLE_ONLY })), {
     dimension: 'title',
-    value: TITLE_ONLY
+    value: TITLE_ONLY,
+    alternates: {},
   })
   assert.equal(selectPaperMetaQuery(detail({ doi: '  ', arxiv: '', title: '' })), null)
   // title 这一维多一道形态门槛: 编号/文件名/整句话不像论文标题, 拿去做 OpenAlex
@@ -108,6 +112,26 @@ test('doi wins over arxiv and title, arxiv over title, and nothing yields no que
   assert.equal(selectPaperMetaQuery(detail({ title: '17' })), null)
   assert.equal(selectPaperMetaQuery(detail({ title: 'scan0001.pdf' })), null)
   assert.equal(selectPaperMetaQuery(detail({ title: 'The weather is nice today.' })), null)
+})
+
+test('alternate identifiers are only the other identifiers, never the title', () => {
+  // 备用来源只喂摘要补充腿, 所以标题不进链: 标题是模糊检索维度, 不是标识符。
+  assert.deepEqual(
+    paperMetaAlternates(detail({ doi: '10.1/x', arxiv: '1706.03762', title: 'Attention' }), 'doi'),
+    { arxiv: '1706.03762' }
+  )
+  assert.deepEqual(
+    paperMetaAlternates(
+      detail({ doi: '10.1/x', arxiv: '1706.03762', title: 'Attention' }),
+      'arxiv'
+    ),
+    { doi: '10.1/x' }
+  )
+  assert.deepEqual(paperMetaAlternates(detail({ doi: '10.1/x', title: 'Attention' }), 'title'), {
+    doi: '10.1/x',
+  })
+  // 空白值不算「已知标识」, 否则服务端会拿到一个必然校验失败的备用来源。
+  assert.deepEqual(paperMetaAlternates(detail({ doi: '  ', arxiv: '' }), 'doi'), {})
 })
 
 test('every dimension stays open to a re-sync, complete records included', () => {
@@ -144,14 +168,29 @@ test('every dimension maps to its own banner title and reason copy', () => {
 })
 
 test('quota exhaustion is told apart from every other failure', () => {
-  assert.equal(classifyPaperMetaFailure({ status: 429, code: 'PAPER_META_QUOTA_EXHAUSTED' }), 'quota')
+  assert.equal(
+    classifyPaperMetaFailure({ status: 429, code: 'PAPER_META_QUOTA_EXHAUSTED' }),
+    'quota'
+  )
   // 只认状态码或只认 code 都算配额: 中间层可能改写其中一个。
   assert.equal(classifyPaperMetaFailure({ status: 429, code: 'REQUEST_FAILED' }), 'quota')
-  assert.equal(classifyPaperMetaFailure({ status: 502, code: 'PAPER_META_QUOTA_EXHAUSTED' }), 'quota')
+  assert.equal(
+    classifyPaperMetaFailure({ status: 502, code: 'PAPER_META_QUOTA_EXHAUSTED' }),
+    'quota'
+  )
   assert.equal(classifyPaperMetaFailure({ status: 404, code: 'PAPER_META_NOT_FOUND' }), 'missing')
-  assert.equal(classifyPaperMetaFailure({ status: 502, code: 'PAPER_META_NETWORK_FAILED' }), 'network')
-  assert.equal(classifyPaperMetaFailure({ status: 502, code: 'PAPER_META_UPSTREAM_FAILED' }), 'failed')
-  assert.equal(classifyPaperMetaFailure({ status: 500, code: 'PAPER_META_ENDPOINT_INVALID' }), 'failed')
+  assert.equal(
+    classifyPaperMetaFailure({ status: 502, code: 'PAPER_META_NETWORK_FAILED' }),
+    'network'
+  )
+  assert.equal(
+    classifyPaperMetaFailure({ status: 502, code: 'PAPER_META_UPSTREAM_FAILED' }),
+    'failed'
+  )
+  assert.equal(
+    classifyPaperMetaFailure({ status: 500, code: 'PAPER_META_ENDPOINT_INVALID' }),
+    'failed'
+  )
   assert.equal(classifyPaperMetaFailure(null), 'failed')
 })
 
@@ -159,7 +198,10 @@ test('the update body comes straight off the payload and blank values are droppe
   assert.deepEqual(paperMetaFields({ success: true, fields: FIELDS, bib_type: 'article' }), FIELDS)
   // serve 侧只写有值的键, 但空值仍要在这里挡住, 否则会把已有数据抹成空。
   assert.deepEqual(
-    paperMetaFields({ success: true, fields: { title: 'Only a title', abstract: '', publisher: null } }),
+    paperMetaFields({
+      success: true,
+      fields: { title: 'Only a title', abstract: '', publisher: null },
+    }),
     { title: 'Only a title' }
   )
   assert.deepEqual(paperMetaFields({ success: true }), {})
@@ -172,10 +214,7 @@ test('the update body comes straight off the payload and blank values are droppe
 
 test('the confirmation dialog lists every offered field, publisher and issue included', () => {
   const rows = paperMetaDiff(FIELDS, detail())
-  assert.deepEqual(
-    rows.map((row) => row.field).sort(),
-    Object.keys(FIELDS).sort()
-  )
+  assert.deepEqual(rows.map((row) => row.field).sort(), Object.keys(FIELDS).sort())
 
   // 当前值取文献上的同义字段 (authors ↔ creators_display), 空值渲染成空串。
   const byField = new Map(rows.map((row) => [row.field, row]))
@@ -199,11 +238,11 @@ test('the confirmation dialog lists every offered field, publisher and issue inc
 test('only the checked fields reach the update body', () => {
   assert.deepEqual(paperMetaPickedFields(FIELDS, new Set(['title', 'year'])), {
     title: FIELDS.title,
-    year: 2012
+    year: 2012,
   })
   assert.deepEqual(paperMetaPickedFields(FIELDS, new Set()), {})
   // 勾了一个上游没给的键也不会凭空写进去。
   assert.deepEqual(paperMetaPickedFields(PREPRINT_FIELDS, new Set(['isbn', 'arxiv'])), {
-    arxiv: '1706.03762'
+    arxiv: '1706.03762',
   })
 })

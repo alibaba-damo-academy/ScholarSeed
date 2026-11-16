@@ -1,0 +1,43 @@
+{
+  "request_id": "replace-for-each-step",
+  "slot": "table.view",
+  "title": "table",
+  "data": {
+    "dataset": {
+      "columns": [
+        {
+          "key": "method",
+          "label": "Sample method"
+        },
+        {
+          "key": "score",
+          "label": "Sample score",
+          "unit": "%"
+        }
+      ],
+      "rows": [
+        {
+          "id": "sample-a",
+          "values": [
+            "A",
+            80
+          ]
+        },
+        {
+          "id": "sample-b",
+          "values": [
+            "B",
+            85
+          ]
+        },
+        {
+          "id": "sample-c",
+          "values": [
+            "C",
+            null
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -87,3 +87,31 @@ export function expressions(source: string) {
     assert.ok(contains(scope), `missing expression: ${expected}`)
   }
 }
+
+export function jsxWithAttributes(source: string, attributes: Record<string, string>): string {
+  assert.ok(Object.keys(attributes).length, 'expected literal JSX attributes')
+  const root = parse(source)
+  const matches: Array<ts.JsxElement | ts.JsxSelfClosingElement> = []
+  const locate = (node: ts.Node): void => {
+    if (ts.isJsxElement(node) || ts.isJsxSelfClosingElement(node)) {
+      const opening = ts.isJsxElement(node) ? node.openingElement : node
+      if (
+        Object.entries(attributes).every(([name, value]) =>
+          opening.attributes.properties.some(
+            (attribute) =>
+              ts.isJsxAttribute(attribute) &&
+              attribute.name.getText(root) === name &&
+              attribute.initializer &&
+              ts.isStringLiteral(attribute.initializer) &&
+              attribute.initializer.text === value
+          )
+        )
+      )
+        matches.push(node)
+    }
+    ts.forEachChild(node, locate)
+  }
+  locate(root)
+  assert.equal(matches.length, 1, `expected one JSX owner: ${JSON.stringify(attributes)}`)
+  return matches[0].getText(root)
+}

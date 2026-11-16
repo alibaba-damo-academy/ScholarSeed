@@ -10,6 +10,24 @@ const crypto = require('node:crypto')
 const { policyFor, validatePolicy, assertDependencies, readLauncher, launcherMessages, updateMessages } = require('../handoff.cjs')
 const sourceRequire = createRequire(path.join(sourceDirectory, 'handoff.cjs'))
 
+test('embedded retirement code changes the native build source identity', () => {
+  const embedded = path.resolve(sourceDirectory, '../../updater/handoff/retirement.ps1')
+  let changed = false
+  const module = { exports: {} }
+  const requireMock = name => name === 'node:fs' ? {
+    ...fs,
+    readFileSync(filename, ...args) {
+      const content = fs.readFileSync(filename, ...args)
+      return changed && filename === embedded ? Buffer.concat([content, Buffer.from('\n# changed')]) : content
+    },
+  } : sourceRequire(name)
+  runInNewContext(fs.readFileSync(path.join(sourceDirectory, 'handoff.cjs'), 'utf8') + '\nmodule.exports.digest = sourceDigest;',
+    { require: requireMock, module, __dirname: sourceDirectory, process, Buffer })
+  const before = module.exports.digest()
+  changed = true
+  assert.notEqual(module.exports.digest(), before)
+})
+
 test('handoff policy freezes the actual component envelope and product identity', () => {
   const context = { appId: 'scholarseed', version: '0.2.0', buildNumber: '202610170001',
     productName: 'ScholarSeed', product: { config: { product_id: 'scholarseed',

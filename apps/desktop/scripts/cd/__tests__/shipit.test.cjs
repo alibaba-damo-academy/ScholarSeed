@@ -1,4 +1,3 @@
-const sourceDirectory = require('node:path').dirname(__dirname)
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
@@ -139,9 +138,10 @@ test('native contract registry selects each dependency without changing executio
     } : originalRequire(name),
   })
   loaded.exports.verifyPreparation(directory)
-  assert.equal(calls.length, 16)
+  assert.equal(calls.length, 18)
   const compilation = name => calls.find(call => call.args.includes(path.join(directory, `${name}-test`)))
   const succession = compilation('succession').args
+  assert.ok(compilation('retirement'))
   assert.equal(succession[succession.indexOf('Security') - 1], '-framework')
   assert.ok(compilation('readonly').args.includes('-DCFPreferencesSetValue=SSReadOnlyPreferenceSet'))
   const parking = compilation('parking').args

@@ -1,10 +1,8 @@
-# 多阶段科研流程模板
+# Multi-stage research workflow template
 
-根据需求命名阶段和交付物；不要因为使用模板增加检索、下载或实验平台要求。
+Name stages and deliverables for the actual requirement. Using a template does not create new search, download or experiment-platform requirements.
 
-1. scope：确认目标、材料来源与授权边界；返回前不执行依赖该选择的业务。
-2. evidence：读取获准材料，区分事实、推算、假设和缺证；保留稳定来源。
-3. review：呈现证据覆盖和需要补充的方向，使用真实数据而非预览样例。
-4. revise：按用户选择回到对应阶段，用新 request_id；已确认且未变化的内容不重复追问。
-5. finish：汇总结果、证据、限制和未完成项。取消不推进；未知结果先核对，不重复有副作用操作。
-6. 阶段间保存输入与决策账本，不能以 iframe 生命周期代替业务阶段。
+1. Use the scope card to confirm the goal, sources and authorization boundaries. Wait for the answer before dependent work.
+2. Read the authorized sources and record facts, calculations, assumptions and gaps with stable references.
+3. Use the review card to show actual evidence coverage and unresolved items. On `revise`, return to the affected stage with a new request ID; preserve inputs and unchanged decisions. On `finish`, deliver results, evidence, limits and open items.
+4. Preserve decisions across stages independently of the iframe lifecycle. Stop on cancellation; check an unknown outcome before repeating a side effect.

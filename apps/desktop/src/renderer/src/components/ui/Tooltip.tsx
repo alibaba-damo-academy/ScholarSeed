@@ -1,3 +1,4 @@
+import type * as React from 'react'
 import type {
   ButtonHTMLAttributes,
   CSSProperties,
@@ -23,7 +24,7 @@ import {
   useRef,
   useState,
 } from 'react'
-import { Portal } from './portal'
+import { Portal, usePortalDocument } from './portal'
 
 import {
   tooltipClassName,
@@ -120,13 +121,14 @@ function getExplicitContentId(children: ReactNode): string | undefined {
   return contentId
 }
 
-export type TooltipAlign = 'center' | 'start'
+export type TooltipAlign = 'center' | 'start' | 'end'
 
 export interface TooltipProps
   extends Omit<HTMLAttributes<HTMLSpanElement>, 'content'>, LocalizationMetadata {
   align?: TooltipAlign
   anchorRef?: { current: HTMLElement | null }
   children: ReactNode
+  consumeEscape?: boolean
   content?: ReactNode
   contentClassName?: string
   defaultOpen?: boolean
@@ -153,7 +155,7 @@ export interface TooltipProviderProps {
 
 export type { TooltipSide }
 
-export function TooltipProvider({ children }: TooltipProviderProps): JSX.Element {
+export function TooltipProvider({ children }: TooltipProviderProps): React.JSX.Element {
   return <>{children}</>
 }
 
@@ -164,6 +166,7 @@ export const Tooltip = forwardRef<HTMLSpanElement, TooltipProps>(
       anchorRef,
       children,
       className,
+      consumeEscape = true,
       content,
       contentClassName,
       defaultOpen = false,
@@ -179,6 +182,7 @@ export const Tooltip = forwardRef<HTMLSpanElement, TooltipProps>(
     ref
   ) => {
     const rootRef = useRef<HTMLSpanElement | null>(null)
+    const document = usePortalDocument()
     const generatedId = useId()
     const generatedContentId = `${generatedId}-content`
     const [contentId, setContentId] = useState(generatedContentId)
@@ -262,12 +266,12 @@ export const Tooltip = forwardRef<HTMLSpanElement, TooltipProps>(
           )
         )
           return
-        event.preventDefault()
+        if (consumeEscape) event.preventDefault()
         setOpen(false)
       }
       document.addEventListener('keydown', dismiss, true)
       return () => document.removeEventListener('keydown', dismiss, true)
-    }, [anchorRef, currentOpen, describedContentId, setOpen])
+    }, [anchorRef, consumeEscape, currentOpen, describedContentId, setOpen, document])
 
     const context = useMemo<TooltipContextValue>(
       () => ({
@@ -428,19 +432,31 @@ function clampTooltipCoordinate(value: number, size: number, limit: number): num
   )
 }
 
+function alignedTooltipCoordinate(
+  start: number,
+  anchorSize: number,
+  contentSize: number,
+  align: TooltipAlign
+): number {
+  if (align === 'start') return start
+  if (align === 'end') return start + anchorSize - contentSize
+  return start + (anchorSize - contentSize) / 2
+}
+
 function portalledTooltipStyle(
   anchor: DOMRect,
   content: DOMRect,
   side: TooltipSide,
   align: TooltipAlign,
-  offset: number
+  offset: number,
+  window: Window = globalThis.window
 ): CSSProperties {
   if (side === 'right') {
     return {
       left: clampTooltipCoordinate(anchor.right + offset, content.width, window.innerWidth),
       position: 'fixed',
       top: clampTooltipCoordinate(
-        align === 'start' ? anchor.top : anchor.top + (anchor.height - content.height) / 2,
+        alignedTooltipCoordinate(anchor.top, anchor.height, content.height, align),
         content.height,
         window.innerHeight
       ),
@@ -449,7 +465,7 @@ function portalledTooltipStyle(
   if (side === 'bottom') {
     return {
       left: clampTooltipCoordinate(
-        align === 'start' ? anchor.left : anchor.left + (anchor.width - content.width) / 2,
+        alignedTooltipCoordinate(anchor.left, anchor.width, content.width, align),
         content.width,
         window.innerWidth
       ),
@@ -466,7 +482,7 @@ function portalledTooltipStyle(
       ),
       position: 'fixed',
       top: clampTooltipCoordinate(
-        align === 'start' ? anchor.top : anchor.top + (anchor.height - content.height) / 2,
+        alignedTooltipCoordinate(anchor.top, anchor.height, content.height, align),
         content.height,
         window.innerHeight
       ),
@@ -474,7 +490,7 @@ function portalledTooltipStyle(
   }
   return {
     left: clampTooltipCoordinate(
-      align === 'start' ? anchor.left : anchor.left + (anchor.width - content.width) / 2,
+      alignedTooltipCoordinate(anchor.left, anchor.width, content.width, align),
       content.width,
       window.innerWidth
     ),
@@ -497,12 +513,12 @@ function initialPortalledTooltipStyle(
     return {
       left: anchor.right + offset,
       position: 'fixed',
-      top: align === 'start' ? anchor.top : anchor.top + anchor.height / 2,
+      top: alignedTooltipCoordinate(anchor.top, anchor.height, 0, align),
     }
   }
   if (side === 'bottom') {
     return {
-      left: align === 'start' ? anchor.left : anchor.left + anchor.width / 2,
+      left: alignedTooltipCoordinate(anchor.left, anchor.width, 0, align),
       position: 'fixed',
       top: anchor.bottom + offset,
     }
@@ -511,11 +527,11 @@ function initialPortalledTooltipStyle(
     return {
       left: anchor.left - offset,
       position: 'fixed',
-      top: align === 'start' ? anchor.top : anchor.top + anchor.height / 2,
+      top: alignedTooltipCoordinate(anchor.top, anchor.height, 0, align),
     }
   }
   return {
-    left: align === 'start' ? anchor.left : anchor.left + anchor.width / 2,
+    left: alignedTooltipCoordinate(anchor.left, anchor.width, 0, align),
     position: 'fixed',
     top: anchor.top - offset,
   }
@@ -529,6 +545,8 @@ function sameTooltipStyle(left: unknown, right: CSSProperties): boolean {
 
 export const TooltipContent = forwardRef<HTMLSpanElement, TooltipContentProps>(
   ({ children, className, id, onMouseEnter, onMouseLeave, side, style, ...props }, ref) => {
+    const document = usePortalDocument()
+    const window = document.defaultView ?? globalThis.window
     const context = useTooltipContext('TooltipContent')
     const currentSide = side ?? context.side
     const contentId = id ?? context.contentId
@@ -545,7 +563,8 @@ export const TooltipContent = forwardRef<HTMLSpanElement, TooltipContentProps>(
         content.getBoundingClientRect(),
         currentSide,
         context.align,
-        context.offset
+        context.offset,
+        window
       )
       setPortalledStyle((previousStyle) =>
         sameTooltipStyle(previousStyle, nextStyle) ? previousStyle : nextStyle
@@ -559,6 +578,7 @@ export const TooltipContent = forwardRef<HTMLSpanElement, TooltipContentProps>(
       context.portalled,
       context.rootRef,
       currentSide,
+      window,
     ])
 
     useEffect(() => {
@@ -600,7 +620,7 @@ export const TooltipContent = forwardRef<HTMLSpanElement, TooltipContentProps>(
         window.removeEventListener('resize', updatePortalledStyle)
         window.removeEventListener('scroll', updatePortalledStyle, true)
       }
-    }, [context.disabled, context.open, context.portalled, updatePortalledStyle])
+    }, [context.disabled, context.open, context.portalled, updatePortalledStyle, window])
 
     if (!context.open || context.disabled) return null
     const anchor = context.anchorRef?.current ?? context.rootRef.current

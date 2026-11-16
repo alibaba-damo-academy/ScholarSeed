@@ -196,12 +196,11 @@ static SSPreparationActivity ClassifyProcess(SSProcessIdentity identity, NSArray
     if (exited) return SSPreparationActivityAbsent;
     if (![path hasPrefix:@"/"] || [path rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location != NSNotFound) return SSPreparationActivityUnknown;
     if (exemption && exemption(identity, path)) { *live = YES; return SSPreparationActivityAbsent; }
-    BOOL known = [path.lastPathComponent isEqual:@"ShipIt"];
+    BOOL known = NO;
     for (NSString *prefix in prefixes) known = known || [path hasPrefix:prefix];
     if (!known) {
         NSString *canonical = canonicalize(path);
         if (![canonical hasPrefix:@"/"] || [canonical rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location != NSNotFound) return SSPreparationActivityUnknown;
-        known = [canonical.lastPathComponent isEqual:@"ShipIt"];
         for (NSString *prefix in prefixes) known = known || [canonical hasPrefix:prefix];
     }
     *live = YES;
@@ -489,7 +488,13 @@ static BOOL ObserveKernelCommpage(struct proc_regionwithpathinfo region) {
 #endif
 }
 
-static const NSUInteger SSPreflightMappingLimit = 4096;
+static const NSUInteger SSPreflightMappingLimit = 32768;
+static BOOL IsPrivateWritableCode(struct proc_regioninfo info) {
+    const int permissions = VM_PROT_READ | VM_PROT_WRITE | VM_PROT_EXECUTE;
+    return info.pri_protection == permissions && info.pri_max_protection == permissions &&
+        !info.pri_flags && (info.pri_share_mode == SM_PRIVATE || info.pri_share_mode == SM_PRIVATE_ALIASED);
+}
+
 static NSArray *ObserveMappings(pid_t process) {
     NSMutableArray *mappings = [NSMutableArray array];
     uint64_t address = 0;
@@ -508,8 +513,10 @@ static NSArray *ObserveMappings(pid_t process) {
         if (!info.pri_size || info.pri_address < address || info.pri_size > UINT64_MAX - info.pri_address) { errno = EINVAL; return nil; }
         address = info.pri_address + info.pri_size;
         if (!identity.vst_ino && !length) {
-            // Anonymous executable memory cannot prove native image ownership.
-            if ((info.pri_protection & VM_PROT_EXECUTE) && !ObserveKernelCommpage(region)) { errno = EINVAL; return nil; }
+            // Private writable code has no vnode. Still require the complete
+            // vnode inventory and reject other unknown executable regions.
+            if ((info.pri_protection & VM_PROT_EXECUTE) && !IsPrivateWritableCode(info) &&
+                !ObserveKernelCommpage(region)) { errno = EINVAL; return nil; }
             continue;
         }
         if (!identity.vst_ino || !S_ISREG(identity.vst_mode) || !length || length >= sizeof(region.prp_vip.vip_path) - 1) { errno = EINVAL; return nil; }

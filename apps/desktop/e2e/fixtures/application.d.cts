@@ -1,5 +1,6 @@
 export function createProductAppRoot(
   artifacts: string,
   desktopRoot: string,
-  browserEnabled: boolean
+  browserEnabled: boolean,
+  browserAdvancedSettings?: boolean
 ): string

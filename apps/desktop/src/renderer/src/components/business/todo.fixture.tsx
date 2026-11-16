@@ -33,7 +33,10 @@ const thread: Thread = {
   todoTurnId: planTurnId,
   todos: Array.from({ length: 9 }, (_, index) => ({
     id: `step-${index}`,
-    content: `Step ${index + 1}`,
+    content:
+      index === 0 && parameters.has('longStep')
+        ? 'LongUnbrokenPlanStep'.repeat(12)
+        : `Step ${index + 1}`,
     status: completed || index < 7 ? 'completed' : index === 7 ? 'in_progress' : 'pending',
   })),
   running: outcome === 'running',
@@ -42,6 +45,37 @@ const thread: Thread = {
   turnTimings: { [planTurnId]: { startedAt: Date.now() - duration } },
 }
 if (outcome !== 'running') thread.turnTimings![planTurnId].completedAt = Date.now()
+const issue = parameters.get('issue')
+if (parameters.has('subplan')) {
+  thread.todos?.push({
+    id: 'child-step',
+    parent_id: 'step-7',
+    content: 'Sub-agent detail',
+    status: issue === 'failed' || issue === 'blocked' ? issue : 'in_progress',
+  })
+}
+if (parameters.has('estimate')) {
+  thread.conversation.push({
+    kind: 'skill',
+    skillId: 'review',
+    name: 'Review',
+    path: '',
+    status: 'running',
+    nativeStatus: 'running',
+    turnId: planTurnId,
+    estimate: {
+      lowerSeconds: 1800,
+      upperSeconds: 2700,
+      sampleCount: 0,
+      confidence: 'low',
+      basis: 'product_baseline',
+    },
+  })
+}
+if (parameters.has('noPlan')) {
+  thread.todoTurnId = undefined
+  thread.todos = []
+}
 const store = {
   state: { activeSession: 'layout', threads: { layout: thread } },
 } as unknown as Store
@@ -50,11 +84,22 @@ document.documentElement.dataset.theme = parameters.get('theme') ?? 'light'
 createRoot(document.getElementById('root')!).render(
   <I18nextProvider i18n={localization}>
     <StoreContext.Provider value={store}>
-      <div style={{ width }}>
+      <div style={{ width, maxWidth: '100%', left: 48, position: 'absolute', bottom: '20%' }}>
         <TodoPanel
           compact
           currentTurnOnly={recovered}
+          continueDisabled={parameters.get('continueDisabled') === 'true'}
           onContinue={async () => {
+            document.documentElement.dataset.continueRequests = String(
+              Number(document.documentElement.dataset.continueRequests ?? 0) + 1
+            )
+            if (parameters.get('holdContinue') === 'true') {
+              await new Promise<void>((resolve) => {
+                ;(
+                  window as Window & { releaseTodoContinuation?: () => void }
+                ).releaseTodoContinuation = resolve
+              })
+            }
             document.documentElement.dataset.continued = 'true'
             return true
           }}

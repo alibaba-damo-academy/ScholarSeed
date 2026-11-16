@@ -290,7 +290,8 @@ class LiteratureSearchService:
             return
         state = live.state
         try:
-            async for event in self._invocations.stream(prepared):
+            async for sourceEvent in self._invocations.stream(prepared):
+                event = sourceEvent
                 if event is None:
                     continue
                 state["last_seq"] = int(event["seq"])
@@ -421,7 +422,11 @@ class LiteratureSearchService:
             bool(paper["title"].strip())
             and isinstance(authors, list)
             and all(isinstance(author, str) for author in authors)
-            and all(paper.get(key) is None or type(paper.get(key)) is int for key in numeric)
+            and all(
+                paper.get(key) is None
+                or (isinstance(paper.get(key), int) and not isinstance(paper.get(key), bool))
+                for key in numeric
+            )
             and all(
                 paper.get(key, "") is None or isinstance(paper.get(key, ""), str) for key in text
             )

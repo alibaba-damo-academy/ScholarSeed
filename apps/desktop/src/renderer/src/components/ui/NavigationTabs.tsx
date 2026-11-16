@@ -1,3 +1,4 @@
+import type * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { ChevronDown, File, X } from 'lucide-react'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
@@ -134,7 +135,7 @@ export function NavigationTabs({
   trailing,
   value = overviewValue,
   ...props
-}: NavigationTabsProps): JSX.Element {
+}: NavigationTabsProps): React.JSX.Element {
   const { t } = useTranslation('ui')
   const overviewLabel = providedOverviewLabel ?? t('navigation.overview')
   const hasTrailing = Boolean(trailing)
@@ -469,7 +470,15 @@ export function NavigationTabs({
       )}
     >
       {tablist}
-      <div className="flex shrink-0 items-center self-stretch">{trailing}</div>
+      <div
+        className={cx(
+          'relative z-[var(--vds-z-local-raised)] flex shrink-0 items-end self-stretch pb-[calc(var(--vds-space-1)*1.5)]',
+          hasTrailing &&
+            '-ml-[calc(var(--vds-navigation-tab-foot-size)+var(--vds-navigation-tab-separator-gap)+var(--vds-navigation-tab-outline-width)/2-var(--vds-space-1)*1.5)]'
+        )}
+      >
+        {trailing}
+      </div>
       {overflowMenu}
     </div>
   )
@@ -521,7 +530,7 @@ function NavigationTabButton({
   onContextMenuOpenChange,
   value,
   variant,
-}: NavigationTabButtonProps): JSX.Element {
+}: NavigationTabButtonProps): React.JSX.Element {
   const { t } = useTranslation('ui')
   const activatedOnPress = useRef(false)
   const showClose = variant === 'document' && onClose && closable && (!compressed || active)
@@ -548,8 +557,8 @@ function NavigationTabButton({
           minWidth: 'var(--vds-navigation-tab-min-width)',
         } as CSSProperties)
       : ({
-          flex: variant === 'document' ? '0 1 var(--vds-navigation-tab-max-width)' : '0 1 auto',
-          width: variant === 'document' ? 'var(--vds-navigation-tab-max-width)' : undefined,
+          flex: '0 1 auto',
+          width: variant === 'document' ? 'max-content' : undefined,
           minWidth: variant === 'document' ? 'var(--vds-navigation-tab-min-width)' : undefined,
           maxWidth: 'var(--vds-navigation-tab-max-width)',
         } as CSSProperties)
@@ -633,6 +642,13 @@ function NavigationTabButton({
         className={cx(
           navigationTabLabelClassName,
           'w-full',
+          variant === 'document' &&
+            !compressed &&
+            (onClose && closable
+              ? active
+                ? 'pr-[calc(var(--vds-navigation-tab-close-size)+var(--vds-space-4))]'
+                : 'pr-[calc(var(--vds-navigation-tab-close-size)+var(--vds-space-2))]'
+              : active && 'pr-[var(--vds-space-2)]'),
           showClose &&
             !iconOnly &&
             '!text-clip [mask-image:linear-gradient(to_right,var(--vds-text-primary)_calc(100%_-_var(--vds-navigation-tab-close-size)_-_var(--vds-space-4)_+_var(--vds-space-half)),transparent_calc(100%_-_var(--vds-navigation-tab-close-size)_+_var(--vds-space-half)))]'
@@ -727,7 +743,7 @@ export function NavigationTabsMenu({
   tabs: readonly NavigationTabItem[]
   value?: string
   onValueChange?: (id: string) => void
-}): JSX.Element {
+}): React.JSX.Element {
   const { t } = useTranslation('ui')
   return (
     <DropdownMenu>
@@ -772,7 +788,7 @@ export function NavigationTabClose({
   className,
   label,
   ...props
-}: NavigationTabCloseProps): JSX.Element {
+}: NavigationTabCloseProps): React.JSX.Element {
   const { t } = useTranslation('ui')
   return (
     <button

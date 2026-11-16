@@ -9,8 +9,8 @@ import '../../styles.css'
 import { TaskCenter, TaskCenterProvider } from './Tasks'
 
 const localization = createLocalization('zh', resources)
-document.documentElement.dataset.theme =
-  new URLSearchParams(location.search).get('theme') ?? 'light'
+const options = new URLSearchParams(location.search)
+document.documentElement.dataset.theme = options.get('theme') ?? 'light'
 const longName = 'Satellite_Ground_Optical_Turbulence_Student_Library_DEMO_'.repeat(5) + '.pdf'
 const task = (status: ProductTask['status']): ProductTask => ({
   id: status,
@@ -38,13 +38,43 @@ const task = (status: ProductTask['status']): ProductTask => ({
 })
 
 const tasks = [task('completed'), task('running'), task('failed')]
+const papers = ['第一篇论文', longName]
+const isLiteratureScenario = options.get('scenario') === 'literature'
+if (isLiteratureScenario) {
+  tasks.splice(
+    0,
+    tasks.length,
+    ...(['partial', 'running'] as const).map((status) => ({
+      ...task(status),
+      title: { key: 'title.literatureJoin' as const, names: [] },
+      sourceNames: papers,
+    }))
+  )
+}
 const listeners = new Set<(task: ProductTask) => void>()
 const source: TaskSourceContribution = {
   id: 'fixture',
   list: async () => [...tasks],
-  cancel: async () => task('cancelled'),
-  retry: async () => task('queued'),
-  present: () => ({ title: '', detail: '', announcement: '', error: '', failures: [] }),
+  ...(isLiteratureScenario
+    ? {}
+    : { cancel: async () => task('cancelled'), retry: async () => task('queued') }),
+  present: (entry) => ({
+    title: '',
+    detail: '',
+    announcement: '',
+    error: '',
+    failures: [],
+    ...(entry.operation === 'copy' && typeof entry.title !== 'string'
+      ? {
+          row: {
+            summary: '已加入 2/2 篇 · 全文成功 1 篇，失败 1 篇',
+            context: '元信息及开放全文 · 目标：我的文献库 / 验收分类',
+            sourceListLabel: '论文清单（2 篇）',
+          },
+          progress: { determinate: true, label: '已处理全文 1/2 篇', value: 50 },
+        }
+      : {}),
+  }),
   subscribe: (listener) => {
     listeners.add(listener)
     return () => {

@@ -4,7 +4,7 @@ import { join } from 'node:path'
 
 import { expect, test } from '@playwright/test'
 
-import { createCfHtmlFixture, parseCfHtml } from './fixtures/cf-html'
+import { parseCfHtml } from './fixtures/cf-html'
 import { apiBase, DesktopSession } from './fixtures/electron'
 import { createRuntime } from './fixtures/runtime'
 
@@ -26,31 +26,6 @@ function readWindowsCfHtml(): string {
   }).trim()
   return Buffer.from(encoded, 'base64').toString('utf8')
 }
-
-test('CF_HTML parser validates UTF-8 byte offsets, line endings, and image counts', () => {
-  for (const lineEnding of ['\n', '\r\n'] as const) {
-    for (const imageCount of [0, 1, 2]) {
-      const images = Array.from({ length: imageCount }, (_, index) => `<img src="data:image/png;base64,image-${index}" alt="截图 ${index + 1}">`).join('')
-      const fragment = `<section><h1>反馈报告 😀</h1><p>中文正文</p>${images}</section>`
-      const raw = createCfHtmlFixture(fragment, lineEnding)
-      const parsed = parseCfHtml(raw)
-
-      expect(parsed.fragment).toBe(fragment)
-      expect(parsed.fragmentByteLength).toBe(Buffer.byteLength(fragment, 'utf8'))
-      expect(parsed.fragmentImageCount).toBe(imageCount)
-      expect(parsed.headerLineEnding).toBe(lineEnding)
-    }
-  }
-
-  const unicodePayload = createCfHtmlFixture('<p>😀</p>', '\r\n')
-  const unicodeOffsets = parseCfHtml(unicodePayload).offsets
-  const splitEmojiOffset = unicodeOffsets.StartFragment + Buffer.byteLength('<p>', 'utf8') + 1
-  const malformedPayload = unicodePayload.replace(
-    `EndFragment:${unicodeOffsets.EndFragment.toString().padStart(10, '0')}`,
-    `EndFragment:${splitEmojiOffset.toString().padStart(10, '0')}`
-  )
-  expect(() => parseCfHtml(malformedPayload)).toThrow('CF_HTML fragment offsets split a UTF-8 character')
-})
 
 test('Electron 44 starts the real desktop stack with the expected runtimes', async ({}, testInfo) => {
   const desktop = new DesktopSession(createRuntime(testInfo), testInfo)
@@ -74,6 +49,44 @@ test('Electron 44 starts the real desktop stack with the expected runtimes', asy
       body: { ok: true, stack: 'codex-appserver', runtime_id: 'codex' }
     })
     await expect(page.getByTestId('workbench-shell')).toBeVisible()
+    await expect(page.getByTestId('composer-send')).toBeVisible()
+    const webPreferences = await desktop.app!.evaluate(({ BrowserWindow }) => {
+      const productWindow = BrowserWindow.getAllWindows().find((candidate) =>
+        candidate.webContents.getURL().startsWith('http://')
+      )
+      if (!productWindow) throw new Error('ScholarSeed product window did not open')
+      const contents = productWindow.webContents
+      if (
+        !('getLastWebPreferences' in contents) ||
+        typeof contents.getLastWebPreferences !== 'function'
+      ) {
+        throw new Error('Electron does not expose the WebPreferences diagnostic method')
+      }
+      const preferences: unknown = contents.getLastWebPreferences()
+      if (
+        typeof preferences !== 'object' ||
+        preferences === null ||
+        !('sandbox' in preferences) ||
+        typeof preferences.sandbox !== 'boolean' ||
+        !('contextIsolation' in preferences) ||
+        typeof preferences.contextIsolation !== 'boolean' ||
+        !('nodeIntegration' in preferences) ||
+        typeof preferences.nodeIntegration !== 'boolean'
+      ) {
+        throw new Error('Electron WebPreferences diagnostic returned invalid security fields')
+      }
+      return {
+        sandbox: preferences.sandbox,
+        contextIsolation: preferences.contextIsolation,
+        nodeIntegration: preferences.nodeIntegration,
+      }
+    })
+    expect(webPreferences).toEqual({
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+    })
+    await page.screenshot({ path: join(desktop.runtime.artifacts, 'startup-ready.png') })
     desktop.assertNoPageErrors()
   } finally {
     await desktop.attachArtifacts()

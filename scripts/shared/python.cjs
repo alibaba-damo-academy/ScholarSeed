@@ -2,16 +2,23 @@
 // Shared Python distribution policy for development and Desktop packaging.
 const fs = require('node:fs')
 const path = require('node:path')
+const os = require('node:os')
 const leases = require('./lease.cjs')
 const crypto = require('node:crypto')
 const { execFile, execFileSync } = require('node:child_process')
 const { ensureArtifact } = require('./artifacts.cjs')
+const { pythonEnvironment, pythonPlatformArguments } = require('./platform.cjs')
+const { installSources } = require('../../apps/desktop/scripts/cd/assembly.cjs')
 
 const VENDOR_DIRECTORY = ['scripts', 'vendor', 'python-build-standalone']
 const MANIFEST_FILENAME = 'manifest.json'
 const CACHE_DIRECTORY = '.python'
 const CACHE_RECEIPT = 'archive.sha256'
 const DEFAULT_VENV = '.venv'
+const SOURCE_PREPARATION_PREFIX = 'scholarseed-sources-'
+const UPGRADE_DIRECTORY_PREFIX = 'upgrade-'
+const PREVIOUS_ENVIRONMENT_DIRECTORY = 'previous'
+const DEPENDENCY_HELPER = path.resolve(__dirname, 'dependencies.py')
 const UV_ENV = 'UV'
 const UV_DEFAULT_INDEX_ENV = 'UV_DEFAULT_INDEX'
 const PIP_INDEX_ENV = 'PIP_INDEX_URL'
@@ -191,9 +198,9 @@ function cleanupTemporary(directory) {
   retryFilesystem(() => fs.rmSync(directory, { recursive: true, force: true }))
 }
 
-async function preparePython(repo) {
+async function preparePython(repo, environment = process.env) {
   const release = pythonRelease(repo)
-  await ensureArtifact(release.archive, release)
+  await ensureArtifact(release.archive, release, {environment})
   await verifyPythonArchive(release)
   const destination = cacheRoot(repo, release)
   if (fs.existsSync(destination)) return verifyCache(destination, release)
@@ -300,15 +307,61 @@ function configuredPipIndex(environment = process.env) {
   }
 }
 
+function stagePreviousEnvironment(repo, directory) {
+  if (!fs.existsSync(directory)) return null
+  if (fs.lstatSync(directory).isSymbolicLink() || !fs.existsSync(path.join(directory, VENV_CONFIGURATION)))
+    throw new Error('existing environment has no verified previous runtime')
+  const executable = developmentPython(repo, directory)
+  const actual = inspectPython(executable), release = pythonRelease(repo)
+  if (sameRealPath(actual.base_prefix, path.join(cacheRoot(repo, release), 'python'))) {
+    verifyDevelopmentPython(repo, executable)
+    return null
+  }
+  const previousRoot = path.dirname(actual.base_prefix), previousHash = path.basename(previousRoot)
+  if (!sameRealPath(actual.prefix, directory) || !SHA256_PATTERN.test(previousHash) ||
+      !sameRealPath(previousRoot, cacheRoot(repo, {sha256: previousHash})) || previousHash === release.sha256)
+    throw new Error('existing environment has no verified previous runtime')
+  verifyCache(previousRoot, {...release, sha256: previousHash, python: actual.python, sqlite: actual.sqlite})
+  const backup = fs.mkdtempSync(path.join(path.dirname(previousRoot), UPGRADE_DIRECTORY_PREFIX))
+  const previous = path.join(backup, PREVIOUS_ENVIRONMENT_DIRECTORY)
+  retryFilesystem(() => fs.renameSync(directory, previous))
+  return {directory, backup, previous}
+}
+
+function restorePreviousEnvironment(staged) {
+  if (fs.existsSync(staged.directory)) {
+    if (fs.lstatSync(staged.directory).isSymbolicLink()) throw new Error('replacement environment became a symbolic link')
+    cleanupTemporary(staged.directory)
+  }
+  retryFilesystem(() => fs.renameSync(staged.previous, staged.directory))
+  cleanupTemporary(staged.backup)
+}
+
 async function prepareDevelopmentEnvironment(repo, environment = process.env) {
-  const env = { ...environment }
+  const env = pythonEnvironment(environment)
   const pipIndex = configuredPipIndex(env)
   if (pipIndex) env[UV_DEFAULT_INDEX_ENV] = pipIndex
   const venv = env[VENV_ENV] || DEFAULT_VENV
   let runtime = env[PYTHON_ENV] || ''
-  if (!runtime) runtime = await preparePython(repo)
+  if (!runtime) runtime = await preparePython(repo, env)
   const reservation = leases.acquire({ mode: 'write', resources: [path.resolve(repo, venv)] })
+  let preparation
+  let previous
   try {
+    if (!env[PYTHON_ENV]) {
+      const directory = path.resolve(repo, venv)
+      previous = stagePreviousEnvironment(repo, directory)
+      if (!fs.existsSync(path.join(directory, VENV_CONFIGURATION)))
+        execFileSync(uvExecutable(env), ['venv', '--python', runtime, '--no-python-downloads', directory], {cwd: repo, env, stdio: 'inherit', windowsHide: true})
+      const python = developmentPython(repo, venv)
+      verifyDevelopmentPython(repo, python)
+      preparation = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), SOURCE_PREPARATION_PREFIX))
+      const requirements = path.join(preparation, 'requirements.txt'), plan = path.join(preparation, 'plan.json')
+      execFileSync(python, ['-I', '-B', DEPENDENCY_HELPER, 'export', '--repo', repo,
+        '--uv', uvExecutable(env), '--requirements', requirements, '--plan', plan], {cwd: repo, env, stdio: 'inherit', windowsHide: true})
+      const selected = JSON.parse(fs.readFileSync(plan, 'utf8'))
+      await installSources(uvExecutable(env), python, requirements, preparation, repo, env, selected.source_builds)
+    }
     execFileSync(uvExecutable(env), [
       'sync',
       '--locked',
@@ -320,6 +373,7 @@ async function prepareDevelopmentEnvironment(repo, environment = process.env) {
       '--group',
       DESKTOP_GROUP,
       '--no-python-downloads',
+      ...pythonPlatformArguments(env),
       '--python',
       runtime
     ], {
@@ -332,10 +386,18 @@ async function prepareDevelopmentEnvironment(repo, environment = process.env) {
       ? verifyDevelopmentPython(repo, developmentPython(repo, venv))
       : { python: runtime, external: true, venv: path.resolve(repo, venv) }
     reservation.release()
+    if (previous) console.log(`[python] previous environment retained at ${previous.previous}`)
     return result
   } catch (error) {
+    if (previous) {
+      try {restorePreviousEnvironment(previous)} catch (recovery) {
+        throw new AggregateError([error, recovery], `Python environment preparation and recovery failed; previous environment: ${previous.previous}`)
+      }
+    }
     error.message += `; environment write reservation retained at ${reservation.directory} (${reservation.id}); verify environment and process cleanup before manual recovery`
     throw error
+  } finally {
+    if (preparation) cleanupTemporary(preparation)
   }
 }
 
@@ -356,7 +418,7 @@ async function main(argv) {
 module.exports = { pythonRelease, verifyPythonArchive, inspectPython, inspectPythonAsync, verifyPython,
   verifyDevelopmentPython, verifyDevelopmentPythonAsync, preparePython, prepareDevelopmentEnvironment,
   developmentPython, ciPython, nativeTar, sameRealPath,
-  retryFilesystem, cleanupTemporary, configuredPipIndex }
+  retryFilesystem, cleanupTemporary, configuredPipIndex, stagePreviousEnvironment, restorePreviousEnvironment }
 
 if (require.main === module) {
   main(process.argv.slice(2)).catch(error => {

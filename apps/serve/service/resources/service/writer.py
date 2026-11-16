@@ -11,6 +11,7 @@ ContentPort 原子写文件(开发 1)。
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 from collections.abc import Callable
@@ -21,6 +22,7 @@ from service.platform.content import (
     AssetKind,
     ContentPort,
     FileAssetRef,
+    ImportCollisionPolicy,
     ImportMode,
     RootKind,
 )
@@ -37,6 +39,8 @@ INVALID_RESOURCE_PARENT = "invalid_resource_parent"
 RESOURCE_PARENT_NOT_FOUND = "parent_not_found"
 RESOURCE_IMPORT_FAILED = "resource_import_failed"
 RESOURCE_NOT_MARKDOWN = "not_text_file"
+RESOURCE_WRITE_DENIED = "resource_write_denied"
+WRITE_PERMISSION_ERRORS = frozenset({errno.EACCES, errno.EPERM})
 
 
 class ResourceWriterError(RuntimeError):
@@ -45,6 +49,25 @@ class ResourceWriterError(RuntimeError):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+class ResourceWriteDenied(ResourceWriterError):
+    """A permission failure before publishing any target file."""
+
+    def __init__(self, parent: str) -> None:
+        super().__init__(RESOURCE_WRITE_DENIED)
+        self.parent = parent
+
+    @classmethod
+    def from_preparation(cls, error: ContentError, parent: str) -> ResourceWriteDenied | None:
+        current: BaseException | None = error
+        visited: set[int] = set()
+        while current is not None and id(current) not in visited:
+            visited.add(id(current))
+            if isinstance(current, OSError) and current.errno in WRITE_PERMISSION_ERRORS:
+                return cls(parent)
+            current = current.__cause__
+        return None
 
 
 class ResourceWriter:
@@ -100,19 +123,25 @@ class ResourceWriter:
                 return existing
             # Directory ownership emits resource-version notifications against the
             # shared project database, so resolve it before reserve takes its write lock.
-            parent = self._ensure_parent(project_id, plan.location.parent)
-            operation = self._imports.reserve(
-                project_id,
-                plan.operation_id,
-                plan.fingerprint,
-                lambda reserved: self._content.prepare_bytes(
+            try:
+                parent = self._ensure_parent(project_id, plan.location.parent)
+                operation = self._imports.reserve(
                     project_id,
-                    parent,
-                    plan.location.name,
-                    content,
-                    reserved,
-                ),
-            )
+                    plan.operation_id,
+                    plan.fingerprint,
+                    lambda reserved: self._content.prepare_bytes(
+                        project_id,
+                        parent,
+                        plan.location.name,
+                        content,
+                        reserved,
+                    ),
+                )
+            except ContentError as error:
+                denied = ResourceWriteDenied.from_preparation(error, plan.location.parent)
+                if denied is not None:
+                    raise denied from error
+                raise
             asset = self._imports.finish(project_id, operation)
             self._listing.record(project_id, (asset,), ResourceSource.IMPORTED)
             return asset
@@ -186,11 +215,13 @@ class ResourceWriter:
         project_id: str,
         source_path: str,
         location: ResourceLocationRef,
+        *,
+        directory: bool = False,
     ) -> FileAssetRef:
-        """把本地文件复制到资料库中的明确位置，保留原始字节。"""
+        """把本地文件或目录复制到资料库中的明确位置，保留原始字节与层级。"""
 
         name = location.name
-        source_suffix = PurePath(source_path).suffix
+        source_suffix = "" if directory else PurePath(source_path).suffix
         if source_suffix and not PurePosixPath(name).suffix:
             name = f"{name}{source_suffix}"
 
@@ -201,6 +232,7 @@ class ResourceWriter:
                 parent,
                 ImportMode.COPY,
                 target_names=(name,),
+                collision_policy=ImportCollisionPolicy.EXACT,
             )
             if not imported:
                 raise ResourceWriterError(RESOURCE_IMPORT_FAILED)

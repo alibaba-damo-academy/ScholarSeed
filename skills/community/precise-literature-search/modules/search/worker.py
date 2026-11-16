@@ -654,8 +654,24 @@ def run(action, work, decisions=None, *, evidence_only=False, **view_options):
     return result
 
 
+def terminal_response(failure):
+    return {**controls(failure), "snapshot": None, "metadata": {}, "records": [],
+            "counts": {"pool": None, "view": 0, "total": 0, "page": 0},
+            "cursor": 0, "next_cursor": None, "next_command": None}
+
+
+class WorkerParser(argparse.ArgumentParser):
+    def error(self, message):
+        failure = {"status": "error", "error": {
+            "code": "invalid_arguments", "message": message[:1000],
+            "message_truncated": len(message) > 1000, "details": {},
+            "retryable": False, "recovery_action": None, "recovery_command": None}}
+        print(encoded(terminal_response(failure)))
+        self.exit(2)
+
+
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = WorkerParser(description=__doc__)
     parser.add_argument("action", choices=("context", "overview", "retrieve", "cite", "select", "record-web", "read-output"))
     parser.add_argument("--work-dir", required=True, type=Path)
     parser.add_argument("--token", required=True)
@@ -700,9 +716,7 @@ def main():
                 "message_truncated": len(message) > 1000,
                 "details": {**error_details(exc), "snapshot_error": error_details(snapshot_error)},
                 "retryable": False, "recovery_action": None, "recovery_command": None}}
-            output = encoded({**controls(failure), "snapshot": None, "metadata": {}, "records": [],
-                              "counts": {"pool": None, "view": 0, "total": 0, "page": 0},
-                              "cursor": 0, "next_cursor": None, "next_command": None})
+            output = encoded(terminal_response(failure))
         print(output)
         return 2
     print(output)

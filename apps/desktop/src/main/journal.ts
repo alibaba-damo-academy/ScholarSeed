@@ -11,7 +11,12 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs'
-import { dirname } from 'node:path'
+import { basename, dirname } from 'node:path'
+
+/** Create and flush a new private file under an admitted directory capability. */
+export interface QualifiedRecordWriter {
+  create(name: string, bytes: Buffer): void
+}
 
 export interface QualifiedRecordConsumer {
   consume(path: string, expected: Buffer, device: string, inode: string): void
@@ -20,6 +25,7 @@ export interface QualifiedRecordConsumer {
 const RECORD_WRITE_OPERATION = {
   mkdir: 'mkdir',
   openTemporary: 'open-temporary',
+  createTemporary: 'create-temporary',
   writeTemporary: 'write-temporary',
   syncTemporary: 'sync-temporary',
   closeTemporary: 'close-temporary',
@@ -79,7 +85,8 @@ export function writeJson(path: string, value: unknown, observe?: RecordWriteObs
 export function writeRecord(
   path: string,
   bytes: string | Uint8Array,
-  observe?: RecordWriteObserver
+  observe?: RecordWriteObserver,
+  writer?: QualifiedRecordWriter
 ): void {
   const started = observe ? performance.now() : 0
   let published = false
@@ -110,13 +117,20 @@ export function writeRecord(
   let descriptor: number | undefined
   let created = false
   try {
-    descriptor = run(RECORD_WRITE_OPERATION.openTemporary, () => openSync(temporary, 'wx', 0o600))
-    created = true
-    const file = descriptor
-    run(RECORD_WRITE_OPERATION.writeTemporary, () => writeFileSync(file, bytes))
-    run(RECORD_WRITE_OPERATION.syncTemporary, () => fsyncSync(file))
-    descriptor = undefined
-    run(RECORD_WRITE_OPERATION.closeTemporary, () => closeSync(file))
+    if (writer) {
+      run(RECORD_WRITE_OPERATION.createTemporary, () =>
+        writer.create(basename(temporary), Buffer.from(bytes))
+      )
+      created = true
+    } else {
+      descriptor = run(RECORD_WRITE_OPERATION.openTemporary, () => openSync(temporary, 'wx', 0o600))
+      created = true
+      const file = descriptor
+      run(RECORD_WRITE_OPERATION.writeTemporary, () => writeFileSync(file, bytes))
+      run(RECORD_WRITE_OPERATION.syncTemporary, () => fsyncSync(file))
+      descriptor = undefined
+      run(RECORD_WRITE_OPERATION.closeTemporary, () => closeSync(file))
+    }
     run(RECORD_WRITE_OPERATION.rename, () => renameSync(temporary, path))
     published = true
     created = false

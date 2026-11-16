@@ -85,6 +85,10 @@ class PdfWorkerContracts(unittest.TestCase):
         self.assertEqual(spawn.call_count, 1)
         self.assertIn("-B", spawn.call_args.args[0])
 
+    def test_fractional_render_scale_is_preserved(self):
+        with render_pdf_page(self.payload, 1, scale=1.5) as image:
+            self.assertEqual(image.size, (300, 450))
+
     def test_timeout_kills_and_reaps_actual_process(self):
         original = subprocess.Popen
         processes = []

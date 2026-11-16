@@ -22,7 +22,7 @@ from service.capabilities.service.descriptor import PLUGIN_DESCRIPTOR
 from service.capabilities.service.install import ORIGIN_FILE_NAME, install_skill_archive
 from service.capabilities.service.management import SkillManagementError
 from service.capabilities.service.package import pack_skill, read_package
-from service.capabilities.service.plugins import PLUGIN_ORIGIN_KIND
+from service.capabilities.service.plugins import PLUGIN_ORIGIN_KIND, installed_snapshot
 from service.capabilities.service.skills import (
     SkillCatalog,
     SkillPresentation,
@@ -175,6 +175,14 @@ class PluginAdmissionContract(unittest.IsolatedAsyncioTestCase):
             checked = await self.client.post(
                 prefix + "/delivery", json={**scope, "action": "check"}
             )
+            self.assertEqual(checked.status_code, 200, checked.text)
+            uploaded = await self.client.post(
+                "/api/capabilities/skills/upload/preview",
+                files={"file": ("delivery.zip", payload, "application/zip")},
+            )
+            self.assertEqual(uploaded.status_code, 200, uploaded.text)
+            self.assertEqual(checked.json()["preview"], uploaded.json()["preview"])
+            self.assertFalse((self.user_root / "delivered-late").exists())
             fresh = checked.json()["report"]
             self.assertNotEqual(fresh["candidate"], report["candidate"])
             generated = await self.client.post(
@@ -212,6 +220,7 @@ class PluginAdmissionContract(unittest.IsolatedAsyncioTestCase):
                 },
             )
             self.assertEqual(confirmed.status_code, 200, confirmed.text)
+            self.assertEqual(self.state().installation_sources.get("delivered-late"), "created")
             self.app.state.session_catalog = SessionCatalogStore(records.database)
             self.catalog.candidates.entries.clear()
             result = await self.client.post(
@@ -227,6 +236,17 @@ class PluginAdmissionContract(unittest.IsolatedAsyncioTestCase):
         with patch("service.capabilities.api.routes.request_owner_id", return_value="other"):
             with self.assertRaises(SessionAccessError):
                 await self.client.post(prefix + "/delivery", json=scope)
+
+    async def test_installed_catalog_keeps_legacy_local_plugins_out_of_the_marketplace(self):
+        self.install(self.package("legacy-plugin", "research.legacy"))
+        self.assertEqual(self.state().installation_sources, {})
+        response = await self.client.get("/api/capabilities/skills")
+        self.assertEqual(response.status_code, 200, response.text)
+        [row] = response.json()["skills"]
+        self.assertEqual(row["name"], "legacy-plugin")
+        self.assertIsNone(row["hub"])
+        self.assertEqual(row["installationSource"], "upload")
+        self.assertEqual(self.state().installation_sources, {})
 
     async def test_ui_package_cannot_be_installed_through_user_plugin_routes(self):
         prefix = "/api/capabilities/skills/plugins"
@@ -269,6 +289,7 @@ class PluginAdmissionContract(unittest.IsolatedAsyncioTestCase):
 
     async def test_broken_bundled_ui_does_not_remove_skill_routes(self):
         self.install(self.package("healthy", "research.healthy"))
+        custom = self.install(custom_payload())
         (self.root / "ui.zip").write_bytes(b"invalid zip")
         app = ServeApplication(activities=self.activities)
         app.state.skill_catalog = self.catalog
@@ -284,9 +305,41 @@ class PluginAdmissionContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.json()["system_ui"]["error"], "ui_initialization_failed")
         self.assertIn("healthy", {row["name"] for row in response.json()["skills"]})
         with self.assertRaisesRegex(ValueError, "ui_dependency_unavailable"):
-            self.registry.resolve(
-                "literature.selection", session_id="session", turn_id="new", user_id="local"
+            self.registry.dependencies(
+                installed_snapshot(custom.path, host_version="0.2.0", capabilities=())
             )
+
+    async def test_bundled_plugin_session_requires_compatible_ui(self):
+        bundled = install_skill_archive(custom_payload(), self.root / "bundled")
+        manifest = bundled.path / "SKILL.md"
+        inventory = SkillInventory(
+            cwd=self.root,
+            revision="test",
+            skills=(
+                SkillView(
+                    name=bundled.path.name,
+                    path=manifest,
+                    description="Test",
+                    enabled=True,
+                    availability=SkillAvailability.AVAILABLE,
+                ),
+            ),
+        )
+        state = SkillProductState()
+        for exports, enabled in ((["Text"], False), (["Button"], True)):
+            with self.subTest(exports=exports):
+                self.registry.install_ui(read_ui(ui_payload(exports=exports)))
+                self.assertEqual(self.catalog.payloads(inventory, state)[0]["active"], enabled)
+                self.assertEqual(
+                    dict(self.catalog.session_enablement(inventory, state, user_id="")),
+                    {manifest: enabled},
+                )
+                unavailable: set[str] = set()
+                snapshots = self.catalog.component_snapshots(
+                    inventory, state, unavailable=unavailable
+                )
+                self.assertEqual(bool(snapshots), enabled)
+                self.assertEqual(unavailable, set() if enabled else {bundled.path.name})
 
     async def test_concurrent_confirm_consumes_plugin_candidate_once(self):
         prefix = "/api/capabilities/skills/plugins"
@@ -764,6 +817,7 @@ class PluginAdmissionContract(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(installed.json()["enabled"])
         self.assertTrue((self.user_root / "beta" / "card.js").is_file())
         self.assertEqual(self.state().disabled_skills, frozenset({"beta"}))
+        self.assertEqual(self.state().installation_sources["beta"], "upload")
         reference = self.registry.resolve(
             "research.shared", session_id="session", turn_id="turn", user_id="local"
         )
@@ -844,18 +898,23 @@ class PluginAdmissionContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stale.status_code, 409, stale.text)
         read = await self.client.post("/api/capabilities/skills/plugins/copy", json=request)
         self.assertIsNone(read.json()["content"])
-        for invalid in [{"text": "", "html": "bad"}, {"text": "字" * 65536}, {"text": 1}]:
+        for invalid in [{"text": "  "}, {"text": "valid", "html": "bad"}, {"text": 1}]:
             response = await self.client.post(
                 "/api/capabilities/skills/plugins/copy",
                 json={**request, "content": invalid, "expected_revision": 1},
             )
             self.assertEqual(response.status_code, 422, response.text)
+        large_copy = {"text": "字" * (64 * 1024), "markdown": "**完整内容**"}
         self.registry.finish(reference)
         saved = await self.client.post(
             "/api/capabilities/skills/plugins/copy",
-            json={**request, "content": content, "expected_revision": 1},
+            json={**request, "content": large_copy, "expected_revision": 1},
         )
         self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertEqual(saved.json()["content"], large_copy)
+        read = await self.client.post("/api/capabilities/skills/plugins/copy", json=request)
+        self.assertEqual(read.status_code, 200, read.text)
+        self.assertEqual(read.json()["content"], large_copy)
 
     async def test_disabled_binding_preserves_code_data_and_draft_across_update(self):
         self.install(self.package("alpha", "research.shared"))

@@ -77,6 +77,14 @@ USER_A_EMAIL = "session-a@test.dev"
 USER_B_EMAIL = "session-b@test.dev"
 USER_PASSWORD = "secret1"
 FOREIGN_ROUTE_CASES: tuple[tuple[str, str, dict[str, Any] | None], ...] = (
+    ("get", "/api/serve/sessions/{session_id}/display-children", None),
+    ("put", "/api/serve/sessions/{session_id}/display-parent", {"parent_session_id": "target"}),
+    ("delete", "/api/serve/sessions/{session_id}/display-parent", None),
+    (
+        "put",
+        "/api/serve/sessions/{session_id}/display-order",
+        {"target_session_id": "target", "placement": "before"},
+    ),
     ("put", "/api/serve/sessions/{session_id}/pin", {"pinned": True}),
     ("get", "/api/serve/history/{session_id}", None),
     ("get", "/api/serve/sessions/{session_id}/events", None),

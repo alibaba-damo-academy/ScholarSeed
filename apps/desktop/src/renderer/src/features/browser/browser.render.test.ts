@@ -1,20 +1,482 @@
 import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import test from 'node:test'
+import test, { after } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { chromium, expect, type BrowserContext, type Page } from '@playwright/test'
 import react from '@vitejs/plugin-react'
-import { createServer } from 'vite'
+
 import type { BrowserCommand } from '../../../../browser.ts'
+import type { BrowserOverlayModel } from '../../../../overlay'
+import browserZh from '../../../../localization/locales/zh/browser.json' with { type: 'json' }
+import browserEn from '../../../../localization/locales/en/browser.json' with { type: 'json' }
+import { renderServers } from '../../../../test-helpers/render.ts'
+
+const servers = renderServers({ after })
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 
+for (const mode of ['pending', 'failed'] as const) {
+  test(
+    'browser initial snapshot preserves guidance and current failure recovery: ' + mode,
+    { timeout: 60_000 },
+    async () => {
+      const server = await servers.create({
+        cacheKey: 'browser',
+        configFile: false,
+        root: ROOT,
+        plugins: [react()],
+        server: { host: '127.0.0.1', port: 0 },
+      })
+      await server.listen()
+      let browser
+      try {
+        browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
+        const page = await browser.newPage()
+        const diagnostics: string[] = []
+        page.on('console', (message) => {
+          if (message.text().startsWith('[browser-failure]')) diagnostics.push(message.text())
+        })
+        await page.goto(
+          new URL(
+            '/features/browser/browser.render.fixture.html?snapshot-read=' + mode,
+            server.resolvedUrls!.local[0]
+          ).href
+        )
+        await expect
+          .poll(() =>
+            page.evaluate(
+              () => (window as unknown as { snapshotReadCount: number }).snapshotReadCount
+            )
+          )
+          .toBe(1)
+        const workspace = page.getByTestId('browser-workspace')
+        const address = workspace.getByRole('textbox', { name: browserZh.address, exact: true })
+        await expect(page.getByTestId('browser-start-page')).toBeVisible()
+        await expect(workspace.getByRole('tablist')).toHaveCount(0)
+        await expect(
+          workspace.getByRole('button', { name: browserZh.newTabAction, exact: true })
+        ).toHaveCount(0)
+        if (mode === 'pending') {
+          await expect(address).toHaveValue('')
+          await page.evaluate(() =>
+            (window as unknown as { finishBrowserSnapshot(): void }).finishBrowserSnapshot()
+          )
+          await expect(address).toHaveValue('https://example.com/')
+          await expect(workspace.getByRole('tablist')).toHaveCount(0)
+        } else {
+          assert.ok(diagnostics.some((line) => line.includes('"source":"snapshot"')))
+          await expect(address).toHaveAttribute('aria-invalid', 'true')
+          await expect(
+            page.getByText(browserZh.errors.operation_failed, { exact: true })
+          ).toBeVisible()
+          await page.reload()
+          await expect(address).toHaveAttribute('aria-invalid', 'true')
+          await expect(
+            page.getByText(browserZh.errors.operation_failed, { exact: true })
+          ).toBeVisible()
+          await expect
+            .poll(() =>
+              page.evaluate(
+                () => (window as unknown as { snapshotReadCount: number }).snapshotReadCount
+              )
+            )
+            .toBe(1)
+        }
+      } finally {
+        try {
+          await browser?.close()
+        } finally {
+          await server.close()
+        }
+      }
+    }
+  )
+}
+
 test(
-  'browser tab drag activates the pressed tab and preserves it through reorder and snapshot updates while keyboard navigation follows visual order',
+  'browser settings hide the advanced entry by default in both languages',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
+      configFile: false,
+      root: ROOT,
+      plugins: [react()],
+      server: { host: '127.0.0.1', port: 0 },
+    })
+    await server.listen()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
+    try {
+      const page = await browser.newPage()
+      await page.goto(
+        new URL(
+          '/features/browser/browser.render.fixture.html?settings',
+          server.resolvedUrls!.local[0]
+        ).href
+      )
+      const settings = page.getByTestId('account-settings-browser')
+      await expect(settings.getByTestId('browser-history-management')).toBeVisible()
+      await expect(settings.getByTestId('browser-settings-downloads')).toBeVisible()
+      await expect(settings.getByText(browserZh.settings.advanced, { exact: true })).toHaveCount(0)
+      await expect(settings.getByTestId('browser-settings-advanced')).toHaveCount(0)
+      assert.deepEqual(await page.evaluate(() => Reflect.get(window, 'policyRequests')), [])
+      await page.getByRole('button', { name: 'English', exact: true }).click()
+      await expect(settings.getByRole('heading', { name: browserEn.settings.title })).toBeVisible()
+      await expect(settings.getByText(browserEn.settings.advanced, { exact: true })).toHaveCount(0)
+    } finally {
+      await browser.close()
+      await server.close()
+    }
+  }
+)
+
+test(
+  'browser settings overview follows grouped design without removing download or advanced controls',
+  { timeout: 60_000 },
+  async () => {
+    const server = await servers.create({
+      cacheKey: 'browser',
+      configFile: false,
+      root: ROOT,
+      plugins: [react()],
+      server: { host: '127.0.0.1', port: 0 },
+    })
+    await server.listen()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
+    try {
+      const page = await browser.newPage({ viewport: { width: 1040, height: 660 } })
+      await page.goto(
+        new URL(
+          '/features/browser/browser.render.fixture.html?settings&advanced',
+          server.resolvedUrls!.local[0]
+        ).href
+      )
+      const settings = page.getByTestId('account-settings-browser')
+      await expect(settings.getByRole('heading', { name: '常规', exact: true })).toBeVisible()
+      await expect(settings.getByRole('heading', { name: '下载', exact: true })).toBeVisible()
+      await expect(settings.getByRole('heading', { name: '下载', exact: true })).toHaveCSS(
+        'line-height',
+        '20px'
+      )
+      await expect(
+        settings.getByText('管理内置浏览器的历史、网站数据和自动化访问。', { exact: true })
+      ).toHaveCount(0)
+      await expect(settings.getByRole('heading', { name: '浏览器设置', exact: true })).toHaveCSS(
+        'font-size',
+        '16px'
+      )
+      await expect(settings.locator('[data-slot="page-body"]')).toHaveCSS('row-gap', '20px')
+      const history = settings.getByTestId('browser-history-management')
+      await expect(history).toHaveCSS('border-radius', '8px')
+      await expect(history.getByText('查看和管理在内置浏览器中访问过的页面')).toHaveCSS(
+        'font-size',
+        '12px'
+      )
+      await expect(history.getByText('查看和管理在内置浏览器中访问过的页面')).toHaveCSS(
+        'color',
+        'rgb(146, 146, 146)'
+      )
+      await expect(history.getByRole('button', { name: '管理', exact: true })).toHaveCSS(
+        'height',
+        '28px'
+      )
+      const downloads = settings.getByTestId('browser-settings-downloads')
+      await expect(history.getByRole('button', { name: '管理', exact: true })).toHaveCSS(
+        'font-size',
+        '12px'
+      )
+      await expect(history.getByRole('button', { name: '管理', exact: true })).toHaveCSS(
+        'line-height',
+        '18px'
+      )
+      await expect(downloads).toHaveCSS('border-radius', '8px')
+      await expect(downloads.getByTestId('browser-download-directory')).toHaveCSS(
+        'font-size',
+        '12px'
+      )
+      await expect(downloads.getByRole('switch', { name: '下载前询问保存位置' })).not.toBeChecked()
+      await expect(
+        settings.getByRole('heading', { name: 'Agent Browser Use', exact: true })
+      ).toBeHidden()
+      await settings.getByRole('button', { name: '高级设置', exact: true }).click()
+      await expect(
+        settings.getByRole('heading', { name: 'Agent Browser Use', exact: true })
+      ).toHaveCount(0)
+      await expect(
+        settings.getByRole('switch', { name: 'Agent Browser Use', exact: true })
+      ).toBeVisible()
+      const advanced = settings.getByTestId('browser-settings-advanced')
+      for (const card of await advanced.locator('.vds-card').all()) {
+        await expect(card).toHaveCSS('border-top-width', '1px')
+      }
+      for (const title of await advanced.locator('.vds-card__title').all()) {
+        await expect(title).toHaveCSS('font-size', '14px')
+        await expect(title).toHaveCSS('font-weight', '400')
+      }
+      for (const control of await advanced.locator('.vds-input, .vds-select, .vds-button').all()) {
+        await expect(control).toHaveCSS('height', '28px')
+      }
+      await settings.getByRole('button', { name: '高级设置', exact: true }).click()
+      await page.getByRole('button', { name: 'English', exact: true }).click()
+      await expect(settings.getByRole('heading', { name: 'General', exact: true })).toBeVisible()
+      await page.emulateMedia({ colorScheme: 'dark' })
+      await expect(history).toHaveCSS('background-color', 'rgb(31, 31, 31)')
+    } finally {
+      await browser.close()
+      await server.close()
+    }
+  }
+)
+
+test(
+  'operation failure toast projects above native pages without changing viewport and forwards pause and close',
+  { timeout: 60_000 },
+  async () => {
+    const server = await servers.create({
+      cacheKey: 'browser',
+      configFile: false,
+      root: ROOT,
+      plugins: [react()],
+      server: { host: '127.0.0.1', port: 0 },
+    })
+    await server.listen()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
+    try {
+      const page = await browser.newPage()
+      const diagnostics: string[] = []
+      page.on('console', (message) => {
+        if (message.text().startsWith('[browser-failure]')) diagnostics.push(message.text())
+      })
+      await page.goto(
+        new URL(
+          '/features/browser/browser.render.fixture.html?native-tooltip',
+          server.resolvedUrls!.local[0]
+        ).href
+      )
+      await expect(page.getByRole('button', { name: '刷新', exact: true })).toBeEnabled()
+      const viewport = page.locator('[data-browser-viewport]')
+      const before = await viewport.boundingBox()
+      assert.ok(before && before.height > 0)
+      await page.getByRole('button', { name: '更多浏览器功能', exact: true }).click()
+      await page.waitForFunction(
+        () => (window as unknown as { menuModels: unknown[] }).menuModels.length === 1
+      )
+      await page.evaluate(() =>
+        (window as unknown as { finishMenu(ok: boolean): void }).finishMenu(false)
+      )
+      const toast = page.locator('.vds-toaster [role="alert"]')
+      await expect(toast).toHaveText('浏览器操作失败，请重试。')
+      assert.ok(diagnostics.some((line) => line.includes('"source":"menu"')))
+      await page.locator('.vds-toaster').evaluate((element) => {
+        const bounds = document.querySelector('[data-browser-viewport]')!.getBoundingClientRect()
+        ;(element as HTMLElement).style.top = `${bounds.top}px`
+      })
+      await page.waitForFunction(() =>
+        (window as unknown as { tooltipModels: { toast?: unknown }[] }).tooltipModels.some(
+          (model) => model.toast
+        )
+      )
+      await page.evaluate(() =>
+        (window as unknown as { finishTooltip(ok: boolean): void }).finishTooltip(true)
+      )
+      await expect(toast).toHaveCSS('opacity', '0')
+      assert.deepEqual(await viewport.boundingBox(), before)
+      const lastBounds = await page.evaluate(() =>
+        (window as unknown as { commands: BrowserCommand[] }).commands
+          .filter((command) => command.kind === 'bounds')
+          .at(-1)
+      )
+      assert.ok(lastBounds?.kind === 'bounds' && lastBounds.visible)
+      await page.evaluate(() => {
+        const fixture = window as unknown as {
+          tooltipModels: { revision: number }[]
+          emitTooltipEvent(event: unknown): void
+        }
+        fixture.emitTooltipEvent({
+          kind: 'toast-hover',
+          revision: fixture.tooltipModels.at(-1)!.revision,
+          paused: true,
+        })
+      })
+      await page.waitForTimeout(6100)
+      await expect(toast).toHaveCount(1)
+      await page.evaluate(() => {
+        const fixture = window as unknown as {
+          tooltipModels: { revision: number }[]
+          emitTooltipEvent(event: unknown): void
+        }
+        fixture.emitTooltipEvent({
+          kind: 'toast-close',
+          revision: fixture.tooltipModels.at(-1)!.revision,
+        })
+      })
+      await expect(toast).toHaveCount(0)
+    } finally {
+      await browser.close()
+      await server.close()
+    }
+  }
+)
+
+test(
+  'download settings show change, conditional reset and an initially disabled ask preference',
+  { timeout: 60_000 },
+  async () => {
+    const server = await servers.create({
+      cacheKey: 'browser',
+      configFile: false,
+      root: ROOT,
+      plugins: [react()],
+      server: { host: '127.0.0.1', port: 0 },
+    })
+    await server.listen()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
+    try {
+      const page = await browser.newPage()
+      await page.goto(
+        new URL(
+          '/features/browser/browser.render.fixture.html?settings',
+          server.resolvedUrls!.local[0]
+        ).href
+      )
+      const downloads = page.getByTestId('browser-settings-downloads')
+      await expect(downloads.getByTestId('browser-download-directory')).toHaveText('/downloads')
+      const ask = downloads.getByRole('switch', { name: '下载前询问保存位置' })
+      await expect(ask).not.toBeChecked()
+      await expect(downloads.getByRole('button', { name: '恢复默认', exact: true })).toHaveCount(0)
+      await downloads.getByRole('button', { name: '更改', exact: true }).click()
+      await expect(downloads.getByTestId('browser-download-directory')).toHaveText('/chosen')
+      await downloads.getByRole('button', { name: '恢复默认', exact: true }).click()
+      await expect(downloads.getByTestId('browser-download-directory')).toHaveText('/downloads')
+      await expect(downloads.getByRole('button', { name: '恢复默认', exact: true })).toHaveCount(0)
+      await ask.click()
+      await expect(ask).toBeChecked()
+    } finally {
+      await browser.close()
+      await server.close()
+    }
+  }
+)
+async function openClearDialog(page: Page) {
+  if (await page.getByRole('button', { name: '管理', exact: true }).count())
+    await page.getByRole('button', { name: '管理', exact: true }).click()
+  await page.getByRole('button', { name: '清除浏览数据', exact: true }).click()
+  await page
+    .getByRole('alertdialog')
+    .getByRole('checkbox', { name: '浏览历史', exact: true })
+    .check()
+}
+
+test(
+  'external browser opening uses the committed URL without closing the embedded page',
+  { timeout: 60_000 },
+  async () => {
+    const server = await servers.create({
+      cacheKey: 'browser',
+      configFile: false,
+      root: ROOT,
+      plugins: [react()],
+      server: { host: '127.0.0.1', port: 0 },
+    })
+    await server.listen()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
+    try {
+      const page = await browser.newPage()
+      await page.goto(
+        new URL('/features/browser/browser.render.fixture.html', server.resolvedUrls!.local[0]).href
+      )
+      const address = page.getByRole('textbox', { name: '网址', exact: true })
+      await expect(address).toHaveCSS('font-weight', '400')
+      const longAddress = `https://example.com/${'long-path/'.repeat(80)}`
+      await address.fill(longAddress)
+      await address.blur()
+      await expect(address).toHaveCSS('text-overflow', 'ellipsis')
+      await expect(address).toHaveValue(longAddress)
+      await address.focus()
+      await expect(address).toHaveCSS('text-overflow', 'clip')
+      await address.fill('unvisited.example')
+      await page.getByRole('button', { name: '用外部浏览器打开', exact: true }).click()
+      assert.deepEqual(
+        await page.evaluate(() => (window as unknown as { externalUrls: string[] }).externalUrls),
+        ['https://example.com/']
+      )
+      await expect(page.getByTestId('browser-workspace')).toBeVisible()
+      assert.equal(
+        await page.evaluate(() =>
+          (window as unknown as { commands: BrowserCommand[] }).commands.some(
+            (command) => command.kind === 'close'
+          )
+        ),
+        false
+      )
+    } finally {
+      await browser.close()
+      await server.close()
+    }
+  }
+)
+
+test(
+  'browser menu copies the active URL and opens data controls without clearing automatically',
+  { timeout: 60_000 },
+  async () => {
+    const server = await servers.create({
+      cacheKey: 'browser',
+      configFile: false,
+      root: ROOT,
+      plugins: [react()],
+      server: { host: '127.0.0.1', port: 0 },
+    })
+    await server.listen()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
+    try {
+      const page = await browser.newPage()
+      await page.goto(
+        new URL('/features/browser/browser.render.fixture.html', server.resolvedUrls!.local[0]).href
+      )
+      const open = async (): Promise<void> => {
+        await page.getByRole('button', { name: '更多浏览器功能', exact: true }).click()
+        await page.evaluate(() =>
+          (window as unknown as { finishMenu(ok: boolean): void }).finishMenu(true)
+        )
+        await expect(
+          page.getByRole('button', { name: '更多浏览器功能', exact: true })
+        ).toHaveAttribute('aria-expanded', 'true')
+      }
+      await open()
+      await page.evaluate(() =>
+        (window as unknown as { menuAction(action: string): void }).menuAction('browser.copy')
+      )
+      await expect
+        .poll(() =>
+          page.evaluate(() => (window as unknown as { copiedAddresses: string[] }).copiedAddresses)
+        )
+        .toEqual(['https://example.com/'])
+      await expect(page.getByRole('status').filter({ hasText: '复制成功' })).toBeVisible()
+      await open()
+      await page.evaluate(() =>
+        (window as unknown as { menuAction(action: string): void }).menuAction('browser.data')
+      )
+      await expect(page.getByTestId('account-settings-browser-history')).toBeVisible()
+      await expect(page.getByRole('alertdialog')).toBeVisible()
+      assert.deepEqual(
+        await page.evaluate(() => (window as unknown as { dataRequests: unknown[] }).dataRequests),
+        []
+      )
+    } finally {
+      await browser.close()
+      await server.close()
+    }
+  }
+)
+
+test(
+  'browser uses history arrows without an inner tab bar or page creation controls',
+  { timeout: 60_000 },
+  async () => {
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
@@ -28,20 +490,26 @@ test(
         new URL('/features/browser/browser.render.fixture.html', server.resolvedUrls!.local[0]).href
       )
       const workspace = page.getByTestId('browser-workspace')
-      const bar = workspace.getByRole('tablist')
-      await expect(bar.getByRole('tab', { selected: true })).toContainText('First')
-      await bar
-        .getByRole('tab', { name: /Second/ })
-        .dragTo(bar.getByRole('tab', { name: /First/ }), { targetPosition: { x: 2, y: 16 } })
-      await expect(bar.getByRole('tab')).toHaveText(['Second', 'First'])
-      await expect(bar.getByRole('tab', { selected: true })).toContainText('Second')
+      await expect(workspace.getByRole('textbox', { name: '网址', exact: true })).toHaveValue(
+        'https://example.com/'
+      )
+      await expect(workspace.getByRole('tablist')).toHaveCount(0)
+      await expect(
+        workspace.getByRole('button', { name: '打开新的标签页', exact: true })
+      ).toHaveCount(0)
+      await workspace.getByRole('button', { name: '后退', exact: true }).click()
+      await workspace.getByRole('button', { name: '前进', exact: true }).click()
       await workspace.getByRole('button', { name: '刷新', exact: true }).click()
-      await expect(bar.getByRole('tab')).toHaveText(['Second', 'First'])
-      await expect(bar.getByRole('tab', { selected: true })).toContainText('Second')
-      await bar.getByRole('tab', { selected: true }).press('Home')
-      await expect(bar.getByRole('tab', { selected: true })).toContainText('Second')
-      await bar.getByRole('tab', { selected: true }).press('End')
-      await expect(bar.getByRole('tab', { selected: true })).toContainText('First')
+      const commands = await page.evaluate(() =>
+        (window as unknown as { commands: BrowserCommand[] }).commands.filter(
+          (command) => command.kind !== 'bounds'
+        )
+      )
+      assert.deepEqual(commands, [
+        { kind: 'back', tabId: 'first' },
+        { kind: 'forward', tabId: 'first' },
+        { kind: 'reload', tabId: 'first' },
+      ])
     } finally {
       await browser.close()
       await server.close()
@@ -53,21 +521,25 @@ test(
   'browser tooltip buttons suppress native titles while preserving accessible names',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
       await page.goto(
         new URL('/features/browser/browser.render.fixture.html', server.resolvedUrls!.local[0]).href
       )
       const workspace = page.getByTestId('browser-workspace')
-      for (const name of ['打开新的标签页', '浏览器提示与状态', '更多浏览器功能']) {
+      await expect(
+        workspace.getByRole('button', { name: '浏览器提示与状态', exact: true })
+      ).toHaveCount(0)
+      for (const name of ['更多浏览器功能']) {
         const control = workspace.getByRole('button', { name, exact: true })
         await expect(control).toHaveAccessibleName(name)
         await expect(control).not.toHaveAttribute('title')
@@ -87,14 +559,15 @@ test(
   'more tooltip stays inside narrow and wide viewport edges on hover and keyboard focus',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
       await page.goto(
@@ -102,7 +575,7 @@ test(
       )
       const workspace = page.getByTestId('browser-workspace')
       const more = workspace.getByRole('button', { name: '更多浏览器功能', exact: true })
-      const help = workspace.getByRole('button', { name: '浏览器提示与状态', exact: true })
+      const external = workspace.getByRole('button', { name: '用外部浏览器打开', exact: true })
       const tooltip = page.getByRole('tooltip')
       for (const width of [1280, 480]) {
         await page.setViewportSize({ width, height: 800 })
@@ -110,7 +583,7 @@ test(
           if (trigger === 'hover') await more.hover()
           else {
             await page.mouse.move(0, 0)
-            await help.focus()
+            await external.focus()
             await page.keyboard.press('Tab')
             await expect(more).toBeFocused()
           }
@@ -154,17 +627,18 @@ test(
 )
 
 test(
-  'compact toolbar keeps loading and feedback geometry stable and exposes help on hover and focus',
+  'compact toolbar shows errors and control status directly without a help button',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage({ viewport: { width: 1280, height: 800 } })
       await page.goto(
@@ -175,7 +649,9 @@ test(
       )
       const workspace = page.getByTestId('browser-workspace')
       const reload = workspace.getByRole('button', { name: '刷新', exact: true })
-      const help = workspace.getByRole('button', { name: '浏览器提示与状态', exact: true })
+      await expect(
+        workspace.getByRole('button', { name: '浏览器提示与状态', exact: true })
+      ).toHaveCount(0)
       const viewport = workspace.getByTestId('browser-viewport')
       const address = workspace.getByRole('textbox', { name: '网址', exact: true })
       await expect(reload).toBeEnabled()
@@ -185,7 +661,17 @@ test(
           window as unknown as { updateActiveBrowserTab(changes: object): void }
         ).updateActiveBrowserTab({ loading: true })
       )
-      await expect(reload).toBeDisabled()
+      await expect(reload).toHaveCount(0)
+      const stopLoading = workspace.getByRole('button', { name: '停止加载', exact: true })
+      await expect(stopLoading).toBeEnabled()
+      await stopLoading.press('Enter')
+      assert.ok(
+        await page.evaluate(() =>
+          (window as unknown as { commands: BrowserCommand[] }).commands.some(
+            (command) => command.kind === 'stop-loading' && command.tabId === 'first'
+          )
+        )
+      )
       await expect(workspace.getByText('网页加载中', { exact: true })).toHaveCount(0)
       assert.deepEqual(await viewport.boundingBox(), original)
       await page.evaluate(() =>
@@ -209,26 +695,34 @@ test(
       })
       assert.equal(spacing.top, spacing.bottom)
       assert.equal(spacing.after, 0)
-      await expect(help).not.toHaveAttribute('title')
-      await help.hover()
-      await expect(page.getByRole('tooltip')).toContainText('输入网址后按 Enter')
+      await expect(workspace.getByRole('alert')).toHaveCount(0)
       assert.deepEqual(await viewport.boundingBox(), original)
       await address.fill('bad:address')
       await address.press('Enter')
       await expect(workspace.getByRole('alert')).toHaveText('请输入有效的 HTTP 或 HTTPS 网址。')
-      assert.deepEqual(await viewport.boundingBox(), original)
-      await help.focus()
-      await expect(help).toBeFocused()
-      await expect(page.getByRole('tooltip')).toHaveText('请输入有效的 HTTP 或 HTTPS 网址。')
-      await expect(help).toHaveAccessibleDescription(/请输入有效的 HTTP 或 HTTPS 网址/)
+      await expect(workspace.getByRole('alert')).toBeVisible()
+      await expect(address).toHaveAccessibleDescription('请输入有效的 HTTP 或 HTTPS 网址。')
+      const errorBounds = await workspace.getByRole('alert').boundingBox()
+      const pageBounds = await viewport.boundingBox()
+      assert.ok(errorBounds && pageBounds)
+      assert.deepEqual(pageBounds, original)
+      const errorContent = await workspace
+        .getByTestId('browser-error-page')
+        .locator('[data-variant="panel"]')
+        .boundingBox()
+      assert.ok(errorContent)
+      assert.ok(
+        Math.abs(errorContent.y + errorContent.height / 2 - pageBounds.y - pageBounds.height / 2) <
+          1
+      )
+      await expect(
+        workspace
+          .getByTestId('browser-error-page')
+          .getByRole('button', { name: '刷新', exact: true })
+      ).toBeEnabled()
       await page.getByRole('button', { name: 'English', exact: true }).click()
-      const englishHelp = workspace.getByRole('button', {
-        name: 'Browser help and status',
-        exact: true,
-      })
       const englishAddress = workspace.getByRole('textbox', { name: 'Address', exact: true })
-      await englishHelp.focus()
-      await expect(page.getByRole('tooltip')).toHaveText('Enter a valid HTTP or HTTPS address.')
+      await expect(workspace.getByRole('alert')).toHaveText('Enter a valid HTTP or HTTPS address.')
       await page.evaluate(() =>
         (
           window as unknown as { updateActiveBrowserTab(changes: object): void }
@@ -236,16 +730,49 @@ test(
       )
       await englishAddress.fill('https://example.org')
       await englishAddress.press('Enter')
-      await englishHelp.focus()
-      await expect(page.getByRole('tooltip')).toHaveText(
+      await expect(workspace.getByRole('status')).toHaveText(
         'This page is controlled by an external program'
       )
       await page.evaluate(() =>
         (
           window as unknown as { updateActiveBrowserTab(changes: object): void }
-        ).updateActiveBrowserTab({ cdpStatus: 'devtools_conflict' })
+        ).updateActiveBrowserTab({ url: 'https://hello/', navigationError: 'navigation_failed' })
       )
-      await expect(page.getByRole('tooltip')).toHaveText(
+      const errorPage = workspace.getByTestId('browser-error-page')
+      await expect(errorPage).toBeVisible()
+      await expect(errorPage.getByText('This site can’t be reached', { exact: true })).toBeVisible()
+      await expect(
+        errorPage.getByText(
+          'Check for a typo in hello. If the address is correct, check your network connection and try again.',
+          { exact: true }
+        )
+      ).toBeVisible()
+      await page.getByRole('button', { name: '简体中文', exact: true }).click()
+      await expect(errorPage.getByText('无法访问此网站', { exact: true })).toBeVisible()
+      await expect(
+        errorPage.getByText('请检查 hello 中是否有拼写错误。如果网址无误，请检查网络连接后重试。', {
+          exact: true,
+        })
+      ).toBeVisible()
+      await page.getByRole('button', { name: 'English', exact: true }).click()
+      await page.waitForFunction(
+        () =>
+          (window as unknown as { commands: BrowserCommand[] }).commands
+            .filter((command) => command.kind === 'bounds')
+            .at(-1)?.visible === false
+      )
+      await errorPage.getByRole('button', { name: 'Reload page', exact: true }).click()
+      await page.waitForFunction(() =>
+        (window as unknown as { commands: BrowserCommand[] }).commands.some(
+          (command) => command.kind === 'reload'
+        )
+      )
+      await page.evaluate(() =>
+        (
+          window as unknown as { updateActiveBrowserTab(changes: object): void }
+        ).updateActiveBrowserTab({ navigationError: null, cdpStatus: 'devtools_conflict' })
+      )
+      await expect(workspace.getByRole('status')).toHaveText(
         'Developer tools now control this page. Close them before reconnecting automation.'
       )
       const more = workspace.getByRole('button', { name: 'More browser features', exact: true })
@@ -257,14 +784,12 @@ test(
         (window as unknown as { finishMenu(ok: boolean): void }).finishMenu(true)
       )
       await expect(more).toHaveAttribute('aria-expanded', 'true')
-      await englishHelp.hover()
       await expect(
         page.getByRole('tooltip').filter({ hasText: 'Developer tools now control' })
       ).toHaveCount(0)
-      assert.deepEqual(await viewport.boundingBox(), original)
       await page.evaluate(() => (window as unknown as { menuFailure(): void }).menuFailure())
-      await englishHelp.focus()
-      await expect(page.getByRole('tooltip')).toContainText(
+      await expect(page.locator('.vds-toaster').getByRole('alert')).toBeVisible()
+      await expect(page.locator('.vds-toaster').getByRole('alert')).toContainText(
         'Browser operation failed. Please try again.'
       )
     } finally {
@@ -278,14 +803,15 @@ test(
   'invalid tooltip paint revokes displayed and pending native models without late visual resurrection',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0, hmr: false },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       for (const displayed of [false, true]) {
         const page = await browser.newPage()
@@ -295,7 +821,7 @@ test(
             server.resolvedUrls!.local[0]
           ).href
         )
-        await page.getByRole('tab', { name: 'First' }).waitFor()
+        await expect(page.getByRole('button', { name: '刷新', exact: true })).toBeEnabled()
         await page.evaluate(() =>
           (window as unknown as { setTooltipOpen(open: boolean): void }).setTooltipOpen(true)
         )
@@ -358,20 +884,21 @@ test(
   'native tooltip presentation fills its exact view without inherited side translation',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
       await page.goto(
         new URL('/features/browser/browser.render.fixture.html', server.resolvedUrls!.local[0]).href
       )
-      await page.getByRole('tab', { name: 'First' }).waitFor()
+      await expect(page.getByRole('button', { name: '刷新', exact: true })).toBeEnabled()
       await page.waitForFunction(
         () => (window as unknown as { suggestionsFixtureReady: boolean }).suggestionsFixtureReady
       )
@@ -432,14 +959,15 @@ test(
   'native plain tooltip preserves viewport before publish and reports display failure without hiding webpage',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
       page.on('console', (message) => {
@@ -469,8 +997,9 @@ test(
         fixture.commands.length = 0
         fixture.setTooltipOpen(true)
       })
-      const tooltip = page.getByRole('tooltip', { name: 'Animated browser tooltip' })
+      const tooltip = page.getByRole('tooltip')
       await tooltip.evaluate((element) => {
+        element.textContent = 'Long browser tab title '.repeat(50)
         const bounds = document.querySelector('[data-browser-viewport]')!.getBoundingClientRect()
         Object.assign((element as HTMLElement).style, {
           animation: 'none',
@@ -479,6 +1008,7 @@ test(
           top: `${bounds.top - element.getBoundingClientRect().height + 3}px`,
         })
       })
+      assert.ok(await tooltip.evaluate((element) => element.scrollHeight > element.clientHeight))
       await page
         .waitForFunction(
           () => (window as unknown as { tooltipModels: unknown[] }).tooltipModels.length > 0,
@@ -499,6 +1029,31 @@ test(
         (window as unknown as { finishTooltip(ok: boolean): void }).finishTooltip(true)
       )
       await expect(tooltip).toHaveCSS('opacity', '0')
+      await tooltip.evaluate((element) => {
+        const events: string[] = []
+        element.addEventListener('mouseover', () => events.push('enter'))
+        element.addEventListener('mouseout', () => events.push('leave'))
+        Object.assign(window, { tooltipHoverEvents: events })
+      })
+      await page.evaluate(() => {
+        const fixture = window as unknown as {
+          tooltipModels: BrowserOverlayModel[]
+          emitTooltipEvent(event: {
+            kind: 'tooltip-hover'
+            revision: number
+            paused: boolean
+          }): void
+        }
+        const revision = fixture.tooltipModels.at(-1)!.revision
+        fixture.emitTooltipEvent({ kind: 'tooltip-hover', revision, paused: true })
+        fixture.emitTooltipEvent({ kind: 'tooltip-hover', revision, paused: false })
+      })
+      assert.deepEqual(
+        await page.evaluate(
+          () => (window as unknown as { tooltipHoverEvents: string[] }).tooltipHoverEvents
+        ),
+        ['enter', 'leave']
+      )
       const paint = await page.evaluate(() => {
         const models = (
           window as unknown as { tooltipModels: { bounds: { width: number; height: number } }[] }
@@ -578,57 +1133,44 @@ test(
 )
 
 test(
-  'browser toolbar icons retain accessible actions and new tab follows the tab track',
+  'browser toolbar icons retain accessible actions without a webpage tab track',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage({ viewport: { width: 1280, height: 800 } })
       await page.goto(
         new URL('/features/browser/browser.render.fixture.html', server.resolvedUrls!.local[0]).href
       )
       const workspace = page.getByTestId('browser-workspace')
-      const add = workspace.getByRole('button', { name: '打开新的标签页', exact: true })
-      await expect(add).toBeVisible()
-      const followsLastTab = async (): Promise<void> => {
-        const last = await workspace.getByRole('tab').last().boundingBox()
-        const button = await add.boundingBox()
-        assert.ok(last && button)
-        assert.ok(button.x >= last.x + last.width)
-        assert.ok(button.x - last.x - last.width <= 24)
-        assert.equal(button.width, button.height)
-        assert.equal(await add.evaluate((element) => getComputedStyle(element).borderRadius), '50%')
-      }
-      await followsLastTab()
-      await add.hover()
-      const addTooltip = page.getByRole('tooltip').filter({ hasText: '打开新的标签页' })
-      await expect(addTooltip).toBeVisible()
-      await expect(addTooltip).toHaveAttribute('data-side', 'bottom')
-      await workspace.getByRole('tab', { name: 'Second' }).hover()
-      await workspace.getByRole('button', { name: '关闭 Second' }).click()
-      await followsLastTab()
-      const help = workspace.getByRole('button', { name: '浏览器提示与状态', exact: true })
+      await expect(workspace.getByRole('tablist')).toHaveCount(0)
+      await expect(
+        workspace.getByRole('button', { name: '打开新的标签页', exact: true })
+      ).toHaveCount(0)
       const tools = workspace.getByRole('button', { name: '更多浏览器功能', exact: true })
-      assert.equal((await help.textContent())?.trim(), '')
       assert.equal((await tools.textContent())?.trim(), '')
-      await expect(help.locator('svg')).toHaveCount(1)
+      await expect(
+        workspace.getByRole('button', { name: '浏览器提示与状态', exact: true })
+      ).toHaveCount(0)
       await expect(tools.locator('svg.lucide-ellipsis')).toHaveCount(1)
-      await expect(help).toHaveAttribute('type', 'button')
       await expect(tools).toHaveAttribute('type', 'button')
       await expect(tools).toHaveAttribute('aria-expanded', 'false')
+      await expect(tools).toHaveAttribute('aria-pressed', 'false')
       await expect(tools).toHaveAttribute('aria-haspopup', 'menu')
       await tools.click()
       await page.evaluate(() =>
         (window as unknown as { finishMenu(ok: boolean): void }).finishMenu(true)
       )
       await expect(tools).toHaveAttribute('aria-expanded', 'true')
+      await expect(tools).toHaveAttribute('aria-pressed', 'true')
       await page.evaluate(() =>
         (window as unknown as { revokeMenu(reason: string): void }).revokeMenu('escape')
       )
@@ -659,11 +1201,11 @@ test(
         )
         .toBe(1)
       await page.getByRole('button', { name: 'English', exact: true }).click()
-      await expect(workspace.getByRole('button', { name: 'Open a new tab' })).toBeVisible()
+      await expect(workspace.getByRole('button', { name: 'Open a new tab' })).toHaveCount(0)
       await expect(workspace.getByRole('button', { name: 'Go', exact: true })).toHaveCount(0)
       await expect(
         workspace.getByRole('button', { name: 'Browser help and status', exact: true })
-      ).toBeEnabled()
+      ).toHaveCount(0)
       await expect(
         workspace.getByRole('button', { name: 'More browser features' })
       ).toHaveAttribute('aria-expanded', 'false')
@@ -678,14 +1220,15 @@ test(
   'native menu non-Escape revocation preserves existing product focus while Escape restores More',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
       await page.goto(
@@ -722,17 +1265,18 @@ test(
 )
 
 test(
-  'new tab remains visible beside overflowing tabs and toolbar disabled states are preserved',
+  'navigation remains reachable with multiple native targets and preserves disabled states',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage({ viewport: { width: 480, height: 660 } })
       const fixture = new URL(
@@ -741,46 +1285,31 @@ test(
       )
       await page.goto(`${fixture.href}?many-tabs`)
       const workspace = page.getByTestId('browser-workspace')
-      const add = workspace.getByRole('button', { name: '打开新的标签页', exact: true })
-      await expect(add).toBeInViewport()
-      const track = workspace.getByRole('tablist')
-      await expect
-        .poll(() => track.evaluate((element) => element.scrollWidth > element.clientWidth))
-        .toBe(true)
-      const button = await add.boundingBox()
-      assert.ok(button && button.x + button.width <= 480)
-      await workspace.getByRole('tab').first().press('End')
-      await expect(workspace.getByRole('tab').last()).toBeInViewport()
-      await expect(add).toBeInViewport()
-      await add.click()
-      await expect
-        .poll(() =>
-          page.evaluate(() =>
-            (window as unknown as { commands: BrowserCommand[] }).commands.some(
-              (command) => command.kind === 'open'
-            )
-          )
-        )
-        .toBe(true)
-      await page.goto(`${fixture.href}?empty-tabs`)
+      await expect(workspace.getByRole('tablist')).toHaveCount(0)
+      await expect(workspace.getByRole('textbox', { name: '网址', exact: true })).toBeInViewport()
+      await expect(workspace.getByRole('button', { name: '后退', exact: true })).toBeInViewport()
+      await page.goto(fixture.href + '?empty-tabs')
       await expect(
         workspace.getByRole('button', { name: '浏览器提示与状态', exact: true })
-      ).toBeEnabled()
+      ).toHaveCount(0)
       await expect(
         workspace.getByRole('button', { name: '更多浏览器功能', exact: true })
       ).toBeEnabled()
-      await expect(add).toBeEnabled()
-      await page.goto(`${fixture.href}?slow`)
-      await add.click()
-      await expect(add).toBeDisabled()
+      await expect(workspace.getByRole('button', { name: '后退', exact: true })).toBeDisabled()
+      await expect(workspace.getByRole('button', { name: '前进', exact: true })).toBeDisabled()
+      await page.goto(fixture.href + '?empty-tabs&slow')
+      await workspace.getByRole('textbox', { name: '网址', exact: true }).fill('example.org')
+      await workspace.getByRole('textbox', { name: '网址', exact: true }).press('Enter')
       await expect(
         workspace.getByRole('button', { name: '更多浏览器功能', exact: true })
       ).toBeDisabled()
       await page.goto(`${fixture.href}?web`)
-      await expect(add).toBeDisabled()
+      await expect(
+        workspace.getByRole('button', { name: '更多浏览器功能', exact: true })
+      ).toBeDisabled()
       await expect(
         workspace.getByRole('button', { name: '浏览器提示与状态', exact: true })
-      ).toBeEnabled()
+      ).toHaveCount(0)
     } finally {
       await browser.close()
       await server.close()
@@ -792,14 +1321,15 @@ test(
   'already focused address click reopens after native dismiss and Escape without automatic restore reopening',
   { timeout: 60_000 },
   async (t) => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     const evidenceRoot = path.resolve(ROOT, '../../../../../tmp/test_snapshot/browser-focus')
     mkdirSync(evidenceRoot, { recursive: true })
     const evidence = mkdtempSync(path.join(evidenceRoot, 'run-'))
@@ -812,6 +1342,7 @@ test(
       await page.goto(
         new URL('/features/browser/browser.render.fixture.html', server.resolvedUrls!.local[0]).href
       )
+      await expect(page.getByRole('textbox', { name: '网址', exact: true })).toBeVisible()
       await page.evaluate(() => {
         const fixture = window as unknown as {
           focusEvidence: unknown[]
@@ -963,14 +1494,15 @@ test(
   'explicit current-revision focus request focuses DOM without relying on window focus events',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
       await page.goto(
@@ -1010,14 +1542,15 @@ test(
   'stale focus requests and model updates never steal focus while repeated current requests remain explicit',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
       await page.goto(
@@ -1102,21 +1635,22 @@ test(
   'suggestions preserve the DOM viewport and publish measured anchor geometry',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
       await page.goto(
         new URL('/features/browser/browser.render.fixture.html', server.resolvedUrls!.local[0]).href
       )
       const address = page.getByRole('textbox', { name: '网址', exact: true })
-      await expect(page.getByRole('tab', { name: 'First', selected: true })).toBeVisible()
+      await expect(address).toHaveValue('https://example.com/')
       const before = await page.getByTestId('browser-viewport').boundingBox()
       await address.fill('Paper')
       await page.waitForFunction(
@@ -1130,7 +1664,7 @@ test(
       const published = await page.evaluate(() =>
         (
           window as unknown as {
-            overlayModels: import('../../../../overlay').BrowserOverlayModel[]
+            overlayModels: BrowserOverlayModel[]
           }
         ).overlayModels.at(-1)!
       )
@@ -1156,14 +1690,15 @@ test(
   'overlay loading empty error and locale/theme states are explicit',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
       await page.goto(
@@ -1177,7 +1712,23 @@ test(
       await address.fill('Paper')
       await expect(overlay.getByRole('status')).toHaveText('正在搜索本机浏览历史…')
       await address.fill('unmatched')
-      await expect(overlay.getByRole('status')).toHaveText('没有匹配的浏览历史。')
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () =>
+              (window as unknown as { overlayModels: BrowserOverlayModel[] }).overlayModels.at(-1)
+                ?.status
+          )
+        )
+        .toBe('empty')
+      await expect(
+        overlay.getByRole('button', {
+          name: browserZh.searchWeb.replace('{{query}}', 'unmatched'),
+          exact: true,
+        })
+      ).toBeVisible()
+      await expect(overlay.getByRole('option')).toHaveCount(0)
+      await expect(overlay.getByRole('status')).toHaveCount(0)
       await page.evaluate(() => {
         document.documentElement.dataset.theme = 'dark'
       })
@@ -1192,7 +1743,12 @@ test(
         .toBe('dark')
       await page.getByRole('button', { name: 'English', exact: true }).click()
       await page.getByRole('textbox', { name: 'Address' }).fill('unmatched ')
-      await expect(overlay.getByRole('status')).toHaveText('No matching browsing history.')
+      await expect(
+        overlay.getByRole('button', {
+          name: browserEn.searchWeb.replace('{{query}}', 'unmatched'),
+          exact: true,
+        })
+      ).toBeVisible()
       await expect
         .poll(() =>
           page.evaluate(
@@ -1221,14 +1777,15 @@ test(
   'closed revisions and late queries cannot navigate or reopen suggestions',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
       await page.goto(
@@ -1242,6 +1799,11 @@ test(
       await page.waitForFunction(
         () => (window as unknown as { historyRequests: unknown[] }).historyRequests.length > 0
       )
+      await expect(
+        page.frameLocator('[data-suggestions-fixture]').getByRole('button', {
+          name: /在 Google 搜索“Paper”/,
+        })
+      ).toBeVisible()
       const revision = await page.evaluate(
         () =>
           (window as unknown as { overlayModels: { revision: number }[] }).overlayModels.at(-1)!
@@ -1271,7 +1833,9 @@ test(
         .frameLocator('[data-suggestions-fixture]')
         .getByRole('button', { name: /Google/ })
         .waitFor()
-      await page.getByRole('tab', { name: 'Second' }).click()
+      await page.evaluate(() =>
+        (window as unknown as { selectBrowserTab(tabId: string): void }).selectBrowserTab('second')
+      )
       await expect(page.locator('[data-suggestions-fixture]')).toBeHidden()
       await address.fill('unmatched ')
       await page
@@ -1294,14 +1858,15 @@ test(
   'overlay Tab returns to the next toolbar control and cross-document blur does not dismiss selection',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
       await page.goto(
@@ -1320,9 +1885,7 @@ test(
       await address.press('ArrowDown')
       await option.press('Tab')
       await expect(page.locator('[data-suggestions-fixture]')).toBeHidden()
-      await expect(
-        page.getByRole('button', { name: '浏览器提示与状态', exact: true })
-      ).toBeFocused()
+      await expect(page.getByRole('button', { name: '更多浏览器功能', exact: true })).toBeFocused()
     } finally {
       await browser.close()
       await server.close()
@@ -1334,14 +1897,15 @@ test(
   'priority dialog first click dismisses suggestions before interaction and revokes old callbacks',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
       await page.goto(
@@ -1399,17 +1963,18 @@ test(
 )
 
 test(
-  'empty browser shows a localized start tab without creating a native target',
+  'empty browser shows localized guidance without a tab bar or a native target',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
       await page.goto(
@@ -1418,12 +1983,29 @@ test(
           server.resolvedUrls!.local[0]
         ).href
       )
-      await expect(
-        page.getByRole('tab', { name: '新标签页', exact: true, selected: true })
-      ).toBeVisible()
-      await expect(page.getByRole('heading', { name: '欢迎使用内置浏览器' })).toBeVisible()
+      await expect(page.getByTestId('browser-workspace').getByRole('tablist')).toHaveCount(0)
+      await expect(page.getByText('在任务中浏览网页', { exact: true })).toBeVisible()
+      await expect(page.getByPlaceholder('搜索或输入网址', { exact: true })).toBeVisible()
+      await expect(page.getByTestId('browser-address-icon')).toBeVisible()
+      const viewportBounds = await page.getByTestId('browser-viewport').boundingBox()
+      const emptyBounds = await page
+        .getByTestId('browser-start-page')
+        .locator('[data-variant="panel"]')
+        .boundingBox()
+      assert.ok(viewportBounds && emptyBounds)
+      assert.ok(
+        Math.abs(
+          emptyBounds.y + emptyBounds.height / 2 - viewportBounds.y - viewportBounds.height / 2
+        ) < 1
+      )
+      assert.ok(
+        Math.abs(
+          emptyBounds.x + emptyBounds.width / 2 - viewportBounds.x - viewportBounds.width / 2
+        ) < 1
+      )
+      await expect(page.getByTestId('browser-start-page').getByRole('button')).toHaveCount(0)
       await expect(page.getByRole('button', { name: '关闭 新标签页', exact: true })).toHaveCount(0)
-      await page.getByRole('button', { name: '输入网址开始浏览', exact: true }).click()
+      await page.getByRole('textbox', { name: '网址', exact: true }).click()
       await expect(page.getByRole('textbox', { name: '网址', exact: true })).toBeFocused()
       assert.deepEqual(
         await page.evaluate(() =>
@@ -1434,13 +2016,9 @@ test(
         []
       )
       await page.getByRole('button', { name: 'English', exact: true }).click()
-      await expect(
-        page.getByRole('tab', { name: 'New tab', exact: true, selected: true })
-      ).toBeVisible()
-      await expect(
-        page.getByRole('heading', { name: 'Welcome to the built-in browser' })
-      ).toBeVisible()
-      await expect(page.getByText('CDP automation', { exact: true })).toBeVisible()
+      await expect(page.getByTestId('browser-workspace').getByRole('tablist')).toHaveCount(0)
+      await expect(page.getByText('Browse the web in your task', { exact: true })).toBeVisible()
+      await expect(page.getByText('CDP automation', { exact: true })).toHaveCount(0)
     } finally {
       await browser.close()
       await server.close()
@@ -1452,20 +2030,21 @@ test(
   'blank webpage tabs share the start page without a native viewport covering it',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
       await page.goto(
         new URL('/features/browser/browser.render.fixture.html', server.resolvedUrls!.local[0]).href
       )
-      await page.getByRole('tab', { name: 'First' }).waitFor()
+      await expect(page.getByRole('button', { name: '刷新', exact: true })).toBeEnabled()
       await page.evaluate(() =>
         (window as unknown as { emitBrowserSnapshot(url: string): void }).emitBrowserSnapshot(
           'about:blank'
@@ -1510,30 +2089,28 @@ test(
 )
 
 test(
-  'closing the last webpage returns to the browser start page',
+  'an empty active webpage returns to guidance without page tab controls',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
       await page.goto(
         new URL('/features/browser/browser.render.fixture.html', server.resolvedUrls!.local[0]).href
       )
       await expect(page.getByTestId('browser-start-page')).toHaveCount(0)
-      await page.getByRole('tab', { name: 'First' }).hover()
-      await page.getByRole('button', { name: '关闭 First', exact: true }).click()
-      await page.getByRole('tab', { name: 'Second' }).hover()
-      await page.getByRole('button', { name: '关闭 Second', exact: true }).click()
-      await expect(
-        page.getByRole('tab', { name: '新标签页', exact: true, selected: true })
-      ).toBeVisible()
+      await page.evaluate(() =>
+        (window as unknown as { emitBrowserSnapshot(url: string): void }).emitBrowserSnapshot('')
+      )
+      await expect(page.getByTestId('browser-workspace').getByRole('tablist')).toHaveCount(0)
       await expect(page.getByTestId('browser-start-page')).toBeVisible()
     } finally {
       await browser.close()
@@ -1546,14 +2123,15 @@ test(
   'sidecar tab switch resizes the new target even at unchanged viewport dimensions',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
       await page.goto(
@@ -1590,14 +2168,15 @@ test(
   'sidecar tab switch does not forward the previous tab key release or composition commit',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
       await page.goto(
@@ -1615,7 +2194,7 @@ test(
       await page.evaluate(() =>
         (window as unknown as { selectBrowserTab(tabId: string): void }).selectBrowserTab('second')
       )
-      await page.getByRole('tab', { name: 'Second', selected: true }).waitFor()
+      await expect(editable).toBeVisible()
       await page.keyboard.up('Shift')
       assert.deepEqual(
         await page.evaluate(() =>
@@ -1628,7 +2207,7 @@ test(
       await page.evaluate(() =>
         (window as unknown as { selectBrowserTab(tabId: string): void }).selectBrowserTab('first')
       )
-      await page.getByRole('tab', { name: 'First', selected: true }).waitFor()
+      await expect(editable).toBeVisible()
       await editable.focus()
       await editable.evaluate((element) => {
         element.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true, data: '' }))
@@ -1646,7 +2225,7 @@ test(
       await page.evaluate(() =>
         (window as unknown as { selectBrowserTab(tabId: string): void }).selectBrowserTab('second')
       )
-      await page.getByRole('tab', { name: 'Second', selected: true }).waitFor()
+      await expect(editable).toBeVisible()
       await editable.evaluate((element) =>
         element.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '文' }))
       )
@@ -1673,14 +2252,15 @@ test(
   'sidecar image decode failure remains user-visible after frame acknowledgement',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
       await page.goto(
@@ -1705,7 +2285,7 @@ test(
       await page.waitForFunction(
         () => (window as unknown as { frameAcks: unknown[] }).frameAcks.length === 1
       )
-      await page.getByTestId('browser-workspace').getByRole('alert').waitFor()
+      await page.locator('.vds-toaster').getByRole('alert').waitFor()
     } finally {
       await browser.close()
       await server.close()
@@ -1713,45 +2293,51 @@ test(
   }
 )
 
-test('blank Electron tab title uses localized new-tab label', { timeout: 60_000 }, async () => {
-  const server = await createServer({
-    configFile: false,
-    root: ROOT,
-    plugins: [react()],
-    server: { host: '127.0.0.1', port: 0 },
-  })
-  await server.listen()
-  const browser = await chromium.launch()
-  try {
-    const page = await browser.newPage()
-    await page.goto(
-      new URL(
-        '/features/browser/browser.render.fixture.html?blank-title',
-        server.resolvedUrls!.local[0]
-      ).href
-    )
-    const tab = page.getByTestId('browser-workspace').getByRole('tab', { selected: true })
-    await tab.getByText('新标签页').waitFor()
-    await page.getByRole('button', { name: 'English' }).click()
-    await tab.getByText('New tab').waitFor()
-  } finally {
-    await browser.close()
-    await server.close()
-  }
-})
-
 test(
-  'first navigation keeps the typed address while its new native tab has not committed',
+  'blank Electron target uses localized guidance instead of a tab label',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
+    try {
+      const page = await browser.newPage()
+      await page.goto(
+        new URL(
+          '/features/browser/browser.render.fixture.html?blank-title',
+          server.resolvedUrls!.local[0]
+        ).href
+      )
+      await expect(page.getByTestId('browser-start-page')).toBeVisible()
+      await expect(page.getByTestId('browser-workspace').getByRole('tablist')).toHaveCount(0)
+      await page.getByRole('button', { name: 'English' }).click()
+      await expect(page.getByText('Browse the web in your task', { exact: true })).toBeVisible()
+    } finally {
+      await browser.close()
+      await server.close()
+    }
+  }
+)
+
+test(
+  'first navigation keeps the typed address while its new native tab has not committed',
+  { timeout: 60_000 },
+  async () => {
+    const server = await servers.create({
+      cacheKey: 'browser',
+      configFile: false,
+      root: ROOT,
+      plugins: [react()],
+      server: { host: '127.0.0.1', port: 0 },
+    })
+    await server.listen()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
       await page.goto(
@@ -1763,7 +2349,7 @@ test(
       const address = page.getByRole('textbox', { name: '网址' })
       await address.fill('example.com')
       await address.press('Enter')
-      await page.getByTestId('browser-workspace').getByRole('tab', { selected: true }).waitFor()
+      await expect(page.getByTestId('browser-workspace').getByRole('tablist')).toHaveCount(0)
       await page.evaluate(
         () =>
           new Promise<void>((resolve) =>
@@ -1772,7 +2358,7 @@ test(
       )
       assert.equal(await address.inputValue(), 'example.com')
       await page.evaluate(() => (window as unknown as { finishOpen(): void }).finishOpen())
-      await page.getByTestId('browser-workspace').getByRole('tab', { selected: true }).waitFor()
+      await expect(page.getByTestId('browser-workspace').getByRole('tablist')).toHaveCount(0)
       await page.waitForFunction(
         () =>
           document.querySelector<HTMLInputElement>('input[aria-label="网址"]')?.value ===
@@ -1789,14 +2375,15 @@ test(
   'editing the address during a first navigation survives its completion',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
       await page.goto(
@@ -1808,7 +2395,7 @@ test(
       const address = page.getByRole('textbox', { name: '网址' })
       await address.fill('example.com')
       await address.press('Enter')
-      await page.getByTestId('browser-workspace').getByRole('tab', { selected: true }).waitFor()
+      await expect(page.getByTestId('browser-workspace').getByRole('tablist')).toHaveCount(0)
       await address.fill('another.example')
       await page.evaluate(() => (window as unknown as { finishOpen(): void }).finishOpen())
       await page.waitForFunction(() =>
@@ -1829,14 +2416,15 @@ test(
   { timeout: 60_000 },
   async () => {
     assert.ok(existsSync(path.join(ROOT, 'features/browser/Browser.tsx')), 'browser UI must exist')
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
       page.setDefaultTimeout(5000)
@@ -1844,7 +2432,7 @@ test(
         new URL('/features/browser/browser.render.fixture.html', server.resolvedUrls!.local[0]).href
       )
       assert.equal(await page.getByTestId('contribution').textContent(), '')
-      await page.getByRole('tab', { name: 'First' }).waitFor()
+      await expect(page.getByRole('button', { name: '刷新', exact: true })).toBeEnabled()
       await page.getByTestId('browser-viewport').evaluate((element) => {
         element.style.height = '300px'
       })
@@ -1980,11 +2568,7 @@ test(
             .filter((command) => command.kind === 'bounds')
             .at(-1)?.visible === true
       )
-      await page.getByRole('tab', { name: 'First' }).focus()
-      await page.getByRole('tab', { name: 'First' }).press('ArrowRight')
-      await page.waitForFunction(() => document.activeElement?.textContent?.includes('Second'))
-      await page.getByRole('tab', { name: 'Second' }).press('ArrowLeft')
-      await page.waitForFunction(() => document.activeElement?.textContent?.includes('First'))
+      await expect(page.getByTestId('browser-workspace').getByRole('tablist')).toHaveCount(0)
       await page.getByRole('textbox', { name: '网址' }).fill('example.com')
       await page.getByRole('textbox', { name: '网址' }).press('Enter')
       await page.getByRole('button', { name: '后退', exact: true }).click()
@@ -2001,25 +2585,18 @@ test(
         (window as unknown as { menuAction(actionId: string): void }).menuAction('browser.devtools')
       )
       assert.equal(await page.getByTestId('browser-workspace').getByRole('switch').count(), 0)
-      await page.getByRole('tab', { name: 'Second' }).click()
-      await page.getByRole('button', { name: '关闭 Second' }).click()
-      await page.getByRole('button', { name: '打开新的标签页' }).click()
+      await expect(page.getByRole('button', { name: '打开新的标签页' })).toHaveCount(0)
       const commands = await page.evaluate(() =>
         (window as unknown as { commands: { kind: string }[] }).commands.filter(
           (command) => command.kind !== 'bounds'
         )
       )
       assert.deepEqual(commands, [
-        { kind: 'select', tabId: 'second' },
-        { kind: 'select', tabId: 'first' },
         { kind: 'navigate', tabId: 'first', input: 'example.com' },
         { kind: 'back', tabId: 'first' },
         { kind: 'forward', tabId: 'first' },
         { kind: 'reload', tabId: 'first' },
         { kind: 'devtools', tabId: 'first', open: true },
-        { kind: 'select', tabId: 'second' },
-        { kind: 'close', tabId: 'second' },
-        { kind: 'open' },
       ])
       await page.getByRole('button', { name: 'English' }).click()
       assert.equal(await page.getByTestId('contribution').textContent(), '')
@@ -2042,16 +2619,16 @@ test(
       assert.equal(unmounted?.kind, 'bounds')
       assert.equal(unmounted?.visible, false)
       await page.goto(
-        new URL('/features/browser/browser.render.fixture.html?slow', server.resolvedUrls!.local[0])
-          .href
+        new URL(
+          '/features/browser/browser.render.fixture.html?pending-open',
+          server.resolvedUrls!.local[0]
+        ).href
       )
-      await page.getByRole('button', { name: '打开新的标签页' }).click()
-      assert.equal(await page.getByRole('button', { name: '关闭 First' }).isDisabled(), true)
-      assert.equal(await page.getByRole('tab', { name: 'Second' }).isDisabled(), true)
+      await page.getByRole('textbox', { name: '网址' }).fill('example.org')
+      await page.getByRole('textbox', { name: '网址' }).press('Enter')
+      await expect(page.getByRole('button', { name: '更多浏览器功能' })).toBeDisabled()
       await page.evaluate(() => (window as unknown as { finishOpen(): void }).finishOpen())
-      await page.getByRole('tab', { name: 'First' }).hover()
-      await page.getByRole('button', { name: '关闭 First' }).click()
-      await page.getByRole('tab', { name: 'First' }).waitFor({ state: 'detached' })
+      await expect(page.getByRole('button', { name: '更多浏览器功能' })).toBeEnabled()
       await page.goto(
         new URL('/features/browser/browser.render.fixture.html?web', server.resolvedUrls!.local[0])
           .href
@@ -2061,7 +2638,7 @@ test(
         .getByRole('alert')
         .filter({ hasText: '内置浏览器仅在桌面端可用。' })
         .waitFor()
-      assert.equal(await page.getByRole('button', { name: '打开新的标签页' }).isDisabled(), true)
+      await expect(page.getByRole('button', { name: '更多浏览器功能' })).toBeDisabled()
     } finally {
       await browser.close()
       await server.close()
@@ -2073,14 +2650,15 @@ test(
   'address navigation can replace a pending request without stale completion resetting it',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
       await page.goto(
@@ -2123,14 +2701,15 @@ test(
   'incoming page snapshots do not overwrite an address being edited',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
       await page.goto(
@@ -2161,14 +2740,15 @@ test(
   'address bar suggests local history and requires explicit consent before web search',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
       await page.goto(
@@ -2204,7 +2784,9 @@ test(
           (command) => command.kind === 'navigate' && command.input === 'https://example.org/paper'
         )
       )
+      await expect(address).toHaveValue('https://example.com/')
       await address.fill('private research phrase')
+      await expect(address).toHaveValue('private research phrase')
       await page
         .frameLocator('[data-suggestions-fixture]')
         .getByRole('button', { name: /在 Google 搜索/ })
@@ -2256,14 +2838,15 @@ test(
   'address suggestions support Escape and ArrowDown plus Enter without submitting the typed query',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
       await page.goto(
@@ -2290,7 +2873,11 @@ test(
       assert.equal(await address.inputValue(), 'Paper')
       await fillSuggestions('Paper ')
       await address.press('ArrowDown')
-      await expect(option).toBeFocused()
+      await expect(
+        page
+          .frameLocator('[data-suggestions-fixture]')
+          .getByRole('option', { name: /Paper Example/ })
+      ).toBeFocused()
       await page
         .frameLocator('[data-suggestions-fixture]')
         .getByRole('option', { name: /Paper Example/ })
@@ -2327,14 +2914,15 @@ test(
   'late history results never replace suggestions for a newer address query',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
       await page.goto(
@@ -2378,14 +2966,15 @@ test(
   'history no-param menu action opens its own section even with no active webpage',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
       await page.goto(
@@ -2408,14 +2997,21 @@ test(
         (window as unknown as { menuAction(action: string): void }).menuAction('browser.history')
       )
       await expect(page.getByTestId('account-settings-browser-history')).toBeVisible()
-      await expect(page.getByRole('heading', { name: '历史记录', exact: true })).toBeVisible()
+      await expect(page.getByRole('navigation', { name: '面包屑导航', exact: true })).toContainText(
+        '浏览历史'
+      )
       await expect(page.getByTestId('browser-settings-cdp')).toHaveCount(0)
       await expect(page.getByTestId('browser-settings-history')).toHaveCount(1)
       await expect(page.getByText('Paper Example')).toBeVisible()
       await page.getByRole('button', { name: 'English' }).click()
-      await expect(page.getByRole('heading', { name: 'History', exact: true })).toBeVisible()
-      await page.getByRole('button', { name: 'Back to browser settings' }).click()
-      await expect(page.getByTestId('browser-settings-cdp')).toBeVisible()
+      await expect(page.getByRole('navigation', { name: 'Breadcrumb', exact: true })).toContainText(
+        'Browsing history'
+      )
+      await page.getByRole('link', { name: 'Browser settings', exact: true }).click()
+      await expect(page.getByTestId('browser-history-management')).toBeVisible()
+      await expect(
+        page.getByRole('button', { name: 'Advanced settings', exact: true })
+      ).toHaveCount(0)
     } finally {
       await browser.close()
       await server.close()
@@ -2427,26 +3023,28 @@ test(
   'browser settings control the Main-owned CDP endpoint without rendering its secret',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
       await page.goto(
         new URL(
-          '/features/browser/browser.render.fixture.html?settings',
+          '/features/browser/browser.render.fixture.html?settings&advanced',
           server.resolvedUrls!.local[0]
         ).href
       )
+      await page.getByRole('button', { name: '高级设置', exact: true }).click()
       const settings = page.getByTestId('account-settings-browser')
       await settings
         .getByText(
-          'Agent 导航的网页使用独立会话，禁止下载且不继承手动浏览的登录状态；其他手动标签的下载不受影响。'
+          '允许产品 Agent 在授权后读取内置浏览器网页。与外部 Playwright/CDP 访问不同，不影响手动浏览。首次配置默认开启并允许 Bing 读取和导航；已有设置保持不变。'
         )
         .waitFor()
       await expect(settings.getByText('外部浏览器自动化（CDP）', { exact: true })).toBeVisible()
@@ -2472,7 +3070,7 @@ test(
       await settings.getByRole('switch', { name: 'Enable browser automation' }).waitFor()
       await settings
         .getByText(
-          'Pages navigated by Agent use a separate session that blocks downloads and does not inherit manual browsing sign-ins. Downloads in other manual tabs are unaffected.'
+          'Allow the product Agent to read built-in browser pages after authorization. Separate from external Playwright/CDP access; manual browsing is unchanged. Initially enabled with Bing reading and navigation allowed; existing settings are preserved.'
         )
         .waitFor()
     } finally {
@@ -2486,25 +3084,27 @@ test(
   'browser settings reopen returns to the browser only after the typed bridge succeeds',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
       await page.goto(
         new URL(
-          '/features/browser/browser.render.fixture.html?settings',
+          '/features/browser/browser.render.fixture.html?settings&history',
           server.resolvedUrls!.local[0]
         ).href
       )
-      const settings = page.getByTestId('account-settings-browser')
+      const settings = page.getByTestId('account-settings-browser-history')
       await settings.getByText('Paper Example').waitFor()
-      await settings.getByRole('button', { name: '重新打开' }).click()
+      await settings.getByRole('button', { name: '更多历史记录操作' }).click()
+      await page.getByRole('menuitem', { name: '打开页面', exact: true }).click()
       await expect(settings).toHaveCount(0)
       await expect(page.getByTestId('browser-workspace')).toBeVisible()
       const requests = await page.evaluate(
@@ -2522,26 +3122,25 @@ test(
   'late history reopen does not replace a settings page selected after the request',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
       await page.goto(
         new URL(
-          '/features/browser/browser.render.fixture.html?settings&pending-history-reopen',
+          '/features/browser/browser.render.fixture.html?settings&history&pending-history-reopen',
           server.resolvedUrls!.local[0]
         ).href
       )
-      await page
-        .getByTestId('browser-settings-history')
-        .getByRole('button', { name: '重新打开' })
-        .click()
+      await page.getByRole('button', { name: '更多历史记录操作' }).click()
+      await page.getByRole('menuitem', { name: '打开页面', exact: true }).click()
       await page.waitForFunction(
         () =>
           typeof (window as unknown as { finishHistoryReopen?: () => void }).finishHistoryReopen ===
@@ -2589,30 +3188,40 @@ test(
   'browser settings search, delete and clear through the typed bridge',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
       await page.goto(
         new URL(
-          '/features/browser/browser.render.fixture.html?settings',
+          '/features/browser/browser.render.fixture.html?settings&history',
           server.resolvedUrls!.local[0]
         ).href
       )
-      const settings = page.getByTestId('account-settings-browser')
+      const settings = page.getByTestId('account-settings-browser-history')
       await settings.getByText('Paper Example').waitFor()
       await settings.getByRole('searchbox', { name: '搜索标题或网址' }).fill('paper')
-      await settings.getByRole('button', { name: '删除记录' }).click()
-      await settings.getByText('没有浏览记录。').waitFor()
-      await settings.getByRole('button', { name: '清除' }).click()
-      await page.getByRole('alertdialog').getByRole('button', { name: '清除' }).click()
-      await settings.getByText('浏览数据已清除。').waitFor()
+      await settings.getByRole('button', { name: '更多历史记录操作' }).click()
+      await page.getByRole('menuitem', { name: '删除记录' }).click()
+      await expect(
+        settings.getByText(browserZh.settings.historyEmpty, { exact: true })
+      ).toBeVisible()
+      await expect(settings.getByRole('searchbox', { name: '搜索标题或网址' })).toHaveValue('paper')
+      await expect(settings.getByTestId('browser-history-list')).toHaveCount(0)
+      await openClearDialog(page)
+      await page.getByRole('combobox', { name: '历史记录时间范围', exact: true }).click()
+      await page.getByRole('option', { name: '全部历史', exact: true }).click()
+      await page.getByRole('alertdialog').getByRole('button', { name: '清除所选数据' }).click()
+      await expect(
+        page.getByRole('status').filter({ hasText: browserZh.settings.clearDone })
+      ).toBeVisible()
       const requests = await page.evaluate(() => ({
         history: (window as unknown as { historyRequests: unknown[] }).historyRequests,
         data: (window as unknown as { dataRequests: unknown[] }).dataRequests,
@@ -2620,7 +3229,7 @@ test(
       assert.ok(
         requests.history.some((request: unknown) => (request as { kind: string }).kind === 'delete')
       )
-      assert.equal((requests.data[0] as { kind: string }).kind, 'clear-history')
+      assert.deepEqual(requests.data[0], { kind: 'clear-selected', types: ['history'] })
     } finally {
       await browser.close()
       await server.close()
@@ -2632,39 +3241,37 @@ test(
   'browser settings select data categories without a time range for site data',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
       await page.goto(
         new URL(
-          '/features/browser/browser.render.fixture.html?settings',
+          '/features/browser/browser.render.fixture.html?settings&history',
           server.resolvedUrls!.local[0]
         ).href
       )
-      const data = page.getByTestId('browser-settings-data')
-      await data.getByRole('combobox', { name: '清除范围' }).click()
-      await page.getByRole('option', { name: '按类型清除（全部时间）' }).click()
-      await data
-        .getByText(
-          '按站点或类型清理只作用于手动浏览的持久会话，但会关闭该会话中的全部网页标签。本地临时网页和 Agent 独立会话不受影响。'
-        )
-        .waitFor()
-      assert.equal(await data.getByRole('button', { name: '清除' }).isDisabled(), true)
-      await data.getByRole('checkbox', { name: 'Cookie' }).click()
+      await page.getByRole('button', { name: '清除浏览数据', exact: true }).click()
+      const data = page.getByRole('alertdialog')
+      await expect(data.getByRole('combobox', { name: '历史记录时间范围' })).toBeVisible()
+      assert.equal(await data.getByRole('button', { name: '清除所选数据' }).isDisabled(), true)
+      await data.getByRole('checkbox', { name: 'Cookie 和网站存储' }).click()
       await data.getByRole('checkbox', { name: '缓存' }).click()
-      await data.getByRole('button', { name: '清除' }).click()
-      await page.getByRole('alertdialog').getByRole('button', { name: '清除' }).click()
+      await data.getByRole('button', { name: '清除所选数据' }).click()
       const requests = await page.evaluate(
         () => (window as unknown as { dataRequests: unknown[] }).dataRequests
       )
-      assert.deepEqual(requests.at(-1), { kind: 'clear-selected', types: ['cookies', 'cache'] })
+      assert.deepEqual(requests.at(-1), {
+        kind: 'clear-selected',
+        types: ['cookies', 'storage', 'cache'],
+      })
     } finally {
       await browser.close()
       await server.close()
@@ -2676,28 +3283,28 @@ test(
   'browser settings show history and clear failures beside their controls',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
       await page.goto(
         new URL(
-          '/features/browser/browser.render.fixture.html?settings&history-query-error&data-error',
+          '/features/browser/browser.render.fixture.html?settings&history&history-query-error&data-error',
           server.resolvedUrls!.local[0]
         ).href
       )
       const history = page.getByTestId('browser-settings-history')
-      const data = page.getByTestId('browser-settings-data')
       await expect(history.getByRole('alert')).toHaveText('浏览器操作失败，请重试。')
-      await data.getByRole('button', { name: '清除' }).click()
-      await page.getByRole('alertdialog').getByRole('button', { name: '清除' }).click()
-      await expect(data.getByRole('alert')).toHaveText('浏览器操作失败，请重试。')
+      await openClearDialog(page)
+      await page.getByRole('alertdialog').getByRole('button', { name: '清除所选数据' }).click()
+      await expect(page.getByTestId('browser-clear-error')).toHaveText('浏览器操作失败，请重试。')
       assert.equal(await page.getByTestId('browser-settings-cdp').getByRole('alert').count(), 0)
     } finally {
       await browser.close()
@@ -2707,26 +3314,28 @@ test(
 )
 
 test('browser history action failure stays in the history card', { timeout: 60_000 }, async () => {
-  const server = await createServer({
+  const server = await servers.create({
+    cacheKey: 'browser',
     configFile: false,
     root: ROOT,
     plugins: [react()],
     server: { host: '127.0.0.1', port: 0 },
   })
   await server.listen()
-  const browser = await chromium.launch()
+  const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
   try {
     const page = await browser.newPage()
     await page.goto(
       new URL(
-        '/features/browser/browser.render.fixture.html?settings&history-action-error',
+        '/features/browser/browser.render.fixture.html?settings&history&history-action-error',
         server.resolvedUrls!.local[0]
       ).href
     )
     const history = page.getByTestId('browser-settings-history')
-    await history.getByRole('button', { name: '重新打开' }).click()
+    await history.getByRole('button', { name: '更多历史记录操作' }).click()
+    await page.getByRole('menuitem', { name: '打开页面', exact: true }).click()
     await expect(history.getByRole('alert')).toHaveText('浏览器操作失败，请重试。')
-    await expect(page.getByTestId('account-settings-browser')).toBeVisible()
+    await expect(page.getByTestId('account-settings-browser-history')).toBeVisible()
     await expect(page.getByTestId('browser-workspace')).toHaveCount(0)
     assert.equal(await page.getByTestId('browser-settings-cdp').getByRole('alert').count(), 0)
   } finally {
@@ -2739,19 +3348,20 @@ test(
   'failed history search hides records from the previous query',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
       await page.goto(
         new URL(
-          '/features/browser/browser.render.fixture.html?settings&history-query-error-after-search',
+          '/features/browser/browser.render.fixture.html?settings&history&history-query-error-after-search',
           server.resolvedUrls!.local[0]
         ).href
       )
@@ -2774,19 +3384,20 @@ test(
   'returning to a prior history query does not reuse a successful stale result',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
       await page.goto(
         new URL(
-          '/features/browser/browser.render.fixture.html?settings&history-repeat-error',
+          '/features/browser/browser.render.fixture.html?settings&history&history-repeat-error',
           server.resolvedUrls!.local[0]
         ).href
       )
@@ -2810,22 +3421,24 @@ test(
   'browser settings manage Agent-only exact-origin rules without a persistent submit grant',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
       await page.goto(
         new URL(
-          '/features/browser/browser.render.fixture.html?settings',
+          '/features/browser/browser.render.fixture.html?settings&advanced',
           server.resolvedUrls!.local[0]
         ).href
       )
+      await page.getByRole('button', { name: '高级设置', exact: true }).click()
       const rules = page.getByTestId('browser-settings-agent-sites')
       await rules.getByText('暂无 Agent 网站规则。').waitFor()
       const agentUse = rules.getByRole('switch', { name: 'Agent Browser Use' })
@@ -2882,22 +3495,24 @@ test(
   'failed Agent Browser Use disable refreshes the authoritative off state',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'browser',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
       await page.goto(
         new URL(
-          '/features/browser/browser.render.fixture.html?settings&pending-agent-disable',
+          '/features/browser/browser.render.fixture.html?settings&advanced&pending-agent-disable',
           server.resolvedUrls!.local[0]
         ).href
       )
+      await page.getByRole('button', { name: '高级设置', exact: true }).click()
       const rules = page.getByTestId('browser-settings-agent-sites')
       const agentUse = rules.getByRole('switch', { name: 'Agent Browser Use' })
       await agentUse.click()

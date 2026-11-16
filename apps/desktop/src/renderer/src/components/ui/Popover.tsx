@@ -1,5 +1,6 @@
+import type * as React from 'react'
 import { type HTMLAttributes, type ReactNode, type RefObject } from 'react'
-import { Portal } from './portal'
+import { Portal, usePortalOverlay } from './portal'
 
 import { popoverContentClassName } from './classes'
 import {
@@ -19,6 +20,7 @@ const popoverContext = createOpenContext('Popover')
 export type PopoverProps = OpenRootProps
 
 export interface PopoverContentProps extends HTMLAttributes<HTMLDivElement> {
+  hosted?: boolean
   horizontalAnchorRef?: RefObject<HTMLElement | null>
   position?: FloatingPosition
   autoFocus?: boolean
@@ -29,17 +31,28 @@ export interface PopoverContentProps extends HTMLAttributes<HTMLDivElement> {
   side?: FloatingSide
 }
 
-export function Popover(props: PopoverProps): JSX.Element {
+export function Popover(props: PopoverProps): React.JSX.Element {
   return <popoverContext.Provider {...props} />
 }
 
 export function PopoverTrigger(
   props: HTMLAttributes<HTMLElement> & { asChild?: boolean; children?: ReactNode }
-): JSX.Element {
+): React.JSX.Element {
   return renderTrigger(popoverContext.useOpenContext(), props)
 }
 
 export function PopoverContent({
+  hosted = false,
+  ...props
+}: PopoverContentProps): React.JSX.Element | null {
+  const renderOverlay = usePortalOverlay()
+  const { open } = popoverContext.useOpenContext()
+  if (!open) return null
+  const content = <PopoverContentView {...props} />
+  return <>{hosted && renderOverlay ? renderOverlay(content) : content}</>
+}
+
+function PopoverContentView({
   align = 'start',
   className,
   side = 'auto',
@@ -49,7 +62,7 @@ export function PopoverContent({
   trapFocus = false,
   horizontalAnchorRef,
   ...props
-}: PopoverContentProps): JSX.Element | null {
+}: PopoverContentProps): React.JSX.Element | null {
   const context = popoverContext.useOpenContext()
   const { contentId, contentRef, open } = context
   const positionedStyle = useFloatingContentStyle(
@@ -59,7 +72,13 @@ export function PopoverContent({
     align,
     horizontalAnchorRef
   )
-  useFocusScope(contentRef, open && positionedStyle?.visibility !== 'hidden', trapFocus, autoFocus)
+  useFocusScope(
+    contentRef,
+    open && positionedStyle?.visibility !== 'hidden',
+    trapFocus,
+    autoFocus,
+    context.anchorRef
+  )
   if (!open) return null
   return (
     <Portal>
@@ -76,6 +95,6 @@ export function PopoverContent({
   )
 }
 
-export const PopoverAnchor = ({ children }: { children?: ReactNode }): JSX.Element => (
+export const PopoverAnchor = ({ children }: { children?: ReactNode }): React.JSX.Element => (
   <>{children}</>
 )

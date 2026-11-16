@@ -1,3 +1,4 @@
+import type * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import type { ButtonHTMLAttributes, HTMLAttributes, ReactNode } from 'react'
 import { forwardRef, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
@@ -7,6 +8,7 @@ import { IconFont } from '../primitive/Iconfont'
 import { toastClassName, toastStyleClassName } from './classes'
 import { ToastContext } from './toastContext'
 import { cx } from './utils'
+import { usePortalDocument } from './portal'
 
 export type ToastTone = 'error' | 'info' | 'success' | 'warning'
 export type ToastDuration = false | number
@@ -126,7 +128,7 @@ export function useToast(): ToastContextValue {
   return context
 }
 
-export function ToastProvider({ children, defaultToasts = [] }: ToastProviderProps): JSX.Element {
+export function ToastProvider({ children, defaultToasts = [] }: ToastProviderProps): React.JSX.Element {
   const [toasts, setToasts] = useState<ToastData[]>(defaultToasts)
   const toastsRef = useRef(toasts)
 
@@ -174,6 +176,7 @@ export const Toaster = forwardRef<HTMLOListElement, ToasterProps>(
     ref
   ) => {
     const context = useContext(ToastContext)
+    const document = usePortalDocument()
     const controlled = toasts !== undefined
     const currentToasts = toasts ?? context?.toasts ?? []
     const dismiss = useMemo<((id: string) => void) | undefined>(() => {

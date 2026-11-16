@@ -24,6 +24,7 @@ import {
   readPdfeTarget,
   isPdfeTargetUrl,
   pdfeDockWidth,
+  pdfeWindowWidth,
   type PdfeDock,
   type PdfeSurface,
   type PdfeTarget,
@@ -258,7 +259,7 @@ async function start(): Promise<void> {
       ...options,
       ...(role === 'controls'
         ? { ...PDFE_CONTROL_SIZE, titleBarStyle: 'default', trafficLightPosition: undefined }
-        : {}),
+        : { width: pdfeWindowWidth(screen.getPrimaryDisplay().workAreaSize.width) }),
       title: translate(role === 'product' ? 'productWindowTitle' : 'title'),
       webPreferences: {
         ...options.webPreferences,

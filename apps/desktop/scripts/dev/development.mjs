@@ -5,13 +5,36 @@ import { fileURLToPath } from 'node:url'
 import { resolveConfig } from 'electron-vite'
 import { build } from 'vite'
 import { createHash } from 'node:crypto'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 
 const DESKTOP_ROOT = fileURLToPath(new URL('../..', import.meta.url))
 const CANDIDATE_PREFIX = 'scholarseed-development-'
-const BUILD_TARGETS = ['main', 'preload']
+const CONFIGURATION_CACHE_PARTS = ['node_modules', '.cache', 'scholarseed', 'development']
+// Native menu/overlay views load file URLs even while the main UI uses Vite HMR.
+// Publish their renderer resources in the same transaction as main and preload.
+const BUILD_TARGETS = ['main', 'preload', 'renderer']
+const LIVE_RENDERER_ENTRY = 'index'
 const CONFIGURATION_ENVIRONMENT = ['NODE_ENV', 'VITE_USER_NODE_ENV', 'BROWSER', 'BROWSER_ARGS', 'ELECTRON_MAJOR_VER', 'ELECTRON_EXEC_PATH']
 const candidates = new WeakMap()
 const publications = new Set()
+const execute = promisify(execFile)
+
+// Keep Rollup's renderer graph out of the long-lived development supervisor.
+export async function compileLocalRenderer(root, configFile, directory) {
+  const resolved = await resolveConfig({ root, configFile, mode: 'development' }, 'serve', 'development')
+  const configuration = resolved.config.renderer
+  const options = configuration.build.rolldownOptions
+  await build({ ...configuration, build: {
+    ...configuration.build,
+    rolldownOptions: {
+      ...options,
+      input: Object.fromEntries(Object.entries(options.input)
+        .filter(([name]) => name !== LIVE_RENDERER_ENTRY))
+    },
+    outDir: directory, emptyOutDir: true, watch: null
+  } })
+}
 
 export class DevelopmentPublicationRejected extends Error {
   constructor(cause) {
@@ -100,23 +123,34 @@ export async function compileCandidate({ desktopRoot = DESKTOP_ROOT, parentDirec
   const parent = await fs.realpath(parentDirectory)
   const directory = await fs.mkdtemp(path.join(parent, CANDIDATE_PREFIX))
   const protectedDirectory = path.join(directory, 'protected')
-  const configFile = path.join(directory, 'candidate.config.mjs')
+  let configurationDirectory
   const previousEnvironment = new Map(CONFIGURATION_ENVIRONMENT.map(name => [name, process.env[name]]))
   try {
+    const configurationCache = path.join(root, ...CONFIGURATION_CACHE_PARTS)
+    await fs.mkdir(configurationCache, { recursive: true })
+    configurationDirectory = await fs.mkdtemp(path.join(configurationCache, CANDIDATE_PREFIX))
+    const configFile = path.join(configurationDirectory, 'candidate.config.mjs')
     await fs.writeFile(configFile,
       `import { desktopConfiguration } from ${JSON.stringify(path.join(root, 'electron.vite.config.ts'))}\n` +
       `export default ({ command, mode }) => desktopConfiguration({ command, mode, protectedOutputRoot: ${JSON.stringify(protectedDirectory)} })\n`,
       { flag: 'wx', mode: 0o600 })
     const resolved = await resolveConfig({ root, configFile, mode: 'development' }, 'serve', 'development')
-    if (!resolved.config?.main || !resolved.config.preload) throw new Error('development candidate requires main and preload configurations')
+    if (BUILD_TARGETS.some(target => !resolved.config?.[target])) throw new Error('development candidate requires main, preload and renderer configurations')
     for (const target of BUILD_TARGETS) {
+      if (target === 'renderer') {
+        await execute(process.execPath, ['--input-type=module', '-e',
+          `import { compileLocalRenderer } from ${JSON.stringify(import.meta.url)}; await compileLocalRenderer(...process.argv.slice(1))`,
+          root, configFile, path.join(directory, target)], { cwd: root })
+        continue
+      }
       const configuration = resolved.config[target]
       await build({ ...configuration, build: {
-        ...configuration.build, outDir: path.join(directory, target), emptyOutDir: true, watch: null
+        ...configuration.build,
+        outDir: path.join(directory, target), emptyOutDir: true, watch: null
       } })
     }
     await fs.unlink(configFile)
-    const candidate = { directory, main: path.join(directory, 'main'), preload: path.join(directory, 'preload'),
+    const candidate = { directory, main: path.join(directory, 'main'), preload: path.join(directory, 'preload'), renderer: path.join(directory, 'renderer'),
       protected: protectedDirectory, published: false,
       rendererConfig: resolved.config.renderer ? { ...resolved.config.renderer, configFile: false } : undefined }
     const files = await inventory(directory)
@@ -135,6 +169,7 @@ export async function compileCandidate({ desktopRoot = DESKTOP_ROOT, parentDirec
       if (value === undefined) delete process.env[name]
       else process.env[name] = value
     }
+    if (configurationDirectory) await fs.rm(configurationDirectory, { recursive: true, force: true })
   }
 }
 

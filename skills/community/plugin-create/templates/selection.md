@@ -1,10 +1,7 @@
-# 选择与修订流程模板
+# Selection and revision workflow template
 
-把此模板改为用户要求的科研任务，不把模板的样例材料当真实文献。
+Adapt this template to the requested research task. Sample materials are not real literature.
 
-1. 读取用户目标、已给材料和约束。只澄清会改变任务的缺口。
-2. 用实际资料接口取得稳定引用；保留材料映射和预填选择，不制造 ref_id。
-3. 用 scope 卡选择阅读目标，data.choices 仅放真实可选项摘要，正文留在证据文件。
-4. 读取 result.answers 中的 action 和 values.selected；确认后按选择阅读、提取证据。
-5. 用户修订后重新整理完整输入，用新 request_id 开始新一轮，不清空已给材料。
-6. 输出目标相关的结论与原文证据，不以卡片提交成功代替分析完成。
+1. Identify the goal and constraints. Use the actual material interfaces to map real source IDs to option summaries in `data.choices`; keep full content in evidence files and carry forward preselected choices.
+2. Use the scope card to select reading targets. Read `action` and `values.selected` from `result.answers`. After confirmation, read only the selected material and deliver conclusions with evidence.
+3. If the user revises the selection, retain all supplied materials and start a new round with a new request ID.

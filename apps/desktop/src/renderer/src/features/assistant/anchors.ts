@@ -1,7 +1,28 @@
-import type { AnswerAnnotation } from '../../contracts/assistant'
+import type { AnswerAnnotation, AnswerAnnotationCreate } from '../../contracts/assistant'
 import type { ConvItem } from '../../model'
 
 const HASH_PREFIX = 'sha256:'
+
+export function reusableAnswerAnnotation(
+  annotations: readonly AnswerAnnotation[],
+  sessionId: string,
+  answerId: string,
+  input: Pick<
+    AnswerAnnotationCreate,
+    'enqueue' | 'answer_revision' | 'start_utf16' | 'end_utf16' | 'selected_text_hash'
+  >
+): AnswerAnnotation | undefined {
+  if (!input.enqueue) return undefined
+  return annotations.find(
+    (annotation) =>
+      annotation.session_id === sessionId &&
+      annotation.answer_id === answerId &&
+      annotation.answer_revision === input.answer_revision &&
+      annotation.start_utf16 === input.start_utf16 &&
+      annotation.end_utf16 === input.end_utf16 &&
+      annotation.selected_text_hash === input.selected_text_hash
+  )
+}
 
 export const ANSWER_ANNOTATION_LOCATION = {
   AVAILABLE: 'available',

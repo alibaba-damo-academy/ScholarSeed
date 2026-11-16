@@ -1,9 +1,10 @@
 {
   "schema": 2,
   "id": "agentic-search",
-  "version": "1.1.8",
+  "version": "1.1.12",
   "host": ">=0.2.0,<0.4.0",
   "skill": "SKILL.md",
+  "ui": { "compatibility": "2.0", "exports": ["Conversation", "createLiteraturePorts"] },
   "capabilities": [
     "navigation.open",
     "interaction.answer",
@@ -16,6 +17,10 @@
       "slot": "display.literature-search",
       "preview": "components/results.json",
       "actions": [
+        {
+          "id": "open-source",
+          "capability": "navigation.open"
+        },
         {
           "id": "open-results",
           "capability": "navigation.open"

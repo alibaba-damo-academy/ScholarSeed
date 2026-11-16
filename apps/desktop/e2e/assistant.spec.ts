@@ -1897,6 +1897,8 @@ for (const scope of ['resource', 'literature'] as const) {
           await page.evaluate(() => window.getSelection()?.removeAllRanges())
           const responsePromise = page.waitForResponse(response => response.url().endsWith('/api/literature/ai/tasks') && response.request().method() === 'POST')
           await inspector.getByRole('button', { name: label, exact: true }).click()
+          if (action === 'explain')
+            await inspector.getByRole('button', { name: '解释一下', exact: true }).click()
           const response = await responsePromise
           expect(response.status()).toBe(202)
           const request = response.request().postDataJSON()
@@ -1905,18 +1907,20 @@ for (const scope of ['resource', 'literature'] as const) {
           expect(request.text).toBe(sourceText)
           expect(request.quads.length).toBeGreaterThan(0)
           const initial = await response.json()
-          const floating = page.getByRole('dialog', { name: action === 'explain' ? 'AI 解释' : '翻译', exact: true })
-          await expect(floating).toBeVisible()
-          await expect.poll(async () => (await floating.getByRole('status').allTextContents()).includes('已完成')
-            || await floating.getByRole('alert').count() > 0, { timeout: TURN_COMPLETE_TIMEOUT_MS }).toBe(true)
-          if (await floating.getByRole('alert').count()) failures.push(`${kind}: ${await floating.getByRole('alert').innerText()}`)
-          else await expect(floating).toContainText('晶格')
+          const resultName = action === 'explain' ? 'explanation' : 'translation'
+          const result = inspector.getByTestId(`pdf-selection-${resultName}-inline`)
+          const resultContent = result.getByTestId(`pdf-selection-${resultName}-content`)
+          await expect(result).toBeVisible()
+          await expect.poll(async () => Boolean((await resultContent.textContent())?.trim())
+            || await result.getByRole('alert').count() > 0, { timeout: TURN_COMPLETE_TIMEOUT_MS }).toBe(true)
+          if (await result.getByRole('alert').count()) failures.push(`${kind}: ${await result.getByRole('alert').innerText()}`)
+          else await expect(result).toContainText('晶格')
           await testInfo.attach(`personal-pdf-prompt-${action}-evidence`, {
-            body: JSON.stringify({ request, initial, rendered: await floating.innerText() }, null, 2), contentType: 'application/json'
+            body: JSON.stringify({ request, initial, rendered: await result.innerText() }, null, 2), contentType: 'application/json'
           })
           await page.screenshot({ path: join(runtime.artifacts, `personal-pdf-annotation-prompt-${action}.png`) })
-          await floating.getByRole('button', { name: action === 'explain' ? '关闭AI 解释' : '关闭翻译', exact: true }).click()
-          await expect(floating).toHaveCount(0)
+          await page.keyboard.press('Escape')
+          await expect(result).toHaveCount(0)
       }
       }
       expect(failures, 'Real model action failures').toEqual([])

@@ -1,3 +1,4 @@
+import type * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import type {
   ButtonHTMLAttributes,
@@ -239,7 +240,7 @@ export const Command = forwardRef<HTMLDivElement, CommandProps>(
 
 Command.displayName = 'Command'
 
-export function CommandDialog({ children, defaultOpen = false, onOpenChange, open, ...props }: CommandDialogProps): JSX.Element {
+export function CommandDialog({ children, defaultOpen = false, onOpenChange, open, ...props }: CommandDialogProps): React.JSX.Element {
   const { t } = useTranslation('ui')
   const [uncontrolledOpen, setUncontrolledOpen] = useState(defaultOpen)
   const currentOpen = open ?? uncontrolledOpen

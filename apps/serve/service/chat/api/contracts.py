@@ -20,7 +20,6 @@ from service.platform.bridge import (
     ContractDescribe,
 )
 from service.platform.queries import ContractList
-from service.platform.vocabulary import BRIDGE_MAX_REQUEST_BYTES
 
 
 def register_contract_routes(
@@ -36,13 +35,7 @@ def register_contract_routes(
             return JSONResponse({"ok": False, "error": "bridge_access_denied"}, HTTP_403_FORBIDDEN)
         turn_id = live.publication_turn_id
         activity = live.bridge_activity
-        raw = bytearray()
-        async for chunk in request.stream():
-            raw.extend(chunk)
-            if len(raw) > BRIDGE_MAX_REQUEST_BYTES:
-                return JSONResponse(
-                    {"ok": False, "error": "bridge_request_too_large"}, HTTP_400_BAD_REQUEST
-                )
+        raw = await request.body()
         if (
             resolve_caller(live.id) is not live
             or live.publication_turn_id != turn_id

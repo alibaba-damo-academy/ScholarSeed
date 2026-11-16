@@ -3,9 +3,9 @@ import path from 'node:path'
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
 import test, { after } from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { chromium, expect } from '@playwright/test'
+import { chromium, expect, type Page } from '@playwright/test'
 import react from '@vitejs/plugin-react'
-import { createServer, type Plugin } from 'vite'
+import type { Plugin } from 'vite'
 import { renderServers } from '../../../../test-helpers/render.ts'
 import type { DeviceSkillRequest } from '../../../../skills.ts'
 import { WORKSPACE_WINDOW_MINIMUM } from '../../../../window.ts'
@@ -28,16 +28,102 @@ type SkillTestWindow = Window & {
 }
 
 const servers = renderServers({ after })
+type FixtureKind = 'skills' | 'catalog'
+const fixtureUrls: Partial<Record<FixtureKind, Promise<string>>> = {}
+
+function fixtureUrl(kind: FixtureKind = 'skills'): Promise<string> {
+  return (fixtureUrls[kind] ??= (async () => {
+    const server = await servers.create({
+      configFile: false,
+      root: ROOT,
+      plugins: kind === 'skills' ? [fixture(), react()] : [react()],
+      cacheKey: kind,
+      server: { host: '127.0.0.1', port: 0 },
+    })
+    await server.listen()
+    const url = server.resolvedUrls?.local[0]
+    assert.ok(url)
+    return url
+  })())
+}
+
+async function openInstalledSkills(
+  page: Page,
+  source: 'hub' | 'scholarseed' | 'user' = 'scholarseed'
+): Promise<void> {
+  const installed = page.getByTestId('skills-installed')
+  const sourceTab = page.getByTestId(`skills-tab-${source}`)
+  await expect(installed.or(sourceTab).first()).toBeVisible()
+  if (await installed.isVisible()) await installed.click()
+  await sourceTab.click()
+}
+
+async function openSkillMarketplace(page: Page): Promise<void> {
+  const installed = page.getByTestId('skills-installed')
+  const back = page.getByRole('button', { name: '已安装技能', exact: true })
+  await expect(installed.or(back).first()).toBeVisible()
+  if (await back.isVisible()) await back.click()
+}
+
+async function openConnectorScope(page: Page, scope: 'market' | 'mine'): Promise<void> {
+  const target = page.getByRole('button', {
+    name: scope === 'mine' ? /^已添加 \d+$/ : '已添加连接器',
+    exact: true,
+  })
+  const current = page.getByRole('button', {
+    name: scope === 'mine' ? '已添加连接器' : /^已添加 \d+$/,
+    exact: true,
+  })
+  await expect(target.or(current).first()).toBeVisible()
+  if (await target.isVisible()) await target.click()
+}
+
+async function openCenterSection(page: Page, section: '技能' | '连接器'): Promise<void> {
+  const navigation = page.getByTestId('skill-center').getByRole('tab', {
+    name: section,
+    exact: true,
+  })
+  const skillsBack = page.getByRole('button', { name: '已安装技能', exact: true })
+  const connectorsBack = page.getByRole('button', { name: '已添加连接器', exact: true })
+  await expect(navigation.or(skillsBack).or(connectorsBack).first()).toBeVisible()
+  if (await skillsBack.isVisible()) await skillsBack.click()
+  if (await connectorsBack.isVisible()) await connectorsBack.click()
+  await navigation.click()
+}
+
+test(
+  'installed skills expose source filters separately from marketplace navigation',
+  { timeout: 60_000 },
+  async () => {
+    const baseUrl = await fixtureUrl()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
+    try {
+      const page = await browser.newPage({ viewport: VIEWPORT })
+      await page.goto(new URL('/__skills', baseUrl).href)
+      await expect(page.getByRole('tab')).toHaveCount(0)
+      await page.getByTestId('skills-installed').click()
+      await expect(page.getByRole('tab', { name: '来自广场', exact: true })).toBeVisible()
+      for (const tab of await page.getByRole('tab').all()) {
+        await expect(tab).toHaveCSS('font-weight', '400')
+      }
+      const back = page.getByRole('button', { name: '已安装技能', exact: true })
+      await expect(back).toHaveCSS('padding-left', '0px')
+      await expect(back).toHaveCSS('font-weight', '500')
+      await page.getByRole('tab', { name: '系统预置', exact: true }).click()
+      await expect(page.locator('[data-skill-group="user"]')).toHaveCount(0)
+      await page.getByRole('tab', { name: '用户上传', exact: true }).click()
+      await expect(page.locator('[data-skill-group="scholarseed"]')).toHaveCount(0)
+      await page.getByRole('button', { name: '已安装技能', exact: true }).click()
+      await expect(page.getByTestId('skills-installed')).toBeVisible()
+      await expect(page.getByRole('tab')).toHaveCount(0)
+    } finally {
+      await browser.close()
+    }
+  }
+)
 
 test('skill use failures explain their cause, retain input and follow language changes', async () => {
-  const server = await servers.create({
-    configFile: false,
-    root: ROOT,
-    plugins: [fixture(), react()],
-    cacheKey: 'skills',
-    server: { host: '127.0.0.1', port: 0 },
-  })
-  await server.listen()
+  const baseUrl = await fixtureUrl()
   const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
   try {
     const page = await browser.newPage({ viewport: VIEWPORT })
@@ -67,10 +153,8 @@ test('skill use failures explain their cause, retain input and follow language c
           'Skill “skill-0” has no local path or its path format is unsupported. Refresh the skill library and try again; contact support if the problem persists.',
       },
     ]) {
-      await page.goto(
-        new URL('/__skills?useFailure=' + scenario.failure, server.resolvedUrls!.local[0]).href
-      )
-      await page.getByRole('tab', { name: '系统预置', exact: true }).click()
+      await page.goto(new URL('/__skills?useFailure=' + scenario.failure, baseUrl).href)
+      await openInstalledSkills(page)
       await page.getByTestId('skill-view-skill-0').click()
       await page
         .getByTestId('skill-detail')
@@ -95,19 +179,11 @@ test('skill use failures explain their cause, retain input and follow language c
     }
   } finally {
     await browser.close()
-    await server.close()
   }
 })
 
 test('skill task submission preserves Windows extended and UNC paths', async () => {
-  const server = await servers.create({
-    configFile: false,
-    root: ROOT,
-    plugins: [fixture(), react()],
-    cacheKey: 'skills',
-    server: { host: '127.0.0.1', port: 0 },
-  })
-  await server.listen()
+  const baseUrl = await fixtureUrl()
   const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
   try {
     const page = await browser.newPage({ viewport: VIEWPORT })
@@ -117,10 +193,10 @@ test('skill task submission preserves Windows extended and UNC paths', async () 
       String.raw`\\server\share\skills\skill-0\SKILL.md`,
       String.raw`\\?\UNC\server\share\skills\skill-0\SKILL.md`,
     ]) {
-      const address = new URL('/__skills', server.resolvedUrls!.local[0])
+      const address = new URL('/__skills', baseUrl)
       address.searchParams.set('usePath', path)
       await page.goto(address.href)
-      await page.getByRole('tab', { name: '系统预置', exact: true }).click()
+      await openInstalledSkills(page)
       await page.getByTestId('skill-view-skill-0').click()
       await page
         .getByTestId('skill-detail')
@@ -146,25 +222,15 @@ test('skill task submission preserves Windows extended and UNC paths', async () 
     }
   } finally {
     await browser.close()
-    await server.close()
   }
 })
 
 test('skills overlay scrollbar preserves width across tabs and supports dragging and keyboard', async () => {
-  const server = await servers.create({
-    configFile: false,
-    root: ROOT,
-    plugins: [fixture(), react()],
-    cacheKey: 'skills',
-    server: { host: '127.0.0.1', port: 0 },
-  })
-  await server.listen()
+  const baseUrl = await fixtureUrl()
   const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
   try {
     const page = await browser.newPage({ viewport: VIEWPORT })
-    await page.goto(
-      new URL('/__skills?marketData=1&scrollMarket=1', server.resolvedUrls!.local[0]).href
-    )
+    await page.goto(new URL('/__skills?marketData=1&scrollMarket=1', baseUrl).href)
     const list = page.getByTestId('skills-list')
     const bar = page.getByRole('scrollbar')
     await expect(bar).toBeVisible()
@@ -183,11 +249,11 @@ test('skills overlay scrollbar preserves width across tabs and supports dragging
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2 + 80)
     await page.mouse.up()
     await expect.poll(() => list.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
-    await page.getByRole('tab', { name: '系统预置', exact: true }).click()
+    await openInstalledSkills(page)
     await expect(page.getByTestId('skill-card-skill-0')).toBeVisible()
     assert.equal(await list.evaluate((element) => element.clientWidth), width)
     await expect(bar).toHaveCount(0)
-    await page.getByRole('tab', { name: '技能广场', exact: true }).click()
+    await page.getByRole('button', { name: '已安装技能', exact: true }).click()
     await expect(bar).toBeVisible()
     assert.equal(await list.evaluate((element) => element.clientWidth), width)
     await list.hover()
@@ -195,9 +261,51 @@ test('skills overlay scrollbar preserves width across tabs and supports dragging
     await expect.poll(() => list.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
   } finally {
     await browser.close()
-    await server.close()
   }
 })
+
+test(
+  'system UI archives are rejected without exposing installation or preview actions',
+  { timeout: 60_000 },
+  async () => {
+    const baseUrl = await fixtureUrl('catalog')
+    let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined
+    try {
+      browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
+      const page = await browser.newPage()
+      await page.goto(new URL('/components/business/skills.render.fixture.html', baseUrl).href)
+      await page.getByRole('button', { name: '添加技能', exact: true }).first().click()
+      await page.getByRole('menuitem', { name: /本地上传/ }).click()
+      await page.evaluate(() =>
+        (
+          window as unknown as { catalogFixture: { respond: (result: unknown) => void } }
+        ).catalogFixture.respond({
+          status: 422,
+          body: JSON.stringify({
+            detail: {
+              code: 'ui_desktop_distribution_only',
+              message: 'ui_desktop_distribution_only',
+            },
+          }),
+        })
+      )
+      await page.getByTestId('skill-upload-input').setInputFiles({
+        name: 'official-ui.zip',
+        mimeType: 'application/zip',
+        buffer: Buffer.from('archive fixture'),
+      })
+      await expect(page.getByText('ui_desktop_distribution_only', { exact: false })).toBeVisible()
+      await expect(page.getByTestId('plugin-report')).toHaveCount(0)
+      await expect(page.getByRole('button', { name: '确认更新系统 UI', exact: true })).toHaveCount(
+        0
+      )
+      await expect(page.getByRole('button', { name: '对话交互预览', exact: true })).toHaveCount(0)
+      await expect(page.getByTestId('skill-install')).toBeDisabled()
+    } finally {
+      await browser?.close()
+    }
+  }
+)
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const ENTRY = '/__skills_fixture.tsx'
@@ -209,12 +317,12 @@ import React from 'react'
 import { createRoot } from 'react-dom/client'
 import { I18nextProvider } from 'react-i18next'
 import { createLocalization } from '/../../localization/engine'
-import skills from '/../../localization/locales/zh/skills.json'
-import ui from '/../../localization/locales/zh/ui.json'
-import components from '/../../localization/locales/zh/components.json'
-import englishSkills from '/../../localization/locales/en/skills.json'
-import englishUi from '/../../localization/locales/en/ui.json'
-import englishComponents from '/../../localization/locales/en/components.json'
+import skills from '/../../localization/locales/zh/skills.json' with { type: 'json' }
+import ui from '/../../localization/locales/zh/ui.json' with { type: 'json' }
+import components from '/../../localization/locales/zh/components.json' with { type: 'json' }
+import englishSkills from '/../../localization/locales/en/skills.json' with { type: 'json' }
+import englishUi from '/../../localization/locales/en/ui.json' with { type: 'json' }
+import englishComponents from '/../../localization/locales/en/components.json' with { type: 'json' }
 import { Skills } from '/components/business/Skills'
 import { skillsFeature } from '/features/skills/feature'
 import { HomeHeader } from '/shell/Header'
@@ -357,10 +465,10 @@ window.scholarseed = { openExternal: async url => { window.skillActions.push(url
   }
   if (request.operation === 'upload-preview') return request.filename === 'bad.zip'
     ? { status: 422, body: JSON.stringify({ detail: { message: 'Invalid ZIP' } }) }
-    : { status: 200, body: JSON.stringify({ preview: { name: 'uploaded-skill', description: 'Upload description', document: '# Uploaded instructions', provider: 'Upload author', version: '1.0', plugin: ['plugin.zip', 'invalid-plugin.zip'].includes(request.filename) } }) }
+    : { status: 200, body: JSON.stringify({ preview: { name: 'uploaded-skill', description: 'Upload description', document: '---\\nname: uploaded-skill\\ninternal: yaml-only\\n---\\n# Uploaded instructions\\n\\n' + 'Review step.\\n\\n'.repeat(60) + 'End of instructions.', provider: 'Upload author', version: '1.0', plugin: ['plugin.zip', 'invalid-plugin.zip'].includes(request.filename) } }) }
   if (request.operation === 'plugin-check') return request.filename === 'invalid-plugin.zip'
     ? { status: 200, body: JSON.stringify({ valid: false, sha256: 'invalid-digest', issues: [{ severity: 'error', path: '.scholarseed-plugin.json', message: 'invalid_plugin_fixture' }] }) }
-    : { status: 200, body: JSON.stringify({ valid: true, candidate: 'upload-candidate', sha256: 'upload-digest', descriptor: { id: 'uploaded-skill', version: '1.0', capabilities: [], components: [] }, issues: [] }) }
+    : { status: 200, body: JSON.stringify({ valid: true, candidate: 'upload-candidate', sha256: 'upload-digest', descriptor: { id: 'uploaded-skill', version: '1.0', capabilities: ['navigation.open'], components: [{ id: 'results' }] }, issues: [{ severity: 'warning', path: 'scenario.json', message: 'technical-warning' }] }) }
   if (request.operation === 'plugin-confirm') return { status: 200, body: JSON.stringify({ installed: { name: 'uploaded-skill' }, enabled: true, receipt: {} }) }
   if (request.operation === 'upload') return { status: 200, body: JSON.stringify({ installed: { name: 'uploaded-skill' } }) }
   return { status: 200, body: JSON.stringify(request.operation === 'document'
@@ -423,22 +531,14 @@ test(
   'search empties use the shared illustration and empty connector installs offer adding',
   { timeout: 60_000 },
   async () => {
-    const server = await servers.create({
-      configFile: false,
-      root: ROOT,
-      plugins: [fixture(), react()],
-      cacheKey: 'skills',
-      server: { host: '127.0.0.1', port: 0 },
-    })
-    await server.listen()
+    const baseUrl = await fixtureUrl()
     const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage({ viewport: VIEWPORT })
-      await page.goto(
-        new URL('/__skills?center=1&emptyConnectors=1', server.resolvedUrls!.local[0]).href
-      )
-      for (const tab of ['技能广场', '系统预置', '我添加的']) {
-        await page.getByRole('tab', { name: tab, exact: true }).click()
+      await page.goto(new URL('/__skills?center=1&emptyConnectors=1', baseUrl).href)
+      for (const tab of ['marketplace', 'scholarseed', 'user'] as const) {
+        if (tab === 'marketplace') await openSkillMarketplace(page)
+        else await openInstalledSkills(page, tab)
         await page.getByTestId('skills-search').fill('no-match-test')
         const empty = page.getByTestId('skills-empty')
         await expect(empty).toContainText('没有匹配的技能')
@@ -447,9 +547,10 @@ test(
         await expect(empty).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
         await expect(empty.getByRole('button')).toHaveCount(0)
       }
-      await page.getByRole('tab', { name: '连接器', exact: true }).click()
-      for (const tab of ['市场', '我的']) {
-        await page.getByRole('tab', { name: tab, exact: true }).click()
+      await openSkillMarketplace(page)
+      await openCenterSection(page, '连接器')
+      for (const tab of ['market', 'mine'] as const) {
+        await openConnectorScope(page, tab)
         await page.getByRole('searchbox', { name: '搜索连接器名称、说明' }).fill('no-match-test')
         const empty = page.getByTestId('connectors-empty')
         await expect(empty).toContainText('没有找到连接器')
@@ -468,7 +569,6 @@ test(
       await expect(page.getByTestId('custom-connector-dialog')).toBeVisible()
     } finally {
       await browser.close()
-      await server.close()
     }
   }
 )
@@ -477,21 +577,12 @@ test(
   'mock update previews capture cards and details then discard isolated data',
   { timeout: 60_000 },
   async () => {
-    const server = await servers.create({
-      configFile: false,
-      root: ROOT,
-      plugins: [fixture(), react()],
-      cacheKey: 'skills',
-      server: { host: '127.0.0.1', port: 0 },
-    })
-    await server.listen()
+    const baseUrl = await fixtureUrl()
     const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage({ viewport: VIEWPORT })
-      await page.goto(
-        new URL('/__skills?updateData=1&attributionData=1', server.resolvedUrls!.local[0]).href
-      )
-      await page.getByTestId('skills-tab-user').click()
+      await page.goto(new URL('/__skills?updateData=1&attributionData=1', baseUrl).href)
+      await openInstalledSkills(page, 'hub')
       const card = page.getByTestId('skill-card-skill-6')
       await expect(card.getByTestId('skill-update-status-skill-6')).toHaveText('有更新')
       const nameBounds = await card
@@ -528,9 +619,7 @@ test(
       await expect(card.getByTestId('skill-update-status-skill-6')).toHaveCount(0)
     } finally {
       await browser.close()
-      await server.close()
       assert.equal(browser.isConnected(), false)
-      assert.equal(server.httpServer?.listening, false)
     }
   }
 )
@@ -539,19 +628,12 @@ test(
   'connector install opens authorization and OAuth keeps its presentation during an attempt',
   { timeout: 60_000 },
   async () => {
-    const server = await servers.create({
-      configFile: false,
-      root: ROOT,
-      plugins: [fixture(), react()],
-      cacheKey: 'skills',
-      server: { host: '127.0.0.1', port: 0 },
-    })
-    await server.listen()
+    const baseUrl = await fixtureUrl()
     const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage({ viewport: VIEWPORT })
-      await page.goto(new URL('/__skills?center=1', server.resolvedUrls!.local[0]).href)
-      await page.getByRole('tab', { name: '连接器', exact: true }).click()
+      await page.goto(new URL('/__skills?center=1', baseUrl).href)
+      await openCenterSection(page, '连接器')
       await page.getByTestId('connector-install-zotero').click()
       await expect(page.locator('.vds-toast')).toHaveCount(0)
       await page.evaluate(() => (window as unknown as SkillTestWindow).releaseConnectorInstall())
@@ -567,7 +649,7 @@ test(
       await expect(detail).toBeVisible()
       await page.mouse.click(10, 10)
       await expect(detail).toHaveCount(0)
-      await page.getByRole('tab', { name: '我的', exact: true }).click()
+      await openConnectorScope(page, 'mine')
       await page
         .getByTestId('connector-github')
         .getByRole('button', { name: '授权', exact: true })
@@ -604,7 +686,6 @@ test(
       await expect(auth).toHaveCount(0)
     } finally {
       await browser.close()
-      await server.close()
     }
   }
 )
@@ -613,25 +694,16 @@ test(
   'connector loading stays centered and auth badges remain after removing skill source badges',
   { timeout: 60_000 },
   async () => {
-    const server = await servers.create({
-      configFile: false,
-      root: ROOT,
-      plugins: [fixture(), react()],
-      cacheKey: 'skills',
-      server: { host: '127.0.0.1', port: 0 },
-    })
-    await server.listen()
+    const baseUrl = await fixtureUrl()
     const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage({ viewport: VIEWPORT })
-      await page.goto(
-        new URL('/__skills?center=1&marketData=1', server.resolvedUrls!.local[0]).href
-      )
+      await page.goto(new URL('/__skills?center=1&marketData=1', baseUrl).href)
       await expect(page.getByTestId('skills-refresh-marketplace')).toHaveCount(0)
       await expect(
         page.getByTestId('marketplace-card-market-paper').getByText('SkillHub', { exact: true })
       ).toHaveCount(0)
-      await page.getByRole('banner').getByRole('tab', { name: '连接器', exact: true }).click()
+      await openCenterSection(page, '连接器')
       const badge = page.getByText('API Key / OAuth', { exact: true }).first()
       await expect(badge).toHaveCSS('background-color', 'rgba(103, 73, 15, 0.04)')
       await expect(badge).toHaveCSS('border-radius', '4px')
@@ -691,7 +763,7 @@ test(
         cardBounds.x + cardBounds.width - checkBounds.x - checkBounds.width / 2,
         otherBounds.x + otherBounds.width - installBounds.x - installBounds.width / 2
       )
-      await page.getByRole('tab', { name: '我的', exact: true }).click()
+      await openConnectorScope(page, 'mine')
       await page.mouse.move(0, 0)
       const more = page.getByTestId('connector-more-github')
       await expect(more).toHaveCSS('visibility', 'visible')
@@ -721,10 +793,8 @@ test(
       await removal.getByRole('button', { name: '取消', exact: true }).click()
       await expect(removal).toHaveCount(0)
       await expect(connector).toBeVisible()
-      await page.goto(
-        new URL('/__skills?center=1&delayConnectors=1', server.resolvedUrls!.local[0]).href
-      )
-      await page.getByRole('banner').getByRole('tab', { name: '连接器', exact: true }).click()
+      await page.goto(new URL('/__skills?center=1&delayConnectors=1', baseUrl).href)
+      await openCenterSection(page, '连接器')
       const loading = page.getByTestId('connectors-loading')
       await expect(loading).toBeVisible()
       await expect(loading.locator('.vds-spinner')).toHaveCount(1)
@@ -744,7 +814,6 @@ test(
         .toBeLessThan(1)
     } finally {
       await browser.close()
-      await server.close()
     }
   }
 )
@@ -753,21 +822,14 @@ test(
   'connector dialogs use regular weight and omit redundant explanatory headings',
   { timeout: 60_000 },
   async () => {
-    const server = await servers.create({
-      configFile: false,
-      root: ROOT,
-      plugins: [fixture(), react()],
-      cacheKey: 'skills',
-      server: { host: '127.0.0.1', port: 0 },
-    })
-    await server.listen()
+    const baseUrl = await fixtureUrl()
     const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage({ viewport: VIEWPORT })
-      await page.goto(new URL('/__skills?center=1', server.resolvedUrls!.local[0]).href, {
+      await page.goto(new URL('/__skills?center=1', baseUrl).href, {
         waitUntil: 'domcontentloaded',
       })
-      await page.getByRole('banner').getByRole('tab', { name: '连接器', exact: true }).click()
+      await openCenterSection(page, '连接器')
       await page.getByRole('button', { name: '查看 Zotero', exact: true }).click()
       const detail = page.getByTestId('connector-detail')
       await expect(detail.getByRole('heading', { name: 'MCP 服务' })).toHaveCount(0)
@@ -786,37 +848,28 @@ test(
       }
     } finally {
       await browser.close()
-      await server.close()
     }
   }
 )
 
-test('plugin previews stay hidden while skill details and upload remain available', async () => {
-  const server = await servers.create({
-    configFile: false,
-    root: ROOT,
-    plugins: [fixture(), react()],
-    cacheKey: 'skills',
-    server: { host: '127.0.0.1', port: 0 },
-  })
-  await server.listen()
+test('installed skills hide conversation previews while details and upload remain available', async () => {
+  const baseUrl = await fixtureUrl()
   const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
   try {
     const page = await browser.newPage({ viewport: VIEWPORT })
     page.on('pageerror', (error) => console.error(error.message))
-    await page.goto(new URL('/__skills?center=1&pluginData=1', server.resolvedUrls!.local[0]).href)
-    await page.getByRole('tab', { name: '系统预置', exact: true }).click()
+    await page.goto(new URL('/__skills?center=1&pluginData=1', baseUrl).href)
+    await openInstalledSkills(page)
     const card = page.getByTestId('skill-card-skill-0')
     await expect(card).toBeVisible()
-    await expect(card.getByRole('button', { name: '预览交互', exact: true })).toHaveCount(0)
+    await expect(page.getByTestId('skill-card-skill-1')).toBeVisible()
+    await expect(page.getByRole('button', { name: '预览交互', exact: true })).toHaveCount(0)
     await expect(card.getByText('系统预置', { exact: true })).toHaveCount(0)
-    await expect(
-      page.getByTestId('skill-card-skill-1').getByRole('button', { name: '预览交互', exact: true })
-    ).toHaveCount(0)
     await page.getByTestId('skill-view-skill-0').click()
     await expect(page.getByTestId('skill-detail')).toBeVisible()
     await page.keyboard.press('Escape')
     await page.getByTestId('skills-add').click()
+    await page.getByRole('menuitem', { name: /本地上传/ }).click()
     await expect(page.getByRole('menuitem', { name: /通过书深创建/ })).toHaveCount(0)
     await expect(page.getByTestId('skill-add-modal')).toBeVisible()
     await expect(page.getByTestId('skill-upload-input')).toBeAttached()
@@ -831,33 +884,57 @@ test('plugin previews stay hidden while skill details and upload remain availabl
     )
   } finally {
     await browser.close()
-    await server.close()
   }
 })
 
-test('plugin-create is hidden only in the system catalog', async () => {
-  const server = await servers.create({
-    configFile: false,
-    root: ROOT,
-    plugins: [fixture(), react()],
-    cacheKey: 'skills',
-    server: { host: '127.0.0.1', port: 0 },
-  })
-  await server.listen()
+test('plugin-create is visible in both system and user catalogs', async () => {
+  const baseUrl = await fixtureUrl()
   const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
   try {
     const page = await browser.newPage({ viewport: VIEWPORT })
-    await page.goto(new URL('/__skills?authoringData=1', server.resolvedUrls!.local[0]).href)
-    await page.getByRole('tab', { name: '系统预置', exact: true }).click()
+    await page.goto(new URL('/__skills?authoringData=1', baseUrl).href)
+    await openInstalledSkills(page)
     await expect(page.getByTestId('skill-card-skill-1')).toBeVisible()
-    await expect(page.getByTestId('skill-card-plugin-create')).toHaveCount(0)
-    await page.getByTestId('skills-search').fill('plugin-create')
-    await expect(page.getByTestId('skill-card-plugin-create')).toHaveCount(0)
-    await page.getByRole('tab', { name: '我添加的', exact: true }).click()
     await expect(page.getByTestId('skill-card-plugin-create')).toBeVisible()
+    await page.getByTestId('skills-search').fill('plugin-create')
+    await expect(page.getByTestId('skill-card-plugin-create')).toBeVisible()
+    await page.getByRole('tab', { name: '用户上传', exact: true }).click()
+    await expect(page.getByTestId('skill-card-plugin-create')).toBeVisible()
+    await page.getByTestId('skills-add').click()
+    const create = page.getByTestId('skills-create')
+    await expect(create).toBeEnabled()
+    await create.click()
+    const use = page.getByRole('dialog')
+    await expect(
+      use.getByRole('heading', { name: '使用 plugin-create', exact: true })
+    ).toBeVisible()
+    await expect(use.getByRole('button', { name: '带入新任务', exact: true })).toBeDisabled()
+    await use.getByLabel('任务内容').fill('创建一个论文证据核对技能')
+    await use.getByRole('button', { name: '带入新任务', exact: true }).click()
+    assert.deepEqual(
+      await page.evaluate(() => (window as unknown as SkillTestWindow).skillActions),
+      [
+        {
+          projectId: 'project-one',
+          submit: true,
+          composerText: '创建一个论文证据核对技能',
+          composerRefs: [
+            {
+              type: 'skill',
+              id: 'plugin-create',
+              title: 'plugin-create',
+              path: '/skills/skill-0',
+              version: undefined,
+            },
+          ],
+        },
+      ]
+    )
+    await page.goto(new URL('/__skills', baseUrl).href)
+    await page.getByTestId('skills-add').click()
+    await expect(page.getByTestId('skills-create')).toBeDisabled()
   } finally {
     await browser.close()
-    await server.close()
   }
 })
 
@@ -865,25 +942,15 @@ test(
   'initial skill loading centers one spinner and a visible label in the list',
   { timeout: 60_000 },
   async () => {
-    const server = await servers.create({
-      configFile: false,
-      root: ROOT,
-      plugins: [fixture(), react()],
-      cacheKey: 'skills',
-      server: { host: '127.0.0.1', port: 0 },
-    })
-    await server.listen()
+    const baseUrl = await fixtureUrl()
     const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage({ viewport: VIEWPORT })
       for (const source of ['Market', 'Local']) {
         await page.goto(
-          new URL(
-            `/__skills?center=1&delayInitial${source}=1&delayLabels=1`,
-            server.resolvedUrls!.local[0]
-          ).href
+          new URL(`/__skills?center=1&delayInitial${source}=1&delayLabels=1`, baseUrl).href
         )
-        if (source === 'Local') await page.getByTestId('skills-tab-scholarseed').click()
+        if (source === 'Local') await openInstalledSkills(page)
         const loading = page.getByTestId('skills-loading')
         await expect(loading).toBeVisible()
         await expect(loading).toContainText('正在加载技能…')
@@ -924,29 +991,21 @@ test(
       }
     } finally {
       await browser.close()
-      await server.close()
     }
   }
 )
 
 test('connector search empties center their image and label within the full list viewport', async () => {
-  const server = await servers.create({
-    configFile: false,
-    root: ROOT,
-    plugins: [fixture(), react()],
-    cacheKey: 'skills',
-    server: { host: '127.0.0.1', port: 0 },
-  })
-  await server.listen()
+  const baseUrl = await fixtureUrl()
   const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
   try {
     const page = await browser.newPage({ viewport: VIEWPORT })
-    await page.goto(new URL('/__skills?center=1', server.resolvedUrls!.local[0]).href)
-    await page.getByRole('tab', { name: '连接器', exact: true }).click()
+    await page.goto(new URL('/__skills?center=1', baseUrl).href)
+    await openCenterSection(page, '连接器')
     for (const viewport of [VIEWPORT, WORKSPACE_WINDOW_MINIMUM]) {
       await page.setViewportSize(viewport)
-      for (const tab of ['市场', '我的']) {
-        await page.getByRole('tab', { name: tab, exact: true }).click()
+      for (const tab of ['market', 'mine'] as const) {
+        await openConnectorScope(page, tab)
         await page.getByRole('searchbox', { name: '搜索连接器名称、说明' }).fill('missing')
         const empty = page.getByTestId('connectors-empty')
         await expect(empty).toContainText('没有找到连接器')
@@ -962,27 +1021,20 @@ test('connector search empties center their image and label within the full list
     }
   } finally {
     await browser.close()
-    await server.close()
   }
 })
 
 test('skill-center search empties center their image and label within the full list viewport', async () => {
-  const server = await servers.create({
-    configFile: false,
-    root: ROOT,
-    plugins: [fixture(), react()],
-    cacheKey: 'skills',
-    server: { host: '127.0.0.1', port: 0 },
-  })
-  await server.listen()
+  const baseUrl = await fixtureUrl()
   const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
   try {
     const page = await browser.newPage({ viewport: VIEWPORT })
-    await page.goto(new URL('/__skills?center=1&marketData=1', server.resolvedUrls!.local[0]).href)
+    await page.goto(new URL('/__skills?center=1&marketData=1', baseUrl).href)
     for (const viewport of [VIEWPORT, WORKSPACE_WINDOW_MINIMUM]) {
       await page.setViewportSize(viewport)
-      for (const tab of ['技能广场', '系统预置', '我添加的']) {
-        await page.getByRole('tab', { name: tab, exact: true }).click()
+      for (const tab of ['marketplace', 'scholarseed', 'user'] as const) {
+        if (tab === 'marketplace') await openSkillMarketplace(page)
+        else await openInstalledSkills(page, tab)
         await page.getByTestId('skills-search').fill('missing')
         const empty = page.getByTestId('skills-empty')
         await expect(empty).toContainText('没有匹配的技能')
@@ -998,7 +1050,6 @@ test('skill-center search empties center their image and label within the full l
     }
   } finally {
     await browser.close()
-    await server.close()
   }
 })
 
@@ -1006,22 +1057,15 @@ test(
   'skill tabs separate catalogue refresh, system inventory and all installed updates',
   { timeout: 60_000 },
   async () => {
-    const server = await servers.create({
-      configFile: false,
-      root: ROOT,
-      plugins: [fixture(), react()],
-      cacheKey: 'skills',
-      server: { host: '127.0.0.1', port: 0 },
-    })
-    await server.listen()
+    const baseUrl = await fixtureUrl()
     const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage({ viewport: VIEWPORT })
-      await page.goto(new URL('/__skills?updateData=1', server.resolvedUrls!.local[0]).href)
+      await page.goto(new URL('/__skills?updateData=1', baseUrl).href)
       await expect(page.getByTestId('skills-refresh-marketplace')).toHaveCount(0)
-      await page.getByTestId('skills-tab-scholarseed').click()
+      await openInstalledSkills(page)
       await expect(page.getByRole('button', { name: '刷新', exact: true })).toHaveCount(0)
-      await page.getByTestId('skills-tab-user').click()
+      await openInstalledSkills(page, 'hub')
       await expect(page.locator('[data-testid^="skill-use-"]')).toHaveCount(0)
       await expect(page.getByTestId('skills-update-all')).toHaveText('一键更新')
       await expect(page.getByRole('button', { name: '重试检查', exact: true })).toHaveCount(0)
@@ -1039,8 +1083,6 @@ test(
       const installedCard = page.getByTestId('skill-card-skill-5')
       await expect(installedCard.getByText('GitHub', { exact: true })).toHaveCount(0)
       await expect(installedCard.getByText('@deepseek-ai', { exact: true })).toHaveCount(0)
-      await expect(installedCard.locator('.vds-card__footer')).toHaveCount(1)
-      await expect(installedCard.getByTestId('skill-source-skill-5')).toHaveText('用户上传')
       await installedCard.hover()
       await page.getByTestId('skill-more-skill-5').click()
       await expect(page.getByRole('menuitem', { name: '更新技能', exact: true })).toBeVisible()
@@ -1059,10 +1101,8 @@ test(
           .map((item) => (item.operation === 'marketplace-update' ? item.name : ''))
       )
       assert.deepEqual(names, ['skill-5', 'skill-6'])
-      await page.goto(
-        new URL('/__skills?updateData=1&failUpdate=1', server.resolvedUrls!.local[0]).href
-      )
-      await page.getByTestId('skills-tab-user').click()
+      await page.goto(new URL('/__skills?updateData=1&failUpdate=1', baseUrl).href)
+      await openInstalledSkills(page, 'hub')
       await page.getByTestId('skills-update-all').click()
       await expect(page.getByText('更新完成：成功 1 项，失败 1 项', { exact: true })).toBeVisible()
       await page.getByTestId('skill-card-skill-6').hover()
@@ -1070,7 +1110,6 @@ test(
       await expect(page.getByTestId('skill-update-skill-6')).toBeEnabled()
     } finally {
       await browser.close()
-      await server.close()
     }
   }
 )
@@ -1079,19 +1118,13 @@ test(
   'skill deletion follows the confirmed dialog and stays silent on success',
   { timeout: 60_000 },
   async () => {
-    const server = await servers.create({
-      configFile: false,
-      root: ROOT,
-      plugins: [fixture(), react()],
-      cacheKey: 'skills',
-      server: { host: '127.0.0.1', port: 0 },
-    })
-    await server.listen()
+    const baseUrl = await fixtureUrl()
     const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage({ viewport: VIEWPORT })
-      await page.goto(new URL('/__skills', server.resolvedUrls!.local[0]).href)
-      await page.getByRole('tab', { name: '我添加的', exact: true }).click()
+      await page.goto(new URL('/__skills', baseUrl).href)
+      await page.getByTestId('skills-installed').click()
+      await page.getByRole('tab', { name: '用户上传', exact: true }).click()
       const remove = async () => {
         await page.getByTestId('skill-card-skill-5').hover()
         await page.getByTestId('skill-more-skill-5').click()
@@ -1129,8 +1162,9 @@ test(
         ),
         1
       )
-      await page.goto(new URL('/__skills?failDelete=1', server.resolvedUrls!.local[0]).href)
-      await page.getByRole('tab', { name: '我添加的', exact: true }).click()
+      await page.goto(new URL('/__skills?failDelete=1', baseUrl).href)
+      await page.getByTestId('skills-installed').click()
+      await page.getByRole('tab', { name: '用户上传', exact: true }).click()
       await remove()
       await dialog.getByRole('button', { name: '确定删除', exact: true }).click()
       await expect(dialog).toBeVisible()
@@ -1138,7 +1172,6 @@ test(
       await expect(page.getByText('删除失败，请重试。')).toBeVisible()
     } finally {
       await browser.close()
-      await server.close()
     }
   }
 )
@@ -1147,27 +1180,18 @@ test(
   'market details omit generic warnings without hiding blocked installation',
   { timeout: 60_000 },
   async () => {
-    const server = await servers.create({
-      configFile: false,
-      root: ROOT,
-      plugins: [fixture(), react()],
-      cacheKey: 'skills',
-      server: { host: '127.0.0.1', port: 0 },
-    })
-    await server.listen()
+    const baseUrl = await fixtureUrl()
     const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage({ viewport: VIEWPORT })
-      await page.goto(new URL('/__skills?marketData=1', server.resolvedUrls!.local[0]).href)
+      await page.goto(new URL('/__skills?marketData=1', baseUrl).href)
       await page.getByTestId('marketplace-card-market-paper').click()
       await expect(page.getByTestId('skill-document')).toContainText('Paper instructions')
       await expect(page.getByTestId('skill-document').getByRole('note')).toHaveCount(0)
       await expect(
         page.getByTestId('skill-detail').getByRole('button', { name: '安装', exact: true })
       ).toBeEnabled()
-      await page.goto(
-        new URL('/__skills?marketData=1&blocked=1', server.resolvedUrls!.local[0]).href
-      )
+      await page.goto(new URL('/__skills?marketData=1&blocked=1', baseUrl).href)
       await page.getByTestId('marketplace-card-market-paper').click()
       await expect(page.getByTestId('skill-document').getByRole('note')).toContainText('已禁止安装')
       await expect(
@@ -1175,7 +1199,6 @@ test(
       ).toBeDisabled()
     } finally {
       await browser.close()
-      await server.close()
     }
   }
 )
@@ -1184,20 +1207,11 @@ test(
   'skill marketplace return restores the project and conversation surface',
   { timeout: 60_000 },
   async () => {
-    const server = await servers.create({
-      configFile: false,
-      root: ROOT,
-      plugins: [fixture(), react()],
-      cacheKey: 'skills',
-      server: { host: '127.0.0.1', port: 0 },
-    })
-    await server.listen()
+    const baseUrl = await fixtureUrl()
     const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage({ viewport: VIEWPORT })
-      await page.goto(
-        new URL('/__skills?center=1&returnConversation=1', server.resolvedUrls!.local[0]).href
-      )
+      await page.goto(new URL('/__skills?center=1&returnConversation=1', baseUrl).href)
       await page.getByTestId('skills-return-conversation').click()
       assert.deepEqual(
         await page.evaluate(() => (window as unknown as SkillTestWindow).skillActions),
@@ -1205,7 +1219,6 @@ test(
       )
     } finally {
       await browser.close()
-      await server.close()
     }
   }
 )
@@ -1214,18 +1227,11 @@ test(
   'standard skill classifications fit supported windows without horizontal overflow',
   { timeout: 60_000 },
   async () => {
-    const server = await servers.create({
-      configFile: false,
-      root: ROOT,
-      plugins: [fixture(), react()],
-      cacheKey: 'skills',
-      server: { host: '127.0.0.1', port: 0 },
-    })
-    await server.listen()
+    const baseUrl = await fixtureUrl()
     const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage({ viewport: VIEWPORT })
-      await page.goto(new URL('/__skills?standardLabels=1', server.resolvedUrls!.local[0]).href)
+      await page.goto(new URL('/__skills?standardLabels=1', baseUrl).href)
       const categories = page.getByRole('group', { name: '科研分类' })
       const buttons = categories.getByRole('button')
       await expect(buttons).toHaveCount(9)
@@ -1249,7 +1255,6 @@ test(
       await expect(buttons.last()).toHaveAttribute('aria-pressed', 'true')
     } finally {
       await browser.close()
-      await server.close()
     }
   }
 )
@@ -1258,22 +1263,12 @@ test(
   'classification filters collapse overflow and expand into rows at minimum width',
   { timeout: 60_000 },
   async () => {
-    const server = await servers.create({
-      configFile: false,
-      root: ROOT,
-      plugins: [fixture(), react()],
-      cacheKey: 'skills',
-      server: { host: '127.0.0.1', port: 0 },
-    })
-    await server.listen()
+    const baseUrl = await fixtureUrl()
     const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage({ viewport: WORKSPACE_WINDOW_MINIMUM })
       await page.goto(
-        new URL(
-          '/__skills?marketData=1&classificationData=1&longLabels=1',
-          server.resolvedUrls!.local[0]
-        ).href
+        new URL('/__skills?marketData=1&classificationData=1&longLabels=1', baseUrl).href
       )
       const categories = page.getByRole('group', { name: '科研分类' })
       const buttons = categories.getByRole('button')
@@ -1309,13 +1304,11 @@ test(
         await scroll.evaluate((element) => element.scrollWidth > element.clientWidth),
         false
       )
-      const tabs = await page.getByRole('tablist', { name: '技能分类' }).boundingBox()
       const filters = await categories.boundingBox()
       await expect(page.getByTestId('skills-classification-divider')).toHaveCount(0)
       await expect(page.getByTestId('marketplace-card-market-paper')).toBeVisible()
       const card = await page.getByTestId('marketplace-card-market-paper').boundingBox()
-      assert.ok(tabs && filters && card)
-      assert.ok(tabs.y + tabs.height <= filters.y)
+      assert.ok(filters && card)
       assert.ok(filters.y + filters.height <= card.y)
       await more.click()
       await expect(more).toHaveText('收起')
@@ -1340,7 +1333,6 @@ test(
       await expect(buttons.last()).toBeFocused()
     } finally {
       await browser.close()
-      await server.close()
     }
   }
 )
@@ -1349,22 +1341,13 @@ test(
   'system skills omit classifications without inheriting or clearing other tabs filters',
   { timeout: 60_000 },
   async () => {
-    const server = await servers.create({
-      configFile: false,
-      root: ROOT,
-      plugins: [fixture(), react()],
-      cacheKey: 'skills',
-      server: { host: '127.0.0.1', port: 0 },
-    })
-    await server.listen()
+    const baseUrl = await fixtureUrl()
     const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage({ viewport: VIEWPORT })
-      await page.goto(
-        new URL('/__skills?marketData=1&classificationData=1', server.resolvedUrls!.local[0]).href
-      )
+      await page.goto(new URL('/__skills?marketData=1&classificationData=1', baseUrl).href)
       await page.getByTestId('skills-classification-analysis').click()
-      await page.getByTestId('skills-tab-scholarseed').click()
+      await openInstalledSkills(page)
       await expect(page.getByRole('group', { name: '科研分类' })).toHaveCount(0)
       await expect(page.getByTestId('skills-classification-scroll')).toHaveCount(0)
       await expect(page.getByTestId('skills-classification-divider')).toHaveCount(0)
@@ -1372,16 +1355,16 @@ test(
       await page.getByTestId('skills-search').fill('skill-0')
       await expect(page.locator('[data-testid^="skill-card-"]')).toHaveCount(1)
       await expect(page.getByTestId('skill-card-skill-0')).toBeVisible()
-      await page.getByTestId('skills-tab-user').click()
+      await openInstalledSkills(page, 'user')
       await expect(page.getByTestId('skills-classification-scroll')).toHaveCount(0)
       await expect(page.locator('[data-testid^="skill-card-"]')).toHaveCount(25)
-      await page.getByTestId('skills-tab-marketplace').click()
+      await openSkillMarketplace(page)
       await expect(page.getByTestId('skills-classification-analysis')).toHaveAttribute(
         'aria-pressed',
         'true'
       )
       await expect(page.getByTestId('marketplace-card-market-paper')).toHaveCount(0)
-      await page.goto(new URL('/__skills?failLabels=1', server.resolvedUrls!.local[0]).href)
+      await page.goto(new URL('/__skills?failLabels=1', baseUrl).href)
       await expect(page.getByRole('alert')).toContainText('分类加载失败')
       await expect(
         page.getByTestId('skills-page').getByText('分类加载失败，请重试。', { exact: true })
@@ -1389,21 +1372,18 @@ test(
       await expect(
         page.locator('.vds-toast').getByText('分类加载失败，请重试。', { exact: true })
       ).toBeVisible()
-      await page.getByTestId('skills-tab-scholarseed').click()
+      await openInstalledSkills(page)
       await expect(page.getByTestId('skills-page').getByRole('alert')).toHaveCount(0)
       await expect(page.locator('[data-testid^="skill-card-"]')).toHaveCount(5)
-      await page.goto(
-        new URL('/__skills?classificationData=1&emptySystem=1', server.resolvedUrls!.local[0]).href
-      )
+      await page.goto(new URL('/__skills?classificationData=1&emptySystem=1', baseUrl).href)
       await page.getByTestId('skills-classification-analysis').click()
-      await page.getByTestId('skills-tab-scholarseed').click()
+      await openInstalledSkills(page)
       await expect(page.getByTestId('skills-empty')).toContainText('还没有技能')
       await expect(
         page.getByTestId('skills-empty').getByRole('button', { name: '刷新' })
       ).toHaveCount(0)
     } finally {
       await browser.close()
-      await server.close()
     }
   }
 )
@@ -1412,20 +1392,11 @@ test(
   'remote categories filter only the market and recover from removed labels after cache expiry',
   { timeout: 60_000 },
   async () => {
-    const server = await servers.create({
-      configFile: false,
-      root: ROOT,
-      plugins: [fixture(), react()],
-      cacheKey: 'skills',
-      server: { host: '127.0.0.1', port: 0 },
-    })
-    await server.listen()
+    const baseUrl = await fixtureUrl()
     const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage({ viewport: VIEWPORT })
-      await page.goto(
-        new URL('/__skills?marketData=1&classificationData=1', server.resolvedUrls!.local[0]).href
-      )
+      await page.goto(new URL('/__skills?marketData=1&classificationData=1', baseUrl).href)
       const categories = page.getByRole('group', { name: '科研分类' })
       await expect(categories.getByRole('button')).toHaveCount(3)
       await expect(page.getByTestId('marketplace-card-market-paper')).toBeVisible()
@@ -1437,7 +1408,7 @@ test(
       await expect(page.getByTestId('skills-empty')).toContainText('没有匹配的技能')
       await page.getByTestId('skills-classification-research').click()
       await expect(page.getByTestId('marketplace-card-market-paper')).toBeVisible()
-      await page.getByTestId('skills-tab-user').click()
+      await openInstalledSkills(page, 'user')
       await expect(page.getByTestId('skills-classification-scroll')).toHaveCount(0)
       await expect(page.locator('[data-testid^="skill-card-"]')).toHaveCount(25)
       await page.evaluate(() => {
@@ -1453,7 +1424,7 @@ test(
           )
         )
       const cachedRequests = await requests()
-      await page.getByTestId('skills-tab-marketplace').click()
+      await openSkillMarketplace(page)
       await expect(page.getByTestId('marketplace-card-market-paper')).toBeVisible()
       await expect(page.getByTestId('skills-load-error')).toHaveCount(0)
       assert.deepEqual(await requests(), cachedRequests)
@@ -1469,48 +1440,36 @@ test(
         'true'
       )
       await expect(page.getByTestId('marketplace-card-market-paper')).toBeVisible()
-      await page.getByTestId('skills-tab-user').click()
+      await openInstalledSkills(page, 'user')
       await expect(page.locator('[data-testid^="skill-card-"]')).toHaveCount(25)
-      await page.goto(
-        new URL('/__skills?marketData=1&failLabels=1', server.resolvedUrls!.local[0]).href
-      )
+      await page.goto(new URL('/__skills?marketData=1&failLabels=1', baseUrl).href)
       await expect(page.getByRole('alert')).toContainText('分类加载失败')
       await expect(page.getByTestId('skills-page').getByRole('alert')).toHaveCount(0)
       await expect(page.getByTestId('marketplace-card-market-paper')).toBeVisible()
     } finally {
       await browser.close()
-      await server.close()
     }
   }
 )
 
 test(
-  'skill center keeps navigation in the header and contextual actions in the page and aligns connector cards',
+  'skill center keeps navigation and contextual actions in the page and aligns connector cards',
   { timeout: 60_000 },
   async () => {
-    const server = await servers.create({
-      configFile: false,
-      root: ROOT,
-      plugins: [fixture(), react()],
-      cacheKey: 'skills',
-      server: { host: '127.0.0.1', port: 0 },
-    })
-    await server.listen()
+    const baseUrl = await fixtureUrl()
     const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage({ viewport: VIEWPORT })
-      await page.goto(
-        new URL('/__skills?center=1&marketData=1', server.resolvedUrls!.local[0]).href
-      )
+      await page.goto(new URL('/__skills?center=1&marketData=1', baseUrl).href)
       const header = page.getByRole('banner')
-      await expect(header.getByRole('tablist', { name: '技能与连接器' })).toBeVisible()
-      await expect(header.getByRole('heading', { name: '技能中心' })).toHaveCSS(
-        'position',
-        'absolute'
-      )
-      const skillsTab = header.getByRole('tab', { name: '技能', exact: true })
+      const navigation = page.getByTestId('skill-center').getByRole('tablist', {
+        name: '技能与连接器',
+      })
+      await expect(navigation).toBeVisible()
+      await expect(header.getByRole('heading', { name: '技能中心' })).toBeVisible()
+      const skillsTab = navigation.getByRole('tab', { name: '技能', exact: true })
       await expect(skillsTab.locator('svg.lucide-hammer')).toBeVisible()
-      const connectorsTab = header.getByRole('tab', { name: '连接器', exact: true })
+      const connectorsTab = navigation.getByRole('tab', { name: '连接器', exact: true })
       const skillsTabBounds = await skillsTab.boundingBox()
       const connectorsTabBounds = await connectorsTab.boundingBox()
       assert.ok(skillsTabBounds && connectorsTabBounds)
@@ -1518,21 +1477,19 @@ test(
       assert.equal(skillsTabBounds?.height, TITLEBAR_DESIGN.height)
       assert.equal(connectorsTabBounds?.height, TITLEBAR_DESIGN.height)
       await expect(skillsTab).toHaveCSS('font-size', '14px')
-      await expect(connectorsTab).toHaveCSS('font-weight', '400')
+      await expect(connectorsTab).toHaveCSS('font-weight', '500')
       await expect(skillsTab).toHaveCSS('font-weight', '500')
       await expect(skillsTab).toHaveCSS('gap', '6px')
       await expect(skillsTab).toHaveCSS('border-radius', '8px')
       await expect(skillsTab).toHaveCSS('padding-left', '8px')
       await expect(skillsTab).toHaveCSS('padding-right', '12px')
-      await expect(
-        page.getByTestId('skill-center').getByRole('tablist', { name: '技能与连接器' })
-      ).toHaveCount(0)
+      await expect(header.getByRole('tablist', { name: '技能与连接器' })).toHaveCount(0)
       const skillBounds = await page.getByTestId('marketplace-card-market-paper').boundingBox()
       const centerBounds = await page.getByTestId('skill-center').boundingBox()
       const listBounds = await page.getByTestId('skills-list').boundingBox()
       assert.ok(centerBounds && listBounds)
       assert.equal(listBounds.x + listBounds.width, centerBounds.x + centerBounds.width)
-      await header.getByRole('tab', { name: '连接器', exact: true }).click()
+      await connectorsTab.click()
       const connectorsPage = page.getByTestId('connectors-page')
       const connectorSearch = connectorsPage.getByRole('searchbox', {
         name: '搜索连接器名称、说明',
@@ -1629,7 +1586,7 @@ test(
       await connectorDetail.getByRole('button', { name: '前往授权', exact: true }).click()
       const authorization = page.getByRole('dialog').last()
       await expect(authorization).not.toContainText('凭据仅保存在本机后端私有存储中')
-      await expect(authorization.getByRole('heading')).toHaveCSS('font-weight', '400')
+      await expect(authorization.getByRole('heading')).toHaveCSS('font-weight', '500')
       await expect(authorization.locator('label').first()).toHaveCSS('font-weight', '400')
       await expect(
         authorization.getByRole('button', { name: '获取 API Key', exact: true })
@@ -1674,7 +1631,7 @@ test(
       await card.getByRole('button', { name: '查看 Zotero' }).click()
       await connectorDetail.getByRole('button', { name: '取消', exact: true }).click()
       await expect(card.getByRole('button', { name: '查看 Zotero' })).toBeFocused()
-      await page.getByRole('tab', { name: '我的', exact: true }).click()
+      await openConnectorScope(page, 'mine')
       await expect(card.getByRole('button', { name: '授权', exact: true })).toBeVisible()
       await expect(card.getByRole('switch')).toHaveCount(0)
       await card.hover()
@@ -1685,24 +1642,22 @@ test(
       await card.getByRole('button', { name: '授权', exact: true }).click()
       await expect(page.getByRole('dialog')).toHaveCount(1)
       await page.keyboard.press('Escape')
-      await header.getByRole('tab', { name: '技能', exact: true }).focus()
+      await openConnectorScope(page, 'market')
+      await navigation.getByRole('tab', { name: '技能', exact: true }).focus()
       await page.keyboard.press('Enter')
       await expect(page.getByTestId('skills-page').getByTestId('skills-search')).toBeVisible()
       await expect(header.getByTestId('skills-search')).toHaveCount(0)
       await expect(connectorsPage).toHaveCount(0)
       await expect(header.getByRole('searchbox', { name: '搜索连接器名称、说明' })).toHaveCount(0)
-      await page.goto(new URL('/__skills?marketData=1', server.resolvedUrls!.local[0]).href)
+      await page.goto(new URL('/__skills?marketData=1', baseUrl).href)
       await expect(header.getByRole('heading', { name: '技能中心' })).toHaveCSS(
         'position',
         'static'
       )
       await page.goto(
-        new URL(
-          '/__skills?center=1&marketData=1&authorizedConnector=1',
-          server.resolvedUrls!.local[0]
-        ).href
+        new URL('/__skills?center=1&marketData=1&authorizedConnector=1', baseUrl).href
       )
-      await header.getByRole('tab', { name: '连接器', exact: true }).click()
+      await connectorsTab.click()
       await page
         .getByTestId('connector-github')
         .getByRole('button', { name: '查看 GitHub' })
@@ -1769,7 +1724,7 @@ test(
       await storedAuthorization.getByRole('button', { name: '取消', exact: true }).click()
       await expect(authorizedDetail.getByRole('switch')).toBeEnabled()
       await authorizedDetail.getByRole('button', { name: '关闭', exact: true }).click()
-      await page.getByRole('tab', { name: '我的', exact: true }).click()
+      await openConnectorScope(page, 'mine')
       const githubCard = page.getByTestId('connector-github')
       await expect(githubCard.getByRole('switch')).toBeEnabled()
       await githubCard.getByRole('switch').click()
@@ -1785,12 +1740,9 @@ test(
         [{ submit: true, projectId: 'project-one', composerText: '使用 GitHub 检索代码' }]
       )
       await page.goto(
-        new URL(
-          '/__skills?center=1&authorizedConnector=1&longConnector=1',
-          server.resolvedUrls!.local[0]
-        ).href
+        new URL('/__skills?center=1&authorizedConnector=1&longConnector=1', baseUrl).href
       )
-      await header.getByRole('tab', { name: '连接器', exact: true }).click()
+      await connectorsTab.click()
       await page
         .getByTestId('connector-github')
         .getByRole('button', { name: /^查看 / })
@@ -1814,7 +1766,6 @@ test(
       await expect(page.getByRole('tooltip')).toContainText('QA_连续长名称_'.repeat(16))
     } finally {
       await browser.close()
-      await server.close()
     }
   }
 )
@@ -1823,19 +1774,12 @@ test(
   'custom connector capsule switches back from empty JSON and preserves valid fields',
   { timeout: 60_000 },
   async () => {
-    const server = await servers.create({
-      configFile: false,
-      root: ROOT,
-      plugins: [fixture(), react()],
-      cacheKey: 'skills',
-      server: { host: '127.0.0.1', port: 0 },
-    })
-    await server.listen()
+    const baseUrl = await fixtureUrl()
     const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage({ viewport: VIEWPORT })
-      await page.goto(new URL('/__skills?center=1', server.resolvedUrls!.local[0]).href)
-      await page.getByRole('tab', { name: '连接器', exact: true }).click()
+      await page.goto(new URL('/__skills?center=1', baseUrl).href)
+      await openCenterSection(page, '连接器')
       await page.getByRole('button', { name: '添加连接器', exact: true }).click()
       const dialog = page.getByRole('dialog')
       const modes = dialog.getByRole('tablist', { name: '配置方式' })
@@ -1846,9 +1790,10 @@ test(
           return `${element.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)}px`
         })
       )
-      await expect(
-        dialog.getByTestId('custom-connector-hint').locator('.icon-fill-status-tips')
-      ).toBeVisible()
+      await expect(dialog.getByTestId('custom-connector-hint')).toHaveAttribute('role', 'status')
+      await expect(dialog.getByTestId('custom-connector-hint')).toContainText(
+        'STDIO 会在本机执行命令'
+      )
       await dialog.getByRole('tab', { name: 'STDIO', exact: true }).click()
       await dialog.getByRole('button', { name: '添加参数', exact: true }).click()
       await dialog.getByRole('button', { name: '添加参数', exact: true }).click()
@@ -1892,7 +1837,6 @@ test(
       )
     } finally {
       await browser.close()
-      await server.close()
     }
   }
 )
@@ -1901,18 +1845,11 @@ test(
   'uninstalled market details hide activation and installed skills expose use and activation',
   { timeout: 60_000 },
   async () => {
-    const server = await servers.create({
-      configFile: false,
-      root: ROOT,
-      plugins: [fixture(), react()],
-      cacheKey: 'skills',
-      server: { host: '127.0.0.1', port: 0 },
-    })
-    await server.listen()
+    const baseUrl = await fixtureUrl()
     const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage({ viewport: VIEWPORT })
-      await page.goto(new URL('/__skills?marketData=1', server.resolvedUrls!.local[0]).href)
+      await page.goto(new URL('/__skills?marketData=1', baseUrl).href)
       const install = page
         .getByTestId('marketplace-card-market-paper')
         .getByRole('button', { name: '安装', exact: true })
@@ -1972,7 +1909,6 @@ test(
       )
     } finally {
       await browser.close()
-      await server.close()
     }
   }
 )
@@ -1982,22 +1918,16 @@ test(
   { timeout: 60_000 },
   async () => {
     const directory = await mkdtemp(path.join(ROOT, '../../../node_modules/skill-upload-'))
-    const server = await servers.create({
-      configFile: false,
-      root: ROOT,
-      plugins: [fixture(), react()],
-      cacheKey: 'skills',
-      server: { host: '127.0.0.1', port: 0 },
-    })
-    await server.listen()
+    const baseUrl = await fixtureUrl()
     const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       await mkdir(path.join(directory, 'references'))
       await writeFile(path.join(directory, 'SKILL.md'), '# Folder skill')
       await writeFile(path.join(directory, 'references/guide.md'), 'Nested evidence')
       const page = await browser.newPage({ viewport: VIEWPORT })
-      await page.goto(new URL('/__skills', server.resolvedUrls!.local[0]).href)
+      await page.goto(new URL('/__skills', baseUrl).href)
       await page.getByTestId('skills-add').click()
+      await page.getByRole('menuitem', { name: /本地上传/ }).click()
       await expect(page.getByTestId('skill-add-modal')).toBeVisible()
       await page
         .getByTestId('skill-add-modal')
@@ -2022,26 +1952,19 @@ test(
       await expect(page.getByTestId('skill-add-modal')).toHaveCount(0)
     } finally {
       await browser.close()
-      await server.close()
       await rm(directory, { recursive: true, force: true })
     }
   }
 )
 
 test('upload separates ordinary ZIPs from declared card plugins', { timeout: 60_000 }, async () => {
-  const server = await servers.create({
-    configFile: false,
-    root: ROOT,
-    plugins: [fixture(), react()],
-    cacheKey: 'skills',
-    server: { host: '127.0.0.1', port: 0 },
-  })
-  await server.listen()
+  const baseUrl = await fixtureUrl()
   const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
   try {
     const page = await browser.newPage({ viewport: VIEWPORT })
-    await page.goto(new URL('/__skills', server.resolvedUrls!.local[0]).href)
+    await page.goto(new URL('/__skills', baseUrl).href)
     await page.getByTestId('skills-add').click()
+    await page.getByRole('menuitem', { name: /本地上传/ }).click()
     const input = page.getByTestId('skill-upload-input')
     for (const filename of ['bad.zip', 'plugin.zip', 'plain.zip']) {
       await input.setInputFiles({
@@ -2052,9 +1975,11 @@ test('upload separates ordinary ZIPs from declared card plugins', { timeout: 60_
       if (filename === 'bad.zip')
         await expect(page.getByTestId('skill-upload-error')).toContainText('Invalid ZIP')
       await expect(page.getByRole('button', { name: '检查插件', exact: true })).toHaveCount(0)
-      await expect(page.getByTestId('skill-upload-preview')).toHaveCount(0)
-      await expect(page.getByTestId('skill-add-modal')).not.toContainText('Upload description')
-      await expect(page.getByTestId('skill-add-modal')).not.toContainText('Uploaded instructions')
+      if (filename === 'plain.zip')
+        await expect(page.getByTestId('skill-upload-preview')).toContainText(
+          'Uploaded instructions'
+        )
+      else await expect(page.getByTestId('skill-upload-preview')).toHaveCount(0)
       await expect(page.getByTestId('skill-add-modal')).not.toContainText('Upload author')
       if (filename === 'bad.zip') await expect(page.getByTestId('skill-install')).toBeDisabled()
       else await expect(page.getByTestId('skill-install')).toBeEnabled()
@@ -2068,27 +1993,20 @@ test('upload separates ordinary ZIPs from declared card plugins', { timeout: 60_
     assert.equal(operations.filter((operation) => operation === 'upload').length, 1)
   } finally {
     await browser.close()
-    await server.close()
   }
 })
 
 test(
-  'plugin upload checks on install and requires consent without a skill preview',
+  'plugin upload shows only skill details after a successful check and requires consent',
   { timeout: 60_000 },
   async () => {
-    const server = await servers.create({
-      configFile: false,
-      root: ROOT,
-      plugins: [fixture(), react()],
-      cacheKey: 'skills',
-      server: { host: '127.0.0.1', port: 0 },
-    })
-    await server.listen()
+    const baseUrl = await fixtureUrl()
     const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage({ viewport: VIEWPORT })
-      await page.goto(new URL('/__skills', server.resolvedUrls!.local[0]).href)
+      await page.goto(new URL('/__skills', baseUrl).href)
       await page.getByTestId('skills-add').click()
+      await page.getByRole('menuitem', { name: /本地上传/ }).click()
       await page.getByTestId('skill-upload-input').setInputFiles({
         name: 'invalid-plugin.zip',
         mimeType: 'application/zip',
@@ -2120,44 +2038,68 @@ test(
       await expect(page.getByRole('button', { name: '检查插件', exact: true })).toHaveCount(0)
       await expect(page.getByTestId('plugin-report')).toHaveCount(0)
       await page.getByTestId('skill-install').click()
-      await expect(page.getByTestId('plugin-report')).toBeVisible()
-      await expect(page.getByTestId('skill-add-modal')).not.toContainText('Upload description')
-      let operations = await page.evaluate(() =>
+      const review = page.getByTestId('skill-add-modal')
+      await expect(
+        review.getByRole('heading', { name: 'uploaded-skill', exact: true })
+      ).toBeVisible()
+      await expect(review).toContainText('版本 1.0')
+      await expect(review).toContainText('Upload description')
+      const document = review.getByRole('region', { name: '技能正文', exact: true })
+      await expect(document.getByRole('heading', { name: 'Uploaded instructions' })).toBeVisible()
+      await expect(document).not.toContainText('yaml-only')
+      await expect(document).toHaveCSS('overflow-y', 'auto')
+      assert.ok(await document.evaluate((element) => element.scrollHeight > element.clientHeight))
+      await document.focus()
+      await page.keyboard.press('End')
+      await expect(document.getByText('End of instructions.')).toBeInViewport()
+      await expect(review.getByRole('button', { name: '取消', exact: true })).toBeVisible()
+      await expect(page.getByTestId('plugin-report')).toHaveCount(0)
+      await expect(page.getByTestId('skill-upload-file')).toHaveCount(0)
+      await expect(review).not.toContainText(/upload-digest|navigation\.open|technical-warning/)
+      await expect(page.getByRole('button', { name: '对话交互预览', exact: true })).toHaveCount(0)
+      await expect(page.getByTestId('plugin-conversation-preview')).toHaveCount(0)
+      const operations = await page.evaluate(() =>
         (window as unknown as SkillTestWindow).skillRequests.map((request) => request.operation)
       )
       assert.equal(operations.filter((operation) => operation === 'plugin-check').length, 3)
+      assert.equal(operations.includes('plugin-preview'), false)
       assert.equal(operations.includes('plugin-confirm'), false)
       assert.equal(operations.includes('upload'), false)
       await page.getByRole('button', { name: '授权并安装', exact: true }).click()
       await expect(page.getByTestId('skill-add-modal')).toHaveCount(0)
-      operations = await page.evaluate(() =>
-        (window as unknown as SkillTestWindow).skillRequests.map((request) => request.operation)
+      const confirmations = await page.evaluate(() =>
+        (window as unknown as SkillTestWindow).skillRequests.filter(
+          (request) => request.operation === 'plugin-confirm'
+        )
       )
-      assert.equal(operations.filter((operation) => operation === 'plugin-confirm').length, 1)
+      assert.deepEqual(confirmations, [
+        {
+          operation: 'plugin-confirm',
+          candidate: 'upload-candidate',
+          sha256: 'upload-digest',
+          confirmed: true,
+          grants: ['navigation.open'],
+          enable: true,
+          update: false,
+        },
+      ])
     } finally {
       await browser.close()
-      await server.close()
     }
   }
 )
 
 test(
-  'upload keeps metadata internal before confirmation and errors remain retryable',
+  'plain skill upload shows details before confirmation and errors remain retryable',
   { timeout: 60_000 },
   async () => {
-    const server = await servers.create({
-      configFile: false,
-      root: ROOT,
-      plugins: [fixture(), react()],
-      cacheKey: 'skills',
-      server: { host: '127.0.0.1', port: 0 },
-    })
-    await server.listen()
+    const baseUrl = await fixtureUrl()
     const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage({ viewport: VIEWPORT })
-      await page.goto(new URL('/__skills', server.resolvedUrls!.local[0]).href)
+      await page.goto(new URL('/__skills', baseUrl).href)
       await page.getByTestId('skills-add').click()
+      await page.getByRole('menuitem', { name: /本地上传/ }).click()
       const input = page.getByTestId('skill-upload-input')
       const uploadDialog = page.getByTestId('skill-add-modal')
       await expect(uploadDialog).toHaveCSS('width', '512px')
@@ -2205,9 +2147,9 @@ test(
         mimeType: 'text/markdown',
         buffer: Buffer.from('test'),
       })
-      await expect(page.getByTestId('skill-upload-preview')).toHaveCount(0)
+      await expect(page.getByTestId('skill-upload-preview')).toContainText('Uploaded instructions')
       await expect(page.getByTestId('skill-install')).toBeEnabled()
-      await expect(uploadDialog).not.toContainText('Uploaded instructions')
+      await expect(uploadDialog).toContainText('Upload description')
       assert.equal(
         await page.evaluate(
           () =>
@@ -2230,7 +2172,6 @@ test(
       )
     } finally {
       await browser.close()
-      await server.close()
     }
   }
 )
@@ -2239,20 +2180,11 @@ test(
   'marketplace card keeps an icon-only loading state and prevents duplicate installs',
   { timeout: 60_000 },
   async () => {
-    const server = await servers.create({
-      configFile: false,
-      root: ROOT,
-      plugins: [fixture(), react()],
-      cacheKey: 'skills',
-      server: { host: '127.0.0.1', port: 0 },
-    })
-    await server.listen()
+    const baseUrl = await fixtureUrl()
     const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage({ viewport: VIEWPORT })
-      await page.goto(
-        new URL('/__skills?marketData=1&delayInstall=1', server.resolvedUrls!.local[0]).href
-      )
+      await page.goto(new URL('/__skills?marketData=1&delayInstall=1', baseUrl).href)
       const card = page.getByTestId('marketplace-card-market-paper')
       const install = card.getByTestId('marketplace-install-market-paper')
       await expect(install).toHaveCSS('width', '26px')
@@ -2287,7 +2219,6 @@ test(
       await expect(card.getByRole('button', { name: '已安装', exact: true })).toHaveCount(0)
     } finally {
       await browser.close()
-      await server.close()
     }
   }
 )
@@ -2296,20 +2227,11 @@ test(
   'marketplace revisits reuse lists and labels after tabs and remounts',
   { timeout: 60_000 },
   async () => {
-    const server = await servers.create({
-      configFile: false,
-      root: ROOT,
-      plugins: [fixture(), react()],
-      cacheKey: 'skills',
-      server: { host: '127.0.0.1', port: 0 },
-    })
-    await server.listen()
+    const baseUrl = await fixtureUrl()
     const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage({ viewport: VIEWPORT })
-      await page.goto(
-        new URL('/__skills?center=1&marketData=1', server.resolvedUrls!.local[0]).href
-      )
+      await page.goto(new URL('/__skills?center=1&marketData=1', baseUrl).href)
       const card = page.getByTestId('marketplace-card-market-paper')
       await expect(card).toBeVisible()
       await expect(page.getByTestId('skills-classification-research')).toBeVisible()
@@ -2321,18 +2243,17 @@ test(
           )
         )
       const initial = await requests()
-      await page.getByTestId('skills-tab-scholarseed').click()
-      await page.getByTestId('skills-tab-marketplace').click()
+      await openInstalledSkills(page)
+      await openSkillMarketplace(page)
       await expect(card).toBeVisible()
       assert.deepEqual(await requests(), initial)
-      await page.getByRole('banner').getByRole('tab', { name: '连接器', exact: true }).click()
+      await openCenterSection(page, '连接器')
       await expect(card).toHaveCount(0)
-      await page.getByRole('banner').getByRole('tab', { name: '技能', exact: true }).click()
+      await openCenterSection(page, '技能')
       await expect(card).toBeVisible()
       assert.deepEqual(await requests(), initial)
     } finally {
       await browser.close()
-      await server.close()
     }
   }
 )
@@ -2341,20 +2262,11 @@ test(
   'marketplace loads the next page on scroll with a single flight and stops at the end',
   { timeout: 60_000 },
   async () => {
-    const server = await servers.create({
-      configFile: false,
-      root: ROOT,
-      plugins: [fixture(), react()],
-      cacheKey: 'skills',
-      server: { host: '127.0.0.1', port: 0 },
-    })
-    await server.listen()
+    const baseUrl = await fixtureUrl()
     const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage({ viewport: VIEWPORT })
-      await page.goto(
-        new URL('/__skills?marketData=1&paginate=1&delayMore=1', server.resolvedUrls!.local[0]).href
-      )
+      await page.goto(new URL('/__skills?marketData=1&paginate=1&delayMore=1', baseUrl).href)
       await expect(page.locator('[data-testid^="marketplace-card-"]')).toHaveCount(24)
       await expect(page.getByRole('button', { name: '加载更多' })).toHaveCount(0)
       const list = page.getByTestId('skills-list')
@@ -2380,9 +2292,7 @@ test(
       await page.mouse.wheel(0, 5000)
       assert.equal(await nextPageRequests(), 1)
       assert.deepEqual(await page.getByTestId('skills-search').boundingBox(), header)
-      await page.goto(
-        new URL('/__skills?marketData=1&paginate=1&failMore=1', server.resolvedUrls!.local[0]).href
-      )
+      await page.goto(new URL('/__skills?marketData=1&paginate=1&failMore=1', baseUrl).href)
       await expect(page.locator('[data-testid^="marketplace-card-"]')).toHaveCount(24)
       await list.hover()
       await page.mouse.wheel(0, 5000)
@@ -2394,9 +2304,7 @@ test(
       await page.getByTestId('skills-load-error').getByRole('button', { name: '重试' }).click()
       await expect(page.getByTestId('marketplace-card-next-paper')).toBeAttached()
       assert.equal(await nextPageRequests(), 2)
-      await page.goto(
-        new URL('/__skills?marketData=1&paginate=1&delayMore=1', server.resolvedUrls!.local[0]).href
-      )
+      await page.goto(new URL('/__skills?marketData=1&paginate=1&delayMore=1', baseUrl).href)
       await expect(page.locator('[data-testid^="marketplace-card-"]')).toHaveCount(24)
       await list.hover()
       await page.mouse.wheel(0, 5000)
@@ -2408,7 +2316,6 @@ test(
       await expect(page.locator('[data-testid^="marketplace-card-"]')).toHaveCount(0)
     } finally {
       await browser.close()
-      await server.close()
     }
   }
 )
@@ -2417,26 +2324,16 @@ test(
   'marketplace details omit download metadata when counts are unknown',
   { timeout: 60_000 },
   async () => {
-    const server = await servers.create({
-      configFile: false,
-      root: ROOT,
-      plugins: [fixture(), react()],
-      cacheKey: 'skills',
-      server: { host: '127.0.0.1', port: 0 },
-    })
-    await server.listen()
+    const baseUrl = await fixtureUrl()
     const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage({ viewport: VIEWPORT })
-      await page.goto(
-        new URL('/__skills?marketData=1&noDownloads=1', server.resolvedUrls!.local[0]).href
-      )
+      await page.goto(new URL('/__skills?marketData=1&noDownloads=1', baseUrl).href)
       await page.getByRole('button', { name: '查看 Paper tools 的详情' }).click()
       await expect(page.getByTestId('skill-downloads')).toHaveCount(0)
       await expect(page.getByTestId('skill-detail')).not.toContainText('下载')
     } finally {
       await browser.close()
-      await server.close()
     }
   }
 )
@@ -2445,20 +2342,11 @@ test(
   'market source hints are static and detail attribution stays hidden after installation',
   { timeout: 60_000 },
   async () => {
-    const server = await servers.create({
-      configFile: false,
-      root: ROOT,
-      plugins: [fixture(), react()],
-      cacheKey: 'skills',
-      server: { host: '127.0.0.1', port: 0 },
-    })
-    await server.listen()
+    const baseUrl = await fixtureUrl()
     const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage({ viewport: VIEWPORT })
-      await page.goto(
-        new URL('/__skills?marketData=1&attributionData=1', server.resolvedUrls!.local[0]).href
-      )
+      await page.goto(new URL('/__skills?marketData=1&attributionData=1', baseUrl).href)
       const card = page.getByTestId('marketplace-card-market-paper')
       const link = card.getByText('@deepseek-ai', { exact: true })
       await expect(card.getByText('GitHub', { exact: true })).toBeVisible()
@@ -2498,24 +2386,22 @@ test(
       ).toBeEnabled()
       await page.keyboard.press('Escape')
       await expect(page.getByRole('dialog')).toHaveCount(0)
-      await page.getByTestId('skills-tab-user').click()
+      await openInstalledSkills(page, 'hub')
       const installed = page.getByTestId('skill-card-paper-local-name')
       await expect(installed.getByText('@deepseek-ai', { exact: true })).toHaveCount(0)
       await expect(installed.getByRole('link')).toHaveCount(0)
       await expect(installed).not.toContainText('Platform Admin')
-      await expect(installed.getByTestId('skill-source-paper-local-name')).toHaveText('GitHub')
       await installed.getByTestId('skill-view-paper-local-name').click()
       await expect(
         page.getByTestId('skill-detail').getByText('GitHub', { exact: true })
       ).toBeVisible()
       await expect(page.getByTestId('skill-detail')).not.toContainText('SkillHub')
-      await page.goto(new URL('/__skills?marketData=1', server.resolvedUrls!.local[0]).href)
+      await page.goto(new URL('/__skills?marketData=1', baseUrl).href)
       const withoutRegistration = page.getByTestId('marketplace-card-market-paper')
       await expect(withoutRegistration.locator('.vds-card__footer')).toHaveCount(0)
       await expect(withoutRegistration).not.toContainText('Platform Admin')
     } finally {
       await browser.close()
-      await server.close()
     }
   }
 )
@@ -2524,19 +2410,11 @@ test(
   'anonymous marketplace opens details, installs, preserves provenance and discards late searches',
   { timeout: 60_000 },
   async () => {
-    const server = await servers.create({
-      configFile: false,
-      root: ROOT,
-      plugins: [fixture(), react()],
-      cacheKey: 'skills',
-      server: { host: '127.0.0.1', port: 0 },
-    })
-    await server.listen()
+    const baseUrl = await fixtureUrl()
     const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage({ viewport: VIEWPORT })
-      await page.goto(new URL('/__skills?marketData=1', server.resolvedUrls!.local[0]).href)
-      await expect(page.getByRole('tab')).toHaveCount(3)
+      await page.goto(new URL('/__skills?marketData=1', baseUrl).href)
       await expect(page.getByTestId('marketplace-card-market-paper')).toBeVisible()
       await page.getByRole('button', { name: '查看 Paper tools 的详情' }).click()
       await expect(page.getByTestId('skill-document')).toContainText('Paper instructions')
@@ -2545,7 +2423,7 @@ test(
       )
       await expect(page.getByRole('dialog')).toHaveCount(1)
       await expect(page.getByTestId('skills-search')).toHaveCount(1)
-      await expect(page.getByTestId('skills-tab-marketplace')).toHaveCount(1)
+      await expect(page.getByTestId('skills-installed')).toBeVisible()
       const detailBox = await page.getByTestId('skill-detail').boundingBox()
       assert.ok(detailBox && detailBox.width <= VIEWPORT.width / 2)
       await expect(
@@ -2556,9 +2434,9 @@ test(
         page.getByTestId('skill-detail').getByRole('button', { name: '使用', exact: true })
       ).toBeEnabled()
       await page.keyboard.press('Escape')
-      await page.getByTestId('skills-tab-user').click()
+      await openInstalledSkills(page, 'hub')
       await expect(page.getByTestId('skill-card-paper-local-name')).toBeVisible()
-      await page.getByTestId('skills-tab-marketplace').click()
+      await openSkillMarketplace(page)
       await page.getByTestId('marketplace-card-market-paper').hover()
       await expect(
         page.getByTestId('marketplace-card-market-paper').getByRole('img', { name: '已安装' })
@@ -2578,7 +2456,6 @@ test(
       await expect(page.getByTestId('skills-empty')).toBeVisible()
     } finally {
       await browser.close()
-      await server.close()
     }
   }
 )
@@ -2587,14 +2464,7 @@ test(
   'the known registry move preserves installed state without merging other base paths',
   { timeout: 60_000 },
   async () => {
-    const server = await servers.create({
-      configFile: false,
-      root: ROOT,
-      plugins: [fixture(), react()],
-      cacheKey: 'skills',
-      server: { host: '127.0.0.1', port: 0 },
-    })
-    await server.listen()
+    const baseUrl = await fixtureUrl()
     const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage({ viewport: VIEWPORT })
@@ -2602,7 +2472,7 @@ test(
         await page.goto(
           new URL(
             '/__skills?marketData=1&migratedMarket=1' + (differentPath ? '&differentPath=1' : ''),
-            server.resolvedUrls!.local[0]
+            baseUrl
           ).href
         )
         const card = page.getByTestId('marketplace-card-market-paper')
@@ -2627,30 +2497,22 @@ test(
       }
     } finally {
       await browser.close()
-      await server.close()
     }
   }
 )
 
 test(
-  'skill cards show installation sources without exposing authors or taxonomy',
+  'skill cards hide authors and taxonomy while keeping update controls',
   { timeout: 60_000 },
   async () => {
-    const server = await servers.create({
-      configFile: false,
-      root: ROOT,
-      plugins: [fixture(), react()],
-      cacheKey: 'skills',
-      server: { host: '127.0.0.1', port: 0 },
-    })
-    await server.listen()
+    const baseUrl = await fixtureUrl()
     const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage({ viewport: VIEWPORT })
       await page.goto(
         new URL(
           '/__skills?marketData=1&classificationData=1&attributionData=1&updateData=1',
-          server.resolvedUrls!.local[0]
+          baseUrl
         ).href
       )
       const marketCard = page.getByTestId('marketplace-card-market-paper')
@@ -2666,9 +2528,9 @@ test(
       )
       for (const [tab, name] of [
         ['scholarseed', 'skill-0'],
-        ['user', 'skill-6'],
-      ]) {
-        await page.getByTestId(`skills-tab-${tab}`).click()
+        ['hub', 'skill-6'],
+      ] as const) {
+        await openInstalledSkills(page, tab)
         await expect(page.getByTestId('skills-classification-scroll')).toHaveCount(0)
         const card = page.getByTestId(`skill-card-${name}`)
         await expect(card).toBeVisible()
@@ -2680,15 +2542,12 @@ test(
           const aligned = (await card.boundingBox())!
           assert.equal(aligned.height, sourced.height)
           assert.equal(compact.height, sourced.height)
-          await expect(card.getByText('官方', { exact: true })).toBeVisible()
           await expect(card.getByText('GitHub', { exact: true })).toHaveCount(0)
           await expect(
             card.getByText(/未关联 SkillHub|原始来源未提供|原始来源暂不可用/)
           ).toHaveCount(0)
-          await expect(card.locator('.vds-card__footer')).toHaveCount(1)
           await expect(page.getByTestId('skill-card-skill-2').getByRole('link')).toHaveCount(0)
         } else {
-          await expect(card.getByText('GitHub', { exact: true })).toBeVisible()
           await expect(card.getByText('@deepseek-ai', { exact: true })).toHaveCount(0)
           await expect(
             page.getByTestId('skill-card-skill-8').getByText('原始来源未提供', { exact: true })
@@ -2703,12 +2562,11 @@ test(
       await expect(updateAll.locator('svg')).toHaveCSS('width', '14px')
       await expect(updateAll.locator('svg')).toHaveCSS('height', '14px')
       await expect(updateAll.locator('.vds-badge')).toHaveCount(0)
-      await page.getByTestId('skills-tab-marketplace').click()
+      await openSkillMarketplace(page)
       await expect(page.getByTestId('skills-classification-scroll')).toBeVisible()
       await expect(page.getByTestId('skills-classification-divider')).toHaveCount(0)
     } finally {
       await browser.close()
-      await server.close()
     }
   }
 )
@@ -2717,20 +2575,11 @@ test(
   'marketplace uses the existing skill card geometry and detail dialog',
   { timeout: 60_000 },
   async () => {
-    const server = await servers.create({
-      configFile: false,
-      root: ROOT,
-      plugins: [fixture(), react()],
-      cacheKey: 'skills',
-      server: { host: '127.0.0.1', port: 0 },
-    })
-    await server.listen()
+    const baseUrl = await fixtureUrl()
     const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage({ viewport: VIEWPORT })
-      await page.goto(
-        new URL('/__skills?marketData=1&scrollMarket=1', server.resolvedUrls!.local[0]).href
-      )
+      await page.goto(new URL('/__skills?marketData=1&scrollMarket=1', baseUrl).href)
       await page.getByTestId('skills-search').fill('paper')
       const trigger = page.getByRole('button', { name: '查看 Paper tools 20 的详情' })
       await trigger.scrollIntoViewIfNeeded()
@@ -2767,24 +2616,20 @@ test(
       await expect(page.getByTestId('skills-search')).toHaveValue('paper')
       await expect(trigger).toBeFocused()
       assert.equal(await list.evaluate((element) => element.scrollTop), scroll)
-      await page.getByTestId('skills-tab-scholarseed').click()
+      await openInstalledSkills(page)
       await expect(page.getByTestId('skill-card-skill-0')).toBeVisible()
       const localBox = await page.getByTestId('skill-card-skill-0').boundingBox()
       assert.ok(localBox && localBox.height >= marketHeight)
-      await expect(page.getByTestId('skill-card-skill-0').locator('.vds-card__footer')).toHaveCount(
-        1
-      )
       assert.ok(localBox)
       await page.getByTestId('skill-view-skill-0').click()
       const localDialog = await page.getByTestId('skill-detail').boundingBox()
       assert.equal(localDialog?.width, marketplaceDialog?.width)
       assert.equal(localDialog?.height, marketplaceDialog?.height)
       await page.keyboard.press('Escape')
-      await page.getByTestId('skills-tab-user').click()
+      await openInstalledSkills(page, 'user')
       await expect(page.getByTestId('skill-card-skill-5')).toBeVisible()
     } finally {
       await browser.close()
-      await server.close()
     }
   }
 )
@@ -2793,30 +2638,22 @@ test(
   'skills catalog uses compact cards, isolated tab searches and a scrolling list',
   { timeout: 60_000 },
   async () => {
-    const server = await servers.create({
-      configFile: false,
-      root: ROOT,
-      plugins: [fixture(), react()],
-      cacheKey: 'skills',
-      server: { host: '127.0.0.1', port: 0 },
-    })
-    await server.listen()
+    const baseUrl = await fixtureUrl()
     const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage({ viewport: VIEWPORT })
-      await page.goto(new URL('/__skills', server.resolvedUrls!.local[0]).href)
-      await expect(page.getByRole('tab')).toHaveCount(3)
-      await expect(page.getByRole('tab', { name: '技能广场', exact: true })).toBeVisible()
+      await page.goto(new URL('/__skills', baseUrl).href)
       await expect(page.getByTestId('skills-page').getByTestId('skills-search')).toBeVisible()
       await expect(
         page.locator('[data-home-header-actions] [data-testid="skills-search"]')
       ).toHaveCount(0)
       await expect(page.getByTestId('skills-empty')).toBeVisible()
       await page.getByTestId('skills-add').click()
+      await page.getByRole('menuitem', { name: /本地上传/ }).click()
       await expect(page.getByRole('menu')).toHaveCount(0)
       await expect(page.getByTestId('skills-add').locator('[class*="switch-arrow"]')).toHaveCount(0)
       await expect(page.getByRole('dialog')).toBeVisible()
-      await page.goto(new URL('/__skills?failLoad=1', server.resolvedUrls!.local[0]).href)
+      await page.goto(new URL('/__skills?failLoad=1', baseUrl).href)
       const loadError = page.getByTestId('skills-load-error')
       await expect(loadError).toContainText('技能广场加载失败')
       await expect(page.getByTestId('skills-empty')).toHaveCount(0)
@@ -2830,13 +2667,19 @@ test(
       await page.keyboard.press('Escape')
       await expect(page.getByRole('dialog')).toHaveCount(0)
       await expect(page.locator('[data-skill-group]')).toHaveCount(0)
-      await page.getByRole('tab', { name: '系统预置', exact: true }).click()
+      await page.evaluate(() => {
+        ;(window as unknown as SkillTestWindow).failSkillLoad = true
+      })
+      await openInstalledSkills(page)
       await expect(loadError).toContainText('技能加载失败，请重试。')
       const listBox = await page.getByTestId('skills-list').boundingBox()
       const errorBox = await loadError.boundingBox()
       assert.ok(listBox && errorBox)
       assert.ok(Math.abs(errorBox.x + errorBox.width / 2 - (listBox.x + listBox.width / 2)) < 2)
       assert.ok(Math.abs(errorBox.y + errorBox.height / 2 - (listBox.y + listBox.height / 2)) < 2)
+      await page.evaluate(() => {
+        ;(window as unknown as SkillTestWindow).failSkillLoad = false
+      })
       await loadError.getByRole('button', { name: '重试' }).click()
       await expect(page.getByTestId('skill-card-skill-0')).toBeVisible()
       await expect(page.getByPlaceholder('搜索技能名称')).toBeVisible()
@@ -2865,11 +2708,20 @@ test(
       const card = page.getByTestId('skill-card-skill-0')
       const box = await card.boundingBox()
       assert.ok(box)
-      assert.ok(box.width > 390 && box.width < 430)
-      const footer = (await card.locator('.vds-card__footer').boundingBox())!
-      const description = (await card.locator('.vds-card__description').boundingBox())!
-      assert.ok(footer.y >= description.y + description.height)
-      await expect(card.getByText('官方', { exact: true })).toBeVisible()
+      const grid = await card.evaluate((element) => {
+        const parent = element.parentElement!
+        const style = getComputedStyle(parent)
+        return {
+          width: parent.getBoundingClientRect().width,
+          columns: style.gridTemplateColumns.split(' ').length,
+          gap: Number.parseFloat(style.columnGap),
+        }
+      })
+      assert.equal(grid.columns, 2)
+      assert.equal(
+        Math.round(box.width),
+        Math.round((grid.width - grid.gap * (grid.columns - 1)) / grid.columns)
+      )
       await page.mouse.move(0, 0)
       await expect(card.getByTestId('skill-more-skill-0')).toBeVisible()
       await expect(card.getByTestId('skill-more-skill-0')).toHaveCSS(
@@ -2919,25 +2771,25 @@ test(
       await page.keyboard.press('Enter')
       await expect(page.getByTestId('skill-detail')).toBeVisible()
       await page.keyboard.press('Escape')
-      await page.getByRole('tab', { name: '我添加的', exact: true }).click()
+      await page.getByRole('tab', { name: '用户上传', exact: true }).click()
       await expect(page.locator('[data-skill-group="scholarseed"]')).toHaveCount(0)
       await expect(page.locator('[data-skill-group="user"]')).toHaveCount(25)
       await page.getByTestId('skills-search').fill('skill-6')
       await expect(page.locator('[data-skill-group="user"]')).toHaveCount(1)
-      await page.getByRole('tab', { name: '系统预置', exact: true }).click()
+      await openInstalledSkills(page)
       await expect(page.getByTestId('skills-search')).toHaveValue('')
       await expect(page.locator('[data-skill-group="scholarseed"]')).toHaveCount(5)
       await page.getByTestId('skills-search').fill('skill-1')
       await expect(page.locator('[data-skill-group="scholarseed"]')).toHaveCount(1)
-      await page.getByRole('tab', { name: '我添加的', exact: true }).click()
+      await page.getByRole('tab', { name: '用户上传', exact: true }).click()
       await expect(page.getByTestId('skills-search')).toHaveValue('skill-6')
       await expect(page.locator('[data-skill-group="user"]')).toHaveCount(1)
       await page.getByRole('button', { name: '清空搜索', exact: true }).click()
       await expect(page.locator('[data-skill-group="user"]')).toHaveCount(25)
-      await page.getByRole('tab', { name: '系统预置', exact: true }).click()
+      await openInstalledSkills(page)
       await expect(page.getByTestId('skills-search')).toHaveValue('skill-1')
       await page.getByRole('button', { name: '清空搜索', exact: true }).click()
-      await page.getByRole('tab', { name: '我添加的', exact: true }).click()
+      await page.getByRole('tab', { name: '用户上传', exact: true }).click()
       await expect(page.getByTestId('skills-search')).toHaveValue('')
       const userCard = page.getByTestId('skill-card-skill-5')
       const more = page.getByTestId('skill-more-skill-5')
@@ -3027,11 +2879,12 @@ test(
       await page.mouse.wheel(0, 1200)
       await expect.poll(() => scroll.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
       assert.deepEqual(await page.getByTestId('skills-search').boundingBox(), before)
-      await page.getByRole('tab', { name: '系统预置', exact: true }).click()
+      await openInstalledSkills(page)
       await expect(page.locator('[data-skill-group="scholarseed"]')).toHaveCount(5)
       await expect(page.locator('[data-skill-group="user"]')).toHaveCount(0)
-      await page.goto(new URL('/__skills?emptyUser=1', server.resolvedUrls!.local[0]).href)
-      await page.getByRole('tab', { name: '我添加的', exact: true }).click()
+      await page.goto(new URL('/__skills?emptyUser=1', baseUrl).href)
+      await page.getByTestId('skills-installed').click()
+      await page.getByRole('tab', { name: '用户上传', exact: true }).click()
       const userEmpty = page.getByTestId('skills-empty')
       await expect(userEmpty).toContainText('暂无技能')
       await expect(userEmpty.locator('svg.lucide-hammer')).toBeVisible()
@@ -3065,11 +2918,11 @@ test(
         'rgb(39, 39, 39)'
       )
       await userEmpty.getByRole('button', { name: '添加技能' }).click()
+      await page.getByRole('menuitem', { name: /本地上传/ }).click()
       await expect(page.getByRole('menu')).toHaveCount(0)
       await expect(page.getByRole('dialog')).toBeVisible()
     } finally {
       await browser.close()
-      await server.close()
     }
   }
 )
@@ -3078,22 +2931,13 @@ test(
   'system UI report without cards confirms an update without plugin activation or preview',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
-      configFile: false,
-      root: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..'),
-      plugins: [react()],
-      server: { host: '127.0.0.1', port: 0 },
-    })
-    await server.listen()
+    const baseUrl = await fixtureUrl('catalog')
     let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined
     try {
       browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
       const page = await browser.newPage()
       await page.goto(
-        new URL(
-          '/components/business/skills.render.fixture.html?uiReport=1',
-          server.resolvedUrls!.local[0]
-        ).href
+        new URL('/components/business/skills.render.fixture.html?uiReport=1', baseUrl).href
       )
       await expect(page.getByRole('button', { name: '确认更新系统 UI', exact: true })).toBeVisible()
       await expect(page.getByRole('button', { name: '对话交互预览', exact: true })).toHaveCount(0)
@@ -3125,7 +2969,6 @@ test(
       assert.deepEqual(requests[0].grants, [])
     } finally {
       await browser?.close()
-      await server.close()
     }
   }
 )
@@ -3134,26 +2977,17 @@ test(
   'catalog failure is not empty and retry preserves the previous successful list',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
-      configFile: false,
-      root: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..'),
-      plugins: [react()],
-      server: { host: '127.0.0.1', port: 0 },
-    })
+    const baseUrl = await fixtureUrl('catalog')
     let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined
     try {
-      await server.listen()
       browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
       const page = await browser.newPage()
       page.on('pageerror', (error) => console.error(error.stack))
       await page.route(/\/api\/(?!.*\.(?:ts|tsx|js)(?:\?|$))/, (route) =>
         route.fulfill({ status: 503, contentType: 'application/json', body: '{}' })
       )
-      await page.goto(
-        new URL('/components/business/skills.render.fixture.html', server.resolvedUrls!.local[0])
-          .href
-      )
-      await page.getByRole('tab', { name: '系统预置', exact: true }).click()
+      await page.goto(new URL('/components/business/skills.render.fixture.html', baseUrl).href)
+      await openInstalledSkills(page)
       await expect(page.getByTestId('skills-load-error')).toContainText('技能加载失败，请重试。')
       await expect(page.getByTestId('skills-empty')).toHaveCount(0)
       const rows = [
@@ -3184,6 +3018,8 @@ test(
         fixture.respond({ status: 503, body: '{}' })
         fixture.refresh()
       })
+      await expect(page.getByText('技能加载失败，请重试。', { exact: true })).toBeVisible()
+      await expect(page.getByTestId('skills-load-error')).toHaveCount(0)
       await expect(page.getByTestId('skill-card-precise-literature-search')).toBeVisible()
       await expect(page.getByTestId('skills-load-error')).toHaveCount(0)
       await expect(page.getByTestId('skills-empty')).toHaveCount(0)
@@ -3199,30 +3035,19 @@ test(
       await expect(page.getByTestId('skills-load-error')).toHaveCount(0)
     } finally {
       await browser?.close()
-      await server.close()
     }
   }
 )
 test('installed skill and connector card actions share a centerline and an eight-pixel gap', async () => {
-  const server = await servers.create({
-    configFile: false,
-    root: ROOT,
-    plugins: [fixture(), react()],
-    cacheKey: 'skills',
-    server: { host: '127.0.0.1', port: 0 },
-  })
-  await server.listen()
+  const baseUrl = await fixtureUrl()
   const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
   try {
     const page = await browser.newPage({ viewport: VIEWPORT })
     await page.goto(
-      new URL(
-        '/__skills?center=1&authorizedConnector=1&twoConnectors=1',
-        server.resolvedUrls!.local[0]
-      ).href
+      new URL('/__skills?center=1&authorizedConnector=1&twoConnectors=1', baseUrl).href
     )
-    for (const group of ['scholarseed', 'user']) {
-      await page.getByTestId(`skills-tab-${group}`).click()
+    for (const group of ['scholarseed', 'user'] as const) {
+      await openInstalledSkills(page, group)
       const card = page.locator(`[data-skill-group="${group}"]`).first()
       const more = card.getByRole('button', { name: /更多操作/ })
       await expect(more).toBeVisible()
@@ -3231,8 +3056,8 @@ test('installed skill and connector card actions share a centerline and an eight
       assert.equal(action.x - menu.x - menu.width, 8)
       assert.ok(Math.abs(action.y + action.height / 2 - menu.y - menu.height / 2) < 1)
     }
-    await page.getByRole('tab', { name: '连接器', exact: true }).click()
-    await page.getByRole('tab', { name: '我的', exact: true }).click()
+    await openCenterSection(page, '连接器')
+    await openConnectorScope(page, 'mine')
     for (const id of ['zotero', 'github']) {
       const card = page.getByTestId(`connector-${id}`)
       const more = card.getByTestId(`connector-more-${id}`)
@@ -3248,24 +3073,17 @@ test('installed skill and connector card actions share a centerline and an eight
     }
   } finally {
     await browser.close()
-    await server.close()
   }
 })
 
 test('skill cards omit unavailable reason copy while retaining activation controls', async () => {
-  const server = await servers.create({
-    configFile: false,
-    root: ROOT,
-    plugins: [fixture(), react()],
-    cacheKey: 'skills',
-    server: { host: '127.0.0.1', port: 0 },
-  })
-  await server.listen()
+  const baseUrl = await fixtureUrl()
   const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
   try {
     const page = await browser.newPage({ viewport: VIEWPORT })
-    await page.goto(new URL('/__skills?disabledReason=1', server.resolvedUrls!.local[0]).href)
-    await page.getByTestId('skills-tab-user').click()
+    await page.goto(new URL('/__skills?disabledReason=1', baseUrl).href)
+    await page.getByTestId('skills-installed').click()
+    await openInstalledSkills(page, 'user')
     const card = page.getByTestId('skill-card-skill-5')
     await expect(card.getByTestId('skill-toggle-skill-5')).toBeChecked()
     await expect(card).not.toContainText('该技能已在书深中停用')
@@ -3274,67 +3092,21 @@ test('skill cards omit unavailable reason copy while retaining activation contro
     await expect(card).not.toContainText('该技能已在书深中停用')
   } finally {
     await browser.close()
-    await server.close()
   }
 })
 
-test('installed cards retain two columns and show accurate source footers with aligned actions', async () => {
-  const server = await servers.create({
-    configFile: false,
-    root: ROOT,
-    plugins: [fixture(), react()],
-    cacheKey: 'skills',
-    server: { host: '127.0.0.1', port: 0 },
-  })
-  await server.listen()
+test('installed skill actions align and connector footers show authorization', async () => {
+  const baseUrl = await fixtureUrl()
   const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
   try {
     const page = await browser.newPage({ viewport: VIEWPORT })
     await page.goto(
-      new URL(
-        '/__skills?center=1&attributionData=1&authorizedConnector=1&twoConnectors=1',
-        server.resolvedUrls!.local[0]
-      ).href
+      new URL('/__skills?center=1&authorizedConnector=1&twoConnectors=1', baseUrl).href
     )
-    for (const tab of ['scholarseed', 'user']) {
-      await page.getByTestId(`skills-tab-${tab}`).click()
+    for (const tab of ['scholarseed', 'user'] as const) {
+      await openInstalledSkills(page, tab)
       const cards = page.locator(`[data-skill-group="${tab}"]`)
-      await expect(cards.nth(2)).toBeVisible()
-      await expect
-        .poll(() =>
-          cards.evaluateAll((elements) => {
-            if (elements.length < 3) return false
-            const [first, second, third] = elements
-              .slice(0, 3)
-              .map((element) => element.getBoundingClientRect())
-            return first.y === second.y && first.x === third.x && third.y > first.y
-          })
-        )
-        .toBe(true)
-      await expect
-        .poll(() =>
-          cards.evaluateAll(
-            (elements) =>
-              elements.length >= 3 &&
-              elements.every(
-                (element) => element.querySelectorAll('.vds-card__footer').length === 1
-              )
-          )
-        )
-        .toBe(true)
-      await expect(cards.first().locator('.vds-card__footer')).toHaveCSS(
-        'border-top-style',
-        'solid'
-      )
-      await expect(
-        cards
-          .first()
-          .getByTestId(tab === 'scholarseed' ? 'skill-source-skill-0' : 'skill-source-skill-5')
-      ).toHaveText(tab === 'scholarseed' ? '官方' : '用户上传')
-      if (tab === 'user') {
-        await expect(page.getByTestId('skill-source-skill-6')).toHaveText('GitHub')
-        await expect(page.getByTestId('skill-source-skill-8')).toHaveText('本地添加')
-      }
+      await expect(cards.first()).toBeVisible()
       const more = cards.first().getByRole('button', { name: /更多操作/ })
       await expect(more.locator('svg.lucide-ellipsis')).toBeVisible()
       const menu = (await more.boundingBox())!
@@ -3342,8 +3114,8 @@ test('installed cards retain two columns and show accurate source footers with a
       assert.ok(menu.x + menu.width < toggle.x)
       assert.ok(Math.abs(menu.y + menu.height / 2 - toggle.y - toggle.height / 2) < 1)
     }
-    await page.getByRole('tab', { name: '连接器', exact: true }).click()
-    await page.getByRole('tab', { name: '我的', exact: true }).click()
+    await openCenterSection(page, '连接器')
+    await openConnectorScope(page, 'mine')
     const offsets = []
     for (const id of ['zotero', 'github']) {
       const card = page.getByTestId(`connector-${id}`)
@@ -3363,27 +3135,16 @@ test('installed cards retain two columns and show accurate source footers with a
     assert.ok(Math.abs(offsets[0] - offsets[1]) < 1)
   } finally {
     await browser.close()
-    await server.close()
   }
 })
 
 test('skill center form dialog headers align titles and close buttons like skill details', async () => {
-  const server = await servers.create({
-    configFile: false,
-    root: ROOT,
-    plugins: [fixture(), react()],
-    cacheKey: 'skills',
-    server: { host: '127.0.0.1', port: 0 },
-  })
-  await server.listen()
+  const baseUrl = await fixtureUrl()
   const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
   try {
     const page = await browser.newPage({ viewport: VIEWPORT })
     await page.goto(
-      new URL(
-        '/__skills?center=1&authorizedConnector=1&twoConnectors=1',
-        server.resolvedUrls!.local[0]
-      ).href
+      new URL('/__skills?center=1&authorizedConnector=1&twoConnectors=1', baseUrl).href
     )
     const checkHeader = async (): Promise<void> => {
       const dialog = page.getByRole('dialog').last()
@@ -3391,7 +3152,7 @@ test('skill center form dialog headers align titles and close buttons like skill
       const title = dialog.locator('.vds-dialog__title')
       const close = dialog.getByRole('button', { name: '关闭', exact: true })
       await expect(title).toHaveCSS('font-size', '16px')
-      await expect(title).toHaveCSS('font-weight', '400')
+      await expect(title).toHaveCSS('font-weight', '500')
       await expect(title).toHaveCSS('line-height', '24px')
       await expect(close).toHaveCSS('top', '12px')
       await expect(close).toHaveCSS('right', '8px')
@@ -3402,13 +3163,14 @@ test('skill center form dialog headers align titles and close buttons like skill
       await close.click()
     }
     await page.getByRole('button', { name: '添加技能', exact: true }).click()
+    await page.getByRole('menuitem', { name: /本地上传/ }).click()
     await checkHeader()
-    await page.getByTestId('skills-tab-scholarseed').click()
+    await openInstalledSkills(page)
     await page.getByTestId('skill-more-skill-0').click()
     await page.getByRole('menuitem', { name: '使用技能', exact: true }).click()
     await checkHeader()
-    await page.getByRole('tab', { name: '连接器', exact: true }).click()
-    await page.getByRole('tab', { name: '我的', exact: true }).click()
+    await openCenterSection(page, '连接器')
+    await openConnectorScope(page, 'mine')
     await page
       .getByTestId('connector-zotero')
       .getByRole('button', { name: '授权', exact: true })
@@ -3421,26 +3183,16 @@ test('skill center form dialog headers align titles and close buttons like skill
     await checkHeader()
   } finally {
     await browser.close()
-    await server.close()
   }
 })
 
 test('skill and connector details leave 4px between the switch and close button at an 8px inset', async () => {
-  const server = await servers.create({
-    configFile: false,
-    root: ROOT,
-    plugins: [fixture(), react()],
-    cacheKey: 'skills',
-    server: { host: '127.0.0.1', port: 0 },
-  })
-  await server.listen()
+  const baseUrl = await fixtureUrl()
   const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
   try {
     const page = await browser.newPage({ viewport: VIEWPORT })
-    await page.goto(
-      new URL('/__skills?center=1&authorizedConnector=1', server.resolvedUrls!.local[0]).href
-    )
-    await page.getByTestId('skills-tab-scholarseed').click()
+    await page.goto(new URL('/__skills?center=1&authorizedConnector=1', baseUrl).href)
+    await openInstalledSkills(page)
     await page.getByTestId('skill-view-skill-0').click()
     for (const id of ['skill-detail', 'connector-detail']) {
       const dialog = page.getByTestId(id)
@@ -3460,8 +3212,8 @@ test('skill and connector details leave 4px between the switch and close button 
       )
       await close.click()
       if (id === 'skill-detail') {
-        await page.getByRole('tab', { name: '连接器', exact: true }).click()
-        await page.getByRole('tab', { name: '我的', exact: true }).click()
+        await openCenterSection(page, '连接器')
+        await openConnectorScope(page, 'mine')
         await page
           .getByTestId('connector-github')
           .getByRole('button', { name: '查看 GitHub', exact: true })
@@ -3470,24 +3222,16 @@ test('skill and connector details leave 4px between the switch and close button 
     }
   } finally {
     await browser.close()
-    await server.close()
   }
 })
 
 test('skill toggles preserve mounted content through stale refreshes and failed background loads', async () => {
-  const server = await servers.create({
-    configFile: false,
-    root: ROOT,
-    plugins: [fixture(), react()],
-    cacheKey: 'skills',
-    server: { host: '127.0.0.1', port: 0 },
-  })
-  await server.listen()
+  const baseUrl = await fixtureUrl()
   const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
   try {
     const page = await browser.newPage({ viewport: VIEWPORT })
-    await page.goto(new URL('/__skills', server.resolvedUrls!.local[0]).href)
-    await page.getByTestId('skills-tab-user').click()
+    await page.goto(new URL('/__skills', baseUrl).href)
+    await openInstalledSkills(page, 'user')
     const toggle = page.getByTestId('skill-toggle-skill-5')
     await expect(toggle).toBeChecked()
     const card = await page.getByTestId('skill-card-skill-5').elementHandle()
@@ -3550,27 +3294,16 @@ test('skill toggles preserve mounted content through stale refreshes and failed 
     await expect(page.getByTestId('skill-toggle-skill-6')).not.toBeChecked()
   } finally {
     await browser.close()
-    await server.close()
   }
 })
 
 test('skill category edges strictly match the card grid with an overlay scrollbar', async () => {
-  const server = await servers.create({
-    configFile: false,
-    root: ROOT,
-    plugins: [fixture(), react()],
-    cacheKey: 'skills',
-    server: { host: '127.0.0.1', port: 0 },
-  })
-  await server.listen()
+  const baseUrl = await fixtureUrl()
   const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
   try {
     const page = await browser.newPage({ viewport: VIEWPORT })
     await page.goto(
-      new URL(
-        '/__skills?center=1&marketData=1&scrollMarket=1&standardLabels=1',
-        server.resolvedUrls!.local[0]
-      ).href
+      new URL('/__skills?center=1&marketData=1&scrollMarket=1&standardLabels=1', baseUrl).href
     )
     await expect(page.getByRole('scrollbar')).toBeVisible()
     assert.equal(
@@ -3597,25 +3330,15 @@ test('skill category edges strictly match the card grid with an overlay scrollba
     }
   } finally {
     await browser.close()
-    await server.close()
   }
 })
 
 test('skill document loading centers a spinner and original-text label', async () => {
-  const server = await servers.create({
-    configFile: false,
-    root: ROOT,
-    plugins: [fixture(), react()],
-    cacheKey: 'skills',
-    server: { host: '127.0.0.1', port: 0 },
-  })
-  await server.listen()
+  const baseUrl = await fixtureUrl()
   const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
   try {
     const page = await browser.newPage({ viewport: VIEWPORT })
-    await page.goto(
-      new URL('/__skills?marketData=1&delayDocument=1', server.resolvedUrls!.local[0]).href
-    )
+    await page.goto(new URL('/__skills?marketData=1&delayDocument=1', baseUrl).href)
     await page
       .getByTestId('marketplace-card-market-paper')
       .getByRole('button', { name: '查看 Paper tools 的详情' })
@@ -3632,6 +3355,5 @@ test('skill document loading centers a spinner and original-text label', async (
     await expect(page.getByTestId('skill-detail')).toHaveCount(0)
   } finally {
     await browser.close()
-    await server.close()
   }
 })

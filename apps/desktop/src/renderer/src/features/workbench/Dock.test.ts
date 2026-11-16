@@ -9,6 +9,40 @@ import { compile } from 'tailwindcss'
 
 type Element = React.ReactElement<React.PropsWithChildren<Record<string, unknown>>>
 
+test('outside focus and window blur preserve PDF selections without changing other document dismissal', () => {
+  const source = readFileSync(new URL('./Dock.tsx', import.meta.url), 'utf8')
+  const start = source.indexOf('const dismissSelection = (): void => {')
+  const end = source.indexOf('const saveOutsideDock', start)
+  for (const kind of ['pdf', 'text']) {
+    let cleared = 0
+    let rangesRemoved = 0
+    const compiled = transformSync(`${source.slice(start, end)}; dismissSelection()`, {
+      loader: 'ts',
+    }).code
+    runInNewContext(compiled, {
+      workspace: {
+        getSnapshot: () => ({
+          focusedTabId: 'tab',
+          tabs: { tab: { sessionId: 'session' } },
+          sessions: { session: { selection: { locator: { kind } } } },
+        }),
+        setSelection: () => {
+          cleared += 1
+        },
+      },
+      window: {
+        getSelection: () => ({
+          removeAllRanges: () => {
+            rangesRemoved += 1
+          },
+        }),
+      },
+    })
+    assert.equal(cleared, kind === 'pdf' ? 0 : 1)
+    assert.equal(rangesRemoved, kind === 'pdf' ? 0 : 1)
+  }
+})
+
 function descendants(element: Element): Element[] {
   return [
     element,

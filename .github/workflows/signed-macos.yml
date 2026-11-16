@@ -24,7 +24,7 @@ concurrency:
 jobs:
   package:
     name: Signed macOS (${{ matrix.arch }})
-    # 主分支推送自动构建 preview，发布由独立手动工作流执行。
+    # Pushes build preview installers; manual runs can select the release channel.
     if: github.repository == 'alibaba-damo-academy/ScholarSeed' && github.ref == 'refs/heads/main'
     runs-on: ${{ matrix.runner }}
     strategy:

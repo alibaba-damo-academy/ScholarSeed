@@ -1,5 +1,6 @@
 export {
   buildProject,
+  buildExample,
   buildScenario,
   loadScenario,
   DATA_ROOT,

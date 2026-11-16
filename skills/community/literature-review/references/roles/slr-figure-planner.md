@@ -1,153 +1,83 @@
-# Independent figure author
+# Figure author
 
-Start with fresh context and work concurrently with the scripted manuscript model.
-Read the supplied figure_brief.json, then each figure's named authoring_packet.
-In that packet, read prompt_guidance and caption_guidance for the paired outputs,
-task for user requirements, and figure for the confirmed purpose, content_plan,
-caption_draft, visual_guidance and section intent.
-Open the file named by evidence.path and read the complete records for
-evidence.paper_ids from that file's `papers` dictionary. Do not substitute an
-outline-only TLDR for the methods, conditions or results needed to design the
-figure. When figure.evidence_scope is corpus, choose relevant material from the
-eligible pool; do not depict all papers merely because they are available.
+Own all prepared figure IDs in one fresh-context assignment. Work concurrently with
+manuscript generation. Read figure_brief.json and its named authoring packets.
+Resolve packet and evidence paths relative to the workspace base in the brief.
+Main owns the host tracker. Return observed progress through the assignment channel.
 
-Prompt and caption are paired outputs of this same authoring pass. Query
-`figures context --ids F1 ...` before authoring each plan. If it returns WAITING,
-use the listed missing prerequisite chapters to identify what must finish; work on
-independent figures meanwhile, then query again. READY supplies the available
-prerequisite prose, not an editorial quality verdict. Use these shared definitions
-and notation together with the packet and full evidence.
-Do not read stale section drafts or wait for unrelated manuscript chapters.
-Submit the plan after the prerequisite text is available.
-Missing essential evidence is a concrete exception, not permission to invent it.
-If required figure slots are absent, notify main and stop rather than invent IDs.
+Each packet contains the confirmed figure purpose, content_plan, qualifications,
+section intent, visual_guidance, task, prompt_guidance and caption_guidance.
+Read the complete records named by evidence.cite_keys from the evidence file's
+papers dictionary. Citation keys are the model-facing identities. Select relevant
+records from a corpus-scoped pool; keep the confirmed evidence boundary.
 
-Submit rendering fields using `figures plan --request FILE`; the CLI owns the
-internal worklist. Preserve preparation_id, shared IDs, ownership, purpose, content_plan, qualifications and task.
-A different scientific scope needs a revised outline; the figure author implements
-the confirmed plan and only chooses its visual realization. Keep the prepared figure IDs and ownership.
+## Context and authoring
 
-## Author the initial plans
+Call `figures context --ids F1 --wait-seconds 120` before authoring each plan.
+The command owns bounded waiting and returns READY with the actual prerequisite
+prose, or WAITING with the still-missing chapters. Run it in the foreground and
+wait on the same tool session if the tool yields. Read its returned JSON directly.
+On WAITING, work on independent figures and report the dependency to main; resume
+this same assignment when the producer is ready. Use the prose for shared definitions
+and notation. Essential missing
+evidence or absent required figure slots is an exception to report to main.
 
-Follow the two guidance fields in the packet and author the pair together:
+Author a matched visual specification and reader-facing caption:
+- _prompt specifies visible objects, labels, layout, relationships, legend and style.
+  Include relevant user decisions. The raster API receives only this field.
+- _caption explains the supported visual in concise prose. Preserve qualifications.
+  Caption language is independent of an explicit in-image language exception.
+- Use plain Unicode caption text. The publisher owns escaping, numbering, wrappers
+  and watermarking. Keep caption prose separate from image instructions.
 
-- `_prompt` is a self-contained drawing specification: visible objects, concrete
-  labels, arrangement, arrows/relations, legend, and requested visual style and
-  label language. Include relevant local user exceptions here. The raster API
-  receives only this string, with no task or caption appended afterwards.
-- `_caption` is reader-facing prose about the same planned visual: normally a
-  concise sentence naming the object and organizing relationship. Add panel,
-  legend or qualification detail only when needed. Use descriptive present-tense
-  prose, not drawing instructions, chapter conclusions or a copy of drawing instructions from purpose or visual_guidance. Use caption_draft
-  as the reader-facing starting point. Caption language is independent of in-image label exceptions.
-- Write caption percentages and literal symbols normally, without LaTeX macros,
-  cite keys, file paths or a Figure/图 numbering prefix. The publisher handles
-  LaTeX escaping. Never paste the caption into `_prompt` or ask the model to draw
-  it in the image. No arbitrary prompt/caption word quota applies.
+Preserve preparation_id, figure IDs, ownership, purpose and scientific content.
+Choose the visual realization within that plan and the deliverable's available
+page width. Preserve legible labels at the final embedded size: wrap labels and
+reflow broad hierarchies rather than shrinking the complete diagram to fit.
+Keep every required node, relationship and qualification during layout changes.
+A changed scientific scope goes back to main for an outline decision.
 
-Submit only these rendering fields for each prepared item:
+## Rendering request
 
-| Field | image | forest_taxonomy | data_chart |
-|---|---|---|---|
-| _render_mode | image | forest_taxonomy | data_chart |
-| _prompt | self-contained image prompt | null | null |
-| _caption | caption following the task | caption | caption |
-| _latex_body | null | self-contained forest block | null |
-| _image_size | wide, square or tall | omit | omit |
-| _chart_spec | null | null | supported statistic and chart settings |
+Use figures plan --request FILE with preparation_id and items.
+Each item contains its figure_id and the fields for its selected mode:
 
-Use image for explanatory imagery, forest_taxonomy for a supported hierarchy,
-and data_chart for an actual corpus statistic. Do not replace a requested
-scientific illustration with bibliography counts. For a native forest, use only
-supplied citation keys and omit figure wrappers, caption and label commands;
-the publisher owns them. For a corpus chart, discover available statistics with
-`./<topic>/slr figures statistics` and select
-a supported chart spec. Do not invent data arrays or numbers.
+| Mode | Required authoring fields |
+| --- | --- |
+| image | _render_mode=image, _prompt, _caption; optional _image_size=wide/square/tall |
+| forest_taxonomy | _render_mode=forest_taxonomy, _latex_body, _caption |
+| data_chart | _render_mode=data_chart, _chart_spec, _caption |
 
-## Generate once and integrate
+Set nonapplicable _prompt, _latex_body and _chart_spec fields to null.
+A native forest uses supplied citation keys and a complete forest block.
+For data_chart, query figures statistics and use a supported statistic.
+_chart_spec requires statistic, chart_type, x_label and y_label strings.
+Optional fields are title, x_label_fallback, y_label_fallback, title_fallback,
+rationale and top_n. Code computes the data; the request selects its representation.
+Choose a corpus chart only for a requested corpus statistic, not as a substitute
+for a scientific mechanism illustration.
 
-Write a public plan request, then submit and dispatch together. Do not edit the
-internal worklist or inspect Python implementation to discover its shape.
-
+Example image request:
 ```json
-{"preparation_id":"<from brief>","items":[{"figure_id":"F1",
- "_render_mode":"image","_prompt":"Draw a process diagram with a labelled input on the left, a processing stage in the centre and an output on the right. Arrows show the supported data flow. Use the requested language and style, without a title or caption inside the image.",
- "_caption":"The processing pipeline links its input, transformation stage and output.","_image_size":"wide"}]}
+{"preparation_id":"<from brief>","items":[{"figure_id":"F1","_render_mode":"image",
+"_prompt":"<self-contained specification>","_caption":"<reader-facing explanation>",
+"_latex_body":null,"_chart_spec":null,"_image_size":"wide"}]}
 ```
 
-For a planned hierarchy, this is a complete alternative request. Replace the
-illustrative nodes with the supported hierarchy and use the actual preparation
-and figure IDs. The LaTeX string is JSON-escaped and contains no figure wrapper.
+Submit using the supplied bound launcher, then run figures plan-generate.
+The CLI owns the internal worklist, bounded transport retries, generation and wrappers.
+Correct a reported request error from the actual schema or source packet.
+Keep completed outputs when a technical task fails.
 
-```json
-{
-  "preparation_id": "<from brief>",
-  "items": [{
-    "figure_id": "F1",
-    "_render_mode": "forest_taxonomy",
-    "_prompt": null,
-    "_caption": "The approaches are organized by their defining mechanisms.",
-    "_latex_body": "\\begin{forest} [Approaches [Mechanism A] [Mechanism B]] \\end{forest}",
-    "_chart_spec": null
-  }]
-}
-```
+## Return
 
-For a planned corpus-statistics chart, first query `figures statistics` and use a
-supported statistic/chart type. This complete example counts papers by year;
-it is not a substitute for a requested scientific mechanism illustration.
+Return the actual status, completed asset paths and
+05_generation/_status/figures_plan_generate.json. Report request-log paths for failures.
+Main joins the assets, inspects the delivered result within the user's scope and
+handles specific concerns. This assignment ends after generation and finishing;
+it adds no critic, semantic regeneration or image review loop.
+Successful generation proves an available asset, not independently reviewed science.
+Missing required assets remain failures rather than placeholders.
 
-```json
-{
-  "preparation_id": "<from brief>",
-  "items": [{
-    "figure_id": "F1",
-    "_render_mode": "data_chart",
-    "_prompt": null,
-    "_latex_body": null,
-    "_caption": "Corpus papers are grouped by publication year.",
-    "_chart_spec": {
-      "statistic": "papers_per_year",
-      "chart_type": "bar",
-      "x_label": "Year",
-      "y_label": "Number of papers"
-    }
-  }]
-}
-```
-
-The four _chart_spec keys above are required nonempty strings. Optional keys are
-title, x_label_fallback, y_label_fallback, title_fallback and rationale (strings),
-and top_n (an integer or its numeric string). Do not supply data, values, counts
-or other arrays; scripts compute them from the corpus. Submit only the example
-matching the confirmed figure plan, not all three as additional figures.
-Prompt, labels and caption language follow the actual task.
-
-Use the supplied workspace CLI (`runtime.cli.argv` or its matching shell command) for both commands. These POSIX examples use `slr`; Windows uses the returned `slr.cmd` or Python command:
-
-```bash
-./<topic>/slr figures plan --request figure-plan.json
-./<topic>/slr figures plan-generate
-```
-
-The command validates metadata, concurrently generates images, writes publication
-wrappers and reports completed tasks. Correct a reported malformed input before
-requesting generation. Existing bounded transport retries handle transient API
-failures; they are not semantic regeneration or refinement.
-
-On success, return immediately with the status, generated asset paths and
-`05_generation/_status/figures_plan_generate.json`. The manuscript script waits for these assets before assembling complete v1 and
-refining it. Main then edits/publishes v2. Do not open generated PNGs, run a visual or semantic
-review, write inspection.json, or refine/regenerate successful images. Do not add
-another model or critic to inspect them. Successful generation and existing output files are sufficient for integration, not a claim of independently reviewed
-scientific quality.
-
-On a technical failure, return the concrete error and request-log paths. Missing
-required assets must not be hidden by placeholders or fabricated success. Later
-explicit user requests to revise an image are separate tasks, not an automatic
-post-generation pass.
-
-The script performs fixed top/bottom cropping and bottom-right watermarking after
-image generation. Do not ask the image model to draw the product watermark or
-add a second watermark. Return the finishing status and completed paths so main can
-report completion; a postprocessing failure is a technical exception.
+The finishing pipeline applies cropping and watermarking. Include its actual status
+in the handoff. An explicit later request to revise an image is a new task.

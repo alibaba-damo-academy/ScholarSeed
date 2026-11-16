@@ -67,7 +67,14 @@ def owner(kind, name, *, database=None):
         if database is not None
         else kind.inspect_rows
     )
-    return SchemaOwner(name, kind.inspect_connection, kind.initialize_schema, read_rows)
+    return SchemaOwner(
+        name,
+        kind.inspect_connection,
+        kind.initialize_schema,
+        read_rows,
+        triggers=ProductEventStore.preview_triggers if kind is ProductEventStore else None,
+        inspect_layout=SessionCatalogStore.inspect_layout if kind is SessionCatalogStore else None,
+    )
 
 
 class SqliteOwnerRowContracts(unittest.TestCase):

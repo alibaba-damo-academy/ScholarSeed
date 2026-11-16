@@ -26,7 +26,10 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import search_policy  # noqa: E402
+import dedup  # noqa: E402
 
+
+CANDIDATE_PREVIEW_LIMIT = 50
 
 DEFAULT_STATE = {
     "query": "",
@@ -156,6 +159,7 @@ def init_state(
     mode=None,
     time_budget_minutes=None,
     selection_reserve_seconds=None,
+    candidates=None,
 ):
     state = copy.deepcopy(DEFAULT_STATE)
     state["query"] = query
@@ -179,29 +183,53 @@ def init_state(
             "deadline_epoch": started + total_seconds,
             "selection_reserve_seconds": round(reserve, 3),
         }
+    seeds = load_candidates(candidates) if candidates else []
+    pool = {}
+    _merge_papers(pool, seeds)
+    state["candidate_input_count"] = len(seeds)
     write_state(session_dir, state)
-    write_pool(session_dir, {})
+    write_pool(session_dir, pool)
+    if seeds:
+        state = dict(state)
+        state["candidate_preview"] = [
+            {key: paper.get(key) for key in ("paper_id", "title", "year", "doi", "arxiv_id")}
+            for paper in seeds[:CANDIDATE_PREVIEW_LIMIT]
+        ]
+        state["candidate_preview_truncated"] = len(seeds) > CANDIDATE_PREVIEW_LIMIT
     return state
 
 
 def _merge_papers(pool, papers):
-    added = 0
-    for p in papers:
-        if not isinstance(p, dict):
-            continue
-        key = _title_key(p.get("title", ""))
-        if key and key not in pool:
-            pool[key] = p
-            added += 1
-        elif key:
-            existing = pool[key]
-            # Prefer the richer record, but preserve provenance from both paths.
-            if not existing.get("abstract") and p.get("abstract"):
-                pool[key] = p
-            sources = set(existing.get("found_by", [])) | set(p.get("found_by", []))
-            if sources:
-                pool[key]["found_by"] = sorted(sources)
-    return added
+    before = len(pool)
+    merged = dedup.deduplicate([*pool.values(), *papers])
+    pool.clear()
+    for paper in merged:
+        stem = dedup.title_key(paper.get("title"))
+        key = stem
+        index = 1
+        while key in pool:
+            index += 1
+            key = f"{stem}:{index}"
+        pool[key] = paper
+    return max(0, len(pool) - before)
+
+
+def load_candidates(path):
+    with open(path, encoding="utf-8") as handle:
+        value = json.load(handle)
+    if isinstance(value, dict) and value.get("schema") == "literature-candidates/v1":
+        if value.get("scope") != "project_literature" or value.get("next_offset") is not None:
+            raise ValueError("project candidate snapshot is incomplete or has an invalid scope")
+        papers = value.get("sources")
+        if not isinstance(papers, list):
+            raise ValueError("project candidate snapshot requires sources[]")
+        for paper in papers:
+            if (not isinstance(paper, dict) or paper.get("source") != "project_library"
+                or not str(paper.get("paper_id", "")).startswith("literature:")
+                or paper.get("paperhub_id")):
+                raise ValueError("invalid project candidate identity")
+        return papers
+    raise ValueError("unsupported candidate snapshot")
 
 
 def add_papers(session_dir, papers):
@@ -355,6 +383,7 @@ def main():
                 mode=args.mode,
                 time_budget_minutes=args.time_budget_minutes,
                 selection_reserve_seconds=args.selection_reserve_seconds,
+                candidates=args.input,
             )
         except ValueError as exc:
             parser.error(str(exc))

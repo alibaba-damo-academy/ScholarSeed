@@ -11,12 +11,16 @@ from io import BytesIO
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from PIL import Image
 
 from apps.serve.tests import pdf as pdf_fixture
+from service.assistant.api.routes import register_assistant_routes
 from service.assistant.persistence.citations import CitationStore
 from service.assistant.persistence.store import AssistantStore
 from service.assistant.service.citations import CitationService, citation_handles
+from service.assistant.service.context import AssistantService
 from service.assistant.service.presentation import project, readable_text
 from service.chat.active import RUNTIME_ID
 from service.chat.constants import PRODUCT_EVENT_USER_MESSAGE
@@ -110,6 +114,59 @@ class AnswerFixture:
 
 
 class CitationContracts(unittest.TestCase):
+    def test_fork_receipt_preserves_revision_handle_and_current_source_rejection(self):
+        self.ready()
+        result = self.query("session", "snapshot", "read", PdfQuery(ref_id="ref", limit=1))
+        url = result["fragments"][0]["citation_url"]
+        handle = url.removeprefix(CITATION_SCHEME)
+        revision = self.answer_for(f"[1]({url})")
+        self.assertEqual(
+            self.service.resolve("session", "answer:1", revision, 0, 0, handle)["state"], "exact"
+        )
+        database = Path(self.temp.name) / "sessions.sqlite3"
+        catalog = SessionCatalogStore(database)
+        catalog.register(
+            "child",
+            SessionPrincipal("local"),
+            runtime_id=RUNTIME_ID,
+            vendor_thread_id="child-vendor",
+            vendor_session_id=None,
+            runtime_workdir=self.temp.name,
+            project_path=None,
+            output_root=self.temp.name,
+            codex_version="contract",
+            model_id="contract",
+            policy_id="ask",
+            status=SessionStatus.READY,
+            title="Child",
+            created_at=2.0,
+        )
+        snapshots = AssistantStore(database)
+        with ProductEventStore(database).transaction() as connection:
+            inherited_id = snapshots.inherit_snapshot("session", "child", "snapshot", connection)
+            self.store.inherit_snapshot("session", "snapshot", "child", inherited_id, connection)
+        self.answers.value = replace(self.answers.value, session_id="child")
+        self.service._snapshot = lambda session, turn: snapshots.snapshot_for_turn(
+            session, "client"
+        )
+        self.service._snapshot_by_id = snapshots.snapshot_by_id
+        self.assertEqual(
+            self.service.resolve("child", "answer:1", revision, 0, 0, handle)["state"], "exact"
+        )
+        with self.assertRaisesRegex(ValueError, "answer_revision_conflict"):
+            self.service.resolve("child", "answer:1", "changed-answer", 0, 0, handle)
+        with self.assertRaisesRegex(ValueError, "citation_link_invalid"):
+            self.service.resolve("child", "answer:1", revision, 0, 0, "unread")
+        self.source.payload = pdf_bytes(crop=True)
+        changed = self.service.resolve("child", "answer:1", revision, 0, 0, handle)
+        self.assertEqual(changed["state"], "changed")
+        self.assertEqual(changed["matches"], [])
+        self.source.missing = True
+        self.assertEqual(
+            self.service.resolve("child", "answer:1", revision, 0, 0, handle)["state"],
+            "unavailable",
+        )
+
     def test_pdf_read_notice_scopes_link_presentation_to_markdown_reports(self):
         self.ready()
         result = self.query("session", "snapshot", "read", PdfQuery(ref_id="ref", limit=1))
@@ -426,6 +483,66 @@ class CitationContracts(unittest.TestCase):
         self.indexes.close()
         self.temp.cleanup()
 
+    def test_turn_sources_group_saved_receipts_without_resolving_document_details(self):
+        database = Path(self.temp.name) / "sessions.sqlite3"
+        app = FastAPI()
+        app.state.auth_enabled = False
+        app.state.session_catalog = SessionCatalogStore(database)
+        app.state.assistant = AssistantService(AssistantStore(database))
+        app.state.product_events = ProductEventStore(database)
+        app.state.answer_source = self.answers
+        app.state.assistant_citations = self.service
+        register_assistant_routes(app)
+
+        handles = {
+            label: f"{index:032x}"
+            for index, label in enumerate(
+                ("first", "second", "new-version", "other-file", "missing"), 1
+            )
+        }
+        for label, handle in handles.items():
+            if label == "missing":
+                continue
+            self.store.record(
+                "session",
+                "snapshot",
+                label,
+                {
+                    "handle": handle,
+                    "project_id": "project",
+                    "source_kind": "file",
+                    "source_id": "other/paper.pdf" if label == "other-file" else "paper.pdf",
+                    "revision": "v2" if label == "new-version" else "v1",
+                    "title": "Paper",
+                },
+            )
+        markdown = (
+            " ".join(f"[{label}]({CITATION_SCHEME}{handle})" for label, handle in handles.items())
+            + " [1](https://example.org)"
+        )
+        self.answers.value = AssistantAnswer(
+            answer_id="turn:turn",
+            session_id="session",
+            turn_id="turn",
+            source_product_seq=1,
+            vendor_item_id=None,
+            markdown=markdown,
+            revision="sha256:" + hashlib.sha256(markdown.encode()).hexdigest(),
+            completed_at=None,
+        )
+        with patch.object(self.service, "resolve_saved", side_effect=AssertionError):
+            response = TestClient(app).get("/api/assistant/sessions/session/turns/turn/sources")
+
+        self.assertEqual(response.status_code, 200)
+        sources = response.json()["sources"]
+        self.assertEqual([source["handle"] for source in sources[:-1]], list(handles.values()))
+        groups = [source["source_group_id"] for source in sources[:-1]]
+        self.assertIsInstance(groups[0], str)
+        self.assertEqual(groups[0], groups[1])
+        self.assertEqual(len(set(groups[:4])), 3)
+        self.assertIsNone(groups[4])
+        self.assertNotIn("source_group_id", sources[-1])
+
     def test_active_project_pdf_is_an_authorized_turn_source(self):
         current = AssistantTurnItem(
             "e_02",
@@ -469,6 +586,100 @@ class CitationContracts(unittest.TestCase):
         self.assertIn(f"[fenced]({CITATION_SCHEME}{invalid})", filtered)
         self.assertIn("After [3].", filtered)
         self.assertEqual(citation_handles(filtered), (valid,))
+
+    def test_library_followup_reuses_receipt_without_reading_again(self):
+        with pdf_fixture.open() as pdf:
+            page = pdf.new_page()
+            page.insert_text((70, 100), "Result: x = y + z = 42 + 7 = 49.")
+            self.source.payload = pdf.tobytes()
+        self.ready()
+        read = self.query("session", "snapshot", "read", PdfQuery(ref_id="ref", limit=1))
+        old_handle = read["fragments"][0]["citation_url"].split(":", 1)[1]
+        record = dict(self.store.get("session", "snapshot", old_handle))
+        record.update(handle="library-receipt", source_kind="literature")
+        self.store.record("session", "snapshot", "library", record)
+        store = AssistantStore(Path(self.temp.name) / "sessions.sqlite3")
+        self.snapshot = store.create_snapshot(
+            replace(self.snapshot, snapshot_id="followup", client_turn_id="next", created_at=1)
+        )
+        self.service._snapshot_by_id = store.snapshot_by_id
+        library = Mock()
+        library.document.side_effect = lambda *args: self.source.citation_document(
+            "project", ContextRef("ref", ContextRefKind.FILE, "paper.pdf", "Paper")
+        )
+        self.service._literature = library
+        markdown = f"[1]({CITATION_SCHEME}library-receipt)"
+        self.assertEqual(self.service.filter_answer("session", "followup", markdown), markdown)
+        self.assertEqual(
+            self.service.markdown_evidence("session", "followup", markdown)[0]["state"], "ready"
+        )
+        revision = self.answer_for(markdown)
+        self.assertEqual(self.service.sources("session", "answer:1", revision)["count"], 1)
+        self.assertEqual(
+            self.service.raw("session", "answer:1", revision, "library-receipt"),
+            self.source.payload,
+        )
+        preview = self.service.preview("session", "answer:1", revision, "library-receipt", 1)
+        with Image.open(BytesIO(preview)) as image:
+            self.assertEqual(image.format, "PNG")
+        self.source.payload = pdf_bytes(crop=True)
+        self.assertEqual(
+            self.service.resolve("session", "answer:1", revision, 0, 0, "library-receipt")["state"],
+            "changed",
+        )
+        self.assertIsNone(self.store.get("session", "followup", "library-receipt"))
+        self.assertEqual(self.store.get("session", "snapshot", "library-receipt"), record)
+        library.read_pages.assert_not_called()
+        library.knowledge.assert_not_called()
+
+    def test_prior_library_receipts_do_not_cross_scope_session_time_or_material_kind(self):
+        store = AssistantStore(Path(self.temp.name) / "sessions.sqlite3")
+        for name, scope, created in (
+            ("later", "project", 2),
+            ("other", "other", 2),
+            ("early", "project", -1),
+        ):
+            store.create_snapshot(
+                replace(
+                    self.snapshot,
+                    snapshot_id=name,
+                    client_turn_id=name,
+                    project_id=scope,
+                    created_at=created,
+                )
+            )
+        for kind in ("literature", "file", "attachment"):
+            self.store.record("session", "snapshot", kind, {"handle": kind, "source_kind": kind})
+        self.assertIsNotNone(self.store.prior_literature("session", "later", "literature"))
+        for sid, snapshot, handle in (
+            ("another-session", "later", "literature"),
+            ("session", "other", "literature"),
+            ("session", "early", "literature"),
+            ("session", "later", "file"),
+            ("session", "later", "attachment"),
+            ("session", "later", "invented"),
+        ):
+            with self.subTest(session=sid, snapshot=snapshot, handle=handle):
+                self.assertIsNone(self.store.prior_literature(sid, snapshot, handle))
+
+    def test_global_library_receipts_can_be_reused_in_global_followup(self):
+        store = AssistantStore(Path(self.temp.name) / "sessions.sqlite3")
+        for name, created in (("global-first", 1), ("global-next", 2)):
+            store.create_snapshot(
+                replace(
+                    self.snapshot,
+                    snapshot_id=name,
+                    client_turn_id=name,
+                    project_id=None,
+                    created_at=created,
+                )
+            )
+        record = {"handle": "global-receipt", "source_kind": "literature"}
+        self.store.record("session", "global-first", "global", record)
+        self.assertEqual(
+            self.store.prior_literature("session", "global-next", "global-receipt"), record
+        )
+        self.assertIsNone(self.store.prior_literature("session", "snapshot", "global-receipt"))
 
     def test_final_answer_unlinks_every_commonmark_form_without_rewriting_code(self):
         invalid = "0123456789abcdef0123456789abcdefdeadbeef"
@@ -1206,6 +1417,43 @@ class CitationContracts(unittest.TestCase):
         self.assertTrue(result["omitted_regions"])
         self.assertEqual(result["unavailable_pages"], ())
 
+    def test_missing_sources_are_distinguished_from_other_open_failures(self):
+        self.ready()
+        result = self.query("session", "snapshot", "read", PdfQuery(ref_id="ref", limit=1))
+        url = result["fragments"][0]["citation_url"]
+        handle = url.split(":", 1)[1]
+        revision = self.answer_for(f"Conclusion [1]({url})")
+        original = self.service.resolve("session", "answer:1", revision, 0, 0, handle)
+        for error, missing in (
+            (ContentError("file_not_found"), True),
+            (FileNotFoundError("removed.pdf"), True),
+            (PermissionError("denied"), False),
+            (ContentError("read_failed"), False),
+        ):
+            with (
+                self.subTest(error=error),
+                patch.object(self.source, "citation_document", side_effect=error),
+            ):
+                resolved = self.service.resolve("session", "answer:1", revision, 0, 0, handle)
+                self.assertEqual(resolved["source_missing"], missing)
+                self.assertEqual(resolved["quote"], original["quote"])
+                self.assertFalse(resolved["can_open_pdf"])
+
+    def test_wrapped_missing_file_preserves_saved_citation_excerpt(self):
+        self.ready()
+        result = self.query("session", "snapshot", "read", PdfQuery(ref_id="ref", limit=1))
+        url = result["fragments"][0]["citation_url"]
+        revision = self.answer_for(f"Conclusion [1]({url})")
+        error = ContentError("read_failed")
+        error.__cause__ = FileNotFoundError("removed.pdf")
+        with patch.object(self.source, "citation_document", side_effect=error):
+            resolved = self.service.resolve(
+                "session", "answer:1", revision, 0, 0, url.split(":", 1)[1]
+            )
+        self.assertTrue(resolved["source_missing"])
+        self.assertEqual(resolved["quote"], result["fragments"][0]["text"])
+        self.assertEqual(resolved["state"], "unavailable")
+
     def test_receipts_are_turn_bound_and_survive_source_loss(self):
         self.ready()
         result = self.query("session", "snapshot", "read", PdfQuery(ref_id="ref", limit=1))
@@ -1223,6 +1471,7 @@ class CitationContracts(unittest.TestCase):
         self.assertEqual(missing["quote"], resolved["quote"])
         self.assertEqual(missing["matches"], [])
         self.assertFalse(missing["can_open_pdf"])
+        self.assertTrue(missing["source_missing"])
         self.assertEqual(missing["pages"], resolved["pages"])
         self.assertEqual(
             self.service.sources("session", "answer:1", revision)["sources"][0]["state"],
@@ -1231,6 +1480,7 @@ class CitationContracts(unittest.TestCase):
         self.source.missing = False
         restored = self.service.resolve("session", "answer:1", revision, 0, 0, handle)
         self.assertEqual(restored["state"], "exact")
+        self.assertFalse(restored["source_missing"])
         self.assertTrue(restored["can_open_pdf"])
         self.assertEqual(restored["pages"], resolved["pages"])
         self.assertEqual(

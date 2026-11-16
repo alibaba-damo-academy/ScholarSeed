@@ -37,7 +37,7 @@ const modules: Record<string, string> = {
   '../primitive': `export const FileFormatIcon = () => null`,
   './Save': `export const ResourceSaveDialog = () => null`,
   './References': `import {Button} from '/components/ui'; export const OverviewReferences = ({onOpened}) => <Button data-testid="overview-reference" onClick={onOpened}>Reference</Button>`,
-  './api': `export const fetchArtifactSha256 = async () => null; export const fetchResourceDirectoryTree = async () => []; export const importArtifactToLiterature = async () => ({}); export const importArtifactToResources = async () => ({})`,
+  './api': `export const fetchArtifactSha256 = async () => null; export const fetchResourceDirectoryTree = async () => []; export const resolveArtifactDirectorySource = async () => null; export const importArtifactToLiterature = async () => ({}); export const importArtifactToResources = async () => ({})`,
 }
 const names = Object.keys(modules)
 const plugin: Plugin = {
@@ -123,7 +123,7 @@ test('overview file actions discover compatible apps and preserve the overflow m
     root: ROOT,
     plugins: [plugin, react()],
     cacheKey: 'actions',
-    optimizeDeps: { noDiscovery: true, include: ['react', 'react-dom/client', 'lucide-react'] },
+    optimizeDeps: { include: ['react', 'react-dom/client', 'lucide-react'] },
     server: { host: '127.0.0.1', port: 0 },
   })
   await server.listen()
@@ -178,7 +178,7 @@ test('fullscreen overview reserves room for its bubble, hides idle scrollbars an
     root: ROOT,
     plugins: [plugin, react()],
     cacheKey: 'actions',
-    optimizeDeps: { noDiscovery: true, include: ['react', 'react-dom/client', 'lucide-react'] },
+    optimizeDeps: { include: ['react', 'react-dom/client', 'lucide-react'] },
     server: { host: '127.0.0.1', port: 0 },
   })
   await server.listen()
@@ -230,7 +230,7 @@ test('task file open-with expands on hover and supports keyboard selection', asy
     root: ROOT,
     plugins: [plugin, react()],
     cacheKey: 'actions',
-    optimizeDeps: { noDiscovery: true, include: ['react', 'react-dom/client', 'lucide-react'] },
+    optimizeDeps: { include: ['react', 'react-dom/client', 'lucide-react'] },
     server: { host: '127.0.0.1', port: 0 },
   })
   await server.listen()
@@ -274,7 +274,7 @@ test('overview keeps its expanded inline list and file actions stable while its 
     root: ROOT,
     plugins: [plugin, react()],
     cacheKey: 'actions',
-    optimizeDeps: { noDiscovery: true, include: ['react', 'react-dom/client', 'lucide-react'] },
+    optimizeDeps: { include: ['react', 'react-dom/client', 'lucide-react'] },
     server: { host: '127.0.0.1', port: 0 },
   })
   await server.listen()
@@ -402,18 +402,26 @@ test('overview keeps its expanded inline list and file actions stable while its 
     await toggle.click()
     await expect(overview).toBeHidden()
     await toggle.click()
+    const conversation = page.getByText('Conversation content', { exact: true })
+    const originalConversation = await conversation.elementHandle()
     await page.evaluate(() => {
       const fixture = window as unknown as { docked: boolean; refreshOverview: () => void }
       fixture.docked = true
       fixture.refreshOverview()
     })
     await expect(overview).toHaveAttribute('data-presentation', 'reserved')
+    assert.ok(
+      await conversation.evaluate((element, original) => element === original, originalConversation)
+    )
     await page.evaluate(() => {
       const fixture = window as unknown as { docked: boolean; refreshOverview: () => void }
       fixture.docked = false
       fixture.refreshOverview()
     })
     await expect(overview).toBeVisible()
+    assert.ok(
+      await conversation.evaluate((element, original) => element === original, originalConversation)
+    )
     await assertRightInset()
     await page.evaluate(() => {
       const fixture = window as unknown as {

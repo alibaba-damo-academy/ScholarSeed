@@ -5,6 +5,7 @@ import json
 import sys
 import time
 from task_contract import atomic_json
+from budget import timing
 
 
 class StreamProgress:
@@ -14,6 +15,7 @@ class StreamProgress:
     def event(self,state):
         value={'event':'llm_progress','stage':self.stage,'state':state,'attempt':self.attempt,
                'characters_received':self.characters,'elapsed_sec':round(time.monotonic()-self.started,1),'log_dir':str(self.folder)}
+        value['processing_time'] = timing(self.workspace, time.monotonic() - self.started)
         atomic_json(self.folder/'progress.json',value)
         atomic_json(self.workspace/'_status/llm_requests'/f'{self.stage}.json',value)
         print(json.dumps(value,ensure_ascii=False),file=sys.stderr,flush=True)

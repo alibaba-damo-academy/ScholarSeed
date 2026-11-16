@@ -349,7 +349,7 @@ class FileEventHub:
                         yield_on_timeout=True,
                     )
 
-                    async def next_changes():
+                    async def next_changes(watcher=watcher):
                         return await anext(watcher)
 
                     try:
@@ -380,7 +380,7 @@ class FileEventHub:
                     finally:
                         closing = self._activities.enter(ActivityDomain.RESOURCE)
 
-                        async def close_watcher():
+                        async def close_watcher(watcher=watcher, closing=closing):
                             await watcher.aclose()
                             # A failed close retains its receipt and blocks seal.
                             closing.close()

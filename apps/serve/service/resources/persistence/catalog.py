@@ -135,7 +135,7 @@ class ResourceCatalogSchema:
 
 
 def _version(value: object, expected: int) -> int:
-    if type(value) is not int or value != expected:
+    if (not isinstance(value, int) or isinstance(value, bool)) or value != expected:
         raise RuntimeError("unsupported resource provenance version")
     return value
 

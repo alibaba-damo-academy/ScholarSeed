@@ -1,4 +1,4 @@
-// Installer presentation only; the embedded official Setup owns installation.
+// Official Setup owns fresh installation; official Update owns replacement.
 const fs = require('node:fs')
 const path = require('node:path')
 const crypto = require('node:crypto')
@@ -43,7 +43,7 @@ function configuration(frozen, payload, files) {
   if (digest(raw) !== frozen.runtime.manifestSha256) throw new Error('installer runtime manifest changed')
   const runtime = JSON.parse(Buffer.from(JSON.parse(raw).manifest, 'base64'))
   if (!Array.isArray(runtime.components) || !runtime.components.length) throw new Error('installer runtime inventory missing')
-  return {appId: frozen.appId, payloadSha256: digest(payload), maxRootUnits: rootBudget(files, runtime.components, `${frozen.appId}-${frozen.version}-build.${frozen.product.config.build_number}-full.nupkg`), messages: messages(), legacy: legacyPolicy()}
+  return {appId: frozen.appId, packVersion: `${frozen.version}-build.${frozen.product.config.build_number}`, payloadSha256: digest(payload), maxRootUnits: rootBudget(files, runtime.components, `${frozen.appId}-${frozen.version}-build.${frozen.product.config.build_number}-full.nupkg`), messages: messages(), legacy: legacyPolicy()}
 }
 function legacyPolicy(source = legacy) {
   if (digest(fs.readFileSync(path.join(__dirname, 'legacy-files.json'))) !== source.inventorySha256)
@@ -57,9 +57,21 @@ function legacyPolicy(source = legacy) {
   const {build, commit, uninstallerSha256, productSha256, asarSha256, inventorySha256} = source
   return {build, commit, uninstallerSha256, productSha256, asarSha256, inventorySha256}
 }
-async function wrapSetup(filename, frozen, args, environment, files, branding) {
+function replacementPackage(payload, full, files) {
+  // Freeze the exact already-inspected full package inside the official Setup.
+  // No second copy, private upstream bundle parser, or neighboring package input.
+  const offset = payload.indexOf(full)
+  if (!full.length || offset < 0 || payload.indexOf(full, offset + 1) !== -1)
+    throw new Error('official Setup must contain the exact full package once')
+  const updater = files.filter(file => file.path === 'lib/app/Squirrel.exe')
+  if (updater.length !== 1 || !Number.isSafeInteger(updater[0].size) || updater[0].size <= 0 || !/^[a-f0-9]{64}$/.test(updater[0].sha256))
+    throw new Error('official updater inventory missing')
+  return {offset, size: full.length, sha256: digest(full), updaterSize: updater[0].size, updaterSha256: updater[0].sha256}
+}
+async function wrapSetup(filename, frozen, args, environment, files, branding, fullPath) {
   const payload = fs.readFileSync(filename)
   const policy = configuration(frozen, payload, files)
+  policy.replacement = replacementPackage(payload, fs.readFileSync(fullPath), files)
   const publisher = frozen.product.config.expected_windows_publisher
   if (frozen.signingRequired) windows.verify(filename, publisher)
   return withCompiler({runDirectory: frozen.runDirectory, goArchive: args['go-archive'], environment}, async ({temporary, go, goRoot, env}) => {
@@ -85,7 +97,8 @@ function stageSetup(temporary, goRoot, payload) {
     const target = path.join(source, directory)
     fs.mkdirSync(target, {recursive: true})
     for (const file of fs.readdirSync(path.join(MODULE, directory))) {
-      if (file.endsWith('.go') || file === 'logo.png') fs.copyFileSync(path.join(MODULE, directory, file), path.join(target, file))
+      if (file.endsWith('.go') || file === 'logo.png' ||
+          (directory === 'handoff' && file === 'retirement.ps1')) fs.copyFileSync(path.join(MODULE, directory, file), path.join(target, file))
     }
   }
   const entry = path.join(source, 'cmd/setup')
@@ -108,4 +121,4 @@ function compileSetup(source, temporary, go, env, policy) {
   if (run(compiled, ['--check-policy'], env) !== policy.payloadSha256) throw new Error('installer payload check failed')
   return compiled
 }
-module.exports = {wrapSetup, configuration, rootBudget, messages, legacyPolicy, stageSetup, compileSetup, verifyDependencies}
+module.exports = {wrapSetup, configuration, replacementPackage, rootBudget, messages, legacyPolicy, stageSetup, compileSetup, verifyDependencies}

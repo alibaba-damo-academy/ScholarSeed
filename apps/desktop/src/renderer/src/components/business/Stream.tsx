@@ -1,18 +1,55 @@
 import { PluginInteraction } from './Frame'
+import {
+  conversationTurns,
+  currentConversationTurn,
+  visibleConversationTurns,
+  turnMarkerProximity,
+  turnNavigationVisible,
+} from './navigation'
+import { markdownSummary } from '../../../../markdown/summary.ts'
+import { OPENUI_SLOT } from '../../../../../../../packages/ui/document'
+import { CANVAS_SLOT } from '../../../../../../../packages/ui/canvas'
+import { WebNavigationContext } from '../../contracts/navigation'
+import { LiteratureAuthorizationCard } from '../../features/literature/Scope'
+import { fulltextSelection } from '../../features/literature/interaction'
+import {
+  LITERATURE_AUTHORIZATION_ACTIONS,
+  LITERATURE_AUTHORIZATION_SLOTS,
+} from '../../contracts/literature'
+import { PLUGIN_ANSWER_CAPABILITY, PUBLIC_COMPONENT_PLUGIN } from '../../../../plugins'
 import { Failure } from './Failure'
 import { Continuation } from './Continuation'
 import { Message } from '../primitive/Message'
+import { EmptyAnswer } from '../primitive/Fallback'
+import { canRetryEmptyTurn, isEmptyAnswer, isEmptyTurn } from './submission'
 import { PluginInstallation } from './Skills'
-import { QuestionOption } from './Options'
+import { QuestionOption, QuestionOptionsReveal, QuestionPrompt } from './Options'
 import type { PluginMount } from '../../../../plugins'
 import { availabilityPolicy } from '../../app/policy'
 import { attentionRequest, matchingAttentionAnchors } from '../../attention'
 import { referenceBaseLabel } from '../../features/assistant/text'
+import { isSelectionReference, selectionReferenceGroups } from '../../features/assistant/contexts'
+import { SelectionReference } from './Conversation'
+import { ForkOriginDivider } from '../../features/assistant/Branch'
+import { useForkOrigin } from '../../features/assistant/origin'
+import { forkBoundaryIndex } from '../../features/assistant/fork'
 import { markInteractionAttentionRead } from '../../features/assistant/attention'
 import { deliveryLabel } from '../../delivery'
-import { authenticationRecoveryAction, formatTurnFailure } from '../../failures'
+import {
+  authenticationRecoveryAction,
+  formatTurnFailure,
+  isRecoverableTurnFailure,
+} from '../../failures'
 import { feedback, renderFeedback } from '../../contracts/feedback'
-import React, { useContext, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import React, {
+  useCallback,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { ReplyCopy, CardOnlyReplyCopy } from './Copy'
 import { AnswerCopyContext, CopyItemsContext, CopySessionContext } from './clipboard'
 import { hasCopyCard } from './copying'
@@ -20,18 +57,36 @@ import type { BrowserApprovalResponseReply } from '../../../../approval'
 import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
 import { createPortal } from 'react-dom'
-import { Check, ChevronRight, Copy, GitBranch } from 'lucide-react'
+import {
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  GitBranch,
+  TriangleAlert,
+  CircleX,
+  X,
+  Hammer,
+} from 'lucide-react'
 import { streamingTextClassName } from '../../design/motion'
 import aiThinking from '../../assets/ai-thinking.gif'
-import { conversationInlinePadding, createFollowScroll, createScrollbarVisibility } from './scroll'
+import {
+  conversationInlinePadding,
+  createFollowScroll,
+  createScrollbarVisibility,
+  messageFocusSpacerHeight,
+} from './scroll'
 import { useAccountAccess } from './access'
+import { useSkillNames, type SkillNames } from './skillnames'
+import { MessageActions, UserMessageText } from './Message'
 import { LoginPrompt } from './LoginPrompt'
-import { commandOutcome } from './command'
+import { commandOutcome } from '../../command'
 import { activeThread, useApp, type ComposerReference } from '../../store'
 import type {
   ConvCard,
   ConvItem,
   DeliveryCardMember,
+  HilAnswerDetails,
   MessageReference,
   Thread,
   TurnOutcome,
@@ -39,18 +94,26 @@ import type {
 } from '../../model'
 import { type HilResolvedMessage } from '../../model'
 import { Icon, type IconName } from '../../icons'
+import { modelSelectionBlocked } from '../../modelselection'
 import { TONE } from '../../tone'
 
 import {
+  canReplayQuestionForm,
   componentOptionAnswers,
+  declarativeAnswer,
+  submittedPluginValues,
+  hasHostQuestions,
   browserApprovalCardRole,
   browserApprovalSubmission,
   browserHistoryApprovalSubmission,
   browserApprovalTarget,
+  approvalDetails,
+  fileApprovalOperation,
   formatHilPermissionScope,
   formatHilResolution,
   formatHilSubmissionError,
   hilEventResolution,
+  hilResolution,
   hilResolvedRunState,
   hilPermissionScope,
   hilSubmissionFailure,
@@ -58,10 +121,16 @@ import {
   pendingHilItems,
   permissionDecisionOptions,
   transcriptPresentationItems,
+  questionDraft,
+  questionAnswer,
+  replayQuestionAnswer,
+  questionAtScroll,
+  questionScrollTarget,
 } from '../../hil'
 import { Markdown, visibleMarkdownText } from '../primitive/Markdown'
 import { sourceOffsetRect } from '../markdown/source'
 import { IconFont } from '../primitive/Iconfont'
+import { ConfirmationCard } from '../primitive/Confirmation'
 import {
   checkSessionRecovery,
   getAuthMe,
@@ -75,6 +144,7 @@ import {
 } from '../../api'
 import {
   appendOptimisticUserMessage,
+  normalizeToolName,
   projectHistory,
   projectHistorySnapshot,
   removeOptimisticUserMessage,
@@ -91,10 +161,14 @@ import {
   collaborationStatusKey,
   visibleThinkingItem,
   activityDisclosureOpen,
+  executionProcesses,
+  fallbackDurationRows,
+  type ExecutionProcess as ExecutionProcessData,
   activityIdentity,
   activityRunState,
   activityRows,
   processRows,
+  rowTurnId,
   type ActivityRow,
   hasVisibleTurnProgress,
   type ActivityItem,
@@ -106,12 +180,30 @@ import {
   formatApplicationRequestFailure,
   formatRuntimeStatus,
   formatTurnUnknown,
+  projectRecoveryCheck,
+  recoveryCheckIdentity,
+  recoveryCheckIsCurrent,
   requestSessionResume,
+  type RecoveryCheckIdentity,
 } from '../../runtime'
 import { SentAttachments } from '../../features/assistant/Attachments'
+import { LiteratureAttachment } from '../../features/assistant/Literature'
+import { isImageAttachment } from '../../features/assistant/utils'
 import { AnnotatedAnswer } from '../../features/assistant/Annotations'
+import { loadAnswerImage } from '../../features/assistant/pictures'
+import { TurnCitationSources } from '../../features/assistant/Citations'
+import {
+  ARTIFACT_DESCRIPTION_CLASS,
+  ARTIFACT_ICON_CLASS,
+  ARTIFACT_OUTLINE_ICON_CLASS,
+  ARTIFACT_TITLE_CLASS,
+  ArtifactOpenButton,
+} from '../primitive/Receipt'
 import { ArtifactCard } from '../../features/assistant/Artifacts'
+import { artifactPreviewKind } from '../../features/assistant/delivery'
+import { ARTIFACT_ROW_ITEM_CLASS, ARTIFACT_ROWS_CLASS } from './Artifact'
 import { AnnotationSummary, annotationDisplay } from '../../features/assistant/Notes'
+import { PdfCommentReference } from '../../features/assistant/Comment'
 import { SessionReference } from '../../features/assistant/SessionReference'
 import { WebSearchRecord } from './Retrieval'
 import {
@@ -120,6 +212,8 @@ import {
   ExecutionProcess,
   ExecutionStatus as ActivityStatusIcon,
   ExecutionIO as IoBlock,
+  TOOL_ACTIVITY_DETAIL_INSET_CLASS,
+  TOOL_ACTIVITY_LABEL_CLASS,
   TOOL_RUN_STEP_STATUS_CLASS,
   TOOL_RUN_STATUS_TONE_CLASS,
   TOOL_RUN_CONTENT_INNER_CLASS,
@@ -132,16 +226,26 @@ import {
   TOOL_RUN_IO_LABEL_CLASS,
   TOOL_RUN_IO_CLASS,
 } from './Execution'
+import { SelectionReferences } from '../../features/assistant/Selections'
+import { selectionLocator } from '../../features/workbench/reveal'
+import { SentReferenceAttachment } from '../primitive'
 import {
   DisplayCardView,
+  useArtifactCardTypes,
   useCardArtifacts,
   useLatestDisplayCards,
   usePostDeliveryCardTypes,
 } from './Cards'
 import { useInteractionPolicies } from './Interactions'
 import {
+  ComposerConfirmationContext,
+  isDockedInstallation,
+  pendingConversationConfirmations,
+} from './confirmation'
+import {
   activityDurationLabel,
   activitySummaryState,
+  answerCountdownLabel,
   elapsedLabel,
   turnDurationLabel,
 } from './duration'
@@ -159,7 +263,10 @@ import {
 import { releaseQueuedOutbox, retainQueuedOutbox } from '../../outbox'
 import {
   Alert,
+  AlertDescription,
+  AlertTitle,
   Button,
+  Tag,
   Checkbox,
   Card,
   CardContent,
@@ -175,6 +282,9 @@ import {
   Spinner,
   Textarea,
   Tooltip,
+  HoverCard,
+  HoverCardContent,
+  HoverCardTrigger,
 } from '../ui'
 
 const HIL_WAIT_TICK_MS = 1000
@@ -197,9 +307,18 @@ const OPENABLE_RESOURCE_CONTEXT_KINDS = new Set(['file', 'resource'])
 const SELECTION_CONTEXT_KIND = 'selection'
 const LITERATURE_CONTEXT_KIND = 'literature'
 const SESSION_CONTEXT_KIND = 'session'
+const GENERATION_PREVIEW_STATUS_KEYS = {
+  streaming: 'generationPreview.streaming',
+  generated: 'generationPreview.generated',
+  unavailable: 'generationPreview.unavailable',
+  failed: 'generationPreview.failed',
+  cancelled: 'generationPreview.cancelled',
+  timeout: 'generationPreview.timeout',
+} as const
 type HilResponseBody = {
   option_id?: string
   answers?: Record<string, string>
+  answer_details?: HilAnswerDetails
   free_text?: string
   values?: Record<string, unknown>
   state_version?: number
@@ -224,11 +343,8 @@ const OUTLINE_HOVER_BUTTON_CLASS =
 const ACCENT_HOVER_BUTTON_CLASS = '[transition:filter_0.12s] hover:brightness-[1.06]'
 const CHIP_BUTTON_CLASS =
   'rounded-[5px] border border-transparent bg-transparent px-[var(--vds-space-2)] py-[3px] text-[10px] text-[var(--text-3)] [transition:border-color_0.12s,color_0.12s] hover:bg-[var(--hover-bg)] hover:text-[var(--text-2)]'
-const FLAT_BUTTON_CLASS =
-  'min-h-[30px] appearance-none rounded-[5px] border border-transparent bg-[var(--bg-3)] px-[11px] py-[6px] text-[11px] leading-[1.25] text-[var(--text-2)] [transition:background_0.16s_ease,border-color_0.16s_ease,box-shadow_0.16s_ease,color_0.16s_ease,filter_0.16s_ease,transform_0.16s_cubic-bezier(0.2,0.8,0.2,1)] hover:enabled:-translate-y-px hover:enabled:bg-[var(--hover-bg)] hover:enabled:text-[var(--text)] active:enabled:scale-[0.982] active:enabled:translate-y-0 active:enabled:bg-[var(--active-bg)] active:enabled:text-[var(--active-text)] active:enabled:shadow-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color-mix(in_oklch,var(--accent)_50%,transparent)] disabled:opacity-55'
 const READING_COLUMN_CLASS =
   'box-border w-full max-w-[var(--vds-conversation-content-width)] min-w-0 mx-auto'
-const MESSAGE_ACTIONS_CLASS = 'mt-[7px] flex items-center gap-[var(--vds-space-1)]'
 const TOOL_RUN_CLASS =
   'my-[10px] mb-[var(--vds-space-4)] overflow-clip rounded-[9px] bg-[color-mix(in_oklch,var(--bg-3)_56%,var(--bg-2))] shadow-[inset_0_0_0_1px_var(--border-soft)] [animation:tool-run-enter_240ms_cubic-bezier(0.2,0.8,0.2,1)_both] motion-reduce:animate-none'
 const TOOL_RUN_TRIGGER_CLASS =
@@ -245,7 +361,7 @@ const TOOL_RUN_STATE_CLASS =
 const TOOL_RUN_PULSE_CLASS =
   'size-[6px] flex-none rounded-full bg-current [animation:tool-run-pulse_1.2s_ease-in-out_infinite] motion-reduce:animate-none'
 const TOOL_RUN_MARKDOWN_CLASS =
-  '!font-[var(--vds-font-code)] !text-[length:var(--vds-font-body-lv1)] !leading-[var(--vds-lh-body-lv1)] !text-[var(--vds-text-secondary)] [&_code]:!text-[length:var(--vds-font-body-lv1)] [&_code]:!leading-[var(--vds-lh-body-lv1)] [&_table]:!text-[length:var(--vds-font-body-lv1)] [&_.md-p]:!my-[var(--vds-space-2)] [&_.md-p:first-child]:!mt-0 [&_.md-p:last-child]:!mb-0'
+  '[&_*]:!font-[var(--vds-fw-regular)] [&_*]:!text-[var(--vds-text-tertiary)] !font-[var(--vds-font-code)] !font-[var(--vds-fw-regular)] !text-[length:var(--vds-font-body-lv1)] !leading-[var(--vds-lh-body-lv1)] !text-[var(--vds-text-tertiary)] [&_code]:!text-[length:var(--vds-font-body-lv1)] [&_code]:!leading-[var(--vds-lh-body-lv1)] [&_table]:!text-[length:var(--vds-font-body-lv1)] [&_.md-p]:!my-[var(--vds-space-2)] [&_.md-p:first-child]:!mt-0 [&_.md-p:last-child]:!mb-0'
 const LEGACY_USER_STOPPED_STATUS = '已停止'
 
 type ToolItem = Extract<ConvItem, { kind: 'tool' }>
@@ -365,33 +481,110 @@ const rewindDialogStyle: React.CSSProperties = {
   boxShadow: 'var(--shadow)',
 }
 
+const TURN_NAVIGATION_STATE_MESSAGES = {
+  running: 'stream.navigation.states.running',
+  waiting: 'stream.navigation.states.waiting',
+  completed: 'stream.navigation.states.completed',
+  failed: 'stream.navigation.states.failed',
+  interrupted: 'stream.navigation.states.interrupted',
+  unknown: 'stream.navigation.states.unknown',
+} as const
+
+function TurnAnswerSummary({ text }: { text: string }): React.JSX.Element {
+  const summary = useMemo(() => markdownSummary(text), [text])
+  return <>{summary}</>
+}
+
+function useScrollControlPlacement(
+  target: HTMLDivElement | null,
+  visible: boolean
+): { left: number; size: number } | null {
+  const [placement, setPlacement] = useState<{ left: number; size: number } | null>(null)
+  useLayoutEffect(() => {
+    if (!target || !visible) {
+      setPlacement(null)
+      return
+    }
+    const controls = target.closest('.vds-ai-composer-host')
+    let observedPlan: HTMLElement | null = null
+    const measure = (): void => {
+      const plan = target.querySelector<HTMLElement>('[data-testid="todo-toggle"]')
+      if (plan !== observedPlan) {
+        if (observedPlan) resize.unobserve(observedPlan)
+        if (plan) resize.observe(plan)
+        observedPlan = plan
+      }
+      const displaced = controls?.querySelector(
+        '[data-testid="hil-dock"], [data-testid="composer-message-queue"], [data-scroll-control-displaced]'
+      )
+      const bounds = plan?.getBoundingClientRect()
+      const size = bounds?.height ?? 0
+      const gap = parseFloat(getComputedStyle(target).getPropertyValue('--vds-space-2'))
+      const center = (target.clientWidth - size) / 2
+      const minimum = (bounds?.width ?? 0) + gap
+      const left = center >= minimum ? center : target.clientWidth - size
+      const next = size > 0 && !displaced && left >= minimum ? { left, size } : null
+      setPlacement((current) =>
+        current?.left === next?.left && current?.size === next?.size ? current : next
+      )
+    }
+    const resize = new ResizeObserver(measure)
+    resize.observe(target)
+    const mutation = new MutationObserver(measure)
+    mutation.observe(controls ?? target, { childList: true, subtree: true })
+    measure()
+    return () => {
+      resize.disconnect()
+      mutation.disconnect()
+    }
+  }, [target, visible])
+  return target && visible ? placement : null
+}
+
 export function Stream({
   home = false,
   onOpenDelivery,
+  scrollControlTarget = null,
 }: {
   home?: boolean
+  scrollControlTarget?: HTMLDivElement | null
   onOpenDelivery?: (member: DeliveryCardMember) => void
 }): React.JSX.Element {
-  const { t } = useTranslation('components')
-  const { state, set, patchThread } = useApp()
+  const { t, i18n } = useTranslation('components')
+  const { state, set, patchThread, getSnapshot } = useApp()
   const thread = activeThread(state)
   const [recoveryChecking, setRecoveryChecking] = useState(false)
-  const [recoveryError, setRecoveryError] = useState(false)
+  const [failedRecovery, setFailedRecovery] = useState<RecoveryCheckIdentity | null>(null)
+  const recoveryError = failedRecovery !== null && recoveryCheckIsCurrent(thread, failedRecovery)
   const resourceProject = state.projects.find((project) => project.path === thread.projectPath)
   const conv =
     state.activeSession === null && state.turnLaunch
       ? [state.turnLaunch.optimisticUserMessage]
       : thread.conversation
+  const hasSkillReferences = conv.some(
+    (item) => item.kind === 'user' && item.refs?.some((reference) => reference.type === 'skill')
+  )
+  const language = i18n.language
+  const skillNames = useSkillNames(state.backendReady && hasSkillReferences, language)
   const currentConv = useLatestDisplayCards(conv)
   const postDeliveryCardTypes = usePostDeliveryCardTypes()
   const pendingHil = pendingHilItems(conv)
+  const pendingTurnIds = new Set(pendingHil.map((item) => item.turnId))
   const streamRef = useRef<HTMLDivElement>(null)
+  const navigationRef = useRef<HTMLElement>(null)
+  const navigationFocusRef = useRef<string | null>(null)
+  const [currentNavigationKey, setCurrentNavigationKey] = useState<string>()
+  const [visibleNavigationKeys, setVisibleNavigationKeys] = useState<string[]>([])
+  const [navigationGutter, setNavigationGutter] = useState(0)
+  const [hoveredNavigationIndex, setHoveredNavigationIndex] = useState<number | null>(null)
   const columnRef = useRef<HTMLDivElement>(null)
   const focusSpacerRef = useRef<HTMLDivElement>(null)
+  const focusBoundsRef = useRef<(() => DOMRect | null) | null>(null)
   const focusedSessionRef = useRef<string | null>(null)
   const continuingTurnsRef = useRef(new Set<string>())
   const endRef = useRef<HTMLDivElement>(null)
   const [showScrollToBottom, setShowScrollToBottom] = useState(false)
+  const scrollControlPlacement = useScrollControlPlacement(scrollControlTarget, showScrollToBottom)
   const showScrollToBottomRef = useRef(false)
   const resumeFollowOnScroll = useRef(false)
   // Turn 终态事件是停止工作态的唯一依据。中途 assistant 文本之后仍可能继续执行
@@ -400,13 +593,116 @@ export function Stream({
   const admitting =
     state.turnLaunch !== null || hasQueuedMessageAwaitingRuntime(thread.queuedMessages ?? [])
   const cardArtifacts = useCardArtifacts(conv)
+  const artifactCardTypes = useArtifactCardTypes()
   const presented = transcriptPresentationItems(currentConv).filter(
-    (item) => item.kind !== 'artifact' || !cardArtifacts.has(item.artifact.artifact_id)
+    (item) =>
+      (thread.readOnly || !isDockedInstallation(item)) &&
+      (item.kind !== 'artifact' || !cardArtifacts.has(item.artifact.artifact_id))
   )
   const activeTurnId = Object.entries(thread.turnOutcomes ?? {})
     .filter(([, outcome]) => outcome === 'running')
     .at(-1)?.[0]
   const rows = activityRows(presented, thread.turnOutcomes, postDeliveryCardTypes)
+  const navigationTurns = conversationTurns(
+    presented.map((item) =>
+      item.kind === 'user' && item.displayMessage
+        ? { ...item, text: renderFeedback(i18n, item.displayMessage) }
+        : item
+    ),
+    thread.turnOutcomes,
+    pendingTurnIds
+  )
+  useEffect(() => {
+    const stream = streamRef.current
+    const column = columnRef.current
+    if (home || !stream || !column) return
+    const navigationKeys = new Set(navigationTurns.map((turn) => turn.key))
+    let frame: number | undefined
+    const update = (): void => {
+      frame = undefined
+      setNavigationGutter(column.getBoundingClientRect().left - stream.getBoundingClientRect().left)
+      const anchors = Array.from(column.querySelectorAll<HTMLElement>('[data-message-kind="user"]'))
+        .filter((element) => element.checkVisibility())
+        .map((element) => ({
+          key: element.dataset.messageItemId || element.dataset.messageTurnId || '',
+          top: element.getBoundingClientRect().top,
+        }))
+        .filter((anchor) => navigationKeys.has(anchor.key))
+      setCurrentNavigationKey(
+        currentConversationTurn(anchors, stream.getBoundingClientRect().top + stream.clientTop)
+      )
+      const viewportTop = stream.getBoundingClientRect().top + stream.clientTop
+      const visibleKeys = visibleConversationTurns(
+        anchors,
+        viewportTop,
+        viewportTop + stream.clientHeight,
+        column.getBoundingClientRect().bottom
+      )
+      setVisibleNavigationKeys((previous) =>
+        previous.length === visibleKeys.length &&
+        previous.every((key, index) => key === visibleKeys[index])
+          ? previous
+          : visibleKeys
+      )
+    }
+    const schedule = (): void => {
+      if (frame === undefined) frame = requestAnimationFrame(update)
+    }
+    update()
+    stream.addEventListener('scroll', schedule, { passive: true })
+    const observer = new ResizeObserver(schedule)
+    observer.observe(stream)
+    observer.observe(column)
+    return () => {
+      stream.removeEventListener('scroll', schedule)
+      observer.disconnect()
+      if (frame !== undefined) cancelAnimationFrame(frame)
+    }
+  }, [home, thread.sessionId, navigationTurns])
+  useEffect(() => {
+    setHoveredNavigationIndex(null)
+    navigationFocusRef.current = null
+  }, [thread.sessionId])
+  useEffect(() => {
+    const navigation = navigationRef.current
+    const entry = navigation?.querySelector<HTMLElement>('[aria-current="step"]')
+    if (!navigation || !entry) return
+    const top = entry.offsetTop
+    if (top < navigation.scrollTop) navigation.scrollTop = top
+    else if (top + entry.offsetHeight > navigation.scrollTop + navigation.clientHeight)
+      navigation.scrollTop = top + entry.offsetHeight - navigation.clientHeight
+  }, [currentNavigationKey, navigationGutter])
+  const sections = processRows(rows)
+  const processes = executionProcesses(rows)
+  const fallbackDurations = fallbackDurationRows(rows)
+  const latestAgentRow = rows.reduce(
+    (latest, row, index) =>
+      row.kind === 'item' && row.item.kind === 'agent' && row.item.text ? index : latest,
+    -1
+  )
+  const fork = useForkOrigin(thread.sessionId)
+  const forkBoundary = fork.origin ? forkBoundaryIndex(rows, fork.origin.inherited_messages) : -1
+  const forkDivider = fork.origin ? <ForkOriginDivider {...fork} origin={fork.origin} /> : null
+  const isArtifactReceiptRow = (row: ActivityRow | undefined): boolean => {
+    if (row?.kind === 'artifacts')
+      return !thread.sessionId || row.items.every((item) => !artifactPreviewKind(item.artifact))
+    return (
+      row?.kind === 'item' &&
+      row.item.kind === 'display_card' &&
+      artifactCardTypes.has(row.item.card.type)
+    )
+  }
+  const sharesArtifactRow = (left: number, right: number): boolean => {
+    const turnId = rows[left] && rowTurnId(rows[left])
+    return Boolean(
+      turnId &&
+      right !== forkBoundary &&
+      rows[right] &&
+      rowTurnId(rows[right]) === turnId &&
+      isArtifactReceiptRow(rows[left]) &&
+      isArtifactReceiptRow(rows[right])
+    )
+  }
   const agentIdentities = subagentIdentities(conv)
   const hasVisibleProgress = hasVisibleTurnProgress(rows, activeTurnId)
   const showWorking = workingIndicatorVisible(
@@ -441,11 +737,20 @@ export function Stream({
   }, [thread.turnOutcomes, thread.sessionId])
   const finalAgentRows = new Set<number>()
   const turnsWithFinalAgent = new Set<string>()
+  const stoppedNotices = new Map<string, Extract<ConvItem, { kind: 'status' }>>()
   for (let index = rows.length - 1; index >= 0; index -= 1) {
     const row = rows[index]
     if (
+      row.kind === 'item' &&
+      row.item.kind === 'status' &&
+      row.item.turnId &&
+      isUserStoppedStatus(row.item)
+    )
+      stoppedNotices.set(row.item.turnId, row.item)
+    if (
       row.kind !== 'item' ||
       row.item.kind !== 'agent' ||
+      !row.item.text.trim() ||
       !row.item.turnId ||
       turnsWithFinalAgent.has(row.item.turnId)
     )
@@ -453,14 +758,37 @@ export function Stream({
     turnsWithFinalAgent.add(row.item.turnId)
     finalAgentRows.add(index)
   }
+  const renderTurnSources = (turnId: string): React.ReactNode =>
+    thread.sessionId && thread.turnOutcomes?.[turnId] !== 'running' ? (
+      <TurnCitationSources
+        sessionId={thread.sessionId}
+        turnId={turnId}
+        text={JSON.stringify(
+          currentConv.flatMap((item) =>
+            item.turnId === turnId && item.kind === 'agent' ? [item.text] : []
+          )
+        )}
+      />
+    ) : null
   const sessionRef = useRef(thread.sessionId)
   sessionRef.current = thread.sessionId
+  const updateFocusSpacer = React.useCallback((): number | undefined => {
+    const stream = streamRef.current
+    const spacer = focusSpacerRef.current
+    const bounds = focusBoundsRef.current?.()
+    if (!stream || !spacer || !bounds) return
+    const top =
+      stream.scrollTop + bounds.top - stream.getBoundingClientRect().top - stream.clientTop
+    spacer.style.height = `${messageFocusSpacerHeight(stream, spacer, top)}px`
+    return top
+  }, [])
   const scrollToBottom = React.useCallback(
     (behavior: ScrollBehavior = 'auto'): void => {
       if (home) return
       const stream = streamRef.current
       if (!stream) return
       focusedSessionRef.current = null
+      focusBoundsRef.current = null
       if (focusSpacerRef.current) focusSpacerRef.current.style.height = '0px'
       stream.scrollTo({ top: stream.scrollHeight, behavior })
     },
@@ -496,11 +824,17 @@ export function Stream({
   useLayoutEffect(() => {
     followScroll.resume()
     resumeFollowOnScroll.current = false
+    focusBoundsRef.current = null
   }, [followScroll, thread.sessionId])
 
   const continueTurn = async (failure: Extract<ConvItem, { kind: 'error' }>): Promise<void> => {
     const sessionId = thread.sessionId
-    if (!sessionId || !canContinueFailedTurn(thread, failure)) return
+    if (
+      !sessionId ||
+      modelSelectionBlocked(getSnapshot().serviceInstanceId, sessionId) ||
+      !canContinueFailedTurn(thread, failure)
+    )
+      return
     const recoveryKey = `${sessionId}:${failure.turnId}`
     if (continuingTurnsRef.current.has(recoveryKey)) return
     continuingTurnsRef.current.add(recoveryKey)
@@ -565,6 +899,7 @@ export function Stream({
       clientUserMessageId,
       assistantContextRevision: state.aiPanel.revision,
       continueTurnId: failure.turnId,
+      serviceInstanceId: getSnapshot().serviceInstanceId ?? undefined,
     })
     const submissionOutcome = composerSubmissionOutcome(delivered)
     if (submissionOutcome === 'rejected') {
@@ -669,22 +1004,29 @@ export function Stream({
       target.firstElementChild instanceof HTMLElement ? target.firstElementChild : target
     const stream = streamRef.current
     const sourceRange = focus.sourceRange
-    const bounds =
-      sourceRange?.unit === ANSWER_SOURCE_RANGE_UNIT
-        ? (sourceOffsetRect(scrollTarget, sourceRange.start) ??
-          scrollTarget.getBoundingClientRect())
-        : scrollTarget.getBoundingClientRect()
-    const top =
-      stream.scrollTop + bounds.top - stream.getBoundingClientRect().top - stream.clientTop
-    const spacer = focusSpacerRef.current
-    if (spacer) {
-      const contentHeight = stream.scrollHeight - spacer.offsetHeight
-      spacer.style.height = `${Math.max(0, top + stream.clientHeight - contentHeight)}px`
-    }
+    focusBoundsRef.current = () =>
+      !scrollTarget.isConnected
+        ? null
+        : sourceRange?.unit === ANSWER_SOURCE_RANGE_UNIT
+          ? (sourceOffsetRect(scrollTarget, sourceRange.start) ??
+            scrollTarget.getBoundingClientRect())
+          : scrollTarget.getBoundingClientRect()
+    const top = updateFocusSpacer()
+    if (top === undefined) return
     showScrollToBottomRef.current = true
     focusedSessionRef.current = thread.sessionId ?? null
     followScroll.pause()
-    stream.scrollTo({ top, behavior: 'instant' })
+    const navigationJump =
+      navigationFocusRef.current === (target.dataset.messageItemId || target.dataset.messageTurnId)
+    navigationFocusRef.current = null
+    stream.scrollTo({
+      top,
+      behavior:
+        navigationJump && !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+          ? 'smooth'
+          : 'instant',
+    })
+    if (target.dataset.messageKind === 'user') target.focus({ preventScroll: true })
     updateScrollToBottomVisibility()
     set((current) => ({
       aiPanel: { ...current.aiPanel, messageFocus: null },
@@ -697,6 +1039,7 @@ export function Stream({
     state.aiPanel,
     thread.resumeState,
     thread.sessionId,
+    updateFocusSpacer,
     updateScrollToBottomVisibility,
   ])
 
@@ -715,11 +1058,14 @@ export function Stream({
   useEffect(() => {
     if (home || !columnRef.current) return () => undefined
     const observer = new ResizeObserver(() => {
+      updateFocusSpacer()
+      updateScrollToBottomVisibility()
       if (focusedSessionRef.current !== thread.sessionId) followScroll.request()
     })
     observer.observe(columnRef.current)
+    if (streamRef.current) observer.observe(streamRef.current)
     return () => observer.disconnect()
-  }, [followScroll, home, thread.sessionId])
+  }, [followScroll, home, thread.sessionId, updateFocusSpacer, updateScrollToBottomVisibility])
 
   useEffect(() => {
     const stream = streamRef.current
@@ -808,242 +1154,499 @@ export function Stream({
   const threadKey = thread.id
   const checkRecovery = async (): Promise<void> => {
     if (thread.readOnly || !thread.sessionId || recoveryChecking) return
+    const requested = recoveryCheckIdentity(thread)
     setRecoveryChecking(true)
     const result = await checkSessionRecovery(thread.sessionId)
     setRecoveryChecking(false)
-    setRecoveryError(!result.ok)
-    patchThread(thread.id, {
-      recoveryBlocked: result.recovery_blocked,
-      recoveryPending: result.recovery_pending,
-      running: result.activity_active === true && result.recovery_pending,
-      status: result.activity_active === true && result.recovery_pending ? 'running' : 'done',
-    })
-    if (result.ok && thread.resumeState === 'failed') requestSessionResume(thread.sessionId)
+    const current = getSnapshot().threads[thread.id]
+    if (!current || !recoveryCheckIsCurrent(current, requested)) return
+    setFailedRecovery(result.ok ? null : requested)
+    patchThread(thread.id, (active) =>
+      recoveryCheckIsCurrent(active, requested) ? projectRecoveryCheck(result) : active
+    )
+    if (result.ok && current.resumeState === 'failed') requestSessionResume(thread.sessionId)
   }
-  return (
-    <div
-      ref={streamRef}
-      onWheel={(event) => {
-        focusedSessionRef.current = null
-        followScroll.pause()
-        resumeFollowOnScroll.current = event.deltaY > 0
-        if (resumeFollowOnScroll.current && !showScrollToBottomRef.current) followScroll.resume()
-      }}
-      onPointerDown={() => {
-        focusedSessionRef.current = null
-        followScroll.pause()
-        resumeFollowOnScroll.current = false
-      }}
-      onKeyDown={() => {
-        focusedSessionRef.current = null
-        followScroll.pause()
-        resumeFollowOnScroll.current = false
-      }}
+  const scrollOverlap = scrollControlPlacement
+    ? `calc(${scrollControlPlacement.size}px + var(--vds-space-2))`
+    : undefined
+  const scrollControl = showScrollToBottom ? (
+    <Button
+      unstyled
+      type="button"
       className={cx(
-        'conversation-stream [--vds-card-radius:var(--vds-radius-6)] [container-name:conversation-stream] [container-type:inline-size] [scrollbar-gutter:stable_both-edges] [overflow-anchor:none] [&::-webkit-scrollbar]:w-[var(--vds-conversation-scrollbar-width)] [&_.vds-card]:!shadow-none',
-        home ? 'pt-0' : 'pt-[var(--vds-space-4)]',
-        scrollbarVisible
-          ? '[scrollbar-color:var(--vds-scrollbar-thumb)_transparent] [&::-webkit-scrollbar-thumb]:bg-[var(--vds-scrollbar-thumb)]'
-          : '[scrollbar-color:transparent_transparent] [&::-webkit-scrollbar-thumb]:bg-transparent'
+        'z-[var(--vds-z-scroll-control)] grid size-[var(--vds-control-height-md)] cursor-pointer place-items-center rounded-[var(--vds-radius-6)] border border-[var(--border)] bg-[color-mix(in_srgb,var(--bg-2)_94%,transparent)] p-0 text-[var(--text-2)] shadow-[var(--vds-shadow-1-center)] hover:bg-[var(--hover-bg)] hover:text-[var(--text)] focus-visible:bg-[var(--hover-bg)] focus-visible:text-[var(--text)]',
+        scrollControlPlacement
+          ? 'pointer-events-auto absolute top-0'
+          : 'sticky bottom-[var(--vds-space-3)] mx-auto mb-[var(--vds-space-2)] mt-[calc(-1*(var(--vds-control-height-md)+var(--vds-space-4)))]'
       )}
-      style={{
-        flex: home ? 'none' : 1,
-        minHeight: 0,
-        overflowY: home ? 'visible' : 'auto',
-        paddingInline: 'var(--vds-space-4)',
-        paddingBottom: home ? '8px' : '10px',
-        userSelect: 'text',
-        WebkitUserSelect: 'text',
-        cursor: 'auto',
+      style={
+        scrollControlPlacement
+          ? {
+              left: scrollControlPlacement.left,
+              width: scrollControlPlacement.size,
+              height: scrollControlPlacement.size,
+            }
+          : undefined
+      }
+      data-testid="scroll-to-bottom"
+      data-scroll-control-inline={scrollControlPlacement ? true : undefined}
+      aria-label={t('stream.bottom')}
+      title={t('stream.bottom')}
+      onClick={() => {
+        followScroll.resume()
+        scrollToBottom(window.matchMedia(REDUCED_MOTION_QUERY).matches ? 'auto' : 'smooth')
       }}
     >
-      <CopySessionContext.Provider value={thread.sessionId ?? ''}>
-        <CopyItemsContext.Provider value={currentConv}>
-          {turnAnnouncementKey && (
-            <div role="status" aria-live="polite" className="sr-only">
-              {t(turnAnnouncementKey)}
-            </div>
-          )}
-          <div
-            ref={columnRef}
-            key={threadKey}
-            className={READING_COLUMN_CLASS}
-            data-testid="conversation-content"
-            style={{ animation: 'overlayIn .32s cubic-bezier(.4,0,.2,1) both' }}
+      <span aria-hidden className="inline-grid rotate-180">
+        <Icon name="send" size={18} sw={1.9} />
+      </span>
+    </Button>
+  ) : null
+  return (
+    <div
+      className={home ? 'contents' : 'relative flex min-h-0 min-w-0 flex-1'}
+      data-scroll-control-overlay={scrollOverlap ? true : undefined}
+      style={scrollOverlap ? { marginBottom: `calc(-1 * ${scrollOverlap})` } : undefined}
+    >
+      {!home &&
+        thread.sessionId &&
+        turnNavigationVisible(navigationTurns.length, navigationGutter) && (
+          <nav
+            ref={navigationRef}
+            data-testid="turn-navigation"
+            aria-label={t('stream.navigation.label')}
+            className="absolute left-0 top-1/2 z-[var(--vds-z-scroll-control)] flex max-h-full w-[var(--vds-space-10)] -translate-y-1/2 flex-col overflow-y-auto overscroll-contain py-[var(--vds-space-2)] [scrollbar-width:none]"
+            onMouseLeave={() => setHoveredNavigationIndex(null)}
+            onBlur={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null))
+                setHoveredNavigationIndex(null)
+            }}
           >
-            {thread.recoveryBlocked && !home && (
-              <Alert
-                layout="stacked"
-                data-testid="session-recovery-blocked"
-                data-recovery-session-id={thread.sessionId}
-                data-recovery-incident-id={thread.recoveryIncidentId ?? undefined}
-                tone="warning"
-                className="mb-[var(--vds-space-4)]"
-                title={t('stream.recoveryBlocked')}
-                description={t(
-                  recoveryError ? 'stream.recoveryCheckFailed' : 'stream.recoveryBlockedDetail'
-                )}
-                action={
-                  <Button
-                    data-testid="session-recovery-check"
-                    size="sm"
-                    variant="outline"
-                    disabled={thread.readOnly || recoveryChecking}
-                    loading={recoveryChecking}
-                    onClick={() => void checkRecovery()}
-                  >
-                    {t('stream.recoveryCheck')}
-                  </Button>
-                }
-              />
-            )}
-            {conv.length === 0 &&
-              (thread.resumeState === 'pending' ? <Loading /> : <Empty home={home} />)}
-            {processRows(rows).map((section) => {
-              const renderRow = (row: ActivityRow, index: number): React.ReactNode => {
-                const previous = rows[index - 1]
-                const next = rows[index + 1]
-                const attachedArtifacts =
-                  row.kind === 'item' &&
-                  row.item.kind === 'agent' &&
-                  next?.kind === 'artifacts' &&
-                  next.turnId === row.item.turnId
-                    ? next
-                    : undefined
-                if (
-                  row.kind === 'artifacts' &&
-                  previous?.kind === 'item' &&
-                  previous.item.kind === 'agent' &&
-                  previous.item.turnId === row.turnId
-                )
-                  return null
-                if (row.kind === 'activity')
-                  return (
-                    <ActivityRun
-                      key={row.key}
-                      agentIdentities={agentIdentities}
-                      items={row.items}
-                      turnId={row.turnId}
-                      tail={row.tail}
-                      outcome={row.turnId ? thread.turnOutcomes?.[row.turnId] : undefined}
-                      timing={row.turnId ? thread.turnTimings?.[row.turnId] : undefined}
-                    />
-                  )
-                if (row.kind === 'artifacts')
-                  return <ArtifactCard key={row.key} items={row.items} turnId={row.turnId} />
-                return (
-                  <div
-                    key={row.key}
-                    className="contents"
-                    data-message-turn-id={row.item.turnId || undefined}
-                    data-message-item-id={row.item.itemId || undefined}
-                    data-message-kind={row.item.kind}
-                  >
-                    <Item
-                      item={row.item}
-                      trailingContent={
-                        attachedArtifacts ? (
-                          <ArtifactCard
-                            items={attachedArtifacts.items}
-                            turnId={attachedArtifacts.turnId}
-                          />
-                        ) : undefined
-                      }
-                      running={busy}
-                      turnOutcome={
-                        row.item.turnId ? thread.turnOutcomes?.[row.item.turnId] : undefined
-                      }
-                      turnTiming={
-                        finalAgentRows.has(index) && row.item.turnId
-                          ? thread.turnTimings?.[row.item.turnId]
-                          : undefined
-                      }
-                      onRewind={rewindPrompt}
-                      onContinue={continueTurn}
-                      onOpenDelivery={onOpenDelivery}
-                    />
-                    {row.item.turnId && thread.turnOutcomes?.[row.item.turnId] !== 'running' && (
-                      <CardOnlyReplyCopy item={row.item} />
-                    )}
-                  </div>
-                )
-              }
-              if (section.kind === 'row') return renderRow(section.row, section.index)
-              const focus = state.aiPanel.messageFocus
-              const reveal =
-                focus?.sessionId === thread.sessionId &&
-                matchingAttentionAnchors(
-                  section.entries.flatMap((entry) =>
-                    entry.row.kind === 'item'
-                      ? [
-                          {
-                            messageItemId: entry.row.item.itemId,
-                            messageTurnId: entry.row.item.turnId,
-                            messageKind: entry.row.item.kind,
-                          },
-                        ]
-                      : []
-                  ),
-                  focus
-                ).length > 0
-              return (
-                <ExecutionProcess
-                  key={section.key}
-                  turnId={section.turnId}
-                  outcome={thread.turnOutcomes?.[section.turnId]}
-                  reveal={reveal}
+            {navigationTurns.map((turn, index) => (
+              <HoverCard
+                key={turn.key}
+                onOpenChange={(open) => {
+                  if (open) setHoveredNavigationIndex(index)
+                  else setHoveredNavigationIndex((current) => (current === index ? null : current))
+                }}
+              >
+                <HoverCardContent
+                  side="right"
+                  className="!w-[var(--vds-tooltip-max-width)] overflow-hidden border border-[var(--vds-border-default)] !p-[var(--vds-space-2)] motion-reduce:!animate-none"
                 >
-                  {section.entries.map((entry) => renderRow(entry.row, entry.index))}
-                </ExecutionProcess>
-              )
-            })}
-            {resourceProject && thread.sessionId && (
-              <Finalizations
-                key={`${resourceProject.id}:${thread.sessionId}`}
-                project={resourceProject.id}
-                sessionId={thread.sessionId}
-                running={busy}
-                revision={thread.lastSeq}
-              />
+                  <span className="grid min-w-0 max-w-[var(--vds-tooltip-max-width)] gap-[var(--vds-space-1)]">
+                    <span className="sr-only">{t('stream.navigation.question', { text: '' })}</span>
+                    <span
+                      data-testid="turn-preview-question"
+                      className="block truncate text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-primary)] [font-weight:var(--vds-fw-regular)]"
+                    >
+                      {turn.question || t('stream.navigation.emptyQuestion')}
+                    </span>
+                    <span className="sr-only">{t('stream.navigation.answer', { text: '' })}</span>
+                    <span
+                      data-testid="turn-preview-answer"
+                      className="line-clamp-3 whitespace-normal text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-tertiary)] [font-weight:var(--vds-fw-regular)] [overflow-wrap:anywhere]"
+                    >
+                      <TurnAnswerSummary
+                        text={turn.answer || t(TURN_NAVIGATION_STATE_MESSAGES[turn.state])}
+                      />
+                    </span>
+                  </span>
+                </HoverCardContent>
+                <HoverCardTrigger asChild>
+                  <Button
+                    unstyled
+                    type="button"
+                    data-testid="turn-navigation-entry"
+                    aria-label={t('stream.navigation.turn', { number: index + 1 })}
+                    aria-current={currentNavigationKey === turn.key ? 'step' : undefined}
+                    onMouseEnter={() => setHoveredNavigationIndex(index)}
+                    onFocus={() => setHoveredNavigationIndex(index)}
+                    className="group grid h-[var(--vds-space-3)] w-full shrink-0 items-center justify-items-start rounded-[var(--vds-radius-2)] pl-[var(--vds-space-3)] focus-visible:outline-none focus-visible:shadow-[var(--vds-focus-brand)]"
+                    onClick={() => {
+                      navigationFocusRef.current = turn.key
+                      set((current) => ({
+                        aiPanel: {
+                          ...current.aiPanel,
+                          messageFocus: {
+                            sessionId: thread.sessionId!,
+                            turnId: turn.turnId,
+                            itemId: turn.itemId,
+                          },
+                        },
+                      }))
+                    }}
+                  >
+                    <span
+                      aria-hidden="true"
+                      data-proximity={turnMarkerProximity(index, hoveredNavigationIndex)}
+                      className={cx(
+                        'h-[var(--vds-border-width-2)] w-[calc(var(--vds-space-1)+var(--vds-space-half))] rounded-full transition-[width,background-color] duration-[var(--vds-duration-normal)] ease-[var(--vds-ease-standard)] motion-reduce:transition-none data-[proximity=outer]:w-[calc(var(--vds-space-2)+var(--vds-space-half))] data-[proximity=far]:w-[calc(var(--vds-space-3)+var(--vds-space-half))] data-[proximity=near]:w-[var(--vds-space-5)] data-[proximity=focused]:w-[calc(var(--vds-space-6)+var(--vds-space-half))] data-[proximity=focused]:!bg-[var(--vds-icon-fill-default)] group-focus-visible:!bg-[var(--vds-icon-fill-default)]',
+                        visibleNavigationKeys.includes(turn.key)
+                          ? 'bg-[var(--vds-icon-fill-default)]'
+                          : 'bg-[var(--vds-border-default)]'
+                      )}
+                    />
+                  </Button>
+                </HoverCardTrigger>
+              </HoverCard>
+            ))}
+          </nav>
+        )}
+      <div
+        ref={streamRef}
+        onWheel={(event) => {
+          focusedSessionRef.current = null
+          followScroll.pause()
+          resumeFollowOnScroll.current = event.deltaY > 0
+          if (resumeFollowOnScroll.current && !showScrollToBottomRef.current) followScroll.resume()
+        }}
+        onPointerDown={() => {
+          focusedSessionRef.current = null
+          followScroll.pause()
+          resumeFollowOnScroll.current = false
+        }}
+        onKeyDown={() => {
+          focusedSessionRef.current = null
+          followScroll.pause()
+          resumeFollowOnScroll.current = false
+        }}
+        className={cx(
+          'conversation-stream [--vds-card-radius:var(--vds-radius-6)] [container-name:conversation-stream] [container-type:inline-size] [scrollbar-gutter:stable_both-edges] [overflow-anchor:none] [&::-webkit-scrollbar]:w-[var(--vds-conversation-scrollbar-width)] [&_.vds-card]:!shadow-none',
+          home ? 'pt-0' : 'pt-[var(--vds-space-4)]',
+          scrollOverlap &&
+            '[mask-image:linear-gradient(to_bottom,black_calc(100%_-_2*var(--vds-space-8)),transparent)]',
+          scrollbarVisible
+            ? '[scrollbar-color:var(--vds-scrollbar-thumb)_transparent] [&::-webkit-scrollbar-thumb]:bg-[var(--vds-scrollbar-thumb)]'
+            : '[scrollbar-color:transparent_transparent] [&::-webkit-scrollbar-thumb]:bg-transparent'
+        )}
+        style={{
+          flex: home ? 'none' : 1,
+          minHeight: 0,
+          overflowY: home ? 'visible' : 'auto',
+          paddingInline: 'var(--vds-space-4)',
+          paddingBottom: home ? '8px' : '10px',
+          userSelect: 'text',
+          WebkitUserSelect: 'text',
+          cursor: 'auto',
+        }}
+      >
+        <CopySessionContext.Provider value={thread.sessionId ?? ''}>
+          <CopyItemsContext.Provider value={currentConv}>
+            {turnAnnouncementKey && (
+              <div role="status" aria-live="polite" className="sr-only">
+                {t(turnAnnouncementKey)}
+              </div>
             )}
-            {showWorking && (
-              <Working
-                waiting={thread.status === 'waiting'}
-                recovering={thread.readiness?.process_state === 'recovering'}
-              />
-            )}
-            <div ref={endRef} />
-            <div ref={focusSpacerRef} aria-hidden="true" />
-          </div>
-        </CopyItemsContext.Provider>
-      </CopySessionContext.Provider>
-      {showScrollToBottom && (
-        <Button
-          unstyled
-          type="button"
-          className="sticky bottom-[14px] [left:50%] z-[var(--vds-z-scroll-control)] mx-auto mb-[10px] mt-[-52px] grid w-[35px] h-[35px] cursor-pointer place-items-center rounded-full border border-[var(--border)] bg-[color-mix(in_srgb,var(--bg-2)_94%,transparent)] p-[var(--vds-space-0)] text-[var(--text-2)] shadow-[var(--shadow)] [animation:cardIn_0.18s_ease_both] hover:bg-[var(--hover-bg)] hover:text-[var(--text)] focus-visible:bg-[var(--hover-bg)] focus-visible:text-[var(--text)] focus-visible:outline-none"
-          data-testid="scroll-to-bottom"
-          aria-label={t('stream.bottom')}
-          title={t('stream.bottom')}
-          onClick={() => {
-            followScroll.resume()
-            scrollToBottom(window.matchMedia(REDUCED_MOTION_QUERY).matches ? 'auto' : 'smooth')
-          }}
-        >
-          <span aria-hidden style={{ transform: 'rotate(180deg)', display: 'inline-grid' }}>
-            <Icon name="send" size={18} sw={1.9} />
-          </span>
-        </Button>
-      )}
+            <div
+              ref={columnRef}
+              key={threadKey}
+              className={cx(
+                READING_COLUMN_CLASS,
+                '[font-family:var(--vds-font-main)] text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)]'
+              )}
+              data-testid="conversation-content"
+              style={{ animation: 'overlayIn .32s cubic-bezier(.4,0,.2,1) both' }}
+            >
+              {thread.recoveryBlocked && !home && (
+                <Alert
+                  layout="stacked"
+                  data-testid="session-recovery-blocked"
+                  data-recovery-session-id={thread.sessionId}
+                  data-recovery-incident-id={thread.recoveryIncidentId ?? undefined}
+                  tone="warning"
+                  className="mb-[var(--vds-space-4)]"
+                  title={t('stream.recoveryBlocked')}
+                  description={t(
+                    recoveryError ? 'stream.recoveryCheckFailed' : 'stream.recoveryBlockedDetail'
+                  )}
+                  action={
+                    <Button
+                      data-testid="session-recovery-check"
+                      size="sm"
+                      variant="outline"
+                      disabled={thread.readOnly || recoveryChecking}
+                      loading={recoveryChecking}
+                      onClick={() => void checkRecovery()}
+                    >
+                      {t('stream.recoveryCheck')}
+                    </Button>
+                  }
+                />
+              )}
+              {conv.length === 0 &&
+                (thread.resumeState === 'pending' ? <Loading /> : <Empty home={home} />)}
+              {sections.map((section, sectionIndex) => {
+                const sectionTurn = section.kind === 'row' ? rowTurnId(section.row) : section.turnId
+                const nextSection = sections[sectionIndex + 1]
+                const nextTurn =
+                  nextSection?.kind === 'row' ? rowTurnId(nextSection.row) : nextSection?.turnId
+                const missingAnswer =
+                  sectionTurn &&
+                  sectionTurn !== nextTurn &&
+                  isEmptyTurn(thread, sectionTurn) &&
+                  !conv.some((item) => item.kind === 'agent' && item.turnId === sectionTurn) ? (
+                    <EmptyTurn key={`empty:${sectionTurn}`} turnId={sectionTurn} />
+                  ) : null
+                const renderRow = (row: ActivityRow, index: number): React.ReactNode => {
+                  const previous = rows[index - 1]
+                  const next = rows[index + 1]
+                  if (
+                    row.kind === 'item' &&
+                    row.item.turnId &&
+                    isUserStoppedStatus(row.item) &&
+                    turnsWithFinalAgent.has(row.item.turnId)
+                  )
+                    return null
+                  const stoppedNotice =
+                    finalAgentRows.has(index) && row.kind === 'item' && row.item.turnId
+                      ? stoppedNotices.get(row.item.turnId)
+                      : undefined
+                  const attachedArtifacts =
+                    row.kind === 'item' &&
+                    row.item.kind === 'agent' &&
+                    next?.kind === 'artifacts' &&
+                    next.turnId === row.item.turnId &&
+                    !sharesArtifactRow(index + 1, index + 2)
+                      ? next
+                      : undefined
+                  if (
+                    row.kind === 'artifacts' &&
+                    previous?.kind === 'item' &&
+                    previous.item.kind === 'agent' &&
+                    previous.item.turnId === row.turnId &&
+                    !sharesArtifactRow(index, index + 1)
+                  )
+                    return null
+                  if (row.kind === 'activity')
+                    return (
+                      <ActivityRun
+                        key={row.key}
+                        agentIdentities={agentIdentities}
+                        items={row.items}
+                        turnId={row.turnId}
+                        tail={row.tail}
+                        outcome={row.turnId ? thread.turnOutcomes?.[row.turnId] : undefined}
+                        timing={row.turnId ? thread.turnTimings?.[row.turnId] : undefined}
+                      />
+                    )
+                  if (row.kind === 'artifacts')
+                    return <ArtifactCard key={row.key} items={row.items} turnId={row.turnId} />
+                  return (
+                    <div
+                      key={row.key}
+                      className={
+                        row.item.kind === 'user'
+                          ? cx(
+                              'outline-none focus-visible:shadow-[var(--vds-focus-brand)]',
+                              index > 0 && 'mt-[var(--vds-space-10)]'
+                            )
+                          : 'contents'
+                      }
+                      tabIndex={row.item.kind === 'user' ? -1 : undefined}
+                      data-message-turn-id={row.item.turnId || undefined}
+                      data-message-item-id={row.item.itemId || undefined}
+                      data-message-kind={row.item.kind}
+                    >
+                      <Item
+                        item={row.item}
+                        skillNames={skillNames}
+                        awaitingConfirmation={pendingTurnIds.has(row.item.turnId)}
+                        latestAgent={index === latestAgentRow}
+                        sourcesContent={
+                          finalAgentRows.has(index) && row.item.turnId
+                            ? renderTurnSources(row.item.turnId)
+                            : undefined
+                        }
+                        trailingContent={
+                          attachedArtifacts || stoppedNotice ? (
+                            <>
+                              {attachedArtifacts && (
+                                <ArtifactCard
+                                  items={attachedArtifacts.items}
+                                  turnId={attachedArtifacts.turnId}
+                                />
+                              )}
+                              {stoppedNotice && <StatusLine item={stoppedNotice} />}
+                            </>
+                          ) : undefined
+                        }
+                        running={busy}
+                        turnOutcome={
+                          row.item.turnId ? thread.turnOutcomes?.[row.item.turnId] : undefined
+                        }
+                        turnTiming={
+                          (finalAgentRows.has(index) || row.item.kind === 'user') &&
+                          row.item.turnId &&
+                          !processes.some((process) => process.turnId === row.item.turnId)
+                            ? thread.turnTimings?.[row.item.turnId]
+                            : undefined
+                        }
+                        onRewind={rewindPrompt}
+                        onContinue={continueTurn}
+                        onOpenDelivery={onOpenDelivery}
+                      />
+                      {row.item.kind !== 'interaction_reply' &&
+                        row.item.turnId &&
+                        thread.turnOutcomes?.[row.item.turnId] !== 'running' && (
+                          <CardOnlyReplyCopy item={row.item} />
+                        )}
+                    </div>
+                  )
+                }
+                const renderForkRow = (
+                  row: ActivityRow,
+                  index: number,
+                  groupedArtifacts = false
+                ): React.ReactNode => {
+                  const turnId = rowTurnId(row)
+                  const timing =
+                    fallbackDurations.has(index) &&
+                    turnId &&
+                    !processes.some((process) => process.turnId === turnId)
+                      ? thread.turnTimings?.[turnId]
+                      : undefined
+                  const content = renderRow(row, index)
+                  const footer = (
+                    <>
+                      {turnId &&
+                        !turnsWithFinalAgent.has(turnId) &&
+                        !rows
+                          .slice(index + 1)
+                          .some((candidate) => rowTurnId(candidate) === turnId) &&
+                        renderTurnSources(turnId)}
+                      {timing?.completedAt !== undefined && <TurnDuration timing={timing} />}
+                    </>
+                  )
+                  return (
+                    <React.Fragment key={row.key}>
+                      {index === forkBoundary ? (
+                        groupedArtifacts ? (
+                          <div className="col-span-full">{forkDivider}</div>
+                        ) : (
+                          forkDivider
+                        )
+                      ) : null}
+                      {groupedArtifacts && row.kind === 'item' ? (
+                        <div className={ARTIFACT_ROW_ITEM_CLASS}>{content}</div>
+                      ) : (
+                        content
+                      )}
+                      {groupedArtifacts ? (
+                        <div className="col-span-full empty:hidden">{footer}</div>
+                      ) : (
+                        footer
+                      )}
+                    </React.Fragment>
+                  )
+                }
+                if (section.kind === 'row') {
+                  if (sharesArtifactRow(section.index - 1, section.index)) return missingAnswer
+                  if (sharesArtifactRow(section.index, section.index + 1)) {
+                    const cards = [renderForkRow(section.row, section.index, true)]
+                    let index = section.index
+                    while (sharesArtifactRow(index, index + 1)) {
+                      index += 1
+                      cards.push(renderForkRow(rows[index], index, true))
+                    }
+                    return (
+                      <div
+                        key={section.row.key}
+                        className={cx(ARTIFACT_ROWS_CLASS, '[&_[data-artifact-list]]:contents')}
+                      >
+                        {cards}
+                      </div>
+                    )
+                  }
+                  return (
+                    <React.Fragment key={section.row.key}>
+                      {renderForkRow(section.row, section.index)}
+                      {missingAnswer}
+                    </React.Fragment>
+                  )
+                }
+                const focus = state.aiPanel.messageFocus
+                const reveal =
+                  focus?.sessionId === thread.sessionId &&
+                  matchingAttentionAnchors(
+                    section.entries.flatMap((entry) =>
+                      entry.row.kind === 'item'
+                        ? [
+                            {
+                              messageItemId: entry.row.item.itemId,
+                              messageTurnId: entry.row.item.turnId,
+                              messageKind: entry.row.item.kind,
+                            },
+                          ]
+                        : []
+                    ),
+                    focus
+                  ).length > 0
+                return (
+                  <React.Fragment key={section.key}>
+                    <TurnProcess
+                      key={section.key}
+                      statusOwner={section.statusOwner}
+                      process={{
+                        turnId: section.turnId,
+                        rows: section.entries.map((entry) => entry.row),
+                        indices: section.entries.map((entry) => entry.index),
+                      }}
+                      agentIdentities={agentIdentities}
+                      outcome={thread.turnOutcomes?.[section.turnId]}
+                      timing={thread.turnTimings?.[section.turnId]}
+                      reveal={reveal}
+                    />
+                    {missingAnswer}
+                  </React.Fragment>
+                )
+              })}
+              {forkBoundary === rows.length && forkDivider}
+              {resourceProject && thread.sessionId && (
+                <Finalizations
+                  key={`${resourceProject.id}:${thread.sessionId}`}
+                  project={resourceProject.id}
+                  sessionId={thread.sessionId}
+                  running={busy}
+                  revision={thread.lastSeq}
+                />
+              )}
+              {showWorking && (
+                <Working
+                  waiting={thread.status === 'waiting'}
+                  recovering={thread.readiness?.process_state === 'recovering'}
+                />
+              )}
+              <div ref={endRef} />
+              <div ref={focusSpacerRef} aria-hidden="true" />
+              {scrollOverlap && <div aria-hidden="true" style={{ height: scrollOverlap }} />}
+            </div>
+          </CopyItemsContext.Provider>
+        </CopySessionContext.Provider>
+        {scrollControlPlacement && scrollControlTarget
+          ? createPortal(scrollControl, scrollControlTarget)
+          : scrollControl}
+      </div>
     </div>
   )
 }
 
-/** Active interactions are blocking turn controls and stay adjacent to the composer. */
-export function PendingHilDock(): React.JSX.Element | null {
+/** A pending confirmation occupies the conversation's input position. */
+export function PendingHilDock({
+  floating = false,
+  adjacentComposer = false,
+}: {
+  floating?: boolean
+  adjacentComposer?: boolean
+} = {}): React.JSX.Element | null {
   const { state } = useApp()
+  const interactionPolicies = useInteractionPolicies()
   const thread = activeThread(state)
-  const interactions = pendingHilItems(thread.conversation)
+  const confirmations = pendingConversationConfirmations(thread)
+  const interactions =
+    confirmations.length > 0 || floating || thread.readOnly
+      ? confirmations
+      : pendingHilItems(thread.conversation)
   const focus = state.aiPanel.messageFocus
   const requestedId = focus?.sessionId === thread.sessionId ? focus.requestId : null
   const [selected, setSelected] = useState<{ sessionId: string | null; requestId: string } | null>(
@@ -1057,12 +1660,28 @@ export function PendingHilDock(): React.JSX.Element | null {
     interactions,
     requestedId ?? (selected?.sessionId === thread.sessionId ? selected.requestId : null)
   )
-  if (thread.readOnly || !interaction) return null
+  const attached = Boolean(
+    interaction &&
+    isQuestionHil(interaction) &&
+    interactionPolicies.find((policy) => policy.matches(interaction.questions ?? []))
+      ?.composerAttached
+  )
+  if (!interaction) return null
   return (
-    // 底部 pb-4：HIL 卡与下方执行计划/输入框容器的间距统一为 4px（卡自身 dock 态 mb-0）。
     <div
-      className="relative z-[var(--vds-z-local-top)] flex min-h-0 flex-[1_1_auto] flex-col overflow-hidden bg-transparent px-[var(--vds-conversation-inline-gutter)] pt-[var(--vds-space-2)] pb-[var(--vds-space-1)]"
+      className={cx(
+        'relative flex min-h-0 flex-[1_1_auto] flex-col overflow-hidden bg-transparent',
+        !floating && 'px-[var(--vds-conversation-inline-gutter)] pt-[var(--vds-space-2)]',
+        adjacentComposer
+          ? 'z-[var(--vds-z-local-top)]'
+          : attached
+            ? 'z-auto pb-[var(--vds-space-2)]'
+            : isQuestionHil(interaction)
+              ? 'z-[var(--vds-z-local-top)] pb-[var(--vds-space-3)]'
+              : 'z-[var(--vds-z-local-top)] pb-[var(--vds-space-1)]'
+      )}
       data-testid="hil-dock"
+      data-hil-attached={attached || undefined}
     >
       <div className={cx(READING_COLUMN_CLASS, '@container flex min-h-0 flex-1 flex-col')}>
         <BrowserAwareHilCard
@@ -1078,22 +1697,74 @@ export function PendingHilDock(): React.JSX.Element | null {
 
 export function ConversationControls({
   children,
+  externalConfirmation = false,
+  floatingComposer = false,
 }: {
   children: React.ReactNode
+  externalConfirmation?: boolean
+  floatingComposer?: boolean
 }): React.JSX.Element {
   const { state } = useApp()
   const thread = activeThread(state)
-  const hasPendingHil = !thread.readOnly && pendingHilItems(thread.conversation).length > 0
+  const interactionPolicies = useInteractionPolicies()
+  const confirmations = pendingConversationConfirmations(thread)
+  const installations = thread.readOnly ? [] : thread.conversation.filter(isDockedInstallation)
+  const hasPendingHil = confirmations.length > 0
+  const hasInstallations = installations.length > 0
+  const requiresCard = confirmations.some(
+    (item) =>
+      !isQuestionHil(item) ||
+      interactionPolicies.some(
+        (policy) => policy.directDecision && policy.matches(item.questions ?? [])
+      )
+  )
   return (
     // 禁 overflow-hidden: composer 的 @/技能弹层是 absolute 向上弹出、会超出本容器盒子被裁成一条边; 高度收敛靠 composer 内部限高滚动。
     <div
       className={cx(
-        'vds-ai-composer-host flex min-h-0 flex-[0_1_auto] flex-col px-[var(--vds-conversation-scrollbar-width)]',
-        hasPendingHil ? 'max-h-3/4' : 'max-h-full'
+        'vds-ai-composer-host flex min-h-0 max-h-full flex-[0_1_auto] flex-col px-[var(--vds-conversation-scrollbar-width)] has-[[data-scroll-control-inline]]:pointer-events-none',
+        (hasPendingHil || hasInstallations) && 'max-h-3/4',
+        hasPendingHil &&
+          'has-[[data-clarification-paged=true]]:max-h-full [&_[data-testid=todo-panel]]:hidden'
       )}
     >
-      <PendingHilDock />
-      <div className="flex-none">{children}</div>
+      {hasInstallations && (
+        <ScrollArea
+          data-scroll-control-displaced=""
+          className={cx(
+            'grid min-h-0 grid-rows-[minmax(0,1fr)]',
+            !floatingComposer && 'px-[var(--vds-conversation-inline-gutter)]'
+          )}
+          viewportClassName="min-h-0"
+        >
+          <div
+            className={cx(
+              READING_COLUMN_CLASS,
+              '@container flex flex-col gap-[var(--vds-space-2)] pt-[var(--vds-space-2)]',
+              floatingComposer && 'pb-[var(--vds-space-2)]'
+            )}
+          >
+            {installations.map((item) => (
+              <BrowserAwareHilCard key={item.requestId} item={item} presentation="dock" />
+            ))}
+          </div>
+        </ScrollArea>
+      )}
+      {!externalConfirmation && (
+        <PendingHilDock adjacentComposer={hasPendingHil && !floatingComposer} />
+      )}
+      <ComposerConfirmationContext.Provider value={{ pending: requiresCard }}>
+        <div
+          className={cx(
+            floatingComposer && hasPendingHil
+              ? 'hidden'
+              : 'flex min-h-0 max-h-full flex-[0_1_auto] flex-col',
+            (hasPendingHil || hasInstallations) && 'shrink-0'
+          )}
+        >
+          {children}
+        </div>
+      </ComposerConfirmationContext.Provider>
     </div>
   )
 }
@@ -1114,14 +1785,19 @@ function Working({
       : t('stream.thinking')
   return (
     <div
-      className="mb-[var(--vds-space-5)] flex items-center gap-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-stream-content-line-height)] text-[var(--vds-text-secondary)]"
+      className="mb-[var(--vds-space-5)] flex items-center gap-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] leading-[var(--vds-stream-content-line-height)] text-[var(--vds-text-secondary)]"
       role="status"
       data-testid="assistant-working"
     >
       {waiting ? (
         <Icon name="schedule" size={14} />
       ) : (
-        <Spinner imageSrc={aiThinking} size="sm" aria-hidden="true" />
+        <Spinner
+          imageSrc={aiThinking}
+          size="sm"
+          className="!size-[var(--vds-icon-8)]"
+          aria-hidden="true"
+        />
       )}
       <span>{label}</span>
     </div>
@@ -1197,6 +1873,10 @@ function Empty({ home = false }: { home?: boolean }): React.JSX.Element {
 
 function Item({
   item,
+  skillNames,
+  awaitingConfirmation,
+  latestAgent,
+  sourcesContent,
   trailingContent,
   running,
   turnOutcome,
@@ -1206,6 +1886,10 @@ function Item({
   onOpenDelivery,
 }: {
   item: ConvItem
+  skillNames: SkillNames
+  awaitingConfirmation: boolean
+  latestAgent: boolean
+  sourcesContent?: React.ReactNode
   trailingContent?: React.ReactNode
   running: boolean
   turnOutcome?: TurnOutcome
@@ -1216,6 +1900,7 @@ function Item({
 }): React.JSX.Element | null {
   const { state } = useApp()
   const readOnly = activeThread(state).readOnly
+  const { t: conversation } = useTranslation('conversation')
   const interactions = answerInteractionCapabilities(turnOutcome)
   switch (item.kind) {
     case 'day':
@@ -1225,25 +1910,89 @@ function Item({
     case 'reentry':
       return <Reentry item={item} />
     case 'user':
-      return <UserBubble item={item} running={running} onRewind={onRewind} />
+      return (
+        <UserBubble
+          item={item}
+          skillNames={skillNames}
+          running={running}
+          onRewind={onRewind}
+          sentAt={item.startedAt ?? (!item.steer ? turnTiming?.startedAt : undefined)}
+        />
+      )
     case 'interaction_reply':
-      return <InteractionReply item={item} />
+      return (
+        <InteractionReply
+          item={item}
+          copyAction={
+            item.turnId && turnOutcome !== 'running' ? <CardOnlyReplyCopy item={item} /> : undefined
+          }
+        />
+      )
     case 'agent':
       return (
         <AgentMsg
+          latest={latestAgent}
           citationEnabled={interactions.citationEnabled}
-          copyEnabled={turnOutcome !== 'running'}
-          forkEnabled={interactions.forkEnabled && !readOnly && turnOutcome === 'completed'}
+          copyEnabled={!awaitingConfirmation && turnOutcome !== 'running'}
+          forkEnabled={
+            !awaitingConfirmation &&
+            interactions.forkEnabled &&
+            !readOnly &&
+            turnOutcome === 'completed'
+          }
           item={item}
+          sourcesContent={sourcesContent}
           trailingContent={trailingContent}
           selectionEnabled={!readOnly && interactions.selectionEnabled}
-          timing={turnTiming}
+          timing={awaitingConfirmation ? undefined : turnTiming}
         />
       )
     case 'delivery':
       return <DeliveryCard item={item} onOpen={onOpenDelivery} />
     case 'artifact':
       return <ArtifactCard items={[item]} turnId={item.turnId} />
+    case 'generation_preview':
+      return (
+        <section
+          aria-label={conversation('generationPreview.label')}
+          data-testid="generation-preview"
+          data-preview-id={item.preview.preview_id}
+          data-preview-status={item.preview.status}
+          className="mb-[var(--vds-space-5)] min-w-0 rounded-[var(--vds-radius-4)] border border-solid border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] p-[var(--vds-space-3)]"
+        >
+          <div
+            role="status"
+            className="mb-[var(--vds-space-3)] flex flex-wrap items-center gap-[var(--vds-space-2)]"
+          >
+            <Tag size="small" tone="neutral">
+              {conversation(GENERATION_PREVIEW_STATUS_KEYS[item.preview.status])}
+            </Tag>
+            <span className="text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-tertiary)]">
+              {conversation('generationPreview.unverified')}
+            </span>
+          </div>
+          {item.preview.blocks.length ? (
+            item.preview.blocks.map((block) => (
+              <Markdown
+                key={block.id}
+                text={
+                  block.kind === 'heading1'
+                    ? `# ${block.text}`
+                    : block.kind === 'heading2'
+                      ? `## ${block.text}`
+                      : block.text
+                }
+                math
+                className="!text-[length:var(--vds-font-body-lv2)]"
+              />
+            ))
+          ) : item.preview.status === 'streaming' ? (
+            <p className="m-0 text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]">
+              {conversation('generationPreview.waiting')}
+            </p>
+          ) : null}
+        </section>
+      )
     case 'review':
       return <ReviewCard review={item.review} />
     case 'display_card':
@@ -1304,52 +2053,29 @@ function DeliveryCard({
     if (!previewTarget || (!previewTarget.materialId && !previewTarget.workspacePath)) return
     onOpen?.(previewTarget)
   }
+  const description = primary
+    ? `${t('stream.registered', { count: delivery.members.length })} · ${meta}`
+    : meta
   return (
-    <div
-      className="flex items-center gap-[12px] rounded-[9px] border border-[var(--border)] bg-[var(--bg-2)] px-[14px] py-[13px] [margin:-10px_0_28px_41px] @max-[44rem]:m-[var(--vds-space-0)] @max-[44rem]:mb-[18px] @max-[44rem]:grid @max-[44rem]:grid-cols-[30px_minmax(0,1fr)_34px] @max-[44rem]:grid-areas-[icon_copy_action] @max-[44rem]:gap-[9px] @max-[44rem]:rounded-[10px] @max-[44rem]:p-[10px]"
+    <Card
+      padding="none"
+      variant="flat"
+      className="my-[var(--vds-space-3)] box-border flex h-[var(--vds-artifact-card-height)] items-center gap-[var(--vds-space-2)] !border-[var(--vds-divider-default)] !bg-[var(--vds-artifact-card-bg)] px-[var(--vds-card-padding-sm)]"
       data-testid="delivery-card"
     >
-      <div className="grid size-[34px] flex-none place-items-center rounded-[7px] bg-[var(--bg-3)] text-[var(--text-2)] @max-[44rem]:[grid-area:icon] @max-[44rem]:size-[30px]">
-        <Icon name="artifacts" size={17} sw={2} />
-      </div>
-      <div className="min-w-0 flex-1 @max-[44rem]:[grid-area:copy]">
-        <div className="text-[9px] font-[650] uppercase tracking-[0.12em] text-[var(--text-3)] @max-[44rem]:hidden">
-          {t('stream.registered', { count: delivery.members.length })}
-        </div>
-        <div
-          className="mt-[2px] overflow-hidden text-ellipsis whitespace-nowrap text-[13px] font-[650] text-[var(--text)] @max-[44rem]:m-[var(--vds-space-0)] @max-[44rem]:text-xs @max-[44rem]:leading-[1.3]"
-          title={label}
-        >
+      <span className={cx(ARTIFACT_ICON_CLASS, ARTIFACT_OUTLINE_ICON_CLASS)} aria-hidden>
+        <Icon name="artifacts" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <EllipsisText className={ARTIFACT_TITLE_CLASS} tooltipPortalled>
           {label}
-        </div>
-        <div
-          className="mt-[2px] overflow-hidden text-ellipsis whitespace-nowrap font-mono text-[9.5px] text-[var(--text-3)] @max-[44rem]:text-[9px] @max-[44rem]:leading-[1.3]"
-          title={meta}
-        >
-          {meta}
-        </div>
+        </EllipsisText>
+        <EllipsisText className={ARTIFACT_DESCRIPTION_CLASS} tooltipPortalled>
+          {description}
+        </EllipsisText>
       </div>
-      {previewTarget && onOpen && (
-        <a
-          className={cx(
-            FLAT_BUTTON_CLASS,
-            'flex-none self-center justify-self-end border-[var(--border)] text-[var(--text-2)] hover:enabled:border-[color-mix(in_oklch,var(--accent)_46%,var(--border))] hover:enabled:bg-[var(--accent-soft)] hover:enabled:text-[var(--accent-ink)] @max-[44rem]:inline-flex @max-[44rem]:size-[34px] @max-[44rem]:min-w-[34px] @max-[44rem]:items-center @max-[44rem]:justify-center @max-[44rem]:rounded-lg @max-[44rem]:p-[var(--vds-space-0)] @max-[44rem]:[grid-area:action]'
-          )}
-          data-testid="delivery-card-open-preview"
-          aria-label={t('stream.previewFile')}
-          title={t('stream.previewFile')}
-          onClick={(event) => {
-            event.preventDefault()
-            open()
-          }}
-        >
-          <span className="@max-[44rem]:hidden">{t('stream.preview')}</span>
-          <span className="hidden @max-[44rem]:inline-flex @max-[44rem]:w-full h-full @max-[44rem]:items-center @max-[44rem]:justify-center @max-[44rem]:leading-none [&_svg]:block [&_svg]:flex-none">
-            <Icon name="expand" size={16} sw={1.8} />
-          </span>
-        </a>
-      )}
-    </div>
+      {previewTarget && onOpen && <ArtifactOpenButton onOpen={open} />}
+    </Card>
   )
 }
 
@@ -1375,7 +2101,8 @@ function loadedSkillName(item: ToolItem): string | null {
 function toolLabel(item: ToolItem, t: TFunction<'conversation'>): string {
   const skillName = loadedSkillName(item)
   const key = TOOL_ACTION_LABELS[activityAction(item)]
-  return skillName ? t('toolActions.skill', { name: skillName }) : key ? t(key) : item.name
+  if (skillName) return t('toolActions.skill', { name: skillName })
+  return key ? t(key) : normalizeToolName(item.name)
 }
 
 const TOOL_ACTION_LABELS: Partial<
@@ -1493,7 +2220,7 @@ function activityAction(item: ActivityItem): ActivityAction {
     if (item.category === 'wait') return 'wait'
     return 'other'
   }
-  const name = item.name.toLowerCase()
+  const name = normalizeToolName(item.name).toLowerCase()
   if (name === 'file_change' || name.includes('apply_patch')) return 'edit'
   if (name === 'read') return 'read'
   if (name.includes('view_image') || name.includes('image')) return 'image'
@@ -1589,7 +2316,12 @@ function activityLinePresentation(
   const labels = Array.from(groups, ([action, group]) => {
     const status = group.some((item) => 'status' in item && item.status === 'running')
       ? 'running'
-      : group.some((item) => 'status' in item && item.status === 'error')
+      : group.some(
+            (item) =>
+              'status' in item &&
+              item.status === 'error' &&
+              !(item.kind === 'tool' && item.recoveredBy)
+          )
         ? 'error'
         : 'done'
     return activityActionLabel(action, group.length, status, t)
@@ -1599,11 +2331,15 @@ function activityLinePresentation(
     icon: ACTIVITY_ACTION_ICONS[firstAction],
     label: labels.join(' · '),
     running: items.some((item) => 'status' in item && item.status === 'running'),
-    failed: items.some((item) => 'status' in item && item.status === 'error'),
+    failed: items.some(
+      (item) =>
+        'status' in item && item.status === 'error' && !(item.kind === 'tool' && item.recoveredBy)
+    ),
   }
 }
 
 function webSearchActionLabel(item: WebSearchItem, t: TFunction<'components'>): string {
+  if (item.action.purpose?.trim()) return item.action.purpose
   if (item.action.type === 'openPage') return t('stream.web.openPage')
   if (item.action.type === 'findInPage') return t('stream.web.findInPage')
   return t('stream.web.search')
@@ -1612,6 +2348,58 @@ function webSearchActionLabel(item: WebSearchItem, t: TFunction<'components'>): 
 // Consecutive tool calls are a rendering projection, not a transcript mutation.
 // The outer group owns the noisy list; each step still keeps its own input/output
 // disclosure for users who need the exact call evidence.
+function TurnProcess({
+  process,
+  statusOwner,
+  agentIdentities,
+  outcome,
+  timing,
+  reveal,
+}: {
+  process: ExecutionProcessData
+  statusOwner: boolean
+  agentIdentities: ReadonlyMap<string, string | number>
+  outcome?: TurnOutcome
+  timing?: TurnTiming
+  reveal?: boolean
+}): React.JSX.Element {
+  const { state: appState } = useApp()
+  const focus = appState.aiPanel.messageFocus
+  const focused =
+    reveal ||
+    (focus?.kind === 'progress' && focus.turnId === process.turnId && Boolean(focus.itemId))
+  return (
+    <ExecutionProcess
+      outcome={outcome}
+      statusOwner={statusOwner}
+      turnId={process.turnId}
+      reveal={focused}
+      timing={timing}
+    >
+      {process.rows.map((row) =>
+        row.kind === 'activity' ? (
+          <ActivityRun
+            key={row.key}
+            items={row.items}
+            agentIdentities={agentIdentities}
+            turnId={process.turnId}
+            tail={row.tail}
+            outcome={outcome}
+            timing={timing}
+          />
+        ) : row.kind === 'item' && row.item.kind === 'thinking' ? (
+          <Markdown
+            key={row.key}
+            text={row.item.text}
+            math
+            className="!text-[length:var(--vds-font-body-lv2)] !leading-[var(--vds-lh-body-lv2)] !text-[var(--vds-text-primary)]"
+          />
+        ) : null
+      )}
+    </ExecutionProcess>
+  )
+}
+
 function ActivityRun({
   items,
   agentIdentities = subagentIdentities(items),
@@ -1648,9 +2436,23 @@ function ActivityRun({
     runningTool || runningSearch || runningPaperSearch || runningSkill || runningNative
   )
   const itemCompleted = items.some((item) => 'status' in item && item.status === 'done')
-  const runState = activityRunState(outcome, itemRunning, itemCompleted, tail)
+  const runState = activityRunState(
+    runningTool?.retryOf ? 'running' : outcome,
+    itemRunning,
+    itemCompleted,
+    tail
+  )
   const running = runState === 'running'
-  const expanded = activityDisclosureOpen(userExpanded, running)
+  const { state: appState } = useApp()
+  const focusedItemId =
+    appState.aiPanel.messageFocus?.kind === 'progress'
+      ? appState.aiPanel.messageFocus.itemId
+      : undefined
+  const focused = tools.some((item) => item.toolId === focusedItemId)
+  const expanded = focused || activityDisclosureOpen(userExpanded, running)
+  useEffect(() => {
+    if (focused) setUserExpanded(true)
+  }, [focused])
   const visibleThinking = visibleThinkingItem(items, running, tail)
   useEffect(() => {
     if (!running) return () => undefined
@@ -1685,7 +2487,7 @@ function ActivityRun({
   const durationEnd = running ? now : completedAt
   const taskDuration =
     startedAt !== undefined && durationEnd !== undefined
-      ? activityDurationLabel(startedAt, durationEnd)
+      ? activityDurationLabel(startedAt, durationEnd, t)
       : null
   const stateLabel = running
     ? t('stream.executing')
@@ -1711,6 +2513,12 @@ function ActivityRun({
       expanded={expanded}
       onExpandedChange={setUserExpanded}
       turnId={turnId}
+      failureCount={
+        tools.filter(
+          (item) =>
+            item.status === 'error' && !item.recoveredBy && commandOutcome(item) !== 'noMatches'
+        ).length
+      }
       failed={hasFailure || presentation.failed}
       running={running || presentation.running}
       accessibleLabel={
@@ -1786,7 +2594,8 @@ function ThinkingActivityStep({
           type="button"
           className={cx(
             TOOL_RUN_STEP_TRIGGER_CLASS,
-            'min-w-0 !px-[var(--vds-space-2)] !py-[var(--vds-space-1)]'
+            TOOL_ACTIVITY_LABEL_CLASS,
+            '!min-h-[var(--vds-control-height-sm)] !py-[var(--vds-space-half)]'
           )}
           aria-label={t('stream.thinkingContent')}
           tabIndex={groupOpen ? 0 : -1}
@@ -1795,10 +2604,7 @@ function ThinkingActivityStep({
           <span className={TOOL_RUN_STEP_NAME_CLASS}>
             {t(active ? 'stream.thinking' : 'stream.thought')}
           </span>
-          <span aria-hidden="true">·</span>
-          <span className="min-w-0 flex-1 truncate text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-tertiary)]">
-            {visibleMarkdownText(item.text)}
-          </span>
+          <span className="flex-1" />
           <span className={TOOL_RUN_STEP_CARET_CLASS}>
             <Icon name="chevron-right" size={12} sw={1.8} />
           </span>
@@ -1807,7 +2613,8 @@ function ThinkingActivityStep({
       <CollapsibleContent
         className={cx(
           TOOL_RUN_IO_CLASS,
-          '!ml-[calc(var(--vds-space-4)*2)] !mr-[var(--vds-space-2)] !mb-[var(--vds-space-3)] !px-[var(--vds-space-3)] !py-[var(--vds-space-2)] !whitespace-normal !bg-[var(--vds-surface-muted)]'
+          TOOL_ACTIVITY_DETAIL_INSET_CLASS,
+          '!border-[var(--vds-divider-default)] !px-[var(--vds-space-3)] !py-[var(--vds-space-2)] !whitespace-normal !bg-[var(--vds-surface-muted)]'
         )}
         data-testid="thinking-activity-content"
       >
@@ -1988,7 +2795,10 @@ function NativeActivityStep({
         <div className={TOOL_RUN_STEP_CONTENT_CLASS} aria-hidden={!open}>
           <div className={TOOL_RUN_CONTENT_INNER_CLASS}>
             {progress.length ? (
-              <div className={TOOL_RUN_IO_STACK_CLASS} data-testid="subagent-progress">
+              <div
+                className={cx(TOOL_RUN_IO_STACK_CLASS, '!gap-0')}
+                data-testid="subagent-progress"
+              >
                 {progress.map((step, index) => {
                   const activityItem = subagentActivityItem(step, item)
                   if (activityItem?.kind === 'thinking') {
@@ -2051,29 +2861,28 @@ function WebSearchStep({
   item: WebSearchItem
   groupOpen: boolean
 }): React.JSX.Element {
+  const openWebPage = useContext(WebNavigationContext)
   const { t } = useTranslation('components')
   const data = webSearchRecordData(item)
-  const results = data.results
+  const isSearch = item.action.type !== 'openPage' && item.action.type !== 'findInPage'
+  const title = webSearchActionLabel(item, t)
   const status =
     item.status === 'running'
       ? t('stream.search.searching')
-      : results.length
-        ? t('stream.search.results', { count: results.length })
-        : t(TOOL_STATUS_KEYS.done.messageKey)
+      : t(TOOL_STATUS_KEYS[item.status].messageKey)
   return (
     <WebSearchRecord
-      title={webSearchActionLabel(item, t)}
-      {...data}
-      groupOpen={groupOpen}
-      status={
-        <span className="inline-flex items-center gap-[var(--vds-space-1)]">
-          <ActivityStatusIcon status={item.status} />
-          {status}
-        </span>
+      title={
+        isSearch ? <span className="text-[length:var(--vds-font-body-lv1)]">{title}</span> : title
       }
+      {...data}
+      showKeywordCount={isSearch}
+      groupOpen={groupOpen}
+      statusIcon={<ActivityStatusIcon status={item.status} />}
+      statusLabel={status}
       onOpenResult={(result) => {
         const destination = externalResultUrl(result.url)
-        if (destination) return window.scholarseed.openExternal(destination)
+        if (destination) openWebPage(destination)
       }}
     />
   )
@@ -2185,11 +2994,14 @@ function ToolStep({
 }): React.JSX.Element {
   const { t } = useTranslation('components')
   const { t: conversation } = useTranslation('conversation')
-  const { act } = useApp()
+  const { act, state: appState } = useApp()
+  const focus = appState.aiPanel.messageFocus
+  const focused =
+    focus?.kind === 'progress' && focus.itemId === item.toolId && focus.turnId === item.turnId
   const skillName = loadedSkillName(item)
   const outcome = commandOutcome(item)
   const neutralSearch = outcome === 'noMatches'
-  const displayStatus = neutralSearch ? 'done' : item.status
+  const displayStatus = neutralSearch || item.recoveredBy ? 'done' : item.status
   const outcomeKey = {
     commandNotFound: 'toolOutcome.commandNotFound',
     permissionDenied: 'toolOutcome.permissionDenied',
@@ -2211,21 +3023,30 @@ function ToolStep({
   return (
     <ToolExecution
       groupOpen={groupOpen}
+      reveal={focused}
+      itemId={item.toolId}
+      turnId={item.turnId}
       data={{
-        name: item.name,
+        name: normalizeToolName(item.name),
         label: toolLabel(item, conversation),
         status: displayStatus,
-        statusLabel: neutralSearch
-          ? outcomeText
-          : item.status === 'done'
-            ? t('stream.ran')
-            : t(TOOL_STATUS_KEYS[item.status].messageKey),
+        statusLabel: item.recoveredBy
+          ? conversation('toolOutcome.recovered')
+          : neutralSearch
+            ? outcomeText
+            : item.status === 'done'
+              ? t('stream.ran')
+              : t(TOOL_STATUS_KEYS[item.status].messageKey),
         failure:
           item.status === 'error'
             ? {
-                summary: neutralSearch ? undefined : outcomeText,
+                summary: neutralSearch || item.recoveredBy ? undefined : outcomeText,
                 help: conversation(
-                  neutralSearch ? 'toolOutcome.noMatchesHelp' : 'toolOutcome.failedHelp'
+                  item.recoveredBy
+                    ? 'toolOutcome.recoveredHelp'
+                    : neutralSearch
+                      ? 'toolOutcome.noMatchesHelp'
+                      : 'toolOutcome.failedHelp'
                 ),
               }
             : undefined,
@@ -2440,6 +3261,53 @@ function BrowserAwareHilCard(props: {
   queueCount?: number
 }): React.JSX.Element {
   const { state } = useApp()
+  const interactionPolicies = useInteractionPolicies()
+  const { item } = props
+  const questions = item.questions ?? []
+  const questionPolicy = isQuestionHil(item)
+    ? interactionPolicies.find((policy) => policy.matches(questions))
+    : undefined
+  if (item.hilState === 'cancelled' && questionPolicy?.renderReply)
+    return (
+      <div
+        data-testid="hil-card"
+        data-interaction-request-id={item.requestId}
+        data-hil-state="cancelled"
+        data-hil-resolved="true"
+      >
+        {questionPolicy.renderReply({
+          requestId: item.requestId,
+          questions,
+          answers: item.answers ?? {},
+          cancelled: true,
+        })}
+      </div>
+    )
+  if (
+    item.hilState === 'stale' &&
+    isQuestionHil(item) &&
+    availabilityPolicy.hilAvailable(item.hilKind ?? '') &&
+    questions.every(
+      (question) => !question.installation && (!question.component || question.options.length > 0)
+    ) &&
+    !interactionPolicies.some((policy) => policy.matches(questions))
+  ) {
+    return (
+      <div
+        data-testid="hil-card"
+        data-hil-kind="question"
+        data-interaction-request-id={item.requestId}
+        data-hil-resolved="true"
+        data-hil-state="stale"
+      >
+        <InteractionReply
+          key={item.requestId}
+          expired
+          item={{ kind: 'interaction_reply', requestId: item.requestId, questions, answers: {} }}
+        />
+      </div>
+    )
+  }
   const content =
     props.item.hilKind === 'browser_approval' &&
     availabilityPolicy.hilAvailable(props.item.hilKind) ? (
@@ -2605,7 +3473,7 @@ function BrowserHistoryApprovalCard({
       className={
         presentation === 'dock'
           ? 'min-w-0 outline-none focus-visible:shadow-[var(--vds-focus-brand)]'
-          : 'mb-[var(--vds-space-4)] min-w-0'
+          : 'my-[var(--vds-conversation-block-gap)] min-w-0'
       }
       onKeyDownCapture={blockModifiedDecisionKey}
       onKeyUpCapture={blockModifiedDecisionKey}
@@ -2698,7 +3566,7 @@ function BrowserHistoryApprovalCard({
           <div className="flex flex-wrap justify-end gap-[var(--vds-space-2)]">
             <Button
               variant="outline"
-              size="sm"
+              size="md"
               disabled={submitting}
               data-testid="hil-history-deny"
               onClick={() => {
@@ -2709,7 +3577,7 @@ function BrowserHistoryApprovalCard({
             </Button>
             <Button
               variant="primary"
-              size="sm"
+              size="md"
               disabled={submitting}
               data-testid="hil-history-allow-once"
               onClick={() => {
@@ -2744,6 +3612,7 @@ function BrowserApprovalCard({
   const [now, setNow] = useState(Date.now())
   const [submitting, setSubmitting] = useState(false)
   const [mainTab, setMainTab] = useState<{ tabId: string; title: string; url: string } | null>(null)
+  const [historyExpanded, setHistoryExpanded] = useState(false)
   const inFlight = useRef(false)
   const cardRef = useRef<HTMLDivElement>(null)
   const approval = item.browserApproval
@@ -2913,6 +3782,113 @@ function BrowserApprovalCard({
     if (event.target instanceof Element && event.target.closest('button')) event.preventDefault()
   }
 
+  const approvalIcon = <Icon name="hand" size={16} sw={1.2} />
+  const confirmation = (
+    <ConfirmationCard
+      compact
+      title={t('approval.title')}
+      icon={approvalIcon}
+      description={t(
+        approval?.action === 'navigate' ? 'approval.description' : 'approval.operationDescription'
+      )}
+      readOnly={done || expired || thread.readOnly === true}
+      disabled={submitting}
+      allowDisabled={!mainTab}
+      allowLabel={t('approval.allowOnce')}
+      denyLabel={t('approval.deny')}
+      onAllow={() => void decide('allow_once')}
+      onDeny={() => void decide('deny')}
+      allowAttributes={{
+        'data-testid': 'hil-browser-allow-once',
+        'data-hil-decision': 'allow-once',
+      }}
+      denyAttributes={{
+        'data-testid': 'hil-browser-deny',
+        'data-hil-decision': 'deny',
+      }}
+      details={[
+        {
+          id: 'url',
+          label: t('approval.url'),
+          value:
+            approval?.action === 'navigate'
+              ? approval.destinationUrl || t('approval.unknown')
+              : approval?.tabUrl || approval?.origin || t('approval.unknown'),
+          multiline: true,
+        },
+        {
+          id: 'expiry',
+          label: t('approval.expiry'),
+          value: approval
+            ? new Date(approval.expiresAt).toLocaleTimeString(i18n.language)
+            : t('approval.unknown'),
+        },
+        {
+          id: 'scope',
+          label: t('approval.scope'),
+          value:
+            (expired && !done) || item.resolvedMessage?.kind === 'browserExpired' ? (
+              <span className="text-[var(--vds-warning-text-primary)]">
+                {t('approval.scopeExpired')}
+              </span>
+            ) : item.resolvedMessage?.kind === 'denied' ? (
+              t('approval.scopeDenied')
+            ) : (
+              t('approval.once')
+            ),
+        },
+        ...(approval?.action !== 'navigate'
+          ? [
+              {
+                id: 'action',
+                label: t('approval.action'),
+                value: actionLabel,
+              },
+            ]
+          : []),
+        ...(approval?.element
+          ? [
+              {
+                id: 'element',
+                label: t('approval.element'),
+                value: `${approval.element.role} · ${approval.element.name || t('approval.unknown')}`,
+                multiline: true,
+              },
+            ]
+          : []),
+      ]}
+    >
+      {queueCount > 1 && (
+        <p className="m-0 text-[var(--vds-text-secondary)]">
+          {conversationT('queuePosition', { current: 1, total: queueCount })}
+        </p>
+      )}
+      {(approval?.action === 'snapshot' || approval?.action === 'read') && !done && !expired && (
+        <p className="m-0 text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]">
+          {t('approval.readRisk')}
+        </p>
+      )}
+      {['click', 'fill', 'submit'].includes(approval?.action ?? '') && !done && !expired && (
+        <p className="m-0 text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]">
+          {t('approval.actionRisk')}
+        </p>
+      )}
+      {!done && !expired && (submitting || !mainTab) && (
+        <p
+          role="status"
+          className="m-0 text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]"
+        >
+          {status}
+        </p>
+      )}
+      {item.hilState === 'failed' && (
+        <p role="alert" className="m-0 text-[var(--vds-error-text-primary)]">
+          {item.submissionError || t('approval.failed')}
+        </p>
+      )}
+    </ConfirmationCard>
+  )
+
   return (
     <Card
       ref={cardRef}
@@ -2926,8 +3902,8 @@ function BrowserApprovalCard({
       data-hil-resolved={done ? 'true' : 'false'}
       className={
         presentation === 'dock'
-          ? 'flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden outline-none focus-visible:shadow-[var(--vds-focus-brand)]'
-          : 'mb-[var(--vds-space-4)] min-w-0'
+          ? 'min-h-0 min-w-0 !border-0 !bg-transparent !p-0 shadow-none outline-none focus-visible:shadow-[var(--vds-focus-brand)]'
+          : 'my-[var(--vds-conversation-block-gap)] min-w-0 !border-0 !bg-transparent !p-0 shadow-none'
       }
       onKeyDownCapture={blockModifiedDecisionKey}
       onKeyUpCapture={blockModifiedDecisionKey}
@@ -2953,181 +3929,28 @@ function BrowserApprovalCard({
         }
       }}
     >
-      <CardContent
-        className={
-          presentation === 'dock'
-            ? 'flex min-h-0 min-w-0 flex-1 flex-col gap-[var(--vds-space-3)] [&>div]:shrink-0 [&>p]:shrink-0'
-            : 'grid min-w-0 gap-[var(--vds-space-3)]'
-        }
-      >
-        <div className="flex flex-wrap items-center gap-[var(--vds-space-2)]">
-          <strong className="text-[length:var(--vds-font-body-lv2)] text-[var(--vds-text-primary)]">
-            {t('approval.title')}
-          </strong>
-          {queueCount > 1 && (
-            <span className="text-[var(--vds-text-secondary)]">
-              {conversationT('queuePosition', { current: 1, total: queueCount })}
-            </span>
-          )}
-        </div>
-        <dl
-          className={cx(
-            'grid min-w-0 gap-[var(--vds-space-2)] break-words text-[length:var(--vds-font-body-lv1)]',
-            presentation === 'dock' && 'min-h-0 flex-1 overflow-y-auto overscroll-contain'
-          )}
+      {presentation === 'history' && (done || expired) ? (
+        <ExecutionBatch
+          label={
+            (expired && !done) || item.resolvedMessage?.kind === 'browserExpired'
+              ? t('approval.expired')
+              : item.resolvedMessage?.kind === 'allowedOnce'
+                ? t('approval.authorized')
+                : item.resolvedMessage?.kind === 'denied'
+                  ? t('approval.denied')
+                  : status
+          }
+          icon={approvalIcon}
+          warning={item.resolvedMessage?.kind !== 'allowedOnce' ? status : undefined}
+          expanded={historyExpanded}
+          onExpandedChange={setHistoryExpanded}
+          animated={false}
         >
-          <div>
-            <dt>
-              <strong>{t('approval.tab')}</strong>
-            </dt>
-            <dd className="m-0">{approval?.tabId ?? t('approval.unknown')}</dd>
-          </div>
-          {(mainTab?.title || approval?.tabTitle) && (
-            <div>
-              <dt>
-                <strong>{t('approval.tabTitle')}</strong>
-              </dt>
-              <dd className="m-0">{mainTab?.title || approval?.tabTitle}</dd>
-            </div>
-          )}
-          {(mainTab?.url || approval?.tabUrl) && (
-            <div>
-              <dt>
-                <strong>{t('approval.tabUrl')}</strong>
-              </dt>
-              <dd className="m-0">{mainTab?.url || approval?.tabUrl}</dd>
-            </div>
-          )}
-          <div>
-            <dt>
-              <strong>{t('approval.task')}</strong>
-            </dt>
-            <dd className="m-0">
-              {thread.title} · {sessionId ?? t('approval.unknown')} ·{' '}
-              {item.turnId ?? t('approval.unknown')}
-            </dd>
-          </div>
-          {approval?.action === 'navigate' && (
-            <div>
-              <dt>
-                <strong>{t('approval.sourceOrigin')}</strong>
-              </dt>
-              <dd className="m-0">
-                {approval.sourceOrigin === null
-                  ? t('approval.blankSource')
-                  : (approval.sourceOrigin ?? t('approval.unknown'))}
-              </dd>
-            </div>
-          )}
-          {approval?.action === 'navigate' && (
-            <div>
-              <dt>
-                <strong>{t('approval.destinationUrl')}</strong>
-              </dt>
-              <dd className="m-0">{approval.destinationUrl ?? t('approval.unknown')}</dd>
-            </div>
-          )}
-          <div>
-            <dt>
-              <strong>
-                {approval?.action === 'navigate'
-                  ? t('approval.destinationOrigin')
-                  : t('approval.origin')}
-              </strong>
-            </dt>
-            <dd className="m-0">{approval?.origin ?? t('approval.unknown')}</dd>
-          </div>
-          <div>
-            <dt>
-              <strong>{t('approval.action')}</strong>
-            </dt>
-            <dd className="m-0">{actionLabel}</dd>
-          </div>
-          {approval?.element && (
-            <div>
-              <dt>
-                <strong>{t('approval.element')}</strong>
-              </dt>
-              <dd className="m-0">
-                {approval.element.role} · {approval.element.name || t('approval.unknown')}
-              </dd>
-            </div>
-          )}
-          {approval?.elementRef && (
-            <div>
-              <dt>
-                <strong>{t('approval.elementRef')}</strong>
-              </dt>
-              <dd className="m-0">{approval.elementRef}</dd>
-            </div>
-          )}
-          <div>
-            <dt>
-              <strong>{t('approval.intent')}</strong>
-            </dt>
-            <dd className="m-0">{approval?.intent || t('approval.unspecified')}</dd>
-          </div>
-          <div>
-            <dt>
-              <strong>{t('approval.expiry')}</strong>
-            </dt>
-            <dd className="m-0">
-              {approval
-                ? new Date(approval.expiresAt).toLocaleTimeString(i18n.language)
-                : t('approval.unknown')}
-            </dd>
-          </div>
-        </dl>
-        {(approval?.action === 'snapshot' || approval?.action === 'read') && (
-          <p className="m-0 text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]">
-            {t('approval.readRisk')}
-          </p>
-        )}
-        {['click', 'fill', 'submit'].includes(approval?.action ?? '') && (
-          <p className="m-0 text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]">
-            {t('approval.actionRisk')}
-          </p>
-        )}
-        <p
-          role="status"
-          className="m-0 text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]"
-        >
-          {status}
-        </p>
-        {item.hilState === 'failed' && (
-          <p role="alert" className="m-0 text-[var(--vds-error-text-primary)]">
-            {item.submissionError || t('approval.failed')}
-          </p>
-        )}
-        {!done && !expired && (
-          <div className="flex flex-wrap justify-end gap-[var(--vds-space-2)]">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={submitting}
-              data-testid="hil-browser-deny"
-              data-hil-decision="deny"
-              onClick={() => {
-                void decide('deny')
-              }}
-            >
-              {t('approval.deny')}
-            </Button>
-            <Button
-              variant="primary"
-              size="sm"
-              disabled={submitting || !mainTab}
-              data-testid="hil-browser-allow-once"
-              data-hil-decision="allow-once"
-              onClick={() => {
-                void decide('allow_once')
-              }}
-            >
-              {t('approval.allowOnce')}
-            </Button>
-          </div>
-        )}
-      </CardContent>
+          {confirmation}
+        </ExecutionBatch>
+      ) : (
+        confirmation
+      )}
     </Card>
   )
 }
@@ -3189,12 +4012,25 @@ function HilCard({
   const patchThread = controller.patchThread
   const sid = controller.sessionId
   const tid = controller.threadId
-  const [picks, setPicks] = useState<Record<number, string[]>>({})
+  const [picks, setPicks] = useState<Record<number, number[]>>(() =>
+    questionDraft(item.questions ?? [])
+  )
   const [subsetPicks, setSubsetPicks] = useState<Record<number, string[]>>({})
   const [texts, setTexts] = useState<Record<number, string>>({})
   const [codeOpen, setCodeOpen] = useState(false)
   const [questionOpen, setQuestionOpen] = useState(true)
+  const [authorizationOpen, setAuthorizationOpen] = useState(false)
+  const [preparation, setPreparation] = useState<{
+    requestId: string
+    state: 'opening' | 'ready' | 'failed'
+  } | null>(null)
   const [questionPage, setQuestionPage] = useState(1)
+  const [skippedQuestions, setSkippedQuestions] = useState<number[]>([])
+  const questionViewport = useRef<HTMLDivElement>(null)
+  const questionNodes = useRef<(HTMLDivElement | null)[]>([])
+  const questionNavigation = useRef<{ index: number; scrollTop: number } | null>(null)
+  const [editingError, setEditingError] = useState(false)
+  const editingRequest = useRef(false)
   const [lastAction, setLastAction] = useState<HilAction | null>(null)
   const [now, setNow] = useState(Date.now())
   const submissionInFlight = useRef(false)
@@ -3213,14 +4049,23 @@ function HilCard({
   const questionPolicy = isQuestion
     ? interactionPolicies.find((policy) => policy.matches(questions))
     : undefined
+  const questionAnswered = (index: number): boolean =>
+    (picks[index]?.length ?? 0) > 0 || Boolean(texts[index]?.trim())
   const questionComplete =
     questions.length > 0 &&
-    (questionPolicy?.complete?.(questions, picks, texts) ??
-      questions.every((question, index) =>
-        question.options.length > 0
-          ? (picks[index]?.length ?? 0) > 0 || Boolean(texts[index]?.trim())
-          : Boolean(texts[index]?.trim())
-      ))
+    (questionPolicy?.complete?.(
+      questions,
+      Object.fromEntries(
+        questions.map((question, index) => [
+          index,
+          (picks[index] ?? []).map((position) => question.options[position]?.label),
+        ])
+      ),
+      texts
+    ) ??
+      questions.every((_, index) => skippedQuestions.includes(index) || questionAnswered(index)))
+  const countdownAt =
+    isQuestion && item.cancelTimeoutOnEdit && !item.timeoutCancelled ? item.timeoutAt : undefined
   const cancelledLabel =
     item.hilState === 'cancelled' && questionPolicy?.cancelledLabel && questions[0]
       ? questionPolicy.cancelledLabel(questions[0])
@@ -3247,22 +4092,59 @@ function HilCard({
           : item
 
   useEffect(() => {
-    if (done || item.blocking === false) return () => undefined
+    if (done || item.blocking === false || (isQuestion && countdownAt === undefined)) return
     const timer = window.setInterval(() => setNow(Date.now()), HIL_WAIT_TICK_MS)
     return () => window.clearInterval(timer)
-  }, [done, item.blocking])
+  }, [countdownAt, done, isQuestion, item.blocking])
 
-  const patchHil = (patch: Partial<HilItem>): void =>
-    patchThread(tid, (t) => ({
-      conversation: t.conversation.map((it) =>
-        it.kind === 'hil' && it.requestId === item.requestId ? { ...it, ...patch } : it
-      ),
-    }))
+  const patchHil = useCallback(
+    (patch: Partial<HilItem>): void =>
+      patchThread(tid, (thread) => ({
+        conversation: thread.conversation.map((entry) =>
+          entry.kind === 'hil' && entry.requestId === item.requestId
+            ? { ...entry, ...patch }
+            : entry
+        ),
+      })),
+    [item.requestId, patchThread, tid]
+  )
+  const markInstallationHandled = useCallback(
+    () => patchHil({ installationHandled: true }),
+    [patchHil]
+  )
+
+  const markEditing = async (): Promise<void> => {
+    if (
+      !sid ||
+      !item.cancelTimeoutOnEdit ||
+      item.timeoutCancelled ||
+      editingRequest.current ||
+      done
+    )
+      return
+    editingRequest.current = true
+    try {
+      const response = await respondHil(
+        sid,
+        item.requestId,
+        { editing: true },
+        hasHostQuestions(questions)
+      )
+      const confirmed = response.ok && response.interaction?.timeout_cancelled === true
+      setEditingError(!confirmed)
+      if (confirmed) patchHil({ timeoutCancelled: true })
+    } catch {
+      setEditingError(true)
+    } finally {
+      editingRequest.current = false
+    }
+  }
 
   const markResolved = (
     label: string,
     answers?: Record<string, string>,
-    resolvedMessage?: HilResolvedMessage
+    resolvedMessage?: HilResolvedMessage,
+    answerDetails?: HilAnswerDetails
   ): void =>
     patchThread(tid, (t) => {
       const alreadyTerminal = t.conversation.some(
@@ -3283,6 +4165,7 @@ function HilCard({
           submissionErrorMessage: undefined,
           submissionRequestFailure: undefined,
           ...(answers ? { answers } : {}),
+          ...(answerDetails ? { answerDetails } : {}),
         }),
       }
     })
@@ -3318,7 +4201,7 @@ function HilCard({
     })
   }
 
-  const submitAction = async (action: HilAction): Promise<void> => {
+  const submitAction = async (action: HilAction, requireConfirmed = false): Promise<void> => {
     console.info(
       '[hil-submit]',
       JSON.stringify({
@@ -3333,8 +4216,17 @@ function HilCard({
         inFlight: submissionInFlight.current,
       })
     )
-    if (controller.readOnly || !sid || submitting || done || submissionInFlight.current) return
-    if (item.sessionId && item.sessionId !== sid) return
+    if (
+      controller.readOnly ||
+      !sid ||
+      submitting ||
+      done ||
+      submissionInFlight.current ||
+      (item.sessionId && item.sessionId !== sid)
+    ) {
+      if (requireConfirmed) throw new Error('canvas_submission_unavailable')
+      return
+    }
     submissionInFlight.current = true
     void markInteractionAttentionRead(sid, item.requestId).catch((error) =>
       console.warn('[attention] interaction read unavailable', error)
@@ -3381,7 +4273,7 @@ function HilCard({
       sid,
       item.requestId,
       action.body,
-      questions.some((question) => Boolean(question.component || question.installation))
+      hasHostQuestions(questions)
     )
     console.info(
       '[hil-submit]',
@@ -3400,6 +4292,7 @@ function HilCard({
           ...hilSubmissionFailure('outcomeUnknown'),
           submissionRequestFailure: undefined,
         })
+        if (requireConfirmed) throw new Error('canvas_submission_unknown')
         return
       }
       if (response.outcome === 'stale') {
@@ -3412,16 +4305,23 @@ function HilCard({
           submissionErrorMessage: undefined,
           submissionRequestFailure: undefined,
         })
+        if (requireConfirmed) throw new Error('canvas_submission_stale')
         return
       }
       markSubmissionFailed({
         ...hilSubmissionFailure('answerUnconfirmed', response.error),
         submissionRequestFailure: response.applicationFailure,
       })
+      if (requireConfirmed) throw new Error(response.error ?? 'canvas_submission_failed')
       return
     }
     submissionInFlight.current = false
-    markResolved(action.label, action.answers, action.resolvedMessage)
+    markResolved(
+      action.label,
+      action.answers,
+      action.resolvedMessage,
+      response.interaction?.answer_details
+    )
   }
 
   const answerPermission = (
@@ -3436,36 +4336,38 @@ function HilCard({
       resolvedMessage,
     })
   }
-  const submitQuestion = (): void => {
+  const submitQuestion = (skipIndex?: number): void => {
     const qs = questions
-    if (!questionComplete) return
-    const answers: Record<string, string> = {}
-    qs.forEach((q, i) => {
-      const key = q.id || q.header || q.question
-      if (q.options.length) {
-        const labels = picks[i] || []
-        const custom = (texts[i] || '').trim()
-        const answer = [labels.join(', '), custom].filter(Boolean).join('\n')
-        if (answer) answers[key] = answer
-      } else if ((texts[i] || '').trim()) {
-        answers[key] = texts[i].trim()
-      }
+    if (skipIndex === undefined && !questionComplete) return
+    const submitted = qs.flatMap((question, index) => {
+      if (index === skipIndex || skippedQuestions.includes(index)) return []
+      const key = question.id || question.header || question.question
+      const detail = { option_indices: picks[index] ?? [], text: texts[index]?.trim() ?? '' }
+      const answer = questionAnswer(question, detail)
+      return answer ? [{ key, answer, detail }] : []
     })
+    const answers = Object.fromEntries(submitted.map(({ key, answer }) => [key, answer]))
+    const answerDetails =
+      !questionPolicy && qs.every(canReplayQuestionForm)
+        ? Object.fromEntries(submitted.map(({ key, detail }) => [key, detail]))
+        : undefined
+    const summary = Object.values(answers).join(' · ')
     void submitAction({
       kind: 'respond',
-      body: { answers },
-      label: Object.values(answers).join(' · ') || t('stream.hil.answered'),
-      resolvedMessage: Object.values(answers).join(' · ') ? undefined : { kind: 'answered' },
+      body: { answers, ...(answerDetails ? { answer_details: answerDetails } : {}) },
+      label: summary || t('stream.hil.skipped'),
       answers,
     })
   }
-  const toggle = (qi: number, label: string, multi: boolean): void =>
+  const toggle = (qi: number, position: number, multi: boolean): void =>
     setPicks((p) => {
       const cur = p[qi] || []
-      if (!multi) return { ...p, [qi]: [label] }
+      if (!multi) return { ...p, [qi]: [position] }
       return {
         ...p,
-        [qi]: cur.includes(label) ? cur.filter((x) => x !== label) : [...cur, label],
+        [qi]: cur.includes(position)
+          ? cur.filter((index) => index !== position)
+          : [...cur, position],
       }
     })
   const subsetIdsFor = (qi: number, question: (typeof questions)[number]): string[] =>
@@ -3496,12 +4398,44 @@ function HilCard({
     }
   }
   const qs = item.questions ?? []
+  const plainClarification =
+    !questionPolicy && qs.every((question) => !question.installation && !question.component)
+  const fixedClarification =
+    presentation === 'dock' &&
+    isQuestion &&
+    !done &&
+    !questionPolicy &&
+    qs.every(
+      (question) => !question.installation && (!question.component || question.options.length > 0)
+    )
   const pagedQuestions =
     !done &&
     !questionPolicy?.directDecision &&
     qs.length > 1 &&
-    qs.every((question) => !question.installation && question.options.length > 0)
+    qs.every(
+      (question) =>
+        !question.installation &&
+        (plainClarification ? !question.component : question.options.length > 0)
+    )
   const visibleQuestionPage = Math.min(questionPage, qs.length)
+  const goToQuestion = (page: number): void => {
+    const viewport = questionViewport.current
+    if (fixedClarification) {
+      setQuestionPage(page)
+      viewport?.scrollTo({ top: 0 })
+      return
+    }
+    const node = questionNodes.current[page - 1]
+    if (!viewport || !node) return
+    const scrollTop = questionScrollTarget(
+      node.getBoundingClientRect().top - viewport.getBoundingClientRect().top + viewport.scrollTop,
+      viewport.scrollHeight,
+      viewport.clientHeight
+    )
+    questionNavigation.current = { index: page - 1, scrollTop }
+    setQuestionPage(page)
+    viewport.scrollTo({ top: scrollTop })
+  }
   const presentedQuestions = qs.map((question) =>
     questionPolicy?.presentQuestion?.(question, localization)
   )
@@ -3530,7 +4464,9 @@ function HilCard({
     ? [preferred, ...allowOpts.filter((o) => o !== preferred)]
     : allowOpts
   const stale = item.hilState === 'stale'
-  const denied = stale || /拒|deny|decline|reject|cancel|^n$|^no$/i.test(item.resolved || '')
+  const cancelled = item.hilState === 'cancelled'
+  const denied =
+    stale || cancelled || /拒|deny|decline|reject|cancel|^n$|^no$/i.test(item.resolved || '')
 
   // 命令块: 优先真实命令 → 其它工具展开参数字段 → external_cli 回退到 body。
   const codeText = item.command?.trim()
@@ -3582,7 +4518,13 @@ function HilCard({
     >
       <span>{stale ? '⌛' : denied ? '⊘' : '✓'}</span>
       <span style={{ minWidth: 0, overflowWrap: 'anywhere' }}>
-        {formatHilResolution(resolutionItem, t, hilT)}
+        {formatHilResolution(
+          cancelled
+            ? { ...resolutionItem, ...hilResolution({ kind: 'cancelled' }) }
+            : resolutionItem,
+          t,
+          hilT
+        )}
       </span>
     </span>
   ) : item.hilState === 'failed' ? (
@@ -3590,8 +4532,8 @@ function HilCard({
       data-testid="hil-submit-error"
       style={{
         display: 'block',
-        marginTop: 5,
-        fontSize: 11.5,
+        marginTop: fixedClarification ? undefined : 5,
+        fontSize: fixedClarification ? 'var(--vds-font-body-lv1)' : 11.5,
         lineHeight: 1.5,
         color: 'var(--c-tension)',
         overflowWrap: 'anywhere',
@@ -3606,13 +4548,20 @@ function HilCard({
     </span>
   ) : (
     <span
-      className={isQuestion ? streamingTextClassName : undefined}
+      className={isQuestion && !fixedClarification ? streamingTextClassName : undefined}
       style={{
         display: 'inline-flex',
         alignItems: 'center',
         gap: 7,
-        fontSize: isQuestion ? 'var(--vds-font-body-lv2)' : 'var(--vds-font-body-lv1)',
-        color: isQuestion ? undefined : 'var(--text-3)',
+        fontSize:
+          isQuestion && !fixedClarification
+            ? 'var(--vds-font-body-lv2)'
+            : 'var(--vds-font-body-lv1)',
+        color: fixedClarification
+          ? 'var(--vds-text-secondary)'
+          : isQuestion
+            ? undefined
+            : 'var(--text-3)',
         whiteSpace: 'nowrap',
         marginTop: isQuestion ? 0 : 4,
       }}
@@ -3630,10 +4579,16 @@ function HilCard({
       )}
       {submitting
         ? t('stream.hil.submittingWait')
-        : t('stream.hil.waitingElapsed', {
-            label: isQuestion ? t('stream.hil.waitingAnswer') : t('stream.hil.waitingPermission'),
-            duration: elapsedLabel(requestedAt, now, t),
-          })}
+        : countdownAt !== undefined
+          ? answerCountdownLabel(countdownAt, now, t)
+          : isQuestion
+            ? fixedClarification
+              ? hilT('reply.title')
+              : t('stream.hil.waitingAnswer')
+            : t('stream.hil.waitingElapsed', {
+                label: t('stream.hil.waitingPermission'),
+                duration: elapsedLabel(requestedAt, now, t),
+              })}
     </span>
   )
 
@@ -3696,28 +4651,308 @@ function HilCard({
             busy={Boolean(controller.readOnly)}
             session={sid}
             request={item.requestId ?? ''}
+            onHandled={presentation === 'dock' ? markInstallationHandled : undefined}
           />
         ))}
       </>
     )
   }
 
-  if (presentation === 'dock' && !isQuestion && !done) {
-    const summary = permissionSummary(item, t)
+  if (
+    presentation === 'dock' &&
+    !done &&
+    questionPolicy?.directPresentation === 'high-risk' &&
+    qs.length === 1 &&
+    qs[0].options.length === 2
+  ) {
+    const question = qs[0]
+    const displayed = presentedQuestions[0] ?? question
+    const prepared =
+      !questionPolicy.prepareDecision ||
+      (preparation?.requestId === item.requestId && preparation.state === 'ready')
+    const preparing = preparation?.requestId === item.requestId && preparation.state === 'opening'
+    const prepareFailed =
+      preparation?.requestId === item.requestId && preparation.state === 'failed'
+    const primaryAction = async (): Promise<void> => {
+      if (prepared) {
+        decideQuestion(question, question.options[0])
+        return
+      }
+      if (preparing || submitting || !questionPolicy.prepareDecision) return
+      setPreparation({ requestId: item.requestId, state: 'opening' })
+      try {
+        const opened = await questionPolicy.prepareDecision()
+        setPreparation({ requestId: item.requestId, state: opened ? 'ready' : 'failed' })
+      } catch {
+        setPreparation({ requestId: item.requestId, state: 'failed' })
+      }
+    }
+    return (
+      <div
+        role="alertdialog"
+        aria-label={displayed.header}
+        data-testid="hil-card"
+        data-hil-kind="question"
+        data-interaction-request-id={item.requestId}
+        data-hil-resolved="false"
+        data-hil-state={item.hilState ?? 'pending'}
+        className="min-w-0"
+      >
+        <ConfirmationCard
+          compact
+          risk="high"
+          title={
+            displayed.header ??
+            (typeof questionPolicy.title === 'function'
+              ? questionPolicy.title(localization)
+              : questionPolicy.title)
+          }
+          description={displayed.question}
+          disabled={submitting}
+          allowDisabled={preparing}
+          allowLabel={
+            prepared
+              ? displayed.options[0].label
+              : (questionPolicy.prepareLabel?.(localization) ?? displayed.options[0].label)
+          }
+          denyLabel={displayed.options[1].label}
+          allowAttributes={{ 'data-testid': 'hil-question-option-0-0' }}
+          denyAttributes={{ 'data-testid': 'hil-question-option-0-1' }}
+          onAllow={() => void primaryAction()}
+          onDeny={() => decideQuestion(question, question.options[1])}
+        >
+          {prepareFailed && (
+            <p role="alert" className="m-0 text-[var(--vds-error-text-primary)]">
+              {questionPolicy.prepareFailure?.(localization)}
+            </p>
+          )}
+          {item.hilState === 'failed' && (
+            <p data-testid="hil-submit-error" className="m-0 text-[var(--vds-error-text-primary)]">
+              {formatHilSubmissionError(item, t)}
+            </p>
+          )}
+        </ConfirmationCard>
+      </div>
+    )
+  }
+
+  if (
+    presentation === 'dock' &&
+    !done &&
+    questionPolicy?.directPresentation === 'failure-strip' &&
+    qs.length === 1 &&
+    qs[0].options.length === 2
+  ) {
+    const question = qs[0]
+    const displayed = presentedQuestions[0] ?? question
+    return (
+      <Card
+        padding="none"
+        role="alert"
+        data-testid="hil-card"
+        data-hil-kind="question"
+        data-interaction-request-id={item.requestId}
+        data-hil-resolved="false"
+        className="min-w-0 !border-[var(--vds-access-border)] !shadow-none"
+      >
+        <div className="flex flex-wrap items-center gap-[var(--vds-space-2)] px-[var(--vds-space-3)] py-[var(--vds-space-2)]">
+          <CircleX
+            className="size-[var(--vds-icon-6)] shrink-0 text-[var(--vds-access-heading)]"
+            aria-hidden
+          />
+          <span className="min-w-0 flex-1 text-[length:var(--vds-font-body-lv1)]">
+            {displayed.header}
+          </span>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="underline"
+            aria-expanded={codeOpen}
+            onClick={() => setCodeOpen(!codeOpen)}
+          >
+            {t('stream.hil.viewFailure')}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={submitting}
+            data-testid="hil-question-option-0-0"
+            onClick={() => decideQuestion(question, question.options[0])}
+          >
+            {displayed.options[0].label}
+          </Button>
+          <IconButton
+            label={displayed.options[1].label}
+            icon={<X />}
+            variant="ghost"
+            size="xs"
+            disabled={submitting}
+            data-testid="hil-question-option-0-1"
+            onClick={() => decideQuestion(question, question.options[1])}
+          />
+        </div>
+        {codeOpen && (
+          <div className="whitespace-pre-wrap border-t border-[var(--vds-border-default)] p-[var(--vds-space-3)] text-[length:var(--vds-font-body-lv1)] [overflow-wrap:anywhere]">
+            {displayed.question}
+          </div>
+        )}
+        {item.hilState === 'failed' && (
+          <p
+            data-testid="hil-submit-error"
+            className="px-[var(--vds-space-3)] text-[var(--vds-access-heading)]"
+          >
+            {formatHilSubmissionError(item, t)}
+          </p>
+        )}
+      </Card>
+    )
+  }
+
+  if (presentation === 'dock' && !done && item.hilKind === 'file_approval') {
+    const details = approvalDetails(item)
+    const operationLabels = {
+      create: t('stream.hil.access.operations.create'),
+      update: t('stream.hil.access.operations.update'),
+      delete: t('stream.hil.access.operations.delete'),
+      changes: t('stream.hil.access.operations.changes'),
+    }
     return (
       <div
         ref={dockRef}
         tabIndex={-1}
         role="alertdialog"
-        aria-label={t('stream.hil.requestPermission')}
+        aria-label={t('stream.hil.access.fileTitle')}
         data-testid="hil-card"
         data-hil-kind="permission"
         data-interaction-request-id={item.requestId}
         data-hil-resolved="false"
         data-hil-state={item.hilState ?? 'pending'}
-        className="grid min-h-[var(--vds-stream-status-card-min-height)] min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-[var(--vds-space-3)] rounded-[var(--vds-radius-6)] border border-solid border-[var(--vds-border-default)] bg-[var(--vds-surface-raised)] px-[var(--vds-space-4)] py-[var(--vds-space-3)] outline-none [animation:cardIn_0.24s_ease_both] focus-visible:shadow-[var(--vds-focus-brand)] @max-[340px]:grid-cols-[auto_minmax(0,1fr)]"
+        className="min-w-0 outline-none focus-visible:shadow-[var(--vds-focus-brand)]"
         onKeyDown={(event) => {
-          if (event.repeat || submitting) return
+          if (event.defaultPrevented || event.repeat || submitting) return
+          if (event.key === 'Escape') {
+            event.preventDefault()
+            deny()
+          }
+        }}
+      >
+        <ConfirmationCard
+          compact
+          risk="high"
+          title={t('stream.hil.access.fileTitle')}
+          description={t('stream.hil.access.fileDescription')}
+          disabled={submitting}
+          allowVisible={Boolean(dockOptions.allowOnce)}
+          allowLabel={submitting ? t('stream.hil.submitting') : t('stream.hil.access.allow')}
+          denyLabel={t('stream.hil.deny')}
+          allowAttributes={{
+            'data-testid': `hil-permission-${dockOptions.allowOnce?.id}`,
+            'data-hil-decision': 'allow-once',
+          }}
+          denyAttributes={{
+            'data-testid': `hil-permission-${dockOptions.deny.id}`,
+            'data-hil-decision': 'deny',
+          }}
+          details={[
+            ...(details.paths.length
+              ? [
+                  {
+                    id: 'path',
+                    label: t('stream.hil.access.path'),
+                    value: details.paths.join('\n'),
+                    highlighted: true,
+                    multiline: true,
+                  },
+                ]
+              : []),
+            {
+              id: 'operation',
+              label: t('stream.hil.access.operation'),
+              value: (
+                <Collapsible
+                  open={codeOpen}
+                  onOpenChange={setCodeOpen}
+                  className="!border-0 !bg-transparent !p-0"
+                >
+                  <CollapsibleTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="content"
+                      className="!justify-start !p-0 !text-[length:inherit]"
+                      aria-label={t('stream.hil.access.changes')}
+                    >
+                      {operationLabels[fileApprovalOperation(item)]}
+                    </Button>
+                  </CollapsibleTrigger>
+                  <CollapsibleContent className="!border-0 !p-0">
+                    <pre className="m-0 whitespace-pre-wrap [overflow-wrap:anywhere]">
+                      {item.diff || JSON.stringify(item.changes ?? [], null, 2)}
+                    </pre>
+                  </CollapsibleContent>
+                </Collapsible>
+              ),
+              multiline: true,
+            },
+            {
+              id: 'scope',
+              label: t('stream.hil.access.scope'),
+              value: t('stream.hil.access.fileScope'),
+              multiline: true,
+            },
+            ...(item.permissions
+              ? [
+                  {
+                    id: 'permissions',
+                    label: t('stream.hil.access.permissions'),
+                    value: fmtVal(item.permissions, t),
+                    multiline: true,
+                  },
+                ]
+              : []),
+          ]}
+          onAllow={answerOnce}
+          onDeny={deny}
+        >
+          {queueCount > 1 && (
+            <span>{hilT('queuePosition', { current: 1, total: queueCount })}</span>
+          )}
+          {item.hilState === 'failed' && (
+            <p data-testid="hil-submit-error" className="m-0 text-[var(--vds-error-text-primary)]">
+              {t('stream.hil.submitFailed', {
+                message: item.submissionRequestFailure
+                  ? formatApplicationRequestFailure(item.submissionRequestFailure, hilT)
+                  : formatHilSubmissionError(item, t) || t('stream.hil.notConfirmedRetry'),
+              })}
+            </p>
+          )}
+        </ConfirmationCard>
+      </div>
+    )
+  }
+
+  if (presentation === 'dock' && !isQuestion && !done) {
+    const summary = permissionSummary(item, t)
+    const commandApproval = Boolean(item.command)
+    const approvalTitle = commandApproval
+      ? t('stream.hil.access.commandTitle')
+      : t('stream.hil.requestPermission')
+    const scopeOptions = dockOptions.allowed.filter(
+      (option) => option.id !== dockOptions.allowOnce?.id
+    )
+    return (
+      <div
+        ref={dockRef}
+        tabIndex={-1}
+        role="alertdialog"
+        aria-label={approvalTitle}
+        data-testid="hil-card"
+        data-hil-kind="permission"
+        data-interaction-request-id={item.requestId}
+        data-hil-resolved="false"
+        data-hil-state={item.hilState ?? 'pending'}
+        className="min-w-0 outline-none focus-visible:shadow-[var(--vds-focus-brand)]"
+        onKeyDown={(event) => {
+          if (event.defaultPrevented || event.repeat || submitting) return
           if (event.key === 'Escape') {
             event.preventDefault()
             deny()
@@ -3729,31 +4964,103 @@ function HilCard({
           }
         }}
       >
-        <span
-          className="grid size-[var(--vds-stream-status-card-icon-size)] flex-none place-items-center rounded-[var(--vds-radius-5)] bg-[var(--vds-warning-2)] text-[var(--vds-warning-bg-default)]"
-          aria-hidden
+        <ConfirmationCard
+          title={approvalTitle}
+          compact={commandApproval}
+          description={commandApproval ? t('stream.hil.access.description') : summary}
+          details={
+            commandApproval
+              ? [
+                  ...(item.path
+                    ? [
+                        {
+                          id: 'path',
+                          label: t('stream.hil.access.path'),
+                          value: item.path,
+                          highlighted: true,
+                        },
+                      ]
+                    : []),
+                  {
+                    id: 'operation',
+                    label: t('stream.hil.access.operation'),
+                    value: t('stream.hil.access.commandOperation'),
+                  },
+                  {
+                    id: 'scope',
+                    label: t('stream.hil.access.scope'),
+                    value: t('stream.hil.access.commandScope'),
+                  },
+                  {
+                    id: 'command',
+                    label: t('stream.hil.access.commandDetails'),
+                    value: (
+                      <span>
+                        {item.reason && <span>{item.reason} </span>}
+                        <span data-testid="hil-command-details">{codeText}</span>
+                      </span>
+                    ),
+                  },
+                ]
+              : undefined
+          }
+          risk={commandApproval || item.safetyTags?.includes('destructive') ? 'high' : 'normal'}
+          disabled={submitting}
+          allowVisible={Boolean(dockOptions.allowOnce)}
+          allowLabel={submitting ? t('stream.hil.submitting') : t('stream.hil.allowOnce')}
+          denyLabel={t('stream.hil.deny')}
+          allowAttributes={{
+            'data-testid': `hil-permission-${dockOptions.allowOnce?.id}`,
+            'data-hil-decision': 'allow-once',
+          }}
+          denyAttributes={{
+            'data-testid': `hil-permission-${dockOptions.deny.id}`,
+            'data-hil-decision': 'deny',
+          }}
+          onAllow={answerOnce}
+          onDeny={deny}
         >
-          <IconFont
-            type="icon-wanquanfangwen"
-            className="text-[length:var(--vds-icon-8)] leading-none"
-          />
-        </span>
-        <span className="flex min-w-0 flex-col gap-[3px]">
-          <span className="flex min-w-0 items-center gap-[7px] text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)] font-bold text-[var(--text)]">
-            <span className="truncate">{t('stream.hil.requestPermission')}</span>
-            {queueCount > 1 && (
-              <span className="flex-none text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] font-medium text-[var(--text-3)]">
-                1 / {queueCount}
-              </span>
-            )}
-          </span>
-          <EllipsisText
-            className="text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--text-2)]"
-            tooltip={summary}
-            tooltipPortalled
-          >
-            {summary}
-          </EllipsisText>
+          {queueCount > 1 && (
+            <span>{hilT('queuePosition', { current: 1, total: queueCount })}</span>
+          )}
+          {!commandApproval && codeText && !summary.includes(codeText.trim()) && (
+            <pre className="max-h-[var(--vds-authorization-list-max-height)] overflow-auto whitespace-pre-wrap break-words font-[family-name:var(--vds-font-code)] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]">
+              {codeText}
+            </pre>
+          )}
+          {(item.path || item.networkTarget || item.permissions || item.diff) && (
+            <div
+              data-testid="hil-permission-details"
+              className="grid min-w-0 gap-[var(--vds-space-2)] break-words text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)] [overflow-wrap:anywhere]"
+            >
+              {!commandApproval && item.path && (
+                <div>
+                  {t('stream.hil.pathLabel')}
+                  {item.path}
+                </div>
+              )}
+              {item.networkTarget && (
+                <div>
+                  {t('stream.hil.networkTargetLabel')}
+                  {fmtVal(item.networkTarget, t)}
+                </div>
+              )}
+              {item.permissions && (
+                <div>
+                  {t('stream.hil.extraPermissionsLabel')}
+                  {fmtVal(item.permissions, t)}
+                </div>
+              )}
+              {item.diff && (
+                <pre
+                  data-testid="hil-file-diff"
+                  className="max-h-[var(--vds-authorization-list-max-height)] overflow-auto whitespace-pre-wrap"
+                >
+                  {item.diff}
+                </pre>
+              )}
+            </div>
+          )}
           {item.hilState === 'failed' && (
             <span
               className="text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--c-tension)]"
@@ -3767,79 +5074,250 @@ function HilCard({
               })}
             </span>
           )}
-        </span>
-        <span className="col-span-full inline-flex flex-wrap items-center justify-end gap-[var(--vds-space-2)]">
-          {dockOptions.allowed
-            .filter((option) => option.id !== dockOptions.allowOnce?.id)
-            .map((option) => {
-              const info = scopeInfo(option, item, t)
-              return (
-                <Button
-                  key={option.id}
-                  variant="outline"
-                  size="sm"
-                  type="button"
-                  data-testid={`hil-permission-${option.id}`}
-                  data-hil-decision={option.id}
-                  title={info.caption}
-                  disabled={submitting}
-                  onClick={() =>
-                    answerPermission(option.id, info.short, {
-                      kind: 'allowedScope',
-                      scope: hilPermissionScope(option, item.prefixKind),
-                    })
-                  }
-                >
-                  {info.short}
-                </Button>
-              )
-            })}
-          <Button
-            variant="outline"
-            size="sm"
-            type="button"
-            data-testid={`hil-permission-${dockOptions.deny.id}`}
-            data-hil-decision="deny"
-            className="whitespace-nowrap"
-            disabled={submitting}
-            onClick={deny}
-          >
-            {t('stream.hil.deny')}
-          </Button>
-          {dockOptions.allowOnce && (
-            <Button
-              variant="primary"
-              size="sm"
-              type="button"
-              data-testid={`hil-permission-${dockOptions.allowOnce.id}`}
-              data-hil-decision="allow-once"
-              className="whitespace-nowrap"
-              disabled={submitting}
-              onClick={answerOnce}
-            >
-              {submitting ? t('stream.hil.submitting') : t('stream.hil.allowOnce')}
-            </Button>
+          {scopeOptions.length > 0 && (
+            <div className="flex flex-wrap items-center justify-end gap-[var(--vds-space-2)]">
+              {scopeOptions.map((option) => {
+                const info = scopeInfo(option, item, t)
+                return (
+                  <Button
+                    key={option.id}
+                    variant="outline"
+                    size="md"
+                    type="button"
+                    data-testid={`hil-permission-${option.id}`}
+                    data-hil-decision={option.id}
+                    title={info.caption}
+                    disabled={submitting}
+                    onClick={() =>
+                      answerPermission(option.id, info.short, {
+                        kind: 'allowedScope',
+                        scope: hilPermissionScope(option, item.prefixKind),
+                      })
+                    }
+                  >
+                    {info.short}
+                  </Button>
+                )
+              })}
+            </div>
           )}
-        </span>
+        </ConfirmationCard>
       </div>
     )
+  }
+
+  const scopeQuestion = questions[0]
+  if (
+    !done &&
+    questionPolicy?.selectablePapers !== undefined &&
+    questions.length === 1 &&
+    (!questionPolicy.selectablePapers || scopeQuestion.papers?.length) &&
+    (!scopeQuestion.component ||
+      (scopeQuestion.component.plugin === PUBLIC_COMPONENT_PLUGIN &&
+        scopeQuestion.component.component ===
+          (questionPolicy.selectablePapers
+            ? LITERATURE_AUTHORIZATION_SLOTS.selectable
+            : LITERATURE_AUTHORIZATION_SLOTS.fixed)))
+  ) {
+    const selectedIds = subsetIdsFor(0, scopeQuestion)
+    const primary = scopeQuestion.options.find((option) => questionPolicy.isPrimaryOption?.(option))
+    const secondary = scopeQuestion.options.find(
+      (option) => !questionPolicy.isPrimaryOption?.(option)
+    )
+    if (primary && secondary && scopeQuestion.component)
+      return (
+        <div
+          className="flex !min-h-0 !min-w-0 flex-[1_1_auto] flex-col"
+          data-testid="hil-card"
+          data-hil-kind="question"
+          data-interaction-request-id={item.requestId}
+          data-hil-resolved="false"
+          data-hil-state={item.hilState ?? 'pending'}
+        >
+          <PluginInteraction
+            reference={scopeQuestion.component}
+            previewMount={previewMount}
+            data={{
+              ...scopeQuestion.componentData,
+              papers: scopeQuestion.papers ?? [],
+              selected_paper_ids: selectedIds,
+              authorization_card: true,
+            }}
+            status={submitting ? 'submitting' : 'pending'}
+            renderHosted={
+              questionPolicy.selectablePapers
+                ? ({ data, status, onAction }) => (
+                    <LiteratureAuthorizationCard
+                      selectable
+                      papers={scopeQuestion.papers ?? []}
+                      selectedPaperIds={fulltextSelection(scopeQuestion, data, true) ?? selectedIds}
+                      expanded={authorizationOpen}
+                      disabled={status !== 'pending'}
+                      onExpandedChange={setAuthorizationOpen}
+                      onSelectionChange={(selected) =>
+                        onAction(LITERATURE_AUTHORIZATION_ACTIONS.select, {
+                          selected_paper_ids: selected,
+                        })
+                      }
+                      onAllow={() =>
+                        onAction(LITERATURE_AUTHORIZATION_ACTIONS.authorize, {
+                          selected_paper_ids: data.selected_paper_ids,
+                        })
+                      }
+                      onDeny={() =>
+                        onAction(LITERATURE_AUTHORIZATION_ACTIONS.reject, {
+                          selected_paper_ids: data.selected_paper_ids,
+                        })
+                      }
+                    />
+                  )
+                : undefined
+            }
+            prepareDraft={(values) => {
+              const selected = fulltextSelection(
+                scopeQuestion,
+                values,
+                Boolean(questionPolicy.selectablePapers)
+              )
+              if (!selected) throw new Error('invalid_authorization_selection')
+              return { selected_paper_ids: selected }
+            }}
+            onRestore={(values) => {
+              const restored = fulltextSelection(
+                scopeQuestion,
+                values,
+                Boolean(questionPolicy.selectablePapers)
+              )
+              if (restored) setSubsetPicks((previous) => ({ ...previous, 0: restored }))
+            }}
+            onAction={(action, values) => {
+              if (
+                action !== LITERATURE_AUTHORIZATION_ACTIONS.select &&
+                action !== LITERATURE_AUTHORIZATION_ACTIONS.authorize &&
+                action !== LITERATURE_AUTHORIZATION_ACTIONS.reject
+              )
+                return
+              const selected = fulltextSelection(
+                scopeQuestion,
+                values,
+                Boolean(questionPolicy.selectablePapers),
+                action === LITERATURE_AUTHORIZATION_ACTIONS.authorize
+              )
+              if (!selected) return
+              if (action === LITERATURE_AUTHORIZATION_ACTIONS.select) {
+                if (questionPolicy.selectablePapers)
+                  setSubsetPicks((previous) => ({ ...previous, 0: selected }))
+              } else
+                decideQuestion(
+                  scopeQuestion,
+                  action === LITERATURE_AUTHORIZATION_ACTIONS.authorize ? primary : secondary,
+                  selected
+                )
+            }}
+            renderContainer={(content, component) => {
+              if (questionPolicy.selectablePapers) return content
+              const complete = [
+                LITERATURE_AUTHORIZATION_ACTIONS.authorize,
+                LITERATURE_AUTHORIZATION_ACTIONS.reject,
+              ].every((action) =>
+                component?.actions.some(
+                  (declaration) =>
+                    declaration.id === action && declaration.capability === PLUGIN_ANSWER_CAPABILITY
+                )
+              )
+              if (!complete && !questionPolicy.selectablePapers)
+                return (
+                  <LiteratureAuthorizationCard
+                    selectable={false}
+                    papers={scopeQuestion.papers ?? []}
+                    selectedPaperIds={selectedIds}
+                    expanded={false}
+                    disabled={submitting}
+                    onExpandedChange={setAuthorizationOpen}
+                    onSelectionChange={(paperIds) =>
+                      setSubsetPicks((previous) => ({ ...previous, 0: paperIds }))
+                    }
+                    onAllow={() => decideQuestion(scopeQuestion, primary, selectedIds)}
+                    onDeny={() => decideQuestion(scopeQuestion, secondary, selectedIds)}
+                  />
+                )
+              return complete ? (
+                content
+              ) : (
+                <ConfirmationCard
+                  compact
+                  title={localization.t('review.authorization.scopeTitle', { ns: 'literature' })}
+                  description={localization.t('review.authorization.scopeDescription', {
+                    ns: 'literature',
+                  })}
+                  allowLabel={localization.t('review.authorization.authorize', {
+                    ns: 'literature',
+                  })}
+                  denyLabel={localization.t('review.authorization.reject', { ns: 'literature' })}
+                  disabled={submitting}
+                  allowDisabled={
+                    Boolean(questionPolicy.selectablePapers) && selectedIds.length === 0
+                  }
+                  onAllow={() => decideQuestion(scopeQuestion, primary, selectedIds)}
+                  onDeny={() => decideQuestion(scopeQuestion, secondary, selectedIds)}
+                >
+                  {content}
+                </ConfirmationCard>
+              )
+            }}
+          />
+          {(item.hilState === 'failed' || editingError) && <div role="alert">{pill}</div>}
+        </div>
+      )
+    if (primary && secondary)
+      return (
+        <div
+          className="flex !min-h-0 !min-w-0 flex-[1_1_auto] flex-col"
+          data-testid="hil-card"
+          data-hil-kind="question"
+          data-interaction-request-id={item.requestId}
+          data-hil-resolved="false"
+          data-hil-state={item.hilState ?? 'pending'}
+        >
+          <LiteratureAuthorizationCard
+            selectable={questionPolicy.selectablePapers}
+            papers={scopeQuestion.papers ?? []}
+            selectedPaperIds={selectedIds}
+            expanded={authorizationOpen}
+            disabled={submitting}
+            onExpandedChange={setAuthorizationOpen}
+            onSelectionChange={(paperIds) =>
+              setSubsetPicks((previous) => ({ ...previous, 0: paperIds }))
+            }
+            onAllow={() => decideQuestion(scopeQuestion, primary, selectedIds)}
+            onDeny={() => decideQuestion(scopeQuestion, secondary, selectedIds)}
+          >
+            {(item.hilState === 'failed' || editingError) && <div role="alert">{pill}</div>}
+          </LiteratureAuthorizationCard>
+        </div>
+      )
   }
 
   const scrollableQuestion = presentation === 'dock' && isQuestion && !done
 
   return (
     <Collapsible
-      open={!isQuestion || questionOpen}
+      open={!isQuestion || fixedClarification || questionOpen}
       onOpenChange={setQuestionOpen}
       data-testid="hil-card"
       data-hil-kind={isQuestion ? 'question' : 'permission'}
+      data-clarification-paged={fixedClarification || undefined}
       data-interaction-request-id={item.requestId}
       data-hil-resolved={done ? 'true' : 'false'}
       data-hil-state={item.hilState ?? 'pending'}
+      onInputCapture={(event) => {
+        const target = event.target as HTMLTextAreaElement
+        if (isQuestion && target.tagName === 'TEXTAREA' && target.value.trim()) void markEditing()
+      }}
       className={cx(
         presentation === 'dock'
           ? 'mb-0 min-w-0 p-[var(--vds-space-4)]'
-          : 'mb-[var(--vds-space-4)] min-w-0 p-[var(--vds-space-4)]',
+          : 'my-[var(--vds-conversation-block-gap)] min-w-0 p-[var(--vds-space-4)]',
         'border border-solid border-[var(--vds-border-default)]',
         /* 权限卡保持 raised 表面；问句卡标题行按执行计划卡片的紧凑间距组合。 */
         isQuestion
@@ -3848,7 +5326,20 @@ function HilCard({
         scrollableQuestion && '!flex min-h-0 flex-1 flex-col overflow-hidden'
       )}
     >
-      {isQuestion ? (
+      {fixedClarification ? (
+        <div className="flex shrink-0 items-start justify-between gap-[var(--vds-space-2)] px-[var(--vds-space-4)] pt-[var(--vds-space-4)] text-[length:var(--vds-font-body-lv1)] font-[number:var(--vds-fw-regular)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-secondary)]">
+          <div className="flex min-w-0 items-center gap-[var(--vds-space-2)]">
+            <IconFont
+              type="line-tool-batch-follow-up"
+              className="shrink-0 text-[length:var(--vds-icon-7)]"
+            />
+            <span role="status">{pill}</span>
+          </div>
+          <span data-testid="hil-question-position" className="shrink-0">
+            {visibleQuestionPage} / {qs.length}
+          </span>
+        </div>
+      ) : isQuestion ? (
         <CollapsibleTrigger asChild>
           <Button
             unstyled
@@ -3867,7 +5358,20 @@ function HilCard({
                 </span>
               ) : null}
               {pill}
+              {item.timeoutCancelled && (
+                <span className="block text-[var(--vds-text-secondary)]">
+                  {hilT('clarification.editing')}
+                </span>
+              )}
             </span>
+            {plainClarification && (
+              <span
+                data-testid="hil-question-position"
+                className="shrink-0 text-[var(--vds-text-secondary)]"
+              >
+                {visibleQuestionPage} / {qs.length}
+              </span>
+            )}
           </Button>
         </CollapsibleTrigger>
       ) : (
@@ -3892,15 +5396,65 @@ function HilCard({
       {isQuestion ? (
         <CollapsibleContent
           className={cx(
-            'mx-[var(--vds-space-4)] mb-[var(--vds-space-4)] mt-[var(--vds-space-1)] !rounded-none !border-0 !bg-transparent !p-0',
+            'mx-[var(--vds-space-4)] mb-[var(--vds-space-4)] !rounded-none !border-0 !bg-transparent !p-0',
+            fixedClarification ? 'mt-[var(--vds-space-3)]' : 'mt-[var(--vds-space-1)]',
             scrollableQuestion && 'flex min-h-0 flex-1 flex-col'
           )}
         >
+          {editingError && (
+            <Button variant="ghost" size="sm" onClick={() => void markEditing()}>
+              {hilT('clarification.editingFailed')}
+            </Button>
+          )}
+          {plainClarification && !fixedClarification && (
+            <div className="mb-[var(--vds-space-4)] flex flex-wrap items-center gap-[var(--vds-space-2)] text-[var(--vds-text-primary)]">
+              <IconFont type="line-tool-batch-follow-up" />
+              <strong className="text-[length:var(--vds-font-body-lv2)]">
+                {hilT('reply.title')}
+              </strong>
+              <span className="text-[var(--vds-text-tertiary)]">
+                {hilT('clarification.scrollHint')}
+              </span>
+            </div>
+          )}
           <ScrollArea
-            className={cx(scrollableQuestion && 'min-h-0 flex-1')}
-            viewportClassName={cx(scrollableQuestion && 'h-full min-h-0')}
+            viewportRef={questionViewport}
+            className={cx(scrollableQuestion && 'grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)]')}
+            viewportClassName={cx(scrollableQuestion && 'min-h-0')}
             viewportProps={{
               'data-testid': 'hil-question-scroll-area',
+              onWheel: () => {
+                questionNavigation.current = null
+              },
+              onTouchStart: () => {
+                questionNavigation.current = null
+              },
+              onPointerDown: () => {
+                questionNavigation.current = null
+              },
+              onKeyDown: () => {
+                questionNavigation.current = null
+              },
+              onScroll: (event) => {
+                if (fixedClarification) return
+                const viewport = event.currentTarget
+                const top = viewport.getBoundingClientRect().top
+                const offsets = questionNodes.current.map((node) =>
+                  node ? node.getBoundingClientRect().top - top + viewport.scrollTop : 0
+                )
+                const atEnd =
+                  viewport.scrollTop > 0 &&
+                  Math.ceil(viewport.scrollTop + viewport.clientHeight) >= viewport.scrollHeight
+                const navigation = questionNavigation.current
+                setQuestionPage(
+                  questionAtScroll(
+                    offsets,
+                    viewport.scrollTop,
+                    atEnd,
+                    navigation?.scrollTop === viewport.scrollTop ? navigation.index : undefined
+                  ) + 1
+                )
+              },
             }}
           >
             {questionPolicy?.directDecision &&
@@ -4064,261 +5618,314 @@ function HilCard({
                 })}
               </div>
             ) : (
-              qs.map((q, qi) => (
-                <div
-                  key={qi}
-                  hidden={pagedQuestions && qi !== visibleQuestionPage - 1}
-                  style={{ marginBottom: qi < qs.length - 1 ? 16 : 0 }}
-                >
+              qs.map((q, qi) =>
+                fixedClarification && qi !== visibleQuestionPage - 1 ? null : (
                   <div
-                    style={{
-                      minWidth: 0,
-                      fontFamily: 'var(--font-serif)',
-                      fontSize: 14.5,
-                      color: 'var(--text)',
-                      marginBottom: 'var(--vds-space-3)',
-                      lineHeight: 1.5,
-                      overflowWrap: 'anywhere',
+                    key={qi}
+                    ref={(node) => {
+                      questionNodes.current[qi] = node
                     }}
+                    onFocusCapture={() => setQuestionPage(qi + 1)}
+                    style={{ marginBottom: !fixedClarification && qi < qs.length - 1 ? 16 : 0 }}
                   >
-                    {presentedQuestions[qi]?.question ?? q.question}
-                  </div>
-                  {q.installation ? (
-                    <PluginInstallation
-                      report={q.installation}
-                      done={done}
-                      busy={submitting}
-                      session={sid}
-                      request={item.requestId ?? ''}
-                      answer={item.answers?.[q.id || q.question]}
-                      onAnswer={async (receipt) => {
-                        const answers = receipt
-                          ? { [q.id || q.question]: JSON.stringify(receipt) }
-                          : undefined
-                        await submitAction({
-                          kind: 'respond',
-                          body: answers ? { answers } : { cancelled: true },
-                          answers,
-                          label: t('stream.hil.answered'),
-                          resolvedMessage: { kind: 'answered' },
-                        })
-                      }}
-                    />
-                  ) : q.component && q.options.length === 0 ? (
-                    <PluginInteraction
-                      reference={q.component}
-                      previewMount={previewMount}
-                      data={q.componentData ?? {}}
-                      status={
-                        item.hilState === 'cancelled'
-                          ? 'cancelled'
-                          : done
-                            ? 'resolved'
-                            : submitting
-                              ? 'submitting'
-                              : 'pending'
-                      }
-                      onAction={(action, values) => {
-                        const answers = {
-                          [q.id || q.header || q.question]: JSON.stringify({ action, values }),
-                        }
-                        void submitAction({
-                          kind: 'respond',
-                          body: { answers },
-                          answers,
-                          label: t('stream.hil.answered'),
-                          resolvedMessage: { kind: 'answered' },
-                        })
-                      }}
-                    />
-                  ) : q.options.length > 0 ? (
                     <div
-                      aria-label={presentedQuestions[qi]?.header || q.header || q.question}
-                      className="flex flex-col gap-[var(--vds-space-3)]"
-                      role={q.multiSelect ? 'group' : 'radiogroup'}
+                      style={{
+                        minWidth: 0,
+                        fontFamily: 'var(--font-serif)',
+                        fontSize: 14.5,
+                        color: 'var(--text)',
+                        marginBottom: 'var(--vds-space-3)',
+                        lineHeight: 1.5,
+                        overflowWrap: 'anywhere',
+                      }}
                     >
-                      {q.component && (
-                        <PluginInteraction
-                          reference={q.component}
-                          previewMount={previewMount}
-                          onRestore={(values) => {
-                            const answers = componentOptionAnswers(q, values)
-                            if (answers) setPicks((previous) => ({ ...previous, [qi]: answers }))
-                            if (typeof values.text === 'string')
-                              setTexts((previous) => ({ ...previous, [qi]: values.text as string }))
-                          }}
-                          prepareDraft={(values) => ({
-                            ...values,
-                            ...(!q.multiSelect ? { text: '' } : {}),
-                          })}
-                          supplement={(save) =>
-                            !done && !questionPolicy?.directDecision ? (
-                              <Textarea
-                                data-testid={`hil-question-other-${qi}`}
-                                aria-label={t('stream.otherAnswer')}
-                                placeholder={t('stream.otherAnswerPlaceholder')}
-                                rows={2}
-                                disabled={submitting}
-                                value={texts[qi] || ''}
-                                className="mt-[var(--vds-space-1)] w-full resize-y"
-                                onChange={(event) => {
-                                  const value = event.target.value
-                                  setTexts((previous) => ({ ...previous, [qi]: value }))
-                                  const clear = !q.multiSelect && Boolean(value.trim())
-                                  if (clear) setPicks((previous) => ({ ...previous, [qi]: [] }))
-                                  void save({
-                                    text: value,
-                                    ...(clear ? { answers: [] } : {}),
-                                  }).catch(() => undefined)
-                                }}
-                              />
-                            ) : null
-                          }
-                          data={{
-                            ...q.componentData,
-                            question: q.question,
-                            displayQuestion: presentedQuestions[qi]?.question ?? q.question,
-                            options: q.options.map((option, index) => ({
-                              ...option,
-                              displayLabel:
-                                presentedQuestions[qi]?.options[index]?.label ??
-                                questionPolicy?.optionLabel?.(option) ??
-                                option.label,
-                              displayDescription:
-                                presentedQuestions[qi]?.options[index]?.description ??
-                                option.description,
-                            })),
-                            multiSelect: q.multiSelect,
-                            answers: done
-                              ? q.options
-                                  .filter((option) =>
-                                    String(item.answers?.[q.id || q.header || q.question] ?? '')
-                                      .split('\n')[0]
-                                      .split(', ')
-                                      .includes(
-                                        questionPolicy?.optionLabel?.(option) ?? option.label
-                                      )
-                                  )
-                                  .map((option) => option.label)
-                              : (picks[qi] ?? []),
-                          }}
-                          status={
-                            item.hilState === 'cancelled'
-                              ? 'cancelled'
-                              : done
-                                ? 'resolved'
-                                : submitting
-                                  ? 'submitting'
+                      <QuestionPrompt presentation={q.presentation}>
+                        {plainClarification && `${qi + 1}. `}
+                        {presentedQuestions[qi]?.question ?? q.question}
+                        {plainClarification && q.options.length > 0 && (
+                          <span className="ml-[var(--vds-space-2)] text-[var(--vds-text-tertiary)]">
+                            {hilT(
+                              q.multiSelect ? 'clarification.multiple' : 'clarification.single'
+                            )}
+                          </span>
+                        )}
+                      </QuestionPrompt>
+                    </div>
+                    {q.installation ? (
+                      <PluginInstallation
+                        report={q.installation}
+                        done={done}
+                        busy={submitting}
+                        session={sid}
+                        request={item.requestId ?? ''}
+                        answer={item.answers?.[q.id || q.question]}
+                        onAnswer={async (receipt) => {
+                          const answers = receipt
+                            ? { [q.id || q.question]: JSON.stringify(receipt) }
+                            : undefined
+                          await submitAction({
+                            kind: 'respond',
+                            body: answers ? { answers } : { cancelled: true },
+                            answers,
+                            label: t('stream.hil.answered'),
+                            resolvedMessage: { kind: 'answered' },
+                          })
+                        }}
+                      />
+                    ) : q.component && q.options.length === 0 ? (
+                      <PluginInteraction
+                        reference={q.component}
+                        previewMount={previewMount}
+                        data={q.componentData ?? {}}
+                        contentRevision={q.componentRevision}
+                        status={
+                          item.hilState === 'cancelled'
+                            ? 'cancelled'
+                            : done
+                              ? 'resolved'
+                              : submitting
+                                ? 'submitting'
+                                : q.component?.component === CANVAS_SLOT &&
+                                    item.hilState === 'unknown'
+                                  ? 'unknown'
                                   : 'pending'
+                        }
+                        onAction={(action, values, contentRevision) => {
+                          if (q.component?.component === CANVAS_SLOT && action === 'cancel') {
+                            return submitAction(
+                              {
+                                kind: 'respond',
+                                body: { cancelled: true },
+                                label: t('stream.hil.answered'),
+                                resolvedMessage: { kind: 'answered' },
+                              },
+                              true
+                            )
                           }
-                          onAction={(_action, values) => {
-                            const answers = componentOptionAnswers(q, values)
-                            if (!answers) return
-                            if (questionPolicy?.directDecision && answers.length === 1) {
-                              decideQuestion(
-                                q,
-                                q.options.find((option) => option.label === answers[0])!
-                              )
-                              return
-                            }
-                            setPicks((previous) => ({ ...previous, [qi]: answers }))
-                            if (!q.multiSelect) setTexts((previous) => ({ ...previous, [qi]: '' }))
-                          }}
-                        />
-                      )}
-                      {!q.component &&
-                        q.options.map((o, i) => {
-                          // 已答态按会话项里的 answers 回显勾选 (多选按 ', ' 拆回 label 列表);
-                          // 未答态才用组件本地 picks —— 否则 resolved 后勾选被清空, 卡片像没答过。
-                          const answered = done
-                            ? String((item.answers ?? {})[q.id || q.header || q.question] ?? '')
-                            : ''
-                          const on = done
-                            ? answered
-                                .split('\n')[0]
-                                .split(', ')
-                                .includes(questionPolicy?.optionLabel?.(o) ?? o.label)
-                            : (picks[qi] || []).includes(o.label)
-                          return (
-                            <QuestionOption
-                              key={i}
-                              testId={`hil-question-option-${qi}-${i}`}
-                              disabled={done || submitting}
-                              checked={on}
-                              multiSelect={q.multiSelect}
-                              label={
-                                presentedQuestions[qi]?.options[i]?.label ??
-                                questionPolicy?.optionLabel?.(o) ??
-                                o.label
+                          if (action === 'cancel') {
+                            void submitAction({ kind: 'cancel' })
+                            return
+                          }
+                          const answers = {
+                            [q.id || q.header || q.question]: JSON.stringify({
+                              action,
+                              values,
+                              ...(q.component?.component === OPENUI_SLOT
+                                ? { content_revision: contentRevision ?? 0 }
+                                : {}),
+                            }),
+                          }
+                          return submitAction(
+                            {
+                              kind: 'respond',
+                              body: { answers },
+                              answers,
+                              label: t('stream.hil.answered'),
+                              resolvedMessage: { kind: 'answered' },
+                            },
+                            q.component?.component === CANVAS_SLOT
+                          )
+                        }}
+                      />
+                    ) : q.options.length > 0 ? (
+                      <div
+                        aria-label={presentedQuestions[qi]?.header || q.header || q.question}
+                        className="flex flex-col gap-[var(--vds-space-3)]"
+                        role={q.multiSelect ? 'group' : 'radiogroup'}
+                      >
+                        {q.component && (
+                          <QuestionOptionsReveal>
+                            <PluginInteraction
+                              reference={q.component}
+                              previewMount={previewMount}
+                              onRestore={(values) => {
+                                const answers = componentOptionAnswers(q, values)
+                                if (answers)
+                                  setPicks((previous) => ({
+                                    ...previous,
+                                    [qi]: answers.map((label) =>
+                                      q.options.findIndex((option) => option.label === label)
+                                    ),
+                                  }))
+                                if (typeof values.text === 'string')
+                                  setTexts((previous) => ({
+                                    ...previous,
+                                    [qi]: values.text as string,
+                                  }))
+                              }}
+                              prepareDraft={(values) => ({ ...values })}
+                              supplement={(save) =>
+                                !done && !questionPolicy?.directDecision ? (
+                                  <Textarea
+                                    data-testid={`hil-question-other-${qi}`}
+                                    aria-label={t('stream.otherAnswer')}
+                                    placeholder={t('stream.otherAnswerPlaceholder')}
+                                    rows={2}
+                                    disabled={submitting}
+                                    value={texts[qi] || ''}
+                                    className="mt-[var(--vds-space-3)] w-full resize-y placeholder:font-[number:var(--vds-fw-regular)]"
+                                    onChange={(event) => {
+                                      const value = event.target.value
+                                      setTexts((previous) => ({ ...previous, [qi]: value }))
+                                      void save({
+                                        text: value,
+                                      }).catch(() => undefined)
+                                    }}
+                                  />
+                                ) : null
                               }
-                              description={
-                                presentedQuestions[qi]?.options[i]?.description ?? o.description
+                              data={{
+                                ...q.componentData,
+                                question: q.question,
+                                displayQuestion: presentedQuestions[qi]?.question ?? q.question,
+                                options: q.options.map((option, index) => ({
+                                  ...option,
+                                  displayLabel:
+                                    presentedQuestions[qi]?.options[index]?.label ??
+                                    questionPolicy?.optionLabel?.(option) ??
+                                    option.label,
+                                  displayDescription:
+                                    presentedQuestions[qi]?.options[index]?.description ??
+                                    option.description,
+                                })),
+                                multiSelect: q.multiSelect,
+                                answers: done
+                                  ? q.options
+                                      .filter((option) =>
+                                        String(item.answers?.[q.id || q.header || q.question] ?? '')
+                                          .split('\n')[0]
+                                          .split(', ')
+                                          .includes(
+                                            questionPolicy?.optionLabel?.(option) ?? option.label
+                                          )
+                                      )
+                                      .map((option) => option.label)
+                                  : (picks[qi] ?? []).map((index) => q.options[index]?.label),
+                              }}
+                              status={
+                                item.hilState === 'cancelled'
+                                  ? 'cancelled'
+                                  : done
+                                    ? 'resolved'
+                                    : submitting
+                                      ? 'submitting'
+                                      : 'pending'
                               }
-                              onSelect={() => {
-                                if (questionPolicy?.directDecision) {
-                                  decideQuestion(q, o)
+                              onAction={(_action, values) => {
+                                const answers = componentOptionAnswers(q, values)
+                                if (!answers) return
+                                if (questionPolicy?.directDecision && answers.length === 1) {
+                                  decideQuestion(
+                                    q,
+                                    q.options.find((option) => option.label === answers[0])!
+                                  )
                                   return
                                 }
-                                if (!q.multiSelect) setTexts((t) => ({ ...t, [qi]: '' }))
-                                toggle(qi, o.label, !!q.multiSelect)
+                                setPicks((previous) => ({
+                                  ...previous,
+                                  [qi]: answers.map((label) =>
+                                    q.options.findIndex((option) => option.label === label)
+                                  ),
+                                }))
                               }}
                             />
-                          )
-                        })}
-                      {done ? (
-                        item.answers?.[q.id || q.header || q.question] && (
-                          <p className="m-0 whitespace-pre-wrap break-words text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]">
-                            {t('stream.submittedAnswer')}
-                            {questionPolicy?.presentAnswer?.(
-                              q,
-                              item.answers[q.id || q.header || q.question],
-                              localization
-                            ) ?? item.answers[q.id || q.header || q.question]}
-                          </p>
-                        )
-                      ) : questionPolicy?.directDecision || q.component ? null : (
-                        <Textarea
-                          data-testid={`hil-question-other-${qi}`}
-                          aria-label={t('stream.otherAnswer')}
-                          placeholder={t('stream.otherAnswerPlaceholder')}
-                          rows={2}
-                          disabled={submitting}
-                          value={texts[qi] || ''}
-                          onChange={(event) => {
-                            const value = event.target.value
-                            setTexts((t) => ({ ...t, [qi]: value }))
-                            if (!q.multiSelect && value.trim())
-                              setPicks((p) => ({ ...p, [qi]: [] }))
-                          }}
-                          className="mt-[var(--vds-space-1)] w-full resize-y"
-                        />
-                      )}
-                    </div>
-                  ) : (
-                    <Textarea
-                      unstyled
-                      data-testid={`hil-question-text-${qi}`}
-                      disabled={done || submitting}
-                      rows={2}
-                      placeholder={t('stream.hil.answerPlaceholder')}
-                      value={
-                        done
-                          ? String(
-                              (item.answers ?? {})[q.id || q.header || q.question] ??
-                                texts[qi] ??
-                                ''
+                          </QuestionOptionsReveal>
+                        )}
+                        {!q.component &&
+                          q.options.map((o, i) => {
+                            // 已答态按会话项里的 answers 回显勾选 (多选按 ', ' 拆回 label 列表);
+                            // 未答态才用组件本地 picks —— 否则 resolved 后勾选被清空, 卡片像没答过。
+                            const answered = done
+                              ? String((item.answers ?? {})[q.id || q.header || q.question] ?? '')
+                              : ''
+                            const on = done
+                              ? answered
+                                  .split('\n')[0]
+                                  .split(', ')
+                                  .includes(questionPolicy?.optionLabel?.(o) ?? o.label)
+                              : (picks[qi] ?? []).includes(i)
+                            return (
+                              <QuestionOption
+                                key={i}
+                                testId={`hil-question-option-${qi}-${i}`}
+                                disabled={done || submitting}
+                                checked={on}
+                                multiSelect={q.multiSelect}
+                                label={
+                                  presentedQuestions[qi]?.options[i]?.label ??
+                                  questionPolicy?.optionLabel?.(o) ??
+                                  o.label
+                                }
+                                description={
+                                  presentedQuestions[qi]?.options[i]?.description ?? o.description
+                                }
+                                onSelect={() => {
+                                  if (questionPolicy?.directDecision) {
+                                    decideQuestion(q, o)
+                                    return
+                                  }
+                                  toggle(qi, i, !!q.multiSelect)
+                                }}
+                              />
                             )
-                          : texts[qi] || ''
-                      }
-                      onChange={(e) => setTexts((t) => ({ ...t, [qi]: e.target.value }))}
-                      className="box-border w-full resize-y rounded-lg border border-[var(--border)] bg-[var(--bg)] px-[10px] py-[var(--vds-space-2)] text-[13px] text-[var(--text)] [font:inherit]"
-                    />
-                  )}
-                </div>
-              ))
+                          })}
+                        {done ? (
+                          item.answers?.[q.id || q.header || q.question] && (
+                            <p className="m-0 whitespace-pre-wrap break-words text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]">
+                              {t('stream.submittedAnswer')}
+                              {questionPolicy?.presentAnswer?.(
+                                q,
+                                item.answers[q.id || q.header || q.question],
+                                localization
+                              ) ?? item.answers[q.id || q.header || q.question]}
+                            </p>
+                          )
+                        ) : questionPolicy?.directDecision || q.component ? null : (
+                          <Textarea
+                            data-testid={`hil-question-other-${qi}`}
+                            aria-label={t('stream.otherAnswer')}
+                            placeholder={
+                              plainClarification
+                                ? hilT('clarification.supplement')
+                                : t('stream.otherAnswerPlaceholder')
+                            }
+                            rows={2}
+                            disabled={submitting}
+                            value={texts[qi] || ''}
+                            onChange={(event) => {
+                              const value = event.target.value
+                              setTexts((t) => ({ ...t, [qi]: value }))
+                            }}
+                            className="w-full resize-y placeholder:font-[number:var(--vds-fw-regular)]"
+                          />
+                        )}
+                      </div>
+                    ) : (
+                      <Textarea
+                        unstyled
+                        data-testid={`hil-question-text-${qi}`}
+                        disabled={done || submitting}
+                        rows={2}
+                        placeholder={t('stream.hil.answerPlaceholder')}
+                        value={
+                          done
+                            ? String(
+                                (item.answers ?? {})[q.id || q.header || q.question] ??
+                                  texts[qi] ??
+                                  ''
+                              )
+                            : texts[qi] || ''
+                        }
+                        onChange={(e) => setTexts((t) => ({ ...t, [qi]: e.target.value }))}
+                        className="box-border w-full resize-y rounded-lg border border-[var(--border)] bg-[var(--bg)] px-[10px] py-[var(--vds-space-2)] text-[13px] text-[var(--text)] [font:inherit]"
+                      />
+                    )}
+                  </div>
+                )
+              )
             )}
           </ScrollArea>
-          {pagedQuestions && (
+          {pagedQuestions && !fixedClarification && !plainClarification && (
             <div
               className="mt-[var(--vds-space-3)] flex flex-wrap items-center justify-between gap-[var(--vds-space-2)]"
               data-testid="hil-question-pages"
@@ -4330,7 +5937,7 @@ function HilCard({
                 page={visibleQuestionPage}
                 pageCount={qs.length}
                 disabled={submitting}
-                onPageChange={setQuestionPage}
+                onPageChange={goToQuestion}
               />
             </div>
           )}
@@ -4344,14 +5951,29 @@ function HilCard({
                 className="mt-[var(--vds-space-4)] flex flex-none items-center justify-end gap-[var(--vds-space-2)]"
                 data-testid="hil-question-actions"
               >
+                {plainClarification && (
+                  <span className="mr-auto text-[var(--vds-text-tertiary)]">
+                    {hilT('clarification.directReply')}
+                  </span>
+                )}
                 <Button
-                  variant="outline"
+                  variant={fixedClarification || plainClarification ? 'ghost' : 'outline'}
                   size="sm"
                   type="button"
                   data-testid="hil-question-skip"
                   disabled={submitting}
                   onClick={() => {
-                    const answers = questionPolicy?.defaults?.(qs) ?? {}
+                    if (fixedClarification) {
+                      const index = visibleQuestionPage - 1
+                      if (visibleQuestionPage < qs.length) {
+                        setSkippedQuestions((previous) => [...previous, index])
+                        goToQuestion(visibleQuestionPage + 1)
+                      } else {
+                        submitQuestion(index)
+                      }
+                      return
+                    }
+                    const answers = plainClarification ? {} : (questionPolicy?.defaults?.(qs) ?? {})
                     void submitAction({
                       kind: 'respond',
                       body: { answers },
@@ -4362,16 +5984,50 @@ function HilCard({
                 >
                   {t('stream.hil.skip')}
                 </Button>
-                <Button
-                  variant="primary"
-                  size="sm"
-                  type="button"
-                  data-testid="hil-question-confirm"
-                  disabled={submitting || !questionComplete}
-                  onClick={submitQuestion}
-                >
-                  {t('stream.hil.confirm')}
-                </Button>
+                {(fixedClarification || plainClarification) &&
+                  pagedQuestions &&
+                  visibleQuestionPage > 1 && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      data-testid="hil-question-previous"
+                      disabled={submitting}
+                      onClick={() => goToQuestion(visibleQuestionPage - 1)}
+                    >
+                      {hilT('clarification.previous')}
+                    </Button>
+                  )}
+                {(fixedClarification || plainClarification) &&
+                pagedQuestions &&
+                visibleQuestionPage < qs.length ? (
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    data-testid="hil-question-next"
+                    disabled={submitting || !questionAnswered(visibleQuestionPage - 1)}
+                    onClick={() => {
+                      setSkippedQuestions((previous) =>
+                        previous.filter((index) => index !== visibleQuestionPage - 1)
+                      )
+                      goToQuestion(visibleQuestionPage + 1)
+                    }}
+                  >
+                    {hilT('clarification.next')}
+                  </Button>
+                ) : (
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    type="button"
+                    data-testid="hil-question-confirm"
+                    disabled={submitting || !questionComplete}
+                    onClick={() => submitQuestion()}
+                  >
+                    {fixedClarification || plainClarification
+                      ? hilT('clarification.submit')
+                      : t('stream.hil.confirm')}
+                  </Button>
+                )}
               </div>
             )}
         </CollapsibleContent>
@@ -4534,7 +6190,7 @@ function HilCard({
                     data-testid={`hil-permission-${o.id}`}
                     disabled={submitting}
                     className={cx(
-                      'cursor-pointer whitespace-nowrap rounded-lg border px-[14px] py-[var(--vds-space-2)] text-[13px] disabled:cursor-default disabled:opacity-60',
+                      'min-h-[var(--vds-control-height-lg)] cursor-pointer whitespace-nowrap rounded-lg border px-[var(--vds-space-4)] py-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv2)] disabled:cursor-default disabled:opacity-60',
                       primary
                         ? cx(
                             ACCENT_HOVER_BUTTON_CLASS,
@@ -4563,7 +6219,7 @@ function HilCard({
                 data-testid={`hil-permission-${denyOpt.id}`}
                 className={cx(
                   OUTLINE_HOVER_BUTTON_CLASS,
-                  'cursor-pointer whitespace-nowrap rounded-lg border border-[var(--border)] bg-transparent px-[14px] py-[var(--vds-space-2)] text-[13px] text-[var(--text-2)] disabled:cursor-default disabled:opacity-60'
+                  'min-h-[var(--vds-control-height-lg)] cursor-pointer whitespace-nowrap rounded-lg border border-[var(--border)] bg-transparent px-[var(--vds-space-4)] py-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv2)] text-[var(--text-2)] disabled:cursor-default disabled:opacity-60'
                 )}
                 disabled={submitting}
                 onClick={() =>
@@ -4605,7 +6261,6 @@ function HilCard({
   )
 }
 
-/** gray task-prompt at the very top of a sub-session stream (scrolls with messages) */
 function PromptCard({ text }: { text: string }): React.JSX.Element {
   const { t } = useTranslation('components')
   return (
@@ -4654,7 +6309,7 @@ function Thinking({
 }): React.JSX.Element {
   const messageId = itemId ? `item:${itemId}` : undefined
   const markdownClassName =
-    '!text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-stream-content-line-height)] text-[var(--text-2)] [&>*:last-child]:mb-0'
+    '!text-[length:var(--vds-font-body-lv2)] !leading-[var(--vds-conversation-answer-line-height)] text-[var(--text-2)] [&>*:last-child]:mb-0'
   return (
     <div className="min-w-0" data-testid="turn-commentary">
       {messageId ? (
@@ -4760,25 +6415,64 @@ function Reentry({ item }: { item: Extract<ConvItem, { kind: 'reentry' }> }): Re
 
 function UserBubble({
   item,
+  skillNames,
   running,
   onRewind,
+  sentAt,
 }: {
   item: Extract<ConvItem, { kind: 'user' }>
+  skillNames: SkillNames
   running: boolean
   onRewind: (anchor: number) => Promise<string | null>
+  sentAt?: number
 }): React.JSX.Element {
-  const { t } = useTranslation('components')
+  const { t, i18n: localization } = useTranslation('components')
   const { t: assistantText } = useTranslation('assistant')
+  const displayText = item.displayMessage
+    ? renderFeedback(localization, item.displayMessage)
+    : item.text
+  const hasMessageText = Boolean(displayText.trim())
   const { state, act } = useApp()
+  const displayRefs = (item.refs ?? []).map((reference) =>
+    reference.type === 'assistant_context' &&
+    reference.kind === 'file' &&
+    !reference.anchor &&
+    reference.sourceId
+      ? { ...reference, type: 'file', path: reference.sourceId }
+      : reference
+  )
   const steer = item.steer
+  const imageCount =
+    displayRefs?.filter(
+      (reference) =>
+        reference.type === 'file' &&
+        reference.path &&
+        isImageAttachment({
+          type: 'file',
+          id: reference.id,
+          title: reference.title,
+          path: reference.path,
+        })
+    ).length ?? 0
+  const hasFileAttachments = displayRefs?.some(
+    (reference) =>
+      reference.path &&
+      (reference.type === 'directory' ||
+        (reference.type === 'file' &&
+          !isImageAttachment({
+            type: 'file',
+            id: reference.id,
+            title: reference.title,
+            path: reference.path,
+          })))
+  )
   const [confirming, setConfirming] = useState(false)
   const [restoring, setRestoring] = useState(false)
   const [error, setError] = useState('')
-  const [expandedReferenceId, setExpandedReferenceId] = useState<string | null>(null)
   const canRewind =
     !activeThread(state).readOnly && !steer && !running && item.rewindAnchor !== undefined
   const annotationRefs =
-    item.refs?.filter(
+    displayRefs?.filter(
       (reference) => reference.type === 'assistant_context' && reference.kind === 'note'
     ) ?? []
   const annotations = annotationRefs.flatMap((reference) => {
@@ -4788,17 +6482,44 @@ function UserBubble({
     return annotation ? [annotationDisplay(annotation)] : []
   })
   const contextRefs =
-    item.refs?.filter(
-      (reference) => reference.type === 'assistant_context' && reference.kind !== 'note'
+    displayRefs?.filter(
+      (reference) =>
+        reference.type === 'assistant_context' &&
+        reference.kind !== 'note' &&
+        reference.kind !== SESSION_CONTEXT_KIND
     ) ?? []
+  const sessionRefs =
+    displayRefs?.filter(
+      (reference) =>
+        reference.type === 'assistant_context' && reference.kind === SESSION_CONTEXT_KIND
+    ) ?? []
+  const inlineRefs = displayRefs.filter(
+    (reference) =>
+      reference.type !== 'assistant_context' &&
+      ((reference.type !== 'file' && reference.type !== 'directory') || !reference.path)
+  )
+  const selectionGroups = selectionReferenceGroups(contextRefs)
   const project = state.projects.find(
     (candidate) => candidate.path === activeThread(state).projectPath
   )
   const openContextSource = (reference: MessageReference): void => {
     if (!reference.sourceId) return
+    const locator = selectionLocator(reference.anchor?.locator)
+    const selection = locator
+      ? {
+          locator,
+          text: reference.anchor?.previewText ?? '',
+          sourceRevision: reference.sourceRevision,
+        }
+      : undefined
     if (reference.kind === LITERATURE_CONTEXT_KIND) {
       if (reference.anchor) {
-        void act.openLiteratureAttachment(reference.sourceId, reference.anchor.documentId)
+        void act.openLiteratureAttachment(
+          reference.sourceId,
+          reference.anchor.documentId,
+          undefined,
+          { selection }
+        )
         return
       }
       if (!project) return
@@ -4810,15 +6531,34 @@ function UserBubble({
       reference.kind === SELECTION_CONTEXT_KIND ||
       OPENABLE_RESOURCE_CONTEXT_KINDS.has(reference.kind ?? '')
     ) {
-      act.openResourceFile(reference.sourceId, project.id)
+      act.openResourceFile(reference.sourceId, project.id, undefined, selection)
     }
   }
-  const contextSourceLabel = (reference: MessageReference): string =>
-    !reference.anchor &&
-    reference.kind !== SESSION_CONTEXT_KIND &&
-    reference.kind !== LITERATURE_CONTEXT_KIND
-      ? reference.sourceId?.split('/').filter(Boolean).pop() || reference.title
-      : referenceBaseLabel(reference, assistantText)
+  const contextSourceLabel = (reference: MessageReference): string => {
+    const title = referenceBaseLabel(reference, assistantText)
+    if (!reference.anchor && OPENABLE_RESOURCE_CONTEXT_KINDS.has(reference.kind ?? '')) {
+      return reference.sourceId?.split('/').filter(Boolean).pop() || title
+    }
+    return title
+  }
+  const annotationSummary = (
+    <AnnotationSummary
+      annotations={annotations}
+      className="mb-[var(--vds-space-2)]"
+      location={state.aiPanel.answerAnnotationFocus}
+      numberForAnnotation={(annotationId, index) => {
+        const raw = state.aiPanel.annotations.find((item) => item.annotation_id === annotationId)
+        if (!raw) return index + 1
+        return (
+          state.aiPanel.annotations
+            .filter((item) => item.source_item_id === raw.source_item_id)
+            .findIndex((item) => item.annotation_id === annotationId) + 1
+        )
+      }}
+      onOpenOriginal={(annotationId) => void act.focusAnswerAnnotation(annotationId)}
+      testId="user-message-annotations"
+    />
+  )
   const confirmRewind = async (): Promise<void> => {
     if (item.rewindAnchor === undefined || restoring) return
     setRestoring(true)
@@ -4831,32 +6571,155 @@ function UserBubble({
   }
   return (
     <>
-      <div className="mb-[22px] flex justify-end">
-        <div className="relative grid w-full min-w-0 justify-items-end">
-          {steer && (
-            <div className="mx-[var(--vds-space-1)] mb-[6px] flex items-center justify-end gap-[7px] text-[9px] font-[650] uppercase tracking-[0.08em] text-[var(--text-3)]">
-              <span>{item.steerLabel}</span>
-              <span className="rounded-[5px] border border-[var(--accent)] px-[6px] py-px text-[9px] text-[var(--accent-ink)]">
-                {t('stream.steer')}
-              </span>
+      <div className="group/message mb-[22px] flex justify-end">
+        <div
+          className={cx(
+            'relative grid min-w-0 justify-items-end',
+            imageCount > 1 || hasFileAttachments
+              ? 'w-full max-w-full'
+              : 'w-max max-w-[var(--conversation-user-message-max)]'
+          )}
+        >
+          {(annotations.length > 0 ||
+            contextRefs.some(
+              (reference) => reference.anchor || reference.kind === 'pdf_comment'
+            )) && (
+            <ScrollArea
+              orientation="horizontal"
+              className="mb-[var(--vds-space-3)] min-w-0 max-w-full"
+              horizontalControls={{
+                previous: assistantText('attachments.scrollPrevious'),
+                next: assistantText('attachments.scrollNext'),
+                hoverOnly: true,
+              }}
+              viewportClassName="![scrollbar-width:none] [&::-webkit-scrollbar]:!hidden"
+            >
+              <div
+                data-testid="sent-context-layer-selections"
+                className="flex w-max min-w-full flex-nowrap items-center gap-[var(--vds-composer-attachment-gap)] empty:hidden"
+              >
+                {contextRefs
+                  .filter((reference) => reference.kind === 'pdf_comment')
+                  .map((reference) => (
+                    <PdfCommentReference
+                      key={reference.id}
+                      id={reference.id}
+                      sourceId={reference.sourceId}
+                      sourceRevision={reference.sourceRevision}
+                      label={reference.title}
+                      presentation="sent"
+                      testId="sent-pdf-comment"
+                    />
+                  ))}
+                {contextRefs.some(
+                  (reference) => reference.anchor && reference.kind !== 'pdf_comment'
+                ) && (
+                  <SelectionReferences
+                    references={contextRefs}
+                    label={contextSourceLabel}
+                    onOpen={openContextSource}
+                  />
+                )}
+                <AnnotationSummary
+                  presentation="sent"
+                  annotations={annotations}
+                  location={state.aiPanel.answerAnnotationFocus}
+                  numberForAnnotation={(annotationId, index) => {
+                    const raw = state.aiPanel.annotations.find(
+                      (item) => item.annotation_id === annotationId
+                    )
+                    if (!raw) return index + 1
+                    return (
+                      state.aiPanel.annotations
+                        .filter((item) => item.source_item_id === raw.source_item_id)
+                        .findIndex((item) => item.annotation_id === annotationId) + 1
+                    )
+                  }}
+                  onOpenOriginal={(annotationId) => void act.focusAnswerAnnotation(annotationId)}
+                  testId="user-message-annotations"
+                />
+              </div>
+            </ScrollArea>
+          )}
+          {imageCount > 0 && (
+            <div
+              data-testid="sent-context-layer-images"
+              className={cx(
+                'mb-[var(--vds-space-3)] min-w-0 max-w-full',
+                imageCount > 1 && 'w-full'
+              )}
+            >
+              <SentAttachments
+                imagesOnly
+                sourceLabel={(ref) => {
+                  const reference = displayRefs?.find((candidate) => candidate.id === ref.id)
+                  if (!reference?.sourceId) return undefined
+                  if (reference.kind === LITERATURE_CONTEXT_KIND)
+                    return assistantText('queue.kinds.literature')
+                  if (reference.kind === SESSION_CONTEXT_KIND)
+                    return assistantText('queue.kinds.session')
+                  return OPENABLE_RESOURCE_CONTEXT_KINDS.has(reference.kind ?? '')
+                    ? assistantText('queue.kinds.resource')
+                    : undefined
+                }}
+                refs={(displayRefs ?? []).flatMap<ComposerReference>((reference) =>
+                  reference.type === 'file' && reference.path
+                    ? [
+                        {
+                          type: 'file',
+                          id: reference.id,
+                          title: reference.title,
+                          path: reference.path,
+                          mediaType: reference.mediaType,
+                          previewSource:
+                            reference.sourceId && reference.kind === 'file' && project
+                              ? {
+                                  kind: 'project' as const,
+                                  project: project.id,
+                                  path: reference.sourceId,
+                                }
+                              : undefined,
+                          size: reference.size,
+                        },
+                      ]
+                    : []
+                )}
+              />
             </div>
           )}
-          <Message
-            text={item.text}
-            timestamp={item.startedAt}
-            steering={steer}
-            onCopy={writeDesktopClipboard}
-            onOpenExternal={(url) => window.scholarseed.openExternal(url)}
-            header={
-              <>
-                {item.refs?.some(
-                  (reference) =>
-                    (reference.type === 'file' || reference.type === 'directory') && reference.path
-                ) && (
-                  <div className="mb-[var(--vds-space-2)] flex w-full min-w-0 flex-wrap gap-[var(--vds-space-2)]">
+          {(hasFileAttachments ||
+            contextRefs.some(
+              (reference) => !reference.anchor && reference.kind !== 'pdf_comment'
+            )) && (
+            <ScrollArea
+              orientation="horizontal"
+              className="mb-[var(--vds-space-3)] min-w-0 max-w-full"
+              horizontalControls={{
+                previous: assistantText('attachments.scrollPrevious'),
+                next: assistantText('attachments.scrollNext'),
+                hoverOnly: true,
+              }}
+              viewportClassName="![scrollbar-width:none] [&::-webkit-scrollbar]:!hidden"
+            >
+              <div
+                data-testid="sent-context-layer-references"
+                className="flex w-max min-w-full flex-nowrap items-center gap-[var(--vds-composer-attachment-gap)] empty:hidden"
+              >
+                {hasFileAttachments && (
+                  <div data-testid="sent-context-layer-files" className="contents">
                     <SentAttachments
                       key={activeThread(state).sessionId}
-                      refs={item.refs.flatMap<ComposerReference>(
+                      sourceLabel={(ref) =>
+                        displayRefs?.some(
+                          (reference) =>
+                            reference.id === ref.id &&
+                            reference.kind === 'file' &&
+                            reference.sourceId
+                        )
+                          ? assistantText('queue.kinds.resource')
+                          : undefined
+                      }
+                      refs={(displayRefs ?? []).flatMap<ComposerReference>(
                         (reference): ComposerReference[] => {
                           if (!reference.path) return []
                           if (reference.type === 'directory')
@@ -4878,6 +6741,14 @@ function UserBubble({
                                 status: reference.status,
                                 path: reference.path,
                                 mediaType: reference.mediaType,
+                                previewSource:
+                                  reference.sourceId && reference.kind === 'file' && project
+                                    ? {
+                                        kind: 'project' as const,
+                                        project: project.id,
+                                        path: reference.sourceId,
+                                      }
+                                    : undefined,
                                 sha256: reference.sha256,
                                 size: reference.size,
                               },
@@ -4888,183 +6759,115 @@ function UserBubble({
                     />
                   </div>
                 )}
-                {canRewind && !confirming && (
-                  <Button
-                    unstyled
-                    type="button"
-                    className={cx(
-                      OUTLINE_HOVER_BUTTON_CLASS,
-                      'absolute right-[10px] top-[-10px] grid size-[24px] place-items-center rounded-[7px] border border-[var(--border)] bg-[var(--bg-2)] p-[var(--vds-space-0)] text-[var(--text-3)]'
-                    )}
-                    onClick={() => setConfirming(true)}
-                    data-testid="rewind-prompt"
-                    title={t('stream.rewindHere')}
-                    aria-label={t('stream.rewindHere')}
-                  >
-                    <Icon name="rewind" size={13} />
-                  </Button>
-                )}
-                {contextRefs.length > 0 ? (
-                  <div
-                    className="mb-[var(--vds-space-2)] flex flex-wrap justify-end gap-[var(--vds-space-1)]"
-                    data-testid="sent-context-references"
-                  >
-                    {contextRefs.map((reference) => {
-                      const selection = Boolean(reference.anchor)
-                      const canOpen = Boolean(
-                        reference.sourceId &&
-                        (project ||
-                          (reference.kind === LITERATURE_CONTEXT_KIND && reference.anchor))
-                      )
-                      const expanded = expandedReferenceId === reference.id
-                      if (reference.kind === SESSION_CONTEXT_KIND) {
+                {contextRefs.some(
+                  (reference) => !reference.anchor && reference.kind !== 'pdf_comment'
+                ) ? (
+                  <div className="contents" data-testid="sent-context-references">
+                    {contextRefs
+                      .filter((reference) => !reference.anchor && reference.kind !== 'pdf_comment')
+                      .map((reference) => {
+                        if (
+                          reference.kind === LITERATURE_CONTEXT_KIND &&
+                          !reference.anchor &&
+                          reference.sourceId
+                        )
+                          return (
+                            <LiteratureAttachment
+                              showActions
+                              key={reference.id}
+                              id={reference.sourceId}
+                              referenceId={reference.id}
+                              title={contextSourceLabel(reference)}
+                              onOpen={() => openContextSource(reference)}
+                            />
+                          )
+                        const canOpen = Boolean(
+                          reference.sourceId &&
+                          (project ||
+                            (reference.kind === LITERATURE_CONTEXT_KIND && reference.anchor))
+                        )
                         return (
-                          <SessionReference
-                            currentSessionId={activeThread(state).sessionId}
+                          <SentReferenceAttachment
                             key={reference.id}
-                            reference={reference}
+                            disabled={!canOpen}
+                            icon={
+                              <Icon
+                                name={reference.kind === LITERATURE_CONTEXT_KIND ? 'books' : 'doc'}
+                                size={12}
+                              />
+                            }
+                            label={contextSourceLabel(reference)}
+                            onOpen={() => openContextSource(reference)}
                           />
                         )
-                      }
-                      return selection ? (
-                        <div
-                          className="grid w-full justify-items-end gap-[var(--vds-space-1)]"
-                          key={reference.id}
-                        >
-                          <Button
-                            unstyled
-                            variant="ghost"
-                            size="content"
-                            className="inline-flex max-w-full items-center gap-[var(--vds-space-2)] rounded-[var(--vds-radius-4)] border border-[var(--vds-brand-light-border)] bg-[var(--vds-brand-light-bg-default)] px-[var(--vds-space-2)] py-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-brand-text-primary)]"
-                            aria-expanded={expanded}
-                            onClick={() => setExpandedReferenceId(expanded ? null : reference.id)}
-                          >
-                            <Icon name="quote" size={12} />
-                            <span className="max-w-[180px] overflow-hidden text-ellipsis whitespace-nowrap">
-                              {contextSourceLabel(reference)}
-                            </span>
-                            <span className="border-l border-[var(--vds-brand-light-border)] pl-[var(--vds-space-2)] text-[var(--vds-text-tertiary)]">
-                              {t('stream.fragment')}
-                            </span>
-                          </Button>
-                          {expanded ? (
-                            <Card
-                              className="w-full text-left"
-                              padding="sm"
-                              data-testid="sent-selection-reference"
-                            >
-                              <CardContent className="grid gap-[var(--vds-space-2)]">
-                                <div className="flex min-w-0 items-center gap-[var(--vds-space-2)]">
-                                  <Icon name="quote" size={13} />
-                                  <Button
-                                    unstyled
-                                    variant="link"
-                                    size="content"
-                                    disabled={!canOpen}
-                                    className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-left font-medium text-[var(--vds-text-primary)]"
-                                    onClick={() => openContextSource(reference)}
-                                  >
-                                    {contextSourceLabel(reference)}
-                                  </Button>
-                                  <IconButton
-                                    label={t('stream.collapseReference')}
-                                    icon={<Icon name="close" size={12} />}
-                                    size="sm"
-                                    variant="ghostIcon"
-                                    onClick={() => setExpandedReferenceId(null)}
-                                  />
-                                </div>
-                                <ScrollArea
-                                  className="max-h-[120px]"
-                                  viewportClassName="max-h-[120px] whitespace-pre-wrap break-words border-t border-[var(--vds-divider-default)] pt-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)]"
-                                >
-                                  {reference.anchor?.previewText || t('stream.unavailableFragment')}
-                                </ScrollArea>
-                              </CardContent>
-                            </Card>
-                          ) : null}
-                        </div>
-                      ) : (
-                        <Button
-                          key={reference.id}
-                          unstyled
-                          variant="outline"
-                          size="content"
-                          disabled={!canOpen}
-                          className="inline-flex max-w-full items-center gap-[var(--vds-space-1)] rounded-[var(--vds-radius-4)] border border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] px-[var(--vds-space-2)] py-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]"
-                          onClick={() => openContextSource(reference)}
-                        >
-                          <Icon
-                            name={reference.kind === LITERATURE_CONTEXT_KIND ? 'books' : 'doc'}
-                            size={12}
-                          />
-                          <span className="max-w-[180px] overflow-hidden text-ellipsis whitespace-nowrap">
-                            {contextSourceLabel(reference)}
-                          </span>
-                        </Button>
-                      )
-                    })}
+                      })}
                   </div>
                 ) : null}
-                {item.refs?.some(
-                  (reference) =>
-                    ((reference.type !== 'file' && reference.type !== 'directory') ||
-                      !reference.path) &&
-                    reference.type !== 'assistant_context'
-                ) && (
-                  <div className="mb-[var(--vds-space-2)] flex flex-wrap gap-[6px]">
-                    {item
-                      .refs!.filter(
-                        (reference) =>
-                          ((reference.type !== 'file' && reference.type !== 'directory') ||
-                            !reference.path) &&
-                          reference.type !== 'assistant_context'
-                      )
-                      .map((reference) => (
-                        <span
-                          key={reference.type + reference.id}
-                          className="inline-flex max-w-full items-center gap-[6px] rounded-lg border border-[var(--border)] bg-[var(--bg-2)] px-[var(--vds-space-2)] py-[2px] text-[10.5px]"
-                          title={t('stream.referenceSent', {
-                            type: reference.type,
-                            id: reference.id,
-                          })}
-                        >
-                          <span className="flex-none font-semibold text-[var(--accent-ink)]">
-                            {userMessageRefType(reference.type, t)}
-                          </span>
-                          <span className="max-w-[180px] overflow-hidden text-ellipsis whitespace-nowrap text-[var(--text-2)]">
-                            {reference.title}
-                          </span>
-                          {reference.status && (
-                            <span className="flex-none text-[9px] text-[var(--text-3)]">
-                              {reference.status}
-                            </span>
-                          )}
-                        </span>
-                      ))}
-                  </div>
-                )}
-              </>
-            }
+              </div>
+            </ScrollArea>
+          )}
+          <div
+            className={cx(
+              'relative min-w-0',
+              imageCount > 1 ? 'max-w-[var(--conversation-user-message-max)]' : 'max-w-full',
+              hasMessageText &&
+                'box-border w-auto overflow-hidden rounded-[var(--vds-radius-4)] bg-[var(--vds-other-overlay-1)] px-[15px] pb-[12px] pt-[11px]',
+              hasMessageText && steer && 'border border-dashed border-[var(--accent)]'
+            )}
+            data-testid={hasMessageText ? 'user-bubble' : undefined}
           >
-            <AnnotationSummary
-              annotations={annotations}
-              className="mt-[var(--vds-space-1)]"
-              location={state.aiPanel.answerAnnotationFocus}
-              numberForAnnotation={(annotationId, index) => {
-                const raw = state.aiPanel.annotations.find(
-                  (item) => item.annotation_id === annotationId
-                )
-                if (!raw) return index + 1
-                return (
-                  state.aiPanel.annotations
-                    .filter((item) => item.source_item_id === raw.source_item_id)
-                    .findIndex((item) => item.annotation_id === annotationId) + 1
-                )
-              }}
-              onOpenOriginal={(annotationId) => void act.focusAnswerAnnotation(annotationId)}
-              testId="user-message-annotations"
-            />
+            {canRewind && !confirming && (
+              <Button
+                unstyled
+                type="button"
+                className={cx(
+                  OUTLINE_HOVER_BUTTON_CLASS,
+                  'absolute right-[10px] top-[-10px] grid size-[24px] place-items-center rounded-[7px] border border-[var(--border)] bg-[var(--bg-2)] p-[var(--vds-space-0)] text-[var(--text-3)]'
+                )}
+                onClick={() => setConfirming(true)}
+                data-testid="rewind-prompt"
+                title={t('stream.rewindHere')}
+                aria-label={t('stream.rewindHere')}
+              >
+                <Icon name="rewind" size={13} />
+              </Button>
+            )}
+            <div className="flex min-w-0 flex-wrap items-center gap-[var(--vds-space-1)]">
+              {inlineRefs.map((reference) => (
+                <SentReferenceAttachment
+                  key={reference.type + reference.id}
+                  variant={reference.type === 'skill' ? 'text' : 'default'}
+                  icon={
+                    reference.type === 'skill' ? (
+                      <Hammer size={12} />
+                    ) : (
+                      userMessageRefType(reference.type, t)
+                    )
+                  }
+                  label={
+                    reference.type === 'skill'
+                      ? skillNames.names.get(reference.id) ||
+                        (skillNames.pending && reference.title === reference.id
+                          ? t(USER_REFERENCE_TYPE_LABELS.skill)
+                          : reference.title)
+                      : reference.title
+                  }
+                  status={reference.type === 'skill' ? undefined : reference.status}
+                  title={t('stream.referenceSent', {
+                    type: reference.type,
+                    id: reference.id,
+                  })}
+                />
+              ))}
+              {sessionRefs.map((reference) => (
+                <SessionReference
+                  currentSessionId={activeThread(state).sessionId}
+                  key={reference.id}
+                  reference={reference}
+                />
+              ))}
+              {hasMessageText && <UserMessageText text={displayText} />}
+            </div>
             {confirming &&
               createPortal(
                 <RewindConfirmation
@@ -5075,11 +6878,47 @@ function UserBubble({
                 />,
                 document.body
               )}
-          </Message>
+          </div>
+          {hasMessageText && item.text && (
+            <MessageActions alignEnd>
+              {sentAt !== undefined && Number.isFinite(sentAt) && (
+                <time
+                  dateTime={new Date(sentAt).toISOString()}
+                  className="text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-tertiary)]"
+                >
+                  {new Intl.DateTimeFormat(localization.resolvedLanguage ?? localization.language, {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  }).format(sentAt)}
+                </time>
+              )}
+              <CopyButton
+                type="button"
+                size="xs"
+                variant="ghostIcon"
+                value={displayText}
+                writeText={writeDesktopClipboard}
+                idleLabel={t('stream.copyMessage')}
+                copiedLabel={t('stream.copied')}
+                copiedIcon={<Check size={14} />}
+                showLoading={false}
+                statusStyle={false}
+                tooltip
+              >
+                <Copy size={14} />
+              </CopyButton>
+            </MessageActions>
+          )}
         </div>
       </div>
       {item.cancelled && (
-        <StatusLine item={{ kind: 'status', text: t('stream.stopped') }} showIcon={false} />
+        <StatusLine
+          item={{
+            kind: 'status',
+            text: '',
+            displayMessage: feedback('components', 'stream.stopped'),
+          }}
+        />
       )}
     </>
   )
@@ -5087,8 +6926,12 @@ function UserBubble({
 
 function InteractionReply({
   item,
+  expired = false,
+  copyAction,
 }: {
   item: Extract<ConvItem, { kind: 'interaction_reply' }>
+  expired?: boolean
+  copyAction?: React.ReactNode
 }): React.JSX.Element {
   const { i18n: localization } = useTranslation('literature')
   const { t: conversation } = useTranslation('conversation')
@@ -5101,17 +6944,168 @@ function InteractionReply({
     question && answer ? questionPolicy?.replyText?.(question, answer, localization) : undefined
   const replyTitle =
     question && answer ? questionPolicy?.replyTitle?.(question, answer, localization) : undefined
+  const declarative =
+    question && answer
+      ? declarativeAnswer(question, answer, {
+          submitted: conversation('reply.submitted'),
+          cancelled: conversation('reply.cancelled'),
+        })
+      : undefined
   const policyTitle =
     typeof questionPolicy?.title === 'function'
       ? questionPolicy.title(localization)
       : questionPolicy?.title
-  const title = replyTitle ?? policyTitle ?? conversation('reply.title')
+  const title = item.timedOut
+    ? conversation('clarification.timedOutTitle')
+    : (replyTitle ??
+      policyTitle ??
+      conversation(declarative === undefined ? 'reply.title' : 'reply.decision'))
+  const receiptText = item.timedOut
+    ? conversation('clarification.timedOut')
+    : item.freeText || replyText
+  if (questionPolicy?.renderReply)
+    return (
+      <>
+        {questionPolicy.renderReply(item)}
+        {copyAction}
+      </>
+    )
+  if (!questionPolicy && !expired && item.questions.every(canReplayQuestionForm)) {
+    const copyValue = [item.freeText, ...Object.values(item.answers)].filter(Boolean).join('\n\n')
+    const skipped =
+      !item.timedOut &&
+      !item.freeText &&
+      !Object.values(item.answers).some((answer) => answer.trim())
+    return (
+      <ExecutionBatch
+        label={
+          item.timedOut
+            ? title
+            : conversation(skipped ? 'reply.skippedSummary' : 'reply.confirmedSummary')
+        }
+        warning={item.timedOut ? receiptText : skipped ? conversation('reply.skipped') : undefined}
+        icon={
+          <IconFont type="line-tool-batch-follow-up" className="text-[length:var(--vds-icon-6)]" />
+        }
+        expanded={open}
+        onExpandedChange={setOpen}
+      >
+        <div
+          data-testid="interaction-reply"
+          data-interaction-request-id={item.requestId}
+          className="mt-[var(--vds-space-2)] w-full min-w-0 max-w-[var(--vds-conversation-interaction-reply-max-width)] rounded-[var(--vds-radius-6)] border border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] p-[var(--vds-space-4)]"
+        >
+          <div className="mb-[var(--vds-space-3)] flex items-center gap-[var(--vds-space-2)] text-[var(--vds-text-primary)]">
+            <IconFont
+              type="line-tool-batch-follow-up"
+              className="text-[length:var(--vds-icon-7)]"
+            />
+            <span className="text-[length:var(--vds-font-body-lv1)] font-[number:var(--vds-fw-regular)]">
+              {conversation('reply.title')}
+            </span>
+            {skipped && (
+              <span className="text-[var(--vds-text-tertiary)]">
+                {conversation('clarification.skipped')}
+              </span>
+            )}
+            <span className="ml-auto text-right text-[length:var(--vds-font-body-lv1)] !font-[var(--vds-fw-regular)] text-[var(--vds-text-tertiary)]">
+              {conversation('reply.readOnly')}
+            </span>
+            {!item.timedOut && copyValue && (
+              <CopyButton
+                iconOnly
+                icon={<Copy />}
+                copiedIcon={<Check />}
+                size="xs"
+                variant="ghostIcon"
+                value={copyValue}
+                writeText={writeDesktopClipboard}
+                tooltip
+                data-testid="interaction-reply-copy"
+              />
+            )}
+          </div>
+          {item.freeText && (
+            <p className="whitespace-pre-wrap text-[var(--vds-text-secondary)] [overflow-wrap:anywhere]">
+              {item.freeText}
+            </p>
+          )}
+          {item.questions.map((question, index) => {
+            const key = question.id || question.header || question.question
+            const answer = item.timedOut ? undefined : item.answers[key]
+            const replay = replayQuestionAnswer(
+              question,
+              answer,
+              item.timedOut ? undefined : item.answerDetails?.[key]
+            )
+            return (
+              <div
+                key={question.id || index}
+                className="mb-[var(--vds-space-3)] grid min-w-0 gap-[var(--vds-space-3)]"
+              >
+                <div className="flex min-w-0 items-start justify-between gap-[var(--vds-space-2)]">
+                  <div className="min-w-0 flex-1 text-[var(--vds-text-primary)] [overflow-wrap:anywhere]">
+                    <QuestionPrompt presentation={question.presentation}>
+                      {index + 1}. {question.question}
+                    </QuestionPrompt>
+                  </div>
+                  {!answer && !item.timedOut && !item.freeText && (
+                    <Tag size="small" tone="neutral" className="shrink-0">
+                      {conversation('reply.skipped')}
+                    </Tag>
+                  )}
+                </div>
+                {question.options.length > 0 && (
+                  <div
+                    aria-label={question.header || question.question}
+                    role={question.multiSelect ? 'group' : 'radiogroup'}
+                    className="grid min-w-0 gap-[var(--vds-space-3)]"
+                  >
+                    {question.options.map((option, position) => (
+                      <QuestionOption
+                        key={position}
+                        {...option}
+                        checked={replay.option_indices.includes(position)}
+                        disabled
+                        readOnly
+                        multiSelect={question.multiSelect}
+                      />
+                    ))}
+                  </div>
+                )}
+                <Textarea
+                  aria-label={
+                    question.options.length
+                      ? conversation('clarification.supplement')
+                      : question.question
+                  }
+                  className="w-full !resize-none [field-sizing:content]"
+                  placeholder={conversation('reply.emptyText')}
+                  rows={2}
+                  readOnly
+                  value={replay.text}
+                />
+              </div>
+            )
+          })}
+        </div>
+        {copyAction}
+      </ExecutionBatch>
+    )
+  }
   const rows = item.questions.map((question) => {
     const key = question.id || question.header || question.question
-    const answer = item.answers[key]
+    const answer = item.answers[key]?.trim()
     const presented = questionPolicy?.presentQuestion?.(question, localization)
+    const values = expired ? undefined : submittedPluginValues(question, answer)
+    const replay =
+      values && question.component
+        ? { reference: question.component, data: question.componentData ?? {}, values }
+        : undefined
     return {
       question: presented?.question ?? question.question,
+      presentation: question.presentation,
+      replay,
       multiSelect: question.multiSelect,
       options: question.options.map((option, index) => ({
         label:
@@ -5122,93 +7116,115 @@ function InteractionReply({
           .split(', ')
           .includes(questionPolicy?.optionLabel?.(option) ?? option.label),
       })),
-      answer: answer
-        ? (questionPolicy?.presentAnswer?.(question, answer, localization) ?? answer)
-        : conversation('reply.skipped'),
+      answer: replay
+        ? conversation('reply.submitted')
+        : answer
+          ? (questionPolicy?.presentAnswer?.(question, answer, localization) ??
+            declarativeAnswer(question, answer, {
+              submitted: conversation('reply.submitted'),
+              cancelled: conversation('reply.cancelled'),
+            }) ??
+            answer)
+          : undefined,
     }
   })
+  const skipped = !item.freeText && !Object.values(item.answers).some((answer) => answer.trim())
   return (
-    <div
-      className="mt-[var(--vds-space-2)] mb-[var(--vds-space-5)] flex justify-start"
-      data-testid="interaction-reply"
-      data-interaction-request-id={item.requestId}
+    <ExecutionBatch
+      label={
+        expired
+          ? conversation('reply.expiredSummary')
+          : item.timedOut
+            ? title
+            : questionPolicy
+              ? (replyText ?? title)
+              : conversation(skipped ? 'reply.skippedSummary' : 'reply.confirmedSummary')
+      }
+      icon={
+        <IconFont type="line-tool-batch-follow-up" className="text-[length:var(--vds-icon-6)]" />
+      }
+      expanded={open}
+      onExpandedChange={setOpen}
+      warning={
+        item.timedOut
+          ? conversation('clarification.timedOut')
+          : skipped && !expired
+            ? conversation('reply.skipped')
+            : undefined
+      }
     >
-      <Collapsible
-        open={open}
-        onOpenChange={setOpen}
-        className="w-full min-w-0 max-w-[var(--vds-conversation-interaction-reply-max-width)] !gap-0 rounded-[var(--vds-radius-6)] border border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)]"
+      <div
+        data-testid="interaction-reply"
+        data-interaction-request-id={item.requestId}
+        className="grid w-full min-w-0 max-w-[var(--vds-conversation-interaction-reply-max-width)] gap-[var(--vds-space-4)] rounded-[var(--vds-radius-6)] border border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] p-[var(--vds-space-4)]"
       >
-        <CollapsibleTrigger asChild>
-          <Button
-            unstyled
-            aria-label={conversation('reply.toggleDetails')}
-            className="!grid w-full min-w-0 cursor-pointer !gap-[var(--vds-space-3)] !rounded-[var(--vds-radius-6)] !border-0 !bg-transparent !p-[var(--vds-space-4)] text-left focus-visible:shadow-[var(--vds-focus-brand)]"
-          >
-            <span className="flex min-w-0 items-center gap-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] text-[var(--vds-text-secondary)]">
-              <IconFont
-                type="line-tool-batch-follow-up"
-                className="shrink-0 text-[length:var(--vds-icon-6)]"
-              />
-              <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{title}</span>
-              <ChevronRight
-                aria-hidden="true"
-                className={cx('size-[var(--vds-icon-5)] shrink-0', open && 'rotate-90')}
-              />
+        <div className="flex min-w-0 items-center gap-[var(--vds-space-2)] text-[var(--vds-text-secondary)]">
+          <IconFont type="line-tool-batch-follow-up" className="text-[length:var(--vds-icon-7)]" />
+          <span className="text-[length:var(--vds-font-body-lv1)] font-[number:var(--vds-fw-regular)]">
+            {title}
+          </span>
+          {!expired && (
+            <span className="ml-auto text-right text-[length:var(--vds-font-body-lv1)] !font-[var(--vds-fw-regular)] text-[var(--vds-text-tertiary)]">
+              {conversation('reply.readOnly')}
             </span>
-            {replyText ? (
-              <span className="whitespace-pre-wrap text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-tertiary)] [overflow-wrap:anywhere]">
-                {replyText}
-              </span>
-            ) : (
-              !open &&
-              rows.map((row, index) => (
-                <span
-                  key={`${row.question}:${index}`}
-                  className="grid min-w-0 gap-[var(--vds-space-1)]"
-                  aria-label={conversation('reply.answerLabel', row)}
-                >
-                  <span className="text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-primary)] [overflow-wrap:anywhere]">
-                    {index + 1}. {row.question}
-                  </span>
-                  <span className="whitespace-pre-wrap text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-tertiary)] [overflow-wrap:anywhere]">
-                    {row.answer}
-                  </span>
-                </span>
-              ))
-            )}
-          </Button>
-        </CollapsibleTrigger>
-        <CollapsibleContent className="grid min-w-0 gap-[var(--vds-space-4)] !rounded-none !border-0 !bg-transparent !p-[var(--vds-space-4)] !pt-0">
-          <p className="m-0 text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-tertiary)]">
-            {conversation('reply.readOnly')}
-          </p>
-          {rows.map((row, index) => (
-            <div
-              key={index}
-              className="grid min-w-0 gap-[var(--vds-space-2)]"
-              aria-label={conversation('reply.answerLabel', row)}
-            >
-              <div className="text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-primary)] [overflow-wrap:anywhere]">
-                {index + 1}. {row.question}
+          )}
+        </div>
+        {receiptText && (
+          <p className="m-0 whitespace-pre-wrap text-[var(--vds-text-tertiary)]">{receiptText}</p>
+        )}
+        {rows.map((row, index) => (
+          <div
+            key={index}
+            className="grid min-w-0 gap-[var(--vds-space-2)]"
+            aria-label={
+              expired
+                ? undefined
+                : conversation('reply.answerLabel', {
+                    question: row.question,
+                    answer: row.answer ?? conversation('reply.skipped'),
+                  })
+            }
+          >
+            <div className="flex min-w-0 items-start justify-between gap-[var(--vds-space-2)]">
+              <div className="min-w-0 flex-1 text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-primary)] [overflow-wrap:anywhere]">
+                <QuestionPrompt presentation={row.presentation}>
+                  {index + 1}. {row.question}
+                </QuestionPrompt>
               </div>
-              {row.options.map((option, optionIndex) => (
-                <QuestionOption
-                  key={optionIndex}
-                  {...option}
-                  disabled
-                  readOnly
-                  multiSelect={row.multiSelect}
-                  onSelect={() => undefined}
-                />
-              ))}
+              {!expired && !row.answer && (
+                <Tag size="small" tone="neutral" className="shrink-0">
+                  {conversation('reply.skipped')}
+                </Tag>
+              )}
+            </div>
+            {row.options.map((option, optionIndex) => (
+              <QuestionOption
+                key={optionIndex}
+                {...option}
+                disabled
+                readOnly
+                multiSelect={row.multiSelect}
+              />
+            ))}
+            {row.replay && (
+              <PluginInteraction
+                reference={row.replay.reference}
+                data={row.replay.data}
+                submittedValues={row.replay.values}
+                status="resolved"
+                onAction={() => undefined}
+              />
+            )}
+            {!expired && row.answer && (
               <p className="m-0 whitespace-pre-wrap text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-tertiary)] [overflow-wrap:anywhere]">
                 {row.answer}
               </p>
-            </div>
-          ))}
-        </CollapsibleContent>
-      </Collapsible>
-    </div>
+            )}
+          </div>
+        ))}
+      </div>
+      {copyAction}
+    </ExecutionBatch>
   )
 }
 
@@ -5322,26 +7338,66 @@ async function writeDesktopClipboard(text: string): Promise<void> {
   await navigator.clipboard.writeText(text)
 }
 
+function EmptyTurn({ turnId }: { turnId: string }): React.JSX.Element {
+  const { t } = useTranslation('conversation')
+  const { state, composerSubmission, composerDraft } = useApp()
+  const readySession = React.useSyncExternalStore(
+    composerSubmission.subscribe,
+    composerSubmission.getSnapshot
+  )
+  const composerText = React.useSyncExternalStore(
+    composerDraft.subscribe,
+    composerDraft.getSnapshot
+  )
+  const owner = activeThread(state)
+  const allowed =
+    readySession === owner.sessionId &&
+    !state.foregroundError &&
+    !composerText.length &&
+    canRetryEmptyTurn(owner, turnId)
+  const current = useRef({ owner, allowed })
+  current.current = { owner, allowed }
+  const retry = async (): Promise<boolean> => {
+    const snapshot = current.current
+    if (
+      !snapshot.allowed ||
+      !snapshot.owner.sessionId ||
+      snapshot.owner.sessionId !== owner.sessionId
+    )
+      return false
+    return composerSubmission.submit(
+      snapshot.owner.sessionId,
+      `empty-answer:${turnId}`,
+      t('answer.retryPrompt')
+    )
+  }
+  return <EmptyAnswer onRetry={allowed ? retry : undefined} />
+}
+
 function AgentMsg({
   citationEnabled,
+  latest,
   copyEnabled,
   forkEnabled,
   item,
+  sourcesContent,
   trailingContent,
   selectionEnabled,
   timing,
 }: {
   citationEnabled: boolean
+  latest: boolean
   copyEnabled: boolean
   forkEnabled: boolean
   item: Extract<ConvItem, { kind: 'agent' }>
+  sourcesContent?: React.ReactNode
   trailingContent?: React.ReactNode
   selectionEnabled: boolean
   timing?: TurnTiming
 }): React.JSX.Element {
   const { t } = useTranslation('components')
-  const { t: conversation } = useTranslation('conversation')
   const { state, set, act } = useApp()
+  const owner = activeThread(state)
   const copyItems = useContext(CopyItemsContext)
   const sessionId = useContext(CopySessionContext)
   const copyAnswer = useContext(AnswerCopyContext)
@@ -5365,27 +7421,10 @@ function AgentMsg({
     setForking(true)
     setForkError(null)
     try {
-      const opened = await openSession({ forkSessionId: sourceSessionId, forkTurnId: item.turnId })
-      if (!opened?.session_id) {
+      if (!(await act.forkSession(sourceSessionId, item.turnId))) {
         setForkError(t('stream.forkFailed'))
         return
       }
-      set((current) => ({
-        ...current,
-        sessions: [
-          {
-            id: opened.session_id,
-            title: opened.title ?? '',
-            title_fallback: opened.title_fallback,
-            status: 'dormant',
-            projectPath: opened.project_path,
-            workdir: opened.runtime_workdir ?? opened.workdir,
-            runtimeId: opened.runtime_id,
-          },
-          ...current.sessions,
-        ],
-      }))
-      act.openSession(opened.session_id)
     } finally {
       forkPending.current = false
       setForking(false)
@@ -5395,12 +7434,15 @@ function AgentMsg({
     timing?.completedAt === undefined
       ? null
       : turnDurationLabel(timing.startedAt, timing.completedAt)
+  const empty = !visibleMarkdownText(item.text).trim()
   return (
-    <div style={{ display: 'flex', gap: 11, marginBottom: 28 }}>
+    <div className="group/message" style={{ display: 'flex', gap: 11, marginBottom: 28 }}>
       <div style={{ flex: 1, minWidth: 0 }}>
-        {item.text ? (
-          <div className="motion-safe:animate-[vds-answer-in_var(--vds-duration-fast)_var(--vds-ease-standard)_both]">
+        {!empty ? (
+          <div className="motion-safe:animate-[vds-answer-in_var(--vds-duration-fast)_var(--vds-ease-standard)_backwards]">
             <AnnotatedAnswer
+              loadRemoteImage={loadAnswerImage}
+              pending={Boolean(item.turnId && owner.turnOutcomes?.[item.turnId] === 'running')}
               citationEnabled={citationEnabled}
               text={item.text}
               eventSeq={item.eventSeq}
@@ -5410,16 +7452,21 @@ function AgentMsg({
               messageId={item.itemId ? `item:${item.itemId}` : null}
               answerSources={item.answerSources}
               answerCoverage={item.answerCoverage}
+              showSources={!item.turnId}
               citationPending={!citationEnabled}
-              markdownClassName="!text-[length:var(--vds-font-body-lv2)]"
+              markdownClassName="!text-[length:var(--vds-font-body-lv2)] !leading-[var(--vds-conversation-answer-line-height)]"
             />
+            {sourcesContent}
             {trailingContent}
           </div>
         ) : (
-          trailingContent
+          <>
+            {isEmptyAnswer(owner, item) ? <EmptyTurn turnId={item.turnId!} /> : null}
+            {trailingContent}
+          </>
         )}
         {item.text && copyEnabled && (
-          <div className={MESSAGE_ACTIONS_CLASS}>
+          <MessageActions latest={latest}>
             {mergeCards ? (
               <ReplyCopy items={copyItems} turnId={item.turnId!} sessionId={sessionId} />
             ) : (
@@ -5454,19 +7501,8 @@ function AgentMsg({
                 />
               </Tooltip>
             ) : null}
-            {duration ? (
-              <Tooltip content={conversation('turn.duration', { duration })} portalled>
-                <span
-                  aria-label={conversation('turn.duration', { duration })}
-                  className="text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-tertiary)]"
-                  data-testid="turn-duration"
-                  tabIndex={0}
-                >
-                  {duration}
-                </span>
-              </Tooltip>
-            ) : null}
-          </div>
+            <TurnDuration timing={timing} />
+          </MessageActions>
         )}
         {forkError ? (
           <p role="alert" className="text-[var(--vds-error-text-primary)]">
@@ -5489,6 +7525,35 @@ function AgentMsg({
   )
 }
 
+function isUserStoppedStatus(item: ConvItem): boolean {
+  return (
+    item.kind === 'status' &&
+    (item.text === LEGACY_USER_STOPPED_STATUS ||
+      (typeof item.displayMessage === 'object' &&
+        item.displayMessage?.ns === 'components' &&
+        item.displayMessage.key === 'stream.stopped'))
+  )
+}
+
+function TurnDuration({ timing }: { timing?: TurnTiming }): React.JSX.Element | null {
+  const { t } = useTranslation('conversation')
+  if (timing?.completedAt === undefined) return null
+  const duration = turnDurationLabel(timing.startedAt, timing.completedAt)
+  const label = t('turn.duration', { duration })
+  return (
+    <Tooltip content={label} portalled>
+      <span
+        aria-label={label}
+        className="text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-tertiary)]"
+        data-testid="turn-duration"
+        tabIndex={0}
+      >
+        {duration}
+      </span>
+    </Tooltip>
+  )
+}
+
 function StatusLine({
   item,
   showIcon = true,
@@ -5499,32 +7564,53 @@ function StatusLine({
   const { t, i18n } = useTranslation('components')
   const { t: conversation } = useTranslation('conversation')
   const { state } = useApp()
-  const userStopped = item.hideIcon || item.text === LEGACY_USER_STOPPED_STATUS
+  const userStopped = isUserStoppedStatus(item)
+  if (
+    typeof item.displayMessage === 'object' &&
+    item.displayMessage?.ns === 'components' &&
+    item.displayMessage.key === 'stream.interrupted'
+  )
+    return (
+      <Alert
+        tone="warning"
+        role="status"
+        aria-live="polite"
+        data-testid="task-interrupted-card"
+        className="mb-[var(--vds-space-3)] w-full"
+        layout="stacked"
+        title={t('stream.interruptedTitle')}
+        description={t('stream.interruptedDescription')}
+      />
+    )
+  if (userStopped)
+    return (
+      <Alert
+        tone="warning"
+        layout="inline"
+        description={t('stream.stopped')}
+        role="status"
+        data-testid="user-stopped-card"
+        className="mt-[var(--vds-space-1)] mb-[var(--vds-stream-stopped-margin-bottom)] w-full"
+      />
+    )
   return (
     <div
       className="mb-[var(--vds-space-5)] flex flex-wrap items-start gap-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-stream-content-line-height)] text-[var(--vds-text-secondary)]"
       role="status"
     >
-      {showIcon && !userStopped ? (
+      {showIcon && !item.hideIcon ? (
         <IconFont type="fill-status-tips" className="shrink-0 leading-[22px]" />
       ) : null}
-      <span
-        className={cx(
-          'min-w-0 flex-1 [overflow-wrap:anywhere]',
-          userStopped && 'text-[length:var(--vds-font-body-lv2)]'
-        )}
-      >
-        {userStopped
-          ? t('stream.stopped')
-          : item.displayMessage
-            ? renderFeedback(i18n, item.displayMessage)
-            : item.runtimeNotice
-              ? conversation('runtime.legacyNotice', {
-                  detail: conversation('runtime.nonterminal'),
-                })
-              : typeof item.text === 'string'
-                ? item.text
-                : formatRuntimeStatus(item.text, conversation)}
+      <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
+        {item.displayMessage
+          ? renderFeedback(i18n, item.displayMessage)
+          : item.runtimeNotice
+            ? conversation('runtime.legacyNotice', {
+                detail: conversation('runtime.nonterminal'),
+              })
+            : typeof item.text === 'string'
+              ? item.text
+              : formatRuntimeStatus(item.text, conversation)}
       </span>
       {item.runtimeAction === 'retry_session_resume' && item.actionSessionId ? (
         <Button
@@ -5572,8 +7658,8 @@ function ErrorCard({
   item: Extract<ConvItem, { kind: 'error' }>
   onContinue: (item: Extract<ConvItem, { kind: 'error' }>) => Promise<void>
 }): React.JSX.Element {
-  const { i18n } = useTranslation('components')
-  const { state, act } = useApp()
+  const { t, i18n } = useTranslation('components')
+  const { state, set, act } = useApp()
   const recoveryThread = activeThread(state)
   const authenticationFailed = item.failure?.kind === 'auth'
   const { authenticated } = useAccountAccess(state.backendReady && authenticationFailed)
@@ -5601,9 +7687,14 @@ function ErrorCard({
     }
   }, [recoveryThread, item, recoveryModelKey, onContinue])
   const authenticationAction = authenticationRecoveryAction(item, recoveryModel, authenticated)
+  const selectionBlocked = Boolean(
+    recoveryThread.sessionId &&
+    modelSelectionBlocked(state.serviceInstanceId, recoveryThread.sessionId)
+  )
   const recoveryAvailable =
     item.runtimeAction === 'continue_turn' || item.runtimeAction === 'confirm_turn_unknown'
-      ? canContinueFailedTurn(recoveryThread, { ...item, actionState: 'idle' })
+      ? (item.runtimeAction !== 'continue_turn' || !selectionBlocked) &&
+        canContinueFailedTurn(recoveryThread, { ...item, actionState: 'idle' })
       : canOfferTurnRecovery(recoveryThread)
   const { t: conversation } = useTranslation('conversation')
   const recoverAuthentication = async (continueRequested: boolean): Promise<void> => {
@@ -5650,6 +7741,126 @@ function ErrorCard({
     : item.turnUnknown
       ? formatTurnUnknown(item, conversation)
       : formatTurnFailure(item, conversation)
+  const confirming = item.actionState === 'submitting'
+  const continuing = item.runtimeAction === 'continue_turn' && item.actionState === 'submitting'
+  const continueUnknown =
+    item.runtimeAction === 'continue_turn' && item.actionState === 'outcome_unknown'
+  const turnUnknown = item.runtimeAction === 'confirm_turn_unknown'
+  const recoverableFailure = isRecoverableTurnFailure(item)
+  const failureDescription =
+    item.failure?.kind === 'unknown'
+      ? failureText.action
+      : failureText.action && failureText.action !== failureText.message
+        ? `${failureText.message} ${failureText.action}`
+        : failureText.message || failureText.action
+  if (turnUnknown) {
+    return (
+      <Alert
+        action={
+          recoveryAvailable ? (
+            <Button
+              data-testid="turn-unknown-continue"
+              disabled={confirming || item.actionState === 'outcome_unknown'}
+              loading={confirming}
+              loadingIcon={<Spinner imageSrc={aiThinking} size="sm" aria-hidden="true" />}
+              onClick={() => void onContinue(item)}
+              size="sm"
+              variant="outline"
+            >
+              {item.actionState === 'outcome_unknown'
+                ? t('stream.continuePending')
+                : t('stream.continueInterrupted')}
+            </Button>
+          ) : null
+        }
+        className="mb-[var(--vds-space-3)] w-full"
+        data-testid="turn-interrupted-notice"
+        layout="stacked"
+        title={failureText.title}
+        tone="warning"
+      >
+        <AlertDescription truncate={false}>{failureDescription}</AlertDescription>
+        {item.actionError ? (
+          <span className="text-[var(--vds-error-text-primary)]">
+            {item.actionErrorMessage
+              ? formatApplicationRequestFailure(item.actionErrorMessage, conversation)
+              : renderFeedback(i18n, item.actionError)}
+          </span>
+        ) : null}
+      </Alert>
+    )
+  }
+  if (item.failure?.kind === 'credits') {
+    return (
+      <Alert
+        className="mb-[var(--vds-space-5)] w-full !rounded-[var(--vds-radius-6)]"
+        data-testid="turn-credits-exhausted"
+        layout="stacked"
+        tone="warning"
+        title={failureText.message}
+      >
+        <AlertDescription truncate={false}>{failureText.action}</AlertDescription>
+      </Alert>
+    )
+  }
+  if (recoverableFailure) {
+    return (
+      <Alert
+        className="mb-[var(--vds-space-5)] w-full flex-wrap !items-center !rounded-[var(--vds-radius-5)] [--vds-alert-background:var(--vds-stream-error-bg)] [--vds-alert-border:var(--vds-stream-error-border)] [--vds-alert-icon-color:var(--vds-stream-error-text)]"
+        data-testid="turn-recoverable-notice"
+        layout="inline"
+        icon={<TriangleAlert className="size-[var(--vds-icon-8)]" aria-hidden />}
+        tone="warning"
+        action={
+          recoveryAvailable ? (
+            <div className="flex flex-wrap items-center gap-[var(--vds-space-2)]">
+              <Button
+                data-testid="turn-continue"
+                disabled={continuing || continueUnknown}
+                loading={continuing}
+                loadingIcon={<Spinner imageSrc={aiThinking} size="sm" aria-hidden="true" />}
+                onClick={() => void onContinue(item)}
+                size="sm"
+                variant="ghost"
+              >
+                {continueUnknown
+                  ? t('stream.continuePending')
+                  : item.failure?.kind === 'connection' || item.failure?.kind === 'unknown'
+                    ? t('stream.continueInterrupted')
+                    : conversation('failure.retry')}
+              </Button>
+              <Button
+                data-testid="turn-switch-model"
+                disabled={continuing || continueUnknown}
+                onClick={() => set({ modelMenuOpen: true })}
+                size="sm"
+                variant="outline"
+              >
+                {conversation('failure.switchModel')}
+              </Button>
+            </div>
+          ) : null
+        }
+      >
+        <AlertTitle className="!font-[var(--vds-fw-regular)] !text-[var(--vds-stream-error-text)]">
+          {item.failure?.kind === 'unknown'
+            ? conversation('failure.interrupted.message')
+            : failureText.message}
+        </AlertTitle>
+        <AlertDescription truncate={false}>{failureText.action}</AlertDescription>
+        {item.actionError ? (
+          <span
+            className="col-span-full break-words text-[var(--vds-error-text-primary)]"
+            data-testid="turn-continue-error"
+          >
+            {item.actionErrorMessage
+              ? formatApplicationRequestFailure(item.actionErrorMessage, conversation)
+              : renderFeedback(i18n, item.actionError)}
+          </span>
+        ) : null}
+      </Alert>
+    )
+  }
   return (
     <Failure
       item={item}

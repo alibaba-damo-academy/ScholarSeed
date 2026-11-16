@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { createInitialPageStep, installRecorderProbe } from './probe.ts'
+import { API_DIAGNOSTIC_HEADER } from '../../../../requests.ts'
 import type { NetworkRecord, RecordedStep } from './model.ts'
 
 class FakeXhr extends EventTarget {
@@ -369,6 +370,111 @@ test('click steps include page path, semantic locator, container chain and geome
       delete (globalThis as Record<string, unknown>)[key]
     }
   }
+})
+
+test('recording correlates only its own Serve fetches and preserves request semantics', async (context) => {
+  let observerCallback: PerformanceObserverCallback | undefined
+  let disconnected = false
+  const previousObserver = Object.getOwnPropertyDescriptor(globalThis, 'PerformanceObserver')
+  class TimingObserver {
+    constructor(callback: PerformanceObserverCallback) {
+      observerCallback = callback
+    }
+    observe(options: PerformanceObserverInit) {
+      assert.equal(options.type, 'resource')
+    }
+    disconnect() {
+      disconnected = true
+    }
+  }
+  const calls: { input: RequestInfo | URL; init?: RequestInit }[] = []
+  const originalFetch: typeof fetch = async (input, init) => {
+    calls.push({ input, init })
+    return new Response('{}', { headers: { 'content-type': 'application/json' } })
+  }
+  const documentTarget = Object.assign(new EventTarget(), { title: 'ScholarSeed' })
+  const windowTarget = Object.assign(new EventTarget(), {
+    location: { href: 'http://127.0.0.1:5173/' },
+    scholarseed: { getApiBase: () => 'http://127.0.0.1:8000' },
+    fetch: originalFetch,
+    setTimeout,
+    clearTimeout,
+  })
+  const historyValue = { pushState: () => undefined, replaceState: () => undefined }
+  Object.defineProperties(globalThis, {
+    window: { configurable: true, value: windowTarget },
+    document: { configurable: true, value: documentTarget },
+    history: { configurable: true, value: historyValue },
+    XMLHttpRequest: { configurable: true, value: FakeXhr },
+    PerformanceObserver: { configurable: true, value: TimingObserver },
+  })
+  context.after(() => {
+    for (const key of ['window', 'document', 'history', 'XMLHttpRequest']) {
+      delete (globalThis as Record<string, unknown>)[key]
+    }
+    if (previousObserver) Object.defineProperty(globalThis, 'PerformanceObserver', previousObserver)
+    else delete (globalThis as Record<string, unknown>).PerformanceObserver
+  })
+  const requests = new Map<string, NetworkRecord>()
+  const lease = installRecorderProbe({
+    startedAtMs: Date.now(),
+    latestStep: () => undefined,
+    onStep: () => undefined,
+    onRequest: (request) => requests.set(request.requestId, request),
+  })
+  context.after(() => lease.dispose())
+  const signal = new AbortController().signal
+  const input = new Request('http://127.0.0.1:8000/api/probe', {
+    method: 'POST',
+    body: '{}',
+    headers: { 'content-type': 'application/json' },
+    signal,
+  })
+  await windowTarget.fetch(input)
+  const headers = new Headers(calls[0]?.init?.headers)
+  const correlation = headers.get(API_DIAGNOSTIC_HEADER)
+  assert.match(correlation || '', /^[a-f0-9]{32}$/)
+  assert.equal(headers.get('content-type'), 'application/json')
+  assert.equal(calls[0]?.input, input)
+  assert.equal(input.signal.aborted, false)
+  const externalInit = { headers: { accept: 'application/json' } }
+  await windowTarget.fetch('https://example.test/api/probe', externalInit)
+  await windowTarget.fetch('http://127.0.0.1:8000/not-api', externalInit)
+  assert.equal(calls[1]?.init, externalInit)
+  assert.equal(calls[2]?.init, externalInit)
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  const own = [...requests.values()].find((request) => request.correlationId)
+  assert.equal(own?.correlationId, correlation)
+  assert.equal(own?.timing?.state, 'unavailable')
+  assert.equal(performance.getEntriesByName(input.url, 'resource').length, 0)
+  observerCallback?.(
+    {
+      getEntries: () => [
+        {
+          name: input.url,
+          startTime: own!.timing!.fetchCalledAt,
+          requestStart: own!.timing!.fetchCalledAt,
+          responseStart: own!.timing!.fetchSettledAt,
+          responseEnd: own!.timing!.fetchSettledAt + 1,
+          connectStart: 0,
+          connectEnd: 0,
+        },
+      ],
+    } as unknown as PerformanceObserverEntryList,
+    {} as PerformanceObserver
+  )
+  assert.equal(requests.get(own!.requestId)?.timing?.state, 'available')
+  await Promise.all([
+    windowTarget.fetch('http://127.0.0.1:8000/api/parallel'),
+    windowTarget.fetch('http://127.0.0.1:8000/api/parallel'),
+  ])
+  const parallel = [...requests.values()].filter((request) => request.url.endsWith('/parallel'))
+  assert.equal(parallel.length, 2)
+  assert.ok(parallel.every((request) => request.timing?.state === 'ambiguous'))
+  lease.dispose()
+  assert.equal(disconnected, true)
+  await windowTarget.fetch('http://127.0.0.1:8000/api/probe', externalInit)
+  assert.equal(calls.at(-1)?.init, externalInit)
 })
 
 test('fetch probe records ordinary response data and a reliable recent-step association', async () => {

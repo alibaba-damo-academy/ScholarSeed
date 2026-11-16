@@ -22,9 +22,15 @@ import state as search_state  # noqa: E402
 def main():
     parser = argparse.ArgumentParser(description="Run one Quick-mode paper search")
     parser.add_argument("--query", required=True)
+    parser.add_argument("--input", help="project candidate snapshot")
     parser.add_argument("--plan", help="JSON plan path (alternative to inline query flags)")
     parser.add_argument("--keyword", action="append", default=[])
     parser.add_argument("--title", action="append", default=[])
+    parser.add_argument(
+        "--exact-titles",
+        action="store_true",
+        help="Retain only papers matching the supplied --title queries",
+    )
     parser.add_argument("--year-end", type=int)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--concepts", required=True, help="comma-separated English concepts")
@@ -39,23 +45,30 @@ def main():
         parser.error("use either --plan or inline --keyword/--title flags, not both")
     if not args.plan and not (args.keyword or args.title):
         parser.error("provide --plan or at least one --keyword/--title")
+    if args.exact_titles and (args.plan or args.keyword or not args.title):
+        parser.error("--exact-titles requires inline --title queries without --plan or --keyword")
 
     # Do not make the agent spend a separate tool turn on credential probing.
     # Missing product credentials are a capability signal, not a request for
     # the user to supply a token. The caller can reuse its existing $web-search
     # results with web_fallback.py.
     if not os.environ.get("SCHOLARSEED_API_KEY", "").strip():
-        json.dump({
-            "mode": "quick",
-            "status": "fallback_required",
-            "fallback_required": True,
-            "fallback_source": "web_search_skill",
-            "paperhub_error_code": "PAPERHUB_AUTH_MISSING",
-            "message": (
-                "PaperHub credential unavailable; continue with the bundled "
-                "Web-only fallback without asking the user for a token."
-            ),
-        }, sys.stdout, ensure_ascii=False, indent=2)
+        json.dump(
+            {
+                "mode": "quick",
+                "status": "fallback_required",
+                "fallback_required": True,
+                "fallback_source": "web_search_skill",
+                "paperhub_error_code": "PAPERHUB_AUTH_MISSING",
+                "message": (
+                    "PaperHub credential unavailable; continue with the bundled "
+                    "Web-only fallback without asking the user for a token."
+                ),
+            },
+            sys.stdout,
+            ensure_ascii=False,
+            indent=2,
+        )
         print()
         return 0
 
@@ -68,6 +81,7 @@ def main():
             session_dir,
             args.query,
             mode="quick",
+            candidates=args.input,
             time_budget_minutes=args.time_budget_minutes,
         )
         plan_path = args.plan
@@ -82,7 +96,8 @@ def main():
                 "queries": [
                     {"mode": "keyword", "query": value, "limit": 20, **query_options}
                     for value in args.keyword
-                ] + [
+                ]
+                + [
                     {"mode": "title", "query": value, "limit": 5, **query_options}
                     for value in args.title
                 ],
@@ -108,15 +123,20 @@ def main():
             print()
             return 0
         if status or round_result.get("error") or round_result.get("budget_stop"):
-            raise ValueError("Quick retrieval failed: %s" % json.dumps(
-                round_result, ensure_ascii=False,
-            ))
+            raise ValueError(
+                "Quick retrieval failed: %s"
+                % json.dumps(
+                    round_result,
+                    ensure_ascii=False,
+                )
+            )
         final_result = quick_finalize.finalize_quick(
             session_dir,
             args.output_dir,
             concepts_text=args.concepts,
             count=args.count,
             include_abstract=args.include_abstract,
+            titles=args.title if args.exact_titles else None,
         )
     except ValueError as exc:
         parser.error(str(exc))
@@ -124,9 +144,14 @@ def main():
         "mode": "quick",
         "wall_elapsed_seconds": round(time.monotonic() - started, 3),
         "retrieval": {
-            key: round_result.get(key) for key in (
-                "planned_queries", "executed_operations", "pool_size",
-                "round_wall_elapsed", "failed_operations", "retry_attempts",
+            key: round_result.get(key)
+            for key in (
+                "planned_queries",
+                "executed_operations",
+                "pool_size",
+                "round_wall_elapsed",
+                "failed_operations",
+                "retry_attempts",
             )
         },
         "result": final_result,

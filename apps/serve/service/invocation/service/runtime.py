@@ -9,6 +9,7 @@ import tempfile
 import time
 import uuid
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
+from contextlib import closing
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -28,6 +29,7 @@ from scholarseed_runtime.gateway.driver import RuntimeObservation, RuntimeTurnOu
 from service.chat.active import developer_instructions
 from service.chat.constants import SSE_HEARTBEAT_SECONDS
 from service.chat.runtime.composition import LiveSessionService, OneShotRuntimeError
+from service.chat.runtime.utils import runtime_failure
 from service.chat.service.settings import SettingsService
 from service.invocation.service.artifacts import InvocationArtifactService
 from service.invocation.service.events import InvocationEventProjector, artifact_payload
@@ -52,15 +54,24 @@ from service.invocation.service.results import (
     InvocationValidatedResult,
 )
 from service.invocation.service.skills import InvocationSkillResolver, ResolvedSkill
+from service.invocation.service.utils import (
+    INVOCATION_EXECUTION_PHASE,
+    diagnostic_code,
+    invocation_diagnostic,
+)
 from service.paths import ONE_SHOT_DIR, ONE_SHOT_WORKSPACE_DIRNAME
 from service.platform.activity import Activities, ActivityDomain, ActivityLease
 from service.platform.bridge import BRIDGE_TOKEN_BYTES, ArtifactPublishFailure
+from service.platform.generation import GenerationScope
+from service.platform.storage import canonical_root, open_directory
 
 INVOCATION_PURPOSE = "isolated_one_shot"
 INVOCATION_RUNTIME_INSTRUCTIONS = (
     "Execute exactly one isolated task. The current working directory is this invocation's "
     "persistent workspace. You may create deliverable files there. Publish every user-facing "
-    "deliverable with scholarseed-bridge artifact publish after its final write."
+    "deliverable after its final write through the scholarseed_bridge model tool with "
+    '{"capability":"artifact","operation":"publish","request":{"path":"<relative path>",'
+    '"role":"final"}}. Use the actual workspace-relative file path.'
 )
 INVOCATION_INTERRUPT_WAIT_SECONDS = 10
 INVOCATION_QUEUE_SIZE = 256
@@ -103,6 +114,7 @@ class PreparedInvocation:
     permission_mode: RuntimePermissionMode
     permission: PermissionIntent | None = None
     result_policy: InvocationResultPolicy | None = None
+    model_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -148,6 +160,7 @@ class OneShotExecution:
         self.user_interrupted = False
         self.result_succeeded = True
         self.result_error_code = ""
+        self.prepared: PreparedInvocation | None = None
 
     @property
     def runtime_workdir(self) -> Path:
@@ -241,11 +254,13 @@ class InvocationService:
         *,
         owner_id: str,
         user_id: str,
+        input_files: Mapping[str, bytes] | None = None,
         trusted_workspace: TrustedInvocationWorkspace | None = None,
         permission: PermissionIntent | None = None,
         result_policy: InvocationResultPolicy | None = None,
     ) -> PreparedInvocation:
         with self._activities.enter(ActivityDomain.INVOCATION):
+            inputs = tuple(input_files.items()) if input_files is not None else ()
             process_environment = await self._environment(user_id)
             skill: ResolvedSkill | None = None
             if request.skill is not None:
@@ -280,9 +295,20 @@ class InvocationService:
                 else self._workspace(invocation_id)
             )
             try:
-                workspace.mkdir(parents=True, exist_ok=trusted_workspace is not None)
+                if trusted_workspace is None:
+                    with closing(
+                        open_directory(canonical_root(self._root), (invocation_id,), create=True)
+                    ) as directory:
+                        directory.mkdir(workspace.name, inherit_acl=True)
             except OSError as error:
                 raise InvocationError(INVOCATION_WORKSPACE_UNAVAILABLE) from error
+            if inputs:
+                await self._activities.finish(
+                    ActivityDomain.INVOCATION,
+                    lambda: self._activities.to_thread(
+                        ActivityDomain.INVOCATION, self._artifacts.stage_inputs, workspace, inputs
+                    ),
+                )
             record = InvocationRecord(
                 invocation_id=invocation_id,
                 owner_id=owner_id,
@@ -306,6 +332,7 @@ class InvocationService:
                 permission_mode=permission_mode,
                 permission=permission,
                 result_policy=result_policy,
+                model_id=request.model_id,
             )
 
     async def stream(self, prepared: PreparedInvocation) -> AsyncGenerator[dict | None, None]:
@@ -326,6 +353,7 @@ class InvocationService:
                 result_policy=prepared.result_policy,
             )
             self._active[record.invocation_id] = execution
+            execution.prepared = prepared
             queue.put_nowait(
                 projector.envelope(
                     "invocation.started",
@@ -411,7 +439,7 @@ class InvocationService:
                 owner_id=record.owner_id,
                 user_id=prepared.user_id,
                 cwd=Path(record.workspace),
-                model_id="",
+                model_id=prepared.model_id,
                 base_instructions="",
                 developer_instructions=instructions,
                 input_text=prepared.prompt,
@@ -507,6 +535,7 @@ class InvocationService:
                 execution.record,
                 status=status,
                 error_code=error.safe_error,
+                diagnostic=invocation_diagnostic(error.diagnostic),
             )
         except Exception as error:
             logger.error(
@@ -518,6 +547,9 @@ class InvocationService:
                 execution.record,
                 status=InvocationStatus.UNKNOWN,
                 error_code=INVOCATION_RUNTIME_FAILED,
+                diagnostic=invocation_diagnostic(
+                    runtime_failure(error, phase=INVOCATION_EXECUTION_PHASE)
+                ),
             )
         finally:
             if execution.result_stop is not None:
@@ -529,6 +561,7 @@ class InvocationService:
                 model_key=record.model_key,
                 output_text=record.output_text,
                 error_code=record.error_code,
+                diagnostic=record.diagnostic,
                 input_tokens=record.input_tokens,
                 output_tokens=record.output_tokens,
                 vendor_thread_id=record.vendor_thread_id,
@@ -723,6 +756,48 @@ class InvocationService:
                 payload = await self._activities.finish(ActivityDomain.INVOCATION, publish)
         return payload
 
+    def generation_scope(self, invocation_id: str) -> GenerationScope | None:
+        execution = self._active.get(invocation_id)
+        if execution is None or execution.prepared is None:
+            return None
+        prepared = execution.prepared
+        if not prepared.model_id or not execution.publication_turn_id:
+            return None
+        turn_id = execution.publication_turn_id
+        activity = execution.bridge_activity
+
+        def current() -> bool:
+            return (
+                self._active.get(invocation_id) is execution
+                and not execution.closed.is_set()
+                and not execution.user_interrupted
+                and execution.publication_turn_id == turn_id
+                and execution.bridge_activity is activity
+            )
+
+        async def publish(kind: str, data: dict, **scope) -> None:
+            if current():
+                await execution.emit(execution.projector.envelope(kind, data, turn_id=turn_id))
+
+        return GenerationScope(
+            identity=execution,
+            id=execution.id,
+            bridge_token=execution.bridge_token,
+            bridge_activity=activity,
+            publication_turn_id=turn_id,
+            user_id=execution.user_id,
+            runtime_workdir=execution.runtime_workdir,
+            model_id=prepared.model_id,
+            reasoning_effort=prepared.execution.reasoning_effort or "",
+            thinking=None,
+            reasoning_policy=prepared.execution.generation_reasoning_policy,
+            process_environment=prepared.process_environment,
+            current=current,
+            attached=lambda: execution.publication_turn_id == turn_id
+            and execution.bridge_activity is activity,
+            publish=publish,
+        )
+
     async def artifact(
         self, invocation_id: str, artifact_id: str, *, owner_id: str
     ) -> tuple[InvocationArtifact, tempfile.SpooledTemporaryFile[bytes]]:
@@ -848,7 +923,11 @@ class InvocationService:
             InvocationStatus.INTERRUPTED: "invocation.interrupted",
             InvocationStatus.UNKNOWN: "invocation.unknown",
         }.get(record.status, "invocation.unknown")
-        return event_type, {"error": record.error_code}
+        data: dict = {"error": diagnostic_code(record.error_code, INVOCATION_RUNTIME_FAILED)}
+        diagnostic = invocation_diagnostic(record.diagnostic)
+        if diagnostic:
+            data["diagnostic"] = diagnostic
+        return event_type, data
 
     def _write_metadata(self, record: InvocationRecord) -> None:
         try:

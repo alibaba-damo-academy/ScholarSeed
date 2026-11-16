@@ -27,6 +27,7 @@ from service.workbench.domain.model import WorkbenchFormatPolicy
 from service.workbench.service.records import PdfRecordStore
 
 from .historical import historical_delivery
+from .pdf import PageFixture, build_pdf
 from .records import pdf_records
 
 PASS = 0
@@ -375,7 +376,8 @@ async def exercise() -> None:
 
         pdf_before = resources / "pdf-before.pdf"
         pdf_after = resources / "pdf-after.pdf"
-        pdf_before.write_bytes(b"%PDF-1.4\nannotated move\n")
+        pdf_original = build_pdf(*(PageFixture() for _ in range(5)), title="annotated move")
+        pdf_before.write_bytes(pdf_original)
         empty_pdf_annotations = annotations.snapshot(project.id, "resources/pdf-before.pdf")
         annotations.commit(
             project.id,
@@ -414,7 +416,7 @@ async def exercise() -> None:
         check(
             "Delivery rollback restores a moved PDF and its stable records",
             pdf_before.is_file()
-            and pdf_before.read_bytes() == b"%PDF-1.4\nannotated move\n"
+            and pdf_before.read_bytes() == pdf_original
             and not pdf_after.exists()
             and restored_pdf_records.record_target.subject_id
             == empty_pdf_annotations.record_target.subject_id
@@ -432,7 +434,7 @@ async def exercise() -> None:
         pdf_version = versions.history(project.id, "resources/pdf-before.pdf")[0]
         renamed_pdf = content.rename(project.id, "resources/pdf-before.pdf", "pdf-edited.pdf")
         current_pdf = content.snapshot(project.id, renamed_pdf.path)
-        edited_pdf_bytes = b"%PDF-1.4\nmodified after move\n"
+        edited_pdf_bytes = build_pdf(*(PageFixture() for _ in range(5)), title="modified after move")
         content.apply_bytes(
             project.id,
             renamed_pdf.path,
@@ -475,7 +477,7 @@ async def exercise() -> None:
         restored_pdf = annotations.snapshot(project.id, "resources/pdf-before.pdf")
         check(
             "restarted PDF restore replaces bytes while preserving its annotation identity",
-            pdf_before.read_bytes() == b"%PDF-1.4\nannotated move\n"
+            pdf_before.read_bytes() == pdf_original
             and restored_pdf.record_target.subject_id
             == empty_pdf_annotations.record_target.subject_id
             and restored_pdf.records["comments"] == pdf_records(4, "restore the path")["comments"],
@@ -486,7 +488,9 @@ async def exercise() -> None:
         await deliveries.bind_turn(
             "session-r", "turn-pdf-create", "turn-pdf-create", "fixture-generation"
         )
-        created_pdf.write_bytes(b"%PDF-1.4\ncreated with annotations\n")
+        created_pdf.write_bytes(
+            build_pdf(*(PageFixture() for _ in range(6)), title="created with annotations")
+        )
         empty_created_annotations = annotations.snapshot(project.id, "resources/created.pdf")
         annotations.commit(
             project.id,

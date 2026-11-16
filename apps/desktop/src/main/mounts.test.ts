@@ -5,7 +5,42 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
-import { MACOS_HDIUTIL, mountPointsOfImage, readHdiutilInfoPlist } from './mounts.ts'
+import { MACOS_HDIUTIL, mountPointsOfImage, readHdiutilInfoPlist, withDmgCleanup } from './mounts.ts'
+
+test('DMG cleanup preserves the original failure and reports the cleanup failure', async () => {
+  const verificationError = new Error('signature verification failed')
+  const detachError = new Error('detach failed')
+  const reported: unknown[] = []
+  await assert.rejects(
+    withDmgCleanup(
+      async () => { throw verificationError },
+      async () => { throw detachError },
+      (error) => reported.push(error)
+    ),
+    (error) => error === verificationError
+  )
+  assert.deepEqual(reported, [detachError])
+})
+
+test('a successful DMG operation requires successful cleanup', async () => {
+  const detachError = new Error('detach failed')
+  await assert.rejects(
+    withDmgCleanup(
+      async () => 'prepared',
+      async () => { throw detachError },
+      () => assert.fail('cleanup is the primary failure')
+    ),
+    (error) => error === detachError
+  )
+  assert.equal(
+    await withDmgCleanup(
+      async () => 'prepared',
+      async () => {},
+      () => assert.fail('unexpected cleanup failure')
+    ),
+    'prepared'
+  )
+})
 
 const INFO_FIXTURE = {
   images: [

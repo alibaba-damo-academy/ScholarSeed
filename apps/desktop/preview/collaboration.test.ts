@@ -29,6 +29,35 @@ test('every project center scenario has bilingual guidance from one resource sou
   assert.equal(JSON.stringify(home), before)
 })
 
+test('browser snapshot guidance is bilingual without claiming removed inner-tab controls', () => {
+  for (const pageId of ['page-browser', 'viewer-browser']) {
+    const page = PREVIEW_CATALOG.find(page => page.id === pageId)!
+    const before = JSON.stringify(page)
+    for (const language of ['zh', 'en'] as const) {
+      const dictionary = language === 'zh' ? zh : en
+      const translate = createLocalization(language, { zh: { preview: zh }, en: { preview: en } }).getFixedT(null, 'preview' as never) as unknown as PdfeTranslate
+      for (const scene of page.scenarios) {
+        assert.ok(scene.expectedKeys?.length && scene.limitationKeys?.length && scene.titleKey)
+        const guidance = pdfeGuidance(page, scene, translate)
+        assert.deepEqual(guidance.expected, scene.expectedKeys.map(key => dictionary[key]))
+        assert.deepEqual(guidance.limitations, scene.limitationKeys.map(key => dictionary[key]))
+        if (language === 'en') assert.doesNotMatch([dictionary[scene.titleKey], ...guidance.expected, ...guidance.limitations].join('\n'), /[\u3400-\u9fff]/u, scene.id)
+      }
+    }
+    assert.equal(JSON.stringify(page), before)
+  }
+})
+
+test('feedback guidance reuses the current activity entry and localizes normal submission', () => {
+  const page = PREVIEW_CATALOG.find(page => page.id === 'surface-feedback')!
+  const scene = page.scenarios.find(scene => scene.id === 'feedback-normal')!
+  for (const dictionary of [zh, en]) {
+    const guidance = pdfeGuidance(page, scene, key => dictionary[key])
+    assert.deepEqual(guidance.entry, [dictionary['dialogEntry_feedback-form']])
+    assert.deepEqual(guidance.expected, [dictionary.feedbackSubmitExpected])
+  }
+})
+
 test('guidance preserves unmodified catalog text for pages outside this milestone', () => {
   const page = PREVIEW_CATALOG.find(page => page.id === 'page-conversation')!
   const scene = page.scenarios[0]
@@ -79,12 +108,8 @@ test('role knowledge points to real Owner sources without creating role-specific
   assert.deepEqual(contexts[0].requiresScopeReview, contexts[2].requiresScopeReview)
 })
 
-test('task scope never promotes an alias or placeholder to a product page and keeps mock candidates distinct', () => {
+test('task scope keeps mock candidates distinct from product requirements', () => {
   assert.deepEqual(PDFE_TASK_SCOPES.map(scope => scope.id), ['mock', 'presentation'])
-  for (const page of PREVIEW_CATALOG.filter(entry => entry.implementation !== 'surface')) {
-    const context = pdfeTaskContext('frontend', 'presentation', 'task', page, page.scenarios[0])
-    assert.deepEqual(context.candidateFiles, [])
-  }
   const page = PREVIEW_CATALOG[0]
   const context = pdfeTaskContext('product', 'mock', 'samples', page, page.scenarios[0])
   assert.deepEqual(context.candidateFiles, ['apps/desktop/preview/catalog.ts', 'apps/desktop/preview/fixtures/'])

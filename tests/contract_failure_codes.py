@@ -1,4 +1,4 @@
-"""Provider failure codes must stay classified on both sides of the adapter/desktop seam."""
+"""Provider failure codes from the adapter and Serve must stay classified in Desktop."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 from scholarseed_codex.failure import CODEX_PROVIDER_FAILED, provider_codes
+from service.chat.service.rejections import QUOTA_FAILURE_CODES
 
 ROOT = Path(__file__).resolve().parents[1]
 RENDERER_FAILURES = ROOT / "apps/desktop/src/renderer/src/failures.ts"
@@ -20,6 +21,10 @@ SENTINEL = "insufficient_quota"
 
 def adapter_codes() -> set[str]:
     return {code.casefold() for code in provider_codes()}
+
+
+def producer_codes() -> set[str]:
+    return adapter_codes() | QUOTA_FAILURE_CODES
 
 
 def renderer_codes() -> set[str]:
@@ -48,20 +53,20 @@ class FailureCodeParityContract(unittest.TestCase):
         self.assertNotIn(CODEX_PROVIDER_FAILED.casefold(), adapter_codes())
         self.assertNotIn(CODEX_PROVIDER_FAILED.casefold(), renderer_codes())
 
-    def test_every_adapter_code_reaches_a_classified_card(self):
+    def test_every_producer_code_reaches_a_classified_card(self):
         # 适配器能产出、渲染层却没登记的码会塌缩成 kind='unknown'：脱敏文案不命中任何
         # 兜底正则，用户只剩「生成过程中发生异常」，且拿不到可改变结果的下一步。
         self.assertEqual(
-            adapter_codes() - renderer_codes(),
+            producer_codes() - renderer_codes(),
             set(),
-            "adapter codes missing from FAILURE_KIND_BY_CODE",
+            "producer codes missing from FAILURE_KIND_BY_CODE",
         )
 
     def test_renderer_registers_no_dead_code(self):
         self.assertEqual(
-            renderer_codes() - adapter_codes(),
+            renderer_codes() - producer_codes(),
             set(),
-            "FAILURE_KIND_BY_CODE entries the adapter never emits",
+            "FAILURE_KIND_BY_CODE entries neither the adapter nor Serve quota policy emits",
         )
 
 

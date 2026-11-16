@@ -115,7 +115,7 @@ class ResourceQueries:
             self._path(project_id, path)
             text = "".join(
                 line if line.endswith("\n") else line + "\n"
-                for line in self._versions.diff(project_id, version.id, base.id)
+                for line in self._versions.diff(project_id, version.id, base.id, base_first=True)
             )
             current_path = self._versions.current_version_path(project_id, version.file_id)
             self._path(project_id, current_path)

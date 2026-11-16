@@ -1,6 +1,20 @@
 :root,
 :root[data-theme='light'] {
   color-scheme: light;
+  --vds-stream-stopped-border: #dedad3;
+  --vds-stream-stopped-color: #5f5a52;
+  --vds-stream-error-border: #ead0c7;
+  --vds-stream-error-bg: #fdf8f6;
+  --vds-stream-error-text: #9a4a35;
+  --vds-access-border: #eda9a1;
+  --vds-access-heading: #b93f32;
+  --vds-access-heading-background: linear-gradient(100deg, #fff4f1, #f9e0dc);
+  --vds-access-surface: #fff;
+  --vds-file-notice-bg: #efebe5;
+  --vds-access-code: #f5f4f1;
+  --vds-access-description: #706b64;
+  --vds-access-action: #353431;
+  --vds-access-action-text: #fff;
   --brand-ink: #22453a;
   --brand-ink-hover: #18382f;
   --brand-spark: #f2c14e;
@@ -15,14 +29,53 @@
   --vds-conversation-message-radius: 14px 14px 4px 14px;
   --vds-conversation-message-font-size: 15px;
   --vds-conversation-message-line-height: 1.85;
+  --vds-conversation-answer-line-height: 24px;
   --vds-conversation-message-collapsed-height: 11.1em;
   --vds-conversation-message-fade: linear-gradient(#000 68%, transparent);
   --vds-plan-list-max-height: 192px;
-  --vds-code-font-size: 12.5px;
-  --vds-code-line-height: 1.75;
-  --vds-code-gutter: 40px;
+  --vds-code-font-family: Menlo, Monaco, Consolas, monospace;
+  --vds-code-font-size: 12px;
+  --vds-code-line-height: 14px;
+  --vds-code-divider-width: 0.5px;
+  --vds-code-text: #393c43;
+  --vds-code-keyword: #ac35a9;
+  --vds-code-identifier: #4179f2;
+  --vds-code-string: #996907;
+  --vds-code-comment: #a2a3a9;
+  --vds-code-gutter: 2ch;
+  --vds-formula-content-height: 80px;
+  --vds-diagram-viewer-height: 60dvh;
+  --vds-canvas-preview-height: 170px;
+  --vds-chart-height: clamp(240px, 52cqi, 400px);
+  --vds-chart-bar-max-width: 56px;
+  /* Chart palette: organic categorical hues; heatmaps use an ordered ramp. */
+  --vds-chart-series-1: #2c5545;
+  --vds-chart-series-2: #c58b2b;
+  --vds-chart-series-3: #ac7058;
+  --vds-chart-series-4: #64848a;
+  --vds-chart-series-5: #858752;
+  --vds-chart-series-6: #827164;
+  --vds-chart-series-7: #a58b76;
+  --vds-chart-series-8: #817a91;
+  --vds-chart-heat-low: #eee5ce;
+  --vds-chart-heat-mid: #a7b58c;
+  --vds-chart-heat-high: #2c5545;
+  --vds-chart-zoom-fill: rgba(44, 85, 69, 0.12);
+  --vds-chart-header: var(--vds-fill-4);
+  --vds-chart-surface: var(--vds-fill-2);
+  --vds-chart-text: var(--vds-text-tertiary);
+  --vds-chart-font-size: var(--vds-font-body-lv1);
+  --vds-chart-font-weight: var(--vds-fw-regular);
+  --vds-artifact-card-bg: var(--vds-bg-white-default);
+  --vds-artifact-card-hover: var(--vds-bg-white-hover);
+  --vds-artifact-card-pressed: var(--vds-bg-white-active);
+  --vds-artifact-card-icon-size: var(--vds-space-10);
+  --vds-conversation-block-gap: var(--vds-space-3);
+  --vds-conversation-details-height: 360px;
   --vds-conversation-table-cell-min-width: 96px;
   --vds-conversation-table-cell-max-width: 280px;
+  --vds-conversation-table-max-height: min(60vh, 480px);
+  --vds-conversation-table-divider-width: 0.5px;
   --vds-attachment-open-shadow: inset 0 0 0 1px
     color-mix(in srgb, var(--brand-ink) 16%, transparent);
   --vds-attachment-line-height: 20px;
@@ -39,7 +92,9 @@
   --vds-control-padding-lg: 0 var(--vds-space-5);
   --vds-control-radius: var(--vds-radius-4);
   --vds-settings-card-radius: var(--vds-radius-6);
-  --vds-settings-prompt-radius: var(--vds-settings-card-radius);
+  --vds-settings-archive-icon-stroke: 1.2;
+  --vds-settings-prompt-radius: var(--vds-radius-4);
+  --vds-settings-prompt-height: 96px;
   --vds-settings-model-panel-radius: var(--vds-settings-card-radius);
   --vds-settings-api-key-card-radius: var(--vds-settings-card-radius);
   --vds-settings-files-card-radius: var(--vds-settings-card-radius);
@@ -68,6 +123,7 @@
   --vds-radio-hit-size: var(--vds-control-height-md);
   --vds-radio-dot-size: var(--vds-space-2);
   --vds-badge-height-sm: 20px;
+  --vds-assistant-source-tag-stroke: inset 0 0 0 var(--vds-border-width-1) var(--vds-border-default);
   --vds-badge-height-md: 24px;
   --vds-switch-width: 34px;
   --vds-switch-height: 20px;
@@ -194,6 +250,8 @@
   /* 浮层内容宽度档位：业务浮层需要固定宽度时取这里，页面不写死像素值。 */
   --vds-popover-width-sm: 220px;
   --vds-popover-width-md: 320px;
+  --vds-reading-source-width: 340px;
+  --vds-browser-find-width: 420px;
   --vds-popover-available-width: calc(100vw - var(--vds-space-6) * 2);
   --vds-reference-list-max-width: 460px;
   --vds-reference-list-max-height: 50vh;
@@ -219,7 +277,7 @@
   --vds-conversation-reference-title-leading: 1.625;
   --vds-conversation-reference-feedback-leading: 20px;
   --vds-pdf-annotation-max-height: min(640px, calc(100dvh - var(--vds-space-6)));
-  --vds-pdf-annotation-preview-max-height: min(320px, 40dvh);
+  --vds-pdf-annotation-preview-max-height: min(240px, 40dvh);
   --vds-command-gap: var(--vds-space-2);
   --vds-command-radius: var(--vds-radius-4);
   --vds-command-input-padding: 0 var(--vds-space-3);
@@ -322,7 +380,40 @@
 }
 
 :root[data-theme='dark'] {
+  --vds-chart-series-1: #8bb59d;
+  --vds-chart-series-2: #d5ad60;
+  --vds-chart-series-3: #ca9480;
+  --vds-chart-series-4: #8eafb4;
+  --vds-chart-series-5: #adb17d;
+  --vds-chart-series-6: #b6a292;
+  --vds-chart-series-7: #c9b29c;
+  --vds-chart-series-8: #afa3bf;
+  --vds-chart-heat-low: #343b32;
+  --vds-chart-heat-mid: #6f8c68;
+  --vds-chart-heat-high: #c8d6a4;
+  --vds-chart-zoom-fill: rgba(139, 181, 157, 0.18);
+  --vds-chart-header: var(--vds-bg-gray-default);
+  --vds-chart-surface: var(--vds-bg-white-default);
+  --vds-code-text: var(--vds-text-primary);
+  --vds-code-keyword: #e59de3;
+  --vds-code-identifier: #91b4ff;
+  --vds-code-string: #d9b66b;
+  --vds-code-comment: var(--vds-text-tertiary);
   color-scheme: dark;
+  --vds-stream-error-border: var(--vds-error-light-border);
+  --vds-stream-error-bg: var(--vds-error-light-bg-default);
+  --vds-stream-error-text: var(--vds-error-text-primary);
+  --vds-stream-stopped-border: var(--vds-border-default);
+  --vds-stream-stopped-color: var(--vds-text-secondary);
+  --vds-access-border: var(--vds-error-light-border);
+  --vds-access-heading: var(--vds-error-text-primary);
+  --vds-access-heading-background: var(--vds-error-light-bg-default);
+  --vds-access-surface: var(--vds-surface-raised);
+  --vds-file-notice-bg: var(--vds-surface-muted);
+  --vds-access-code: var(--vds-surface-muted);
+  --vds-access-description: var(--vds-text-secondary);
+  --vds-access-action: var(--vds-text-primary);
+  --vds-access-action-text: var(--vds-surface-raised);
   --vds-surface-raised: var(--vds-bg-white-default);
   --vds-surface-muted: var(--vds-bg-gray-default);
   --vds-surface-hover: var(--vds-bg-gray-hover);
@@ -335,4 +426,40 @@
   --vds-avatar-color: var(--vds-brand-text-primary);
   --vds-loading-overlay-bg: rgb(20 20 20 / 64%);
   --vds-loading-overlay-muted-bg: rgb(29 29 29 / 72%);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]):not(.light) {
+    --vds-chart-series-1: #8bb59d;
+    --vds-chart-series-2: #d5ad60;
+    --vds-chart-series-3: #ca9480;
+    --vds-chart-series-4: #8eafb4;
+    --vds-chart-series-5: #adb17d;
+    --vds-chart-series-6: #b6a292;
+    --vds-chart-series-7: #c9b29c;
+    --vds-chart-series-8: #afa3bf;
+    --vds-chart-heat-low: #343b32;
+    --vds-chart-heat-mid: #6f8c68;
+    --vds-chart-heat-high: #c8d6a4;
+    --vds-chart-zoom-fill: rgba(139, 181, 157, 0.18);
+    --vds-chart-header: var(--vds-bg-gray-default);
+    --vds-chart-surface: var(--vds-bg-white-default);
+    --vds-code-text: var(--vds-text-primary);
+    --vds-code-keyword: #e59de3;
+    --vds-code-identifier: #91b4ff;
+    --vds-code-string: #d9b66b;
+    --vds-code-comment: var(--vds-text-tertiary);
+    --vds-stream-error-border: var(--vds-error-light-border);
+    --vds-stream-error-bg: var(--vds-error-light-bg-default);
+    --vds-stream-error-text: var(--vds-error-text-primary);
+    --vds-access-border: var(--vds-error-light-border);
+    --vds-access-heading: var(--vds-error-text-primary);
+    --vds-access-heading-background: var(--vds-error-light-bg-default);
+    --vds-access-surface: var(--vds-surface-raised);
+    --vds-file-notice-bg: var(--vds-surface-muted);
+    --vds-access-code: var(--vds-surface-muted);
+    --vds-access-description: var(--vds-text-secondary);
+    --vds-access-action: var(--vds-text-primary);
+    --vds-access-action-text: var(--vds-surface-raised);
+  }
 }

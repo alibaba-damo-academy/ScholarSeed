@@ -1,6 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { posix } from 'node:path'
+import { resolveExample, readExampleFile } from '../../../scripts/shared/examples.cjs'
 import { loadReviewedSamples } from './samples.ts'
+
+export type PreviewFileSeed = 'empty' | 'example' | 'reviewed'
 
 export interface PreviewFileEntry {
   readonly path: string
@@ -23,6 +26,7 @@ export const PREVIEW_FILE_ERROR = {
   notDirectory: 'preview_not_a_directory',
   conflict: 'preview_path_conflict',
   invalidBytes: 'preview_invalid_bytes',
+  invalidSeed: 'preview_invalid_seed',
 } as const
 
 export class PreviewFileError extends Error {
@@ -67,9 +71,24 @@ function loadSamples(): ReadonlyMap<string, PreviewFileContent> {
   }))
 }
 
+function loadSeed(seed: PreviewFileSeed): ReadonlyMap<string, PreviewFileContent> {
+  if (seed === 'empty') return new Map()
+  if (seed === 'reviewed') return loadSamples()
+  if (seed !== 'example') throw new PreviewFileError(PREVIEW_FILE_ERROR.invalidSeed)
+  const project = resolveExample().projects[0]
+  return new Map(project.files.map(file => {
+    const bytes = new Uint8Array(readExampleFile(file))
+    return [file.path, { path: file.path, name: posix.basename(file.path), kind: 'file' as const, bytes, size: bytes.byteLength, mtime: INITIAL_MTIME, identity: `preview-example:${project.id}:${file.id}`, revision: revision(bytes) }]
+  }))
+}
+
 export class PreviewFiles {
-  private files = new Map(loadSamples())
+  private files: Map<string, PreviewFileContent>
   private clock = INITIAL_MTIME
+
+  constructor(private readonly seed: PreviewFileSeed = 'empty') {
+    this.files = new Map(loadSeed(seed))
+  }
 
   private tick(): number {
     this.clock += MTIME_STEP
@@ -158,7 +177,7 @@ export class PreviewFiles {
   }
 
   reset(): void {
-    this.files = new Map(loadSamples())
+    this.files = new Map(loadSeed(this.seed))
     this.clock = INITIAL_MTIME
   }
 }

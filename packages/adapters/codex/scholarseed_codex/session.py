@@ -14,7 +14,7 @@ from importlib.metadata import version
 from pathlib import Path
 from typing import Any, Callable
 
-from scholarseed_codex.activity import NativeActivity
+from scholarseed_codex.activity import NativeActivity, NativeActivityBlocker
 from scholarseed_codex.capacity import HostRole
 from scholarseed_codex.diagnostic import THREAD_HISTORY_MISSING_ERROR
 from scholarseed_codex.directive import parse_declarations
@@ -23,6 +23,7 @@ from scholarseed_codex.environment import (
     configured_codex_executable,
 )
 from scholarseed_codex.events import RUNTIME_EVENT_SCHEMA_VERSION, translate_event
+from scholarseed_codex.executable import _parse_codex_version
 from scholarseed_codex.isolation import managed_codex_launch, managed_shell_environment
 from scholarseed_codex.launch import model_connection, validate_model_connection
 from scholarseed_codex.loop import ToolLoopGuard
@@ -38,9 +39,12 @@ from scholarseed_codex.permission import (
 )
 from scholarseed_codex.pool import CodexHostPool, PoolReservation
 from scholarseed_codex.profile import (
+    CODEX_GENERATION_ONLY_CONFIG,
+    CODEX_GENERATION_ONLY_MULTI_AGENT_MODE,
     CODEX_MULTI_AGENT_V2_ENABLED_CONFIG,
     CODEX_PROTOCOL_SCHEMA_HASH,
     CODEX_PROTOCOL_VERSION,
+    CODEX_SAMPLE_MIN_VERSION,
     CODEX_WEB_SEARCH_DISABLED_MODE,
     CODEX_WEB_SEARCH_LIVE_MODE,
     CODEX_WEB_SEARCH_MODE_KEY,
@@ -114,7 +118,11 @@ from scholarseed_runtime.contract import (
     TurnRequest,
     service_tool_profile,
 )
-from scholarseed_runtime.contract.command import SubmissionRetryProof, ThreadReplacementProof
+from scholarseed_runtime.contract.command import (
+    RUNTIME_ACTIVE_TURN_CHANGED,
+    SubmissionRetryProof,
+    ThreadReplacementProof,
+)
 from scholarseed_runtime.contract.incident import (
     RUNTIME_TURN_NOT_SUBMITTED,
     RuntimeIncident,
@@ -170,6 +178,35 @@ CODEX_SERVICE_TIER_CONFIG = "service_tier"
 TURN_SUBMISSION_FAILED_ERROR = "runtime_turn_submission_failed"
 FAILED_STATE = "failed"
 UNKNOWN_STATE = "unknown"
+GENERATION_ONLY_TOOL_REJECTED = "generation_only_tool_rejected"
+GENERATION_ONLY_TURN_REJECTED = "generation_only_turn_rejected"
+GENERATION_ONLY_INVALID_CONFIGURATION = "generation_only_invalid_configuration"
+GENERATION_ONLY_INTERRUPT_FAILED = "generation_only_interrupt_failed"
+GENERATION_ONLY_INPUT_KINDS = frozenset({InputKind.TEXT, InputKind.LOCAL_IMAGE})
+GENERATION_ONLY_REJECTED_EVENTS = frozenset(
+    {
+        CodexSessionEventKind.TOOL_STARTED,
+        CodexSessionEventKind.TOOL_PROGRESS,
+        CodexSessionEventKind.TOOL_COMPLETED,
+        CodexSessionEventKind.TOOL_SEARCH_STARTED,
+        CodexSessionEventKind.TOOL_SEARCH_COMPLETED,
+        CodexSessionEventKind.WEB_SEARCH_STARTED,
+        CodexSessionEventKind.WEB_SEARCH_COMPLETED,
+        CodexSessionEventKind.PAPER_SEARCH_STARTED,
+        CodexSessionEventKind.PAPER_SEARCH_COMPLETED,
+        CodexSessionEventKind.SKILL_STARTED,
+        CodexSessionEventKind.SKILL_COMPLETED,
+        CodexSessionEventKind.NATIVE_ACTIVITY_STARTED,
+        CodexSessionEventKind.NATIVE_ACTIVITY_COMPLETED,
+        CodexSessionEventKind.SUBAGENT_ACTIVITY,
+        CodexSessionEventKind.FILE_CHANGED,
+        CodexSessionEventKind.PLAN_UPDATED,
+        CodexSessionEventKind.PLAN_DELTA,
+        CodexSessionEventKind.DIFF_UPDATED,
+        CodexSessionEventKind.HIL_REQUESTED,
+        CodexSessionEventKind.DYNAMIC_TOOL_REQUESTED,
+    }
+)
 ACTIVITY_COMMAND_PENDING = "runtime_command_pending"
 ACTIVITY_OPERATION_PENDING = "runtime_operation_pending"
 SUBAGENT_LIFECYCLE_KINDS = frozenset(
@@ -317,12 +354,18 @@ class CodexRuntimeSession:
         launch_environment: Mapping[str, str] | None = None,
         tool_environment: Mapping[str, str] | None = None,
         host_pool: CodexHostPool | None = None,
-        isolated_home: Path | None = None,
     ) -> None:
-        if isolated_home is not None and (
-            resume_binding is not None or request.fork_source is not None
+        if request.generation_only and (
+            resume_binding is not None
+            or request.fork_source is not None
+            or request.initial_history
+            or request.service_tools
+            or request.skill_roots
+            or request.skill_configurations
+            or RuntimeCapabilityName.WEB_SEARCH in request.required_capabilities
+            or RuntimeCapabilityName.WEB_SEARCH in request.optional_capabilities
         ):
-            raise ValueError("isolated invocations cannot resume or fork shared native state")
+            raise ValueError(GENERATION_ONLY_INVALID_CONFIGURATION)
         self._host_pool = host_pool or CodexHostPool()
         self._owns_pool = host_pool is None
         self._tool_environment = dict(tool_environment or {})
@@ -360,6 +403,7 @@ class CodexRuntimeSession:
             or request.initial_history
         ):
             raise ValueError("invalid Codex fork source")
+        self._generation_only = request.generation_only
         self._required_capabilities = required_capabilities(request.required_capabilities)
         self._optional_capabilities = optional_capabilities(
             request.optional_capabilities, self._required_capabilities
@@ -375,12 +419,12 @@ class CodexRuntimeSession:
         self._capability_resolution: dict[str, Any] | None = None
         self._active_command_id = ""
         self._committed_commands: set[str] = set()
+        self._generation_submitted = False
+        self._generation_error = ""
         self._loop_guard = ToolLoopGuard()
         executable = configured_codex_executable()
         validate_model_connection(request.model)
-        runtime_home = (
-            isolated_home if isolated_home is not None else self._host_pool.prepare_home()
-        )
+        runtime_home = self._host_pool.prepare_home()
         permission_policy = CODEX_PERMISSION_POLICIES[request.permission.mode]
         permissions_profile, self._permission_config = thread_permission_config(
             permission_policy.sandbox,
@@ -403,7 +447,6 @@ class CodexRuntimeSession:
                 launch_cwd=runtime_home / CODEX_DISCOVERY_HOME_DIRNAME,
                 execution_scope=request.execution_scope or request.product_session_id,
                 process_sharing_scope=request.process_sharing_scope,
-                isolation_scope=str(runtime_home) if isolated_home is not None else "",
                 resume_session_id=(
                     resume_binding.opaque_session_ref if resume_binding is not None else ""
                 ),
@@ -417,7 +460,11 @@ class CodexRuntimeSession:
                 launch_arguments=launch_arguments,
                 approval_policy=permission_policy.approval_policy,
                 approval_reviewer=permission_policy.approval_reviewer,
-                multi_agent_mode=DEFAULT_COLLABORATION_MODE,
+                multi_agent_mode=(
+                    CODEX_GENERATION_ONLY_MULTI_AGENT_MODE
+                    if request.generation_only
+                    else DEFAULT_COLLABORATION_MODE
+                ),
                 executable=executable,
                 identity=CODEX_MANAGED_IDENTITY,
                 developer_instructions=request.developer_instructions,
@@ -502,18 +549,26 @@ class CodexRuntimeSession:
         if native.complete:
             self._native.host.retain_loaded_roots(native.loaded_thread_ids)
         blockers.extend(native.blockers)
-        if revision != self._current_activity_revision():
-            blockers.append(RUNTIME_ACTIVITY_CHANGED)
-        if generation != f"{self._event_namespace}:{self._native.host.process_generation}":
+        current_revision = self._current_activity_revision()
+        revision_changed = revision != current_revision
+        generation_changed = (
+            generation != f"{self._event_namespace}:{self._native.host.process_generation}"
+        )
+        if revision_changed or generation_changed:
             blockers.append(RUNTIME_ACTIVITY_CHANGED)
         return RuntimeActivitySnapshot(
             generation,
-            self._current_activity_revision(),
+            current_revision,
             self._watermark,
             native.complete,
             tuple(blockers),
             execution_tree_complete=native.complete and RUNTIME_ACTIVITY_CHANGED not in blockers,
             execution_tree_blockers=native.execution_tree_blockers,
+            execution_tree_transient=not generation_changed
+            and (
+                (native.complete and revision_changed)
+                or NativeActivityBlocker.LOADED_THREADS_CHANGED.value in native.blockers
+            ),
         )
 
     def _confirmation_idle(self) -> bool:
@@ -1006,6 +1061,8 @@ class CodexRuntimeSession:
             config[CODEX_MULTI_AGENT_V2_ENABLED_CONFIG] = False
         config.update(session_skill_config(self._skill_configurations))
         config.update(self._permission_config)
+        if self._generation_only:
+            config.update(CODEX_GENERATION_ONLY_CONFIG)
         config.update(
             managed_shell_environment(
                 self._tool_environment,
@@ -1036,7 +1093,14 @@ class CodexRuntimeSession:
         enabled = self._enabled_capabilities & SESSION_SCOPED_CAPABILITIES
         if not native_web_search_supported(self._request.model):
             enabled = enabled - {RuntimeCapabilityName.WEB_SEARCH}
-        return capabilities(enabled)
+        return capabilities(
+            enabled,
+            text_sample=(
+                self._binding is not None
+                and (_parse_codex_version(self._native.host.version) or ())
+                >= CODEX_SAMPLE_MIN_VERSION
+            ),
+        )
 
     async def _on_native_event(self, event: CodexSessionEvent) -> None:
         self._activity_revision += 1
@@ -1056,6 +1120,29 @@ class CodexRuntimeSession:
             and bool(self._active_command_id)
             and client_id == self._active_command_id
         )
+        if self._generation_only:
+            if event.kind in GENERATION_ONLY_REJECTED_EVENTS:
+                if not self._generation_error:
+                    self._generation_error = GENERATION_ONLY_TOOL_REJECTED
+                    task = asyncio.create_task(self._interrupt_generation(event))
+                    self._tasks.add(task)
+                    task.add_done_callback(self._tasks.discard)
+                return
+            if self._generation_error and event.kind in {
+                CodexSessionEventKind.TURN_COMPLETED,
+                CodexSessionEventKind.TURN_INTERRUPTED,
+                CodexSessionEventKind.TURN_FAILED,
+            }:
+                event = replace(
+                    event,
+                    kind=CodexSessionEventKind.TURN_FAILED,
+                    payload={
+                        **event.payload,
+                        "status": FAILED_STATE,
+                        "safe_error": self._generation_error,
+                        "error": self._generation_error,
+                    },
+                )
         if (
             event.kind is CodexSessionEventKind.TURN_STARTED or owns_unknown_command
         ) and self._active_command_id:
@@ -1161,6 +1248,23 @@ class CodexRuntimeSession:
         ):
             self._committed_commands.discard(self._active_command_id)
             self._active_command_id = ""
+
+    async def _interrupt_generation(self, event: CodexSessionEvent) -> None:
+        try:
+            await self._native.host.attachment(self._native.session_id).turn.interrupt()
+        except Exception:
+            logger.exception("codex_generation_interrupt_failed turn_id=%s", event.turn_id)
+            await self._on_native_event(
+                replace(
+                    event,
+                    kind=CodexSessionEventKind.RUNTIME_INCIDENT,
+                    payload={
+                        "kind": GENERATION_ONLY_INTERRUPT_FAILED,
+                        "state": FAILED_STATE,
+                        "safe_error": GENERATION_ONLY_TOOL_REJECTED,
+                    },
+                )
+            )
 
     async def _publish_loop_incident(self, event: CodexSessionEvent, safe_error: str) -> None:
         self._sequence += 1
@@ -1327,6 +1431,12 @@ class CodexRuntimeSession:
             raise AppServerError(TURN_ADMISSION_STALE, safe_error=TURN_ADMISSION_STALE)
 
     def _submit_locked(self, request: TurnRequest) -> CommandReceipt:
+        if self._generation_only and (self._generation_submitted or request.collaboration_mode):
+            return CommandReceipt(
+                request.command_id,
+                CommandState.REJECTED,
+                safe_error=GENERATION_ONLY_TURN_REJECTED,
+            )
         if self._active_command_id:
             return CommandReceipt(
                 request.command_id,
@@ -1366,8 +1476,17 @@ class CodexRuntimeSession:
                 )
             return lambda: True
 
+        items = tuple(_input_item(item) for item in request.items)
+        if self._generation_only and any(
+            item.kind not in GENERATION_ONLY_INPUT_KINDS for item in items
+        ):
+            return CommandReceipt(
+                request.command_id,
+                CommandState.REJECTED,
+                safe_error=GENERATION_ONLY_TURN_REJECTED,
+            )
         turn_input = TurnInput(
-            tuple(_input_item(item) for item in request.items),
+            items,
             client_user_message_id=request.command_id,
             collaboration_mode=CollaborationMode(
                 request.collaboration_mode or CollaborationMode.DEFAULT.value
@@ -1377,7 +1496,9 @@ class CodexRuntimeSession:
             submission_deadline=request.submission_deadline,
             submission_attempts=request.submission_attempts,
             retry_observer=observe_retry if request.retry_authorizer is not None else None,
+            output_schema=request.output_schema,
         )
+        self._generation_submitted = True
         self._active_command_id = request.command_id
         task = asyncio.create_task(self._native.run(turn_input))
         self._tasks.add(task)
@@ -1524,20 +1645,36 @@ class CodexRuntimeSession:
 
     @_admitted
     async def steer(self, request: SteerRequest) -> CommandReceipt:
+        if self._generation_only:
+            return CommandReceipt(
+                request.command_id,
+                CommandState.REJECTED,
+                safe_error=GENERATION_ONLY_TURN_REJECTED,
+            )
         active_turn_id = self._native.active_turn_id
         if request.expected_turn_id and request.expected_turn_id != active_turn_id:
             return CommandReceipt(
                 request.command_id,
                 CommandState.REJECTED,
                 correlation_id=active_turn_id,
-                safe_error="runtime_active_turn_changed",
+                safe_error=RUNTIME_ACTIVE_TURN_CHANGED,
             )
-        native_turn_id = await self._native.steer(
-            TurnInput(
-                tuple(_input_item(item) for item in request.items),
-                client_user_message_id=request.command_id,
+        try:
+            native_turn_id = await self._native.steer(
+                TurnInput(
+                    tuple(_input_item(item) for item in request.items),
+                    client_user_message_id=request.command_id,
+                ),
+                expected_turn_id=request.expected_turn_id or active_turn_id,
             )
-        )
+        except AppServerError as exc:
+            if exc.safe_error != RUNTIME_ACTIVE_TURN_CHANGED:
+                raise
+            return CommandReceipt(
+                request.command_id,
+                CommandState.REJECTED,
+                safe_error=exc.safe_error,
+            )
         return CommandReceipt(
             request.command_id,
             CommandState.ACCEPTED,
@@ -1803,6 +1940,28 @@ class CodexRuntimeSession:
 
     @_admitted
     async def control(self, request: RuntimeControlRequest) -> AppliedState:
+        if request.kind is RuntimeControlKind.TEXT_SAMPLE:
+            values = dict(request.values) if isinstance(request.values, Mapping) else {}
+            turn_id = values.get("source_turn_id")
+            prompt = values.get("prompt")
+            if not isinstance(turn_id, str) or not turn_id.strip():
+                raise ValueError("text sample requires a source turn")
+            if not isinstance(prompt, str) or not prompt.strip():
+                raise ValueError("text sample requires a prompt")
+            sampled = await self._native.host.sample(self._native.session_id, turn_id, prompt)
+            return AppliedState(
+                request.command_id,
+                request.command_id,
+                CommandState.APPLIED,
+                scope="session",
+                values={
+                    "source_turn_id": sampled.get("sourceTurnId"),
+                    "text": sampled.get("text"),
+                    "input_tokens": sampled.get("inputTokens"),
+                    "cached_input_tokens": sampled.get("cachedInputTokens"),
+                    "output_tokens": sampled.get("outputTokens"),
+                },
+            )
         control = self._native.mcp_control
         if control is None:
             return AppliedState(

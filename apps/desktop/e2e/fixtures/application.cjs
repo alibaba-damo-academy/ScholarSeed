@@ -5,7 +5,7 @@ const PRODUCT_APP_ROOT_DIRECTORY = 'app-root'
 const PRODUCT_CONFIG_FILE = 'product.json'
 const PRODUCT_DIRECTORIES = ['out', 'resources', 'runtime']
 
-function createProductAppRoot(artifacts, desktopRoot, browserEnabled) {
+function createProductAppRoot(artifacts, desktopRoot, browserEnabled, browserAdvancedSettings) {
   const repository = join(artifacts, PRODUCT_APP_ROOT_DIRECTORY)
   const directory = join(repository, 'apps', 'desktop')
   mkdirSync(directory, { recursive: true })
@@ -19,7 +19,9 @@ function createProductAppRoot(artifacts, desktopRoot, browserEnabled) {
   mkdirSync(join(directory, 'node_modules'), { recursive: true })
   const manifestPath = join(directory, 'resources', PRODUCT_CONFIG_FILE)
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
-  writeFileSync(manifestPath, JSON.stringify({ ...manifest, features: { ...manifest.features, browser: browserEnabled } }, null, 2))
+  const features = { ...manifest.features, browser: browserEnabled }
+  if (browserAdvancedSettings !== undefined) features.browser_advanced_settings = browserAdvancedSettings
+  writeFileSync(manifestPath, JSON.stringify({ ...manifest, features }, null, 2))
   return directory
 }
 

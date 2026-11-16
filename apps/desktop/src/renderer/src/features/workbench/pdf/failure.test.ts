@@ -8,7 +8,7 @@ import {
   pdfAiFailure,
   pdfAiFailureRecovery,
   pdfAiFailureText,
-} from './failure.ts'
+} from '../../../components/business/diagnostic.ts'
 
 const resources = Object.fromEntries(
   ['zh', 'en'].map((language) => [
@@ -36,6 +36,18 @@ async function translator(language = 'zh') {
   })
   return i18n
 }
+
+test('reading citation failures have their own localized explanation', async () => {
+  for (const language of ['zh', 'en']) {
+    const i18n = await translator(language)
+    const failure = { code: 'pdf_ai_reading_citations_invalid', diagnostic: '' }
+    assert.equal(
+      pdfAiFailureText(failure, i18n.getFixedT(null, 'pdf')),
+      resources[language].pdf.reading.errors.reading_citations_invalid
+    )
+    assert.equal(pdfAiFailureRecovery(failure).retry, true)
+  }
+})
 
 test('HTTP details, live tasks, and restored tasks retain identity across language changes', async () => {
   const i18n = await translator()

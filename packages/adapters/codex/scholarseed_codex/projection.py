@@ -6,16 +6,14 @@ import json
 import logging
 import os
 import tomllib
+import traceback
 from pathlib import Path
 from typing import Any, Mapping
 
 import tomlkit
 
 from scholarseed_codex.environment import CODEX_CONFIG_FILENAME, CODEX_MODEL_PROVIDERS_KEY
-from scholarseed_runtime.contract.storage import (
-    RuntimeConfigurationPartitioning,
-    RuntimeConfigurationStorage,
-)
+from scholarseed_runtime.contract.storage import RuntimeConfigurationStorage
 
 LOGGER = logging.getLogger(__name__)
 
@@ -23,7 +21,6 @@ MCP_SERVERS_CONFIG_KEY = "mcp_servers"
 MCP_PROJECTION_ENCODING = "utf-8"
 MCP_PROJECTION_INVALID = "mcp_projection_invalid"
 MCP_PROJECTION_FAILED = "mcp_projection_failed"
-MCP_PARTITION_UNSUPPORTED = "runtime_configuration_partition_unsupported"
 
 
 class McpProjectionError(ValueError):
@@ -40,12 +37,6 @@ class CodexConfigurationEditor:
     @property
     def runtime_home(self) -> Path:
         return self._path.parent
-
-    def partition(self) -> CodexConfigurationEditor:
-        if not isinstance(self._storage, RuntimeConfigurationPartitioning):
-            raise McpProjectionError(MCP_PARTITION_UNSUPPORTED)
-        grant = self._storage.partition(self._path)
-        return CodexConfigurationEditor(grant.storage, grant.path.parent)
 
     def publish(self, servers: Mapping[str, Mapping[str, Any]]) -> str:
         return self._publish({MCP_SERVERS_CONFIG_KEY: servers})
@@ -84,12 +75,15 @@ class CodexConfigurationEditor:
         except McpProjectionError:
             raise
         except Exception as error:
-            # Keep the public error stable; never log config/TOML exception text or payloads.
+            origin = traceback.extract_tb(error.__traceback__)[-1]
             LOGGER.error(
-                "mcp_projection_failed pid=%s exception_type=%s errno=%s winerror=%s",
+                "mcp_projection_failed pid=%s exception_type=%s errno=%s winerror=%s origin=%s:%s:%s",
                 os.getpid(),
                 type(error).__name__,
-                error.errno if isinstance(error, OSError) else None,
-                getattr(error, "winerror", None) if isinstance(error, OSError) else None,
+                getattr(error, "errno", None),
+                getattr(error, "winerror", None),
+                Path(origin.filename).name,
+                origin.lineno,
+                origin.name,
             )
             raise McpProjectionError(MCP_PROJECTION_FAILED) from None

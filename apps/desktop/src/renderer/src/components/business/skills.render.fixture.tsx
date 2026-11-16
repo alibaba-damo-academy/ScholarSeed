@@ -6,7 +6,7 @@ import { resources } from '../../../../localization/resources'
 import { SKILL_CATALOG_CHANGED_EVENT } from '../../../../skills'
 import '../../browser'
 import { StoreProvider } from '../../store'
-import { ToastProvider } from '../ui'
+import { ToastProvider, Toaster } from '../ui'
 import { Skills, SkillAdd } from './Skills'
 
 const localization = createLocalization('zh', resources, { report: () => undefined })
@@ -60,6 +60,7 @@ createRoot(document.getElementById('root')!).render(
             <Skills />
           )}
         </StoreProvider>
+        <Toaster />
       </ToastProvider>
     </I18nextProvider>
   </StrictMode>

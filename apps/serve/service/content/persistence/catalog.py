@@ -15,7 +15,6 @@ proposal 47 §5.4 定死了两件事:
 from __future__ import annotations
 
 import json
-import math
 import re
 import sqlite3
 import time
@@ -27,11 +26,13 @@ from uuid import uuid4
 
 from service.content.domain import naming
 from service.content.domain.model import OPERATION_INTERRUPTED, OperationState
+from service.content.persistence.utils import finite_number
 from service.persistence.notifications import NotificationConnection, NotificationRule
 from service.persistence.project import (
     DatabaseMode,
     database_files,
     open_database,
+    reader,
     rebuild_table,
     reject_schema_residue,
     schema_transaction,
@@ -688,8 +689,8 @@ class ContentCatalog:
             ).fetchall()
         return tuple(_project_row(row) for row in rows)
 
-    def project(self, project_id: str) -> ProjectRow | None:
-        with self._tx() as connection:
+    def project(self, project_id: str, *, read_only: bool = False) -> ProjectRow | None:
+        with reader(self.path) if read_only else self._tx() as connection:
             return self.project_row(connection, project_id)
 
     @staticmethod
@@ -850,8 +851,7 @@ class ContentCatalog:
                     or plan.project_id != record["project_id"]
                     or plan.dir_root != record["root_path"]
                     or plan.layout != ProjectLayout.MANAGED.value
-                    or type(plan.created_at) not in (float, int)
-                    or not math.isfinite(plan.created_at)
+                    or not finite_number(plan.created_at)
                     or plan.created_at < 0
                     or plan.seeded_from is not None
                     or plan.archived_at is not None
@@ -966,7 +966,7 @@ class ContentCatalog:
     ) -> None:
         if not connection.in_transaction:
             raise ValueError("creation recovery requires a transaction")
-        if type(now) not in (int, float) or not math.isfinite(now) or now <= 0:
+        if not finite_number(now) or now <= 0:
             raise ValueError("invalid creation recovery timestamp")
         if not any(row.operation_id == identity for row in cls._project_creations(connection)):
             raise CatalogFormatError("project creation is missing")
@@ -991,7 +991,7 @@ class ContentCatalog:
     ) -> ProjectCreation:
         if not connection.in_transaction:
             raise ValueError("creation recovery requires a transaction")
-        if type(now) not in (int, float) or not math.isfinite(now) or now <= 0:
+        if not finite_number(now) or now <= 0:
             raise ValueError("invalid creation recovery timestamp")
         creation = next(
             (
@@ -1139,7 +1139,7 @@ class ContentCatalog:
         """
         if not connection.in_transaction:
             raise ValueError("project removal requires a transaction")
-        if type(now) not in (int, float) or not math.isfinite(now) or now <= 0:
+        if not finite_number(now) or now <= 0:
             raise ValueError("invalid project removal timestamp")
         removal = next(
             (row for row in cls._project_removals(connection) if row.project_id == project_id),
@@ -1198,9 +1198,9 @@ class ContentCatalog:
     # ---- 关联外部根 ----
 
     def external_roots(
-        self, project_id: str, *, include_revoked: bool = False
+        self, project_id: str, *, include_revoked: bool = False, read_only: bool = False
     ) -> tuple[ExternalRootRow, ...]:
-        with self._tx() as connection:
+        with reader(self.path) if read_only else self._tx() as connection:
             return self.external_root_rows(connection, project_id, include_revoked=include_revoked)
 
     @staticmethod
@@ -1447,7 +1447,7 @@ class ContentCatalog:
         now: float | None = None,
     ) -> None:
         stamp = time.time() if now is None else now
-        if type(stamp) not in (int, float) or not math.isfinite(stamp) or stamp <= 0:
+        if not finite_number(stamp) or stamp <= 0:
             raise ValueError("invalid content operation timestamp")
         if state not in (OperationState.SUCCEEDED, OperationState.FAILED):
             raise ValueError("content operation result must be terminal")
@@ -1643,8 +1643,7 @@ class ContentCatalog:
                     )
                     or root.root_id != record["root_id"]
                     or root.revoked_at is not None
-                    or type(root.authorized_at) not in (int, float)
-                    or not math.isfinite(root.authorized_at)
+                    or not finite_number(root.authorized_at)
                 ):
                     raise ValueError("invalid authorization reconciliation")
                 _inventory_path(root.source_path)
@@ -1739,8 +1738,7 @@ class ContentCatalog:
                             for value in (row.root_id, row.project_id, row.mount_path)
                         )
                         or row.revoked_at is not None
-                        or type(row.authorized_at) not in (int, float)
-                        or not math.isfinite(row.authorized_at)
+                        or not finite_number(row.authorized_at)
                     ):
                         raise ValueError("invalid root receipt result")
                     _inventory_path(row.source_path)

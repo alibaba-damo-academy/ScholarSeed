@@ -1,5 +1,6 @@
 import type { ArtifactCitationReference, RecordTarget, SavedCitationReference } from './workbench'
 
+export const ANSWER_SOURCES_CHANGED_EVENT = 'scholarseed-answer-sources-changed'
 export const MANAGED_FULLTEXT_SOURCE_KIND = 'managed_fulltext'
 
 export function artifactCitationUrl(
@@ -29,7 +30,9 @@ export function savedCitationUrl(
   if (page != null) params.set('page', String(page))
   return `${SAVED_CITATION_ROUTE}/${operation}?${params}`
 }
-export const isCitationUrl = (url: string): boolean => /^scholarseed-cite:/.test(url)
+export const CITATION_URL_PREFIX = 'scholarseed-cite:'
+export const citationReferenceUrl = (handle: string): string => `${CITATION_URL_PREFIX}${handle}`
+export const isCitationUrl = (url: string): boolean => url.startsWith(CITATION_URL_PREFIX)
 export interface CitationPage {
   page: number
   quads: number[][]
@@ -47,9 +50,11 @@ export interface CitationPresentation {
   manual_check: boolean
 }
 export interface CitationResolution {
+  bibliography?: CitationBibliography | null
   artifact_citation?: ArtifactCitationReference
   saved_citation?: SavedCitationReference
   can_open_pdf?: boolean
+  source_missing?: boolean
   pipeline?: string
   fallback_reason?: string
   card_field?: string
@@ -74,6 +79,15 @@ export interface CitationResolution {
   state: 'exact' | 'source_only' | 'unavailable' | 'changed'
   matches: CitationMatch[]
   presentation: CitationPresentation
+}
+export interface CitationBibliography {
+  version: 1
+  title: string
+  authors: string
+  year: string
+  publication: string
+  url: string
+  doi: string
 }
 export interface CitationFocus extends CitationMatch {
   revision: string

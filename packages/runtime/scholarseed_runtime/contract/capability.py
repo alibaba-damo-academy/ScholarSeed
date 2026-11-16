@@ -14,6 +14,7 @@ class CapabilityState(str, Enum):
 
 
 class RuntimeCapabilityName(str, Enum):
+    TEXT_SAMPLE = "text_sample"
     SUSPEND = "suspend"
     RESOURCE_ADMISSION = "resource_admission"
     HOST_WARMUP = "host_warmup"

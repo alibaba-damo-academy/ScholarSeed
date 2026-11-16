@@ -11,9 +11,9 @@ from pydantic import ValidationError
 from starlette.status import (
     HTTP_400_BAD_REQUEST,
     HTTP_403_FORBIDDEN,
-    HTTP_413_CONTENT_TOO_LARGE,
 )
 
+from service.capabilities.service.declarative import CANVAS_SLOT
 from service.capabilities.service.descriptor import ComponentValidationError
 from service.chat.api.bridge import scoped_bridge_admission, scoped_bridge_caller
 from service.chat.service.cards import CardRegistry, DisplayCardError
@@ -34,7 +34,6 @@ from service.platform.bridge import (
     PluginInstallation,
 )
 from service.platform.vocabulary import (
-    BRIDGE_MAX_REQUEST_BYTES,
     BRIDGE_SESSION_HEADER,
 )
 
@@ -55,13 +54,7 @@ def register_card_routes(
             return JSONResponse({"ok": False, "error": "bridge_access_denied"}, HTTP_403_FORBIDDEN)
         scope_id = request.headers.get(BRIDGE_SESSION_HEADER, "")
         turn_id, activity = caller.publication_turn_id, caller.bridge_activity
-        raw = bytearray()
-        async for chunk in request.stream():
-            raw.extend(chunk)
-            if len(raw) > BRIDGE_MAX_REQUEST_BYTES:
-                return JSONResponse(
-                    {"ok": False, "error": "bridge_request_too_large"}, HTTP_413_CONTENT_TOO_LARGE
-                )
+        raw = await request.body()
         try:
             command = PluginInstallation.model_validate_json(raw)
             if (
@@ -87,15 +80,10 @@ def register_card_routes(
         scope_id = request.headers.get(BRIDGE_SESSION_HEADER, "")
         turn_id = caller.publication_turn_id
         activity = caller.bridge_activity
-        raw = bytearray()
-        async for chunk in request.stream():
-            raw.extend(chunk)
-            if len(raw) > BRIDGE_MAX_REQUEST_BYTES:
-                return JSONResponse(
-                    {"ok": False, "error": "bridge_request_too_large"}, HTTP_413_CONTENT_TOO_LARGE
-                )
+        raw = await request.body()
         try:
             parameters = json.loads(raw)
+            command: ComponentCatalog | ComponentPreflight | ComponentInvocation
             if operation == COMPONENT_CATALOG_OPERATION:
                 command = ComponentCatalog.model_validate(parameters)
             elif operation == COMPONENT_PREFLIGHT_OPERATION:
@@ -113,9 +101,25 @@ def register_card_routes(
                     {"ok": False, "error": "bridge_access_denied"}, HTTP_403_FORBIDDEN
                 )
             if isinstance(command, ComponentCatalog):
-                result = {"ok": True, "components": caller.component_catalog()}
+                components = caller.component_catalog()
+                slot = command.slot or (
+                    CANVAS_SLOT if command.include_ui and command.ui_mode == "canvas" else None
+                )
+                selected = (
+                    [item for item in components if item.get("slot") == slot]
+                    if slot
+                    else [
+                        {
+                            key: value
+                            for key, value in item.items()
+                            if key not in {"input_schema", "output_schema"}
+                        }
+                        for item in components
+                    ]
+                )
+                result = {"ok": True, "components": selected}
                 if command.include_ui:
-                    result["ui"] = caller.component_ui_catalog()
+                    result["ui"] = caller.component_ui_catalog(command.ui_mode, command.ui_detail)
                 return JSONResponse(result)
             if isinstance(command, ComponentPreflight):
                 return JSONResponse(
@@ -127,6 +131,10 @@ def register_card_routes(
                     command, turn_id=turn_id, waiting=operation == COMPONENT_REQUEST_OPERATION
                 ),
             )
+            if operation == COMPONENT_DISPLAY_OPERATION:
+                result = {
+                    key: result[key] for key in ("card_id", "type", "component") if key in result
+                }
             return JSONResponse({"ok": True, "result": result})
         except ComponentValidationError as error:
             return JSONResponse(
@@ -150,14 +158,7 @@ def register_card_routes(
         turn_id = caller.publication_turn_id
         if not turn_id:
             return JSONResponse({"ok": False, "error": "bridge_access_denied"}, HTTP_403_FORBIDDEN)
-        raw = bytearray()
-        async for chunk in request.stream():
-            raw.extend(chunk)
-            if len(raw) > BRIDGE_MAX_REQUEST_BYTES:
-                return JSONResponse(
-                    {"ok": False, "error": "bridge_request_too_large"},
-                    HTTP_413_CONTENT_TOO_LARGE,
-                )
+        raw = await request.body()
         try:
             command = DisplayCard.model_validate(json.loads(raw))
         except (ValueError, ValidationError):

@@ -19,6 +19,7 @@ CODEX_PROTOCOL_VERSION = "2"
 CODEX_PROTOCOL_SCHEMA_HASH = "f3dec1e031d99a420b137b903f02196d4325eece57620c925bb7130b25f168d2"
 CODEX_MIN_SUPPORTED_VERSION = (0, 159, 0)
 CODEX_MAX_TESTED_VERSION = (0, 159, 0)
+CODEX_SAMPLE_MIN_VERSION = (0, 164, 0)
 CODEX_ALLOW_UNTESTED_NEWER = True
 CODEX_DEVELOPMENT_VERSION = (0, 0, 0)
 CODEX_ALLOW_DEVELOPMENT_VERSION_ENV = "DAMOAGENT_CODEX_ALLOW_DEVELOPMENT_VERSION"
@@ -33,6 +34,18 @@ CODEX_WEB_SEARCH_DISABLED_MODE = "disabled"
 CODEX_PLAN_TOOL_ENABLED_CONFIG = "tools.update_plan.enabled"
 CODEX_PLAN_TOOL_NAME = "update_plan"
 CODEX_USER_INPUT_ENABLED_CONFIG = "features.default_mode_request_user_input"
+CODEX_GENERATION_ONLY_CONFIG: Mapping[str, RuntimeValue] = {
+    "features.shell_tool": False,
+    "features.multi_agent": False,
+    "features.goals": False,
+    "features.view_image": False,
+    "features.sleep_tool": False,
+    "features.apps": False,
+    CODEX_PLAN_TOOL_ENABLED_CONFIG: False,
+    CODEX_USER_INPUT_ENABLED_CONFIG: False,
+    CODEX_WEB_SEARCH_MODE_KEY: CODEX_WEB_SEARCH_DISABLED_MODE,
+}
+CODEX_GENERATION_ONLY_MULTI_AGENT_MODE = "none"
 CODEX_MULTI_AGENT_V2_ENABLED_CONFIG = "features.multi_agent_v2"
 
 _SUPPORTED_CAPABILITIES = frozenset(
@@ -79,6 +92,8 @@ SESSION_SCOPED_CAPABILITIES = frozenset(_SESSION_CAPABILITY_CONFIGS)
 
 def capabilities(
     enabled_session_capabilities: frozenset[RuntimeCapabilityName] | None = None,
+    *,
+    text_sample: bool = False,
 ) -> CapabilitySet:
     enabled = (
         SESSION_SCOPED_CAPABILITIES
@@ -86,6 +101,8 @@ def capabilities(
         else enabled_session_capabilities
     )
     supported = (_SUPPORTED_CAPABILITIES - SESSION_SCOPED_CAPABILITIES) | enabled
+    if text_sample:
+        supported = supported | {RuntimeCapabilityName.TEXT_SAMPLE}
     return CapabilitySet(
         tuple(
             RuntimeCapability(

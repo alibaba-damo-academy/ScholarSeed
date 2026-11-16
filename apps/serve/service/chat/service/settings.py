@@ -18,6 +18,9 @@ from service.chat.constants import (
     DEFAULT_GLOBAL_PERMISSION_MODE,
     DEFAULT_VERSION_IGNORE_PATTERNS,
     DEFAULT_WORKFLOW_ENABLED,
+    FOLLOW_UP_CONFLICT,
+    FOLLOW_UP_MODE_KEY,
+    FOLLOW_UP_REVISION_KEY,
     GLOBAL_AUTO_REVIEW_DEFAULT_KEY,
     GLOBAL_PERMISSION_MODE_KEY,
     GLOBAL_PERMISSION_MODES,
@@ -32,6 +35,7 @@ from service.chat.constants import (
     VERSION_POLICY_BACKUP_KEY,
     VERSION_POLICY_MIGRATION_KEY,
     WORKSPACE_ROOT_KEY,
+    FollowUpMode,
 )
 from service.paths import SERVE_SETTINGS_FILE
 from service.platform.resources import (
@@ -127,6 +131,35 @@ class SettingsService:
     def workflow_default(self) -> bool:
         value = self._read().get(GLOBAL_WORKFLOW_DEFAULT_KEY)
         return value if isinstance(value, bool) else DEFAULT_WORKFLOW_ENABLED
+
+    @staticmethod
+    def _follow_up(data: Mapping[str, Any]) -> dict[str, Any]:
+        mode = FollowUpMode(data.get(FOLLOW_UP_MODE_KEY, FollowUpMode.QUEUE.value))
+        revision = data.get(FOLLOW_UP_REVISION_KEY, 0)
+        if not isinstance(revision, int) or isinstance(revision, bool) or revision < 0:
+            raise ValueError("invalid follow-up revision")
+        return {"mode": mode.value, "revision": revision}
+
+    def follow_up(self) -> dict[str, Any]:
+        return self._follow_up(self._read())
+
+    def set_follow_up(self, mode: object, *, expected_revision: int) -> dict[str, Any]:
+        selected = FollowUpMode(mode)
+        if (
+            not isinstance(expected_revision, int)
+            or isinstance(expected_revision, bool)
+            or expected_revision < 0
+        ):
+            raise ValueError("invalid follow-up revision")
+        with _transaction():
+            data = self._read()
+            current = self._follow_up(data)
+            if current["revision"] != expected_revision:
+                raise ValueError(FOLLOW_UP_CONFLICT)
+            data[FOLLOW_UP_MODE_KEY] = selected.value
+            data[FOLLOW_UP_REVISION_KEY] = expected_revision + 1
+            self._write(data)
+            return self._follow_up(data)
 
     def set_permission_mode(self, mode: object) -> str:
         value = str(mode or "").strip()

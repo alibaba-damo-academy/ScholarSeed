@@ -95,7 +95,8 @@
     "title": "Connectors",
     "scope": "Connector scope",
     "market": "Marketplace",
-    "mine": "Mine",
+    "mine": "Added",
+    "addedTitle": "Added connectors",
     "install": "Install",
     "authorize": "Authorize",
     "reauthorize": "Authorize",
@@ -240,8 +241,10 @@
   },
   "groups": {
     "all": "Skill marketplace",
+    "hub": "From marketplace",
+    "installed": "Installed skills",
     "scholarseed": "System preset",
-    "user": "Added by me",
+    "user": "User uploaded",
     "label": "Skill groups"
   },
   "loadFailed": "Could not load skills. Please retry.",
@@ -334,6 +337,7 @@
   "deleting": "Deleting…",
   "confirmDelete": "Confirm deletion",
   "upload": {
+    "document": "Skill instructions",
     "formats": "Supports SKILL.md, .zip, or a folder containing SKILL.md",
     "selectDirectory": "Choose folder",
     "directoryFailed": "Could not read the skill folder. Choose a single folder with readable files (up to 5000 files and 64 MiB).",
@@ -355,6 +359,14 @@
   },
   "installed": "Installed {{name}}. It is enabled and available under Mine.",
   "plugin": {
+    "frameFailure": {
+      "load": "The plugin page did not load.",
+      "mount": "The plugin loaded but did not display its content.",
+      "resource": "A plugin script could not be loaded.",
+      "script": "The plugin encountered an error while running."
+    },
+    "expandPreview": "Expand plugin preview",
+    "collapsePreview": "Collapse plugin preview",
     "copy": "Copy card",
     "copyUnavailable": "This card has no copyable text yet",
     "copyMissing": "[This card has no copyable text yet]",
@@ -372,11 +384,10 @@
     "check": "Check plugin",
     "preview": "Conversation preview",
     "confirm": "Authorize and install",
-    "open": "Preview interactions",
     "report": "Plugin inspection",
     "grants": "Requested capabilities",
     "none": "None",
-    "warning": "Only install packages you trust. UI isolation does not sandbox Skill scripts. Preview cannot call native capabilities. Inspection is not runtime acceptance.",
+    "warning": "Only install packages you trust. UI isolation does not sandbox Skill scripts. Inspection is not runtime acceptance.",
     "enableFailed": "Files installed, but enabling failed. Retry enabling from Skills.",
     "sample": "Conversation preview · sample data, no real operations",
     "nativeDetails": "Native actions and details",
@@ -387,6 +398,7 @@
     "confirmAction": "Confirm selection",
     "reset": "Reset preview",
     "unavailable": "Plugin component is unavailable or has changed. No action was submitted.",
+    "conversationContentFailed": "This conversation content could not be displayed.",
     "loading": "Loading component…"
   },
   "installation": {
@@ -403,7 +415,7 @@
       "installing": "Installing"
     },
     "title": "Install generated skill",
-    "checked": "Host checks passed. Not installed yet. Preview interactions, then review permissions and authorize installation.",
+    "checked": "Host checks passed. Not installed yet. Review permissions before authorizing installation.",
     "install": "Install in ScholarSeed",
     "defer": "Not now",
     "declined": "Installation flow ended without a successful installation receipt.",

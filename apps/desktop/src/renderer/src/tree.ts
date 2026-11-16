@@ -31,6 +31,7 @@ export function serveSessionNode(
             : 'dormant'
   return {
     id: session.session_id,
+    displayParentSessionId: session.display_parent_session_id,
     title: session.title || session.session_id.slice(0, 8),
     title_fallback: session.title ? sessionTitleFallback(session.title_fallback) : null,
     status,
@@ -118,6 +119,25 @@ export function upsertSessionNode(nodes: SessionNode[], node: SessionNode): Sess
   // The session list is a newest-first creation timeline. A locally-created
   // session arrives before the next catalog refresh and therefore starts at the head.
   return findSessionNode(nodes, node.id) ? replaceSessionNode(nodes, node) : [node, ...nodes]
+}
+
+export function projectSessionNodes(nodes: SessionNode[]): SessionNode[] {
+  const byId = new Map(nodes.map((node) => [node.id, node]))
+  const children = new Map<string, SessionNode[]>()
+  const roots: SessionNode[] = []
+  for (const node of nodes) {
+    const parent = node.displayParentSessionId ? byId.get(node.displayParentSessionId) : undefined
+    if (parent && parent.id !== node.id && !parent.displayParentSessionId) {
+      const siblings = children.get(parent.id) ?? []
+      siblings.push(node)
+      children.set(parent.id, siblings)
+    } else {
+      roots.push(node)
+    }
+  }
+  return roots.map((node) =>
+    children.has(node.id) ? { ...node, children: children.get(node.id) } : node
+  )
 }
 
 /** Preserve a branch's position in the sidebar tree when it receives its real session id. */

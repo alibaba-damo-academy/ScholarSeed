@@ -8,7 +8,8 @@ import logging
 import os
 import re
 import time
-from typing import TypedDict
+from collections.abc import Mapping
+from typing import TypedDict, TypeGuard
 from urllib.parse import urlsplit
 
 import httpx
@@ -28,6 +29,7 @@ AGENT_BROWSER_ACTION_DEADLINE_SECONDS = 29.0
 AGENT_BROWSER_ACTION_TIMEOUT_SECONDS = 35.0
 AGENT_BROWSER_MAX_RESPONSE_BYTES = 65_536
 AGENT_BROWSER_PROOF_LIFETIME_MS = 60_000
+MILLISECONDS_PER_SECOND = 1000
 AGENT_BROWSER_PROOF_ID_CHARS = 128
 AGENT_BROWSER_HISTORY_DIGEST_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 AGENT_BROWSER_MAX_URL_CHARS = 8_192
@@ -50,6 +52,44 @@ class BrowserScope(TypedDict):
     generation: int
     interrupt_generation: int
     lifecycle_epoch: int
+
+
+class BrowserObservationProof(TypedDict):
+    proof_id: str
+    target_instance_id: str
+    target_generation: int
+    origin: str
+    policy_decision: str
+    expires_at: int
+
+
+def valid_observation_proof(
+    value: object, scope: Mapping[str, object], requestId: str, tabId: object, intent: str
+) -> TypeGuard[BrowserObservationProof]:
+    return (
+        isinstance(value, dict)
+        and value.get("scope") == scope
+        and value.get("request_id") == requestId
+        and value.get("tab_id") == tabId
+        and value.get("intent") == intent
+        and isinstance(value.get("policy_decision"), str)
+        and value["policy_decision"] in {"ask", "allow"}
+        and isinstance(value.get("proof_id"), str)
+        and bool(value["proof_id"])
+        and isinstance(value.get("target_instance_id"), str)
+        and bool(value["target_instance_id"])
+        and isinstance(value.get("origin"), str)
+        and bool(value["origin"])
+        and isinstance(value.get("target_generation"), int)
+        and not isinstance(value["target_generation"], bool)
+        and value["target_generation"] >= 0
+        and isinstance(value.get("policy_revision"), int)
+        and not isinstance(value["policy_revision"], bool)
+        and value["policy_revision"] >= 0
+        and isinstance(value.get("expires_at"), int)
+        and not isinstance(value["expires_at"], bool)
+        and value["expires_at"] > time.time() * MILLISECONDS_PER_SECOND
+    )
 
 
 def _web_origin(value: object) -> str | None:
@@ -1050,12 +1090,8 @@ class BrowserHostClient:
             "lifecycle_epoch": lifecycle_epoch,
             **({"request_id": request_id} if request_id is not None else {}),
             **({"action_request_id": action_request_id} if action_request_id is not None else {}),
-            **(
-                {"tab_id": tab_id, "intent": intent}
-                if tab_id is not None and intent is not None
-                else {}
-            ),
-            **({"tab_id": tab_id} if tab_id is not None and intent is None else {}),
+            **({"tab_id": tab_id} if tab_id is not None else {}),
+            **({"intent": intent} if intent is not None else {}),
             **({"grant_request_id": grant_request_id} if grant_request_id is not None else {}),
             **({"proof_id": proof_id} if proof_id is not None else {}),
             **({"url": url} if url is not None else {}),

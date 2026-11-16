@@ -1,12 +1,28 @@
-# 自定义交互：载荷与生命周期
+# Custom interactions: payloads and lifecycle
 
-本指南使用 schema 2 的既有语义，不授予能力或替代真实使用验收。
+This guide describes existing schema 2 semantics. It neither grants capabilities nor replaces real usage verification.
 
-## 同一份 values，两层校验
+## Declare and invoke a component
 
-组件的 input_schema 描述宿主传入的 data；动作 input_schema 描述用户提交的 values。
-对于 interaction.answer，组件 output_schema 也校验同一份 values，不校验外层回答信封。
-例如用户提交 `{ "feedback": "保持当前范围" }`：
+Declare `id`, `slot`, JSON `preview` and `actions` under schema 2 `components`; do not use schema 1 `ui`, standalone HTML or `context/invoke`. Public components reference a public slot from the contract, set `public: true` and omit `entry`. The host owns those implementations and their domain tools and permissions; generic invocation cannot replace them or fabricate candidates, downloads or authorization records.
+
+Custom components provide a package-local JavaScript `entry` and omit `public` or set it to false. Use the contract's JSON Schema subset without external references. Inputs, drafts and answers are JSON, not secrets or functions. Mount ordinary JavaScript in the host's `#root`; no CDN, remote modules, network requests or proxies, Node, host DOM, popups, downloads or external links. The host owns the isolated container.
+
+For a workbench, verify host support before declaring `"workbench": true` on the custom component (or using `--workbench`). The host supplies the open action and moves the same instance; do not add a navigation button.
+
+At runtime, check `component/catalog` with `{}` through the model tool `scholarseed_bridge`, not shell credentials. A descriptor or preview does not display a card. Use `component/display` once per logical result: the returned card record does not prove business completion. A display card is resolved; browsing state stays local with no draft saves. Use `component/request` when later work depends on the answer. Parse `{action, values}` from `result.answers` on success and treat `result.cancelled` as cancellation. Failure, expiry and unknown delivery cannot advance dependent work. Consume successful answers without asking for textual confirmation again.
+
+Start with the package's invocation payload and the current `component_invocation_schema`. Both calls require `request_id`, `slot`, `data` and `title`; optional `prompt` explains the decision but does not replace the title. Measure serialized UTF-8 bytes against `bridge_request_max_bytes`, not the data schema limit. Send only summaries, stable IDs and evidence pointers for the current step. Split oversized requests by stage and keep full evidence in the persistent working directory.
+
+Use a new ID for a new result, stage or revision. If delivery is uncertain, check the original receipt before retrying with the same ID and identical payload. Keep inputs on failure and carry unchanged confirmations forward. Never repeat business side effects to recover an unknown response.
+
+Enablement allows new bindings; it does not run the Skill or display a card. Custom slots are exclusive among enabled plugins. An initial conflict may permit installation without enablement; an update conflict preserves the previous version and registration. Disablement prevents new bindings, while existing interactions remain pinned to their original package, data and saved choices and continue only after permission checks.
+
+## The same values, two validations
+
+A component's input_schema describes host-provided data. An action's input_schema describes user-submitted values.
+For interaction.answer, the component output_schema validates those same values, not the outer answer envelope.
+For example, a user submits `{ "feedback": "Keep the current scope" }`:
 
 ```json
 {
@@ -17,13 +33,23 @@
 }
 ```
 
-将该 schema 同时用于确认动作 input_schema 和组件 output_schema。
-不要在 output_schema 要求 action，或在提交时偷偷添加未声明的 stage。
-宿主返回给 AI 的回答才是 `{ "action": "confirm", "values": { "feedback": "保持当前范围" } }`。
-预览场景添加 `"submissions": { "confirm": [{ "feedback": "保持当前范围" }] }`，保留该动作正常 responses。
-样例检查不执行 JavaScript，不证明所有运行分支都合法；预览操作及实际运行仍需验证。
+Use this schema for both the confirmation action input_schema and the component output_schema.
+Do not require action in output_schema or silently add an undeclared stage on submission.
+Only the host's answer to the AI is `{ "action": "confirm", "values": { "feedback": "Keep the current scope" } }`.
 
-## 保存与提交
+## Preview the same component
+
+A scenario uses `{data, responses}`; cover every action with a `{state, data}` response, where state is resolved, failed or cancelled. Include `"submissions": { "confirm": [{ "feedback": "Keep the current scope" }] }`-style examples for each custom confirmation action. The preview validates actual submitted values against both schemas before applying sample responses.
+
+Public previews reuse the host component; custom previews load the same package code as live use. Replace only business execution with sample responses. Do not add preview-only confirmation controls or execute real business operations. Use the [testing guide](testing.md) for task-specific scenarios and checks.
+
+## Registering content for copying
+
+The host's copy control below the message combines the text and cards in order; the iframe does not write directly to the clipboard. Inside the official `mount`, text and research cards, charts, `DataTable` and `Content` register automatically. For additional custom-rendered text, call the declared `useCopyContent(text)` from the React component. Use `setCopyContent({text, markdown?})` for the whole card only when it is fully custom-rendered. Do not mix replacement-style registration with automatic merging in the same frame.
+
+After saving a draft, wait for `onState.revision` to update before registering the new version. Keep complete source text, excerpts, sources and current choices. Do not copy buttons, rely only on the collapsed DOM or read files pointed to by artifact links. Report registration failures and allow retry. If content exceeds 64 KiB, do not truncate it and report success. Copy registration neither advances the AI, proves task completion nor grants clipboard permissions.
+
+## Saving and submitting
 
 ```javascript
 try {
@@ -36,50 +62,33 @@ try {
 }
 ```
 
-这些变量和展示函数由卡片实现。草稿是 JSON 对象；不能比较 receipt.state 与字符串。
-保存失败保留本地输入。提交使用 `window.plugin.submit("confirm", { feedback })`，没有业务 Promise；
-等待 onState 更新，不能自行宣告流程成功。恢复时使用宿主 draft，不用默认值覆盖已经保存的选择。
+The card implements these variables and display functions. `receipt.state` is the saved JSON draft, not the string `"saved"`. Only a successful receipt with its revision proves persistence; save neither authorizes nor advances the workflow. Keep local input on failure. Submit the declared action and JSON values with `window.plugin.submit`; wait for `onState`, not a business-result Promise. Sensitive operations require trusted host confirmation outside the component.
 
-## 本地编辑不是宿主快照
+## Local edits are not host snapshots
 
-维护独立的当前编辑模型；输入、增删项、排序和优先级操作立即写入该模型。保存和确认的事件处理器在点击时读取这个模型，
-不要捕获上次 render 的 values 副本。用户选填的字段不能被校验器变成必填；移除最后一项是否允许必须由业务要求决定。
+Use `data` for card inputs and field definitions, and `draft` for saved user values. Do not merge them even when the keys match: for example, `data.fields` is an array of field definitions, while `draft.fields` is an object of values. Restore values from the draft one field at a time.
 
-首次挂载从 draft 恢复（空数组、false 和空字符串也是有效选择），缺失字段才回退到 data/default。
-onState 是宿主快照通知，不是“丢弃未保存修改”的指令。相同 data/draft 的状态、语言或主题变化不能清空本地编辑；
-保存期间继续输入时，旧保存回执不能覆盖较新的输入。保存成功记录提交时的编辑修订，只有本地修订未变化才标记全部已保存。
-真正的新流程数据或外部草稿变化应明确合并/冲突策略；不在每次 onState 开头无条件把编辑模型置空。
-非 pending 时禁用回答提交，但已完成的展示卡仍可提供获准的只读查看操作。
+Maintain an independent current edit model. Inputs, insertion/removal, sorting and priority changes update it immediately.
+Save and confirm handlers read that model at click time, not a values copy captured during a previous render.
+Validation must not make optional user fields mandatory. Whether removing the final item is allowed is a business requirement.
 
-交付前逐项操作：连续修改两个值、不失焦立即确认、增删项后确认、保存期间继续输入、失败重试、关闭重开恢复。
-逐项核对宿主实际收到的 values，不能只检查界面文字变化或预览样例通过。
+On first mount, restore draft: empty arrays, false and empty strings are valid. Fall back to data/default only for missing fields.
+`onState` supplies the host snapshot (`data`, `draft`, `status`, `language`, `slot`, `theme`). State, language or theme changes with identical data/draft must not clear unsaved edits. An iframe remount is not a new business step.
+An older save receipt must not overwrite edits made while saving. Record the edit revision submitted for saving; mark everything saved only if the local revision has not changed.
+Define a merge/conflict policy for genuinely new workflow data or externally changed drafts. Never reset the edit model unconditionally on every onState.
+Disable answer submission outside pending. Completed display cards may still offer authorized read-only viewing actions.
 
-## 回答和宿主能力调用分开
+When a confirmation card resolves, use its final values to restore the original view. Include the stable IDs, filters, selections and edits needed for review in the declared values. Disable editing, saving and submission; keep details readable.
 
-`plugin.submit` 只用于回答等待中的交互，不能用来打开文献、导航、保存或入库；display 卡没有等待中的回答，
-因此在 display 卡上调用 submit 不会获得导航结果。
-宿主能力使用 `await plugin.request(actionId, values)`，动作须在包内声明且在当前调用上下文有实际处理器。
-成功、取消、失败分别呈现；捕获拒绝并保留当前内容，不把“已发送”当“已打开”。
+The scaffold's optional `data.fields` is an array of `{id, label, placeholder?, value?}` definitions. Text defaults to an empty string; drafts and answers use `fields: {fieldId: text}`. No definitions means no extra inputs. Update requests, preview responses, submissions and downstream consumption together. Dynamic rows need their own checks: the first edit must write real state even when the displayed row started as a placeholder or all rows were deleted.
 
-声明 `navigation.open` 或 `literature.read` 并不自动生成任意文献 API。
-当前通用自定义组件的 plugin-call 只接通 skills.list、navigation.skills；文献查看等能力由对应公共文献卡的领域端口提供，
-不能将公共卡中的 action 名复制到通用自定义卡就承诺它可用。需要当前未开放能力时说明缺口并与用户确定可用流程，
-不要生成无效“打开原文”按钮、静默降级或绕隔离使用 window.open。
+## Answers and host capabilities are separate
 
-## 最小合法发布与载荷
+plugin.submit answers a pending interaction; it cannot open papers, navigate, save or import to a library.
+A display card has no pending answer, so submit on it cannot produce navigation.
+Use `await plugin.request(actionId, values)` for host capabilities. Declare the action in the package and verify that the current invocation context has its real handler.
+Present success, cancellation and failure separately. Catch rejection and retain content; "sent" does not mean "opened".
 
-`describe` 的 component_invocation_schema 是实际 request/display 请求 schema，bridge_request_max_bytes 是桥传输的字节上限。
-生成的 Skill 应先从本会话 catalog 核实实际 slot，再发送包含 request_id、slot、data、title 的完整请求；
-display 同样需要 title。prompt 用于说明要决定什么，不代替 title。
-预先按 UTF-8 测量序列化请求体，不能用字符数或组件 data 的校验上限代替传输上限。
-卡片仅携带当前步骤所需的结构化摘要、稳定条目 ID 和证据指针，不塞入整篇正文、重复长段或全量历史。
-超过上限时按业务阶段拆分，保留完整证据在持久工作目录中；不要先反复发超大请求再逐个猜必填字段。
-修订 data 或 title 后换新 request_id，相同参数的运输重试才沿用原 ID。
-
-## 多阶段与修订
-
-每一步写清输入、用户决定、返回值、后续动作和取消路径。范围确认后才选择材料，材料确认后才构建大纲；
-依赖用户决定的步骤不得提前执行。请求 ID 由步骤和修订轮组成；同参数投递重试复用原 ID，
-用户修改目标或大纲后用新修订轮 ID。失败保留输入、取消不推进、结果未知先核对，不盲目重复业务。
-
-最终交付分别说明包检查、预览、安装和实际使用的证据；没有实际执行的环节明确未验证。
+Declaring navigation.open or literature.read does not create an arbitrary literature API.
+Generic custom component plugin-call currently connects skills.list and navigation.skills only. Paper viewing and other domain operations belong to the corresponding public literature card's domain port.
+Copying a public card's action name into a generic custom card does not make it available. Explain a missing capability and agree on a supported flow instead of generating a dead "open full text" button, silently degrading or using window.open to bypass isolation.

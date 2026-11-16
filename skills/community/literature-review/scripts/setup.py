@@ -5,12 +5,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'lib'))
-from platform_runtime import utf8_env
+from platform_runtime import PYTHON_REQUIREMENT, supports_python, utf8_env
 
 
 def main():
-    if sys.version_info[:2] != (3, 12):
-        raise SystemExit('Python 3.12.x is required by the product environment.')
+    if not supports_python(sys.version_info):
+        raise SystemExit(f'{PYTHON_REQUIREMENT} is required by the product environment.')
     product_python = Path(sys.executable)
     env = utf8_env()
     for args in (['-m', 'pip', 'check'],):

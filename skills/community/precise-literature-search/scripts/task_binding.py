@@ -18,6 +18,7 @@ SKILL_NAME = "precise-literature-search"
 TASK_TYPE = "precise_search"
 RUN_ROOT_NAME = ".precise-literature-search"
 RUNS_DIR_NAME = "runs"
+RUN_PATH_PARTS = 3
 BINDING_FILE = ".pls-binding.json"
 BINDING_SCHEMA_VERSION = "1.0"
 CAPABILITY = "task"
@@ -59,22 +60,34 @@ def write_binding(run_dir: Path, work_dir: Path) -> dict:
 def ensure_binding(run_dir: Path) -> dict:
     """Return the run's binding, regenerating it for a run resumed from an older skill."""
 
+    if run_dir.parent.name != RUNS_DIR_NAME or run_dir.parent.parent.name != RUN_ROOT_NAME:
+        raise ValueError("not a run directory of this skill")
+    current_run = run_dir.resolve()
+    work_dir = current_run.parents[2]
+    state = read_json(run_dir / "state.json")
+    if "activation_workspace" in state:
+        relative = Path(state["activation_workspace"])
+        if (
+            relative.is_absolute()
+            or len(relative.parts) < RUN_PATH_PARTS
+            or ".." in relative.parts
+            or current_run.parts[-len(relative.parts):] != relative.parts
+        ):
+            raise ValueError("stored activation workspace does not identify this run")
+        work_dir = current_run.parents[len(relative.parts) - 1]
     path = run_dir / BINDING_FILE
     if path.is_file():
         binding = read_json(path)
         if isinstance(binding, dict) and binding.get("run_id") == run_dir.name:
-            current_run = run_dir.resolve()
             if (
                 binding.get("version") != skill_version()
                 and binding.get("skill") == str(SKILL_ROOT)
                 and binding.get("workspace") == str(current_run)
-                and binding.get("work_dir") == str(current_run.parents[2])
+                and binding.get("work_dir") == str(work_dir)
             ):
-                return write_binding(run_dir, current_run.parents[2])
+                return write_binding(run_dir, work_dir)
             return binding
-    if run_dir.parent.name != RUNS_DIR_NAME or run_dir.parent.parent.name != RUN_ROOT_NAME:
-        raise ValueError("not a run directory of this skill")
-    return write_binding(run_dir, run_dir.resolve().parents[2])
+    return write_binding(run_dir, work_dir)
 
 
 def activation_request(run_dir: Path) -> dict:

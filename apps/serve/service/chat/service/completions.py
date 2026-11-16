@@ -121,6 +121,11 @@ SUPERSEDED_TOOL_DECLARATIONS = "superseded_tool_declarations"
 DEVELOPER_ROLE = "developer"
 ITEM_REFERENCE_TYPE = "item_reference"
 MODEL_BRIDGE_INVALID_TOOL_INPUT = "model_bridge_invalid_tool_input"
+MODEL_BRIDGE_INVALID_OUTPUT_FORMAT = "model_bridge_invalid_output_format"
+OUTPUT_FORMAT_TEXT = "text"
+OUTPUT_FORMAT_JSON_OBJECT = "json_object"
+OUTPUT_FORMAT_JSON_SCHEMA = "json_schema"
+JSON_SCHEMA_FORMAT_KEYS = frozenset(("type", "name", "schema", "strict", "description"))
 MODEL_BRIDGE_CREDENTIAL_REQUIRED = "model_bridge_credential_required"
 MODEL_UPSTREAM_STREAM_ERROR = "model_upstream_stream_error"
 UPSTREAM_RATE_LIMIT_STATUS = HTTPStatus.TOO_MANY_REQUESTS
@@ -410,7 +415,9 @@ class CompletionUpstream:
     thinking: ModelThinking | None = None
     reasoning_options: tuple[Mapping[str, Any], ...] | None = None
     provider: str = ""
+    reasoning_summary_models: frozenset[str] = frozenset()
     approval_model_ref: str = ""
+    allow_tools: bool = True
     active: bool = True
     renewal_source: Callable[[], object] | None = field(default=None, repr=False)
     renewal_epochs: tuple[CompletionEpoch, ...] = field(default_factory=tuple, repr=False)
@@ -658,6 +665,7 @@ class CompletionBridge:
         self._internal_base_url = internal_base_url.rstrip("/")
         # machine 轴下订阅桥归这台机器所有, 切账号不该把它拆掉(见 rebind_owner)。
         self._shared_ownership = bool(shared_ownership)
+        # 组合根注入的只读探针: 会话当前附着持有的 bridge_id; None 表示无附着保护(旧行为)。
         self._held_registration = held_registration
         self._probe_failures = 0
         self._upstreams: dict[str, CompletionUpstream] = {}
@@ -738,6 +746,7 @@ class CompletionBridge:
                 upstream.token_provider,
                 upstream.trust_env,
                 upstream.provider,
+                upstream.reasoning_summary_models,
                 dict(upstream.model_routes),
             )
 
@@ -828,6 +837,7 @@ class CompletionBridge:
                     "responses_endpoint": upstream.responses_endpoint,
                     "wire_protocol": upstream.wire_protocol,
                     "provider": upstream.provider,
+                    "reasoning_summary_models": sorted(upstream.reasoning_summary_models),
                     "model_routes": upstream.model_routes,
                     "reasoning_effort": upstream.reasoning_effort,
                     "thinking": (
@@ -882,7 +892,9 @@ class CompletionBridge:
         thinking: ModelThinking | None = None,
         reasoning_options: Sequence[Mapping[str, Any]] | None = None,
         provider: str = "",
+        reasoning_summary_models: frozenset[str] = frozenset(),
         approval_model_ref: str = "",
+        allow_tools: bool = True,
         renewal_source: Callable[[], object] | None = None,
         resume_scope: str = "",
     ) -> CompletionRegistration:
@@ -935,6 +947,7 @@ class CompletionBridge:
                         "reasoning_options": reasoning_options,
                         "trust_env": trust_env,
                         "provider": provider,
+                        "reasoning_summary_models": sorted(reasoning_summary_models),
                         "approval_model": approval_model_ref,
                         "source_text": source_text,
                     },
@@ -997,7 +1010,9 @@ class CompletionBridge:
                 else None
             ),
             provider=provider,
+            reasoning_summary_models=reasoning_summary_models,
             approval_model_ref=approval_model_ref,
+            allow_tools=allow_tools,
             renewal_source=renewal_source,
         )
         upstream = self._upstreams[bridge_id]
@@ -1348,7 +1363,9 @@ class CompletionBridge:
                 await call.before_output(upstream.session_id, diagnostic.turn_id, b"")
             result = await self._forward(upstream, payload, call)
             if not call.streaming and result.status_code < 400 and call.before_output is not None:
-                await call.before_output(upstream.session_id, diagnostic.turn_id, result.body)
+                await call.before_output(
+                    upstream.session_id, diagnostic.turn_id, bytes(result.body)
+                )
             if result.status_code >= 400:
                 reason = StreamEnd.HTTP_ERROR.value
             return result
@@ -1379,6 +1396,13 @@ class CompletionBridge:
                 {"error": {"code": MODEL_BRIDGE_INVALID_TOOL_INPUT}}, status_code=400
             )
         call.diagnostic.converted_input_items = converted_items
+        if not upstream.allow_tools:
+            # Native runtimes can still advertise interactive tools after their
+            # generation-only flags are applied. Restrict the registered model
+            # request as well, before either wire protocol is projected.
+            payload = dict(payload)
+            for field in ("tools", "tool_choice", "parallel_tool_calls"):
+                payload.pop(field, None)
         call.diagnostic.observe_tools(payload)
         namespace_tools = NamespaceTools({})
         if upstream.wire_protocol == ModelWireProtocol.CHAT_COMPLETIONS:
@@ -1412,7 +1436,12 @@ class CompletionBridge:
         if native_response:
             chat_request = dict(payload)
         else:
-            chat_request = responses_to_chat_request(payload)
+            try:
+                chat_request = responses_to_chat_request(payload)
+            except ValueError:
+                return JSONResponse(
+                    {"error": {"code": MODEL_BRIDGE_INVALID_OUTPUT_FORMAT}}, status_code=400
+                )
         protocol = (
             ModelWireProtocol.RESPONSES if native_response else ModelWireProtocol.CHAT_COMPLETIONS
         )
@@ -1498,6 +1527,7 @@ class CompletionBridge:
             ),
             protocol.value,
         )
+        call.diagnostic.observe_output_format(chat_request)
         request_bytes_before = _json_size(chat_request)
         if not native_response and request_bytes_before > CHAT_COMPLETIONS_REQUEST_LIMIT_BYTES:
             try:
@@ -1966,7 +1996,11 @@ class CompletionBridge:
                 if call.revoked or not upstream.active:
                     raise asyncio.CancelledError()
                 if native_response:
-                    normalizer = NativeResponseNormalizer()
+                    normalizer = NativeResponseNormalizer(
+                        reasoning_summary=(
+                            str(chat_request["model"]) in upstream.reasoning_summary_models
+                        )
+                    )
                     provenance = ProvenanceStream()
                     assert native_iterator is not None
                     async for chunk, previously_observed, prefix_complete in _native_stream_chunks(
@@ -2260,10 +2294,54 @@ def responses_to_chat_request(payload: Mapping[str, Any]) -> dict[str, Any]:
         request["max_tokens"] = max_tokens
     if payload.get("parallel_tool_calls") is not None:
         request["parallel_tool_calls"] = bool(payload.get("parallel_tool_calls"))
+    response_format = _chat_response_format(payload)
+    if response_format is not None:
+        request["response_format"] = response_format
     reasoning = payload.get("reasoning")
     if isinstance(reasoning, Mapping) and reasoning.get("effort"):
         request["reasoning_effort"] = reasoning["effort"]
     return request
+
+
+def _chat_response_format(payload: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Preserve Responses structured-output semantics on a Chat Completions wire."""
+    text = payload.get("text")
+    if text is None:
+        return None
+    if not isinstance(text, Mapping):
+        raise ValueError(MODEL_BRIDGE_INVALID_OUTPUT_FORMAT)
+    format_ = text.get("format")
+    if format_ is None:
+        return None
+    if not isinstance(format_, Mapping):
+        raise ValueError(MODEL_BRIDGE_INVALID_OUTPUT_FORMAT)
+    kind = format_.get("type")
+    if kind in (OUTPUT_FORMAT_TEXT, OUTPUT_FORMAT_JSON_OBJECT):
+        if set(format_) != {"type"}:
+            raise ValueError(MODEL_BRIDGE_INVALID_OUTPUT_FORMAT)
+        return None if kind == OUTPUT_FORMAT_TEXT else {"type": kind}
+    if kind != OUTPUT_FORMAT_JSON_SCHEMA or set(format_) - JSON_SCHEMA_FORMAT_KEYS:
+        raise ValueError(MODEL_BRIDGE_INVALID_OUTPUT_FORMAT)
+    if (
+        not isinstance(format_.get("name"), str)
+        or not format_["name"]
+        or not isinstance(format_.get("schema"), Mapping)
+        or (
+            "strict" in format_
+            and format_["strict"] is not None
+            and not isinstance(format_["strict"], bool)
+        )
+        or (
+            "description" in format_
+            and format_["description"] is not None
+            and not isinstance(format_["description"], str)
+        )
+    ):
+        raise ValueError(MODEL_BRIDGE_INVALID_OUTPUT_FORMAT)
+    return {
+        "type": kind,
+        "json_schema": {key: value for key, value in format_.items() if key != "type"},
+    }
 
 
 def _chat_request_metrics(request: Mapping[str, Any]) -> dict[str, int]:

@@ -1,0 +1,160 @@
+{
+  "version": "V11",
+  "parent": "V5",
+  "status": "generation_validation_passed",
+  "release_sha256": "7d062a22e8ac72823ee4eaa3d0f83807417e851fea4f73caa6f4685427dcd2ae",
+  "code_commit": "eba39b9",
+  "code_tag": "cpes-figure-v11-experiment",
+  "date": "2026-09-22",
+  "model": "qwen3.8-max",
+  "reasoning_effort": "none",
+  "pdf": "2607.29595.pdf",
+  "cards": 7,
+  "model_calls": 7,
+  "local_card_reuses": 0,
+  "retries": 0,
+  "offline_tests_passed": 111,
+  "quality_blind_review": "not_performed",
+  "same_images_and_text_prompts_as_v5": true,
+  "unknown_evidence_rejected_locally": true,
+  "v5_usage": {
+    "input_tokens": 10367,
+    "output_tokens": 7645,
+    "total_tokens": 18012,
+    "cached_tokens": null
+  },
+  "v11_usage": {
+    "input_tokens": 10367,
+    "output_tokens": 7847,
+    "total_tokens": 18214,
+    "image_tokens": 1685,
+    "cached_tokens": 8192,
+    "uncached_input_tokens": 2175
+  },
+  "input_schema_local_estimate": {
+    "tokenizer": "o200k_base",
+    "v5_total": 1756,
+    "v11_total": 1414,
+    "saving": 342
+  },
+  "conclusions": [
+    "All seven cards passed structure and evidence-ID grounding validation.",
+    "Provider reported cache hits, but V5 cache usage was not retained and earlier same-image prompts may have warmed the cache; causation is unproven.",
+    "Provider input token counts are identical to V5 for every figure; local schema text savings did not reduce observed provider input counts.",
+    "Output increased by 202 tokens in this single run; no semantic quality equivalence or stable speed improvement is claimed.",
+    "V5 remains the selected stable release."
+  ],
+  "report": "<upstream-validation>/cpes-all-figures-2607-29595-v11-20260922/token-comparison.md",
+  "run_index": "<upstream-validation>/cpes-all-figures-2607-29595-v11-20260922/run/system/index.json",
+  "stages_seconds": {
+    "cpes-format-converter": 12.359026908874512,
+    "cpes-figure": 31.892018795013428
+  },
+  "per_figure": [
+    {
+      "figure": "1",
+      "usage": {
+        "input_tokens": 1293,
+        "output_tokens": 1075,
+        "total_tokens": 2368,
+        "image_tokens": 128,
+        "image_tokens_source": "usage.x_details",
+        "cached_tokens": 1024,
+        "cached_tokens_source": "usage.input_tokens_details.cached_tokens",
+        "cache_creation_input_tokens": null,
+        "cache_creation_input_tokens_source": "not_reported",
+        "uncached_input_tokens": 269
+      }
+    },
+    {
+      "figure": "2",
+      "usage": {
+        "input_tokens": 2248,
+        "output_tokens": 1564,
+        "total_tokens": 3812,
+        "image_tokens": 622,
+        "image_tokens_source": "usage.x_details",
+        "cached_tokens": 2048,
+        "cached_tokens_source": "usage.input_tokens_details.cached_tokens",
+        "cache_creation_input_tokens": null,
+        "cache_creation_input_tokens_source": "not_reported",
+        "uncached_input_tokens": 200
+      }
+    },
+    {
+      "figure": "3",
+      "usage": {
+        "input_tokens": 1480,
+        "output_tokens": 1052,
+        "total_tokens": 2532,
+        "image_tokens": 219,
+        "image_tokens_source": "usage.x_details",
+        "cached_tokens": 1024,
+        "cached_tokens_source": "usage.input_tokens_details.cached_tokens",
+        "cache_creation_input_tokens": null,
+        "cache_creation_input_tokens_source": "not_reported",
+        "uncached_input_tokens": 456
+      }
+    },
+    {
+      "figure": "4",
+      "usage": {
+        "input_tokens": 1431,
+        "output_tokens": 1199,
+        "total_tokens": 2630,
+        "image_tokens": 77,
+        "image_tokens_source": "usage.x_details",
+        "cached_tokens": 1024,
+        "cached_tokens_source": "usage.input_tokens_details.cached_tokens",
+        "cache_creation_input_tokens": null,
+        "cache_creation_input_tokens_source": "not_reported",
+        "uncached_input_tokens": 407
+      }
+    },
+    {
+      "figure": "5",
+      "usage": {
+        "input_tokens": 1215,
+        "output_tokens": 897,
+        "total_tokens": 2112,
+        "image_tokens": 77,
+        "image_tokens_source": "usage.x_details",
+        "cached_tokens": 1024,
+        "cached_tokens_source": "usage.input_tokens_details.cached_tokens",
+        "cache_creation_input_tokens": null,
+        "cache_creation_input_tokens_source": "not_reported",
+        "uncached_input_tokens": 191
+      }
+    },
+    {
+      "figure": "6",
+      "usage": {
+        "input_tokens": 1350,
+        "output_tokens": 1101,
+        "total_tokens": 2451,
+        "image_tokens": 281,
+        "image_tokens_source": "usage.x_details",
+        "cached_tokens": 1024,
+        "cached_tokens_source": "usage.input_tokens_details.cached_tokens",
+        "cache_creation_input_tokens": null,
+        "cache_creation_input_tokens_source": "not_reported",
+        "uncached_input_tokens": 326
+      }
+    },
+    {
+      "figure": "7",
+      "usage": {
+        "input_tokens": 1350,
+        "output_tokens": 959,
+        "total_tokens": 2309,
+        "image_tokens": 281,
+        "image_tokens_source": "usage.x_details",
+        "cached_tokens": 1024,
+        "cached_tokens_source": "usage.input_tokens_details.cached_tokens",
+        "cache_creation_input_tokens": null,
+        "cache_creation_input_tokens_source": "not_reported",
+        "uncached_input_tokens": 326
+      }
+    }
+  ]
+}

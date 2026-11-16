@@ -6,8 +6,15 @@ import ts from 'typescript'
 import { transformSync } from 'esbuild'
 import { block } from '../../test-helpers/source-contract.ts'
 import { openedSessionTitle } from './session.ts'
-import { sessionSummaryNeedsCatalog } from './catalog.ts'
-import type { SessionStatusSnapshot } from './api.ts'
+import {
+  projectCatalogFailure,
+  pruneMissingCatalogThreads,
+  sameSessionCatalog,
+  sessionSummaryNeedsCatalog,
+} from './catalog.ts'
+import type { AspEnvelope, SessionStatusSnapshot } from './api.ts'
+import type { Thread } from './model.ts'
+import { projectSessionState, recoveryCheckIsCurrent } from './runtime.ts'
 
 /**
  * 「AI 改了产品数据 → 界面按数据域失效重取」这条接线的契约测试。
@@ -19,6 +26,48 @@ import type { SessionStatusSnapshot } from './api.ts'
 const liveSource = readFileSync(new URL('./live.ts', import.meta.url), 'utf8')
 const apiSource = readFileSync(new URL('./api.ts', import.meta.url), 'utf8')
 const storeSource = readFileSync(new URL('./store.tsx', import.meta.url), 'utf8')
+
+test('live recovery incidents supply the identity used to reject a superseded check', () => {
+  let current: Thread = {
+    id: 'thread',
+    title: 'Task',
+    sessionId: 'session',
+    conversation: [],
+    lastSeq: 0,
+  }
+  const branch = block(liveSource, "case 'session_state': {", "case 'session_title_updated':")
+  const apply = runInNewContext(
+    ts.transpileModule(`(event) => { switch (event.type) { ${branch} } }`, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    }).outputText,
+    {
+      threadId: current.id,
+      projectSessionState,
+      patchThread: (_id: string, update: (thread: Thread) => Partial<Thread>) => {
+        current = { ...current, ...update(current) }
+      },
+      set: () => {},
+      refreshMeta: { current: () => {} },
+    }
+  ) as (
+    event: Pick<Extract<AspEnvelope, { type: 'session_state' }>, 'type' | 'data' | 'seq'>
+  ) => void
+  const blocked = {
+    state: 'failed',
+    runtime_id: 'codex',
+    recovery_blocked: true,
+    recovery_pending: true,
+    incident_id: 'incident-1',
+  } as const
+  apply({ type: 'session_state', seq: 10, data: blocked })
+  const requested = current
+  assert.equal(requested.recoveryIncidentId, 'incident-1')
+  assert.equal(requested.recoverySourceSeq, 10)
+  apply({ type: 'session_state', seq: 12, data: { ...blocked, incident_id: 'incident-2' } })
+  assert.equal(current.recoveryIncidentId, 'incident-2')
+  assert.equal(current.recoverySourceSeq, 12)
+  assert.equal(recoveryCheckIsCurrent(current, requested), false)
+})
 
 test('shared notifications forward subjects without changing legacy record reset delivery', () => {
   const source = readFileSync(new URL('./app/notifications.ts', import.meta.url), 'utf8')
@@ -102,6 +151,350 @@ test('thread status snapshots invalidate the catalog only for an actual title ch
 
 const INVALIDATION_EVENT = 'product_data_changed'
 
+test('history replacement cannot permanently erase an unknown-model warning', () => {
+  const parsed = ts.createSourceFile('live.ts', liveSource, ts.ScriptTarget.Latest, true)
+  let callback = ''
+  function visit(node: ts.Node): void {
+    if (ts.isVariableDeclaration(node) && node.name.getText(parsed) === 'markUnknownModel') {
+      const call = node.initializer
+      if (call && ts.isCallExpression(call)) callback = call.arguments[0].getText(parsed)
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(parsed)
+  assert.ok(callback)
+  const state = { threads: { thread: { resumeState: 'pending', conversation: [] as unknown[] } } }
+  let patches = 0
+  const context = {
+    getSnapshot: () => state,
+    resumeUnknownModels: { current: new Set<string>() },
+    resumeStopped: { current: new Set<string>() },
+    resumeDeferredRetries: { current: new Set<string>() },
+    resumeRetryTimers: { current: {} },
+    window: { clearTimeout: () => {} },
+    reportSessionResume: () => ({
+      conversation: [
+        {
+          kind: 'status',
+          incidentId: 'session-resume:session',
+          text: { key: 'resume.modelSelectionUnknown' },
+        },
+      ],
+    }),
+    patchThread: (_id: string, update: (thread: unknown) => object) => {
+      patches++
+      Object.assign(state.threads.thread, update(state.threads.thread))
+    },
+  }
+  const js = ts.transpileModule(`globalThis.mark = ${callback}`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText
+  const mark = runInNewContext(`${js}; globalThis.mark`, context) as (
+    id: string,
+    sid: string
+  ) => void
+  mark('thread', 'session')
+  mark('thread', 'session')
+  assert.equal(patches, 1)
+  state.threads.thread.conversation = [] // a late history snapshot replaces the notice
+  mark('thread', 'session')
+  assert.equal(patches, 2)
+})
+
+test('resume cleanup keeps a terminal result and requeues only a superseded attempt', () => {
+  const parsed = ts.createSourceFile('live.ts', liveSource, ts.ScriptTarget.Latest, true)
+  let cleanup = ''
+  function visit(node: ts.Node): void {
+    if (ts.isTryStatement(node) && node.finallyBlock?.getText(parsed).includes('ownsAttempt'))
+      cleanup = node.finallyBlock.getText(parsed)
+    ts.forEachChild(node, visit)
+  }
+  visit(parsed)
+  assert.ok(cleanup)
+  for (const [superseded, unknown] of [
+    [false, false],
+    [true, false],
+    [true, true],
+  ]) {
+    const attempt = {}
+    const inFlight = new Map([['thread', attempt]])
+    const patches: unknown[] = []
+    const thread = { sessionId: 'session', readOnly: false }
+    const state = {
+      threads: { thread },
+      activeSession: 'thread',
+      backendReady: true,
+      runtimeQuiescing: false,
+    }
+    const context = {
+      threadId: 'thread',
+      attempt,
+      generation: 1,
+      resumeInFlight: { current: inFlight },
+      current: () => !superseded && inFlight.get('thread') === attempt,
+      stateRef: { current: state },
+      startupSnapshot: () => ({ generation: 1 }),
+      disposed: { current: false },
+      resumeUnknownModels: { current: new Set(unknown ? ['thread'] : []) },
+      detachers: { current: {} },
+      patchThread: (_id: string, value: unknown) => patches.push(value),
+    }
+    runInNewContext(
+      ts.transpileModule(cleanup, {
+        compilerOptions: { target: ts.ScriptTarget.ES2022 },
+      }).outputText,
+      context
+    )
+    assert.equal(inFlight.has('thread'), false)
+    assert.deepEqual(
+      patches.map((value) => JSON.stringify(value)),
+      superseded && !unknown ? ['{"resumeState":"pending"}'] : []
+    )
+  }
+})
+
+test('model selection supersedes a delayed resume response and requeues after selection', () => {
+  const parsed = ts.createSourceFile('live.ts', liveSource, ts.ScriptTarget.Latest, true)
+  let currentSource = ''
+  let cleanup = ''
+  function visit(node: ts.Node): void {
+    if (
+      ts.isVariableDeclaration(node) &&
+      (node.name.getText(parsed) === 'streamCurrent' ||
+        (node.name.getText(parsed) === 'current' &&
+          node.getText(parsed).includes('modelSelectionSessions')))
+    ) {
+      const name = node.name.getText(parsed)
+      currentSource += `const ${node.getText(parsed)}; globalThis.${name} = ${name};`
+    }
+    if (ts.isTryStatement(node) && node.finallyBlock?.getText(parsed).includes('ownsAttempt'))
+      cleanup = node.finallyBlock.getText(parsed)
+    ts.forEachChild(node, visit)
+  }
+  visit(parsed)
+  assert.ok(currentSource && cleanup)
+  const attempt = {}
+  const inFlight = new Map([['thread', attempt]])
+  const patches: unknown[] = []
+  const snapshot = {
+    threads: { thread: { sessionId: 'session', readOnly: false } },
+    activeSession: 'thread',
+    backendReady: true,
+    workbenchReady: true,
+    runtimeQuiescing: false,
+    serviceInstanceId: 'instance',
+    modelSelectionSessions: {
+      thread: { generation: 4, pending: 0 },
+      other: { generation: 0, pending: 0 },
+    },
+  }
+  const context = {
+    threadId: 'thread',
+    sessionId: 'session',
+    attempt,
+    generation: 1,
+    instance: 'instance',
+    modelGeneration: 4,
+    lease: { current: () => true },
+    resumeInFlight: { current: inFlight },
+    stateRef: { current: snapshot },
+    getSnapshot: () => snapshot,
+    startupSnapshot: () => ({ generation: 1, phase: 'ready' }),
+    STARTUP_PHASE: { ready: 'ready' },
+    disposed: { current: false },
+    resumeUnknownModels: { current: new Set() },
+    detachers: { current: {} },
+    patchThread: (_id: string, value: unknown) => patches.push(value),
+  }
+  const run = (source: string) =>
+    runInNewContext(
+      ts.transpileModule(source, {
+        compilerOptions: { target: ts.ScriptTarget.ES2022 },
+      }).outputText,
+      context
+    )
+  run(currentSource)
+  const current = (context as typeof context & { current: () => boolean }).current
+  assert.equal(current(), true)
+  snapshot.modelSelectionSessions.other = { generation: 1, pending: 1 }
+  assert.equal(current(), true, 'another session selection must not invalidate this attempt')
+  snapshot.modelSelectionSessions.thread = { generation: 5, pending: 1 }
+  assert.equal(current(), false, 'old 409 must not be applied while the selection is pending')
+  snapshot.modelSelectionSessions.thread.pending = 0
+  assert.equal(current(), false, 'old 409 must remain stale after the selection completes')
+  run(cleanup)
+  assert.deepEqual(
+    patches.map((value) => JSON.stringify(value)),
+    ['{"resumeState":"pending"}']
+  )
+})
+
+test('attached session stream keeps applying events across model selection', () => {
+  const parsed = ts.createSourceFile('live.ts', liveSource, ts.ScriptTarget.Latest, true)
+  const declarations: Record<string, string> = {}
+  function visit(node: ts.Node): void {
+    if (ts.isVariableDeclaration(node)) {
+      const name = node.name.getText(parsed)
+      if (
+        (name === 'current' && node.getText(parsed).includes('modelSelectionSessions')) ||
+        name === 'streamCurrent' ||
+        (name === 'attach' && node.getText(parsed).includes('streamEvents'))
+      )
+        declarations[name] = `const ${node.getText(parsed)}; globalThis.${name} = ${name};`
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(parsed)
+  assert.ok(declarations.current && declarations.attach)
+  const snapshot = {
+    threads: { thread: { sessionId: 'session', readOnly: false } },
+    activeSession: 'thread',
+    backendReady: true,
+    workbenchReady: true,
+    runtimeQuiescing: false,
+    serviceInstanceId: 'instance',
+    modelSelectionSessions: { thread: { generation: 0, pending: 0 } },
+  }
+  const applied: string[] = []
+  let consume: ((event: { type: string; seq: number }) => void) | undefined
+  const context = {
+    threadId: 'thread',
+    sessionId: 'session',
+    generation: 1,
+    instance: 'instance',
+    modelGeneration: 0,
+    lease: { current: () => true, attach: (open: () => unknown) => open() },
+    stateRef: { current: snapshot },
+    getSnapshot: () => snapshot,
+    startupSnapshot: () => ({ generation: 1, phase: 'ready' }),
+    STARTUP_PHASE: { ready: 'ready' },
+    disposed: { current: false },
+    resumeUnknownModels: { current: new Set<string>() },
+    detachers: { current: {} },
+    streamEvents: (_sessionId: string, _fromSeq: number, callback: NonNullable<typeof consume>) => {
+      consume = callback
+      return () => undefined
+    },
+    onEvent: (_threadId: string, event: { type: string }) => applied.push(event.type),
+    patchThread: () => undefined,
+    set: () => undefined,
+    liveIndex: { current: {} },
+    refreshMetaRef: { current: () => undefined },
+    act: { invalidateResources: () => undefined },
+    bodySequences: { current: new Map() },
+  }
+  for (const name of ['streamCurrent', 'current', 'attach']) {
+    if (!declarations[name]) continue
+    runInNewContext(
+      ts.transpileModule(declarations[name], {
+        compilerOptions: { target: ts.ScriptTarget.ES2022 },
+      }).outputText,
+      context
+    )
+  }
+  ;(context as typeof context & { attach: (sequence: number) => void }).attach(0)
+  assert.ok(consume)
+  consume({ type: 'turn_completed', seq: 1 })
+  snapshot.modelSelectionSessions.thread = { generation: 1, pending: 1 }
+  consume({ type: 'session_state', seq: 2 })
+  snapshot.modelSelectionSessions.thread.pending = 0
+  consume({ type: 'turn_completed', seq: 3 })
+  assert.deepEqual(applied, ['turn_completed', 'session_state', 'turn_completed'])
+  snapshot.activeSession = 'other'
+  consume({ type: 'turn_completed', seq: 4 })
+  snapshot.activeSession = 'thread'
+  snapshot.serviceInstanceId = 'replacement'
+  consume({ type: 'turn_completed', seq: 5 })
+  snapshot.serviceInstanceId = 'instance'
+  context.resumeUnknownModels.current.add('thread')
+  consume({ type: 'turn_completed', seq: 6 })
+  assert.equal(applied.length, 3)
+})
+
+test('retry due during model selection preserves its attempt count and resumes after selection', () => {
+  const parsed = ts.createSourceFile('live.ts', liveSource, ts.ScriptTarget.Latest, true)
+  let timer = ''
+  let effect = ''
+  function visit(node: ts.Node): void {
+    if (
+      ts.isCallExpression(node) &&
+      node.expression.getText(parsed) === 'window.setTimeout' &&
+      node.arguments[0]?.getText(parsed).includes('resumeDeferredRetries.current.add')
+    )
+      timer = `(${node.arguments[0].getText(parsed)})()`
+    if (
+      ts.isCallExpression(node) &&
+      node.expression.getText(parsed) === 'useEffect' &&
+      node.getText(parsed).includes('resumeDeferredRetries.current.delete(threadId)') &&
+      node.getText(parsed).includes('targets.forEach')
+    )
+      effect = node.getText(parsed)
+    ts.forEachChild(node, visit)
+  }
+  visit(parsed)
+  assert.ok(timer && effect)
+  const attempts = new Map([['session', 3]])
+  const deferred = new Set<string>()
+  let calls = 0
+  let unknown = false
+  let marked = 0
+  const state = {
+    activeSession: 'thread',
+    backendReady: true,
+    workbenchReady: true,
+    runtimeQuiescing: false,
+    serviceInstanceId: 'instance',
+    modelSelectionSessions: { thread: { pending: 1, generation: 1 } },
+    threads: { thread: { sessionId: 'session', resumeState: 'pending', readOnly: false } },
+  }
+  const context = {
+    threadId: 'thread',
+    sessionId: 'session',
+    state,
+    getSnapshot: () => state,
+    resumeRetryTimers: { current: { thread: 42 } },
+    resumeDeferredRetries: { current: deferred },
+    resumeAttempts: { current: attempts },
+    resumeStopped: { current: new Set() },
+    resumeUnknownModels: { current: new Set() },
+    resumeInFlight: { current: new Map() },
+    subscriptions: { current: { retain: () => {} } },
+    window: { clearTimeout: () => {} },
+    detachers: { current: {} },
+    liveIndex: { current: {} },
+    hasUnknownModel: () => unknown,
+    markUnknownModel: () => {
+      marked++
+    },
+    patchThread: () => {},
+    ensure: () => {
+      calls++
+    },
+    useEffect: (callback: () => void) => callback(),
+  }
+  const run = (source: string) =>
+    runInNewContext(
+      ts.transpileModule(source, {
+        compilerOptions: { target: ts.ScriptTarget.ES2022 },
+      }).outputText,
+      context
+    )
+  run(timer)
+  assert.equal(calls, 0)
+  run(effect)
+  assert.equal(attempts.get('session'), 3)
+  state.modelSelectionSessions.thread.pending = 0
+  run(effect)
+  assert.equal(calls, 1)
+  assert.equal(attempts.get('session'), 3)
+  assert.equal(deferred.size, 0)
+  // A restored ledger entry must win over a pending automatic retry.
+  unknown = true
+  run(effect)
+  assert.equal(calls, 1)
+  assert.equal(marked, 1)
+})
+
 // Run the production refresh callback and lifecycle effect with controlled I/O.
 // These are deterministic race tests, not real Desktop acceptance.
 function metadataHarness() {
@@ -121,7 +514,25 @@ function metadataHarness() {
   }
   visit(parsed)
   assert.ok(refresh && lifecycle)
-  const state = { runtimeQuiescing: false, backendReady: true, workspaceLoadState: 'ready' }
+  const state = {
+    runtimeQuiescing: false,
+    backendReady: true,
+    workspaceLoadState: 'ready',
+    projectsLoaded: false,
+    projects: [],
+    defaultWorkspacePath: '',
+    threads: {},
+    sessions: [],
+    activeSession: null,
+    sessionActivitySeen: {},
+    sessionActivityInitialized: false,
+    sessionCatalogRevision: 0,
+    foregroundError: null,
+  }
+  let committed = state
+  const queued: ((current: typeof state) => typeof state)[] = []
+  const reductions: (typeof state)[] = []
+  let applyPatch!: (value: unknown) => void
   let calls = 0
   let retries = 0
   const updates: unknown[] = []
@@ -134,6 +545,7 @@ function metadataHarness() {
     metadataRequest: { current: 0 },
     metadataRetryAttempt: { current: 0 },
     metadataPollInFlight: { current: null },
+    metadataSessions: { current: [] },
     refreshMetaRef: { current: () => undefined },
     detachers: { current: {} },
     subscriptions: { current: { clear: () => undefined } },
@@ -141,15 +553,26 @@ function metadataHarness() {
     resumeInFlight: { current: new Map() },
     useCallback: (fn: unknown) => fn,
     useEffect: (fn: () => void) => fn(),
-    set: (value: unknown) => updates.push(value),
-    listProjects: async () => [],
+    set: (value: unknown) => {
+      updates.push(value)
+      applyPatch(value)
+    },
+    setState: (update: (current: typeof state) => typeof state) => queued.push(update),
+    settingsSurface: { current: { project: () => ({}) } },
+    availabilityPolicy: { navigationPatch: (_current: unknown, delta: unknown) => delta },
+    projectCatalogFailure,
+    pruneMissingCatalogThreads,
+    sameSessionCatalog,
+    SESSION_CATALOG_APPEARANCE_GRACE_SECONDS: 5,
+    SESSION_CATALOG_RECOVERY_NOTICE: 'retrying',
+    SESSION_CATALOG_UNAVAILABLE_NOTICE: 'unavailable',
+    listProjects: async () => ({ projects: [], default: '' }),
     loadSessionCatalog: () => {
       calls++
       return new Promise((done) => {
         resolve = done
       })
     },
-    projectCatalogFailure: () => ({ retry: true, workspaceLoadState: 'ready' }),
     scheduleMetadataRetry: () => {
       retries++
     },
@@ -164,6 +587,11 @@ function metadataHarness() {
       }).outputText,
       context
     )
+  applyPatch = run(`(() => {
+    ${block(storeSource, 'const set = useCallback((patch:', 'const closeMenus =')}
+    return set
+  })()`)
+  run(block(liveSource, 'function mergeLocalThreads(', 'export function useLiveSession'))
   run(refresh)
   context.refreshMetaRef.current = () => {
     void (context as typeof context & { refresh: () => Promise<void> }).refresh()
@@ -171,13 +599,103 @@ function metadataHarness() {
   return {
     state,
     updates,
+    reductions,
+    committed: () => committed,
+    flush: () => {
+      for (const update of queued.splice(0)) {
+        committed = update(committed)
+        reductions.push(committed)
+      }
+      context.stateRef.current = committed
+      return committed
+    },
     refresh: (context as typeof context & { refresh: () => Promise<void> }).refresh,
-    fail: () => resolve({ ok: false, failure: { retryable: true } }),
+    fail: (retryable = true) => resolve({ ok: false, failure: { retryable } }),
+    succeed: () => resolve({ ok: true, catalog: { sessions: [] } }),
     lifecycle: () => run(lifecycle),
     calls: () => calls,
     retries: () => retries,
   }
 }
+
+test('queued catalog success cannot be downgraded by its dirty follow-up before commit', async () => {
+  const harness = metadataHarness()
+  harness.state.workspaceLoadState = 'loading'
+  const first = harness.refresh()
+  void harness.refresh()
+  void harness.refresh()
+  assert.equal(harness.calls(), 1)
+  harness.succeed()
+  await first
+  assert.equal(harness.calls(), 2)
+  assert.equal(harness.state.workspaceLoadState, 'loading')
+  const committed = harness.flush()
+  assert.equal(committed.workspaceLoadState, 'ready')
+  assert.equal(committed.projectsLoaded, true)
+  assert.equal(harness.reductions.at(-1), harness.reductions.at(-2))
+  assert.equal(harness.calls(), 2)
+  const lastUpdate = harness.updates.at(-1)
+  assert.ok(typeof lastUpdate === 'function')
+  assert.deepEqual(Object.keys(lastUpdate(committed)), [])
+  harness.succeed()
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(harness.calls(), 2)
+  assert.equal(harness.flush().workspaceLoadState, 'ready')
+})
+
+test('catalog refresh still loads initial and errored workspaces and preserves ready identity', async () => {
+  for (const initial of ['loading', 'error', 'ready']) {
+    const harness = metadataHarness()
+    harness.state.workspaceLoadState = initial
+    const first = harness.refresh()
+    const before = harness.committed()
+    const loading = harness.flush()
+    assert.equal(loading.workspaceLoadState, initial === 'ready' ? 'ready' : 'loading')
+    if (initial === 'ready') assert.equal(loading, before)
+    harness.succeed()
+    await first
+    assert.equal(harness.flush().workspaceLoadState, 'ready')
+  }
+})
+
+for (const retryable of [true, false]) {
+  test(`queued catalog success survives a dirty ${retryable ? 'retryable' : 'non-retryable'} failure before commit`, async () => {
+    const harness = metadataHarness()
+    harness.state.workspaceLoadState = 'loading'
+    const first = harness.refresh()
+    void harness.refresh()
+    harness.succeed()
+    await first
+    assert.equal(harness.calls(), 2)
+    harness.fail(retryable)
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(harness.state.workspaceLoadState, 'loading')
+    const committed = harness.flush()
+    assert.equal(committed.workspaceLoadState, 'ready')
+    assert.equal(committed.projectsLoaded, true)
+    assert.equal(committed.foregroundError, retryable ? 'retrying' : 'unavailable')
+    assert.equal(harness.retries(), Number(retryable))
+    assert.equal(harness.calls(), 2)
+  })
+}
+
+test('initial and errored workspace catalog failures stay errored with the original retry policy', async () => {
+  for (const initial of ['loading', 'error']) {
+    for (const retryable of [true, false]) {
+      const harness = metadataHarness()
+      harness.state.workspaceLoadState = initial
+      const first = harness.refresh()
+      harness.fail(retryable)
+      await first
+      const committed = harness.flush()
+      assert.equal(committed.workspaceLoadState, 'error')
+      assert.equal(committed.projectsLoaded, false)
+      assert.equal(committed.foregroundError, null)
+      assert.equal(harness.retries(), Number(retryable))
+      assert.equal(harness.calls(), 1)
+    }
+  }
+})
 
 test('all catalog refresh entry points share one request and one dirty follow-up', async () => {
   const harness = metadataHarness()
@@ -360,6 +878,16 @@ test('shutdown invalidates pending catalog results even after cancellation resum
   assert.equal(h.retries(), 1, 'normal transport failures still retry after resume')
 })
 
+test('recorded tool recovery preserves terminal turn lifecycle and source identity', () => {
+  const started = block(liveSource, "case 'tool_started':", "case 'tool_output_delta':")
+  assert.match(started, /running: event\.data\.retry_of \? thread\.running : true/)
+  assert.match(started, /status: event\.data\.retry_of \? thread\.status : 'running'/)
+  assert.match(started, /batchId: event\.data\.batch_id/)
+  assert.match(started, /retryOf: event\.data\.retry_of/)
+  assert.match(started, /turnOutcomes: event\.data\.retry_of\s+\?\s+thread\.turnOutcomes/)
+  assert.match(started, /turnTimings: event\.data\.retry_of\s+\?\s+thread\.turnTimings/)
+})
+
 test('visible home refreshes the catalog before a background running event is known', () => {
   const refresh = block(liveSource, 'const catalogRefreshNeeded =', 'useEffect(() => {')
   assert.match(refresh, /state\.mainView === 'home' \|\|/)
@@ -425,6 +953,6 @@ test('the invalidator is threaded into the stream and pinned in the callback dep
   assert.match(call, /act\.invalidateResources,\n\s+\(scopes\) => \{/)
   assert.match(
     liveSource,
-    /act\.invalidateLiterature,\n\s+act\.invalidateResources,\n\s+act\.loadAiContext,\n\s+act\.reloadArtifactLinks,\n\s+patchThread,\n\s+set,\n\s+\]/
+    /act\.invalidateLiterature,\n\s+act\.invalidateResources,\n\s+act\.loadAiContext,\n\s+act\.reloadArtifactLinks,\n\s+patchThread,\n\s+set,\n\s+getSnapshot,\n\s+\]/
   )
 })

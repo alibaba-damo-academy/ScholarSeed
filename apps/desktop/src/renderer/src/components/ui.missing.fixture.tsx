@@ -1,3 +1,4 @@
+import type * as React from 'react'
 import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { I18nextProvider } from 'react-i18next'
@@ -55,7 +56,7 @@ import {
   PopoverTrigger
 } from './ui'
 
-function Fixture(): JSX.Element {
+function Fixture(): React.JSX.Element {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [alertDialogOpen, setAlertDialogOpen] = useState(false)
   const [alertDialogResult, setAlertDialogResult] = useState('pending')

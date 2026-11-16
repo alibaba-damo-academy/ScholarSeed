@@ -1,6 +1,7 @@
 """Task-conditioned structure and real asset references; no semantic repair."""
 import re
 from task_contract import structural_contract, is_abstract
+from strategy import CHAPTER, PARAGRAPH
 
 
 def actual_references(body, markdown=False):
@@ -19,6 +20,13 @@ def outline_structure_errors(request,outline):
     tree=outline.get('outline_tree') or []
     all_nodes=[n for s in tree for n in [s,*s.get('subsections',[])]]
     rules=structural_contract(request); errors=[]
+    unit=request.get('deliverable',{}).get('unit')
+    if unit==CHAPTER and len(tree)!=1:
+        errors.append('a single requested chapter requires exactly one top-level node')
+    if unit==PARAGRAPH and tree:
+        errors.append('an unsectioned paragraph cannot have outline headings')
+    if unit==PARAGRAPH and outline.get('survey_title'):
+        errors.append('an unsectioned paragraph cannot have an unsolicited document title')
     for v in rules['forbidden_sections']:
         match=lambda n:is_abstract(n) if is_abstract(v) else n.get('title','').strip().casefold()==v['title'].strip().casefold()
         if any(match(n) for n in all_nodes): errors.append('forbidden section present: '+v['title'])

@@ -399,6 +399,42 @@ class HistoryContract(unittest.TestCase):
             self.assertEqual(status, 1)
             self.assertIn("bridge_context_unavailable", json.loads(output.getvalue())["error"])
 
+    def test_missing_cli_context_directs_agent_to_model_tool_without_http(self) -> None:
+        output = io.StringIO()
+        with patch.dict(os.environ, {}, clear=True), patch("httpx.Client") as client:
+            with redirect_stdout(output):
+                status = main(
+                    ["artifact", "publish", "--json", '{"path":"outputs/report.md","role":"final"}']
+                )
+        result = json.loads(output.getvalue())
+        self.assertEqual(status, 1)
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["error"].startswith("bridge_context_unavailable:"))
+        self.assertNotIn("run inside a ScholarSeed Agent session", result["error"])
+        self.assertIn("scholarseed_bridge", result["next_action"])
+        self.assertIn("capability", result["next_action"])
+        self.assertIn("operation", result["next_action"])
+        self.assertIn("request", result["next_action"])
+        client.assert_not_called()
+
+    def test_artifact_help_explains_terminal_context_boundary(self) -> None:
+        output = io.StringIO()
+        with redirect_stdout(output), self.assertRaises(SystemExit) as result:
+            main(["artifact", "publish", "--help"])
+        self.assertEqual(result.exception.code, 0)
+        self.assertIn("scholarseed_bridge", output.getvalue())
+        self.assertIn("终端", output.getvalue())
+
+    def test_unrelated_cli_value_error_does_not_offer_context_recovery(self) -> None:
+        output = io.StringIO()
+        with patch("service.cli.bridge.execute", side_effect=ValueError("bridge_address_invalid")):
+            with redirect_stdout(output):
+                status = main(["history", "list", "--json", "{}"])
+        self.assertEqual(status, 1)
+        self.assertEqual(
+            json.loads(output.getvalue()), {"ok": False, "error": "bridge_address_invalid"}
+        )
+
     def test_launch_environment_preserves_skill_alignment(self) -> None:
         live = SimpleNamespace(
             id=CALLER,

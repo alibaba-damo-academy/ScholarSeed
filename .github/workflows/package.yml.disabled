@@ -92,6 +92,17 @@ jobs:
       #     NODE_OPTIONS: --max-old-space-size=4096
       #   run: npm run ops -- --package-manager npm cd build local --stage installer
 
+      - name: Preserve installer smoke reports
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: installer-smoke-${{ runner.os }}-${{ runner.arch }}
+          path: |
+            tmp/ci-smoke/quality.json
+            tmp/ci-smoke-*/*.json
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Calculate installer checksum
         shell: bash
         run: |

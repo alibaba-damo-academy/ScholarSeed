@@ -13,9 +13,7 @@ import {
   DialogHeader,
   DialogPortal,
   DialogTitle,
-  EmptyState,
   Input,
-  ScrollArea,
   Select,
   SelectContent,
   SelectItem,
@@ -32,134 +30,12 @@ const FOLDER_NAME_MAX_LENGTH = 60
 const INVALID_FOLDER_NAME = /[\\/:*?"<>|]/
 const ROOT_FOLDER_PATH = ''
 
-interface FolderItem {
-  children: FolderItem[]
-  draft: boolean
-  name: string
-  path: string
-}
-
-function resourceFolders(nodes: ResourceNode[], parent = ROOT_FOLDER_PATH): FolderItem[] {
+function folderPaths(nodes: ResourceNode[], parent = ROOT_FOLDER_PATH): string[] {
   return nodes.flatMap((node) => {
     if (node.kind !== 'dir') return []
     const path = parent ? `${parent}/${node.name}` : node.name
-    return [
-      {
-        children: resourceFolders(node.children ?? [], path),
-        draft: false,
-        name: node.name,
-        path,
-      },
-    ]
+    return [path, ...folderPaths(node.children ?? [], path)]
   })
-}
-
-function insertDraftFolder(items: FolderItem[], path: string): FolderItem[] {
-  const parts = path.split('/').filter(Boolean)
-  const insert = (rows: FolderItem[], depth: number, parent: string): FolderItem[] => {
-    const name = parts[depth]
-    if (!name) return rows
-    const itemPath = parent ? `${parent}/${name}` : name
-    const existing = rows.find((row) => row.name === name)
-    if (existing) {
-      return rows.map((row) =>
-        row !== existing
-          ? row
-          : {
-              ...row,
-              children: insert(row.children, depth + 1, itemPath),
-            }
-      )
-    }
-    const created: FolderItem = { children: [], draft: true, name, path: itemPath }
-    created.children = insert(created.children, depth + 1, itemPath)
-    return [...rows, created]
-  }
-  return insert(items, 0, ROOT_FOLDER_PATH)
-}
-
-function folderItems(nodes: ResourceNode[], drafts: string[]): FolderItem[] {
-  return drafts.reduce(insertDraftFolder, resourceFolders(nodes))
-}
-
-function folderPaths(items: FolderItem[]): string[] {
-  return items.flatMap((item) => [item.path, ...folderPaths(item.children)])
-}
-
-function FolderRow({
-  depth,
-  expanded,
-  item,
-  onExpand,
-  onSelect,
-  selected,
-}: {
-  depth: number
-  expanded: Set<string>
-  item: FolderItem
-  onExpand: (path: string) => void
-  onSelect: (path: string) => void
-  selected: string
-}): React.JSX.Element {
-  const { t } = useTranslation('assistant')
-  const open = expanded.has(item.path)
-  const hasChildren = item.children.length > 0
-  return (
-    <>
-      <div
-        className={`flex items-center border-b border-[var(--vds-border-default)] ${
-          selected === item.path ? 'bg-[var(--vds-brand-light-bg-default)]' : ''
-        }`}
-        style={{ paddingLeft: `${12 + depth * 24}px` }}
-      >
-        <Button
-          aria-label={
-            hasChildren
-              ? t(open ? 'save.collapseFolder' : 'save.expandFolder', { name: item.name })
-              : undefined
-          }
-          className="size-8 min-w-8 px-0"
-          disabled={!hasChildren}
-          onClick={() => onExpand(item.path)}
-          size="sm"
-          variant="ghost"
-        >
-          {hasChildren ? <Icon name={open ? 'chevron-down' : 'chevron-right'} size={13} /> : null}
-        </Button>
-        <Button
-          className="min-w-0 flex-1 justify-start rounded-none px-1 py-3 text-left"
-          icon={<Icon name="folder" size={17} />}
-          onClick={() => onSelect(item.path)}
-          variant="ghost"
-        >
-          <span className="truncate">{item.name}</span>
-          {item.draft ? (
-            <span className="ml-auto text-xs font-normal text-[var(--vds-text-tertiary)]">
-              {t('save.createdOnSave')}
-            </span>
-          ) : null}
-          {selected === item.path ? (
-            <span aria-hidden="true" className="text-base">
-              ✓
-            </span>
-          ) : null}
-        </Button>
-      </div>
-      {open
-        ? item.children.map((child) => (
-            <FolderRow
-              depth={depth + 1}
-              expanded={expanded}
-              item={child}
-              key={child.path}
-              onExpand={onExpand}
-              onSelect={onSelect}
-              selected={selected}
-            />
-          ))
-        : null}
-    </>
-  )
 }
 
 export function ResourceSaveDialog({
@@ -185,6 +61,7 @@ export function ResourceSaveDialog({
   literatureContent,
   rootLabel,
   submitDisabled = false,
+  nested = false,
 }: {
   description: string
   error: string
@@ -208,6 +85,7 @@ export function ResourceSaveDialog({
   literatureContent?: React.ReactNode
   rootLabel?: string
   submitDisabled?: boolean
+  nested?: boolean
 }): React.JSX.Element {
   const { t } = useTranslation('components')
   const { t: assistantText } = useTranslation('assistant')
@@ -215,15 +93,17 @@ export function ResourceSaveDialog({
   const { toast } = useToast()
   const reportedError = useRef('')
   const [draftFolders, setDraftFolders] = useState<string[]>([])
-  const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [creatingFolder, setCreatingFolder] = useState(false)
   const [folderName, setFolderName] = useState('')
   const [folderError, setFolderError] = useState<
     '' | 'save.folderNameRequired' | 'save.folderNameInvalid' | 'save.folderExists'
   >('')
-  const folders = useMemo(() => folderItems(tree, draftFolders), [draftFolders, tree])
-  const knownPaths = useMemo(() => new Set(folderPaths(folders)), [folders])
+  const knownPaths = useMemo(
+    () => new Set([...folderPaths(tree), ...draftFolders]),
+    [draftFolders, tree]
+  )
   const nameError = resourceNameError(location.name)
+  const selectLayer = nested ? '!z-[var(--vds-z-modal-nested-flyout)]' : undefined
 
   useEffect(() => {
     if (!open || !error) {
@@ -238,7 +118,6 @@ export function ResourceSaveDialog({
   useEffect(() => {
     if (!open) return
     setDraftFolders([])
-    setExpanded(new Set())
     setCreatingFolder(false)
     setFolderName('')
     setFolderError('')
@@ -246,15 +125,6 @@ export function ResourceSaveDialog({
 
   const selectFolder = (path: string): void => {
     onLocationChange({ ...location, parent: path })
-  }
-
-  const toggleFolder = (path: string): void => {
-    setExpanded((current) => {
-      const next = new Set(current)
-      if (next.has(path)) next.delete(path)
-      else next.add(path)
-      return next
-    })
   }
 
   const createFolder = (): void => {
@@ -273,7 +143,6 @@ export function ResourceSaveDialog({
       return
     }
     setDraftFolders((current) => [...current, path])
-    setExpanded((current) => new Set([...current, location.parent].filter(Boolean)))
     onLocationChange({ ...location, parent: path })
     setCreatingFolder(false)
     setFolderName('')
@@ -285,7 +154,9 @@ export function ResourceSaveDialog({
       <DialogPortal>
         <DialogContent
           aria-label={title}
-          className="w-[min(720px,calc(100vw-48px))] max-h-[calc(100dvh-var(--vds-space-8))] max-w-none grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0"
+          overlayClassName={nested ? '!z-[var(--vds-z-modal-nested-overlay)]' : undefined}
+          portalClassName={nested ? '!z-[var(--vds-z-modal-nested-flyout)]' : undefined}
+          className={`w-[min(720px,calc(100vw-48px))] max-h-[calc(100dvh-var(--vds-space-8))] max-w-none grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0 ${nested ? '!z-[var(--vds-z-modal-nested)]' : ''}`}
         >
           <DialogHeader className="border-b border-[var(--vds-border-default)] px-6 py-5">
             <DialogTitle className="text-2xl">{title}</DialogTitle>
@@ -302,7 +173,7 @@ export function ResourceSaveDialog({
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
-                <SelectContent>
+                <SelectContent className={selectLayer}>
                   {projectOptions.map((project) => (
                     <SelectItem key={project.id} value={project.id}>
                       {project.name}
@@ -412,60 +283,22 @@ export function ResourceSaveDialog({
                   </div>
                 ) : null}
 
-                <div className="overflow-hidden rounded-[var(--vds-radius-3)] border border-[var(--vds-border-default)]">
-                  <div
-                    className={
-                      location.parent === ROOT_FOLDER_PATH
-                        ? 'bg-[var(--vds-brand-light-bg-default)]'
-                        : ''
-                    }
-                  >
-                    <Button
-                      className="w-full justify-start rounded-none px-4 py-3 text-left"
-                      icon={<Icon name="folder" size={18} />}
-                      onClick={() => selectFolder(ROOT_FOLDER_PATH)}
-                      variant="ghost"
-                    >
-                      <span className="min-w-0 flex-1 truncate font-medium">
-                        {rootLabel ?? projectName}
-                      </span>
-                      {location.parent === ROOT_FOLDER_PATH ? (
-                        <span aria-hidden="true" className="text-base">
-                          ✓
-                        </span>
-                      ) : null}
-                    </Button>
-                  </div>
-                  <ScrollArea className="max-h-[340px]" viewportClassName="max-h-[340px]">
-                    {folders.length ? (
-                      folders.map((item) => (
-                        <FolderRow
-                          depth={0}
-                          expanded={expanded}
-                          item={item}
-                          key={item.path}
-                          onExpand={toggleFolder}
-                          onSelect={selectFolder}
-                          selected={location.parent}
-                        />
-                      ))
-                    ) : (
-                      <EmptyState
-                        variant="compact"
-                        icon={<Icon name="folder" />}
-                        title={assistantText('remaining.emptyFolders')}
-                      />
-                    )}
-                  </ScrollArea>
-                </div>
+                <Select disabled={saving} value={location.parent} onValueChange={selectFolder}>
+                  <SelectTrigger aria-label={assistantText('save.chooseFolder')}>
+                    <SelectValue placeholder={rootLabel ?? projectName} />
+                  </SelectTrigger>
+                  <SelectContent className={selectLayer}>
+                    <SelectItem value={ROOT_FOLDER_PATH}>{rootLabel ?? projectName}</SelectItem>
+                    {[...knownPaths].map((path) => (
+                      <SelectItem key={path} value={path}>
+                        {path}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             )}
 
-            {rootLabel && destination === 'resources' && (
-              <p className="m-0 text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]">
-                {assistantText('save.destination', { path: location.parent || rootLabel })}
-              </p>
-            )}
             {summary ? (
               <p className="m-0 text-sm text-[var(--vds-text-secondary)]">{summary}</p>
             ) : null}

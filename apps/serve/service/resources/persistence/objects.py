@@ -187,7 +187,7 @@ def _unique_fields(pairs):
 
 
 def _descriptor_size(value: object) -> int:
-    if type(value) is not int or value < 0:
+    if (not isinstance(value, int) or isinstance(value, bool)) or value < 0:
         raise CasCorruptError("invalid_descriptor_size")
     return value
 
@@ -213,9 +213,9 @@ def decode_object_descriptor(
         if body.get("object_id") != object_id:
             raise CasCorruptError("descriptor_object_mismatch")
         if (
-            type(body.get("format_version")) is not int
-            or body["format_version"] != CAS_FORMAT_VERSION
-        ):
+            not isinstance(body.get("format_version"), int)
+            or isinstance(body.get("format_version"), bool)
+        ) or body["format_version"] != CAS_FORMAT_VERSION:
             raise CasCorruptError("unsupported_cas_format")
         layout = CasLayout(body["layout"])
         raw_size = _descriptor_size(body["raw_size_bytes"])
@@ -232,7 +232,10 @@ def decode_object_descriptor(
             manifest = json.loads(manifest_bytes, object_pairs_hook=_unique_fields)
             if (
                 not isinstance(manifest, dict)
-                or type(manifest.get("manifest_version")) is not int
+                or (
+                    not isinstance(manifest.get("manifest_version"), int)
+                    or isinstance(manifest.get("manifest_version"), bool)
+                )
                 or manifest["manifest_version"] != MANIFEST_VERSION
                 or manifest.get("chunker_profile") != CHUNKER_PROFILE
                 or manifest.get("object_id") != object_id
@@ -292,9 +295,9 @@ def verified_chunk(chunk_id: str, data: bytes, payload: bytes) -> bytes:
         if body.get("chunk_id") != chunk_id:
             raise CasCorruptError("chunk_identity_mismatch")
         if (
-            type(body.get("format_version")) is not int
-            or body["format_version"] != CAS_FORMAT_VERSION
-        ):
+            not isinstance(body.get("format_version"), int)
+            or isinstance(body.get("format_version"), bool)
+        ) or body["format_version"] != CAS_FORMAT_VERSION:
             raise CasCorruptError("unsupported_cas_format")
         if body.get("codec") != WholeCodec.IDENTITY.value:
             raise CasCorruptError("unsupported_cas_codec")
@@ -913,9 +916,9 @@ class CasStore:
         """
         _hex(expected_object_id)
         if (
-            type(raw_size_bytes) is not int
-            or type(max_raw_bytes) is not int
-            or type(max_chunks) is not int
+            (not isinstance(raw_size_bytes, int) or isinstance(raw_size_bytes, bool))
+            or (not isinstance(max_raw_bytes, int) or isinstance(max_raw_bytes, bool))
+            or (not isinstance(max_chunks, int) or isinstance(max_chunks, bool))
             or not 0 <= raw_size_bytes <= max_raw_bytes
             or max_chunks < 1
         ):
@@ -993,7 +996,7 @@ class CasStore:
             return decode_object_descriptor(
                 object_id,
                 (directory / DESCRIPTOR_FILENAME).read_bytes(),
-                lambda: (directory / MANIFEST_FILENAME).read_bytes(),
+                (directory / MANIFEST_FILENAME).read_bytes,
             )
         except OSError as exc:
             raise CasCorruptError("invalid_descriptor") from exc

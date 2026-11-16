@@ -9,8 +9,8 @@
   4. envelope 契约 — v/query/rows/total/truncated/evidence + --fields 投影 + --limit 截断。
   5. FTS lazy-ingest 幂等 — 同文件二次 ensure_indexed 0 摄入。
 
-集成层 (真实 ~/.veda/logs, 不烧 token): CLI usage 总数与 HTTP overview 同源一致等,
-在 main() 的 --integration 分支跑 (需要本机有真实 trace 数据)。
+集成层 (显式选择的真实 Trace 来源, 不烧 token): CLI usage 与 store overview 同源一致。
+仅在 main() 的 --integration 分支跑，需要预先授权并设置 DAMOATRACE_HOME，缺数据失败。
 
 跑法: .venv/bin/python -m damoatrace.tests.e2e_trace_query_cli [--integration]
 """
@@ -18,12 +18,16 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 import damoatrace.recording.records as rec
+from damoatrace.data.store import TraceStore
+from damoatrace.paths import HOME_ENV, TRACE_DIR
+from damoatrace.search.fts import FtsSearch
 
 REPO = Path(__file__).resolve().parents[2]  # <repo>/<pkg>/tests/
 PY = sys.executable
@@ -311,8 +315,6 @@ def test_contract() -> None:
 
         # bootstrap 事件常独立落在无 task.start 的 jsonl，但 attributes 已带 session_id。
         # 它必须归属真实 session，不能在产品里沉到 _orphan。
-        from damoatrace.data.store import TraceStore
-
         sessions = TraceStore(trace_dir).sessions()
         assert "_orphan" not in {row["session_id"] for row in sessions}, sessions
         assert any(row["session_id"] == "sessX" and row["event_count"] == 15 for row in sessions)
@@ -374,8 +376,6 @@ def test_contract() -> None:
         assert "injected_entry_ids" in mr["missing_fields"], mr
 
         # ── 10. FTS lazy-ingest 幂等 ──
-        from damoatrace.search.fts import FtsSearch
-
         fts = FtsSearch(trace_dir, db_path=trace_dir / "index.sqlite3")
         if fts.available():
             r1 = fts.ensure_indexed()
@@ -404,14 +404,12 @@ def test_contract() -> None:
     print("contract: ALL PASS (11 组断言)")
 
 
-def test_integration_real_logs() -> None:
-    """真实 ~/.veda/logs 集成 (同源验证); 无真实数据时跳过。"""
-    from damoatrace.paths import TRACE_DIR
-
+def integration_real_logs() -> None:
+    """Opt-in real-source comparison; missing evidence is not a passing test."""
+    if not os.environ.get(HOME_ENV, "").strip():
+        raise ValueError("integration requires explicit DAMOATRACE_HOME")
     if not any(TRACE_DIR.glob("*.jsonl")):
-        print("integration: 无真实 trace 数据, 跳过")
-        return
-    from damoatrace.data.store import TraceStore
+        raise ValueError("integration requires available trace data in DAMOATRACE_HOME")
 
     store = TraceStore(TRACE_DIR)
     # CLI usage 总 token == analytics overview 总 token (同源同数)
@@ -443,10 +441,37 @@ def test_integration_real_logs() -> None:
 
 
 def main() -> int:
-    test_contract()
     if "--integration" in sys.argv:
-        test_integration_real_logs()
+        integration_real_logs()
+    else:
+        test_contract()
+        test_integration_requires_available_source()
     return 0
+
+
+def test_integration_requires_available_source() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        environment = {**os.environ, "HOME": str(root)}
+        environment.pop(HOME_ENV, None)
+        for source, message in (
+            (None, "integration requires explicit DAMOATRACE_HOME"),
+            (str(root / "absent"), "integration requires available trace data"),
+        ):
+            if source is not None:
+                environment[HOME_ENV] = source
+            result = subprocess.run(
+                [PY, "-m", "damoatrace.tests.e2e_trace_query_cli", "--integration"],
+                cwd=REPO,
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert result.returncode != 0
+            assert message in result.stderr
+        assert not (root / "absent").exists()
+        assert not (root / ".damoatrace").exists()
 
 
 if __name__ == "__main__":

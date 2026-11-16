@@ -82,6 +82,28 @@ def register_session(database: Path, session_id: str = SESSION_ID) -> SessionCat
 
 
 class ProductEventContract(unittest.TestCase):
+    def test_user_send_time_uses_first_submission_after_binding_and_reopen(self) -> None:
+        for binding, created_at in (("pending", 10.0), ("bound", 20.0)):
+            self.events.append(
+                session_id=SESSION_ID,
+                runtime_id=RUNTIME_ID,
+                vendor_thread_id=VENDOR_THREAD_ID,
+                vendor_turn_id="turn" if binding == "bound" else None,
+                vendor_item_id="message",
+                kind=PRODUCT_EVENT_USER_MESSAGE,
+                payload={"text": "hello", "client_turn_id": "client", "binding": binding},
+                idempotency_key=binding,
+                created_at=created_at,
+            )
+        service = EventService({}, ProductEventStore(self.database), logging.getLogger(__name__))
+        for native in (
+            [],
+            [{"kind": "user", "text": "hello", "turn_id": "turn", "item_id": "message"}],
+        ):
+            restored = service.decorate_history(SESSION_ID, native)
+            self.assertEqual(restored[0]["sent_at"], 10.0)
+            self.assertEqual(service.decorate_history(SESSION_ID, restored), restored)
+
     def test_rejected_history_is_filtered_only_for_model_and_survives_reopen(self) -> None:
         for index, code in enumerate(
             (
@@ -805,7 +827,7 @@ class ProductEventContract(unittest.TestCase):
             ),
             patch.object(
                 ProductEventStore,
-                "_reclaim_needed",
+                "reclaim_needed",
                 side_effect=AssertionError("vacuum scan at startup"),
             ),
             patch.object(

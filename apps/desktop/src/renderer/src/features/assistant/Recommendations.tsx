@@ -1,4 +1,5 @@
 import React from 'react'
+import { X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import {
   Alert,
@@ -8,6 +9,7 @@ import {
   CardContent,
   CardHeader,
   CardTitle,
+  IconButton,
   Textarea,
 } from '../../components/ui'
 import { nextStepMessage, type NextStepsContent } from './suggestions'
@@ -20,6 +22,8 @@ export function Suggestions({
   draft,
   onDraft,
   onSend,
+  variant = 'form',
+  onDismiss,
 }: {
   payload: NextStepsContent
   available: boolean
@@ -28,8 +32,55 @@ export function Suggestions({
   draft: string
   onDraft: (value: string) => void
   onSend: (message: string) => void | Promise<void>
+  variant?: 'form' | 'compact'
+  onDismiss?: () => void
 }): React.JSX.Element {
   const { t } = useTranslation('conversation')
+  if (variant === 'compact') {
+    return (
+      <div
+        data-testid="next-steps-card"
+        aria-busy={busy}
+        className="grid min-w-0 gap-[var(--vds-space-2)]"
+      >
+        <div className="flex min-w-0 items-center gap-[var(--vds-space-2)]">
+          <span className="text-[length:var(--vds-font-caption)] text-[var(--vds-text-secondary)]">
+            {t('suggestions.title')}
+          </span>
+          {onDismiss ? (
+            <IconButton
+              icon={<X />}
+              size="xs"
+              variant="ghost"
+              label={t('suggestions.dismiss')}
+              disabled={busy}
+              onClick={onDismiss}
+            />
+          ) : null}
+        </div>
+        <div className="flex min-w-0 flex-wrap gap-[var(--vds-space-2)]">
+          {payload.options.map((option) => (
+            <Button
+              key={option.label}
+              variant="secondary"
+              size="sm"
+              className="!h-auto min-h-[var(--vds-control-height-sm)] max-w-full !whitespace-normal rounded-full text-left [overflow-wrap:anywhere]"
+              title={option.description}
+              disabled={!available || busy}
+              onClick={() => void onSend(nextStepMessage(option))}
+            >
+              {option.label}
+            </Button>
+          ))}
+        </div>
+        {failed ? (
+          <Alert tone="error">
+            <AlertDescription>{t('retry.continueUnconfirmed')}</AlertDescription>
+          </Alert>
+        ) : null}
+      </div>
+    )
+  }
   return (
     <Card data-testid="next-steps-card" aria-busy={busy}>
       <CardHeader>

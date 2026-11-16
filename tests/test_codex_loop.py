@@ -1,13 +1,20 @@
 """Contract checks for unchanged tool-result loop detection."""
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 from scholarseed_codex.loop import REPEATED_TOOL_LIMIT, ToolLoopGuard
 from scholarseed_codex.protocol.session import CodexSessionEvent, CodexSessionEventKind
 from scholarseed_codex.session import CodexRuntimeSession
-from scholarseed_runtime.contract import RuntimeEventKind
+from scholarseed_runtime.contract import (
+    ModelConnectionMode,
+    ModelIntent,
+    ModelTransport,
+    OpenSessionRequest,
+    RuntimeEventKind,
+)
 from scholarseed_runtime.contract.incident import RuntimeIncidentKind
 
 
@@ -85,19 +92,19 @@ def test_new_turn_does_not_inherit_previous_streak() -> None:
 
 
 async def test_repeated_native_results_publish_incident_and_interrupt_once() -> None:
-    session = object.__new__(CodexRuntimeSession)
+    session = CodexRuntimeSession(
+        OpenSessionRequest(
+            product_session_id="product-1",
+            cwd=Path.cwd(),
+            model=ModelIntent(
+                transport=ModelTransport(
+                    mode=ModelConnectionMode.REMOTE, endpoint="https://models.example.test/v1"
+                )
+            ),
+        )
+    )
     interruption = AsyncMock()
-    session._activity_revision = 0
-    session._sequence = 0
-    session._evidence_sequence = 0
-    session._event_namespace = "test-attachment"
-    session._seen_subagents = set()
     session._active_command_id = "command-1"
-    session._committed_commands = set()
-    session._loop_guard = ToolLoopGuard()
-    session._events = asyncio.Queue()
-    session._tasks = set()
-    session._request = SimpleNamespace(product_session_id="product-1")
     session._observe_evidence = AsyncMock()
     session._native = SimpleNamespace(
         session_id="native-1",
@@ -127,7 +134,11 @@ async def test_repeated_native_results_publish_incident_and_interrupt_once() -> 
             )
         )
     await asyncio.gather(*session._tasks)
-    observations = [session._events.get_nowait() for _ in range(session._events.qsize())]
+    events = session.events()
+    try:
+        observations = [await anext(events) for _ in range(session._events.qsize())]
+    finally:
+        await events.aclose()
     incidents = [event for event in observations if event.kind is RuntimeEventKind.RUNTIME_INCIDENT]
     assert len(incidents) == 1
     assert incidents[0].payload["incident"]["kind"] == RuntimeIncidentKind.REPEATED_TOOL_LOOP.value

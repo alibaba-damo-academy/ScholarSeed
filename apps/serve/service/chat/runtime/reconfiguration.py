@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any
 from uuid import UUID
 
@@ -32,8 +33,18 @@ PREPARATION_INSTANCE_CHANGED = "runtime_preparation_instance_changed"
 PREPARATION_CLOSED = "runtime_preparation_closed"
 
 
+class ReconfigurationStage(str, Enum):
+    WARM = "warm"
+    BUSINESS_WAIT = "business_wait"
+    OWNER_DRAIN = "owner_drain"
+    RESOURCE_WAIT = "resource_wait"
+    APPLY = "apply"
+
+
 class PreparationError(ValueError):
-    pass
+    def __init__(self, message: str, *, state: CommandState | None = None) -> None:
+        super().__init__(message)
+        self.state = state
 
 
 @dataclass
@@ -181,6 +192,7 @@ class HostReconfiguration:
             nonlocal generation
             with owner:
                 reopen = True
+                stage = ReconfigurationStage.WARM
                 try:
                     if warm is not None:
                         try:
@@ -222,26 +234,35 @@ class HostReconfiguration:
                             operation.state = receipt.state
                             operation.safe_error = receipt.safe_error
                             return
-                        generation = self._activities.begin()
+                        generation = self._activities.begin_if_idle()
+                        if generation is None:
+                            operation.state = CommandState.REJECTED
+                            operation.safe_error = RESOURCE_HOST_BUSY
+                            return
                     if generation is None:
                         raise RuntimeError(RESOURCE_HOST_CONFIGURATION_UNCERTAIN)
                     self._logger.info(
-                        "runtime_host_reconfiguration_business_wait request_id=%s counts=%s",
+                        "runtime_host_reconfiguration_business_wait request_id=%s counts=%s "
+                        "resources=%s",
                         request_id,
                         self._activities.snapshot().counts,
+                        self._activities.resource_diagnostics(),
                     )
+                    stage = ReconfigurationStage.BUSINESS_WAIT
                     await asyncio.wait_for(
                         self._activities.wait_business_drained(generation), wait_seconds
                     )
                     validate()
-                    blocked = await self._drain(generation)
+                    stage = ReconfigurationStage.OWNER_DRAIN
                     reopen = False
+                    blocked = await self._drain(generation)
                     if not blocked:
                         self._logger.info(
                             "runtime_host_reconfiguration_resource_wait request_id=%s counts=%s",
                             request_id,
                             self._activities.snapshot().counts,
                         )
+                        stage = ReconfigurationStage.RESOURCE_WAIT
                         await asyncio.wait_for(
                             self._activities.wait_resources_drained(generation, owner), wait_seconds
                         )
@@ -260,12 +281,13 @@ class HostReconfiguration:
                     ):
                         self._logger.warning(
                             "runtime_host_reconfiguration_drain_blocked request_id=%s "
-                            "blocked=%s generation_matches=%s phase=%s counts=%s",
+                            "blocked=%s generation_matches=%s phase=%s counts=%s resources=%s",
                             request_id,
                             blocked,
                             snapshot.generation == generation,
                             snapshot.phase.value,
                             snapshot.counts,
+                            self._activities.resource_diagnostics(),
                         )
                         reopen = False
                         operation.state = CommandState.RESTART_REQUIRED
@@ -273,6 +295,7 @@ class HostReconfiguration:
                         return
                     validate()
                     reopen = False
+                    stage = ReconfigurationStage.APPLY
                     receipt = await apply(owner)
                     if receipt.state not in {
                         CommandState.APPLIED,
@@ -285,9 +308,11 @@ class HostReconfiguration:
                     reopen = receipt.state in {CommandState.APPLIED, CommandState.REJECTED}
                 except TimeoutError:
                     self._logger.warning(
-                        "runtime_host_reconfiguration_timeout request_id=%s counts=%s",
+                        "runtime_host_reconfiguration_timeout request_id=%s counts=%s stage=%s resources=%s",
                         request_id,
                         self._activities.snapshot().counts,
+                        stage.value,
+                        self._activities.resource_diagnostics(),
                     )
                     operation.state = (
                         CommandState.REJECTED if reopen else CommandState.RESTART_REQUIRED

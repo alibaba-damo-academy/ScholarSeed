@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import tempfile
 import threading
 import unittest
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -28,7 +30,7 @@ from scholarseed_runtime.contract import (
 )
 from scholarseed_runtime.gateway.driver import RuntimeTurnOutcome, RuntimeTurnResult
 from service.chat.api.artifacts import register_artifact_routes
-from service.chat.runtime.composition import OneShotRuntimeResult
+from service.chat.runtime.composition import OneShotRuntimeError, OneShotRuntimeResult
 from service.chat.runtime.projection import (
     ARTIFACT_PUBLISH_ACCESS_DENIED,
     ARTIFACT_PUBLISH_IO_FAILED,
@@ -37,7 +39,8 @@ from service.invocation.api.routes import register_invocation_routes
 from service.invocation.api.schema import InvocationStartRequest
 from service.invocation.service.artifacts import ARTIFACT_MAX_BYTES
 from service.invocation.service.events import InvocationEventProjector
-from service.invocation.service.model import InvocationCommand, InvocationSkill
+from service.invocation.service.metadata import InvocationMetadata
+from service.invocation.service.model import InvocationCommand, InvocationExecution, InvocationSkill
 from service.invocation.service.runtime import InvocationError, InvocationService, OneShotExecution
 from service.invocation.service.skills import (
     InvocationSkillError,
@@ -45,8 +48,11 @@ from service.invocation.service.skills import (
     ResolvedSkill,
 )
 from service.paths import ONE_SHOT_WORKSPACE_DIRNAME
+from service.platform import access, windows
 from service.platform.activity import Activities, ActivityDomain, MaintenanceActive
 from service.platform.bridge import ArtifactPublishFailure
+from service.platform.inference import ReasoningPolicy
+from service.platform.storage import DirectoryHandle, open_directory
 from service.platform.vocabulary import (
     BRIDGE_SESSION_HEADER,
     BRIDGE_TOKEN_HEADER,
@@ -56,6 +62,8 @@ OWNER_ID = "local"
 USER_ID = "account-user"
 FINAL_CONTENT = "final artifact\n"
 SUPPORTING_CONTENT = "supporting artifact\n"
+INPUT_STAGE_WAIT_SECONDS = 10
+CHILD_INHERITANCE_FLAGS = 0x03
 
 
 def event(
@@ -276,6 +284,96 @@ def frames(response_text: str) -> list[dict[str, Any]]:
 
 
 class InvocationContract(unittest.TestCase):
+    def test_failed_activation_preserves_safe_diagnostics_in_stream_and_metadata(self) -> None:
+        diagnostic = {
+            "phase": "activation.attach",
+            "exception_types": ["PermissionError"],
+            "errno": 13,
+            "winerror": 5,
+            "message": "diagnostic-secret-88850421",
+            "path": r"C:\Users\diagnostic-secret-88850421\cache",
+        }
+        workspaces = []
+
+        async def fail(**kwargs):
+            workspaces.append(Path(kwargs["cwd"]))
+            raise OneShotRuntimeError(submitted=False, diagnostic=diagnostic)
+
+        with patch.object(self.runtime, "invoke_once", fail):
+            response = self.client.post(
+                "/api/agent/invocations",
+                headers={"Accept": "text/event-stream"},
+                json=self.request(),
+            )
+        received = frames(response.text)
+        terminal = received[-1]
+        self.assertEqual(terminal["type"], "invocation.failed")
+        self.assertEqual(terminal["data"]["diagnostic"]["winerror"], 5)
+        self.assertNotIn("diagnostic-secret-88850421", response.text)
+        invocation_id = received[0]["invocation_id"]
+        # A fresh reader must retain the same terminal cause after process restart.
+        metadata = InvocationMetadata()
+        record = metadata.read(invocation_id, workspaces[0])
+        self.assertIsNotNone(record)
+        self.assertEqual(record.error_code, terminal["data"]["error"])
+        self.assertEqual(record.diagnostic, terminal["data"]["diagnostic"])
+        self.assertEqual(self.service._terminal_parts(record, ())[1], terminal["data"])
+        target = metadata.path(workspaces[0])
+        self.assertNotIn("diagnostic-secret-88850421", target.read_text())
+        # Old metadata has neither field; it remains readable without invented evidence.
+        payload = json.loads(target.read_text())
+        payload.pop("error_code")
+        payload.pop("diagnostic")
+        target.write_text(json.dumps(payload))
+        legacy = metadata.read(invocation_id, workspaces[0])
+        self.assertIsNotNone(legacy)
+        self.assertEqual(legacy.error_code, "")
+        self.assertEqual(legacy.diagnostic, {})
+
+    def test_explicit_model_generation_scope_expires_with_its_invocation(self) -> None:
+        async def run():
+            scopes = []
+            original = self.runtime.invoke_once
+
+            async def invoke(**kwargs):
+                observe = kwargs["observer"]
+
+                async def observed(event):
+                    await observe(event)
+                    if event.kind is RuntimeEventKind.TURN_STARTED:
+                        scope = self.service.generation_scope(kwargs["invocation_id"])
+                        self.assertIsNotNone(scope)
+                        self.assertTrue(scope.current())
+                        self.assertEqual(scope.model_id, "selected:model")
+                        self.assertEqual(scope.user_id, USER_ID)
+                        self.assertEqual(scope.reasoning_policy, ReasoningPolicy.LOW_LATENCY)
+                        scopes.append(scope)
+
+                return await original(**{**kwargs, "observer": observed})
+
+            with patch.object(self.runtime, "invoke_once", invoke):
+                prepared = await self.service.prepare(
+                    InvocationCommand(
+                        prompt="generate",
+                        skill=None,
+                        model_id="selected:model",
+                        execution=InvocationExecution(
+                            generation_reasoning_policy=ReasoningPolicy.LOW_LATENCY
+                        ),
+                    ),
+                    owner_id=OWNER_ID,
+                    user_id=USER_ID,
+                )
+                self.assertIsNone(self.service.generation_scope(prepared.record.invocation_id))
+                async for _event in self.service.stream(prepared):
+                    pass
+                self.assertEqual(self.runtime.calls[0]["model_id"], "selected:model")
+                self.assertEqual(len(scopes), 1)
+                self.assertFalse(scopes[0].current())
+                self.assertIsNone(self.service.generation_scope(prepared.record.invocation_id))
+
+        asyncio.run(run())
+
     def test_parent_permission_is_inherited_without_network_or_approval_expansion(self) -> None:
         async def scenario() -> None:
             permission = PermissionIntent(
@@ -343,6 +441,128 @@ class InvocationContract(unittest.TestCase):
         self.client = TestClient(app)
         self.runtime = runtime
 
+    def test_prepare_stages_scoped_inputs_exclusively_before_execution(self) -> None:
+        async def scenario() -> None:
+            prepared = await self.service.prepare(
+                InvocationStartRequest(prompt="use selected input").command(),
+                owner_id=OWNER_ID,
+                user_id=USER_ID,
+                input_files={"selected.pdf": b"frozen snapshot"},
+            )
+            workspace = Path(prepared.record.workspace)
+            selected = workspace / "selected.pdf"
+            self.assertEqual(selected.read_bytes(), b"frozen snapshot")
+            self.assertEqual(self.runtime.calls, [])
+            self.assertEqual(self.activities.snapshot().counts, {})
+            for payload in (b"frozen snapshot", b"different snapshot"):
+                with self.subTest(payload=payload), self.assertRaises(FileExistsError):
+                    self.service._artifacts.stage_inputs(workspace, (("selected.pdf", payload),))
+
+                self.assertEqual(selected.read_bytes(), b"frozen snapshot")
+            outside = workspace.parent / "outside.pdf"
+            outside.write_bytes(b"outside unchanged")
+            (workspace / "linked.pdf").symlink_to(outside)
+            for relative in ("../outside.pdf", str(outside), "linked.pdf"):
+                with self.subTest(relative=relative), self.assertRaises((OSError, ValueError)):
+                    self.service._artifacts.stage_inputs(workspace, ((relative, b"unwanted"),))
+            self.assertEqual(outside.read_bytes(), b"outside unchanged")
+            original_sync = DirectoryHandle.sync
+            sync_failed = False
+
+            def fail_first_sync(directory: DirectoryHandle) -> None:
+                nonlocal sync_failed
+                if not sync_failed:
+                    sync_failed = True
+                    raise OSError("input sync refused")
+                original_sync(directory)
+
+            with patch.object(DirectoryHandle, "sync", fail_first_sync):
+                with self.assertRaisesRegex(OSError, "input sync refused"):
+                    self.service._artifacts.stage_inputs(workspace, (("failed.pdf", b"partial"),))
+            self.assertFalse((workspace / "failed.pdf").exists())
+            self.assertEqual(selected.read_bytes(), b"frozen snapshot")
+
+        asyncio.run(scenario())
+        response = self.client.post(
+            "/api/agent/invocations", json={"prompt": "not a file API", "input_files": {"x": "y"}}
+        )
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(self.runtime.calls, [])
+
+    @unittest.skipUnless(os.name == "nt", "Windows inheritance requires native ACLs")
+    def test_new_invocation_workspace_inherits_host_access_to_tool_files(self) -> None:
+        prepared = asyncio.run(
+            self.service.prepare(
+                InvocationStartRequest(prompt="produce an artifact").command(),
+                owner_id=OWNER_ID,
+                user_id=USER_ID,
+            )
+        )
+        workspace = Path(prepared.record.workspace)
+        user = windows.current_sid()
+        with closing(
+            open_directory(workspace, (), final_access=windows.READ_CONTROL | windows.SYNCHRONIZE)
+        ) as directory:
+            with access.security_snapshot(directory.native_handles[-1]) as (snapshot, _):
+                self.assertTrue(
+                    any(
+                        kind == windows.ALLOW_ACE
+                        and flags & CHILD_INHERITANCE_FLAGS == CHILD_INHERITANCE_FLAGS
+                        and principal == user
+                        and mask & access.FILE_GENERIC_READ == access.FILE_GENERIC_READ
+                        for kind, flags, principal, mask in snapshot.entries
+                    ),
+                    "new tool files must inherit an explicit grant for the Serve account",
+                )
+
+    def test_cancelled_input_preparation_waits_for_writer_and_releases_leases(self) -> None:
+        async def scenario() -> None:
+            entered = asyncio.Event()
+            release = threading.Event()
+            loop = asyncio.get_running_loop()
+            staged = []
+            input_files = {"selected.pdf": b"frozen snapshot"}
+            original = self.service._artifacts.stage_inputs
+
+            def stage(workspace, inputs):
+                loop.call_soon_threadsafe(entered.set)
+                if not release.wait(INPUT_STAGE_WAIT_SECONDS):
+                    raise TimeoutError("input writer was not released")
+                original(workspace, inputs)
+                staged.append(workspace)
+
+            with patch.object(self.service._artifacts, "stage_inputs", stage):
+                preparation = asyncio.create_task(
+                    self.service.prepare(
+                        InvocationStartRequest(prompt="stage only").command(),
+                        owner_id=OWNER_ID,
+                        user_id=USER_ID,
+                        input_files=input_files,
+                    )
+                )
+                try:
+                    await asyncio.wait_for(entered.wait(), INPUT_STAGE_WAIT_SECONDS)
+                    input_files["selected.pdf"] = b"later mutation"
+                    preparation.cancel()
+                    await asyncio.sleep(0)
+                    preparation.cancel()
+                    await asyncio.sleep(0)
+                    self.assertFalse(preparation.done())
+                    generation = self.activities.begin()
+                    self.assertFalse(self.activities.seal(generation))
+                    self.assertEqual(self.runtime.calls, [])
+                finally:
+                    release.set()
+                with self.assertRaises(asyncio.CancelledError):
+                    await asyncio.wait_for(preparation, INPUT_STAGE_WAIT_SECONDS)
+            self.assertEqual(len(staged), 1)
+            self.assertEqual((staged[0] / "selected.pdf").read_bytes(), b"frozen snapshot")
+            self.assertEqual(self.activities.snapshot().counts, {})
+            self.assertTrue(self.activities.seal(generation))
+            self.assertEqual(self.runtime.calls, [])
+
+        asyncio.run(scenario())
+
     def test_drain_rejects_prepare_before_creating_workspace(self) -> None:
         async def scenario() -> None:
             generation = self.activities.begin()
@@ -351,6 +571,7 @@ class InvocationContract(unittest.TestCase):
                     InvocationStartRequest(prompt="new task").command(),
                     owner_id=OWNER_ID,
                     user_id=USER_ID,
+                    input_files={"selected.pdf": b"must not write"},
                 )
             self.assertEqual(list(self.root.iterdir()), [])
             self.assertTrue(self.activities.seal(generation))
@@ -473,6 +694,11 @@ class InvocationContract(unittest.TestCase):
         disabled_call, enabled_call = self.runtime.calls[-2:]
         self.assertEqual(disabled_call["developer_instructions"], "")
         self.assertTrue(enabled_call["developer_instructions"])
+        self.assertIn("scholarseed_bridge model tool", enabled_call["developer_instructions"])
+        self.assertIn('"capability":"artifact"', enabled_call["developer_instructions"])
+        self.assertNotIn(
+            "scholarseed-bridge artifact publish", enabled_call["developer_instructions"]
+        )
         self.assertFalse(frames(disabled.text)[0]["data"]["execution"]["developer_prompt"])
         self.assertTrue(frames(enabled.text)[0]["data"]["execution"]["developer_prompt"])
 

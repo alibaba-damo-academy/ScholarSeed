@@ -28,6 +28,7 @@ test('empty project center does not load unrelated reviewed documents; required 
     import { createServer } from 'node:http';
     import { createPreviewService } from './preview/service.ts';
     import { PreviewFiles } from './preview/files.ts';
+    import { ProjectSimulation } from './preview/project.ts';
     const service = createPreviewService();
     const server = createServer((request, response) => service.middleware(request, response, () => response.writeHead(404).end()));
     server.listen(0, '127.0.0.1');
@@ -40,10 +41,20 @@ test('empty project center does not load unrelated reviewed documents; required 
       assert.equal(state.projects.length, 0);
       assert.equal(state.sessions.length, 0);
       assert.equal(globalThis.reviewedReads, 0);
-      assert.throws(() => new PreviewFiles(), /blocked-reviewed-fixture/);
+      const projects = new ProjectSimulation('/preview/empty-create', []);
+      const created = projects.create('Empty project');
+      await new Promise(resolve => setTimeout(resolve, 350));
+      assert.equal(projects.operation(created).state, 'succeeded');
+      assert.equal(projects.files(projects.operation(created).result.id).manifest().length, 0);
+      projects.dispose();
+      assert.equal(globalThis.reviewedReads, 0);
+      assert.equal(new PreviewFiles().manifest().length, 0);
+      assert.ok(new PreviewFiles('example').manifest().length > 0);
+      assert.equal(globalThis.reviewedReads, 0);
+      assert.throws(() => new PreviewFiles('reviewed'), /blocked-reviewed-fixture/);
       assert.ok(globalThis.reviewedReads > 0);
       globalThis.restoreReviewedReads();
-      const recovered = new PreviewFiles();
+      const recovered = new PreviewFiles('reviewed');
       assert.ok(recovered.manifest().length > 0);
       const ordinary = await fetch(origin + '/__preview/reset?previewInstance=sample-loading', {
         method: 'POST', headers: { 'content-type': 'application/json' },

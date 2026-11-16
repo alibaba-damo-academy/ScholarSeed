@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
 import unittest
+from contextlib import AsyncExitStack
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -22,7 +22,6 @@ from service.chat.constants import (
 )
 from service.chat.persistence.catalog import SessionCatalogStore, SessionPrincipal, SessionStatus
 from service.chat.persistence.events import ProductEventStore
-from service.chat.persistence.worker import PersistenceWorker
 from service.chat.runtime.live import LiveSession
 from service.chat.service.provenance import (
     PROVENANCE_SOURCE_LIMIT,
@@ -67,7 +66,7 @@ class NativeProvenanceContracts(unittest.TestCase):
                 sources = []
                 calls = []
 
-                def turn_provider(session_id: str) -> str:
+                def turn_provider(session_id: str, calls=calls) -> str:
                     calls.append(session_id)
                     return "original-turn" if len(calls) == 1 else "later-turn"
 
@@ -149,9 +148,9 @@ class NativeProvenanceContracts(unittest.TestCase):
         )
 
     def test_missing_and_empty_annotations_are_distinct(self) -> None:
-        for annotations, provided in ((None, False), ([], True), ({}, False)):
-            with self.subTest(annotations=annotations):
-                result = item_provenance(message(annotations=annotations))
+        for citation_annotations, provided in ((None, False), ([], True), ({}, False)):
+            with self.subTest(annotations=citation_annotations):
+                result = item_provenance(message(annotations=citation_annotations))
                 self.assertEqual(result["provided"], provided)
                 self.assertEqual(result["sources"], [])
 
@@ -286,9 +285,11 @@ class NativeProvenanceContracts(unittest.TestCase):
 
 class NativeProvenanceLedgerContracts(unittest.IsolatedAsyncioTestCase):
     async def test_sources_bind_vendor_turn_and_reopen_without_memory_cache(self) -> None:
-        with TemporaryDirectory() as directory:
+        async with AsyncExitStack() as cleanup:
+            directory = cleanup.enter_context(TemporaryDirectory())
             database = Path(directory) / "sessions.sqlite3"
-            SessionCatalogStore(database).register(
+            catalog = SessionCatalogStore(database)
+            catalog.register(
                 "session",
                 SessionPrincipal("owner"),
                 runtime_id="codex",
@@ -304,21 +305,24 @@ class NativeProvenanceLedgerContracts(unittest.IsolatedAsyncioTestCase):
                 title="",
                 created_at=1.0,
             )
-            live = LiveSession.__new__(LiveSession)
-            live.id = "session"
-            live.runtime_id = "codex"
+            live = LiveSession(
+                session_id="session",
+                runtime_id="codex",
+                runtime_workdir=Path(directory),
+                project_path=None,
+                output_root=Path(directory) / "outputs",
+                model_id="test",
+                catalog=catalog,
+                events=ProductEventStore(database),
+                artifacts=Mock(),
+                skills=Mock(),
+                logger=logging.getLogger(__name__),
+                trace=Mock(),
+            )
+            cleanup.push_async_callback(live.persistence.close)
             live.vendor_thread_id = "thread"
             live.active_product_turn_id = "client-turn"
             live.ledger = SimpleNamespace(active_turn_id="vendor-turn")
-            live._events = ProductEventStore(database)
-            live._persistence = PersistenceWorker()
-            self.addAsyncCleanup(live._persistence.close)
-            live._publication_lock = asyncio.Lock()
-            live._broadcast_sequence = 0
-            live._publication_error = None
-            live._publication_task = None
-            live._trace = Mock()
-            live._logger = logging.getLogger(__name__)
             fields = item_provenance(message(annotations=[citation()]))
             with patch.object(live, "_broadcast_product_event"):
                 await live.observe_sources("old-client-turn", fields)

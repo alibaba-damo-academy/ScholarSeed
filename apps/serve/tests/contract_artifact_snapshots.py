@@ -29,6 +29,98 @@ from service.platform.content import ArtifactScope, ArtifactScopeKind
 
 
 class ArtifactSnapshotContract(unittest.TestCase):
+    def test_directory_manifest_is_canonical_and_empty_root_is_preserved(self):
+        for name, members in (("first", ("z.txt", "a.txt")), ("second", ("a.txt", "z.txt"))):
+            folder = self.workspace / name
+            folder.mkdir()
+            for member in members:
+                (folder / member).write_bytes(member.encode())
+        first = self.content.capture_artifact(self.scope, "first")
+        second = self.content.capture_artifact(self.scope, "second")
+        self.assertEqual(first.sha256, second.sha256)
+        (self.workspace / "empty").mkdir()
+        empty = self.content.capture_artifact(self.scope, "empty")
+        self.assertEqual(empty.kind, "directory")
+        self.assertEqual(self.content.artifact_manifest(empty).entries, ())
+        self.assertEqual(self.content.artifact_manifest(empty).total_size, 0)
+
+    def test_directory_limits_reject_whole_capture_and_expected_hash_is_manifest_bound(self):
+        folder = self.workspace / "delivery"
+        (folder / "nested").mkdir(parents=True)
+        (folder / "nested" / "a.txt").write_bytes(b"four")
+        for constant, maximum in (
+            ("MAX_DIRECTORY_ENTRIES", 1),
+            ("MAX_DIRECTORY_DEPTH", 1),
+            ("MAX_ARTIFACT_BYTES", 3),
+        ):
+            with self.subTest(constant=constant), patch.object(snapshot, constant, maximum):
+                with self.assertRaisesRegex(ContentError, TOO_LARGE):
+                    self.content.capture_artifact(self.scope, "delivery")
+        handle = self.content.capture_artifact(self.scope, "delivery")
+        self.assertEqual(
+            self.content.capture_artifact(self.scope, "delivery", handle.sha256), handle
+        )
+        with self.assertRaisesRegex(ContentError, SOURCE_CHANGED):
+            self.content.capture_artifact(self.scope, "delivery", "0" * 64)
+
+    def test_directory_snapshot_keeps_empty_directories_and_historical_member_bytes(self):
+        folder = self.workspace / "delivery"
+        (folder / "empty").mkdir(parents=True)
+        (folder / "nested").mkdir()
+        (folder / "nested" / "报告.md").write_bytes(b"original")
+        handle = self.content.capture_artifact(self.scope, "delivery")
+        self.assertEqual(handle.kind, "directory")
+        manifest = self.content.artifact_manifest(handle)
+        self.assertEqual(
+            [entry.path for entry in manifest.entries], ["empty", "nested", "nested/报告.md"]
+        )
+        self.assertEqual(manifest.total_size, len(b"original"))
+        (folder / "nested" / "报告.md").write_bytes(b"changed")
+        first = manifest.entries[-1]
+        original = replace(
+            handle,
+            kind="file",
+            name="报告.md",
+            source_path="delivery/nested/报告.md",
+            sha256=first.sha256,
+            size=first.size,
+            media_type=first.media_type,
+        )
+        self.assertEqual(self.content.read_artifact(original), b"original")
+        second = self.content.capture_artifact(self.scope, "delivery")
+        self.assertNotEqual(handle.sha256, second.sha256)
+        self.assertEqual(self.content.artifact_manifest(handle), manifest)
+
+    def test_directory_snapshot_rejects_symlink_members(self):
+        folder = self.workspace / "delivery"
+        folder.mkdir()
+        target = folder / "report.md"
+        target.write_bytes(b"original")
+        link = folder / "alias.md"
+        try:
+            link.symlink_to(target)
+        except OSError:
+            self.skipTest("symlink creation requires native privilege")
+        with self.assertRaises(ContentError):
+            self.content.capture_artifact(self.scope, "delivery")
+        link.unlink()
+
+    def test_directory_snapshot_rejects_source_changes(self):
+        folder = self.workspace / "delivery"
+        folder.mkdir()
+        target = folder / "report.md"
+        target.write_bytes(b"original")
+        capture_file = snapshot._capture_file_once
+
+        def mutate(*args, **kwargs):
+            result = capture_file(*args, **kwargs)
+            target.write_bytes(b"changed")
+            return result
+
+        with patch.object(snapshot, "_capture_file_once", side_effect=mutate):
+            with self.assertRaisesRegex(ContentError, SOURCE_CHANGED):
+                self.content.capture_artifact(self.scope, "delivery")
+
     def test_capture_identifies_pdf_bytes_without_trusting_filename(self):
         payload = b"%PDF-1.7\ncontract bytes\x00"
         for name in ("paper", "1706.03762_Attention", "paper.txt", "paper.PDF"):

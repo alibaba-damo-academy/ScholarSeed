@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 import zipfile
 from datetime import datetime
@@ -18,10 +19,12 @@ from unittest.mock import patch
 from damoatrace.data.store import TraceStore
 from damoatrace.recording.diagnostics import diagnostic_bundle
 from damoatrace.recording.records import effective_status, is_failed
+from damoatrace.recording.storage import budget_lock
 from damoatrace.recording.writer import EvidenceWriter
 from scholarseed_runtime.contract.event import DeliveryClass, RuntimeEvent, RuntimeEventKind
 from service.chat.constants import (
     PRODUCT_EVENT_HIL_REQUESTED,
+    PRODUCT_EVENT_HIL_RESOLVED,
     PRODUCT_EVENT_NATIVE_ACTIVITY_COMPLETED,
     PRODUCT_EVENT_NATIVE_ACTIVITY_STARTED,
     PRODUCT_EVENT_TURN_COMPLETED,
@@ -31,6 +34,7 @@ from service.chat.constants import (
 )
 from service.chat.persistence.catalog import SessionCatalogStore
 from service.chat.persistence.events import ProductEventRecord, ProductEventStore
+from service.chat.persistence.worker import PersistenceWorker
 from service.chat.runtime.capture import SessionCapture
 from service.chat.runtime.evidence import (
     TRACE_PERMISSION_AUTO_APPROVAL,
@@ -256,6 +260,20 @@ class TraceEvidenceContract(unittest.TestCase):
             self.assertEqual(response["attributes"]["decision"], OPTION)
             self.assertIs(response["attributes"]["cancelled"], False)
 
+    def test_product_hil_retains_server_owned_approval_source(self) -> None:
+        self.product(
+            PRODUCT_EVENT_HIL_RESOLVED,
+            "hil-turn",
+            {
+                "request_id": REQUEST,
+                "kind": "question",
+                "state": "resolved",
+                "decision_source": "user_explicit",
+            },
+        )
+        response = next(row for row in self.events() if row["kind"] == "hil.response")
+        self.assertEqual(response["attributes"].get("decision_source"), "user_explicit")
+
     def test_transport_failure_details_survive_portable_export(self) -> None:
         details = {
             "phase": "finished",
@@ -466,6 +484,38 @@ class TraceEvidenceContract(unittest.TestCase):
 
 
 class ActivationTimingConcurrency(unittest.IsolatedAsyncioTestCase):
+    async def test_activation_lock_wait_does_not_block_loop_and_records_are_drained(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            trace = SessionTrace(SESSION, root, runtime_id=RUNTIME, trace_dir=root)
+            worker = PersistenceWorker(session_id=SESSION)
+            entered, release = threading.Event(), threading.Event()
+
+            def hold_lock() -> None:
+                with budget_lock(root):
+                    entered.set()
+                    release.wait(2)
+
+            holder = asyncio.create_task(asyncio.to_thread(hold_lock))
+            try:
+                self.assertTrue(await asyncio.to_thread(entered.wait, 1))
+                timing = trace.activation("locked-request", dispatch=worker.enqueue)
+                with timing.measure(ActivationStage.TOTAL):
+                    pass
+                barrier = asyncio.create_task(worker.run(trace.close))
+                await asyncio.sleep(0.05)
+                self.assertFalse(barrier.done())
+                release.set()
+                await barrier
+                rows = TraceStore(root, trace_file=trace.path, offline=True).all_events()
+                self.assertEqual(len(rows), 1)
+                self.assertEqual(rows[0]["attributes"]["request_id"], "locked-request")
+            finally:
+                release.set()
+                await holder
+                await worker.close()
+                trace.close()
+
     async def test_deferred_start_in_another_task_uses_request_root(self) -> None:
         samples = []
         timing = ActivationTiming("queued-request", samples.append)

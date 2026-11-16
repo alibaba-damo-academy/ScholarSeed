@@ -65,6 +65,26 @@ func TestSandboxWorkerDiagnosticsRoundTripEveryClassification(t *testing.T) {
 	}
 }
 
+func TestSandboxMetadataDiagnosticsPreserveLegacyExitCodes(t *testing.T) {
+	for _, entry := range []struct {
+		stage  string
+		reason string
+		code   int
+	}{
+		{sandboxStageTarget, sandboxReasonPolicy, 4066},
+		{sandboxStageVerification, sandboxReasonWorker, 4101},
+		{"metadata", sandboxReasonPolicy, 4102},
+	} {
+		cause := &sandboxDiagnosticError{sandboxDiagnostic{Event: sandboxFailed, Stage: entry.stage, Reason: entry.reason}}
+		if code := SandboxExitCode(cause); code != entry.code {
+			t.Fatalf("%s/%s exit code: got %d, want %d", entry.stage, entry.reason, code, entry.code)
+		}
+		if decoded := SandboxDiagnostic(sandboxWorkerFailure(uint32(entry.code))); decoded != cause.diagnostic {
+			t.Fatalf("classification changed: %#v", decoded)
+		}
+	}
+}
+
 func TestSandboxCancellationRequiresActualCancellationResult(t *testing.T) {
 	for _, entry := range []struct {
 		cause  error
@@ -86,12 +106,10 @@ func TestSandboxCancellationRequiresActualCancellationResult(t *testing.T) {
 }
 
 func TestSandboxRecoveryVersionIsExact(t *testing.T) {
-	for _, version := range []string{"0.163.0", "0.165.0"} {
-		if err := validateSandboxVersion(version); err != nil {
-			t.Fatal(err)
-		}
+	if err := validateSandboxVersion("0.165.0"); err != nil {
+		t.Fatal(err)
 	}
-	for _, version := range []string{"", "0.159.0", "0.163.0-r1", "0.164.0", "0.163.0\n", "0.165.0-r1", "0.166.0", "0.165.0\n", "codex-cli 0.165.0"} {
+	for _, version := range []string{"", "0.159.0", "0.163.0", "0.165.0-r1", "0.164.0", "0.165.0\n"} {
 		if validateSandboxVersion(version) == nil {
 			t.Fatalf("unreviewed version accepted: %q", version)
 		}
@@ -99,7 +117,7 @@ func TestSandboxRecoveryVersionIsExact(t *testing.T) {
 }
 
 func TestSandboxRuntimeVersionMatchesRequestedExecution(t *testing.T) {
-	for _, version := range []string{"0.163.0", "0.165.0"} {
+	for _, version := range []string{"0.165.0"} {
 		for _, revision := range []string{"-r1", "-r12"} {
 			if !sandboxRuntimeVersionMatches(version, version+revision) {
 				t.Fatalf("matching reviewed runtime rejected: %s%s", version, revision)
@@ -111,7 +129,7 @@ func TestSandboxRuntimeVersionMatchesRequestedExecution(t *testing.T) {
 			}
 		}
 	}
-	for _, entry := range [][2]string{{"0.165.0", "0.163.0-r1"}, {"0.163.0", "0.165.0-r1"}, {"0.166.0", "0.166.0-r1"}} {
+	for _, entry := range [][2]string{{"0.163.0", "0.163.0-r1"}, {"0.163.0", "0.163.0-r12"}, {"0.165.0", "0.163.0-r1"}, {"0.163.0", "0.165.0-r1"}, {"0.166.0", "0.166.0-r1"}} {
 		if sandboxRuntimeVersionMatches(entry[0], entry[1]) {
 			t.Fatalf("runtime identity substitution accepted: %q", entry)
 		}

@@ -1,3 +1,4 @@
+import fingerprints from '../../native/shipit/fingerprint.cjs'
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
@@ -73,6 +74,7 @@ export interface TerminalRecoveryOptions {
   cleanup: string
   toolDirectory: string
   expectedTeam: string
+  recovery?: 'orphan' | 'retire'
   selection?: RepairRoots
 }
 export type RepairSelection = Omit<UpdateLaunchContext, 'at'>
@@ -81,6 +83,20 @@ const REPAIR_ROOTS = ['home', 'userData', 'workspace'] as const
 
 export function sameRepairSelection(first: RepairRoots, second: RepairRoots): boolean {
   return REPAIR_ROOTS.every((key) => first[key] === second[key])
+}
+// This digest labels a deny-only maintenance operation for an unbound legacy
+// handoff. It is never written into the old request or used to authorize install.
+export function retirementOperation(bytes: Buffer) {
+  const handoff = decodeSquirrelHandoff(bytes)
+  return (
+    handoff.binding ?? {
+      schema: 1 as const,
+      requestId: createHash('sha256').update(bytes).digest('hex'),
+      candidate: handoff.candidate,
+      sha512: createHash('sha512').update(bytes).digest('hex'),
+      size: bytes.length,
+    }
+  )
 }
 
 export interface TerminalRecoveryDependencies {
@@ -282,14 +298,20 @@ export async function verifyApplication(
 }
 
 export function orphanSource(
-  options: Pick<TerminalRecoveryOptions, 'nativeState' | 'application'>,
+  options: Pick<TerminalRecoveryOptions, 'nativeState' | 'application' | 'recovery'>,
   expected: unknown,
   uid: number
 ): string {
   const record = expected ? object(expected, 'native_evidence_differs') : null
   let bytes: Buffer
   if (record) {
-    if (record.kind !== ORPHAN_OBSERVATION_KIND || typeof record.stateBytes !== 'string')
+    if (
+      record.kind !==
+        (options.recovery === 'retire'
+          ? 'retired-preparation-observation'
+          : ORPHAN_OBSERVATION_KIND) ||
+      typeof record.stateBytes !== 'string'
+    )
       reject('native_evidence_differs')
     bytes = Buffer.from(record.stateBytes, 'base64')
     if (
@@ -301,15 +323,19 @@ export function orphanSource(
   } else bytes = captureRecord(options.nativeState, PRODUCT_BYTES, [uid]).bytes
   const state = object(JSON.parse(bytes.toString('utf8')))
   if (
-    state.installationAuthorized !== false ||
-    state.launchAfterInstallation !== false ||
+    (options.recovery !== 'retire' &&
+      (state.installationAuthorized !== false || state.launchAfterInstallation !== false)) ||
     typeof state.updateBundleURL !== 'string' ||
     typeof state.targetBundleURL !== 'string' ||
-    !validSquirrelBinding(state.binding) ||
+    (state.binding ? !validSquirrelBinding(state.binding) : options.recovery !== 'retire') ||
     realpathSync.native(fileURLToPath(String(state.targetBundleURL))) !== options.application
   )
     reject('invalid_records')
-  return absolute(realpathSync.native(fileURLToPath(state.updateBundleURL)))
+  return absolute(
+    options.recovery === 'retire'
+      ? fileURLToPath(state.updateBundleURL)
+      : realpathSync.native(fileURLToPath(state.updateBundleURL))
+  )
 }
 
 function validateRecoveryScope(
@@ -407,7 +433,11 @@ export async function inspectOrphanRecovery(
         !sameRepairSelection(options.selection, context))
     )
       reject('invalid_scope')
-    const handoff = decodeSquirrelHandoff(handoffRecord.bytes)
+    const original = decodeSquirrelHandoff(handoffRecord.bytes)
+    const retiring = options.recovery === 'retire'
+    const handoff = retiring
+      ? { ...original, binding: retirementOperation(handoffRecord.bytes) }
+      : original
     if (
       context.uid !== runtime.uid ||
       context.application !== options.application ||
@@ -415,12 +445,25 @@ export async function inspectOrphanRecovery(
       context.targetBuild !== handoff.buildNumber ||
       !validSquirrelBinding(handoff.binding) ||
       handoff.binding.candidate !== context.candidate ||
-      !['requested', 'failed'].includes(handoff.state) ||
+      !['requested', 'failed', ...(retiring ? ['installing', 'downloaded'] : [])].includes(
+        handoff.state
+      ) ||
       squirrelHandoffRecordPath(context.home) !== options.handoff
     )
       reject('invalid_records')
     const policy = object(JSON.parse(productRecord.bytes.toString('utf8')))
-    assertRecoveryProduct(policy, context, options.expectedTeam, context.sourceBuild)
+    if (
+      retiring &&
+      (!/^\d{12}$/.test(String(policy.build_number)) ||
+        String(policy.build_number) < context.sourceBuild)
+    )
+      reject('source_identity_differs')
+    assertRecoveryProduct(
+      policy,
+      context,
+      options.expectedTeam,
+      retiring ? String(policy.build_number) : context.sourceBuild
+    )
     phase = 'signature_refused'
     await runtime.verifyApplication(options.application, context.bundleId, options.expectedTeam)
     phase = 'native_preflight_refused'
@@ -439,7 +482,7 @@ export async function inspectOrphanRecovery(
     const source = object(observed.source, 'native_evidence_differs')
     const target = object(observed.target, 'native_evidence_differs')
     if (
-      observed.kind !== ORPHAN_OBSERVATION_KIND ||
+      observed.kind !== (retiring ? 'retired-preparation-observation' : ORPHAN_OBSERVATION_KIND) ||
       observed.bundleIdentifier !== context.bundleId ||
       !sameSquirrelBinding(observed.binding, handoff.binding) ||
       target.path !== options.application ||
@@ -450,6 +493,19 @@ export async function inspectOrphanRecovery(
       !HASH_PATTERN.test(String(object(observed.selection).sha256))
     )
       reject('native_evidence_differs')
+    if (retiring) {
+      if (
+        handoff.nativeRequest &&
+        (handoff.nativeRequest.source.path !== source.path ||
+          handoff.nativeRequest.target.path !== options.application)
+      )
+        reject('native_evidence_differs')
+      phase = 'signature_refused'
+      await verifyRetirementCapability(options.application, runtime.uid)
+      phase = 'evidence_changed'
+      if (!sameRecoveryRecords(options, runtime.uid, records)) reject('evidence_changed')
+      return observed
+    }
     canonicalDirectory(source.path)
     phase = 'unsafe_record'
     const candidate = captureRecord(join(source.path, ...PRODUCT_FILE), PRODUCT_BYTES, [
@@ -592,4 +648,26 @@ export async function inspectTerminalRecovery(
     if (error instanceof RecoveryInspectionError) throw error
     reject(phase)
   }
+}
+
+// Signature verification by the caller seals both this receipt and the helper.
+// Compare the actual Mach-O fingerprint as well: a receipt alone is not capability.
+export async function verifyRetirementCapability(application: string, uid: number): Promise<void> {
+  const receiptPath = join(application, 'Contents', 'Resources', 'shipit', 'build.json')
+  const helperPath = realpathSync.native(
+    join(application, 'Contents', 'Frameworks', 'Squirrel.framework', 'Resources', 'ShipIt')
+  )
+  if (!helperPath.startsWith(join(application, 'Contents') + '/')) reject('signature_refused')
+  const receipt = captureRecord(receiptPath, PRODUCT_BYTES, [0, uid])
+  const helper = captureRecord(helperPath, 32 * 1024 * 1024, [0, uid])
+  const value = object(JSON.parse(receipt.bytes.toString('utf8')))
+  if (
+    value.schema !== 1 ||
+    !HASH_PATTERN.test(String(object(value.overlays)['retirement.h'])) ||
+    !HASH_PATTERN.test(String(value.executableDigest)) ||
+    fingerprints.fingerprint(helperPath) !== value.executableDigest ||
+    !sameRecord(receiptPath, receipt, PRODUCT_BYTES, [0, uid]) ||
+    !sameRecord(helperPath, helper, 32 * 1024 * 1024, [0, uid])
+  )
+    reject('signature_refused')
 }

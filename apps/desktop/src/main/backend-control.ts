@@ -339,6 +339,11 @@ export class BackendControl {
     await this.preparation(TOOLCHAIN_OPERATION, ready, resources)
   }
 
+  async whenAuthenticated(): Promise<void> {
+    await this.connected
+    if (this.stopped || !this.socket) throw new Error('private backend control unavailable')
+  }
+
   async skillPython(ready: boolean): Promise<void> {
     await this.preparation(SKILL_PYTHON_OPERATION, ready)
   }

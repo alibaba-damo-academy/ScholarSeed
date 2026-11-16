@@ -122,7 +122,7 @@ test('macOS bytecode freezes after skill provisioning and before context and pac
 })
 
 
-test('cold Python sync stages privately, replaces only after success and always cleans up', t => {
+test('cold Python sync stages privately, replaces only after success and always cleans up', async t => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ss-sync-')))
   t.after(() => fs.rmSync(root, {recursive: true, force: true}))
   for (const fail of [false, true]) {
@@ -136,8 +136,11 @@ test('cold Python sync stages privately, replaces only after success and always 
     const policy = ['first', 'second'].map((name, index) => ({name, version: '1.0', sha256: 'a'.repeat(64), buildConstraints: `fixture-builder==${index + 1}.0 --hash=sha256:${String(index + 1).repeat(64)}\n`}))
     const requirements = path.join(root, `${fail}-locked.txt`)
     fs.writeFileSync(requirements, policy.map(source => `${source.name}==${source.version} \\\n    --hash=sha256:${source.sha256}`).join('\n'))
-    vm.runInNewContext(fs.readFileSync(filename, 'utf8'), {module, process, __dirname: sourceDirectory,
+    vm.runInNewContext(fs.readFileSync(filename, 'utf8'), {module, process, __filename: filename, __dirname: sourceDirectory,
       require: name => name === 'node:child_process' ? {
+        execFileSync: (executable, args) => args.includes('--version') ? 'uv 0.12.11' : JSON.stringify({
+          python: '3.14.10', implementation: 'cpython', platform: 'win32', machine: 'AMD64',
+          cacheTag: 'cpython-314', soabi: 'cp314-win_amd64', gilDisabled: 0}),
         spawnSync: (file, args, options) => {
           calls.push({file, args, options, constraints: args.includes('--build-constraints')
             ? fs.readFileSync(args[args.indexOf('--build-constraints') + 1], 'utf8') : null})
@@ -152,11 +155,11 @@ test('cold Python sync stages privately, replaces only after success and always 
     const invoke = () => module.exports.stageSync('uv', path.join(original, 'python.exe'),
       requirements, 'wheel-root', {UV_LINK_MODE: 'copy', SCHOLARSEED_BUILD_CACHE_ROOT: root}, root, policy)
     if (fail) {
-      assert.throws(invoke, /Python component step failed/)
+      await assert.rejects(invoke, /Python component step failed/)
       assert.ok(fs.existsSync(path.join(original, 'obsolete')))
       assert.ok(!fs.existsSync(path.join(original, 'installed')))
     } else {
-      const result = invoke()
+      const result = await invoke()
       assert.equal(calls.length, policy.length + 1)
       assert.ok(calls.at(-1).args.includes('--no-build'))
       assert.deepEqual(calls.slice(0, -1).map(call => call.constraints), policy.map(source => source.buildConstraints))
@@ -172,7 +175,7 @@ test('cold Python sync stages privately, replaces only after success and always 
   }
 })
 
-test('source policy drift is rejected before installing and leaves the original tree intact', t => {
+test('source policy drift is rejected before installing and leaves the original tree intact', async t => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ss-source-policy-')))
   t.after(() => fs.rmSync(root, {recursive: true, force: true}))
   const original = path.join(root, 'original')
@@ -181,8 +184,142 @@ test('source policy drift is rejected before installing and leaves the original 
   fs.writeFileSync(python, 'original interpreter')
   const requirements = path.join(root, 'requirements.txt')
   fs.writeFileSync(requirements, 'jieba==0.42.1 --hash=sha256:' + '0'.repeat(64))
-  assert.throws(() => require('../assembly.cjs').stageSync('must-not-execute', python,
+  await assert.rejects(() => require('../assembly.cjs').stageSync('must-not-execute', python,
     requirements, root, {}, root, [{name: 'jieba', version: '0.42.1', sha256: 'a'.repeat(64)}]), /source build policy differs from runtime lock: jieba/)
   assert.equal(fs.readFileSync(python, 'utf8'), 'original interpreter')
   assert.deepEqual(fs.readdirSync(root).sort(), ['original', 'requirements.txt'])
+})
+
+test('source caches bind interpreter ABI, native target, compiler inputs and installer version', async t => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ss-source-cache-')))
+  t.after(() => fs.rmSync(root, {recursive: true, force: true}))
+  const filename = path.join(sourceDirectory, 'assembly.cjs'), realRequire = createRequire(filename)
+  const source = {name: 'fastcdc', version: '1.7.0', sha256: 'a'.repeat(64), buildConstraints: 'locked builder'}
+  const requirements = path.join(root, 'requirements.txt')
+  fs.writeFileSync(requirements, `fastcdc==1.7.0 --hash=sha256:${source.sha256}\n`)
+  const interpreter = {python: '3.14.10', implementation: 'cpython', platform: 'darwin', machine: 'arm64',
+    cacheTag: 'cpython-314', soabi: 'cpython-314-darwin', gilDisabled: 0}
+  const caches = []
+  const variants = [
+    {},
+    {python: '3.12.13', cacheTag: 'cpython-312', soabi: 'cpython-312-darwin'},
+    {machine: 'x86_64'},
+    {gilDisabled: 1, soabi: 'cpython-314t-darwin'},
+    {environment: {MACOSX_DEPLOYMENT_TARGET: '14.0'}},
+    {environment: {SDKROOT: '/other/sdk'}},
+    {environment: {CFLAGS: '-march=native'}},
+    {environment: {CXXFLAGS: '-fno-exceptions'}},
+    {environment: {LDSHARED: 'clang -shared'}},
+    {environment: {CL: '/DTEST_BUILD=1'}},
+    {environment: {_CL_: '/DTEST_BUILD=2'}},
+    {uv: 'uv 0.12.12'},
+    {environment: {VCToolsVersion: '14.50'}},
+    {environment: {SOURCE_DATE_EPOCH: '315532800'}},
+    {environment: {UNRELATED_TOKEN: 'do-not-record'}}
+  ]
+  for (const [index, variant] of variants.entries()) {
+    const module = {exports: {}}
+    const {environment: overrides, uv, ...identity} = variant
+    vm.runInNewContext(fs.readFileSync(filename, 'utf8'), {module, process, __filename: filename, __dirname: sourceDirectory,
+      require: name => name === 'node:child_process' ? {
+        execFileSync: (executable, args) => args.includes('--version') ? uv || 'uv 0.12.11' : JSON.stringify({...interpreter, ...identity}),
+        spawnSync: (executable, args) => { caches.push(args[args.indexOf('--cache-dir') + 1]); return {status: 0} }
+      } : realRequire(name)}, {filename})
+    const directory = path.join(root, `run-${index}`)
+    fs.mkdirSync(directory)
+    await module.exports.installSources('uv', 'candidate-python', requirements, directory, root,
+      {SCHOLARSEED_BUILD_CACHE_ROOT: root, MACOSX_DEPLOYMENT_TARGET: '13.0', ...overrides}, [source])
+  }
+  assert.equal(new Set(caches.slice(0, -1)).size, variants.length - 1)
+  assert.equal(caches[0], caches.at(-1))
+  assert.doesNotMatch(fs.readFileSync(path.join(caches[0], 'source-policy.json'), 'utf8'), /do-not-record|UNRELATED_TOKEN/)
+})
+
+test('unverified source build tools fail before any install or cache publication', async t => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ss-source-probe-')))
+  t.after(() => fs.rmSync(root, {recursive: true, force: true}))
+  const requirements = path.join(root, 'requirements.txt')
+  const source = {name: 'fastcdc', version: '1.7.0', sha256: 'a'.repeat(64), buildConstraints: 'locked builder'}
+  fs.writeFileSync(requirements, `fastcdc==1.7.0 --hash=sha256:${source.sha256}\n`)
+  const filename = path.join(sourceDirectory, 'assembly.cjs'), realRequire = createRequire(filename)
+  const interpreter = {python: '3.14.10', implementation: 'cpython', platform: 'darwin', machine: 'arm64',
+    cacheTag: 'cpython-314', soabi: 'cpython-314-darwin', gilDisabled: 0}
+  for (const [index, invalid] of [{python: 'unknown'}, {cacheTag: null}, {soabi: null}, {gilDisabled: 2}, {uv: 'unknown'}, {timeout: true}].entries()) {
+    const module = {exports: {}}, directory = path.join(root, `run-${index}`)
+    fs.mkdirSync(directory)
+    vm.runInNewContext(fs.readFileSync(filename, 'utf8'), {module, process, __filename: filename, __dirname: sourceDirectory,
+      require: name => name === 'node:child_process' ? {
+        execFileSync: (executable, args, options) => {
+          assert.ok(options.timeout > 0)
+          if (invalid.timeout) throw new Error('probe timed out')
+          return args.includes('--version') ? invalid.uv || 'uv 0.12.11' : JSON.stringify({...interpreter, ...invalid})
+        },
+        spawnSync: () => assert.fail('unverified tools must not install')
+      } : realRequire(name)}, {filename})
+    await assert.rejects(() => module.exports.installSources('uv', 'candidate-python', requirements, directory, root,
+      {SCHOLARSEED_BUILD_CACHE_ROOT: root}, [source]), /invalid source build|probe timed out/)
+    assert.deepEqual(fs.readdirSync(directory), [])
+    await module.exports.installSources('must-not-probe', 'must-not-probe', requirements, directory, root, {}, [])
+  }
+  assert.ok(!fs.existsSync(path.join(root, 'build')))
+})
+
+test('reviewed source repair checks native payloads before caching or hashed installation', async t => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ss-wheel-repair-')))
+  t.after(() => fs.rmSync(root, {recursive: true, force: true}))
+  const filename = path.join(sourceDirectory, 'assembly.cjs'), realRequire = createRequire(filename)
+  const source = {name: 'fastcdc', version: '1.7.0', sha256: 'a'.repeat(64), buildConstraints: 'locked', repairWheel: true}
+  const requirements = path.join(root, 'requirements.txt')
+  fs.writeFileSync(requirements, `fastcdc==1.7.0 --hash=sha256:${source.sha256}\n`)
+  for (const failed of [false, true]) {
+    const commands = [], module = {exports: {}}
+    let builderRecipe = 'first'
+    const cacheRoot = path.join(root, failed ? 'failure' : 'success')
+    vm.runInNewContext(fs.readFileSync(filename, 'utf8'), {module, process, __filename: filename, __dirname: sourceDirectory,
+      require: name => name === '../../runtime/components.cjs' ? {...realRequire(name), sha256FileSync: file => file.endsWith('wheels.cjs') ? builderRecipe : realRequire(name).sha256FileSync(file)}
+        : name === './wheels.cjs' ? {withBuilder: async (options, operation) => operation({python: 'locked-builder', builder: ['3.14.10', '26.2.1'], environment: {PIP_NO_INDEX: '1'}})}
+        : name === 'node:child_process' ? {
+          execFileSync: (executable, args) => args.includes('--version') ? 'uv 0.12.11' : JSON.stringify({python: '3.14.10', implementation: 'cpython', platform: 'darwin', machine: 'arm64', cacheTag: 'cpython-314', soabi: 'cpython-314-darwin', gilDisabled: 0}),
+          spawnSync: (executable, args, options) => {
+            commands.push({executable, args, options})
+            if (args.includes('--wheel-dir')) {
+              const output = args[args.indexOf('--wheel-dir') + 1]
+              fs.mkdirSync(output, {recursive: true})
+              const repaired = args.some(value => value.includes('delocate.cmd'))
+              if (repaired && failed) return {status: 2}
+              fs.writeFileSync(path.join(output, `fastcdc-1.7.0-cp314-cp314-macosx_${repaired ? '13' : '27'}_0_arm64.whl`), 'validated wheel')
+            }
+            return {status: 0}
+          }
+        } : realRequire(name)}, {filename})
+    const directory = path.join(root, failed ? 'failed-inputs' : 'inputs')
+    fs.mkdirSync(directory)
+    const invoke = () => module.exports.installSources('uv', 'candidate', requirements, directory, root,
+      {SCHOLARSEED_BUILD_CACHE_ROOT: cacheRoot}, [source])
+    if (failed) {
+      await assert.rejects(invoke, /Python component step failed/)
+      assert.ok(!commands.some(command => command.args.includes('--no-index')))
+      assert.deepEqual(fs.readdirSync(path.join(cacheRoot, 'build', 'source-wheels')), [])
+    } else {
+      await invoke()
+      assert.ok(commands.some(command => command.args.some(value => value.includes('delocate.cmd'))))
+      assert.ok(commands.some(command => command.args.includes('--no-build-isolation') && command.args.includes('--require-hashes')))
+      const install = commands.at(-1)
+      assert.ok(install.args.includes('--no-index') && install.args.includes('--require-hashes'))
+      const locked = fs.readFileSync(install.args[install.args.indexOf('--requirement') + 1], 'utf8')
+      assert.match(locked, /fastcdc==1\.7\.0 --hash=sha256:/)
+      assert.ok(install.args.includes('--find-links'))
+      const repeated = path.join(root, 'repeated-inputs')
+      fs.mkdirSync(repeated)
+      await module.exports.installSources('uv', 'candidate', requirements, repeated, root,
+        {SCHOLARSEED_BUILD_CACHE_ROOT: cacheRoot}, [source])
+      assert.equal(commands.filter(command => command.args.includes('--no-build-isolation')).length, 1)
+      builderRecipe = 'changed'
+      const changed = path.join(root, 'changed-builder-inputs')
+      fs.mkdirSync(changed)
+      await module.exports.installSources('uv', 'candidate', requirements, changed, root,
+        {SCHOLARSEED_BUILD_CACHE_ROOT: cacheRoot}, [source])
+      assert.equal(commands.filter(command => command.args.includes('--no-build-isolation')).length, 2)
+    }
+  }
 })

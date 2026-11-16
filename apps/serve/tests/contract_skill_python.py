@@ -22,7 +22,9 @@ from fastapi import FastAPI
 
 from service.capabilities.service.skills import SKILL_PRODUCT_METADATA_FILE
 from service.capabilities.service.source import compile_source_skills
-from service.cli import serve, skill_python
+from service.cli import serve
+from service.cli import skill as skill_python
+from service.cli import skill_python as launcher
 from service.platform import executables
 from service.platform.activity import Activities
 from service.platform.storage import filesystem_path
@@ -58,18 +60,22 @@ class SkillPythonContracts(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             document = Path(directory) / "中文正文.txt"
             document.write_text(text, encoding="utf-8")
+            (Path(directory) / "probe.py").write_text("VALUE = 'loaded'\n", encoding="utf-8")
             script = reviewed_script(
-                directory,
+                str(Path(directory) / "pack"),
                 "import json,sys,subprocess\nfrom pathlib import Path\n"
                 "text=Path(sys.argv[1]).read_text()\n"
                 "print(json.dumps([text,sys.argv[2],sys.flags.utf8_mode],ensure_ascii=False),flush=True)\n"
-                "subprocess.run([sys.executable,'-B','-c',"
-                "'import sys;print(sys.flags.utf8_mode)'],check=True)\n"
+                "subprocess.run([sys.executable,'-c',"
+                "'import sys;sys.path.insert(0,sys.argv[1]);import probe;"
+                'print(sys.flags.utf8_mode);assert probe.VALUE == \\"loaded\\"\','
+                "str(Path(sys.argv[1]).parent)],"
+                "cwd=Path(sys.argv[1]).parent,check=True)\n"
                 "raise SystemExit(7)\n",
             )
             bootstrap = (
                 "import sys\nfrom pathlib import Path\n"
-                "from service.cli import skill_python\n"
+                "from service.cli import skill as skill_python\n"
                 "skill_python.SERVICE_BUNDLED_SKILLS_DIR=Path(sys.argv[1])\n"
                 "raise SystemExit(skill_python.main(sys.argv[2:]))\n"
             )
@@ -77,6 +83,7 @@ class SkillPythonContracts(unittest.TestCase):
                 **os.environ,
                 "PYTHONUTF8": "0",
                 "PYTHONIOENCODING": "cp1252",
+                "PYTHONDONTWRITEBYTECODE": "0",
             }
             environment.pop(BRIDGE_SESSION_ENV, None)
             result = subprocess.run(
@@ -85,7 +92,7 @@ class SkillPythonContracts(unittest.TestCase):
                     "-B",
                     "-c",
                     bootstrap,
-                    directory,
+                    str(Path(directory) / "pack"),
                     str(script),
                     str(document),
                     text,
@@ -99,6 +106,18 @@ class SkillPythonContracts(unittest.TestCase):
             lines = result.stdout.decode("utf-8").splitlines()
             self.assertEqual(json.loads(lines[0]), [text, text, 1])
             self.assertEqual(lines[1], "1")
+            self.assertEqual(list(Path(directory).rglob("*.pyc")), [])
+
+    def test_lightweight_launcher_version_probe_succeeds_in_a_fresh_process(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "-B", "-m", "service.cli.skill_python", "--version"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=TEST_TIMEOUT_SECONDS,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), f"Python {sys.version.split()[0]}")
 
     def test_authoring_contract_uses_product_launcher_without_arbitrary_modules(self) -> None:
         # Verify launcher dispatch against a current contract fixture. A bundled
@@ -137,7 +156,7 @@ class SkillPythonContracts(unittest.TestCase):
             patch.object(skill_python.subprocess, "run") as run,
             patch.object(skill_python.os, "execve") as execute,
         ):
-            self.assertEqual(skill_python.main(["--diagnostic-v1"]), 0)
+            self.assertEqual(launcher.main(["--diagnostic-v1"]), 0)
         self.assertEqual(json.loads(output.getvalue())["event"], "launcher_ready")
         admit.assert_not_called()
         run.assert_not_called()
@@ -287,14 +306,16 @@ class SkillPythonContracts(unittest.TestCase):
         for platform in ("darwin", "win32"):
             with (
                 self.subTest(platform=platform),
+                patch.dict(os.environ, {"PYTHONDONTWRITEBYTECODE": "0"}),
                 patch.object(skill_python.sys, "platform", platform),
                 patch.object(skill_python.os, "execve") as replace,
+                patch.object(skill_python, "admit_script"),
                 patch.object(
                     skill_python.subprocess, "run", return_value=SimpleNamespace(returncode=7)
                 ) as run,
             ):
-                self.assertEqual(skill_python.main(["--version"]), 7 if platform == "win32" else 0)
-                command = [sys.executable, "-B", "-X", "utf8", "--version"]
+                self.assertEqual(skill_python.main(["script.py"]), 7 if platform == "win32" else 0)
+                command = [sys.executable, "-B", "-X", "utf8", "script.py"]
                 if platform == "win32":
                     self.assertEqual(run.call_count, 1)
                     self.assertEqual(run.call_args.args, (command,))
@@ -309,16 +330,87 @@ class SkillPythonContracts(unittest.TestCase):
                     run.assert_not_called()
                 self.assertEqual(environment["PYTHONUTF8"], "1")
                 self.assertEqual(environment["PYTHONIOENCODING"], "utf-8")
+                self.assertEqual(environment["PYTHONDONTWRITEBYTECODE"], "1")
 
-    def test_rebuilt_inventory_authorizes_current_source(self) -> None:
+    def test_reviewed_skill_uses_installed_l1_without_loading_model_providers(self) -> None:
+        source = (
+            "import sys\nfrom importlib.metadata import version\n"
+            "from knowledge_layer.comprehend import process_single_doc\n"
+            "assert version('deep-rnd-l1') == '0.2.6'\n"
+            "assert 'openai' not in sys.modules and 'anthropic' not in sys.modules\n"
+            "print('l1-ready')\n"
+        )
         with tempfile.TemporaryDirectory() as directory:
-            reviewed_script(directory)
-            script = reviewed_script(directory, "print('current reviewed source')")
+            script = reviewed_script(directory, source)
+            observed = []
+
+            def execute_real_child(executable, arguments, environment):
+                self.assertEqual(executable, sys.executable)
+                result = subprocess.run(
+                    arguments, env=environment, capture_output=True, text=True, check=True
+                )
+                observed.append(result.stdout.strip())
+
             with (
                 patch.object(skill_python, "SERVICE_BUNDLED_SKILLS_DIR", Path(directory)),
                 patch.dict(os.environ, {}, clear=True),
+                patch.object(skill_python.os, "execve", side_effect=execute_real_child),
+                patch.object(skill_python.sys, "platform", "darwin"),
             ):
-                skill_python.admit_script([str(script)])
+                self.assertEqual(skill_python.main([str(script)]), 0)
+            self.assertEqual(observed, ["l1-ready"])
+
+    def test_version_probe_reports_the_running_interpreter_without_relaunch(self) -> None:
+        for argument in ("--version", "-V"):
+            output = io.StringIO()
+            with (
+                self.subTest(argument=argument),
+                redirect_stdout(output),
+                patch.object(skill_python.os, "execve") as replace,
+                patch.object(skill_python.subprocess, "run") as run,
+            ):
+                self.assertEqual(launcher.main([argument]), 0)
+            self.assertEqual(output.getvalue(), f"Python {sys.version.split()[0]}\n")
+            replace.assert_not_called()
+            run.assert_not_called()
+
+    def test_customized_bundled_skill_executes_local_entry_and_dependency(self) -> None:
+        bootstrap = (
+            "import sys\nfrom pathlib import Path\n"
+            "from service.cli import skill\n"
+            "skill.SERVICE_BUNDLED_SKILLS_DIR=Path(sys.argv[1])\n"
+            "raise SystemExit(skill.main(sys.argv[2:]))\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            script = reviewed_script(directory)
+            (script.parent / "SKILL.md").write_text(
+                "---\nname: fixture\ndescription: Customized fixture\n---\n",
+                encoding="utf-8",
+            )
+            (script.parent / "helper.py").write_text("VALUE = 'local helper'\n", encoding="utf-8")
+            script.write_text(
+                "import sys\nfrom pathlib import Path\n"
+                "sys.path.insert(0, str(Path(__file__).parent))\n"
+                "from helper import VALUE\nprint(VALUE)\n",
+                encoding="utf-8",
+            )
+            added_entry = script.with_name("added.py")
+            added_entry.write_text("print('local entry')\n", encoding="utf-8")
+            environment = {
+                name: value for name, value in os.environ.items() if name != BRIDGE_SESSION_ENV
+            }
+            for entry, output in ((script, "local helper"), (added_entry, "local entry")):
+                with self.subTest(entry=entry.name):
+                    result = subprocess.run(
+                        [sys.executable, "-B", "-c", bootstrap, directory, str(entry)],
+                        env=environment,
+                        capture_output=True,
+                        text=True,
+                        timeout=TEST_TIMEOUT_SECONDS,
+                        check=False,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout.strip(), output)
 
     def test_launcher_admission_matches_native_and_filesystem_path_spellings(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -336,23 +428,17 @@ class SkillPythonContracts(unittest.TestCase):
                     ):
                         skill_python.admit_script([str(selected)])
 
-    def test_missing_build_receipt_never_falls_back_to_legacy_manifest(self) -> None:
+    def test_missing_build_receipt_does_not_block_execution(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             script = reviewed_script(directory)
             (script.parent / SKILL_PRODUCT_METADATA_FILE).unlink()
-            with patch.object(skill_python, "SERVICE_BUNDLED_SKILLS_DIR", Path(directory)):
-                with self.assertRaises(OSError):
-                    skill_python.admit_script([str(script)])
+            with (
+                patch.object(skill_python, "SERVICE_BUNDLED_SKILLS_DIR", Path(directory)),
+                patch.dict(os.environ, {}, clear=True),
+            ):
+                skill_python.admit_script([str(script)])
 
-    def test_unlisted_file_invalidates_compiled_inventory(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            script = reviewed_script(directory)
-            (script.parent / "extra.py").write_text("print('extra')\n", encoding="utf-8")
-            with patch.object(skill_python, "SERVICE_BUNDLED_SKILLS_DIR", Path(directory)):
-                with self.assertRaisesRegex(ValueError, "integrity"):
-                    skill_python.admit_script([str(script)])
-
-    def test_native_session_uses_frozen_builtin_without_exporting_bridge_credentials(self) -> None:
+    def test_native_session_admits_local_builtin_without_exporting_bridge_credentials(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             script = reviewed_script(directory)
             with (
@@ -363,16 +449,17 @@ class SkillPythonContracts(unittest.TestCase):
                 skill_python.admit_script([str(script)])
                 admit.assert_not_called()
                 script.write_text("print('modified')", encoding="utf-8")
-                with self.assertRaisesRegex(ValueError, "integrity"):
-                    skill_python.admit_script([str(script)])
+                skill_python.admit_script([str(script)])
+                admit.assert_not_called()
 
     def test_forged_bridge_cannot_admit_a_user_script(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            script = reviewed_script(directory)
+            root = Path(directory) / "bundled"
+            reviewed_script(str(root))
+            script = Path(directory) / "user.py"
+            script.write_text("print('user script')\n", encoding="utf-8")
             with (
-                patch.object(
-                    skill_python, "SERVICE_BUNDLED_SKILLS_DIR", Path(directory) / "elsewhere"
-                ),
+                patch.object(skill_python, "SERVICE_BUNDLED_SKILLS_DIR", root),
                 patch.dict(os.environ, {BRIDGE_SESSION_ENV: "forged"}),
                 patch.object(
                     skill_python, "request", return_value={"ok": True, "builtin": True}
@@ -654,14 +741,56 @@ class SkillPythonContracts(unittest.TestCase):
             ),
         )
 
+    def test_launcher_preserves_isolation_arguments_and_platform_exit_status(self) -> None:
+        arguments = ["script.py", "中文 空格", "", 'quoted "value"', "path with spaces\\"]
+        for platform in ("darwin", "win32"):
+            for isolated in (0, 1):
+                with (
+                    self.subTest(platform=platform, isolated=isolated),
+                    patch.object(launcher.sys, "platform", platform),
+                    patch.object(launcher.sys, "flags", SimpleNamespace(isolated=isolated)),
+                    patch.object(launcher.os, "execve") as replace,
+                    patch.object(
+                        launcher.subprocess, "run", return_value=SimpleNamespace(returncode=7)
+                    ) as run,
+                ):
+                    self.assertEqual(launcher.main(arguments), 7 if platform == "win32" else 0)
+                    isolation = ["-I"] if isolated else []
+                    command = [
+                        sys.executable,
+                        *isolation,
+                        "-B",
+                        "-X",
+                        "utf8",
+                        "-m",
+                        "service.cli.skill",
+                        *arguments,
+                    ]
+                    if platform == "win32":
+                        run.assert_called_once_with(
+                            command,
+                            executable=sys.executable,
+                            env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+                            check=False,
+                        )
+                        replace.assert_not_called()
+                    else:
+                        replace.assert_called_once_with(
+                            sys.executable,
+                            command,
+                            {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+                        )
+                        run.assert_not_called()
+
     def test_cli_rejects_an_empty_invocation(self) -> None:
         with patch.object(skill_python.os, "execve") as execute:
-            self.assertEqual(skill_python.main([]), 2)
+            self.assertEqual(launcher.main([]), 2)
         execute.assert_not_called()
 
     def test_managed_skill_checks_live_admission_before_exec(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             script = reviewed_script(directory)
+            script.write_text("print('customized')\n", encoding="utf-8")
             with (
                 patch.object(skill_python, "SERVICE_BUNDLED_SKILLS_DIR", Path(directory)),
                 patch.dict(os.environ, {BRIDGE_SESSION_ENV: "session"}, clear=True),
@@ -726,12 +855,13 @@ class SkillPythonContracts(unittest.TestCase):
                     execute.assert_not_called()
                     run.assert_not_called()
 
-    def test_launcher_import_keeps_rpc_registry_outside_frozen_builtin_validation(self) -> None:
-        # 0.3 requires local frozen-inventory validation (including manifest parsing).
-        # Keep that admission boundary while avoiding the general RPC registry.
+    def test_launcher_import_skips_build_inventory_and_rpc_registry(self) -> None:
         program = (
-            "import sys; import service.cli.skill_python; "
+            "import sys; import service.cli.skill; "
+            "assert {'httpx', "
+            "'service.cli.task'} <= sys.modules.keys(); "
             "assert not {'service.cli.bridge', 'service.platform.bridge', "
+            "'service.capabilities.service.source', "
             "} & sys.modules.keys()"
         )
         result = subprocess.run(
@@ -741,6 +871,74 @@ class SkillPythonContracts(unittest.TestCase):
             timeout=TEST_TIMEOUT_SECONDS,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_launcher_probes_do_not_load_skill_execution_dependencies(self) -> None:
+        for argument in ("--version", "-V", "--diagnostic-v1"):
+            program = (
+                "import sys; from service.cli import skill_python; "
+                f"assert skill_python.main([{argument!r}]) == 0; "
+                "assert not {'httpx', 'service.capabilities.domain', "
+                "'service.capabilities.service.source', 'service.cli.task'} & sys.modules.keys()"
+            )
+            with self.subTest(argument=argument):
+                result = subprocess.run(
+                    [sys.executable, "-I", "-B", "-c", program],
+                    capture_output=True,
+                    text=True,
+                    timeout=TEST_TIMEOUT_SECONDS,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_real_launcher_rejects_user_code_before_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "executed"
+            cases = (
+                ["-c", f"from pathlib import Path; Path({str(marker)!r}).touch()"],
+                ["-m", "pip", "--version"],
+                [str(Path(directory) / "missing.py")],
+            )
+            for arguments in cases:
+                with self.subTest(arguments=arguments):
+                    result = subprocess.run(
+                        [
+                            sys.executable,
+                            "-I",
+                            "-B",
+                            "-m",
+                            "service.cli.skill_python",
+                            *arguments,
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=TEST_TIMEOUT_SECONDS,
+                    )
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertIn("Skill unavailable:", result.stderr)
+            self.assertFalse(marker.exists())
+
+    def test_execution_dependency_failure_never_runs_user_code(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "executed"
+            program = (
+                "import importlib.abc, runpy, sys\n"
+                "class Unavailable(importlib.abc.MetaPathFinder):\n"
+                "    def find_spec(self, fullname, path=None, target=None):\n"
+                "        if fullname == 'httpx':\n"
+                "            raise ModuleNotFoundError('httpx unavailable')\n"
+                "sys.meta_path.insert(0, Unavailable())\n"
+                f"sys.argv = ['service.cli.skill', '-c', "
+                f"{f'from pathlib import Path; Path({str(marker)!r}).touch()'!r}]\n"
+                "runpy.run_module('service.cli.skill', run_name='__main__')\n"
+            )
+            result = subprocess.run(
+                [sys.executable, "-I", "-B", "-c", program],
+                capture_output=True,
+                text=True,
+                timeout=TEST_TIMEOUT_SECONDS,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("ModuleNotFoundError: httpx unavailable", result.stderr)
+            self.assertFalse(marker.exists())
 
     @unittest.skipIf(
         os.name == "nt", "POSIX shell launcher; Windows uses the packaged executable contract"
@@ -784,7 +982,7 @@ class SkillPythonContracts(unittest.TestCase):
                         sys.executable,
                         "-B",
                         "-c",
-                        "from pathlib import Path; from service.cli import skill_python; "
+                        "from pathlib import Path; from service.cli import skill as skill_python; "
                         f"skill_python.SERVICE_BUNDLED_SKILLS_DIR = Path({directory!r}); "
                         f"raise SystemExit(skill_python.main([{str(script)!r}]))",
                     ],
@@ -819,6 +1017,7 @@ class SkillPythonContracts(unittest.TestCase):
                 patch.object(serve, "probe_command", return_value=True),
             ):
                 asyncio.run(serve._ensure_skill_python_path(Activities()))
+                self.assertEqual(os.environ.get("SCHOLARSEED_SKILL_PYTHON"), str(launcher))
                 self.assertEqual(
                     os.environ["PATH"].split(os.pathsep),
                     [str(scripts), "/host/bin", "/usr/bin"],
@@ -865,6 +1064,7 @@ class SkillPythonContracts(unittest.TestCase):
                 patch.object(serve, "probe_command", return_value=True) as probe,
             ):
                 asyncio.run(serve._ensure_skill_python_path(Activities()))
+                self.assertEqual(os.environ.get("SCHOLARSEED_SKILL_PYTHON"), str(launcher))
                 self.assertEqual(
                     os.environ["PATH"].split(os.pathsep), [str(product), str(installed)]
                 )
@@ -886,6 +1086,7 @@ class SkillPythonContracts(unittest.TestCase):
                 patch.object(serve, "probe_command", return_value=False),
             ):
                 asyncio.run(serve._ensure_skill_python_path(Activities()))
+                self.assertNotIn("SCHOLARSEED_SKILL_PYTHON", os.environ)
                 self.assertEqual(os.environ["PATH"], original)
 
 

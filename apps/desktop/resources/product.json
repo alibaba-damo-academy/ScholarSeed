@@ -13,6 +13,7 @@
   "account_base_url": "https://scholarseed.damo.alibaba.com",
   "features": {
     "browser": true,
+    "browser_advanced_settings": false,
     "feedback_recorder": true
   },
   "credential_profiles": {

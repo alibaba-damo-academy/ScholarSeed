@@ -12,6 +12,8 @@ export type MainView = (typeof MAIN_VIEWS)[number]
 export const NAVIGATION_DIAGNOSTIC_PREFIX = '[navigation]'
 
 export const SETTINGS_PAGES = [
+  'general',
+  'translation',
   'prompts',
   'preferences',
   'account',
@@ -30,7 +32,7 @@ export const SETTINGS_PAGES = [
 ] as const
 export type AccountSettingsPage = (typeof SETTINGS_PAGES)[number]
 
-export const BROWSER_SETTINGS_SECTIONS = ['overview', 'history'] as const
+export const BROWSER_SETTINGS_SECTIONS = ['overview', 'history', 'data'] as const
 export type BrowserSettingsSection = (typeof BROWSER_SETTINGS_SECTIONS)[number]
 
 export function browserSettingsSection(
@@ -72,7 +74,13 @@ export type NavigationDocument = NavigationDocumentMetadata &
         projectScope?: string
         recordTarget?: NavigationRecordTarget
       }
-    | { kind: 'session-artifact'; sessionId: string; artifactId: string; absolutePath?: string }
+    | {
+        kind: 'session-artifact'
+        sessionId: string
+        artifactId: string
+        absolutePath?: string
+        memberPath?: string
+      }
     | { kind: 'runtime-file' }
     | { kind: 'builtin'; id: string }
     | { kind: 'version'; project: string; versionId: string; revision: string }
@@ -162,6 +170,11 @@ export function sanitizeNavigationDocument(value: unknown): NavigationDocument |
   }
   for (const field of DOCUMENT_METADATA_FIELDS) {
     if (identity(source[field])) result[field] = source[field]
+  }
+  if (kind === 'session-artifact' && source.memberPath !== undefined) {
+    const memberPath = identity(source.memberPath)
+    if (!memberPath) return null
+    result.memberPath = memberPath
   }
   if (kind === 'project') result.project = identity(source.project)
   const target = object(source.recordTarget)

@@ -669,6 +669,7 @@ export function CsvDocument(props: Props): React.JSX.Element {
         </div>
       ) : (
         <Grid
+          tabId={props.tabId}
           model={model}
           title={props.title}
           zoom={CSV_INITIAL_ZOOM}

@@ -14,6 +14,7 @@ from io import BytesIO
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 
+from PIL import Image, UnidentifiedImageError
 from pypdf import PdfReader
 from pypdf.errors import PyPdfError
 
@@ -23,6 +24,7 @@ from service.content.service.port import ContentService
 from service.content.service.spreadsheet import decode_csv
 from service.content.service.xlsx import decode as decode_xlsx
 from service.platform.citations import CitationDocument
+from service.platform.content import ArtifactScope, ArtifactScopeKind
 from service.platform.context import (
     ActiveDocumentResolution,
     AssistantContextIssue,
@@ -35,12 +37,14 @@ from service.platform.context import (
     ContextRefKind,
     ContextResolutionState,
 )
-from service.platform.files import guess_media_type
+from service.platform.files import FILE_RAW_MAX_BYTES, guess_media_type
 
 SUPPORTED_KINDS = frozenset((ContextRefKind.FILE, ContextRefKind.DIR))
 PDF_MEDIA_TYPE = "application/pdf"
 DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 TEXT_MEDIA_PREFIX = "text/"
+IMAGE_MEDIA_PREFIX = "image/"
+IMAGE_FORMATS = frozenset(("PNG", "JPEG", "WEBP", "GIF"))
 PDF_SUFFIX = ".pdf"
 CSV_SUFFIX = ".csv"
 XLSX_SUFFIX = ".xlsx"
@@ -50,6 +54,7 @@ REASON_SOURCE_FORBIDDEN = "source_forbidden"
 REASON_SOURCE_UNSUPPORTED = "source_type_unsupported"
 REASON_SOURCE_UNAVAILABLE = "source_unavailable"
 REASON_SOURCE_STALE = "source_revision_changed"
+REASON_SOURCE_TOO_LARGE = "file_too_large"
 PROVIDER_VERSION = "content-context/v2"
 REVISION_PREFIX = "sha256:"
 
@@ -177,7 +182,11 @@ class ContentContextProvider:
             return self._failure(ContextResolutionState.FORBIDDEN, REASON_SOURCE_FORBIDDEN)
         try:
             if ref.kind is ContextRefKind.FILE:
-                text, revision, media_type = self._file(project_id, ref.source_id)
+                payload, media_type = self._bytes(project_id, ref.source_id)
+                if media_type.startswith(IMAGE_MEDIA_PREFIX):
+                    return self._image(project_id, ref, payload, media_type)
+                text = self._decode(payload, media_type, ref.source_id)
+                revision = self._revision(payload)
                 if (
                     ref.anchor is not None
                     and ref.source_revision
@@ -214,10 +223,50 @@ class ContentContextProvider:
         except (OSError, ValueError):
             return self._failure(ContextResolutionState.UNAVAILABLE, REASON_SOURCE_UNAVAILABLE)
 
-    def _file(self, project_id: str, source_id: str) -> tuple[str, str, str]:
-        payload, media_type = self._bytes(project_id, source_id)
+    def _image(
+        self, project_id: str, ref: ContextRef, payload: bytes, media_type: str
+    ) -> AssistantContextResolution:
+        if len(payload) > FILE_RAW_MAX_BYTES:
+            return self._failure(ContextResolutionState.TOO_LARGE, REASON_SOURCE_TOO_LARGE)
+        try:
+            with Image.open(BytesIO(payload)) as image:
+                if image.format not in IMAGE_FORMATS or Image.MIME.get(image.format) != media_type:
+                    raise ContentError(REASON_SOURCE_UNSUPPORTED)
+                image.verify()
+        except (UnidentifiedImageError, OSError, SyntaxError, Image.DecompressionBombError) as exc:
+            raise ContentError(REASON_SOURCE_UNSUPPORTED) from exc
         revision = self._revision(payload)
-        return self._decode(payload, media_type, source_id), revision, media_type
+        if ref.anchor is not None and ref.source_revision and ref.source_revision != revision:
+            return self._failure(ContextResolutionState.STALE, REASON_SOURCE_STALE)
+        source_id = ref.source_id
+        if Path(source_id).is_absolute():
+            project = self._content.project_for_path(source_id)
+            if project is None or project.id != project_id:
+                return self._failure(ContextResolutionState.FORBIDDEN, REASON_SOURCE_FORBIDDEN)
+            source_id = self._content.project_relative(project_id, source_id)
+        scope = ArtifactScope(ArtifactScopeKind.PROJECT, project_id)
+        captured = self._content.capture_artifact(
+            scope, source_id, expected_sha256=hashlib.sha256(payload).hexdigest()
+        )
+        location = self._content.artifact_storage(scope)
+        locator = str(Path(location.storage_root) / location.objects_relative / captured.sha256)
+        return AssistantContextResolution(
+            state=ContextResolutionState.READY,
+            provider_version=PROVIDER_VERSION,
+            source_revision=revision,
+            items=(
+                AssistantContextResolvedItem(
+                    item_id=ref.source_id,
+                    source_id=ref.source_id,
+                    label=ref.label,
+                    source_revision=revision,
+                    text="",
+                    role=ContextItemRole.IMAGE,
+                    model_locator=locator,
+                    media_type=media_type,
+                ),
+            ),
+        )
 
     def _bytes(self, project_id: str, source_id: str) -> tuple[bytes, str]:
         if not Path(source_id).is_absolute():

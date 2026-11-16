@@ -14,9 +14,11 @@ const {
 } = require('../src/main/squirrel.ts')
 const {
   persistUpdateLaunch,
+  pruneUpdateLaunchDirectories,
   restoreUpdateLaunch,
   updateLaunchDirectory,
 } = require('../src/main/relaunch.ts')
+const { beginDomains } = require('./domains.cjs')
 
 const SOURCE = '202610120719'
 const TARGET = '202610121003'
@@ -53,6 +55,56 @@ function fixture(t) {
     record: path.join(updateLaunchDirectory(coordinator, identity.application), 'context.json'),
   }
 }
+
+test('prunes idle launch buckets and preserves live updates and recovery evidence', {
+  skip: process.platform !== 'darwin',
+}, (t) => {
+  const f = fixture(t)
+  f.persist()
+  const pending = path.dirname(f.record)
+  const root = path.dirname(pending)
+  const makeBucket = (name) => {
+    const bucket = path.join(root, name.repeat(64))
+    fs.mkdirSync(bucket, { mode: 0o700 })
+    return bucket
+  }
+  const idle = makeBucket('a')
+  fs.writeFileSync(path.join(idle, 'context-write'), '', { mode: 0o600 })
+  const empty = makeBucket('b')
+  const occupied = makeBucket('c')
+  const locked = makeBucket('d')
+  const recovery = makeBucket('e')
+  fs.mkdirSync(path.join(recovery, 'terminal-recovery'), { mode: 0o700 })
+  const unrecognized = makeBucket('0')
+  fs.writeFileSync(path.join(unrecognized, 'context.json'), 'invalid', { mode: 0o600 })
+  const unknown = makeBucket('z')
+  const link = path.join(root, 'f'.repeat(64))
+  fs.symlinkSync(unknown, link)
+  const domains = beginDomains(native, f.coordinator, [occupied])
+  const pin = native.pin(locked, false)
+  const lock = native.acquireAt(pin, 'context-write', true)
+  const prune = () => pruneUpdateLaunchDirectories(native, f.coordinator, assert.fail)
+  try {
+    domains.occupy()
+    domains.admit()
+    assert.equal(prune(), 2)
+    assert.ok(!fs.existsSync(idle))
+    assert.ok(!fs.existsSync(empty))
+    for (const preserved of [f.record, occupied, locked, recovery, unrecognized, unknown, link]) {
+      assert.ok(fs.existsSync(preserved), preserved)
+    }
+  } finally {
+    native.release(lock)
+    native.release(pin)
+    domains.close()
+  }
+  f.restore().complete()
+  assert.equal(prune(), 3)
+  assert.ok(!fs.existsSync(pending))
+  assert.equal(prune(), 0)
+  f.persist()
+  assert.ok(fs.existsSync(f.record))
+})
 
 test(
   'persistent identity comes from the pinned directory and survives a new process',

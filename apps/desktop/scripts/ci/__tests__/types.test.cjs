@@ -64,7 +64,9 @@ test('every Desktop TypeScript source, test and Playwright configuration has a p
     ...readdirSync(DESKTOP)
       .filter((filename) => TYPESCRIPT_FILE.test(filename))
       .map((filename) => resolve(DESKTOP, filename)),
-    ...['src', 'preview', 'e2e'].flatMap((directory) => sources(resolve(DESKTOP, directory))),
+    ...['src', 'preview', 'e2e', 'native'].flatMap((directory) =>
+      sources(resolve(DESKTOP, directory))
+    ),
   ]
   const missing = files
     .map((filename) => relative(DESKTOP, filename).split('\\').join('/'))

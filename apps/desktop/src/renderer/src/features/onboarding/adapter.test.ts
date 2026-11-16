@@ -83,6 +83,16 @@ test('project guide uses public file and category controls only on explicit step
       button(anchors.task, () => {
         calls.push('task')
       })
+      const categories = document.createElement('div')
+      categories.dataset.ob = anchors.categories
+      categories.textContent = '当前分类'
+      const tabs = document.createElement('div')
+      tabs.hidden = true
+      for (const anchor of [anchors.materialsTab, anchors.literatureTab]) {
+        tabs.append(root.querySelector(`[data-ob="${anchor}"]`)!)
+      }
+      categories.append(tabs)
+      root.append(categories)
       const steps = guideSteps(() => {
         throw new Error('project guide must use public controls')
       }, 'project')

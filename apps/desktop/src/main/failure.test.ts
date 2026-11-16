@@ -3,14 +3,31 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { createInstance } from 'i18next'
 
-import { backendFailureMessage, updateInstallFailure, type BackendFailure } from './failure.ts'
+import {
+  backendFailureMessage,
+  classifyBackendFailure,
+  updateInstallFailure,
+  type BackendFailure,
+} from './failure.ts'
 
 const localization = createInstance()
 await localization.init({
-  lng: 'zh', fallbackLng: false, interpolation: { escapeValue: false },
-  resources: Object.fromEntries(['zh', 'en'].map(language => [language, {
-    foundation: JSON.parse(readFileSync(new URL(`../localization/locales/${language}/foundation.json`, import.meta.url), 'utf8'))
-  }]))
+  lng: 'zh',
+  fallbackLng: false,
+  interpolation: { escapeValue: false },
+  resources: Object.fromEntries(
+    ['zh', 'en'].map((language) => [
+      language,
+      {
+        foundation: JSON.parse(
+          readFileSync(
+            new URL(`../localization/locales/${language}/foundation.json`, import.meta.url),
+            'utf8'
+          )
+        ),
+      },
+    ])
+  ),
 })
 
 const zh = localization.getFixedT('zh', 'foundation')
@@ -22,7 +39,7 @@ test('startup reasons translate at delivery while raw diagnostics and exit metad
     { kind: 'pythonInvalid', detail },
     { kind: 'startupFailed', detail },
     { kind: 'exited', code: 17, signal: null, detail },
-    { kind: 'exited', code: null, signal: 'SIGTERM', detail }
+    { kind: 'exited', code: null, signal: 'SIGTERM', detail },
   ]
   for (const failure of failures) {
     const snapshot = structuredClone(failure)
@@ -41,7 +58,10 @@ test('startup reasons translate at delivery while raw diagnostics and exit metad
 })
 
 test('missing Python messages preserve both macOS and Windows paths verbatim', () => {
-  for (const path of ['/Applications/My App/Resources/bin/python', 'C:\\Program Files\\My App\\python.exe']) {
+  for (const path of [
+    '/Applications/My App/Resources/bin/python',
+    'C:\\Program Files\\My App\\python.exe',
+  ]) {
     const failure: BackendFailure = { kind: 'pythonMissing', path }
     assert.ok(backendFailureMessage(zh, failure, 'notReady').endsWith(path))
     assert.ok(backendFailureMessage(en, failure, 'notReady').endsWith(path))
@@ -50,7 +70,11 @@ test('missing Python messages preserve both macOS and Windows paths verbatim', (
 })
 
 test('browser readiness errors retain precise diagnostics with complete localized reasons', () => {
-  for (const code of ['browser_feature_policy_missing', 'browser_feature_policy_invalid', 'browser_feature_policy_mismatch']) {
+  for (const code of [
+    'browser_feature_policy_missing',
+    'browser_feature_policy_invalid',
+    'browser_feature_policy_mismatch',
+  ]) {
     const failure: BackendFailure = { kind: 'startupFailed', detail: `Error: ${code}` }
     const chinese = backendFailureMessage(zh, failure, 'notReady')
     const english = backendFailureMessage(en, failure, 'notReady')
@@ -62,29 +86,43 @@ test('browser readiness errors retain precise diagnostics with complete localize
 })
 
 test('health timeout and startup versus recovery fallbacks use distinct localized reasons', () => {
-  assert.equal(backendFailureMessage(zh, { kind: 'healthTimeout' }, 'notReady'), '本地服务健康检查超时。')
-  assert.equal(backendFailureMessage(en, { kind: 'healthTimeout' }, 'recovering'), 'The local service health check timed out.')
+  assert.equal(
+    backendFailureMessage(zh, { kind: 'healthTimeout' }, 'notReady'),
+    '本地服务健康检查超时。'
+  )
+  assert.equal(
+    backendFailureMessage(en, { kind: 'healthTimeout' }, 'recovering'),
+    'The local service health check timed out.'
+  )
   assert.equal(backendFailureMessage(zh, null, 'notReady'), '本地服务未能就绪。')
-  assert.equal(backendFailureMessage(en, undefined, 'notReady'), 'The local service did not become ready.')
+  assert.equal(
+    backendFailureMessage(en, undefined, 'notReady'),
+    'The local service did not become ready.'
+  )
   assert.equal(backendFailureMessage(zh, undefined, 'recovering'), '本地服务正在恢复，请稍后重试。')
-  assert.equal(backendFailureMessage(en, null, 'recovering'), 'The local service is recovering. Try again shortly.')
-  assert.equal(backendFailureMessage(en, { kind: 'startupFailed', detail: '' }, 'notReady'), 'The local service failed to start.')
+  assert.equal(
+    backendFailureMessage(en, null, 'recovering'),
+    'The local service is recovering. Try again shortly.'
+  )
+  assert.equal(
+    backendFailureMessage(en, { kind: 'startupFailed', detail: '' }, 'notReady'),
+    'The local service failed to start.'
+  )
 })
-
 
 test('install fallback provenance preserves the canonical error and never marks a matching upstream diagnostic', () => {
   for (const empty of [{}, { error: undefined }, { error: '' }]) {
     assert.deepEqual(updateInstallFailure(empty), {
       error: 'update failed',
       errorFallback: 'install_failed',
-      errorOrigin: 'install'
+      errorOrigin: 'install',
     })
   }
   for (const detail of ['update failed', '原始诊断 <error> & message']) {
     assert.deepEqual(updateInstallFailure({ error: detail }), {
       error: detail,
       errorFallback: undefined,
-      errorOrigin: 'install'
+      errorOrigin: 'install',
     })
     const prior = { error: 'update failed', errorFallback: 'install_failed', phase: 'failed' }
     assert.equal({ ...prior, ...updateInstallFailure({ error: detail }) }.errorFallback, undefined)
@@ -99,12 +137,12 @@ test('a structured install classification suppresses the raw diagnostic', () => 
     assert.deepEqual(updateInstallFailure({ errorFallback: kind }), {
       error: undefined,
       errorFallback: kind,
-      errorOrigin: 'install'
+      errorOrigin: 'install',
     })
     assert.deepEqual(updateInstallFailure({ error: 'STATUS=乱码', errorFallback: kind }), {
       error: undefined,
       errorFallback: kind,
-      errorOrigin: 'install'
+      errorOrigin: 'install',
     })
   }
 })
@@ -116,8 +154,37 @@ test('install failures are always attributed to the install action', () => {
     {},
     { error: '' },
     { error: 'installer exited with 1603' },
-    { errorFallback: 'install_verify_unavailable' as const }
+    { errorFallback: 'install_verify_unavailable' as const },
   ]) {
     assert.equal(updateInstallFailure(result).errorOrigin, 'install')
+  }
+})
+
+test('future schema revisions produce actionable bilingual startup failures', () => {
+  for (const newline of ['\n', '\r\n']) {
+    for (const prefix of ['', 'service.persistence.revisions.']) {
+      const detail = [
+        'Traceback (most recent call last):',
+        `${prefix}SchemaUpgradeRequired: SCHOLARSEED_SCHEMA_UPGRADE_REQUIRED owner=session_catalog revision=2 supported=1`,
+      ].join(newline)
+      const failure = classifyBackendFailure({ kind: 'exited', code: 1, signal: null, detail })
+      assert.equal(failure.kind, 'schemaUpgradeRequired')
+      assert.match(backendFailureMessage(zh, failure, 'notReady'), /请升级书深/)
+      assert.match(backendFailureMessage(en, failure, 'notReady'), /Upgrade ScholarSeed/)
+      assert.equal(backendFailureMessage(en, failure, 'notReady').includes('Traceback'), false)
+    }
+  }
+})
+
+test('unknown schema, malformed metadata and stray upgrade text stay generic', () => {
+  for (const detail of [
+    'RuntimeError: unsupported session schema declaration',
+    'SchemaRevisionInvalid: invalid schema revision receipt',
+    'SQL contains SCHOLARSEED_SCHEMA_UPGRADE_REQUIRED',
+    'SchemaUpgradeRequired: SCHOLARSEED_SCHEMA_UPGRADE_REQUIRED owner=session_catalog revision=1 supported=1',
+    'SchemaUpgradeRequired: SCHOLARSEED_SCHEMA_UPGRADE_REQUIRED owner=session_catalog revision=2 supported=1 extra',
+  ]) {
+    const failure: BackendFailure = { kind: 'exited', code: 1, signal: null, detail }
+    assert.deepEqual(classifyBackendFailure(failure), failure)
   }
 })

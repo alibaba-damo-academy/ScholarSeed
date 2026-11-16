@@ -10,10 +10,16 @@ from service.capabilities.service.descriptor import (
     PLUGIN_DESCRIPTOR,
     inspect_plugin,
     plugin_contract,
+    validate_component_value,
 )
 
 
 class DescriptorContract(unittest.TestCase):
+    def test_component_values_accept_large_data_but_reject_non_json_numbers(self):
+        validate_component_value({"type": "object"}, {"text": "x" * 300000})
+        with self.assertRaises(ValueError):
+            validate_component_value({"type": "object"}, {"value": float("nan")})
+
     def setUp(self) -> None:
         self.document = {
             "schema": 2,

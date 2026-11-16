@@ -12,15 +12,10 @@
 import {
   LITERATURE_EXCERPT_SOURCE_KIND,
   PDF_EXCERPT_LOCATOR_KIND,
-  type LiteratureExcerptSelection
+  type LiteratureExcerptSelection,
 } from '../../contracts/resources.ts'
 import type { FindTextReveal } from '../../contracts/workbench.ts'
-import type {
-  AssetOrigin,
-  ResourceLinkRoot,
-  ResourceManagementState,
-  ResourceNode
-} from './state'
+import type { AssetOrigin, ResourceLinkRoot, ResourceManagementState, ResourceNode } from './state'
 
 /** 后端返回的树节点（字段与 service/resources 的资产契约 对齐）。 */
 interface ResourceNodePayload {
@@ -53,11 +48,14 @@ interface ResourceTreePayload {
   /** 这一层的条目总数与本页起点。 */
   total: number
   offset: number
-  linked_roots?: Record<string, {
-    root_id: string
-    mount_path: string
-    source_path: string
-  }>
+  linked_roots?: Record<
+    string,
+    {
+      root_id: string
+      mount_path: string
+      source_path: string
+    }
+  >
 }
 
 /** 写操作结果。error 为后端 detail 码，便于分支处理。 */
@@ -149,7 +147,9 @@ function webImportRequestError(payload: { detail?: unknown } | null, status: num
     const candidateOverflow = detail.some((entry) => {
       if (typeof entry !== 'object' || entry === null) return false
       const record = entry as { loc?: unknown; type?: unknown }
-      return Array.isArray(record.loc) && record.loc.includes('candidates') && record.type === 'too_long'
+      return (
+        Array.isArray(record.loc) && record.loc.includes('candidates') && record.type === 'too_long'
+      )
     })
     return candidateOverflow ? WEB_IMPORT_CANDIDATE_LIMIT_ERROR : WEB_IMPORT_REJECTED_ERROR
   }
@@ -189,7 +189,14 @@ export interface ResourceCapability {
   can_version: boolean
   can_diff: boolean
   can_preview_history: boolean
-  management_state: 'migration_required' | 'managed' | 'git' | 'ignored' | 'oversized' | 'unsupported' | 'unavailable'
+  management_state:
+    | 'migration_required'
+    | 'managed'
+    | 'git'
+    | 'ignored'
+    | 'oversized'
+    | 'unsupported'
+    | 'unavailable'
   drifted: boolean
   snapshot_state: 'saved' | 'pending'
   pending: ResourcePending | null
@@ -318,25 +325,35 @@ export async function fetchResourceReviewBatches(
   if (afterBatchId) params.set('after_batch_id', afterBatchId)
   try {
     const response = await fetch(`${base()}/api/resource/review-batches?${params}`, {
-      credentials: 'include', cache: 'no-store'
+      credentials: 'include',
+      cache: 'no-store',
     })
-    return response.ok ? await response.json() as ResourceReviewBatchPage : null
-  } catch { return null }
+    return response.ok ? ((await response.json()) as ResourceReviewBatchPage) : null
+  } catch {
+    return null
+  }
 }
 
 export async function fetchResourceReviewBatch(
-  project: string, batchId: string
+  project: string,
+  batchId: string
 ): Promise<ResourceReviewBatch | null> {
   try {
     const response = await fetch(
       `${base()}/api/resource/review-batches/${encodeURIComponent(batchId)}?${versionParams(project)}`,
       { credentials: 'include', cache: 'no-store' }
     )
-    return response.ok ? await response.json() as ResourceReviewBatch : null
-  } catch { return null }
+    return response.ok ? ((await response.json()) as ResourceReviewBatch) : null
+  } catch {
+    return null
+  }
 }
 
-const ACTIVE_REVIEW_BATCH_STATES: readonly ResourceReviewBatchState[] = ['open', 'applying', 'failed']
+const ACTIVE_REVIEW_BATCH_STATES: readonly ResourceReviewBatchState[] = [
+  'open',
+  'applying',
+  'failed',
+]
 
 export async function fetchResourceReviewBatchForPath(
   project: string,
@@ -347,9 +364,9 @@ export async function fetchResourceReviewBatchForPath(
     do {
       const page = await fetchResourceReviewBatches(project, state, cursor)
       if (!page) return null
-      const batch = page.items.find((candidate) => candidate.members.some((member) => (
-        member.path === path && member.state !== 'completed'
-      )))
+      const batch = page.items.find((candidate) =>
+        candidate.members.some((member) => member.path === path && member.state !== 'completed')
+      )
       if (batch) return batch
       cursor = page.next_cursor ?? ''
     } while (cursor)
@@ -358,7 +375,10 @@ export async function fetchResourceReviewBatchForPath(
 }
 
 export async function fetchReviewMemberContent(
-  project: string, batchId: string, fileId: string, side: 'base' | 'candidate' | 'current'
+  project: string,
+  batchId: string,
+  fileId: string,
+  side: 'base' | 'candidate' | 'current'
 ): Promise<Uint8Array | null> {
   try {
     const response = await fetch(
@@ -366,11 +386,15 @@ export async function fetchReviewMemberContent(
       { credentials: 'include', cache: 'no-store' }
     )
     return response.ok ? new Uint8Array(await response.arrayBuffer()) : null
-  } catch { return null }
+  } catch {
+    return null
+  }
 }
 
 export async function fetchReviewMemberCurrent(
-  project: string, batchId: string, fileId: string
+  project: string,
+  batchId: string,
+  fileId: string
 ): Promise<{ content: Uint8Array; revision: string | null } | null> {
   try {
     const response = await fetch(
@@ -380,10 +404,12 @@ export async function fetchReviewMemberCurrent(
     return response.ok
       ? {
           content: new Uint8Array(await response.arrayBuffer()),
-          revision: response.headers.get(CONTENT_REVISION_HEADER)
+          revision: response.headers.get(CONTENT_REVISION_HEADER),
         }
       : null
-  } catch { return null }
+  } catch {
+    return null
+  }
 }
 
 export async function decideResourceReviewBatch(
@@ -399,17 +425,26 @@ export async function decideResourceReviewBatch(
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
-        body: JSON.stringify({ decisions: decisions.map((decision) => ({
-          ...decision,
-          revised_content: decision.revised_content ? reviewContentBase64(decision.revised_content) : undefined
-        })) })
+        body: JSON.stringify({
+          decisions: decisions.map((decision) => ({
+            ...decision,
+            revised_content: decision.revised_content
+              ? reviewContentBase64(decision.revised_content)
+              : undefined,
+          })),
+        }),
       }
     )
-    const payload = await response.json().catch(() => null) as Omit<ResourceReviewBatchMutation, 'ok'> | null
+    const payload = (await response.json().catch(() => null)) as Omit<
+      ResourceReviewBatchMutation,
+      'ok'
+    > | null
     return response.ok
       ? { ok: true, batch: payload?.batch, results: payload?.results }
       : { ok: false, error: reviewBatchError(payload, response.status) }
-  } catch { return { ok: false, error: NETWORK_ERROR } }
+  } catch {
+    return { ok: false, error: NETWORK_ERROR }
+  }
 }
 
 export interface ResourceVersionedFile {
@@ -424,33 +459,58 @@ export interface ResourceVersionedPage {
   next_cursor: string | null
 }
 
-export async function fetchVersionedFiles(project: string, state: ResourceVersionedFile['state'],
-  cursor?: string): Promise<ResourceVersionedPage | null> {
+export async function fetchVersionedFiles(
+  project: string,
+  state: ResourceVersionedFile['state'],
+  cursor?: string
+): Promise<ResourceVersionedPage | null> {
   const params = versionParams(project)
   params.set('state', state)
   if (cursor) params.set('after_file_id', cursor)
   try {
-    const response = await fetch(`${base()}/api/resource/files?${params}`, { credentials: 'include', cache: 'no-store' })
-    return response.ok ? await response.json() as ResourceVersionedPage : null
-  } catch { return null }
+    const response = await fetch(`${base()}/api/resource/files?${params}`, {
+      credentials: 'include',
+      cache: 'no-store',
+    })
+    return response.ok ? ((await response.json()) as ResourceVersionedPage) : null
+  } catch {
+    return null
+  }
 }
 
 export async function decideResourceReview(
-  project: string, path: string, pending: ResourcePending, action: ResourceReviewAction,
-  expectedDiskRevision: string | null, idempotencyKey: string
+  project: string,
+  path: string,
+  pending: ResourcePending,
+  action: ResourceReviewAction,
+  expectedDiskRevision: string | null,
+  idempotencyKey: string
 ): Promise<ResourceMutation> {
   if (!pending.review) return { ok: false, error: 'review_not_found' }
   try {
     const response = await fetch(
       `${base()}/api/resource/files/${encodeURIComponent(pending.file_id)}/review/${action}?${versionParams(project)}`,
-      { method: 'POST', credentials: 'include',
+      {
+        method: 'POST',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
-        body: JSON.stringify({ path, review_id: pending.review.id, pending_revision: pending.revision,
-          expected_disk_revision: expectedDiskRevision }) }
+        body: JSON.stringify({
+          path,
+          review_id: pending.review.id,
+          pending_revision: pending.revision,
+          expected_disk_revision: expectedDiskRevision,
+        }),
+      }
     )
-    const payload = await response.json().catch(() => null) as { error?: { code?: string } } | null
-    return response.ok ? { ok: true } : { ok: false, error: payload?.error?.code ?? `http_${response.status}` }
-  } catch { return { ok: false, error: NETWORK_ERROR } }
+    const payload = (await response.json().catch(() => null)) as {
+      error?: { code?: string }
+    } | null
+    return response.ok
+      ? { ok: true }
+      : { ok: false, error: payload?.error?.code ?? `http_${response.status}` }
+  } catch {
+    return { ok: false, error: NETWORK_ERROR }
+  }
 }
 
 export type ResourceReviewResolution = 'keep_current' | 'restore_candidate'
@@ -462,37 +522,72 @@ export interface ResourceReviewConflict {
   token: string
 }
 
-export async function fetchResourceReviewConflict(project: string, fileId: string): Promise<ResourceReviewConflict | null> {
+export async function fetchResourceReviewConflict(
+  project: string,
+  fileId: string
+): Promise<ResourceReviewConflict | null> {
   try {
-    const response = await fetch(`${base()}/api/resource/files/${encodeURIComponent(fileId)}/review/conflict?${versionParams(project)}`, { credentials: 'include', cache: 'no-store' })
-    return response.ok ? await response.json() as ResourceReviewConflict : null
-  } catch { return null }
+    const response = await fetch(
+      `${base()}/api/resource/files/${encodeURIComponent(fileId)}/review/conflict?${versionParams(project)}`,
+      { credentials: 'include', cache: 'no-store' }
+    )
+    return response.ok ? ((await response.json()) as ResourceReviewConflict) : null
+  } catch {
+    return null
+  }
 }
 
-export async function reconcileResourceReview(project: string, fileId: string,
-  action: ResourceReviewResolution, token: string, key: string): Promise<ResourceMutation> {
+export async function reconcileResourceReview(
+  project: string,
+  fileId: string,
+  action: ResourceReviewResolution,
+  token: string,
+  key: string
+): Promise<ResourceMutation> {
   try {
-    const response = await fetch(`${base()}/api/resource/files/${encodeURIComponent(fileId)}/review/reconcile?${versionParams(project)}`, {
-      method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key },
-      body: JSON.stringify({ action, token })
-    })
-    const result = await response.json().catch(() => null) as { error?: { code?: string } } | null
-    return response.ok ? { ok: true } : { ok: false, error: result?.error?.code ?? `http_${response.status}` }
-  } catch { return { ok: false, error: NETWORK_ERROR } }
+    const response = await fetch(
+      `${base()}/api/resource/files/${encodeURIComponent(fileId)}/review/reconcile?${versionParams(project)}`,
+      {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key },
+        body: JSON.stringify({ action, token }),
+      }
+    )
+    const result = (await response.json().catch(() => null)) as { error?: { code?: string } } | null
+    return response.ok
+      ? { ok: true }
+      : { ok: false, error: result?.error?.code ?? `http_${response.status}` }
+  } catch {
+    return { ok: false, error: NETWORK_ERROR }
+  }
 }
 
-export function reviewConflictMatches(preview: ResourceReviewConflict, pending: ResourcePending): boolean {
-  return preview.file_id === pending.file_id && preview.review_id === pending.review?.id
-    && preview.pending_revision === pending.revision
+export function reviewConflictMatches(
+  preview: ResourceReviewConflict,
+  pending: ResourcePending
+): boolean {
+  return (
+    preview.file_id === pending.file_id &&
+    preview.review_id === pending.review?.id &&
+    preview.pending_revision === pending.revision
+  )
 }
 
-export async function fetchReviewBaseline(project: string, pending: ResourcePending): Promise<number[] | null> {
+export async function fetchReviewBaseline(
+  project: string,
+  pending: ResourcePending
+): Promise<number[] | null> {
   if (!pending.review) return null
   try {
-    const response = await fetch(`${base()}/api/resource/files/${encodeURIComponent(pending.file_id)}/review/${encodeURIComponent(pending.review.id)}/base?${versionParams(project)}`,
-      { credentials: 'include', cache: 'no-store' })
+    const response = await fetch(
+      `${base()}/api/resource/files/${encodeURIComponent(pending.file_id)}/review/${encodeURIComponent(pending.review.id)}/base?${versionParams(project)}`,
+      { credentials: 'include', cache: 'no-store' }
+    )
     return response.ok ? Array.from(new Uint8Array(await response.arrayBuffer())) : null
-  } catch { return null }
+  } catch {
+    return null
+  }
 }
 
 export interface ResourceVersion {
@@ -541,9 +636,7 @@ export interface ResourceRestorePreview {
   path_conflict?: boolean
 }
 
-export type ResourceRestoreMutation<T> =
-  | { ok: true; result: T }
-  | { ok: false; error: string }
+export type ResourceRestoreMutation<T> = { ok: true; result: T } | { ok: false; error: string }
 
 export interface ResourceDelivery {
   id: string
@@ -589,6 +682,19 @@ export interface ResourceDeliveryRestoreResult {
 
 const base = (): string => window.scholarseed?.getApiBase() ?? ''
 const WEB_SEARCH_SITE_ICON_PATH = '/api/resource/web-icon'
+const WEB_SOURCE_PREVIEW_PATH = '/api/resource/web-preview'
+
+export async function webSourcePreview(
+  url: string,
+  signal: AbortSignal
+): Promise<{ title: string; description: string; abstract?: string }> {
+  const response = await fetch(
+    `${base()}${WEB_SOURCE_PREVIEW_PATH}?${new URLSearchParams({ url })}`,
+    { signal }
+  )
+  if (!response.ok) throw new Error('web_preview_unavailable')
+  return response.json()
+}
 
 /** Build the local controlled-proxy URL used by search-result Avatar images. */
 export function webSearchSiteIconUrl(url: string): string | undefined {
@@ -617,7 +723,7 @@ export async function fetchVersionCapability(
       `${base()}/api/resource/capability?${versionParams(project, path)}`,
       { credentials: 'include', cache: 'no-store' }
     )
-    return response.ok ? await response.json() as ResourceCapability : null
+    return response.ok ? ((await response.json()) as ResourceCapability) : null
   } catch {
     return null
   }
@@ -643,9 +749,8 @@ export async function fetchResourceVersions(
 ): Promise<ResourceVersionPage | null> {
   try {
     const params = versionParams(project)
-    const query = typeof cursorOrQuery === 'number'
-      ? { cursor: cursorOrQuery }
-      : cursorOrQuery ?? {}
+    const query =
+      typeof cursorOrQuery === 'number' ? { cursor: cursorOrQuery } : (cursorOrQuery ?? {})
     if (query.cursor !== undefined) params.set('cursor', String(query.cursor))
     if (query.q) params.set('q', query.q)
     if (query.origin) params.set('origin', query.origin)
@@ -655,7 +760,7 @@ export async function fetchResourceVersions(
       { credentials: 'include' }
     )
     if (!response.ok) return null
-    return await response.json() as ResourceVersionPage
+    return (await response.json()) as ResourceVersionPage
   } catch {
     return null
   }
@@ -674,14 +779,19 @@ export async function updateResourceVersionAlias(
         method: 'PATCH',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
-        body: JSON.stringify({ alias, expected_revision: version.metadata_revision ?? 0 })
+        body: JSON.stringify({ alias, expected_revision: version.metadata_revision ?? 0 }),
       }
     )
-    const payload = await response.json() as { version?: ResourceVersion; error?: { code?: string } }
+    const payload = (await response.json()) as {
+      version?: ResourceVersion
+      error?: { code?: string }
+    }
     return response.ok && payload.version
       ? { ok: true, result: payload.version }
       : { ok: false, error: payload.error?.code ?? VERSION_ALIAS_FAILED }
-  } catch { return { ok: false, error: NETWORK_ERROR } }
+  } catch {
+    return { ok: false, error: NETWORK_ERROR }
+  }
 }
 
 export async function previewResourceVersionDelete(
@@ -693,8 +803,10 @@ export async function previewResourceVersionDelete(
       `${base()}/api/resource/versions/${encodeURIComponent(versionId)}/delete/preview?${versionParams(project)}`,
       { method: 'POST', credentials: 'include' }
     )
-    return response.ok ? await response.json() as ResourceVersionDeletePreview : null
-  } catch { return null }
+    return response.ok ? ((await response.json()) as ResourceVersionDeletePreview) : null
+  } catch {
+    return null
+  }
 }
 
 export async function deleteResourceVersion(
@@ -710,14 +822,19 @@ export async function deleteResourceVersion(
         method: 'DELETE',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
-        body: JSON.stringify({ preflight_token: preflightToken })
+        body: JSON.stringify({ preflight_token: preflightToken }),
       }
     )
-    const payload = await response.json() as { remaining_count?: number; error?: { code?: string } }
+    const payload = (await response.json()) as {
+      remaining_count?: number
+      error?: { code?: string }
+    }
     return response.ok && typeof payload.remaining_count === 'number'
       ? { ok: true, result: { remaining_count: payload.remaining_count } }
       : { ok: false, error: payload.error?.code ?? VERSION_DELETE_FAILED }
-  } catch { return { ok: false, error: NETWORK_ERROR } }
+  } catch {
+    return { ok: false, error: NETWORK_ERROR }
+  }
 }
 
 export async function fetchResourceVersionContent(
@@ -744,7 +861,7 @@ export async function fetchResourceVersionAnnotations(
       `${base()}/api/resource/versions/${encodeURIComponent(versionId)}/annotations?${versionParams(project)}`,
       { credentials: 'include' }
     )
-    return response.ok ? await response.json() as ResourceVersionAnnotations : null
+    return response.ok ? ((await response.json()) as ResourceVersionAnnotations) : null
   } catch {
     return null
   }
@@ -754,12 +871,11 @@ export async function fetchResourceDeliveries(
   project: string
 ): Promise<ResourceDeliveryEntry[] | null> {
   try {
-    const response = await fetch(
-      `${base()}/api/resource/deliveries?${versionParams(project)}`,
-      { credentials: 'include' }
-    )
+    const response = await fetch(`${base()}/api/resource/deliveries?${versionParams(project)}`, {
+      credentials: 'include',
+    })
     if (!response.ok) return null
-    const payload = await response.json() as { deliveries?: ResourceDeliveryEntry[] }
+    const payload = (await response.json()) as { deliveries?: ResourceDeliveryEntry[] }
     return payload.deliveries ?? []
   } catch {
     return null
@@ -775,7 +891,7 @@ export async function previewDeliveryRestore(
       `${base()}/api/resource/deliveries/${encodeURIComponent(deliveryId)}/revert/preview?${versionParams(project)}`,
       { method: 'POST', credentials: 'include' }
     )
-    return response.ok ? await response.json() as ResourceDeliveryRestorePreview : null
+    return response.ok ? ((await response.json()) as ResourceDeliveryRestorePreview) : null
   } catch {
     return null
   }
@@ -794,13 +910,11 @@ export async function restoreResourceDelivery(
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
-        body: JSON.stringify({ policy, preflight_token: preflightToken })
+        body: JSON.stringify({ policy, preflight_token: preflightToken }),
       }
     )
-    const payload = await response.json().catch(() => null) as
-      | ResourceDeliveryRestoreResult
-      | { error?: { code?: string; message?: string } }
-      | null
+    const payload = (await response.json().catch(() => null)) as
+      ResourceDeliveryRestoreResult | { error?: { code?: string; message?: string } } | null
     if (!response.ok) {
       const error = payload && 'error' in payload ? payload.error : undefined
       return { ok: false, error: error?.code || error?.message || `http_${response.status}` }
@@ -820,7 +934,7 @@ export async function previewResourceRestore(
       `${base()}/api/resource/versions/${encodeURIComponent(versionId)}/restore/preview?${versionParams(project)}`,
       { method: 'POST', credentials: 'include' }
     )
-    return response.ok ? await response.json() as ResourceRestorePreview : null
+    return response.ok ? ((await response.json()) as ResourceRestorePreview) : null
   } catch {
     return null
   }
@@ -839,14 +953,18 @@ export async function restoreResourceVersion(
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
-        body: JSON.stringify({ policy, preflight_token: preflightToken })
+        body: JSON.stringify({ policy, preflight_token: preflightToken }),
       }
     )
-    const payload = await response.json().catch(() => null) as
-      | { version?: ResourceVersion; error?: { code?: string; message?: string } }
-      | null
+    const payload = (await response.json().catch(() => null)) as {
+      version?: ResourceVersion
+      error?: { code?: string; message?: string }
+    } | null
     if (!response.ok) {
-      return { ok: false, error: payload?.error?.code || payload?.error?.message || `http_${response.status}` }
+      return {
+        ok: false,
+        error: payload?.error?.code || payload?.error?.message || `http_${response.status}`,
+      }
     }
     return payload?.version
       ? { ok: true, result: payload.version }
@@ -868,11 +986,11 @@ export async function saveResourceVersionAs(
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
-        body: JSON.stringify({ target_dir: '', name })
+        body: JSON.stringify({ target_dir: '', name }),
       }
     )
     if (!response.ok) return null
-    const payload = await response.json() as { version?: ResourceVersion }
+    const payload = (await response.json()) as { version?: ResourceVersion }
     return payload.version ?? null
   } catch {
     return null
@@ -890,10 +1008,14 @@ export async function sealResourceVersion(
 }
 
 export async function sealResourceSnapshot(
-  project: string, path: string, capability: ResourceCapability, idempotencyKey: string,
+  project: string,
+  path: string,
+  capability: ResourceCapability,
+  idempotencyKey: string,
   origin: 'user' | 'external_confirmed' = 'user'
 ): Promise<ResourceMutation> {
-  if (!capability.file_id || !capability.can_version) return { ok: false, error: 'version_management_disabled' }
+  if (!capability.file_id || !capability.can_version)
+    return { ok: false, error: 'version_management_disabled' }
   if (capability.drifted) return { ok: false, error: 'revision_conflict' }
   if (capability.pending?.review) return { ok: false, error: 'pending_review_requires_decision' }
   try {
@@ -908,12 +1030,16 @@ export async function sealResourceSnapshot(
           origin,
           expected_disk_revision: capability.disk_revision,
           expected_version_id: capability.version_id,
-          expected_pending_revision: capability.pending?.revision ?? null
-        })
+          expected_pending_revision: capability.pending?.revision ?? null,
+        }),
       }
     )
-    const payload = await response.json().catch(() => null) as { error?: { code?: string } } | null
-    return response.ok ? { ok: true } : { ok: false, error: payload?.error?.code ?? `http_${response.status}` }
+    const payload = (await response.json().catch(() => null)) as {
+      error?: { code?: string }
+    } | null
+    return response.ok
+      ? { ok: true }
+      : { ok: false, error: payload?.error?.code ?? `http_${response.status}` }
   } catch {
     return { ok: false, error: NETWORK_ERROR }
   }
@@ -930,12 +1056,19 @@ const VERSION_DELETE_FAILED = 'version_delete_failed'
 const INVALID_IMPORT_RESPONSE = 'invalid_import_response'
 
 /** payload → 前端模型，剥掉 null 以匹配可选字段语义。 */
-function toLinkRoots(payload: ResourceTreePayload['linked_roots']): Record<string, ResourceLinkRoot> {
-  return Object.fromEntries(Object.entries(payload ?? {}).map(([rootId, root]) => [rootId, {
-    rootId: root.root_id,
-    mountPath: root.mount_path,
-    sourcePath: root.source_path
-  }]))
+function toLinkRoots(
+  payload: ResourceTreePayload['linked_roots']
+): Record<string, ResourceLinkRoot> {
+  return Object.fromEntries(
+    Object.entries(payload ?? {}).map(([rootId, root]) => [
+      rootId,
+      {
+        rootId: root.root_id,
+        mountPath: root.mount_path,
+        sourcePath: root.source_path,
+      },
+    ])
+  )
 }
 
 function toNode(
@@ -956,16 +1089,18 @@ function toNode(
       ? { linkRoot: linkedRoots[payload.link_root_id] }
       : {}),
     ...(payload.version
-      ? { version: {
-          managementState: payload.version.management_state,
-          drifted: payload.version.drifted,
-          snapshotState: payload.version.snapshot_state,
-          pendingOrigin: payload.version.pending_origin,
-          manualAdmitted: payload.version.manual_admitted ?? false,
-          needsReview: payload.version.needs_review
-        } }
+      ? {
+          version: {
+            managementState: payload.version.management_state,
+            drifted: payload.version.drifted,
+            snapshotState: payload.version.snapshot_state,
+            pendingOrigin: payload.version.pending_origin,
+            manualAdmitted: payload.version.manual_admitted ?? false,
+            needsReview: payload.version.needs_review,
+          },
+        }
       : {}),
-    children: payload.children?.map((child) => toNode(child, linkedRoots))
+    children: payload.children?.map((child) => toNode(child, linkedRoots)),
   }
 }
 
@@ -976,10 +1111,10 @@ export async function fetchResourceAgentOrigin(
   const query = new URLSearchParams({ project, path })
   try {
     const response = await fetch(`${base()}/api/resource/agent-origin?${query.toString()}`, {
-      credentials: 'include'
+      credentials: 'include',
     })
     if (!response.ok) return null
-    const payload = await response.json() as {
+    const payload = (await response.json()) as {
       source_kind: 'answer' | 'artifact'
       session_id: string
       session_deleted?: boolean
@@ -994,7 +1129,7 @@ export async function fetchResourceAgentOrigin(
       sessionDeleted: payload.session_deleted === true,
       turnId: payload.turn_id,
       itemId: payload.item_id,
-      ...(payload.source_range ? { sourceRange: payload.source_range } : {})
+      ...(payload.source_range ? { sourceRange: payload.source_range } : {}),
     }
   } catch {
     return null
@@ -1008,11 +1143,12 @@ async function postJson(path: string, body: Record<string, unknown>): Promise<Re
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
     })
-    const payload = (await response.json().catch(() => null)) as
-      | { detail?: string; node?: ResourceNodePayload }
-      | null
+    const payload = (await response.json().catch(() => null)) as {
+      detail?: string
+      node?: ResourceNodePayload
+    } | null
     if (!response.ok) {
       return { ok: false, error: payload?.detail ?? `http_${response.status}` }
     }
@@ -1034,11 +1170,18 @@ async function postJson(path: string, body: Record<string, unknown>): Promise<Re
  */
 export async function fetchResourceListing(project: string): Promise<ResourceNode[] | null> {
   try {
-    const response = await fetch(`${base()}/api/resource/list?${new URLSearchParams({ project })}`, {
-      credentials: 'include', cache: 'no-store'
-    })
+    const response = await fetch(
+      `${base()}/api/resource/list?${new URLSearchParams({ project })}`,
+      {
+        credentials: 'include',
+        cache: 'no-store',
+      }
+    )
     if (!response.ok) return null
-    const payload = await response.json() as { items: ResourceNodePayload[]; linked_roots?: ResourceTreePayload['linked_roots'] }
+    const payload = (await response.json()) as {
+      items: ResourceNodePayload[]
+      linked_roots?: ResourceTreePayload['linked_roots']
+    }
     const roots = toLinkRoots(payload.linked_roots)
     return payload.items.map((item) => toNode(item, roots))
   } catch {
@@ -1050,7 +1193,13 @@ export async function fetchResourceTree(
   project?: string | null,
   path?: string,
   offset = 0
-): Promise<{ root: string; resourceRoot: string; nodes: ResourceNode[]; total: number; offset: number } | null> {
+): Promise<{
+  root: string
+  resourceRoot: string
+  nodes: ResourceNode[]
+  total: number
+  offset: number
+} | null> {
   const params = new URLSearchParams()
   if (project) params.set('project', project)
   if (path) params.set('path', path)
@@ -1059,7 +1208,7 @@ export async function fetchResourceTree(
   try {
     const response = await fetch(`${base()}/api/resource/tree${query ? `?${query}` : ''}`, {
       credentials: 'include',
-      cache: 'no-store'
+      cache: 'no-store',
     })
     if (!response.ok) return null
     const payload = (await response.json()) as ResourceTreePayload
@@ -1069,7 +1218,7 @@ export async function fetchResourceTree(
       resourceRoot: payload.resource_root,
       nodes: payload.nodes.map((node) => toNode(node, linkedRoots)),
       total: payload.total ?? payload.nodes.length,
-      offset: payload.offset ?? 0
+      offset: payload.offset ?? 0,
     }
   } catch {
     return null
@@ -1090,7 +1239,7 @@ export async function fetchResourceCount(project?: string | null): Promise<numbe
   const query = params.toString()
   try {
     const response = await fetch(`${base()}/api/resource/count${query ? `?${query}` : ''}`, {
-      credentials: 'include'
+      credentials: 'include',
     })
     if (!response.ok) return null
     const payload = (await response.json()) as { files?: number }
@@ -1109,7 +1258,7 @@ export async function fetchResourceContent(
   if (project) params.set('project', project)
   try {
     const response = await fetch(`${base()}/api/resource/read?${params.toString()}`, {
-      credentials: 'include'
+      credentials: 'include',
     })
     if (!response.ok) return null
     const payload = (await response.json()) as { content: string }
@@ -1148,7 +1297,7 @@ export async function searchResources(
   if (project) params.set('project', project)
   try {
     const response = await fetch(`${base()}/api/resource/search?${params.toString()}`, {
-      credentials: 'include'
+      credentials: 'include',
     })
     if (!response.ok) return null
     const payload = (await response.json()) as { hits: ResourceSearchHit[] }
@@ -1177,7 +1326,7 @@ export const mutateResourceNode = (
     name: input.name ?? '',
     target_dir: input.targetDir ?? null,
     ...(input.content === undefined ? {} : { content: input.content }),
-    project: project ?? null
+    project: project ?? null,
   })
 
 /** 导入本地文件/文件夹（PRD「资料导入」：复制 or 关联）。 */
@@ -1194,7 +1343,7 @@ export async function importResources(
       credentials: 'include',
       headers: {
         'Content-Type': 'application/json',
-        ...(resolution ? { 'Idempotency-Key': resolution.idempotencyKey } : {})
+        ...(resolution ? { 'Idempotency-Key': resolution.idempotencyKey } : {}),
       },
       body: JSON.stringify({
         mode,
@@ -1206,31 +1355,29 @@ export async function importResources(
               plan_token: resolution.planToken,
               decisions: resolution.sourceIndexes.map((sourceIndex) => ({
                 source_index: sourceIndex,
-                action: resolution.action
-              }))
+                action: resolution.action,
+              })),
             }
-          : {})
-      })
+          : {}),
+      }),
     })
-    const payload = (await response.json().catch(() => null)) as
-      | {
-          detail?: string
-          status?: 'completed' | 'needs_resolution'
-          project_id?: string
-          plan_token?: string
-          conflicts?: Array<{
-            source_index: number
-            source_name: string
-            source_kind: 'file' | 'dir'
-            target_path: string
-            target_kind: 'file' | 'dir' | null
-            suggested_name: string
-            expected_target_revision: string | null
-            can_replace_with_version: boolean
-          }>
-          imported?: ResourceNodePayload[]
-        }
-      | null
+    const payload = (await response.json().catch(() => null)) as {
+      detail?: string
+      status?: 'completed' | 'needs_resolution'
+      project_id?: string
+      plan_token?: string
+      conflicts?: Array<{
+        source_index: number
+        source_name: string
+        source_kind: 'file' | 'dir'
+        target_path: string
+        target_kind: 'file' | 'dir' | null
+        suggested_name: string
+        expected_target_revision: string | null
+        can_replace_with_version: boolean
+      }>
+      imported?: ResourceNodePayload[]
+    } | null
     if (!response.ok) return { ok: false, error: payload?.detail ?? `http_${response.status}` }
     if (payload?.status === 'needs_resolution' && payload.plan_token) {
       return {
@@ -1245,8 +1392,8 @@ export async function importResources(
           targetKind: item.target_kind,
           suggestedName: item.suggested_name,
           expectedTargetRevision: item.expected_target_revision,
-          canReplaceWithVersion: item.can_replace_with_version
-        }))
+          canReplaceWithVersion: item.can_replace_with_version,
+        })),
       }
     }
     if (!payload?.project_id) return { ok: false, error: INVALID_IMPORT_RESPONSE }
@@ -1254,7 +1401,7 @@ export async function importResources(
       ok: true,
       status: 'completed',
       projectId: payload.project_id,
-      imported: (payload?.imported ?? []).map((node) => toNode(node))
+      imported: (payload?.imported ?? []).map((node) => toNode(node)),
     }
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : NETWORK_ERROR }
@@ -1273,30 +1420,28 @@ export async function importWebResources(
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ project, query, parent, candidates })
+      body: JSON.stringify({ project, query, parent, candidates }),
     })
-    const payload = (await response.json().catch(() => null)) as
-      | {
-          detail?: unknown
-          succeeded?: number
-          failed?: number
-          items?: Array<{
-            title: string
-            url: string
-            status: 'success' | 'failed'
-            final_url?: string
-            node?: ResourceNodePayload
-            error?: string
-          }>
-        }
-      | null
+    const payload = (await response.json().catch(() => null)) as {
+      detail?: unknown
+      succeeded?: number
+      failed?: number
+      items?: Array<{
+        title: string
+        url: string
+        status: 'success' | 'failed'
+        final_url?: string
+        node?: ResourceNodePayload
+        error?: string
+      }>
+    } | null
     if (!response.ok) {
       return {
         ok: false,
         succeeded: 0,
         failed: candidates.length,
         items: [],
-        error: webImportRequestError(payload, response.status)
+        error: webImportRequestError(payload, response.status),
       }
     }
     const items = (payload?.items ?? []).map((item): WebImportItem => ({
@@ -1305,13 +1450,13 @@ export async function importWebResources(
       status: item.status,
       finalUrl: item.final_url,
       node: item.node ? toNode(item.node) : undefined,
-      error: item.error
+      error: item.error,
     }))
     return {
       ok: true,
       succeeded: payload?.succeeded ?? items.filter((item) => item.status === 'success').length,
       failed: payload?.failed ?? items.filter((item) => item.status === 'failed').length,
-      items
+      items,
     }
   } catch (error) {
     return {
@@ -1319,7 +1464,7 @@ export async function importWebResources(
       succeeded: 0,
       failed: candidates.length,
       items: [],
-      error: error instanceof Error ? error.message : 'network_error'
+      error: error instanceof Error ? error.message : 'network_error',
     }
   }
 }
@@ -1328,12 +1473,13 @@ export async function importWebResources(
 export async function importLiteratureExcerpts(
   input: LiteratureExcerptImportInput
 ): Promise<LiteratureExcerptImportMutation> {
-  const location = input.parent || input.name
-    ? {
-        ...(input.parent ? { parent: input.parent } : {}),
-        ...(input.name ? { name: input.name } : {})
-      }
-    : undefined
+  const location =
+    input.parent || input.name
+      ? {
+          ...(input.parent ? { parent: input.parent } : {}),
+          ...(input.name ? { name: input.name } : {}),
+        }
+      : undefined
   try {
     const response = await fetch(`${base()}/api/resource/excerpts`, {
       method: 'POST',
@@ -1345,7 +1491,7 @@ export async function importLiteratureExcerpts(
         source: {
           kind: LITERATURE_EXCERPT_SOURCE_KIND,
           literature_id: input.literatureId,
-          ...(input.documentRevision ? { document_revision: input.documentRevision } : {})
+          ...(input.documentRevision ? { document_revision: input.documentRevision } : {}),
         },
         selections: input.selections.map((selection) => ({
           text: selection.text,
@@ -1354,31 +1500,30 @@ export async function importLiteratureExcerpts(
             page: selection.locator.page,
             ...(selection.locator.quads?.length
               ? { quads: selection.locator.quads.map((quad) => [...quad]) }
-              : {})
-          }
-        }))
-      })
+              : {}),
+          },
+        })),
+      }),
     })
-    const payload = (await response.json().catch(() => null)) as
-      | {
-          detail?: string
-          operation?: 'created' | 'updated'
-          node?: ResourceNodePayload
-          literature_id?: string
-          added?: number
-          skipped?: number
-          total?: number
-        }
-      | null
+    const payload = (await response.json().catch(() => null)) as {
+      detail?: string
+      operation?: 'created' | 'updated'
+      node?: ResourceNodePayload
+      literature_id?: string
+      added?: number
+      skipped?: number
+      total?: number
+    } | null
     if (!response.ok) return { ok: false, error: payload?.detail ?? `http_${response.status}` }
     if (
-      !payload?.operation
-      || !payload.node
-      || !payload.literature_id
-      || typeof payload.added !== 'number'
-      || typeof payload.skipped !== 'number'
-      || typeof payload.total !== 'number'
-    ) return { ok: false, error: 'invalid_excerpt_response' }
+      !payload?.operation ||
+      !payload.node ||
+      !payload.literature_id ||
+      typeof payload.added !== 'number' ||
+      typeof payload.skipped !== 'number' ||
+      typeof payload.total !== 'number'
+    )
+      return { ok: false, error: 'invalid_excerpt_response' }
     return {
       ok: true,
       operation: payload.operation,
@@ -1386,12 +1531,12 @@ export async function importLiteratureExcerpts(
       literatureId: payload.literature_id,
       added: payload.added,
       skipped: payload.skipped,
-      total: payload.total
+      total: payload.total,
     }
   } catch (error) {
     return {
       ok: false,
-      error: error instanceof Error ? error.message : 'network_error'
+      error: error instanceof Error ? error.message : 'network_error',
     }
   }
 }
@@ -1411,11 +1556,12 @@ export async function issueTrashToken(
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path, project: project ?? null })
+      body: JSON.stringify({ path, project: project ?? null }),
     })
-    const payload = (await response.json().catch(() => null)) as
-      | { detail?: string; token?: string }
-      | null
+    const payload = (await response.json().catch(() => null)) as {
+      detail?: string
+      token?: string
+    } | null
     if (!response.ok) return { ok: false, error: payload?.detail ?? `http_${response.status}` }
     return { ok: true, token: payload?.token }
   } catch (e) {
@@ -1433,11 +1579,12 @@ export async function resolveRevealTarget(
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path, project: project ?? null })
+      body: JSON.stringify({ path, project: project ?? null }),
     })
-    const payload = (await response.json().catch(() => null)) as
-      | { detail?: string; absolute?: string }
-      | null
+    const payload = (await response.json().catch(() => null)) as {
+      detail?: string
+      absolute?: string
+    } | null
     if (!response.ok) return { ok: false, error: payload?.detail ?? `http_${response.status}` }
     return { ok: true, absolute: payload?.absolute }
   } catch (e) {
@@ -1448,13 +1595,30 @@ export async function resolveRevealTarget(
 const VERSION_ADMISSION_FAILED = 'version_admission_failed'
 const VERSION_ADMISSION_NETWORK_ERROR = 'network_error'
 
-export async function admitResourceVersion(project: string, path: string, diskRevision: string, idempotencyKey: string): Promise<{ ok: true; capability: ResourceCapability } | { ok: false; error: string }> {
+export async function admitResourceVersion(
+  project: string,
+  path: string,
+  diskRevision: string,
+  idempotencyKey: string
+): Promise<{ ok: true; capability: ResourceCapability } | { ok: false; error: string }> {
   try {
-    const response = await fetch(`${base()}/api/serve/resources/version-admission?${new URLSearchParams({ project })}`, {
-      method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
-      body: JSON.stringify({ path, expected_disk_revision: diskRevision })
-    })
-    const payload = await response.json() as { capability?: ResourceCapability; error?: { code?: string } }
-    return response.ok && payload.capability ? { ok: true, capability: payload.capability } : { ok: false, error: payload.error?.code ?? VERSION_ADMISSION_FAILED }
-  } catch { return { ok: false, error: VERSION_ADMISSION_NETWORK_ERROR } }
+    const response = await fetch(
+      `${base()}/api/serve/resources/version-admission?${new URLSearchParams({ project })}`,
+      {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
+        body: JSON.stringify({ path, expected_disk_revision: diskRevision }),
+      }
+    )
+    const payload = (await response.json()) as {
+      capability?: ResourceCapability
+      error?: { code?: string }
+    }
+    return response.ok && payload.capability
+      ? { ok: true, capability: payload.capability }
+      : { ok: false, error: payload.error?.code ?? VERSION_ADMISSION_FAILED }
+  } catch {
+    return { ok: false, error: VERSION_ADMISSION_NETWORK_ERROR }
+  }
 }

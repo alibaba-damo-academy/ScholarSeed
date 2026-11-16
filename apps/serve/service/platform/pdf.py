@@ -23,6 +23,7 @@ from PIL import Image
 from pypdf import PasswordType, PdfReader
 from pypdf.errors import PdfReadError
 
+from service.platform.annotations import native_pdf_records
 from service.platform.records import EMPTY_RECORDS, decode_records
 
 PDF_ANNOTATIONS_ATTACHMENT = "scholarseed-annotations.json"
@@ -149,6 +150,8 @@ class PdfWord:
 class PdfCharacter:
     text: str
     bounds: PdfRect
+    font: str = ""
+    size: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -356,7 +359,7 @@ def pdf_page_body_text(payload: bytes, page_number: int, original_text: str) -> 
                 if 0 <= neighbor < len(document.pages):
                     repeated.update(_decoration_candidates(document.pages[neighbor]))
             positions = []
-            normalized = []
+            normalized: list[str] = []
             for position, character in enumerate(original_text):
                 if not character.isspace():
                     folded = character.casefold()
@@ -368,7 +371,7 @@ def pdf_page_body_text(payload: bytes, page_number: int, original_text: str) -> 
                 start = normalized_text.find(signature)
                 if start >= 0 and normalized_text.find(signature, start + 1) < 0:
                     ranges.append((positions[start], positions[start + len(signature) - 1] + 1))
-            merged = []
+            merged: list[tuple[int, int]] = []
             for start, end in sorted(ranges):
                 if merged and start <= merged[-1][1]:
                     merged[-1] = (merged[-1][0], max(merged[-1][1], end))
@@ -403,7 +406,12 @@ def pdf_page_layout(payload: bytes, page_number: int) -> PdfPageLayout:
                 if word.get("text")
             )
             characters = tuple(
-                PdfCharacter(str(character.get("text") or ""), _rect(character))
+                PdfCharacter(
+                    str(character.get("text") or ""),
+                    _rect(character),
+                    str(character.get("fontname") or ""),
+                    float(character.get("size") or 0),
+                )
                 for character in page.chars
                 if character.get("text")
             )
@@ -506,18 +514,22 @@ class PdfAnnotationError(ValueError):
     """Embedded ScholarSeed records exist but cannot be restored safely."""
 
 
-def embedded_pdf_records(payload: bytes) -> dict[str, Any]:
-    """Read only ScholarSeed's canonical attachment, not native third-party annotations.
+def embedded_pdf_records(
+    payload: bytes, existing_records: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Reconcile native annotations with the canonical attachment or existing records.
 
     Container validity remains owned by the PDF viewer/attachment validator.
     Opaque resources accepted by the existing record API carry no embedded records.
     Invalid embedded records are ignored rather than blocking the owning PDF flow.
-    This boundary does not migrate or partially recover unsupported payloads.
+    Native reading annotations are independent of an invalid embedded attachment.
     """
     try:
         reader, _encrypted = _reader(payload)
     except PdfDocumentError:
-        return decode_records(EMPTY_RECORDS)
+        return decode_records(existing_records if existing_records is not None else EMPTY_RECORDS)
+    if existing_records is not None:
+        return native_pdf_records(payload, existing_records, reader)
     try:
         matches = [
             attachment
@@ -525,7 +537,7 @@ def embedded_pdf_records(payload: bytes) -> dict[str, Any]:
             if attachment.name == PDF_ANNOTATIONS_ATTACHMENT
         ]
         if not matches:
-            return decode_records(EMPTY_RECORDS)
+            return native_pdf_records(payload, EMPTY_RECORDS, reader)
         if len(matches) != 1:
             raise PdfAnnotationError("duplicate PDF annotation attachments")
         attachment = matches[0]
@@ -537,14 +549,14 @@ def embedded_pdf_records(payload: bytes) -> dict[str, Any]:
         records = decode_records(attached)
         if any(mark["page"] > len(reader.pages) for mark in records["marks"]):
             raise PdfAnnotationError("PDF annotation page out of range")
-        return records
+        return native_pdf_records(payload, records, reader)
     except (PdfAnnotationError, RuntimeError, TypeError, ValueError, KeyError) as error:
         _log.warning(
             "Ignoring invalid embedded ScholarSeed PDF annotations (%s): %s",
             type(error).__name__,
             error,
         )
-        return decode_records(EMPTY_RECORDS)
+        return native_pdf_records(payload, EMPTY_RECORDS, reader)
 
 
 class PdfSelectionError(ValueError):

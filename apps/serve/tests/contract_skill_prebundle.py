@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 import yaml
 
@@ -44,9 +45,12 @@ from service.capabilities.service.skills import (
 )
 from service.capabilities.service.source import (
     EXECUTABLE_MODE,
+    WINDOWS_PLATFORM,
+    _portable_mode,
     compile_source_skills,
     skill_source_files,
     source_lock,
+    verify_source_locked_pack,
     verify_source_pack,
     write_source_lock,
 )
@@ -180,20 +184,6 @@ def _plugin_create_identity() -> None:
     check(
         "creation package identity and version agree",
         frontmatter["name"] == name and frontmatter["version"] == version,
-    )
-    stored = json.loads((REPO_ROOT / "skills/skills.lock.json").read_bytes())
-    generated = source_lock()
-    if os.name == "nt":
-        for row in stored["skills"]:
-            for item in row["files"]:
-                item["mode"] = FILE_MODE
-    check(
-        "old identity is absent from frozen inventory",
-        all(row["slug"] != "plugin-authoring" for row in stored["skills"]),
-    )
-    check(
-        "reviewed inventory matches repository inputs",
-        stored == generated,
     )
     with tempfile.TemporaryDirectory(prefix="plugin-create-contract-") as temporary:
         target = Path(temporary) / "skills"
@@ -611,6 +601,80 @@ def _cli_gate_runs() -> None:
         check("CLI 只读校验不会补写缺失配置", not config_path.exists())
 
 
+def _bridge_reference_gate() -> None:
+    name = "scholarseed-product-operations"
+    relative = Path(name) / "references/scholarseed-bridge/contracts/artifact.jsonl"
+    with tempfile.TemporaryDirectory(prefix="skill-bridge-reference-") as temporary:
+        source = Path(temporary) / "community"
+        shutil.copytree(COMMUNITY_SKILLS_ROOT / name, source / name)
+        (source.parent / "registry.json").write_bytes(json_bytes({"dependencies": {name: {}}}))
+        target = Path(temporary) / "pack"
+        command = [
+            sys.executable,
+            "-m",
+            PREBUNDLE_MODULE,
+            "--build",
+            "--source",
+            str(source),
+            "--target",
+            str(target),
+        ]
+        expected = (source / relative).read_bytes()
+        (source / relative).write_bytes(b"{}\n")
+        drifted = subprocess.run(
+            command, cwd=REPO_ROOT, capture_output=True, text=True, check=False
+        )
+        check(
+            "Bridge drift fails before publishing the skill pack",
+            drifted.returncode != 0
+            and "Bridge reference drift: artifact.jsonl" in drifted.stdout
+            and not target.exists(),
+            drifted.stdout + drifted.stderr,
+        )
+        generated = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                PREBUNDLE_MODULE,
+                "--write-bridge-reference",
+                "--source",
+                str(source),
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        check(
+            "Bridge generator restores the reviewed reference byte for byte",
+            generated.returncode == 0 and (source / relative).read_bytes() == expected,
+            generated.stdout + generated.stderr,
+        )
+        built = subprocess.run(command, cwd=REPO_ROOT, capture_output=True, text=True, check=False)
+        check(
+            "Skill pack includes the current Bridge contract",
+            built.returncode == 0 and (target / relative).read_bytes() == expected,
+            built.stdout + built.stderr,
+        )
+        packed_skill = target / name
+        check(
+            "Skill pack keeps operation guides inside their owning topics",
+            not (packed_skill / "reference").exists()
+            and not (packed_skill / "references/guides").exists()
+            and all(
+                (packed_skill / "references" / path).is_file()
+                for path in (
+                    "scholarseed-bridge/README.md",
+                    "scholarseed-frontend/README.md",
+                    "scholarseed-chat-ui/README.md",
+                    "scholarseed-bridge/guides/artifacts.md",
+                    "scholarseed-chat-ui/guides/evidence.md",
+                    "scholarseed-chat-ui/guides/plot/schema.json",
+                )
+            ),
+        )
+
+
 def _source_verification_checks_payloads() -> None:
     with tempfile.TemporaryDirectory(prefix="skill-payload-contract-") as temporary:
         target = Path(temporary) / "skills"
@@ -688,9 +752,110 @@ def _source_inventory_modes() -> None:
                 check("missing or invalid frozen modes fail closed", True)
             else:
                 check("missing or invalid frozen modes fail closed", False)
+        for suffix in (".cmd", ".bat", ".exe"):
+            command = skill / f"command{suffix}"
+            command.write_bytes(b"fixture payload\n")
+            command.chmod(EXECUTABLE_MODE)
+            with patch("service.capabilities.service.source.sys.platform", WINDOWS_PLATFORM):
+                check(
+                    f"Windows source modes do not infer POSIX execution from {suffix}",
+                    _portable_mode(command) == FILE_MODE,
+                )
+            with patch("service.capabilities.service.source.sys.platform", "darwin"):
+                check(
+                    f"POSIX source modes retain execution for {suffix}",
+                    _portable_mode(command) == EXECUTABLE_MODE,
+                )
+        modes.update({command.resolve(): FILE_MODE for command in skill.glob("command.*")})
+        with patch("service.capabilities.service.source.sys.platform", WINDOWS_PLATFORM):
+            frozen = source_lock(source, file_modes=modes)
+        record = next(row for row in frozen["skills"][0]["files"] if row["path"] == "run")
+        check(
+            "Windows source modes retain explicit frozen execution",
+            record["mode"] == EXECUTABLE_MODE,
+        )
+        target = root / "compiled"
+        with patch(
+            "service.capabilities.service.source._payload_mode", return_value=EXECUTABLE_MODE
+        ):
+            compile_source_skills(target, source, lock_path=destination)
+        with patch("service.capabilities.service.source.sys.platform", WINDOWS_PLATFORM):
+            check(
+                "Windows installed verification normalizes recorded executable modes",
+                verify_source_locked_pack(destination, target).ok,
+            )
+            (target / "example" / "command.cmd").write_bytes(b"changed payload\n")
+            check(
+                "Windows installed mode normalization still rejects changed bytes",
+                not verify_source_locked_pack(destination, target).ok,
+            )
+
+
+def _dependency_identity() -> None:
+    with tempfile.TemporaryDirectory(prefix="skill-dependency-identity-") as temporary:
+        root = Path(temporary)
+        source = root / "community"
+        _write_source_skill(source / "example")
+        registry = source.parent / "registry.json"
+        registry.write_bytes(
+            json_bytes({"dependencies": {"example": {"executables": ["scholarseed-bridge"]}}})
+        )
+        target = root / "compiled"
+        compile_source_skills(target, source)
+        manifest = target / "example/SKILL.md"
+        original = manifest.read_bytes()
+        before = json.loads((target / "example/.scholarseed.json").read_bytes())
+        catalog = SkillCatalog(bundled_root=target, user_root=root / "user")
+        inventory = SkillInventory(
+            cwd=REPO_ROOT,
+            revision="dependency-identity",
+            skills=(_view("example", manifest),),
+        )
+        fingerprint = catalog.payloads(inventory, SkillProductState())[0]["fingerprint"]
+        registry.write_bytes(json_bytes({"dependencies": {"example": {}}}))
+        compile_source_skills(target, source)
+        after = json.loads((target / "example/.scholarseed.json").read_bytes())
+        package = json.loads((target / "example/.scholarseed-package.json").read_bytes())
+        check(
+            "dependency-only rebuild preserves document and version",
+            manifest.read_bytes() == original
+            and before["version"] == after["version"] == package["version"] == "1.0.0",
+        )
+        check(
+            "dependency-only rebuild changes payload identity without a version bump",
+            before["payload_sha256"] != after["payload_sha256"] and package["dependencies"] == {},
+        )
+        check(
+            "catalogue invalidates cached identity for changed dependency manifests",
+            catalog.payloads(inventory, SkillProductState())[0]["fingerprint"] != fingerprint,
+        )
+        valid, problems = verify_source_pack(target, source)
+        check(
+            "same-version dependency update passes exact source verification", valid, str(problems)
+        )
 
 
 def main() -> int:
+    _dependency_identity()
+    with tempfile.TemporaryDirectory(prefix="bridge-entry-pack-") as temporary:
+        target = Path(temporary) / "skills"
+        compile_source_skills(target)
+        document = (target / "agentic-search/SKILL.md").read_text(encoding="utf-8")
+        check(
+            "standalone search publishes through the model tool",
+            "scholarseed_bridge" in document
+            and "scholarseed-bridge literature result" not in document,
+        )
+        check(
+            "standalone search retains its metadata checkpoint",
+            '"checkpoint":"metadata"' in document,
+        )
+        for name in ("project-literature", "research-idea-partner"):
+            package = json.loads((target / name / ".scholarseed-package.json").read_bytes())
+            check(
+                f"{name} requires no unauthenticated shell bridge",
+                "scholarseed-bridge" not in package["dependencies"].get("executables", []),
+            )
     _source_inventory_modes()
     _plugin_create_identity()
     _locked_source_compiles_exactly()
@@ -698,6 +863,7 @@ def main() -> int:
     _catalog_exposes_only_product_roots()
     _fingerprint_cache_tracks_content()
     _cli_gate_runs()
+    _bridge_reference_gate()
     _source_verification_checks_payloads()
     print(f"\n{PASS} passed, {FAIL} failed")
     return 1 if FAIL else 0

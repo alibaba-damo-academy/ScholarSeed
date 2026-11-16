@@ -22,6 +22,16 @@ export const DEFAULT_PROJECT_LAYOUT: ProjectLayout = {
 
 export type ProjectLayouts = Record<string, ProjectLayout>
 
+export function projectConversationMode(
+  layout: ProjectLayout,
+  overlaysAllowed = true
+): 'split' | 'floating' | 'tab' | 'hidden' | 'fullscreen' {
+  if (layout.conversationFull) return 'fullscreen'
+  if (!layout.full) return 'split'
+  if (layout.taskTab) return 'tab'
+  return overlaysAllowed ? 'floating' : 'hidden'
+}
+
 export function changeProjectLayout(
   layout: ProjectLayout,
   action:
@@ -34,9 +44,25 @@ export function changeProjectLayout(
     | 'toggleFloating'
     | 'minimizeConversation'
     | 'restoreConversation'
+    | 'revealConversation'
     | 'showTask'
+    | 'switchTask'
 ): ProjectLayout {
   switch (action) {
+    case 'switchTask':
+      if (!layout.full || layout.taskTab) return layout
+      return {
+        ...changeProjectLayout(layout, 'revealConversation'),
+        swapped: false,
+      }
+    case 'revealConversation':
+      return {
+        ...layout,
+        full: false,
+        taskTab: false,
+        conversationFull: false,
+        floating: layout.floating === 'minimized' ? layout.floatingRestore : layout.floating,
+      }
     case 'showTask':
       return {
         ...layout,

@@ -35,7 +35,6 @@ from service.platform.bridge import (
 )
 from service.platform.shutdown import ShutdownStage
 from service.platform.vocabulary import (
-    BRIDGE_MAX_REQUEST_BYTES,
     BRIDGE_MAX_RESPONSE_BYTES,
 )
 
@@ -228,10 +227,6 @@ def register_browser_history_routes(
             async with asyncio.timeout(BROWSER_HISTORY_BODY_TIMEOUT_SECONDS):
                 async for chunk in request.stream():
                     raw.extend(chunk)
-                    if len(raw) > BRIDGE_MAX_REQUEST_BYTES:
-                        return JSONResponse(
-                            {"ok": False, "error": "bridge_request_too_large"}, HTTP_400_BAD_REQUEST
-                        )
         except TimeoutError:
             return JSONResponse(
                 {"ok": False, "error": "bridge_request_timeout"}, HTTP_408_REQUEST_TIMEOUT

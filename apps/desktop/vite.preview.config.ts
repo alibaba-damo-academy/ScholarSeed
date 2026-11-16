@@ -2,7 +2,7 @@ import { resolve } from 'node:path'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { RENDERER_DEV_HOST } from './endpoints'
-import { RENDERER_OPTIMIZE_DEPS, supportedFontSources } from './renderer'
+import { RENDERER_OPTIMIZE_DEPS, RENDERER_SHARED_DEPENDENCIES, supportedFontSources } from './renderer'
 import { previewWorkbench } from './preview/plugin'
 import { PREVIEW_DEV_PORT, PREVIEW_CACHE_DIRECTORY } from './preview/constants'
 import { developmentLocalization } from './scripts/ci/localization/dom.mjs'
@@ -15,8 +15,13 @@ export default defineConfig(({ command }) => ({
   base: './',
   css: { postcss: styles('pdfe') },
   cacheDir: resolve(__dirname, PREVIEW_CACHE_DIRECTORY),
-  plugins: [react({ babel: developmentLocalization(command) }), supportedFontSources(), previewWorkbench()],
+  plugins: [
+    react({ babel: developmentLocalization(command) }),
+    supportedFontSources(),
+    previewWorkbench(),
+  ],
   optimizeDeps: RENDERER_OPTIMIZE_DEPS,
+  resolve: { dedupe: RENDERER_SHARED_DEPENDENCIES },
   define: { __SCHOLARSEED_WEB_VERSION__: JSON.stringify(PREVIEW_VERSION) },
   server: {
     host: RENDERER_DEV_HOST,
@@ -35,7 +40,7 @@ export default defineConfig(({ command }) => ({
     },
     fs: {
       strict: true,
-      allow: [resolve(__dirname)],
+      allow: [resolve(__dirname), resolve(__dirname, '../../packages/ui')],
       deny: ['**/.env', '**/.env.*', '**/*.{crt,pem,key}', '**/.git/**'],
     },
   },

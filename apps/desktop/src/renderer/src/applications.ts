@@ -5,11 +5,14 @@ export interface ApplicationCandidate {
 }
 
 export function uniqueApplications<T extends ApplicationCandidate>(applications: T[]): T[] {
-  const names = new Set<string>()
-  return applications.filter((application) => {
-    const name = application.name.trim().toLocaleLowerCase()
-    if (names.has(name)) return false
-    names.add(name)
-    return true
-  })
+  const paths = new Set<string>()
+  return applications
+    .slice()
+    .sort((left, right) => Number(right.isDefault) - Number(left.isDefault))
+    .filter((application) => {
+      if (!application.path) return true
+      if (paths.has(application.path)) return false
+      paths.add(application.path)
+      return true
+    })
 }

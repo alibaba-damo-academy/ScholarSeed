@@ -8,10 +8,18 @@ import json
 from pathlib import Path
 import shutil
 import tempfile
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'lib'))
+
+from task_contract import read_request
+from strategy import PROVIDED_ONLY
 
 
 def import_result(source: Path, workspace: Path) -> dict:
     source, workspace = source.resolve(), workspace.resolve()
+    if (workspace/'01_input/writing_request.json').exists() and read_request(workspace).get('sources',{}).get('policy')==PROVIDED_ONLY:
+        raise ValueError('provided_only forbids importing externally discovered papers')
     output = workspace / "02_retrieval"
     if source == output or output in source.parents or source in output.parents:
         raise ValueError("source must be separate from 02_retrieval")

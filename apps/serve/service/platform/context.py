@@ -57,6 +57,7 @@ class ContextRefKind(str, Enum):
     SESSION = "session"
     SELECTION = "selection"
     NOTE = "note"
+    PDF_COMMENT = "pdf_comment"
 
 
 class ContextLabelFallback(str, Enum):
@@ -93,6 +94,7 @@ class ContextItemRole(str, Enum):
     """解析项在模型上下文中的职责。"""
 
     MATERIAL = "material"
+    IMAGE = "image"
     SCOPE = "scope"
 
 
@@ -491,7 +493,6 @@ class AssistantTurnContextSource(Protocol):
         session_id: str,
         client_turn_id: str,
         snapshot_id: str,
-        question: str,
     ) -> AssistantTurnContextResult:
         """Replay a queued turn's immutable snapshot after selection revisions move."""
 

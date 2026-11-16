@@ -18,9 +18,11 @@ from docx.parts.hdrftr import FooterPart, HeaderPart
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
+from PIL import Image
 
 from apps.serve.tests import pdf as pdf_fixture
 from scholarseed_runtime.contract.history import HistoryEntry
+from scholarseed_runtime.contract.input import InputItem, InputKind, TurnInput
 from service.assistant.persistence.store import AssistantStore
 from service.assistant.service.context import AssistantService
 from service.chat.active import RUNTIME_ID
@@ -35,6 +37,7 @@ from service.chat.persistence.catalog import SessionCatalogStore, SessionPrincip
 from service.chat.persistence.events import ProductEventStore
 from service.chat.service.context import SessionContextProvider
 from service.chat.service.history import HistoryService
+from service.chat.service.turns import TurnAdmission, TurnService
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.context import ContentContextProvider
 from service.content.service.extract import decode_docx
@@ -125,6 +128,82 @@ class ContentExtractionContract(unittest.TestCase):
 
 
 class ContentContextProviderContract(unittest.TestCase):
+    def test_project_image_is_frozen_and_combined_with_local_image_input(self) -> None:
+        payload = BytesIO()
+        Image.new("RGB", (8, 8), "red").save(payload, format="WEBP")
+        original = Path(self.project.root) / "image.webp"
+        original.write_bytes(payload.getvalue())
+        selection = self.assistant.replace_selection(
+            session_id=SESSION_ID,
+            expected_revision=0,
+            project_policy=ProjectContextPolicy.EXPLICIT_ONLY,
+            search_scope=SearchScope.DISABLED,
+            refs=(self.ref(ContextRefKind.FILE, "image.webp"),),
+        )
+        result = self.assistant.freeze(
+            session_id=SESSION_ID,
+            client_turn_id="image-turn",
+            expected_revision=selection.revision,
+            question="Describe both images",
+        )
+        self.assertIsNone(result.failure)
+        assert result.context is not None
+        item = result.context.snapshot.items[0]
+        self.assertEqual(item.role.value, "image")
+        frozen = Path(item.model_locator)
+        self.assertNotEqual(frozen, original)
+        original.write_bytes(b"changed after admission")
+        self.assertEqual(frozen.read_bytes(), payload.getvalue())
+        restored = self.assistant.resume_queued(
+            session_id=SESSION_ID,
+            client_turn_id="image-turn",
+            snapshot_id=result.context.snapshot.snapshot_id,
+        )
+        self.assertIsNone(restored.failure)
+        assert restored.context is not None
+        self.assertEqual(restored.context.snapshot.items[0].model_locator, str(frozen))
+        local_image = Path(self.temporary.name) / "local.webp"
+        local_image.write_bytes(payload.getvalue())
+        admission = TurnAdmission(
+            turn_input=TurnInput((InputItem(InputKind.LOCAL_IMAGE, path=local_image),)),
+            display_text="Describe both images",
+            skill_versions={},
+            references=(),
+        )
+        projected = TurnService._with_context(admission, result.context)
+        images = [
+            entry for entry in projected.turn_input.items if entry.kind is InputKind.LOCAL_IMAGE
+        ]
+        self.assertEqual([entry.path for entry in images], [frozen, local_image])
+        self.assertNotIn(str(frozen), json.dumps(result.context.surface_refs))
+        self.assertNotIn(str(original), json.dumps(result.context.surface_refs))
+
+    def test_invalid_project_image_remains_unsupported(self) -> None:
+        (Path(self.project.root) / "invalid.webp").write_bytes(b"not an image")
+        result = self.resolve(self.provider, self.ref(ContextRefKind.FILE, "invalid.webp"))
+        self.assertEqual(result.state, ContextResolutionState.UNSUPPORTED)
+
+    def test_project_image_formats_use_verified_image_inputs(self) -> None:
+        for image_format, suffix in (("PNG", ".png"), ("JPEG", ".jpg"), ("GIF", ".gif")):
+            with self.subTest(image_format=image_format):
+                payload = BytesIO()
+                Image.new("RGB", (8, 8), "blue").save(payload, format=image_format)
+                path = "image" + suffix
+                (Path(self.project.root) / path).write_bytes(payload.getvalue())
+                result = self.resolve(self.provider, self.ref(ContextRefKind.FILE, path))
+                self.assertEqual(result.state, ContextResolutionState.READY)
+                self.assertEqual(result.items[0].role.value, "image")
+                self.assertEqual(
+                    Path(result.items[0].model_locator).read_bytes(), payload.getvalue()
+                )
+
+    def test_project_image_rejects_mismatched_format(self) -> None:
+        payload = BytesIO()
+        Image.new("RGB", (8, 8), "blue").save(payload, format="PNG")
+        (Path(self.project.root) / "mismatch.webp").write_bytes(payload.getvalue())
+        result = self.resolve(self.provider, self.ref(ContextRefKind.FILE, "mismatch.webp"))
+        self.assertEqual(result.state, ContextResolutionState.UNSUPPORTED)
+
     def test_csv_draft_action_retains_literal_values_and_validates_evidence(self) -> None:
         payload = b"id,value\r\n001,1e3\r\n"
         path = Path(self.project.root) / "draft.csv"
@@ -306,6 +385,7 @@ class ContentContextProviderContract(unittest.TestCase):
                 ContextRefKind.FILE: self.provider,
                 ContextRefKind.DIR: self.provider,
                 ContextRefKind.LITERATURE: self.literature_provider,
+                ContextRefKind.LITERATURE_COLLECTION: self.literature_provider,
                 ContextRefKind.SESSION: SessionContextProvider(
                     HistoryService(self.session_catalog, self.events),
                 ),
@@ -354,6 +434,47 @@ class ContentContextProviderContract(unittest.TestCase):
                 budget=AssistantContextBudget(max_chars=60_000, max_items=64),
             )
         )
+
+    def test_collection_context_is_a_project_scoped_locator_without_source_content(self) -> None:
+        collection = self.literature_repository.create_collection(
+            "Selected", project_id=self.project.id
+        )
+        ref = self.ref(ContextRefKind.LITERATURE_COLLECTION, collection["id"])
+        result = self.resolve(self.literature_provider, ref)
+        self.assertEqual(result.state, ContextResolutionState.READY)
+        self.assertEqual(result.items[0].model_locator, "literature_collection:" + collection["id"])
+        self.assertEqual(result.items[0].text, "")
+        foreign = self.literature_repository.create_collection("Foreign", project_id="other")
+        rejected = self.resolve(
+            self.literature_provider, self.ref(ContextRefKind.LITERATURE_COLLECTION, foreign["id"])
+        )
+        self.assertEqual(rejected.state, ContextResolutionState.MISSING)
+
+    def test_collection_scope_survives_queued_snapshot_persistence(self) -> None:
+        collection = self.literature_repository.create_collection(
+            "Selected", project_id=self.project.id
+        )
+        selection = self.assistant.replace_selection(
+            session_id=SESSION_ID,
+            expected_revision=0,
+            project_policy=ProjectContextPolicy.EXPLICIT_ONLY,
+            search_scope=SearchScope.DISABLED,
+            refs=(self.ref(ContextRefKind.LITERATURE_COLLECTION, collection["id"]),),
+        )
+        queued = self.assistant.freeze_queued(
+            session_id=SESSION_ID,
+            client_turn_id="collection-turn",
+            expected_revision=selection.revision,
+            question="Review this collection",
+        )
+        self.assertIsNone(queued.failure)
+        resumed = self.assistant.resume_queued(
+            session_id=SESSION_ID,
+            client_turn_id="collection-turn",
+            snapshot_id=queued.context.snapshot.snapshot_id,
+        )
+        self.assertIsNone(resumed.failure)
+        self.assertEqual(resumed.context.model_context, queued.context.model_context)
 
     def test_docx_reference_freezes_without_loading_missing_default_templates(self) -> None:
         document = Document()
@@ -929,7 +1050,6 @@ class ContentContextProviderContract(unittest.TestCase):
             session_id=SESSION_ID,
             client_turn_id="queued-focus-turn",
             snapshot_id=queued.context.snapshot.snapshot_id,
-            question="Read this file",
         )
         assert resumed.context is not None
         card = json.loads(resumed.context.model_context.splitlines()[1])
@@ -1018,7 +1138,6 @@ class ContentContextProviderContract(unittest.TestCase):
             session_id=SESSION_ID,
             client_turn_id="queued-active-literature-turn",
             snapshot_id=queued.context.snapshot.snapshot_id,
-            question="Summarize this paper",
         )
         self.assertIsNotNone(resumed.context)
 
@@ -1117,7 +1236,6 @@ class ContentContextProviderContract(unittest.TestCase):
             session_id=SESSION_ID,
             client_turn_id="queued-literatures",
             snapshot_id=queued.context.snapshot.snapshot_id,
-            question="Read these papers",
         )
         assert resumed.context is not None
         self.assertIn("literature:queued-first", resumed.context.model_context)

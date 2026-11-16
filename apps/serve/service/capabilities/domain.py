@@ -6,7 +6,6 @@ from service.platform.vocabulary import ARTIFACT_PATH_CHARS, BRIDGE_ROUTE_PREFIX
 
 SKILL_MANIFEST_NAME = "SKILL.md"
 PACKAGE_MANIFEST = ".scholarseed-package.json"
-COMPONENT_ANSWER_CAPABILITY = "interaction.answer"
 SKILL_CAPABILITY = "skill"
 SKILL_ADMISSION_OPERATION = "admit"
 SKILL_ADMISSION_ROUTE = BRIDGE_ROUTE_PREFIX + "skill/admit"

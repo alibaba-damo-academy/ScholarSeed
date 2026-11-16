@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import { writeRecord } from './journal.ts'
 
 import {
   drainInbox,
@@ -49,6 +50,7 @@ test('inbox preserves only validated native timing and never lets diagnostics bl
 
 function deps(logs: string[], home?: string, now?: number): HandoffInboxDependencies {
   return {
+    publish: writeRecord,
     home: () => home ?? mkdtempSync(join(tmpdir(), 'handoff-inbox-test-')),
     log: (line) => logs.push(line),
     now: now === undefined ? undefined : () => now,

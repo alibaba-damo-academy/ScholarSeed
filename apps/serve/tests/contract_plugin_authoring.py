@@ -6,6 +6,7 @@ import contextlib
 import hashlib
 import io
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -15,6 +16,7 @@ from pathlib import Path
 
 from service.capabilities.service.descriptor import PLUGIN_DESCRIPTOR, validate_component_submission
 from service.capabilities.service.package import PACKAGE_MANIFEST
+from service.capabilities.service.ui import UI_COMPATIBILITY
 from service.cli.plugins import main
 from service.platform.bridge import (
     BRIDGE_REQUESTS,
@@ -22,7 +24,6 @@ from service.platform.bridge import (
     CONTRACT_DESCRIBE_OPERATION,
     ComponentInvocation,
 )
-from service.platform.vocabulary import BRIDGE_MAX_REQUEST_BYTES
 
 
 class AuthoringContract(unittest.TestCase):
@@ -99,37 +100,47 @@ class AuthoringContract(unittest.TestCase):
             Path(__file__).resolve().parents[3]
             / "skills/community/plugin-create/scripts/scaffold.py"
         )
-        for kind, count in (("selection", 1), ("comparison", 2), ("stages", 2)):
-            with self.subTest(kind=kind):
-                source = self.root / kind
+        for kind, count, workbench in (
+            ("selection", 1, False),
+            ("comparison", 2, False),
+            ("stages", 2, False),
+            ("selection", 1, True),
+        ):
+            case = f"{kind}-workbench" if workbench else kind
+            with self.subTest(kind=kind, workbench=workbench):
+                source = self.root / case
                 command = [
                     sys.executable,
                     str(script),
                     kind,
                     str(source),
                     "--name",
-                    f"test-{kind}",
+                    f"test-{case}",
                     "--host",
                     ">=0.2.0,<0.4.0",
                 ]
+                if workbench:
+                    command.append("--workbench")
                 generated = subprocess.run(command, capture_output=True, text=True, check=True)
                 self.assertFalse(json.loads(generated.stdout)["ready_for_delivery"])
                 status, result = self.call(
                     "pack",
                     source,
                     "--name",
-                    f"test-{kind}",
+                    f"test-{case}",
                     "--version",
                     "0.1.0",
                     "--output",
-                    self.root / f"{kind}.zip",
+                    self.root / f"{case}.zip",
                 )
                 self.assertEqual(status, 0, result)
                 self.assertEqual(len(result["descriptor"]["components"]), count)
+                self.assertEqual(result["descriptor"]["ui"]["compatibility"], UI_COMPATIBILITY)
                 self.assertFalse(result["runtime_verified"])
                 for component in result["descriptor"]["components"]:
+                    self.assertEqual(component.get("workbench"), True if workbench else None)
                     request_path = source / "requests" / f"{component['id']}.json"
-                    request = json.loads(request_path.read_text())
+                    request = json.loads(request_path.read_text(encoding="utf-8"))
                     self.assertEqual(request["slot"], component["slot"])
                     self.assertEqual(
                         request["data"]["actions"],
@@ -141,7 +152,7 @@ class AuthoringContract(unittest.TestCase):
                     self.assertEqual(status, 0, validation)
                     self.assertIn(
                         f"requests/{component['id']}.json",
-                        (source / "SKILL.md").read_text(),
+                        (source / "SKILL.md").read_text(encoding="utf-8"),
                     )
                 before = (source / "SKILL.md").read_bytes()
                 duplicate = subprocess.run(command, capture_output=True)
@@ -167,7 +178,7 @@ class AuthoringContract(unittest.TestCase):
             result["component_invocation_schema"], ComponentInvocation.model_json_schema()
         )
         self.assertIn("title", result["component_invocation_schema"]["required"])
-        self.assertEqual(result["bridge_request_max_bytes"], BRIDGE_MAX_REQUEST_BYTES)
+        self.assertNotIn("bridge_request_max_bytes", result)
         self.assertFalse(result["grants_permissions"])
 
     def test_validate_request_preserves_input_and_reports_missing_material_id(self):
@@ -320,6 +331,45 @@ class AuthoringContract(unittest.TestCase):
         (self.source / "scope.json").write_text(json.dumps(scenario))
         status, result = self.pack(archive)
         self.assertEqual(status, 0, result)
+
+    @unittest.skipUnless(shutil.which("node"), "requires a JavaScript parser")
+    def test_entry_syntax_gate_checks_archive_as_classic_script_without_executing(self):
+        self.descriptor["components"] = [
+            {"id": "card", "entry": "card.js", "preview": "card.json", "actions": []}
+        ]
+        self.save_descriptor()
+        (self.source / "card.json").write_text('{"data": {}, "responses": {}}')
+        source = self.source / "card.js"
+        source.write_text("const okay = true;\nwindow.mount(1;\n")
+        archive = self.root / "sample.zip"
+        self.assertEqual(self.pack(archive)[0], 0)
+        status, report = self.call("check", archive, "--check-entries")
+        self.assertEqual(status, 1, report)
+        self.assertEqual(report["issues"][-1]["code"], "component_entry_syntax_invalid")
+        self.assertEqual(report["issues"][-1]["path"], "card.js")
+        self.assertEqual(report["issues"][-1]["detail"]["line"], 2)
+        self.assertIn("missing )", report["issues"][-1]["message"])
+
+        candidate = self.root / "candidate.zip"
+        args = (
+            "pack",
+            self.source,
+            "--name",
+            "sample-plugin",
+            "--version",
+            "0.1.0",
+            "--output",
+            candidate,
+            "--check-entries",
+        )
+        self.assertEqual(self.call(*args)[0], 1)
+        self.assertFalse(candidate.exists())
+        source.write_text("throw new Error('must not execute');")
+        status, report = self.call(*args)
+        self.assertEqual(status, 0, report)
+        self.assertEqual(report["entry_syntax"]["checked"], ["card.js"])
+        self.assertFalse(report["runtime_verified"])
+        self.assertTrue(candidate.is_file())
 
     def test_pack_and_check_share_the_same_descriptor(self):
         archive = self.root / "sample.zip"

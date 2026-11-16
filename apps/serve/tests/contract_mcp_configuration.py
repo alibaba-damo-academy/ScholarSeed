@@ -18,7 +18,7 @@ from scholarseed_runtime.contract.mcp import (
     McpHttpTransport,
     McpStdioTransport,
 )
-from service.platform.mcp import McpHttpServer, McpStdioServer
+from service.platform.mcp import McpHttpServer, McpSseServer, McpStdioServer
 from service.platform.storage import canonical_root, open_private_directory
 from service.settings.mcp import (
     MCP_CONFIG_LOCK_FILENAME,
@@ -37,6 +37,29 @@ SECRET_REFERENCE = "credential-reference"
 
 
 class ConfigurationSchemaTests(unittest.TestCase):
+    def test_remote_server_rejects_zero_port(self):
+        for serverClass in (McpHttpServer, McpSseServer):
+            with self.subTest(server=serverClass.__name__):
+                with self.assertRaises(ValidationError):
+                    serverClass(id=SERVER_NAME, url="https://example.invalid:0/mcp")
+                serverClass(id=SERVER_NAME, url=SERVER_URL)
+                serverClass(id=SERVER_NAME, url="https://example.invalid:65535/mcp")
+
+    def test_remote_transports_keep_distinct_literal_and_header_validation(self):
+        for serverClass, transport, otherTransport in (
+            (McpHttpServer, "http", "sse"),
+            (McpSseServer, "sse", "http"),
+        ):
+            with self.subTest(transport=transport):
+                server = serverClass(id=SERVER_NAME, url=SERVER_URL)
+                self.assertEqual(server.transport, transport)
+                with self.assertRaises(ValidationError):
+                    serverClass(id=SERVER_NAME, url=SERVER_URL, transport=otherTransport)
+                with self.assertRaises(ValidationError):
+                    serverClass(
+                        id=SERVER_NAME, url=SERVER_URL, headers={"X-Test": "injected\r\nvalue"}
+                    )
+
     def test_startup_timeout_survives_storage_and_runtime_projection(self):
         server = McpHttpServer(id="example", url=SERVER_URL, startup_timeout=1250, timeout=9000)
         document = McpConfigurationStore.decode(

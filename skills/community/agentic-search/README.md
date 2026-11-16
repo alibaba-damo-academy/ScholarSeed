@@ -1,229 +1,184 @@
-# Agentic Search：分档学术论文检索
+# Agentic Search: tiered academic paper discovery
 
-这是一个面向 Codex 的学术论文检索 Skill。用户可以直接输入自然语言研究问题，
-包括没有写出论文名、方法名或数据集名的含蓄问题；Skill 会识别隐藏实体、检索候选
-论文、沿参考文献补充相关工作，并返回按相关性分层的 `metadata.json`。
+**English** · [简体中文](README_zh.md)
 
-它适合这些场景：
+A Codex Skill for natural-language academic paper discovery, including implicit queries that do not name a paper, method or dataset. It resolves hidden entities, retrieves candidates, follows references and returns relevance-tiered `metadata.json`.
 
-- 从一段研究设想或争议中寻找最相关论文；
-- 根据零散线索定位方法、项目、数据集、标准或奠基论文；
-- 为调研、related work 或系统综述建立候选论文池；
-- 在响应速度和检索质量之间选择合适档位。
+Use it to find papers for a research idea or debate, identify methods/projects/datasets/standards from incomplete clues, or build a candidate pool for related work and reviews. Its default deliverable is paper metadata, not a long research report.
 
-默认只返回论文元数据，不生成长篇研究报告。
+## Search modes
 
-## 三个检索档位
+| Mode | Use case | Time target | Default paper count | Provided Codex profile |
+|---|---|---|---|---|
+| Quick | Search bars and previews | Under one minute | Up to 20 | Luna / low |
+| Balanced | Interactive discovery | 5–6 minutes | 38–40 | Sol / high |
+| Quality | High recall and implicit questions | No hard limit; recorded benchmark about 8–9 minutes | 38–40 | Sol / xhigh / fast |
 
-| 档位 | 适合场景 | 时间目标 | 默认论文数 | 推荐 Codex 配置 |
-|---|---|---:|---:|---|
-| **Quick** | 搜索栏、快速预览 | 1 分钟内 | 最多 20 篇 | Luna / low |
-| **Balanced** | 日常交互式论文检索 | 5–6 分钟 | 38–40 篇 | Sol / high |
-| **Quality** | 高召回调研、复杂或含蓄问题 | 不设硬时限；当前基准约 8–9 分钟 | 38–40 篇 | Sol / xhigh / fast |
+**Quality is the default.** Without an explicit mode or time budget, the Skill uses the C1 quality-first workflow. Quick and Balanced require an explicit mode or corresponding budget. Recorded timings are observations, not service guarantees.
 
-**默认档位是 Quality。** 用户没有指定档位或时间预算时，会执行当前质量最好的 C1
-工作流。Quick 和 Balanced 只在用户明确指定，或给出相应时间预算时启用。
+These are different execution graphs, not time-truncated copies:
 
-三个档位不是把同一流程简单截断：
+- **Quick:** one entity-resolution batch, one bounded PaperHub graph and deterministic selection.
+- **Balanced:** one focused retrieval round, model-selected citation anchors and set-level selection.
+- **Quality:** repeated entity/relation gap recovery, citation-anchor selection per round and a final provenance audit.
 
-- **Quick**：一次实体解析、一次有界 PaperHub 检索图和确定性选稿；
-- **Balanced**：一轮集中检索、模型选择引用锚点和集合级选稿；
-- **Quality**：按实体–关系缺口进行多轮检索，每轮选择引用锚点，最后执行
-  provenance audit。当前 Quality 使用完整 C1 策略。
+## Getting started
 
-## 快速开始
+Use an installed, authenticated Codex CLI launched from ScholarSeed Desktop or `scholarseed-serve`. A PaperHub API key is an optional enhancement, not a prerequisite. Install the independent `web-search` Skill as well.
 
-前提：已安装并登录 Codex CLI，并从 ScholarSeed Desktop 或 `scholarseed-serve` 启动。PaperHub API key 是登录用户的
-增强能力，不是运行前提。
+### Optional manual Codex installation
 
-### 1. 安装
-
-在本仓库根目录执行：
+The product supplies its bundled Skills. For a separately authorized manual Codex installation, run these commands **from this Skill's directory**, where `tools/` and `config/` are located:
 
 ```bash
 scholarseed-skill-python tools/install_codex.py --scope user --with-network-profile
 ```
 
-这个命令不会安装 Codex。它会安装：
+This does not install Codex. It installs:
 
-- 用户级 Skill：`~/.agents/skills/agentic-search`；
-- 四个 Codex profile：默认 Quality 别名，以及 Quick、Balanced、Quality；
-- PaperHub 用户配置：`~/.config/agentic-search/search_config.json`。
+- `~/.agents/skills/agentic-search`;
+- a default Quality alias plus Quick, Balanced and Quality profiles;
+- `~/.config/agentic-search/search_config.json`.
 
-默认使用符号链接，因此需要保留本仓库目录；如果需要独立副本，加 `--mode copy`。
-新增 Skill 没有出现在 Codex 中时，请重启 Codex。
+The default is a symlink, so retain the source directory. Use `--mode copy` for an independent copy. Restart Codex if a newly installed Skill is not discovered. The installer does not overwrite existing installations or machine configuration.
 
-### 2. 可选：启用 PaperHub 增强能力
+### Optional PaperHub enhancement
+
+Set the key before starting Codex:
 
 ```bash
-export SCHOLARSEED_API_KEY="你的 PaperHub API key"
+export SCHOLARSEED_API_KEY="<your-paperhub-api-key>"
 ```
 
-必须在启动 Codex 前设置。key 只从环境变量读取，不应写入仓库、配置文件或共享日志。
-没有 key 时无需额外配置，Skill 会通过另行安装的 `$web-search` skill 返回明确标记的降级结果，也
-不会要求用户提供 token。
+Credentials are read from the environment only. Never put real keys in source, configuration or shared logs. Without a key, the Skill uses the separately installed `$web-search` Skill and explicitly labels degraded results; it does not ask the user for a token.
 
-### 3. 选择档位并调用
+### Choose a mode
 
-#### Quality：默认档位
+Quality, the default:
 
 ```bash
 codex --profile agentic-search-quality
 ```
 
-进入 Codex 后直接调用，无需再写档位：
-
 ```text
-$agentic-search 检索“检索增强生成中的引用可靠性评估”相关论文
+$agentic-search Find papers on evaluating citation reliability in retrieval-augmented generation.
 ```
 
-`codex --profile agentic-search` 是同一 Quality 配置的短别名。显式写“Quality”也可以：
+`codex --profile agentic-search` is an alias for the same Quality configuration. You can explicitly request Quality in the task.
 
-```text
-$agentic-search 用 Quality 模式完整检索“检索增强生成中的引用可靠性评估”
-```
-
-#### Balanced：5–6 分钟档
+Balanced:
 
 ```bash
 codex --profile agentic-search-balanced
 ```
 
 ```text
-$agentic-search 用 Balanced 模式检索“检索增强生成中的引用可靠性评估”
+$agentic-search Use Balanced mode to find papers on evaluating citation reliability in retrieval-augmented generation.
 ```
 
-#### Quick：1 分钟档
+Quick:
 
 ```bash
 codex --profile agentic-search-quick
 ```
 
 ```text
-$agentic-search 用 Quick 模式检索“检索增强生成中的引用可靠性评估”
+$agentic-search Use Quick mode to find papers on evaluating citation reliability in retrieval-augmented generation.
 ```
 
-profile 选择适合该档位的模型、reasoning effort 和联网权限；用户 prompt 决定实际
-检索算法。为了获得已经验证过的质量和延迟，建议二者保持一致。例如使用 Quick
-profile 时，也在请求中明确写 Quick。
+Profiles select the session's model, reasoning effort and networking. The request selects the search algorithm. Keep them aligned when comparing the recorded quality and latency.
 
-也可以只指定端到端时间预算：
+You can specify only a budget:
 
 ```text
-$agentic-search 在大约 6 分钟内完成“检索增强生成中的引用可靠性评估”的论文检索
+$agentic-search Find papers on evaluating citation reliability in retrieval-augmented generation in about six minutes.
 ```
 
-当前映射规则：
+Budget mapping:
 
-- `time_budget_minutes <= 2`：Quick；
-- `2 < time_budget_minutes <= 6`：Balanced；
-- `time_budget_minutes > 6`：带 deadline 的 Quality；
-- 未指定：无时限 Quality/C1。
+- `time_budget_minutes <= 2`: Quick.
+- `2 < time_budget_minutes <= 6`: Balanced.
+- `time_budget_minutes > 6`: Quality with a deadline.
+- No budget: unrestricted Quality/C1.
 
-deadline 可以阻止新的检索批次，但不能中断正在生成的一次模型响应，因此这些时间是
-软目标，不是硬 SLA。
+A deadline prevents new retrieval batches but cannot interrupt an in-progress model response. These are soft targets, not hard SLAs.
 
-## 默认检索源
+## Search sources and networking
 
-默认策略是 **有凭据时 PaperHub 直连优先 + `$web-search` skill + 不使用 Brave**：
+The default policy is **PaperHub when credentials are available + `$web-search`, with Brave off**.
 
-1. **PaperHub** 是可选的结构化增强源，用于关键词、题名、论文详情和参考文献查询；
-2. **`$web-search` skill** 统一承接公网检索，宿主依次尝试 `official-api`、`codex-native`；
-   两者统一返回 `scholarseed.web_search.v1` 候选核心，agentic-search 不直接绕过该 skill
-   调用原生 Web Search，也不使用 automatic/browser profile；
-3. **Brave 默认关闭**。即使环境中存在 `BRAVE_API_KEY`，也不会自动使用。
+1. PaperHub optionally supplies structured keyword, title, detail and reference queries.
+2. All public-web retrieval goes through `$web-search`, trying `official-api` then `codex-native`. Both provide the `scholarseed.web_search.v1` candidate core. Do not bypass that Skill with direct native Web Search or use automatic/browser profiles.
+3. Brave stays off even when `BRAVE_API_KEY` exists.
 
-凭据缺失、被拒绝，或 PaperHub 在有界重试后整体不可达时，Skill 会停止 PaperHub
-请求，复用/补充公网论文候选并写入 `source_mode: "web_only"`、`degraded: true` 和覆盖
-限制；不会把普通网页伪装成论文，也不会为了凑数写入噪声。如果 `$web-search` 也
-不可用，则明确失败。
+Missing/rejected credentials or an overall PaperHub outage after bounded retries stops PaperHub requests. The Skill reuses or supplements verifiable web paper candidates and records `source_mode: "web_only"`, `degraded: true` and coverage limitations. It does not disguise ordinary webpages as papers or add noise to reach a quota. If `$web-search` is also unavailable, it fails explicitly.
 
-降级数量契约、故障记录和旧版行为对比见
-[PaperHub 降级策略](docs/PAPERHUB_FALLBACK.md)。
+See [PaperHub fallback policy](docs/PAPERHUB_FALLBACK.md) for counts, failure records and unsupported fallback conditions.
 
-PaperHub 默认配置为 `auto`，并继承当前网络代理；传输异常时还会尝试清理代理环境后的
-直连。若宿主通过受限网络代理执行域名授权，旧用户配置中的 PaperHub `NO_PROXY`
-绕行可能导致请求失败，需移除该配置。需要直连或 SSH 隧道的机器，可以修改用户配置，
-详见 [SETUP.md](SETUP.md)。
+PaperHub defaults to `auto`, inherits proxy settings and may retry a clean direct connection after transport failure. A legacy PaperHub `NO_PROXY` bypass can conflict with host-controlled network restrictions; remove it where required. Direct and SSH-tunnel configurations are described in [SETUP.md](SETUP.md). A successful connection does not prove host network policy enforcement.
 
-只有用户明确允许，或 PaperHub/`$web-search` 不可用且用户接受备用路径时，才会
-使用 Brave。例如：
+Use Brave only with explicit permission, or when primary sources are unavailable and the user accepts the fallback:
 
 ```text
-$agentic-search 用 Quality 模式检索……；如果主要检索源覆盖不足，允许使用 Brave 补充
+$agentic-search Use Quality mode for this topic. If the primary sources have insufficient coverage, you may supplement with Brave.
 ```
 
-`$web-search` 的 `codex-native` provider 使用 Codex 托管 Web Search；`official-api`、
-PaperHub 和 Brave 由本地 Python 进程发出 HTTP 请求。后者需要 sandbox 允许命令联网，
-也需要机器具备可用网络路径。`web-search` 必须作为独立 skill 安装并可被运行时发现。
+The `codex-native` provider is a hosted Codex tool. `official-api`, PaperHub and Brave make HTTP requests from local Python processes and need both command-network permission and a working machine network route. The independent `web-search` Skill must be installed and discoverable.
 
-## 输出内容
+## Output
 
-结果默认写入当前工作区：
+Standalone searches write to the current session's selected output directory. Searches supporting another task write under its `work/` directory. Resumed runs keep their existing path.
 
 ```text
-agentic-search-results/<topic>/metadata.json
+SESSION_DIR/agentic-search-results/metadata.json
 ```
 
-论文按用途分为：
+- **Tier 1:** papers most directly answering the question.
+- **Tier 2:** clearly relevant methods, evidence and important extensions.
+- **Tier 3:** related entities, citation chains and secondary subtopics for recall.
 
-- **Tier 1**：最直接回答问题的核心论文；
-- **Tier 2**：明确相关的方法、证据和重要扩展；
-- **Tier 3**：用于提高召回的相关实体、引用链和次级子主题论文。
+Records may include title, authors, year, venue/journal, pages, volume, abstract, DOI, arXiv ID, citation count, URL, source, tier and selection rationale. See the [output schema](references/output-schema.md).
 
-每篇论文可包含题名、作者、年份、venue、期刊名、页码、volume、摘要、DOI、arXiv ID、
-引用数、URL、命中来源、所属 tier 和入选理由等字段。完整 schema 见
-[references/output-schema.md](references/output-schema.md)。
+## Models and configuration
 
-## 模型和配置可以更换吗？
-
-可以。推荐 profile 是经过评测的默认组合，不是硬编码依赖。若账号没有对应模型或
-fast service tier，可以在启动时覆盖：
+The provided profiles are recorded configurations, not hard dependencies. If your account lacks a configured model or fast service tier, override them:
 
 ```bash
 codex --profile agentic-search-quality \
-  -m <账号可用的模型> \
+  -m <available-model> \
   -c model_reasoning_effort='"high"' \
   -c service_tier='"default"'
 ```
 
-命令行参数优先于项目配置和 profile。更换模型或 effort 后仍会运行相同检索图，但
-延迟、token 和质量可能变化，应作为新的运行配置验证。配置优先级、全局设置、代理、
-SSH 隧道、Codex Cloud 和缓存说明见 [SETUP.md](SETUP.md)。Codex 官方的 Skill 与
-profile 机制可参考 [Build skills](https://learn.chatgpt.com/docs/build-skills) 和
-[Advanced configuration](https://learn.chatgpt.com/docs/config-file/config-advanced)。
+CLI options take precedence over project/profile settings. A different model or effort keeps the search graph but may change latency, tokens and quality; validate the actual combination separately. [SETUP.md](SETUP.md) covers configuration precedence, proxies, tunnels, cloud environments and caches.
 
-## 诊断
+## Diagnostics
 
 ```bash
-# 只检查配置和环境，不发网络请求
+# Inspect local configuration/environment without network requests.
 scholarseed-skill-python tools/doctor.py
 
-# 发出一个最小 PaperHub 请求
+# Send a minimal PaperHub request.
 scholarseed-skill-python tools/doctor.py --live
 ```
 
-常见状态：
+- `api_key_present: false`: Web-only fallback, not an installation error.
+- `PAPERHUB_AUTH_MISSING`: no key.
+- `PAPERHUB_HTTP_401`: rejected key.
+- `PAPERHUB_TRANSPORT_ERROR`: network, proxy or tunnel failure.
 
-- `api_key_present: false`：当前会使用 Web-only 降级，不是安装错误；
-- `PAPERHUB_AUTH_MISSING`：缺少 key；
-- `PAPERHUB_HTTP_401`：key 无效；
-- `PAPERHUB_TRANSPORT_ERROR`：网络、代理或隧道问题。
+## Other manual installation options
 
-## 其他安装方式
-
-如果 Codex 全局配置已经启用 live web search、已安装 `web-search` skill，并允许 `workspace-write` 中的命令
-联网，可以只安装 Skill：
+If live web search, command networking in `workspace-write` and `web-search` are already configured, install only this Skill:
 
 ```bash
 scholarseed-skill-python tools/install_codex.py --scope user
 ```
 
-让某个项目的协作者都能发现它：
+For a project:
 
 ```bash
 scholarseed-skill-python tools/install_codex.py --scope repo --repo /path/to/target-repo
 ```
 
-仓库级安装不会修改用户 profile 或 PaperHub 配置。更详细的三档设计和评测边界见
-[docs/TIERED_SEARCH.md](docs/TIERED_SEARCH.md)。
+Project installation does not modify user profiles or PaperHub configuration. See [tiered search design](docs/TIERED_SEARCH.md) for the recorded benchmark scope and limitations.

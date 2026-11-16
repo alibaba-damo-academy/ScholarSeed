@@ -3,12 +3,17 @@ import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
-import { expect } from '@playwright/test'
+import { chromium, expect, type Page } from '@playwright/test'
 import { renderFixture } from '../../../test-helpers/render.ts'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const BOOTSTRAP_EXIT_TIMEOUT_MS = 30_000
 const BOOTSTRAP_FAILURE = 'injected-browser-startup-failure'
+
+async function openApproval(page: Page, url: string): Promise<void> {
+  await page.goto(url)
+  await page.evaluate('window.approvalReady')
+}
 
 test('browser approval bootstrap failure exits without retaining its Vite listener', () => {
   const hook =
@@ -37,30 +42,178 @@ test('browser approval bootstrap failure exits without retaining its Vite listen
 })
 
 test(
-  'approval decisions remain visible while narrow-panel details scroll independently',
+  'browser approval shows the reference details and decisions and hides the plan',
   { timeout: 60_000 },
   async () => {
     const { browser, url, close } = await renderFixture(ROOT)
     try {
       const page = await browser.newPage({ viewport: { width: 340, height: 500 } })
-      await page.goto(new URL('/components/browser-approval.render.fixture.html', url).href)
+      await openApproval(
+        page,
+        new URL('/components/browser-approval.render.fixture.html', url).href
+      )
       await page.getByRole('button', { name: 'Open approval', exact: true }).click()
       const allow = page.getByTestId('hil-browser-allow-once')
       const deny = page.getByTestId('hil-browser-deny')
       await expect(allow).toBeInViewport({ ratio: 1 })
       await expect(deny).toBeInViewport({ ratio: 1 })
-      const details = page.getByTestId('hil-card').locator('dl')
-      await expect
-        .poll(() => details.evaluate((element) => element.scrollHeight > element.clientHeight))
-        .toBe(true)
-      await details.evaluate((element) => {
-        element.scrollTop = element.scrollHeight
-      })
-      await expect(allow).toBeInViewport({ ratio: 1 })
-      await expect(deny).toBeInViewport({ ratio: 1 })
+      await expect(page.getByTestId('hil-card')).toContainText('https://example.org/')
+      await expect(page.getByTestId('hil-card').locator('dl')).toHaveCount(1)
+      await expect(page.getByTestId('hil-card')).toContainText('请求浏览器访问')
+      await expect(page.getByTestId('hil-card')).toContainText('有效期至')
+      await expect(page.getByTestId('hil-card')).toContainText('授权范围')
+      await expect(allow).toHaveText('允许本次访问')
+      await expect(page.getByTestId('todo-panel')).toBeHidden()
+      await deny.click()
+      await expect(page.getByTestId('todo-panel')).toBeVisible()
     } finally {
       await close()
     }
+  }
+)
+
+test(
+  'browser approval history is collapsed by default and expands to disabled decisions',
+  { timeout: 60_000 },
+  async () => {
+    const { browser, url, close } = await renderFixture(ROOT)
+    try {
+      const page = await browser.newPage()
+      await openApproval(
+        page,
+        new URL('/components/browser-approval.render.fixture.html?history', url).href
+      )
+      for (const decision of ['hil-browser-allow-once', 'hil-browser-deny']) {
+        await page.getByRole('button', { name: 'Open approval', exact: true }).click()
+        const history = page
+          .getByTestId('hil-card')
+          .filter({ hasNot: page.locator('[role="alertdialog"]') })
+          .first()
+        await history.getByTestId(decision).click()
+        await expect(history).toHaveAttribute('data-hil-resolved', 'true')
+        const toggle = history.getByTestId('turn-activity-trigger')
+        await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+        await expect(history.getByTestId('hil-browser-allow-once')).toBeHidden()
+        await toggle.click()
+        await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+        await expect(history.getByTestId('hil-browser-allow-once')).toBeDisabled()
+        await expect(history.getByTestId('hil-browser-deny')).toBeDisabled()
+        await expect(
+          history
+            .locator('dl > div')
+            .filter({ has: page.getByText('授权范围', { exact: true }) })
+            .locator('dd')
+        ).toHaveText(decision === 'hil-browser-deny' ? '已拒绝' : '仅本次')
+        await expect(history.locator('dt')).toHaveText(['网址', '有效期至', '授权范围', '操作'])
+        await expect(history).not.toContainText('网页标签标识')
+        await expect(history).not.toContainText('会话与任务轮次')
+      }
+    } finally {
+      await close()
+    }
+  }
+)
+
+test(
+  'expired browser approval scope shows a warning instead of a grant',
+  { timeout: 60_000 },
+  async () => {
+    const { browser, url, close } = await renderFixture(ROOT)
+    try {
+      const page = await browser.newPage()
+      await openApproval(
+        page,
+        new URL('/components/browser-approval.render.fixture.html?history&expired', url).href
+      )
+      await page.getByRole('button', { name: 'Open approval', exact: true }).click()
+      const card = page.getByTestId('hil-card').first()
+      await card.getByTestId('turn-activity-trigger').click()
+      const scope = card
+        .locator('dl > div')
+        .filter({ has: page.getByText('授权范围', { exact: true }) })
+        .locator('dd')
+      await expect(scope).toHaveText('已过期')
+      await expect(scope.getByText('已过期', { exact: true })).toHaveClass(
+        /text-\[var\(--vds-warning-text-primary\)\]/
+      )
+      await expect(card.getByTestId('hil-browser-allow-once')).toBeDisabled()
+      await expect(card.getByTestId('hil-browser-deny')).toBeDisabled()
+    } finally {
+      await close()
+    }
+  }
+)
+
+test(
+  'literature authorization keeps the regular composer visible and preserves its draft',
+  { timeout: 60_000 },
+  async (context) => {
+    const fixture = await renderFixture(ROOT, {
+      launch: () => chromium.launch({ headless: true, channel: process.env.PLAYWRIGHT_CHANNEL }),
+    })
+    context.after(() => fixture.close())
+    const page = await fixture.page(context)
+    await page.goto(
+      new URL('/components/browser-approval.render.fixture.html?composer', fixture.url).href
+    )
+    const plan = page.getByTestId('todo-panel')
+    await expect(plan).toBeVisible()
+    await expect(plan.getByText('执行计划', { exact: true })).toHaveCSS('font-weight', '400')
+
+    const input = page.getByTestId('composer-input')
+    const composer = page.getByTestId('composer-drop-zone')
+    const stop = composer.getByTestId('composer-stop')
+    const draft = '第一行草稿\n第二行草稿'
+    await page.getByRole('button', { name: 'Clear literature approval' }).click()
+    await input.fill(draft)
+    await expect(input).toHaveCSS('height', '44px')
+    await expect(stop).toBeVisible()
+    await page.getByRole('button', { name: 'Open literature approval' }).click()
+    const dock = page.getByTestId('hil-dock')
+    await expect(dock).toHaveAttribute('data-hil-attached', 'true')
+    const card = dock.getByTestId('hil-card').locator(':scope > div').first()
+    await expect(card).toBeVisible()
+    await expect(card.getByText('请求授权文献', { exact: true })).toHaveCSS('font-weight', '500')
+    await expect(card.getByText(/^是否允许下载、读取并使用以下文献/)).toHaveCSS(
+      'font-weight',
+      '400'
+    )
+    await expect(plan).toBeHidden()
+    await expect(composer).toBeVisible()
+    await expect(input).toHaveValue(draft)
+
+    await page.getByRole('button', { name: 'Clear literature approval' }).click()
+    await expect(dock).toHaveCount(0)
+    await expect(plan).toBeVisible()
+    await expect(stop).toBeVisible()
+    await expect(input).toHaveCSS('height', '44px')
+    await expect(input).toHaveValue(draft)
+  }
+)
+
+test(
+  'literature authorization hides the floating composer until confirmation clears',
+  { timeout: 60_000 },
+  async (context) => {
+    const fixture = await renderFixture(ROOT)
+    context.after(() => fixture.close())
+    const page = await fixture.page(context)
+    await page.goto(
+      new URL('/components/browser-approval.render.fixture.html?composer=floating', fixture.url)
+        .href
+    )
+    const input = page.getByTestId('composer-input')
+    const draft = '悬浮输入框草稿'
+    await page.getByRole('button', { name: 'Clear literature approval' }).click()
+    await input.fill(draft)
+    await page.getByRole('button', { name: 'Open literature approval' }).click()
+    await expect(page.getByTestId('hil-dock')).toBeVisible()
+    await expect(input).toBeHidden()
+
+    await page.getByRole('button', { name: 'Clear literature approval' }).click()
+    await expect(page.getByTestId('hil-dock')).toHaveCount(0)
+    await expect(input).toBeVisible()
+    await expect(input).toHaveValue(draft)
   }
 )
 
@@ -71,7 +224,8 @@ test(
     const { browser, url, close } = await renderFixture(ROOT)
     try {
       const page = await browser.newPage()
-      await page.goto(
+      await openApproval(
+        page,
         new URL('/components/browser-approval.render.fixture.html?browser=off', url).href
       )
       for (const name of ['Open approval', 'Open history approval']) {
@@ -121,15 +275,17 @@ test(
             }
           ).approvalRequests.map((request) => request.decision)
         )
-      await page.goto(new URL('/components/browser-approval.render.fixture.html', url).href)
+      await openApproval(
+        page,
+        new URL('/components/browser-approval.render.fixture.html', url).href
+      )
       const trigger = page.getByRole('button', { name: 'Open approval' })
       await trigger.waitFor({ state: 'visible' })
       page.setDefaultTimeout(5000)
       await trigger.click()
-      const dialog = page.getByRole('alertdialog', { name: '浏览器访问请求' })
+      const dialog = page.getByRole('alertdialog', { name: '请求浏览器访问' })
       await dialog.waitFor()
-      assert.match(await dialog.innerText(), /屏幕阅读器可访问但肉眼不可见的文字/)
-      assert.match(await dialog.innerText(), /网页内容不可信/)
+      assert.match(await dialog.innerText(), /https:\/\/example.org\//)
       assert.equal(await dialog.evaluate((element) => document.activeElement === element), true)
       for (const modifier of ['Control', 'Meta', 'Alt', 'Shift']) {
         await dialog.press(`${modifier}+Enter`)
@@ -137,7 +293,7 @@ test(
         await dialog.press(`${modifier}+Escape`)
         assert.equal(await dialog.count(), 1, `${modifier}+Escape must not resolve approval`)
       }
-      const allowButton = page.getByRole('button', { name: '仅允许本次' })
+      const allowButton = page.getByRole('button', { name: '允许本次访问' })
       await allowButton.waitFor({ state: 'visible' })
       assert.equal(await allowButton.isEnabled(), true)
       for (const button of [allowButton, page.getByRole('button', { name: '拒绝' })]) {
@@ -162,8 +318,8 @@ test(
       await trigger.click()
       await dialog.waitFor()
       assert.equal(await dialog.evaluate((element) => document.activeElement === element), true)
-      await page.getByRole('button', { name: '仅允许本次' }).waitFor({ state: 'visible' })
-      assert.equal(await page.getByRole('button', { name: '仅允许本次' }).isEnabled(), true)
+      await page.getByRole('button', { name: '允许本次访问' }).waitFor({ state: 'visible' })
+      assert.equal(await page.getByRole('button', { name: '允许本次访问' }).isEnabled(), true)
       await dialog.press('Enter')
       await page.getByRole('alertdialog').waitFor({ state: 'detached' })
       assert.equal(await trigger.evaluate((element) => document.activeElement === element), true)
@@ -217,7 +373,10 @@ test(
       const page = await browser.newPage()
       const errors: string[] = []
       page.on('pageerror', (error) => errors.push(error.message))
-      await page.goto(new URL('/components/browser-approval.render.fixture.html', url).href)
+      await openApproval(
+        page,
+        new URL('/components/browser-approval.render.fixture.html', url).href
+      )
       const trigger = page.getByRole('button', { name: 'Open history approval' })
       await trigger.click()
       const dialog = page.getByRole('alertdialog', { name: '浏览历史访问请求' })

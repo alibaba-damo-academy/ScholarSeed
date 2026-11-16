@@ -1,6 +1,7 @@
 // Hierarchical data-domain coordination. This is an advisory kernel protocol,
 // not generation compatibility, namespace migration or activation authority.
 const path = require('node:path')
+const { bindRegistry } = require('./registry.cjs')
 const barriers = require('./barriers.cjs')
 const MODES = Object.freeze({
   intent: { a: false },
@@ -164,9 +165,14 @@ function beginDomains(native, coordinatorPath, roots, maintenance = false, roles
   let admission = []
   let occupancy = []
   let state = 'guarded'
+  // Set only by verifyReadBarriers() for the current occupancy. A maintainer can
+  // register a durable intent only after exclusive occupancy, which the shared
+  // slots exclude, so one check per continuous occupancy is sufficient.
+  let barrierVerified = false
   try {
     const coordinator = native.pin(coordinatorPath, false)
     coordination.push(coordinator)
+    native = bindRegistry(native, coordinatorPath, coordinator)
     const coordinatorBinding = binding(native, coordinator, coordinatorPath)
     const bindings = [coordinatorBinding]
     const coordinatorLineage = [coordinatorBinding.identity, ...coordinatorBinding.ancestors]
@@ -217,10 +223,12 @@ function beginDomains(native, coordinatorPath, roots, maintenance = false, roles
           throw releaseError
         }
         state = 'guarded'
+        barrierVerified = false
       } else {
         state = ['ERR_LEASE_RELEASE', 'ERR_DOMAIN_RELEASE'].includes(error.code)
           ? 'uncertain'
           : 'failed'
+        barrierVerified = false
       }
       throw error
     }
@@ -228,6 +236,7 @@ function beginDomains(native, coordinatorPath, roots, maintenance = false, roles
       if (state !== 'guarded') throw new Error('domain occupancy requires guarded admission')
       occupancy = acquire(native, coordinator, plan, 'occupancy')
       revalidate(native, bindings)
+      barrierVerified = false
       state = 'authorizing'
     }
     const finishOccupancy = (owned = {}) => {
@@ -292,12 +301,74 @@ function beginDomains(native, coordinatorPath, roots, maintenance = false, roles
           failedOccupancy(error)
         }
       },
+      clearCache(root, aliases = []) {
+        if (!maintenance || state !== 'occupied' || !readers.has(root) || roles[root] === 'project')
+          throw new Error('cache clearing requires exclusive private directory maintenance')
+        try {
+          revalidate(native, bindings)
+          barriers.check(native, coordinator, coordinatorBinding, bindings.slice(1))
+          revalidate(native, bindings)
+          const pin = readers.get(root)
+          for (const [staged, name] of aliases) native.discardCacheAliasAt(pin, staged, name)
+          native.clearCacheAt(pin)
+          revalidate(native, bindings)
+        } catch (error) {
+          state = ['ERR_LEASE_RELEASE', 'ERR_DOMAIN_RELEASE'].includes(error.code)
+            ? 'uncertain' : 'failed'
+          cleanup(native, [], error)
+        }
+      },
+      publishCache(root, staged, name) {
+        if (!(state === 'admitted' || (maintenance && state === 'occupied')) ||
+            !readers.has(root) || roles[root] === 'project')
+          throw new Error('cache publication requires a qualified private directory')
+        try {
+          revalidate(native, bindings)
+          native.publishCacheAt(readers.get(root), staged, name)
+          revalidate(native, bindings)
+        } catch (error) {
+          if (error.code === 'ERR_LEASE_EXISTS') throw error
+          state = ['ERR_LEASE_RELEASE', 'ERR_DOMAIN_RELEASE'].includes(error.code)
+            ? 'uncertain' : 'failed'
+          cleanup(native, [], error)
+        }
+      },
+      verifyReadBarriers() {
+        if (state !== 'occupied') throw new Error('barrier verification requires occupied admission')
+        try {
+          revalidate(native, bindings)
+          barriers.check(native, coordinator, coordinatorBinding, bindings.slice(1))
+          revalidate(native, bindings)
+          barrierVerified = true
+        } catch (error) {
+          failedOccupancy(error)
+        }
+      },
+      policyBinding(root) {
+        if (state !== 'occupied' || !readers.has(root))
+          throw new Error('policy binding requires an occupied root')
+        revalidate(native, bindings)
+        return {
+          pin: readers.get(root),
+          lineage: native.lineage(readers.get(root)),
+          acquire: (name) => native.acquireAt(coordinator, name, true),
+          release: (handle) => native.release(handle),
+        }
+      },
       read(root, name, maxBytes) {
         if (state !== 'occupied') throw new Error('domain read requires occupied admission')
         try {
           if (!readers.has(root))
             throw new Error('domain read requires an explicitly selected root')
+          // Shared occupancy only excludes a migrator still holding its volatile
+          // X lease; a crashed migration leaves a durable intent that must also
+          // fail reads closed. A caller that verified this occupancy may reuse
+          // that result, but directory revalidation still runs on every read.
           revalidate(native, bindings)
+          if (!barrierVerified) {
+            barriers.check(native, coordinator, coordinatorBinding, bindings.slice(1))
+            revalidate(native, bindings)
+          }
           const bytes = native.readAt(readers.get(root), name, maxBytes)
           revalidate(native, bindings)
           return bytes
@@ -366,6 +437,42 @@ function beginDomains(native, coordinatorPath, roots, maintenance = false, roles
           throw error
         }
       },
+      create(root, name, bytes) {
+        if (state !== 'admitted') throw new Error('record creation requires an admitted writer')
+        try {
+          if (!readers.has(root)) throw new Error('record creation requires a selected root')
+          revalidate(native, bindings)
+          native.createAt(readers.get(root), name, bytes)
+          revalidate(native, bindings)
+        } catch (error) {
+          state = ['ERR_LEASE_RELEASE', 'ERR_DOMAIN_RELEASE'].includes(error.code)
+            ? 'uncertain' : 'failed'
+          cleanup(native, [], error)
+        }
+      },
+      replace(root, name, bytes) {
+        if (state !== 'admitted') throw new Error('record replacement requires an admitted writer')
+        let published = false
+        try {
+          if (!readers.has(root)) throw new Error('record replacement requires a selected root')
+          revalidate(native, bindings)
+          native.replaceAt(readers.get(root), name, bytes)
+          published = true
+          revalidate(native, bindings)
+        } catch (error) {
+          if (published) {
+            state = 'uncertain'
+            throw Object.assign(new Error('published record could not be revalidated', { cause: error }), {
+              code: 'ERR_LEASE_SYNC',
+            })
+          }
+          // ERR_LEASE_SYNC means the rename may already have landed, so the
+          // published record is uncertain and must not be retried or rolled back.
+          state = ['ERR_LEASE_RELEASE', 'ERR_DOMAIN_RELEASE', 'ERR_LEASE_SYNC'].includes(error.code)
+            ? 'uncertain' : 'failed'
+          cleanup(native, [], error)
+        }
+      },
       close() {
         if (state === 'closed') throw new Error('domains already closed')
         if (state === 'authorizing')
@@ -403,6 +510,7 @@ function createDirectory(native, coordinatorPath, parentPath, name, role = 'priv
   try {
     const coordinator = native.pin(coordinatorPath, false)
     coordination.push(coordinator)
+    native = bindRegistry(native, coordinatorPath, coordinator)
     const parent = native.pin(parentPath, false, role)
     pins.push(parent)
     const coordinatorBinding = binding(native, coordinator, coordinatorPath)

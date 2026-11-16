@@ -393,10 +393,10 @@ class ConnectorBroker:
         check_generation()
         return tuple(blocked)
 
-    async def resolve(self, reference: str) -> RuntimeSecret:
-        if reference == BROKER_REFERENCE:
+    async def resolve(self, secret_ref: str) -> RuntimeSecret:
+        if secret_ref == BROKER_REFERENCE:
             return RuntimeSecret("Bearer " + self.token)
-        return await self.secrets.resolve(reference)
+        return await self.secrets.resolve(secret_ref)
 
     async def start(self) -> None:
         if self._close_task is not None:

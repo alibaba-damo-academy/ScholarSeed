@@ -9,7 +9,9 @@ import {
   useRef,
   useState,
 } from 'react'
+import { ChevronLeft, ChevronRight } from 'lucide-react'
 
+import { IconButton } from './IconButton'
 import {
   scrollAreaBarClassName,
   scrollAreaClassName,
@@ -29,10 +31,26 @@ export interface ScrollAreaProps extends HTMLAttributes<HTMLDivElement> {
   orientation?: ScrollAreaOrientation
   shadow?: boolean | 'auto'
   overlay?: boolean
+  overlayScrollOnly?: boolean
+  overlayVerticalInsetSelector?: string
   viewportClassName?: string
   viewportProps?: ScrollAreaViewportProps
   viewportRef?: Ref<HTMLDivElement>
+  horizontalControls?: {
+    previous: string
+    next: string
+    hoverOnly?: boolean
+    variant?: 'default' | 'image'
+    scrollBy?: 'page' | 'items'
+  }
 }
+
+const SCROLL_EDGE_TOLERANCE = 1
+const OVERLAY_SCROLLBAR_IDLE_MS = 800
+const HORIZONTAL_CONTROL_CLASS =
+  'box-border !size-[var(--vds-icon-9)] !min-h-0 !min-w-0 !rounded-[var(--vds-radius-3)] !border !border-solid !border-[var(--vds-divider-default)] !bg-[var(--vds-bg-white-default)] !p-0 !text-[var(--vds-text-secondary)] !shadow-none [--vds-icon-button-glyph:var(--vds-icon-6)] pointer-events-auto'
+const IMAGE_CONTROL_CLASS =
+  'pointer-events-auto !size-[var(--vds-image-strip-control-size)] !min-h-0 !min-w-0 !rounded-[var(--vds-radius-3)] !border !border-solid !border-[var(--vds-border-default)] !bg-[var(--vds-bg-white-default)] !p-0 !text-[var(--vds-text-secondary)] shadow-[var(--vds-shadow-1-center)]'
 
 export const ScrollArea = forwardRef<HTMLDivElement, ScrollAreaProps>(
   (
@@ -42,16 +60,83 @@ export const ScrollArea = forwardRef<HTMLDivElement, ScrollAreaProps>(
       orientation = 'vertical',
       shadow = false,
       overlay = false,
+      overlayScrollOnly = false,
+      overlayVerticalInsetSelector,
       viewportClassName,
       viewportProps,
       viewportRef,
+      horizontalControls,
       ...props
     },
     ref
   ) => {
     const [viewport, setViewport] = useState<HTMLDivElement | null>(null)
+    const [scrolling, setScrolling] = useState(false)
+    useEffect(() => {
+      if (!overlay || !overlayScrollOnly || !viewport) return
+      let timer: number | undefined
+      const show = (): void => {
+        window.clearTimeout(timer)
+        setScrolling(true)
+        timer = window.setTimeout(() => setScrolling(false), OVERLAY_SCROLLBAR_IDLE_MS)
+      }
+      viewport.addEventListener('scroll', show, { passive: true })
+      return () => {
+        viewport.removeEventListener('scroll', show)
+        window.clearTimeout(timer)
+        setScrolling(false)
+      }
+    }, [overlay, overlayScrollOnly, viewport])
     const [edges, setEdges] = useState({ top: false, bottom: false })
+    const [horizontalEdges, setHorizontalEdges] = useState({ left: false, right: false })
     useImperativeHandle(viewportRef, () => viewport!, [viewport])
+    useEffect(() => {
+      if (!horizontalControls || !viewport || orientation === 'vertical') return
+      const update = (): void => {
+        const left = viewport.scrollLeft > SCROLL_EDGE_TOLERANCE
+        const right =
+          viewport.scrollWidth - viewport.clientWidth - viewport.scrollLeft > SCROLL_EDGE_TOLERANCE
+        setHorizontalEdges((previous) =>
+          previous.left === left && previous.right === right ? previous : { left, right }
+        )
+      }
+      const resize = new ResizeObserver(update)
+      const observe = (): void => {
+        resize.disconnect()
+        resize.observe(viewport)
+        for (const child of viewport.children) resize.observe(child)
+        update()
+      }
+      const mutation = new MutationObserver(observe)
+      mutation.observe(viewport, { childList: true, subtree: true })
+      viewport.addEventListener('scroll', update, { passive: true })
+      observe()
+      return () => {
+        resize.disconnect()
+        mutation.disconnect()
+        viewport.removeEventListener('scroll', update)
+      }
+    }, [Boolean(horizontalControls), orientation, viewport])
+    const scrollHorizontal = (direction: number): void => {
+      if (!viewport) return
+      let distance = viewport.clientWidth
+      if (horizontalControls?.scrollBy === 'items') {
+        const content = viewport.firstElementChild
+        const first = content?.firstElementChild
+        if (!content || !first) return
+        const stride =
+          first.getBoundingClientRect().width +
+          (Number.parseFloat(getComputedStyle(content).columnGap) || 0)
+        if (stride <= 0) return
+        distance = Math.max(1, Math.floor(viewport.clientWidth / stride)) * stride
+      }
+      viewport?.scrollBy({
+        left: direction * distance,
+        behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches
+          ? 'instant'
+          : 'smooth',
+      })
+    }
     useEffect(() => {
       if (shadow !== 'auto' || !viewport) return
       const update = (): void => {
@@ -88,7 +173,9 @@ export const ScrollArea = forwardRef<HTMLDivElement, ScrollAreaProps>(
       <div
         className={cx(
           scrollAreaClassName({ className, orientation, shadow: !!shadow }),
-          scrollAreaStyleClassName({ shadow: !!shadow })
+          scrollAreaStyleClassName({ shadow: !!shadow }),
+          overlay && overlayScrollOnly && !scrolling && '[&>[role=scrollbar]]:invisible',
+          horizontalControls?.hoverOnly && 'group/scroll-area'
         )}
         data-orientation={orientation}
         data-fade-top={shadow === true || (shadow === 'auto' && edges.top)}
@@ -99,6 +186,7 @@ export const ScrollArea = forwardRef<HTMLDivElement, ScrollAreaProps>(
         {overlay ? (
           <OverlayViewport
             orientation={orientation}
+            verticalInsetSelector={overlayVerticalInsetSelector}
             className={viewportClasses}
             viewportRef={setViewport}
             {...restViewportProps}
@@ -108,6 +196,46 @@ export const ScrollArea = forwardRef<HTMLDivElement, ScrollAreaProps>(
         ) : (
           <div className={viewportClasses} ref={setViewport} {...restViewportProps}>
             {children}
+          </div>
+        )}
+        {horizontalControls && orientation !== 'vertical' && horizontalEdges.left && (
+          <div
+            className={cx(
+              'pointer-events-none absolute inset-y-0 left-0 z-[var(--vds-z-local-control)] flex w-[var(--vds-space-8)] items-center justify-start bg-gradient-to-r from-[var(--vds-scroll-area-horizontal-fade,var(--vds-fill-2))] to-transparent'
+            )}
+          >
+            <IconButton
+              label={horizontalControls.previous}
+              icon={<ChevronLeft />}
+              className={cx(
+                horizontalControls.variant === 'image'
+                  ? IMAGE_CONTROL_CLASS
+                  : HORIZONTAL_CONTROL_CLASS,
+                horizontalControls.hoverOnly &&
+                  'opacity-0 transition-opacity group-hover/scroll-area:opacity-[var(--vds-opacity-full)] group-focus-within/scroll-area:opacity-[var(--vds-opacity-full)] motion-reduce:transition-none'
+              )}
+              onClick={() => scrollHorizontal(-1)}
+            />
+          </div>
+        )}
+        {horizontalControls && orientation !== 'vertical' && horizontalEdges.right && (
+          <div
+            className={cx(
+              'pointer-events-none absolute inset-y-0 right-0 z-[var(--vds-z-local-control)] flex w-[var(--vds-space-8)] items-center justify-end bg-gradient-to-l from-[var(--vds-scroll-area-horizontal-fade,var(--vds-fill-2))] to-transparent'
+            )}
+          >
+            <IconButton
+              label={horizontalControls.next}
+              icon={<ChevronRight />}
+              className={cx(
+                horizontalControls.variant === 'image'
+                  ? IMAGE_CONTROL_CLASS
+                  : HORIZONTAL_CONTROL_CLASS,
+                horizontalControls.hoverOnly &&
+                  'opacity-0 transition-opacity group-hover/scroll-area:opacity-[var(--vds-opacity-full)] group-focus-within/scroll-area:opacity-[var(--vds-opacity-full)] motion-reduce:transition-none'
+              )}
+              onClick={() => scrollHorizontal(1)}
+            />
           </div>
         )}
       </div>
@@ -122,11 +250,13 @@ function OverlayViewport({
   className,
   viewportRef,
   orientation,
+  verticalInsetSelector,
   id,
   ...props
 }: ScrollAreaViewportProps & {
   viewportRef?: Ref<HTMLDivElement>
   orientation: ScrollAreaOrientation
+  verticalInsetSelector?: string
 }): React.JSX.Element {
   const generatedId = useId()
   const [viewport, setViewport] = useState<HTMLDivElement | null>(null)
@@ -158,7 +288,11 @@ function OverlayViewport({
         </div>
       </div>
       {viewport && orientation !== 'horizontal' && (
-        <OverlayBar viewport={viewport} orientation="vertical" />
+        <OverlayBar
+          viewport={viewport}
+          orientation="vertical"
+          insetSelector={verticalInsetSelector}
+        />
       )}
       {viewport && orientation !== 'vertical' && (
         <OverlayBar viewport={viewport} orientation="horizontal" />
@@ -170,19 +304,23 @@ function OverlayViewport({
 function OverlayBar({
   viewport,
   orientation,
+  insetSelector,
 }: {
   viewport: HTMLDivElement
   orientation: 'vertical' | 'horizontal'
+  insetSelector?: string
 }): React.JSX.Element | null {
   const vertical = orientation === 'vertical'
-  const [metrics, setMetrics] = useState({ size: 0, total: 0, position: 0, minimum: 0 })
+  const [metrics, setMetrics] = useState({ size: 0, total: 0, position: 0, minimum: 0, inset: 0 })
   const drag = useRef<{ pointer: number; position: number } | null>(null)
   useLayoutEffect(() => {
+    let insetElement: Element | null = null
     const measure = (): void => {
       setMetrics({
         size: vertical ? viewport.clientHeight : viewport.clientWidth,
         total: vertical ? viewport.scrollHeight : viewport.scrollWidth,
         position: vertical ? viewport.scrollTop : viewport.scrollLeft,
+        inset: insetElement?.getBoundingClientRect().height ?? 0,
         minimum: parseFloat(
           getComputedStyle(viewport).getPropertyValue('--vds-scrollbar-thumb-min-size')
         ),
@@ -191,20 +329,33 @@ function OverlayBar({
     const observer = new ResizeObserver(measure)
     observer.observe(viewport)
     if (viewport.firstElementChild) observer.observe(viewport.firstElementChild)
+    const observeInset = (): void => {
+      const next = insetSelector ? viewport.querySelector(insetSelector) : null
+      if (next !== insetElement) {
+        if (insetElement) observer.unobserve(insetElement)
+        insetElement = next
+        if (insetElement) observer.observe(insetElement)
+      }
+      measure()
+    }
+    const mutation = insetSelector ? new MutationObserver(observeInset) : null
+    mutation?.observe(viewport, { childList: true, subtree: true })
     viewport.addEventListener('scroll', measure, { passive: true })
-    measure()
+    observeInset()
     return () => {
       observer.disconnect()
+      mutation?.disconnect()
       viewport.removeEventListener('scroll', measure)
     }
-  }, [viewport, vertical])
+  }, [viewport, vertical, insetSelector])
   const maximum = metrics.total - metrics.size
-  if (maximum <= 0 || metrics.size <= 0) return null
+  const trackSize = metrics.size - metrics.inset
+  if (maximum <= 0 || trackSize <= 0) return null
   const thumbSize = Math.min(
-    metrics.size,
-    Math.max(metrics.minimum, (metrics.size * metrics.size) / metrics.total)
+    trackSize,
+    Math.max(metrics.minimum, (trackSize * trackSize) / (metrics.total - metrics.inset))
   )
-  const travel = metrics.size - thumbSize
+  const travel = trackSize - thumbSize
   const offset = (metrics.position / maximum) * travel
   const scrollTo = (position: number): void => {
     if (vertical) viewport.scrollTop = position
@@ -220,8 +371,12 @@ function OverlayBar({
       aria-valuemax={maximum}
       aria-valuenow={Math.round(metrics.position)}
       tabIndex={0}
+      style={vertical ? { top: metrics.inset } : undefined}
       className={cx(
-        'absolute z-[var(--vds-z-local-control)] touch-none select-none rounded-[var(--vds-scrollbar-radius)] focus-visible:outline focus-visible:outline-[var(--vds-border-default)]',
+        'absolute z-[var(--vds-z-local-control)] touch-none select-none rounded-[var(--vds-scrollbar-radius)]',
+        insetSelector
+          ? 'focus-visible:outline-none focus-visible:[&>[data-scroll-thumb]]:bg-[var(--vds-text-tertiary)]'
+          : 'focus-visible:outline focus-visible:outline-[var(--vds-border-default)]',
         vertical
           ? 'inset-y-0 right-0 w-[var(--vds-overlay-scrollbar-size)]'
           : 'inset-x-0 bottom-0 h-[var(--vds-overlay-scrollbar-size)]'

@@ -5,10 +5,20 @@ import { chromium, expect } from '@playwright/test'
 import react from '@vitejs/plugin-react'
 import { transformWithEsbuild, type Plugin } from 'vite'
 import { renderServers } from '../../../../test-helpers/render.ts'
+import type { FilesResp } from '../../api'
+
+interface DirectoryProbe extends Window {
+  listings: Record<string, (files: FilesResp) => void>
+  opened: string[]
+  thread: { sessionId: string; workdir: string; artifacts: unknown[] }
+  selectThread: (thread: DirectoryProbe['thread']) => void
+  finishOpen: (result: { ok: boolean }) => void
+}
 
 const servers = renderServers({ after })
 const ROOT = path.resolve(import.meta.dirname, '../..')
 const ENTRY = '/overview-probe.tsx'
+const DIRECTORY_ENTRY = '/directory-probe.tsx'
 const plugin: Plugin = {
   name: 'overview-probe',
   resolveId(source) {
@@ -64,6 +74,136 @@ const plugin: Plugin = {
     })
   },
 }
+
+const directoryPlugin: Plugin = {
+  name: 'overview-directory-probe',
+  enforce: 'pre',
+  resolveId(source, importer) {
+    if (source === DIRECTORY_ENTRY) return DIRECTORY_ENTRY
+    if (importer?.endsWith('/SessionArtifacts.tsx')) {
+      if (source === '../../api') return 'overview-directory-api'
+      if (source === '../../store') return 'overview-directory-store'
+      if (source === '../../fileOpen') return 'overview-directory-open'
+    }
+    return null
+  },
+  async load(id) {
+    if (id === 'overview-directory-api')
+      return `
+      export const getSessionFiles = session => new Promise(resolve => window.listings[session] = resolve)
+      export const openSystemPath = path => { window.opened.push(path); return new Promise(resolve => window.finishOpen = resolve) }
+    `
+    if (id === 'overview-directory-store')
+      return `
+      import React from 'react'
+      export const activeThread = state => state.thread
+      export const useApp = () => {
+        const [thread, select] = React.useState(window.thread)
+        window.selectThread = select
+        return {state: {thread}, act: {}}
+      }
+    `
+    if (id === 'overview-directory-open') return 'export const openByDefault = () => {}'
+    if (id !== DIRECTORY_ENTRY) return null
+    return (
+      await transformWithEsbuild(
+        `
+      import React from 'react'
+      import {createRoot} from 'react-dom/client'
+      import {I18nextProvider} from 'react-i18next'
+      import {createLocalization} from '/../../localization/engine'
+      import {resources} from '/../../localization/resources'
+      import {SessionArtifacts} from '/components/business/SessionArtifacts.tsx'
+      import '/styles.css'
+      window.listings = {}; window.opened = []
+      window.thread = {sessionId: 'task-a', workdir: '/project', artifacts: [{
+        artifact_id: 'a', path: 'output/a/report.md', name: 'report.md',
+        publication_id: 'published-a', role: 'final', status: 'available'
+      }]}
+      createRoot(document.getElementById('root')).render(
+        <I18nextProvider i18n={createLocalization('zh', resources)}><SessionArtifacts /></I18nextProvider>
+      )
+    `,
+        'directory-probe.tsx',
+        { loader: 'tsx', jsx: 'automatic', tsconfigRaw: {} }
+      )
+    ).code
+  },
+  configureServer(server) {
+    server.middlewares.use('/__directory', (_request, response, next) => {
+      server
+        .transformIndexHtml(
+          '/__directory',
+          `<div id="root"></div><script type="module" src="${DIRECTORY_ENTRY}"></script>`
+        )
+        .then((html) => {
+          response.setHeader('Content-Type', 'text/html')
+          response.end(html)
+        })
+        .catch(next)
+    })
+  },
+}
+
+test('overview opens only the server directory for the current task and ignores old completions', async () => {
+  const server = await servers.create({
+    configFile: false,
+    root: ROOT,
+    plugins: [directoryPlugin, react()],
+    cacheKey: 'overview-directory',
+    server: { host: '127.0.0.1', port: 0 },
+  })
+  await server.listen()
+  const browser = await chromium.launch({ headless: true, channel: process.env.PLAYWRIGHT_CHANNEL })
+  try {
+    const page = await browser.newPage()
+    await page.addInitScript(() => {
+      window.scholarseed = {
+        platform: 'darwin',
+        preferences: { language: 'zh' },
+      } as typeof window.scholarseed
+    })
+    await page.goto(`${server.resolvedUrls!.local[0]}__directory`)
+    const button = page.getByTestId('task-overview-directory')
+    await expect(button).toBeDisabled()
+    await page.evaluate(() =>
+      (window as unknown as DirectoryProbe).listings['task-a']({
+        root: '/project',
+        path: '',
+        items: [],
+        crumbs: [],
+        directory_path: '/project/output/a',
+      })
+    )
+    await expect(button).toBeEnabled()
+    await button.click()
+    assert.deepEqual(await page.evaluate(() => (window as unknown as DirectoryProbe).opened), [
+      '/project/output/a',
+    ])
+    await page.evaluate(() => {
+      const probe = window as unknown as DirectoryProbe
+      probe.selectThread({ ...probe.thread, sessionId: 'task-b' })
+    })
+    await expect(button).toBeDisabled()
+    await page.evaluate(() => (window as unknown as DirectoryProbe).finishOpen({ ok: false }))
+    await expect(page.getByRole('alert')).toHaveCount(0)
+    await page.evaluate(() =>
+      (window as unknown as DirectoryProbe).listings['task-b']({
+        root: '/project',
+        path: '',
+        items: [],
+        crumbs: [],
+        directory_path: null,
+      })
+    )
+    await expect(button).toBeDisabled()
+    assert.deepEqual(await page.evaluate(() => (window as unknown as DirectoryProbe).opened), [
+      '/project/output/a',
+    ])
+  } finally {
+    await browser.close()
+  }
+})
 
 test('overview previews five artifacts, expands inline and fades only overflowing scroll edges', async () => {
   const server = await servers.create({

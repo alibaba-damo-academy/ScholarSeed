@@ -1,4 +1,17 @@
-import { Copy, ExternalLink, FileLock2, NotepadText, Pencil, Undo2 } from 'lucide-react'
+import {
+  ArrowDown,
+  ArrowUp,
+  BookOpen,
+  Check,
+  Copy,
+  ExternalLink,
+  FileLock2,
+  NotebookPen,
+  SquareChartGantt,
+  NotepadText,
+  SlidersHorizontal,
+  Undo2,
+} from 'lucide-react'
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
@@ -12,6 +25,9 @@ import pdfWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'
 import { openSystemPath } from '../../api'
 import { writeClipboardImage } from '../../components/primitive/clipboard'
 import { useApp } from '../../store'
+import { useTranslationBackend } from '../translation/context'
+import { TranslationPreferenceStatus } from '../translation/Preferences'
+import { useTranslationText } from '../translation/text'
 import { LiteratureExcerptImport } from '../../components/business/Excerpts'
 import {
   Button,
@@ -22,22 +38,37 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  Divider,
+  EllipsisText,
   EmptyState,
+  FloatingToolbar,
   IconButton,
   Input,
   ResizablePanel,
+  ResizablePanelGroup,
+  ResizableHandle,
+  Switch,
   Tabs,
   TabsContent,
   TabsList,
   TabsTrigger,
   Textarea,
+  Toggle,
   Tooltip,
   useToast,
   type ToastTone,
 } from '../../components/ui'
 import { CITATION_VIEW_STATE_KEY, type CitationFocus } from '../../contracts/citations'
 import type { DocumentPanelContext, DocumentPanelContribution } from '../../contracts/features'
-import type { SelectionAnchor } from '../../contracts/workbench'
+import {
+  ANNOTATION_VIEW_STATE_KEY,
+  type AnnotationFocus,
+  type PdfTextMarkRecord,
+  type PdfTextMarkStyle,
+  type SelectionAnchor,
+} from '../../contracts/workbench'
+import { useAssistantIngress } from '../assistant/ingress'
+import { addPdfCommentContext } from './context'
 import {
   asLiteratureExcerptSource,
   LITERATURE_EXCERPT_VIEW_STATE_KEY,
@@ -47,7 +78,7 @@ import {
 } from '../../contracts/resources'
 import { Icon } from '../../icons'
 import { resolveShortcut } from '../../shortcuts'
-import { useSelectionActionContribution } from './actions'
+import { dismissSelectionActions, useSelectionActionContribution } from './actions'
 import {
   commitPdfRecords,
   isLocatedDocumentSource,
@@ -61,11 +92,21 @@ import {
   type PdfRecords,
 } from './api'
 import { useWorkspaceController, selectionViewport, useDocumentWorkspace } from './workspace'
-import { PDF_COMMENT_TOOL, PdfTools, type PdfTool } from './pdf/Tools'
+import { documentSelectionReveal } from './workspace'
+import {
+  PDF_COMMENT_TOOL,
+  PDF_COPY_FEEDBACK_DURATION_MS,
+  PdfTools,
+  type PdfTool,
+} from './pdf/Tools'
 import { PdfAnnotations } from './pdf/Annotations'
 import { PdfUndoHistory } from './pdf/history'
 import { PdfPageSlot, type PdfFocus, type PdfFocusTarget } from './pdf/Page'
-import { PdfAnnotation } from './pdf/Annotation'
+import { pdfPlainText } from './pdf/utils'
+import { PdfAnnotation, PdfCommentDraft } from './pdf/Annotation'
+import { documentSelectionInteractionProps } from './focus'
+import { selectionSurfaceBoundary, type SelectionBounds } from './placement'
+import { PdfCommentInput, type PdfCommentEdit } from './pdf/Comment'
 import {
   exportAnnotatedPdf,
   restoreAnnotatedPdf,
@@ -85,11 +126,21 @@ import {
   MIN_SCALE,
   mostVisiblePage,
   PAGE_GUTTER,
+  PDF_WIDE_TRANSLATION_GUTTER,
+  PDF_WIDE_TRANSLATION_MIN_WIDTH,
+  PDF_TRANSLATION_MAX_RATIO,
+  PDF_TRANSLATION_MIN_RATIO,
+  PDF_TRANSLATION_WIDTH_STATE_KEY,
   pageInSelectionSpan,
   pageNumber,
   SCALE_STEP,
+  resizePdfTranslation,
   selectionPageText,
   THUMBNAIL_WIDTH,
+  THUMBNAIL_HEIGHT,
+  translationSpreadSize,
+  translationWidthRatio,
+  type PdfTranslationResize,
   type PdfFitMode,
   type Size,
 } from './pdf/geometry'
@@ -104,6 +155,7 @@ import { PdfOutline } from './pdf/Outline'
 import { PdfPanel } from './pdf/Panel'
 import {
   DEFAULT_PDF_MARK_COLOR,
+  createPointMark,
   PDF_RECORD_SCHEMA_VERSION,
   stagePdfRecords,
   type PdfMarkColor,
@@ -114,25 +166,25 @@ import { PdfFonts } from './pdf/fonts'
 import { PdfLifecycle } from './pdf/lifecycle'
 import { classifyPdfLoadFailure, PDF_LOAD_FAILURE_KIND, type PdfLoadFailure } from './pdf/loading'
 import { usePdfAnalysis } from './pdf/Reading'
-import { loadPdfVisualRegionImage, type PdfVisualRegion } from './pdf/analysis'
+import { loadPdfVisualRegionImage, pdfCitationSource, type PdfVisualRegion } from './pdf/analysis'
 import { PdfScale } from './pdf/Scale'
 import { pdfWheelScale } from './pdf/zoom'
-
-const TRANSLATION_COLUMN_RATIO = 3 / 7
 
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl
 const SEARCH_BATCH_SIZE = 8
 const SEARCH_DELAY_MS = 180
 const MIN_FIGURE_SELECTION_PX = 8
-const PDF_NAVIGATION_DEFAULT_WIDTH_PX = 190
+const PDF_NAVIGATION_DEFAULT_WIDTH_PX = 260
 const PDF_NAVIGATION_MIN_WIDTH_PX = 190
 const PDF_NAVIGATION_MAX_WIDTH_PX = 360
 const PDF_ACTUAL_SCALE = 1
 const PDF_SCROLL_STEP_PX = 64
 const PDF_PAGE_SCROLL_RATIO = 0.9
-const PDF_RECORDS_PANEL_ID = 'pdf-records'
 const PDF_DEFAULT_PAGE_SIZE: Size = { width: 612, height: 792 }
 const PDF_NEAR_PAGE_RADIUS = 1
+const READING_SPLIT_SIZES = [55, 45]
+const READING_SPLIT_MINIMUM = 30
+const PERCENTAGE_TOTAL = 100
 
 function logPdfExportFailure(error: unknown): void {
   const cause =
@@ -221,6 +273,20 @@ function EncryptedPdfState({
   )
 }
 
+function pdfSelectionBoundary(host: HTMLElement): SelectionBounds {
+  const bounds = host.getBoundingClientRect()
+  const margin = parseFloat(getComputedStyle(host).getPropertyValue('--vds-pdf-selection-margin'))
+  return selectionSurfaceBoundary(
+    {
+      left: Math.max(0, bounds.left),
+      right: Math.min(window.innerWidth, bounds.right),
+      top: Math.max(0, bounds.top),
+      bottom: Math.min(window.innerHeight, bounds.bottom),
+    },
+    margin
+  )
+}
+
 function persistedSelectionViewport(
   host: HTMLElement,
   selections: readonly PageSelection[]
@@ -242,17 +308,16 @@ function persistedSelectionViewport(
   const last = rects.at(-1)
   if (!bounds || !last) return null
   const point = { x: last.right, y: last.bottom }
-  const hostBounds = host.getBoundingClientRect()
-  const visible =
-    point.x > Math.max(0, hostBounds.left) &&
-    point.x < Math.min(window.innerWidth, hostBounds.right) &&
-    point.y > Math.max(0, hostBounds.top) &&
-    point.y < Math.min(window.innerHeight, hostBounds.bottom)
-  return selectionViewport(
-    { ...bounds, width: bounds.right - bounds.left, height: bounds.bottom - bounds.top },
-    point,
-    visible
-  )
+  const boundary = pdfSelectionBoundary(host)
+  const visible = boundary.right > boundary.left && boundary.bottom > boundary.top
+  return {
+    ...selectionViewport(
+      { ...bounds, width: bounds.right - bounds.left, height: bounds.bottom - bounds.top },
+      point,
+      visible
+    ),
+    boundary,
+  }
 }
 
 function toExcerptSelections(selections: readonly PageSelection[]): LiteratureExcerptSelection[] {
@@ -285,17 +350,48 @@ export function PdfDocument({
   onResourceImported?: () => void | Promise<void>
 }): React.JSX.Element {
   const { t, i18n } = useTranslation('pdf')
-  const { set } = useApp()
+  const { set, state: appState, act: appActions } = useApp()
+  const [readingSplit, setReadingSplit] = useState(READING_SPLIT_SIZES)
+  const [readingPanelMinimum, setReadingPanelMinimum] = useState(READING_SPLIT_MINIMUM)
+  const readingGroupRef = useRef<HTMLDivElement>(null)
+  const readingResized = useRef(false)
+  const { backend: translationBackend, settings: translationSettings } = useTranslationBackend()
+  const selectionToolbarEnabled = translationBackend
+    ? translationSettings?.toolbar !== false
+    : appState.pdfSelectionToolbarEnabled
+  const selectionToolbarDisabled = Boolean(
+    translationBackend &&
+    (translationSettings?.preferencesReady === false || translationSettings?.preferencesSaving)
+  )
+  const setSelectionToolbarEnabled = useCallback(
+    (toolbar: boolean): void => {
+      if (translationBackend) {
+        if (!selectionToolbarDisabled) void translationBackend.update({ toolbar })
+      } else appActions.setPdfSelectionToolbarEnabled(toolbar)
+    },
+    [translationBackend, selectionToolbarDisabled, appActions]
+  )
+  const translationText = useTranslationText()
   const controller = useWorkspaceController()
   const workspace = useDocumentWorkspace()
   const session = workspace.sessions[sessionId]
   const tab = workspace.tabs[tabId]
   const reading = tab?.viewState
+  const translationRatio = translationWidthRatio(reading?.[PDF_TRANSLATION_WIDTH_STATE_KEY])
+  const translationResize = useRef<PdfTranslationResize | null>(null)
   const isLiterature = session?.source.kind === 'literature'
   const literatureId = session?.source.kind === 'literature' ? session.source.literatureId : ''
   const attachmentId = session?.source.kind === 'literature' ? session.source.attachmentId : ''
   const citation = reading?.[CITATION_VIEW_STATE_KEY] as CitationFocus | undefined
-  const citationPages = citation?.revision === session?.revision ? citation.pages : undefined
+  const annotationFocus = reading?.[ANNOTATION_VIEW_STATE_KEY] as AnnotationFocus | undefined
+  const selectionReveal = documentSelectionReveal(tab)
+  const selectionTarget =
+    selectionReveal?.locator.kind === 'pdf' ? selectionReveal.locator : undefined
+  const citationPages = selectionTarget
+    ? [{ page: selectionTarget.page, quads: selectionTarget.quads }]
+    : citation?.revision === session?.revision
+      ? citation.pages
+      : undefined
   const citationTargets =
     citationPages?.flatMap((target) =>
       citationRegions(target.quads).map((_, region) => ({ page: target.page, region }))
@@ -315,19 +411,36 @@ export function PdfDocument({
           PDF_NAVIGATION_MAX_WIDTH_PX
         )
       : PDF_NAVIGATION_DEFAULT_WIDTH_PX
-  const recordsOpen = isLiterature && reading?.records === true
   const [expandedPanel, setExpandedPanel] = useState<string | null>(null)
+  const [documentPanelHeaderHost, setDocumentPanelHeaderHost] = useState<HTMLDivElement | null>(
+    null
+  )
   const query = typeof reading?.query === 'string' ? reading.query : ''
   const sidebarTab =
-    reading?.sidebarTab === 'pages' || reading?.sidebarTab === 'search'
+    reading?.sidebarTab === 'pages' ||
+    reading?.sidebarTab === 'search' ||
+    reading?.sidebarTab === 'annotations'
       ? reading.sidebarTab
       : 'outline'
   const [pageCount, setPageCount] = useState(0)
+  const [documentText, setDocumentText] = useState('')
   const [loadedPages, setLoadedPages] = useState<Map<number, PDFPageProxy>>(() => new Map())
+  const [commentRails, setCommentRails] = useState<Map<PDFPageProxy, number>>(() => new Map())
+  const handleCommentRail = useCallback((page: PDFPageProxy, width: number): void => {
+    setCommentRails((current) => {
+      if ((current.get(page) ?? 0) === width) return current
+      const next = new Map(current)
+      if (width) next.set(page, width)
+      else next.delete(page)
+      return next
+    })
+  }, [])
   const [estimatedPageSize, setEstimatedPageSize] = useState<Size>(PDF_DEFAULT_PAGE_SIZE)
   const [translationLayoutOpen, setTranslationLayoutOpen] = useState(false)
   const [selectionDragSpan, setSelectionDragSpan] = useState<SelectionDragSpan | null>(null)
-  const cropStart = useRef<{ x: number; y: number; bounds: DOMRect; page: number }>()
+  const cropStart = useRef<{ x: number; y: number; bounds: DOMRect; page: number } | undefined>(
+    undefined
+  )
   const [cropBox, setCropBox] = useState<{
     left: number
     top: number
@@ -350,10 +463,23 @@ export function PdfDocument({
   )
   const [outline, setOutline] = useState<PdfOutlineItem[]>([])
   const [sidecar, setSidecar] = useState<PdfRecordSnapshot | null>(null)
+  const nativeSourcesKey = JSON.stringify(
+    sidecar?.source_revision === session?.revision ? sidecar?.records.native_annotations : undefined
+  )
   const undoHistory = useMemo(() => new PdfUndoHistory(), [session?.documentId, session?.revision])
   const currentUndoHistory = useRef(undoHistory)
   currentUndoHistory.current = undoHistory
   const recordSaving = useMemo(() => ({ current: false }), [undoHistory])
+  const paletteLabels = {
+    yellow: t('palette.yellow'),
+    orange: t('palette.orange'),
+    green: t('palette.green'),
+    teal: t('palette.teal'),
+    blue: t('palette.blue'),
+    purple: t('palette.purple'),
+    red: t('palette.red'),
+    gray: t('palette.gray'),
+  }
   const { toast } = useToast()
   const statusText = {
     readFailed: t('status.readFailed'),
@@ -383,7 +509,11 @@ export function PdfDocument({
   }
   const [loadError, setLoadError] = useState<PdfLoadFailure | null>(null)
   const [externalOpening, setExternalOpening] = useState(false)
-  const [size, setSize] = useState<Size>({ width: 0, height: 0 })
+  const [size, setSize] = useState<Size & { outerWidth: number }>({
+    width: 0,
+    height: 0,
+    outerWidth: 0,
+  })
   const [pageInput, setPageInput] = useState(String(currentPage))
   const [goToPageOpen, setGoToPageOpen] = useState(false)
   const [goToPageValue, setGoToPageValue] = useState(String(currentPage))
@@ -392,19 +522,26 @@ export function PdfDocument({
   const [highlightOpen, setHighlightOpen] = useState(false)
   const [activeTool, setActiveTool] = useState<PdfTool | null>(null)
   const [activeMark, setActiveMark] = useState<string | null>(null)
-  const [markColors, setMarkColors] = useState<Record<PdfMark['style'], PdfMarkColor>>({
+  const ingress = useAssistantIngress()
+  const [markColors, setMarkColors] = useState<Record<PdfTextMarkStyle, PdfMarkColor>>({
     highlight: DEFAULT_PDF_MARK_COLOR,
     underline: DEFAULT_PDF_MARK_COLOR,
     strikethrough: DEFAULT_PDF_MARK_COLOR,
   })
+  const [selectionColor, setSelectionColor] = useState<PdfMarkColor>(DEFAULT_PDF_MARK_COLOR)
   const [commentFormOpen, setCommentFormOpen] = useState(false)
+  const toggleSelectionComment = useCallback(() => {
+    const open = !commentFormOpen
+    dismissSelectionActions(tabId)
+    setCommentFormOpen(open)
+  }, [commentFormOpen, tabId])
   const [commentDraft, setCommentDraft] = useState('')
   const [saving, setSaving] = useState(false)
   useEffect(() => setSaving(false), [undoHistory])
   const [exporting, setExporting] = useState(false)
   const exportingRef = useRef(false)
   const [focus, setFocus] = useState<PdfFocus>()
-  const destinationResolver = useRef<PdfDestinationResolver>()
+  const destinationResolver = useRef<PdfDestinationResolver | undefined>(undefined)
   const [returnPosition, setReturnPosition] = useState<{
     page: number
     top: number
@@ -426,12 +563,17 @@ export function PdfDocument({
   const [searchError, setSearchError] = useState<string | null>(null)
   const [hasText, setHasText] = useState(true)
   const viewportRef = useRef<HTMLDivElement>(null)
+  const citationNavigationRef = useRef<HTMLDivElement>(null)
+  const [citationNavigationHeight, setCitationNavigationHeight] = useState(0)
   const documentRef = useRef<HTMLDivElement>(null)
   const searchInputRef = useRef<HTMLTextAreaElement>(null)
-  const zoomAnchorRef = useRef<PdfZoomAnchor>()
-  const wheelZoomFrameRef = useRef<number>()
-  const wheelZoomScaleRef = useRef<number>()
-  const wheelZoomEventRef = useRef<WheelEvent>()
+  const zoomAnchorRef = useRef<PdfZoomAnchor | undefined>(undefined)
+  const navigationAnchorRef = useRef<Pick<PdfZoomAnchor, 'page' | 'y' | 'clientY'> | undefined>(
+    undefined
+  )
+  const wheelZoomFrameRef = useRef<number | undefined>(undefined)
+  const wheelZoomScaleRef = useRef<number | undefined>(undefined)
+  const wheelZoomEventRef = useRef<WheelEvent | undefined>(undefined)
   const textCache = useRef(new Map<number, string>())
   const readingRef = useRef(reading)
   readingRef.current = reading
@@ -456,6 +598,10 @@ export function PdfDocument({
     },
     [tabId]
   )
+  useEffect(() => {
+    if (isLiterature && reading?.records === true)
+      update({ records: false, sidebar: true, sidebarTab: 'annotations' })
+  }, [isLiterature, reading?.records, update])
   const handleDocumentTranslationChange = useCallback(
     (open: boolean): void => {
       setTranslationLayoutOpen(open)
@@ -466,6 +612,7 @@ export function PdfDocument({
 
   useEffect(() => {
     setPageCount(0)
+    setDocumentText('')
     setLoadedPages(new Map())
     setOutline([])
     destinationResolver.current = undefined
@@ -479,10 +626,16 @@ export function PdfDocument({
     const fontOwner = new PdfFonts()
     setFonts(fontOwner)
     void lifecycle
-      .open(session.bytes, currentPage)
-      .then((opened) => {
+      .open(session.bytes, currentPage, nativeSourcesKey ? JSON.parse(nativeSourcesKey) : undefined)
+      .then(async (opened) => {
         if (!opened || !running) return
         const pdf = opened.document
+        const firstPage = await lifecycle.getPage(1)
+        if (!firstPage || !running) return
+        const text = pdfPlainText(await firstPage.getTextContent())
+        if (!running) return
+        textCache.current.set(1, text)
+        setDocumentText(text)
         const initialViewport = opened.page.getViewport({ scale: 1 })
         setEstimatedPageSize({ width: initialViewport.width, height: initialViewport.height })
         setPageCount(opened.pageCount)
@@ -530,7 +683,7 @@ export function PdfDocument({
       fontOwner.dispose()
       void lifecycle.suspend()
     }
-  }, [active, lifecycle, session?.revision, sessionId])
+  }, [active, lifecycle, session?.revision, sessionId, nativeSourcesKey])
 
   const loadPage = useCallback(
     async (pageNumber: number): Promise<PDFPageProxy | null> => {
@@ -550,18 +703,21 @@ export function PdfDocument({
     setSidecar(null)
     if (!recordTargetFor(session.source)) return
     let running = true
-    let receivedUpdate = false
-    const unsubscribe = subscribePdfRecords(session.source, (snapshot) => {
-      receivedUpdate = true
-      if (running) {
-        setSidecar(snapshot)
+    let failed = false
+    const unsubscribe = subscribePdfRecords(
+      session.source,
+      (snapshot) => {
+        if (running) {
+          failed = false
+          setSidecar(snapshot)
+        }
+      },
+      () => {
+        if (!running || failed) return
+        failed = true
+        notifyResult('readFailed')
       }
-    })
-    void loadPdfRecords(session.source).then((snapshot) => {
-      if (!running || receivedUpdate) return
-      setSidecar(snapshot)
-      if (!snapshot) notifyResult('readFailed')
-    })
+    )
     return () => {
       running = false
       unsubscribe()
@@ -571,28 +727,67 @@ export function PdfDocument({
   useLayoutEffect(() => {
     const host = viewportRef.current
     if (!host) return
-    const observer = new ResizeObserver(() =>
-      setSize({ width: host.clientWidth, height: host.clientHeight })
-    )
+    const observer = new ResizeObserver(([entry]) => {
+      if (!entry || entry.contentRect.width <= 0 || entry.contentRect.height <= 0) return
+      setSize({
+        width: host.clientWidth,
+        height: host.clientHeight,
+        outerWidth: host.offsetWidth,
+      })
+    })
     observer.observe(host)
     return () => observer.disconnect()
   }, [])
 
+  useLayoutEffect(() => {
+    const navigation = citationNavigationRef.current
+    if (!navigation) {
+      setCitationNavigationHeight(0)
+      return
+    }
+    const measure = (): void =>
+      setCitationNavigationHeight(navigation.getBoundingClientRect().height)
+    const observer = new ResizeObserver(measure)
+    observer.observe(navigation)
+    measure()
+    return () => observer.disconnect()
+  }, [citationTargets.length])
+
   const activePage = loadedPages.get(pageNumber(currentPage, pageCount))
   const natural = activePage?.getViewport({ scale: 1 })
-  const fitViewportWidth = size.width + (sidebar ? navigationWidth : 0)
-  const fittedPageSize =
-    natural && translationLayoutOpen
-      ? { width: natural.width * 2, height: natural.height }
-      : natural
+  const translationSourceWidth = useMemo(() => {
+    let width = estimatedPageSize.width
+    for (const page of loadedPages.values())
+      width = Math.max(width, page.getViewport({ scale: 1 }).width)
+    return width
+  }, [estimatedPageSize.width, loadedPages])
+  const activeCommentRail =
+    activePage && !translationLayoutOpen ? (commentRails.get(activePage) ?? 0) : 0
+  const wideTranslation = translationLayoutOpen && size.outerWidth > PDF_WIDE_TRANSLATION_MIN_WIDTH
+  useLayoutEffect(() => {
+    if (wideTranslation) update({ mode: 'width' })
+  }, [update, wideTranslation])
+  const fitViewport = {
+    width: Math.max(
+      1,
+      wideTranslation
+        ? size.outerWidth - PDF_WIDE_TRANSLATION_GUTTER
+        : size.width - activeCommentRail - PAGE_GUTTER
+    ),
+    height: Math.max(1, size.height - PAGE_GUTTER),
+  }
+  const translationSourceSize = {
+    width: translationSourceWidth,
+    height: natural?.height ?? estimatedPageSize.height,
+  }
+  const fittedPageSize = translationLayoutOpen
+    ? translationSpreadSize(translationSourceSize, translationRatio)
+    : natural
   const scale =
     mode === 'custom'
       ? storedScale
       : fittedPageSize && size.width && size.height
-        ? fittedScale(mode, fittedPageSize, {
-            width: Math.max(1, fitViewportWidth - PAGE_GUTTER),
-            height: Math.max(1, size.height - PAGE_GUTTER),
-          })
+        ? fittedScale(mode, fittedPageSize, fitViewport)
         : 1
   const scaleRef = useRef(scale)
   scaleRef.current = scale
@@ -638,6 +833,7 @@ export function PdfDocument({
 
   // Restore page after tab remount or geometry changes. Scrolling itself does not trigger this effect.
   useLayoutEffect(() => {
+    if (translationResize.current || navigationAnchorRef.current) return
     const zoomAnchor = zoomAnchorRef.current
     if (zoomAnchor) {
       zoomAnchorRef.current = undefined
@@ -653,7 +849,10 @@ export function PdfDocument({
         return
       }
     }
-    // Citation geometry owns its scroll; do not jump to the page before it animates.
+    if (focus && focus.kind !== 'citation') {
+      requestFocus(focus)
+      return
+    }
     if (citationPages?.length) {
       requestFocus(
         focus?.kind === 'citation' && citationPages.some((target) => target.page === focus.page)
@@ -669,6 +868,30 @@ export function PdfDocument({
       requestFocus({ kind: 'citation', page: currentPage, region: focus.region })
     }
   }, [pageCount, scale, sidebar, translationLayoutOpen])
+
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current
+    const anchor = navigationAnchorRef.current
+    if (!anchor || !viewport) return
+    const nextSize = {
+      width: viewport.clientWidth,
+      height: viewport.clientHeight,
+      outerWidth: viewport.offsetWidth,
+    }
+    if (
+      size.width !== nextSize.width ||
+      size.height !== nextSize.height ||
+      size.outerWidth !== nextSize.outerWidth
+    ) {
+      setSize(nextSize)
+      return
+    }
+    navigationAnchorRef.current = undefined
+    const page = viewport.querySelector<HTMLElement>(`[data-testid="pdf-page-${anchor.page}"]`)
+    if (!page) return
+    const bounds = page.getBoundingClientRect()
+    viewport.scrollBy({ top: bounds.top + bounds.height * anchor.y - anchor.clientY })
+  }, [sidebar, size])
   useEffect(() => setPageInput(String(currentPage)), [currentPage])
 
   useEffect(() => {
@@ -676,6 +899,30 @@ export function PdfDocument({
     if (!page || !pageCount) return
     requestFocus({ kind: 'citation', page })
   }, [citation, pageCount, requestFocus])
+
+  const consumedAnnotationFocus = useRef<AnnotationFocus | undefined>(undefined)
+  useEffect(() => {
+    if (selectionTarget && pageCount) requestFocus({ kind: 'citation', page: selectionTarget.page })
+  }, [selectionReveal?.sequence, pageCount, requestFocus])
+  useEffect(() => {
+    if (
+      !annotationFocus ||
+      consumedAnnotationFocus.current === annotationFocus ||
+      annotationFocus.revision !== session?.revision ||
+      sidecar?.source_revision !== session.revision
+    )
+      return
+    const mark = sidecar.records.marks.find(
+      (candidate) =>
+        candidate.id === annotationFocus.markId &&
+        candidate.page === annotationFocus.page &&
+        candidate.anchor_state === 'anchored'
+    )
+    if (!mark) return
+    consumedAnnotationFocus.current = annotationFocus
+    setActiveMark(mark.id)
+    requestFocus({ kind: 'annotation', page: mark.page, id: mark.id })
+  }, [annotationFocus, session?.revision, sidecar, requestFocus])
 
   useEffect(() => {
     if (query.trim()) setFocus(undefined)
@@ -702,9 +949,7 @@ export function PdfDocument({
                 let text = textCache.current.get(page.pageNumber)
                 if (text === undefined) {
                   const content = await page.getTextContent()
-                  text = content.items
-                    .map((item) => ('str' in item ? item.str + (item.hasEOL ? '\n' : '') : ''))
-                    .join('')
+                  text = pdfPlainText(content)
                   if (active) textCache.current.set(page.pageNumber, text)
                 }
                 return { page: page.pageNumber, text }
@@ -810,7 +1055,7 @@ export function PdfDocument({
   }
 
   const selectedText = selections.map((selection) => selection.text).join('\n')
-  const clearSelection = (): void => {
+  const clearSelection = useCallback((): void => {
     setActiveMark(null)
     setSelections([])
     setHighlightOpen(false)
@@ -818,13 +1063,13 @@ export function PdfDocument({
     setCommentDraft('')
     controller.setSelection(tabId, null)
     window.getSelection()?.removeAllRanges()
-  }
+  }, [controller, tabId])
 
   const selectionMarks = (
-    style: PdfMark['style'],
+    style: PdfTextMarkStyle,
     color: PdfMarkColor,
     selected = selections
-  ): PdfMark[] =>
+  ): PdfTextMarkRecord[] =>
     selected.map((selection) => {
       const timestamp = Date.now() / 1000
       return {
@@ -857,9 +1102,12 @@ export function PdfDocument({
     if (options.clear) clearSelection()
     if (pendingFocus) {
       setActiveMark(pendingFocus.id)
-      setSelections([
-        { page: pendingFocus.page, text: pendingFocus.text, quads: pendingFocus.quads },
-      ])
+      if (pendingFocus.style === 'comment') controller.setSelection(tabId, null)
+      setSelections(
+        pendingFocus.style === 'comment'
+          ? []
+          : [{ page: pendingFocus.page, text: pendingFocus.text, quads: pendingFocus.quads }]
+      )
     }
     const saved = await commitPdfRecords(
       session.source,
@@ -895,7 +1143,7 @@ export function PdfDocument({
   }
 
   const addMark = async (
-    style: PdfMark['style'],
+    style: PdfTextMarkStyle,
     color: PdfMarkColor,
     selected = selections
   ): Promise<void> => {
@@ -935,7 +1183,7 @@ export function PdfDocument({
         comments: [...sidecar.records.comments, comment],
         notes: sidecar.records.notes,
       },
-      { focus: mark }
+      {}
     )
   }
 
@@ -948,44 +1196,48 @@ export function PdfDocument({
       body: commentDraft.trim(),
       created_at: Date.now() / 1000,
     }))
-    await persistRecords(
+    const saved = await persistRecords(
       {
         schema_version: PDF_RECORD_SCHEMA_VERSION,
         marks: [...sidecar.records.marks, ...added],
         comments: [...sidecar.records.comments, ...comments],
         notes: sidecar.records.notes,
       },
-      { clear: true, focus: added[0] }
+      {}
     )
+    if (saved) clearSelection()
   }
 
   const updateMark = async (
     markId: string,
-    patch: Partial<Pick<PdfMark, 'color' | 'style'>>
+    patch: { color?: PdfMarkColor; style?: PdfTextMarkStyle }
   ): Promise<void> => {
     if (!sidecar) return
     const current = sidecar.records.marks.find((mark) => mark.id === markId)
     if (
       !current ||
+      (current.style === 'comment' && patch.style !== undefined) ||
       ((patch.color === undefined || patch.color === current.color) &&
         (patch.style === undefined || patch.style === current.style))
     )
       return
     const updatedAt = Date.now() / 1000
+    const updated: PdfMark =
+      current.style === 'comment'
+        ? { ...current, color: patch.color ?? current.color, updated_at: updatedAt }
+        : { ...current, ...patch, updated_at: updatedAt }
     await persistRecords(
       {
         schema_version: PDF_RECORD_SCHEMA_VERSION,
-        marks: sidecar.records.marks.map((mark) =>
-          mark.id === markId ? { ...mark, ...patch, updated_at: updatedAt } : mark
-        ),
+        marks: sidecar.records.marks.map((mark) => (mark.id === markId ? updated : mark)),
         comments: sidecar.records.comments,
         notes: sidecar.records.notes,
       },
-      { focus: { ...current, ...patch, updated_at: updatedAt } }
+      { focus: updated }
     )
   }
 
-  const applyMark = (style: PdfMark['style'], color: PdfMarkColor): void => {
+  const applyMark = (style: PdfTextMarkStyle, color: PdfMarkColor): void => {
     if (activeMark) void updateMark(activeMark, { style, color })
     else void addMark(style, color)
   }
@@ -1003,6 +1255,52 @@ export function PdfDocument({
           { id: crypto.randomUUID(), mark_id: markId, body, created_at: Date.now() / 1000 },
         ],
         notes: sidecar.records.notes,
+      },
+      { focus: mark }
+    )
+  }
+
+  const updateMarkComments = async (markId: string, drafts: PdfCommentEdit[]): Promise<boolean> => {
+    if (!sidecar || !drafts.length || drafts.some((draft) => !draft.body.trim())) return false
+    const mark = sidecar.records.marks.find((candidate) => candidate.id === markId)
+    if (
+      !mark ||
+      drafts.some(
+        (draft) =>
+          !sidecar.records.comments.some(
+            (comment) => comment.id === draft.id && comment.mark_id === markId
+          )
+      )
+    )
+      return false
+    const bodies = new Map(drafts.map((draft) => [draft.id, draft.body.trim()]))
+    return persistRecords(
+      {
+        ...sidecar.records,
+        comments: sidecar.records.comments.map((comment) =>
+          bodies.has(comment.id) ? { ...comment, body: bodies.get(comment.id)! } : comment
+        ),
+      },
+      { focus: mark }
+    )
+  }
+
+  const addPointComment = async (
+    page: number,
+    point: [number, number],
+    body: string
+  ): Promise<boolean> => {
+    if (!sidecar || !session?.capabilities.can_annotate || !body.trim()) return false
+    const mark = createPointMark(page, point)
+    const timestamp = mark.created_at
+    return persistRecords(
+      {
+        ...sidecar.records,
+        marks: [...sidecar.records.marks, mark],
+        comments: [
+          ...sidecar.records.comments,
+          { id: crypto.randomUUID(), mark_id: mark.id, body: body.trim(), created_at: timestamp },
+        ],
       },
       { focus: mark }
     )
@@ -1029,17 +1327,30 @@ export function PdfDocument({
 
   const selectionContribution = useMemo(
     () => ({
+      toolbarEnabled: selectionToolbarEnabled,
+      forceVisible: commentFormOpen,
       actions: (
-        <PdfTools
-          colors={markColors}
-          disabled={!sidecar || saving || !session?.capabilities.can_annotate}
-          hasSelection={selections.length > 0}
-          onApply={applyMark}
-          onColor={(style, color) => setMarkColors((previous) => ({ ...previous, [style]: color }))}
-          onComment={() => setCommentFormOpen((value) => !value)}
-          commentOpen={commentFormOpen}
-          onOpenChange={setHighlightOpen}
-        />
+        <>
+          <PdfTools
+            section="marks"
+            colors={markColors}
+            selectionColor={selectionColor}
+            onSelectionColor={setSelectionColor}
+            disabled={!sidecar || saving || !session?.capabilities.can_annotate}
+            hasSelection={selections.length > 0}
+            onApply={applyMark}
+            onColor={(style, color) =>
+              setMarkColors((previous) => ({ ...previous, [style]: color }))
+            }
+            onComment={toggleSelectionComment}
+            commentOpen={commentFormOpen}
+            onOpenChange={setHighlightOpen}
+          />
+          <Divider
+            orientation="vertical"
+            className="!self-center !min-h-0 !h-[var(--vds-lh-body-lv1)] [--vds-divider-margin-vertical:0_var(--vds-space-1)]"
+          />
+        </>
       ),
       dismiss: () => {
         setHighlightOpen(false)
@@ -1077,11 +1388,10 @@ export function PdfDocument({
           }
         : {}),
       panel: commentFormOpen ? (
-        <div className="vds-selection-action-result">
-          <Textarea
+        <div className="vds-selection-action-result !border-t-0 !gap-[var(--vds-space-3)] !p-[var(--vds-space-3)]">
+          <PdfCommentInput
             autoFocus
             aria-label={t('annotationContent')}
-            label={t('writeComment')}
             rows={3}
             value={commentDraft}
             onChange={(event) => setCommentDraft(event.target.value)}
@@ -1092,18 +1402,21 @@ export function PdfDocument({
             disabled={!commentDraft.trim() || saving}
             onClick={() => void addComment()}
           >
-            {t('saveAnnotation')}
+            {t('pdfAnnotation.kind.comment')}
           </Button>
         </div>
       ) : null,
     }),
     [
+      selectionToolbarEnabled,
       activeMark,
       addAiComment,
       commentDraft,
       commentFormOpen,
+      toggleSelectionComment,
       highlightOpen,
       markColors,
+      selectionColor,
       saving,
       selections,
       session?.capabilities.can_annotate,
@@ -1116,30 +1429,55 @@ export function PdfDocument({
   const copyContribution = useMemo(
     () => ({
       actions: (
-        <CopyButton
-          value={selectedText}
-          size="sm"
-          variant="ghost"
-          disabled={!selectedText}
-          idleLabel={t('copySelection')}
-          onClick={(event) => {
-            const writer = window.scholarseed?.writeClipboard
-            if (!writer) return
-            event.preventDefault()
-            void writer(selectedText).then((result) => {
+        <div className="ml-auto flex shrink-0 items-center gap-[var(--vds-space-1)]">
+          <CopyButton
+            value={selectedText}
+            iconOnly
+            icon={<Copy size={16} />}
+            copiedIcon={<Check size={16} />}
+            feedbackDuration={PDF_COPY_FEEDBACK_DURATION_MS}
+            tooltip
+            size="sm"
+            variant="ghost"
+            disabled={!selectedText}
+            idleLabel={t('copySelection')}
+            writeText={async (text) => {
+              const writer = window.scholarseed?.writeClipboard
+              if (!writer) throw new Error('clipboard unavailable')
+              const result = await writer(text)
               notifyResult(result.ok ? 'copied' : 'copyFailed')
-            })
-          }}
-        >
-          <Copy size={16} />
-          {t('copy')}
-        </CopyButton>
+              if (!result.ok) throw new Error('clipboard write failed')
+            }}
+          />
+          <PdfTools
+            section="comment"
+            colors={markColors}
+            disabled={!sidecar || saving || !session?.capabilities.can_annotate}
+            hasSelection={selections.length > 0}
+            onApply={applyMark}
+            onColor={(style, color) =>
+              setMarkColors((previous) => ({ ...previous, [style]: color }))
+            }
+            onComment={toggleSelectionComment}
+            commentOpen={commentFormOpen}
+          />
+        </div>
       ),
       expanded: false,
       id: 'pdf-copy',
       order: 100,
     }),
-    [selectedText, t]
+    [
+      selectedText,
+      t,
+      markColors,
+      sidecar,
+      saving,
+      session?.capabilities.can_annotate,
+      selections,
+      commentFormOpen,
+      toggleSelectionComment,
+    ]
   )
   useSelectionActionContribution(tabId, selectionContribution)
   useSelectionActionContribution(tabId, copyContribution)
@@ -1306,6 +1644,43 @@ export function PdfDocument({
     update,
     zoom,
   ])
+  const syncSelectionViewport = useCallback((): void => {
+    const host = viewportRef.current
+    if (!host) return
+    const workspace = controller.getSnapshot()
+    const selectedSession = workspace.sessions[sessionId]
+    const presentation = workspace.selectionPresentations[tabId]
+    if (
+      !presentation ||
+      selectedSession?.selection?.status !== 'exact' ||
+      selectedSession.selection.locator.kind !== 'pdf' ||
+      !selections.length
+    )
+      return
+    const viewport = persistedSelectionViewport(host, selections) ?? {
+      ...presentation,
+      boundary: pdfSelectionBoundary(host),
+    }
+    const boundary = viewport.boundary
+    controller.setSelection(tabId, selectedSession.selection, {
+      ...viewport,
+      visible: Boolean(
+        active && boundary && boundary.right > boundary.left && boundary.bottom > boundary.top
+      ),
+    })
+  }, [active, controller, selections, sessionId, tabId])
+  useLayoutEffect(() => {
+    const host = viewportRef.current
+    if (!host) return
+    syncSelectionViewport()
+    const observer = new ResizeObserver(syncSelectionViewport)
+    observer.observe(host)
+    window.addEventListener('resize', syncSelectionViewport)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', syncSelectionViewport)
+    }
+  }, [syncSelectionViewport, scale, sidebar, navigationWidth])
   const onScroll = (): void => {
     const host = viewportRef.current
     if (!host) return
@@ -1323,17 +1698,7 @@ export function PdfDocument({
         current && current.focus !== page ? { ...current, focus: page } : current
       )
     if (page && page !== readingRef.current?.page) update({ page })
-    const workspace = controller.getSnapshot()
-    const selectedSession = workspace.sessions[sessionId]
-    if (
-      !workspace.selectionPresentations[tabId] ||
-      selectedSession?.selection?.status !== 'exact' ||
-      selectedSession.selection.locator.kind !== 'pdf' ||
-      !selections.length
-    )
-      return
-    const viewport = persistedSelectionViewport(host, selections)
-    if (viewport) controller.setSelection(tabId, selectedSession.selection, viewport)
+    syncSelectionViewport()
   }
   const canExport = Boolean(session?.bytes.length && (!recordTargetFor(session.source) || sidecar))
   const exportLabel = exporting
@@ -1369,10 +1734,59 @@ export function PdfDocument({
     cropStart.current = undefined
     setCropBox(null)
   }, [])
+  const preserveReadingPosition = (): void => {
+    const viewport = viewportRef.current
+    const page = viewport?.querySelector<HTMLElement>(`[data-testid="pdf-page-${currentPage}"]`)
+    if (!viewport || !page) return
+    const frame = viewport.getBoundingClientRect()
+    const bounds = page.getBoundingClientRect()
+    if (bounds.width <= 0 || bounds.height <= 0) return
+    const clientX = Math.max(bounds.left, Math.min(bounds.right, frame.left + frame.width / 2))
+    const clientY = Math.max(bounds.top, Math.min(bounds.bottom, frame.top + frame.height / 3))
+    zoomAnchorRef.current = {
+      page: currentPage,
+      x: (clientX - bounds.left) / bounds.width,
+      y: (clientY - bounds.top) / bounds.height,
+      clientX,
+      clientY,
+    }
+  }
+  const toggleNavigation = (): void => {
+    const viewport = viewportRef.current
+    if (viewport && !citationPages?.length && focus?.kind !== 'citation') {
+      const frame = viewport.getBoundingClientRect()
+      const clientY = frame.top + frame.height / 3
+      let nearestDistance = Infinity
+      for (const page of viewport.querySelectorAll<HTMLElement>('.vds-pdf-page')) {
+        const bounds = page.getBoundingClientRect()
+        if (bounds.height <= 0) continue
+        const distance = Math.max(bounds.top - clientY, clientY - bounds.bottom, 0)
+        if (distance >= nearestDistance) continue
+        nearestDistance = distance
+        navigationAnchorRef.current = {
+          page: Number(page.dataset.page),
+          y: (clientY - bounds.top) / bounds.height,
+          clientY,
+        }
+        if (distance === 0) break
+      }
+    }
+    update({ sidebar: !sidebar })
+  }
   const anchoredMarks =
     sidecar?.records.marks.filter((mark) => mark.anchor_state === 'anchored') ?? []
   const analysis = usePdfAnalysis({
     active,
+    artifact:
+      session?.source.kind === 'session-artifact'
+        ? {
+            session_id: session.source.sessionId,
+            artifact_id: session.source.artifactId,
+            member: session.source.memberPath,
+          }
+        : undefined,
+    citation:
+      session?.source.kind === 'session-file' ? pdfCitationSource(session.source) : undefined,
     literatureId,
     literatureTitle: excerptSource?.literatureId === literatureId ? excerptSource.title : '',
     attachmentId,
@@ -1384,13 +1798,20 @@ export function PdfDocument({
     tabId,
     page: currentPage,
     pageCount,
+    documentText,
     selection: selections,
     canAnnotate: Boolean(sidecar && session?.capabilities.can_annotate),
     onAddComment: addAiComment,
     onNavigate: navigate,
-    onLocate: (sourcePage, text) => {
-      navigate(sourcePage)
-      requestFocus({ kind: 'reading', page: sourcePage, text })
+    onLocate: (sourcePage, text, quads) => {
+      if (sourcePage !== currentPage) navigate(sourcePage)
+      requestFocus({ kind: 'reading', page: sourcePage, text, quads })
+    },
+    onReadingLayoutChange: preserveReadingPosition,
+    onReadingOpen: () => {
+      readingResized.current = false
+      update({ mode: 'width', sidebar: false })
+      set({ aiPanel: { ...appState.aiPanel, open: false, cover: false } })
     },
     onDocumentTranslationChange: handleDocumentTranslationChange,
     viewportRef,
@@ -1400,6 +1821,43 @@ export function PdfDocument({
       update({ records: false })
     },
   })
+  const resizableDocumentPanel = Boolean(
+    activeDocumentPanel?.resizable && !analysis.panel && !analysis.expandedSelectionResult
+  )
+  const readingPanelOpen = analysis.panel === 'interpretation' || resizableDocumentPanel
+  const readingPanelExpanded =
+    analysis.panel === 'interpretation'
+      ? analysis.panelExpanded
+      : resizableDocumentPanel && expandedPanel === activeDocumentPanel?.id
+  useLayoutEffect(() => {
+    const group = readingGroupRef.current
+    if (!group || !readingPanelOpen || readingPanelExpanded) return
+    const resize = (): void => {
+      if (readingResized.current) return
+      const handle = group.children[1] as HTMLElement | undefined
+      const available = group.clientWidth - (handle?.offsetWidth ?? 0)
+      const panelWidth = parseFloat(
+        getComputedStyle(group).getPropertyValue('--vds-layout-pdf-panel-width')
+      )
+      if (available <= 0 || !Number.isFinite(panelWidth)) return
+      const percent = Math.min(100 - READING_SPLIT_MINIMUM, (panelWidth / available) * 100)
+      setReadingSplit([100 - percent, percent])
+      setReadingPanelMinimum(Math.min(READING_SPLIT_MINIMUM, percent))
+    }
+    resize()
+    const observer = new ResizeObserver(resize)
+    observer.observe(group)
+    return () => observer.disconnect()
+  }, [readingPanelOpen, readingPanelExpanded])
+  useEffect(() => {
+    if (
+      active &&
+      appState.aiPanel.open &&
+      analysis.panel === 'interpretation' &&
+      !analysis.preparingChat
+    )
+      analysis.setPanel(null)
+  }, [active, appState.aiPanel.open])
   const copyVisualRegion = useCallback(
     async (region: PdfVisualRegion): Promise<void> => {
       if (!session) return
@@ -1431,7 +1889,7 @@ export function PdfDocument({
     analysis.exitFigureSelection()
   }, [analysis.exitFigureSelection, clearFigureSelection])
   const activeDocumentPanelId = activeDocumentPanel?.id
-  const rightPanelOpen = Boolean(analysis.sidePanel || recordsOpen || activeDocumentPanelId)
+  const rightPanelOpen = Boolean(analysis.sidePanel || (activeDocumentPanelId && !analysis.panel))
   useEffect(() => {
     if (!active) return
     set({
@@ -1457,18 +1915,178 @@ export function PdfDocument({
     if (!opened.ok) toast({ title: t('encrypted.openFailed'), tone: 'error' })
   }
 
+  const renderAnnotation = (
+    mark: PdfMark,
+    close: () => void,
+    initialMode: 'edit' | 'comment' = 'edit',
+    inlineComment = false,
+    appearanceOnly = false
+  ): React.ReactNode => (
+    <PdfAnnotation
+      result={analysis.annotationResult?.markId === mark.id ? analysis.annotationResult : null}
+      onOpenSettings={() => appActions.openSettings('prompts')}
+      key={`${mark.id}-${initialMode}`}
+      initialMode={appearanceOnly && mark.style === 'comment' ? 'comment' : initialMode}
+      inlineComment={inlineComment}
+      appearanceOnly={appearanceOnly && initialMode === 'edit' && mark.style !== 'comment'}
+      analyzing={analysis.selectionAnalyzing}
+      canAnalyze={mark.style !== 'comment' && analysis.canAnalyzeSelection}
+      comments={sidecar?.records.comments.filter((comment) => comment.mark_id === mark.id) ?? []}
+      mark={mark}
+      saving={saving}
+      onColorChange={(color) => {
+        void updateMark(mark.id, { color })
+      }}
+      onComment={(body) => addMarkComment(mark.id, body)}
+      onUpdateComments={(drafts) => updateMarkComments(mark.id, drafts)}
+      onClose={close}
+      onDelete={() => {
+        void deleteMark(mark.id)
+      }}
+      onStyleChange={(style) => {
+        void updateMark(mark.id, { style })
+      }}
+      onExplain={(instruction) => {
+        if (mark.style === 'comment') return
+        analysis.explainSelection(
+          { page: mark.page, text: mark.text, quads: mark.quads },
+          instruction,
+          mark.id
+        )
+      }}
+      onTranslate={() => {
+        if (mark.style === 'comment') return
+        analysis.translateSelection(
+          { page: mark.page, text: mark.text, quads: mark.quads },
+          mark.id
+        )
+      }}
+      onAddToTask={async () => {
+        if (
+          !session ||
+          mark.anchor_state !== 'anchored' ||
+          !sidecar ||
+          sidecar.source_revision !== session.revision
+        )
+          return false
+        const added = await addPdfCommentContext(
+          session,
+          sidecar,
+          mark.id,
+          mark.style === 'comment'
+            ? null
+            : {
+                document_id: session.documentId,
+                document_session_id: sessionId,
+                revision: session.revision,
+                status: 'exact',
+                text: mark.text,
+                locator: {
+                  kind: 'pdf',
+                  page: mark.page,
+                  quads: mark.quads,
+                  text_length: Array.from(mark.text).length,
+                },
+              },
+          controller,
+          ingress
+        )
+        if (!added) return false
+        return true
+      }}
+    />
+  )
+
   useEffect(() => {
     if (analysis.figure) setActiveTool(null)
   }, [analysis.figure])
   useEffect(() => {
-    if (!analysis.figure) return undefined
+    if (!active || (!analysis.figure && !activeTool && !selections.length && !activeMark))
+      return undefined
     const onEscape = (event: KeyboardEvent): void => {
-      if (event.key !== 'Escape') return
-      exitFigureSelection()
+      if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing) return
+      if (controller.getSnapshot().focusedTabId !== tabId) return
+      if (
+        (event.target as Element | null)?.closest(
+          'input, textarea, [contenteditable="true"], [role="dialog"], [role="region"]'
+        )
+      )
+        return
+      event.preventDefault()
+      if (analysis.figure) exitFigureSelection()
+      setActiveTool(null)
+      setSelectionDragSpan(null)
+      clearSelection()
     }
     window.addEventListener('keydown', onEscape)
     return () => window.removeEventListener('keydown', onEscape)
-  }, [analysis.figure, exitFigureSelection])
+  }, [
+    active,
+    activeMark,
+    activeTool,
+    analysis.figure,
+    clearSelection,
+    controller,
+    exitFigureSelection,
+    selections.length,
+    tabId,
+  ])
+
+  const documentPanelContent =
+    activeDocumentPanel &&
+    !analysis.panel &&
+    !analysis.expandedSelectionResult &&
+    documentPanels ? (
+      <PdfPanel
+        key={`${documentPanels.context.documentSessionId}:${activeDocumentPanel.id}`}
+        ariaLabel={activeDocumentPanel.label(i18n)}
+        bodyClassName={
+          activeDocumentPanel.headerActions ? 'min-h-0 flex-1 overflow-hidden' : undefined
+        }
+        closeLabel={t('reading.close')}
+        expanded={expandedPanel === activeDocumentPanel.id}
+        inline={resizableDocumentPanel}
+        icon={activeDocumentPanel.icon ?? <NotepadText size={16} />}
+        testId={`document-panel-${activeDocumentPanel.id}`}
+        headerSeparator={activeDocumentPanel.headerSeparator}
+        title={activeDocumentPanel.title}
+        headerActionsRef={
+          activeDocumentPanel.headerActions ? setDocumentPanelHeaderHost : undefined
+        }
+        onClose={() => {
+          setExpandedPanel(null)
+          documentPanels.toggle(activeDocumentPanel.id)
+        }}
+        onToggleExpanded={
+          activeDocumentPanel.headerActions && !activeDocumentPanel.resizable
+            ? undefined
+            : () => {
+                preserveReadingPosition()
+                setExpandedPanel((value) =>
+                  value === activeDocumentPanel.id ? null : activeDocumentPanel.id
+                )
+              }
+        }
+      >
+        {activeDocumentPanel.render(documentPanels.context, {
+          headerActionsHost: documentPanelHeaderHost,
+          annotationAction: (onDirectWrite) =>
+            activeDocumentPanel.renderAnnotationAction?.({
+              context: documentPanels.context,
+              snapshot: sidecar ?? null,
+              disabled: saving,
+              dismissSelection: clearSelection,
+              openPanel: () => {
+                if (documentPanels.activePanelId !== activeDocumentPanel.id) {
+                  documentPanels.toggle(activeDocumentPanel.id)
+                }
+              },
+              placement: 'panel',
+              onDirectWrite,
+            }),
+        })}
+      </PdfPanel>
+    ) : null
 
   const requestedPage = Number(goToPageValue)
   const canGoToPage =
@@ -1483,6 +2101,35 @@ export function PdfDocument({
     setGoToPageOpen(false)
   }
 
+  const documentPanelActions = (placement: 'start' | 'end'): React.ReactNode =>
+    documentPanels?.panels
+      .filter((panel) => (panel.railPlacement ?? 'end') === placement)
+      .map((panel) => {
+        const label = panel.label(i18n)
+        return (
+          <Tooltip key={panel.id} portalled content={label} side="left">
+            <IconButton
+              aria-pressed={documentPanels.activePanelId === panel.id}
+              data-testid={`document-panel-toggle-${panel.id}`}
+              label={label}
+              title={undefined}
+              icon={panel.icon ?? <NotepadText size={18} />}
+              variant={
+                documentPanels.activePanelId === panel.id && panel.activeTone === 'brand'
+                  ? 'secondary'
+                  : 'ghostIcon'
+              }
+              onClick={() => {
+                exitFigureSelection()
+                analysis.setPanel(null)
+                update({ records: false })
+                setExpandedPanel(null)
+                documentPanels.toggle(panel.id)
+              }}
+            />
+          </Tooltip>
+        )
+      })
   return (
     <div
       ref={documentRef}
@@ -1510,26 +2157,34 @@ export function PdfDocument({
             />
           )}
           <div
-            className="vds-pdf-tools grid min-h-12 grid-cols-[minmax(max-content,1fr)_minmax(max-content,1fr)] items-center gap-3 overflow-x-auto border-b border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] px-[var(--vds-space-4)] py-1.5 text-[length:var(--vds-font-body-lv2)]"
+            className="vds-pdf-tools [&_.vds-icon-button]:!size-[var(--vds-control-height-md)] [&_.vds-icon-button]:!min-w-[var(--vds-control-height-md)] [&_.vds-icon-button>span]:!text-[var(--vds-icon-outline-default)] [&_svg]:!text-[var(--vds-icon-outline-default)] [&_.iconfont]:!text-[var(--vds-icon-outline-default)] relative flex min-h-[var(--vds-library-toolbar-height)] flex-wrap items-center gap-[var(--vds-space-2)] border-b border-[var(--vds-border-default)] bg-[var(--vds-bg-gray-light-default)] px-[var(--vds-space-4)] py-[var(--vds-space-2)] text-[length:var(--vds-pdf-selection-font-size)]"
             role="toolbar"
             aria-label={t('pdfToolbar.toolbar')}
           >
-            <div className="flex items-center justify-self-start gap-[var(--vds-space-2)]">
-              <IconButton
-                label={t('pdfToolbar.directory')}
-                icon={<Icon name="list" size={15} />}
-                size="sm"
-                variant="outline"
-                data-testid="pdf-sidebar-toggle"
-                aria-pressed={sidebar}
-                onClick={() => update({ sidebar: !sidebar })}
-              />
+            <div className="flex min-w-0 flex-1 flex-wrap items-center justify-center gap-[var(--vds-toolbar-icon-gap)] px-[calc(var(--vds-control-height-md)*2+var(--vds-space-2))]">
+              <Tooltip
+                portalled
+                content={t('pdfToolbar.directory')}
+                className="!absolute left-[var(--vds-space-3)] top-[var(--vds-space-2)]"
+              >
+                <IconButton
+                  label={t('pdfToolbar.directory')}
+                  title={undefined}
+                  icon={<BookOpen size={15} />}
+                  size="sm"
+                  variant="ghostIcon"
+                  data-testid="pdf-sidebar-toggle"
+                  className="hover:!text-[var(--vds-text-secondary)] aria-pressed:!text-[var(--vds-text-primary)] hover:[&_svg]:!text-[var(--vds-text-secondary)] aria-pressed:[&_svg]:!text-[var(--vds-text-primary)] aria-pressed:hover:!text-[var(--vds-text-primary)] aria-pressed:hover:[&_svg]:!text-[var(--vds-text-primary)]"
+                  aria-pressed={sidebar}
+                  onClick={toggleNavigation}
+                />
+              </Tooltip>
               {returnPosition ? (
                 <IconButton
                   label={t('pdfToolbar.returnToSource')}
                   icon={<Undo2 />}
                   size="sm"
-                  variant="outline"
+                  variant="ghost"
                   data-testid="pdf-return-to-source"
                   onClick={returnToLinkSource}
                 />
@@ -1538,7 +2193,7 @@ export function PdfDocument({
                 label={t('pdfToolbar.zoomOut')}
                 icon={<Icon name="minus" size={15} />}
                 size="sm"
-                variant="outline"
+                variant="ghost"
                 data-testid="pdf-zoom-out"
                 disabled={scale <= MIN_SCALE}
                 onClick={() => zoom(scale - SCALE_STEP)}
@@ -1556,10 +2211,14 @@ export function PdfDocument({
                 label={t('pdfToolbar.zoomIn')}
                 icon={<Icon name="plus" size={15} />}
                 size="sm"
-                variant="outline"
+                variant="ghost"
                 data-testid="pdf-zoom-in"
                 disabled={scale >= MAX_SCALE}
                 onClick={() => zoom(scale + SCALE_STEP)}
+              />
+              <Divider
+                orientation="vertical"
+                className="!self-center !min-h-0 !h-[var(--vds-lh-body-lv1)] [--vds-divider-margin-vertical:0_var(--vds-space-2)]"
               />
               <IconButton
                 label={t('pdfToolbar.previousPage')}
@@ -1569,13 +2228,13 @@ export function PdfDocument({
                   </span>
                 }
                 size="sm"
-                variant="outline"
+                variant="ghost"
                 data-testid="pdf-previous"
                 disabled={currentPage <= 1 || !pageCount}
                 onClick={() => navigate(currentPage - 1)}
               />
               <Input
-                className="!w-[var(--vds-pdf-page-number-width)] text-center tabular-nums"
+                className="!h-[var(--vds-control-height-sm)] !w-[var(--vds-pdf-page-number-width)] !px-0 text-center tabular-nums"
                 size="sm"
                 aria-label={t('pdfToolbar.pageNumber')}
                 data-testid="pdf-page-input"
@@ -1590,17 +2249,61 @@ export function PdfDocument({
                 }}
                 onBlur={() => navigate(pageNumber(pageInput, pageCount))}
               />
-              <span className="whitespace-nowrap tabular-nums">/ {pageCount || '…'}</span>
+              <span className="whitespace-nowrap text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] [font-weight:var(--vds-fw-regular)] text-[var(--vds-text-tertiary)] tabular-nums">
+                / {pageCount || '…'}
+              </span>
               <IconButton
                 label={t('pdfToolbar.nextPage')}
                 icon={<Icon name="chevron-right" size={15} />}
                 size="sm"
-                variant="outline"
+                variant="ghost"
                 data-testid="pdf-next"
                 disabled={currentPage >= pageCount}
                 onClick={() => navigate(currentPage + 1)}
               />
-              <span className="ml-2 inline-flex border-l border-[var(--vds-border-default)] pl-2">
+              <Divider
+                orientation="vertical"
+                className="!self-center !min-h-0 !h-[var(--vds-lh-body-lv1)] [--vds-divider-margin-vertical:0_var(--vds-space-2)]"
+              />
+              <span
+                {...documentSelectionInteractionProps}
+                className="inline-flex items-center gap-[var(--vds-toolbar-icon-gap)] [&>[data-pdf-annotation-tools]]:order-first"
+              >
+                {analysis.toolbar}
+                {analysis.toolbar && (
+                  <Divider
+                    orientation="vertical"
+                    data-testid="pdf-selection-toolbar-divider"
+                    className="!self-center !min-h-0 !h-[var(--vds-lh-body-lv1)] [--vds-divider-margin-vertical:0_var(--vds-space-2)]"
+                  />
+                )}
+                {translationBackend ? (
+                  <span className="inline-flex items-center gap-[var(--vds-space-2)] whitespace-nowrap">
+                    <Switch
+                      data-testid="pdf-selection-toolbar"
+                      label={translationText('toolbar')}
+                      checked={selectionToolbarEnabled}
+                      disabled={selectionToolbarDisabled}
+                      onCheckedChange={setSelectionToolbarEnabled}
+                    />
+                    <span className="font-[var(--vds-fw-regular)] text-[var(--vds-text-secondary)]">
+                      {translationText('toolbar')}
+                    </span>
+                  </span>
+                ) : (
+                  <Tooltip portalled content={t('selectionToolbarHint')} side="bottom">
+                    <Toggle
+                      pressed={selectionToolbarEnabled}
+                      onPressedChange={setSelectionToolbarEnabled}
+                      aria-label={t('selectionToolbar')}
+                      data-testid="pdf-selection-toolbar-toggle"
+                      className="!text-[length:var(--vds-pdf-selection-font-size)]"
+                      size="sm"
+                    >
+                      {t('selectionToolbar')}
+                    </Toggle>
+                  </Tooltip>
+                )}
                 <PdfTools
                   colors={markColors}
                   disabled={!sidecar || saving || !session?.capabilities.can_annotate}
@@ -1609,18 +2312,31 @@ export function PdfDocument({
                   onColor={(style, color) =>
                     setMarkColors((previous) => ({ ...previous, [style]: color }))
                   }
-                  onComment={() => setCommentFormOpen((value) => !value)}
+                  onComment={toggleSelectionComment}
                   commentOpen={commentFormOpen}
                   activeTool={activeTool}
                   onToggle={(tool) => {
                     exitFigureSelection()
-                    setActiveTool((previous) => (previous === tool ? null : tool))
+                    dismissSelectionActions(tabId)
+                    const nextTool = activeTool === tool ? null : tool
+                    setActiveTool(nextTool)
+                    setCommentFormOpen(nextTool === PDF_COMMENT_TOOL && selections.length > 0)
                   }}
                 />
               </span>
+              <TranslationPreferenceStatus showProgress={false} />
             </div>
-            <div className="flex items-center justify-self-end gap-[var(--vds-space-2)]">
-              {analysis.toolbar}
+            <div className="absolute right-[var(--vds-space-4)] top-[var(--vds-space-2)] flex items-center gap-[var(--vds-space-2)]">
+              <Tooltip portalled content={translationText('settingsButton')} side="bottom">
+                <IconButton
+                  size="sm"
+                  variant="ghost"
+                  label={translationText('settingsButton')}
+                  icon={<SlidersHorizontal size={16} />}
+                  data-testid="pdf-translation-settings"
+                  onClick={() => appActions.openSettings('translation')}
+                />
+              </Tooltip>
               {excerptSource && session?.source.kind === 'project' && session.source.project ? (
                 <LiteratureExcerptImport
                   documentRevision={session.revision}
@@ -1636,7 +2352,7 @@ export function PdfDocument({
                   title={undefined}
                   icon={<Icon name="upload" size={15} />}
                   size="sm"
-                  variant="outline"
+                  variant="ghost"
                   data-testid="pdf-export"
                   disabled={!canExport || exporting}
                   onClick={() => void exportPdf()}
@@ -1646,7 +2362,7 @@ export function PdfDocument({
             {citationPages && citationPages.length > 1 && (
               <span
                 aria-label={t('citationPages')}
-                className="col-span-2 inline-flex items-center gap-1"
+                className="inline-flex w-full items-center gap-1"
               >
                 <span>{t('citationLabel')}</span>
                 {citationPages.map((target) => (
@@ -1665,40 +2381,6 @@ export function PdfDocument({
                 ))}
               </span>
             )}
-            {citationTargets.length > 1 && (
-              <span
-                aria-label={t('citationNavigation')}
-                className="col-span-2 inline-flex items-center gap-1"
-              >
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  disabled={citationTargetIndex <= 0}
-                  onClick={() => {
-                    const target = citationTargets[citationTargetIndex - 1]
-                    requestFocus({ kind: 'citation', ...target })
-                  }}
-                >
-                  {t('previousEvidence')}
-                </Button>
-                <span>
-                  {citationTargetIndex < 0
-                    ? t('evidenceCount', { total: citationTargets.length })
-                    : `${citationTargetIndex + 1} / ${citationTargets.length}`}
-                </span>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  disabled={citationTargetIndex === citationTargets.length - 1}
-                  onClick={() => {
-                    const target = citationTargets[citationTargetIndex + 1]
-                    requestFocus({ kind: 'citation', ...target })
-                  }}
-                >
-                  {t('nextEvidence')}
-                </Button>
-              </span>
-            )}
           </div>
           {(loadError !== null || (sidecar && sidecar.source_state !== 'available')) && (
             <div
@@ -1715,450 +2397,619 @@ export function PdfDocument({
             </div>
           )}
           <div
-            className={`vds-pdf-reader relative grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)] overflow-hidden${isLiterature ? ' !flex' : ''}${sidebar ? ' !flex has-sidebar' : ''}`}
+            className={`vds-pdf-reader relative grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)] overflow-hidden${isLiterature || translationBackend ? ' !flex' : ''}${sidebar ? ' !flex has-sidebar' : ''}`}
           >
-            {sidebar && (
-              <ResizablePanel
-                className="pointer-events-none! absolute inset-y-0 left-0 z-[var(--vds-z-surface-panel)] [&>button]:pointer-events-auto! [&>div:first-child]:pointer-events-auto! [&>div:first-child]:overflow-hidden! [&>div:last-child]:pointer-events-none!"
-                data-testid="pdf-navigation-resizable"
-                leftPanel={
-                  <aside
-                    className="vds-pdf-sidebar box-border h-full w-full min-w-0 overflow-x-hidden! overflow-y-auto! border-r border-[var(--border-soft)] bg-[var(--bg-1)] p-[var(--vds-space-2)]! bg-[var(--vds-bg-white-default)]! shadow-[var(--vds-shadow-2-right)] [&_nav]:flex [&_nav]:flex-col [&_nav]:items-center [&_nav]:gap-[var(--vds-space-2)] [&_nav]:pt-[var(--vds-space-3)]"
-                    aria-label={t('navigation')}
-                  >
-                    <Tabs
-                      className="h-full min-h-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden"
-                      value={sidebarTab}
-                      onValueChange={(value) => update({ sidebarTab: value })}
-                    >
-                      <TabsList className="[&_.vds-tabs__trigger]:whitespace-nowrap">
-                        <TabsTrigger value="outline">{t('outlineTab')}</TabsTrigger>
-                        <TabsTrigger value="pages">{t('pagesTab')}</TabsTrigger>
-                        <TabsTrigger value="search">{t('searchTab')}</TabsTrigger>
-                      </TabsList>
-                      <TabsContent
-                        value="outline"
-                        className="min-h-0 overflow-x-hidden overflow-y-auto"
-                      >
-                        {!outline.length && (
-                          <p className="vds-pdf-records-empty text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--text-3)]">
-                            {t('noOutline')}
-                          </p>
-                        )}
-                        <PdfOutline items={outline} onNavigate={navigate} />
-                      </TabsContent>
-                      <TabsContent
-                        value="pages"
-                        className="min-h-0 overflow-x-hidden overflow-y-auto"
-                      >
-                        <nav aria-label={t('thumbnails')}>
-                          {pageNumbers.map((number) => (
-                            <Button
-                              key={number}
-                              variant="ghost"
-                              size="content"
-                              data-testid={`pdf-thumbnail-${number}`}
-                              aria-label={t('goToPage', { page: number })}
-                              aria-current={currentPage === number ? 'page' : undefined}
-                              onClick={() => navigate(number)}
-                            >
-                              <span className="vds-pdf-thumbnail grid gap-[var(--vds-space-1)] text-center">
-                                <PdfPageSlot
-                                  estimatedSize={estimatedPageSize}
-                                  fonts={fonts}
-                                  initialPage={loadedPages.get(number)}
-                                  loadPage={loadPage}
-                                  pageNumber={number}
-                                  scale={THUMBNAIL_WIDTH / estimatedPageSize.width}
-                                  thumbnail
-                                />
-                                <span>{number}</span>
-                              </span>
-                            </Button>
-                          ))}
-                        </nav>
-                      </TabsContent>
-                      <TabsContent value="search" className="min-h-0 overflow-hidden">
-                        <div
-                          role="search"
-                          className="grid h-full min-h-0 grid-rows-[auto_auto_auto_minmax(0,1fr)] gap-2 pt-2"
-                        >
-                          <Textarea
-                            className="w-full min-w-0 resize-none overflow-x-hidden"
-                            ref={searchInputRef}
-                            size="sm"
-                            aria-label={t('searchText')}
-                            placeholder={t('searchText')}
-                            data-testid="pdf-search"
-                            wrap="soft"
-                            value={query}
-                            onChange={(event) => update({ query: event.target.value })}
-                          />
-                          <span role="status" className="text-xs text-[var(--text-3)]">
-                            {query.trim()
-                              ? searching
-                                ? t('searching')
-                                : searchError !== null
-                                  ? t('searchFailed', { detail: searchError })
-                                  : hits.length
-                                    ? t('matchCount', { current: hitIndex + 1, total: hits.length })
-                                    : hasText
-                                      ? t('noMatches')
-                                      : t('noText')
-                              : ''}
-                          </span>
-                          <div className="flex gap-1">
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              disabled={!hits.length}
-                              onClick={() => searchStep(-1)}
-                            >
-                              {t('previousMatch')}
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              data-testid="pdf-search-next"
-                              disabled={!hits.length}
-                              onClick={() => searchStep(1)}
-                            >
-                              {t('nextMatch')}
-                            </Button>
-                          </div>
-                          <nav
-                            aria-label={t('searchResults')}
-                            className="min-h-0 min-w-0 items-stretch! overflow-x-hidden overflow-y-auto"
-                          >
-                            {hits.map((hit, index) => (
-                              <Button
-                                key={`${hit.page}-${hit.ordinal}`}
-                                size="content"
-                                variant="ghost"
-                                className="w-full min-w-0 justify-start text-left whitespace-normal! [overflow-wrap:anywhere]"
-                                onClick={() => {
-                                  setHitIndex(index)
-                                  navigate(hit.page)
-                                  requestFocus({
-                                    kind: 'search',
-                                    page: hit.page,
-                                    ordinal: hit.ordinal,
-                                  })
-                                }}
-                              >
-                                {t('page', { page: hit.page })} ·{' '}
-                                <span className="min-w-0 [overflow-wrap:anywhere]">
-                                  {searchSnippet(hit.text, query)}
-                                </span>
-                              </Button>
-                            ))}
-                          </nav>
-                        </div>
-                      </TabsContent>
-                    </Tabs>
-                  </aside>
-                }
-                leftWidth={`${navigationWidth}px`}
-                maxLeftWidth={PDF_NAVIGATION_MAX_WIDTH_PX}
-                minLeftWidth={PDF_NAVIGATION_MIN_WIDTH_PX}
-                rightPanel={<span aria-hidden />}
-                onWidthChange={(width) => update({ navigationWidth: Number.parseFloat(width) })}
-              />
-            )}
-            <div
-              ref={viewportRef}
-              data-ob="pdf-viewport"
-              className={`vds-pdf-pages min-h-0 min-w-0 flex-1 overflow-auto p-[var(--vds-space-4)] [overflow-anchor:none] [scrollbar-gutter:stable_both-edges]${analysis.figure ? ' cursor-crosshair' : ''}`}
-              style={{ marginLeft: sidebar ? `${navigationWidth}px` : undefined }}
-              onScroll={onScroll}
-              onMouseUp={() => {
-                if (!analysis.figure) {
-                  captureSelection(true)
-                  setSelectionDragSpan(null)
+            <ResizablePanelGroup
+              ref={readingGroupRef}
+              className={`min-h-0 min-w-0 flex-1 !rounded-none !border-0 ${analysis.expandedSelectionResult ? 'invisible' : ''}`}
+              data-testid="pdf-reading-split"
+              sizes={readingPanelOpen ? (readingPanelExpanded ? [0, 100] : readingSplit) : [100, 0]}
+              onSizesChange={(sizes) => {
+                if (readingPanelOpen && !readingPanelExpanded) {
+                  readingResized.current = true
+                  preserveReadingPosition()
+                  setReadingSplit(sizes)
                 }
               }}
-              onKeyUp={() => captureSelection()}
-              onPointerDownCapture={(event) => {
-                const element = (event.target as HTMLElement).closest<HTMLElement>('.vds-pdf-page')
-                if (!analysis.figure) {
-                  const page = element ? Number(element.dataset.page) : null
-                  setSelectionDragSpan(page ? { anchor: page, focus: page } : null)
-                  return
-                }
-                if (!element) return
-                event.preventDefault()
-                event.stopPropagation()
-                analysis.setFigureGuideOpen(false)
-                cropStart.current = {
-                  x: event.clientX,
-                  y: event.clientY,
-                  bounds: element.getBoundingClientRect(),
-                  page: Number(element.dataset.page),
-                }
-                event.currentTarget.setPointerCapture(event.pointerId)
-              }}
-              onPointerMove={(event) => {
-                if (!analysis.figure) {
-                  const element = (event.target as HTMLElement).closest<HTMLElement>(
-                    '.vds-pdf-page'
-                  )
-                  const page = element ? Number(element.dataset.page) : null
-                  if (page)
-                    setSelectionDragSpan((current) =>
-                      current && current.focus !== page ? { ...current, focus: page } : current
-                    )
-                  return
-                }
-                const start = cropStart.current
-                if (!start) return
-                const x = Math.max(start.bounds.left, Math.min(start.bounds.right, event.clientX)),
-                  y = Math.max(start.bounds.top, Math.min(start.bounds.bottom, event.clientY))
-                setCropBox({
-                  left: Math.min(x, start.x),
-                  top: Math.min(y, start.y),
-                  width: Math.abs(x - start.x),
-                  height: Math.abs(y - start.y),
-                })
-              }}
-              onPointerUp={(event) => {
-                const start = cropStart.current
-                if (!start) return
-                event.preventDefault()
-                cropStart.current = undefined
-                if (
-                  cropBox &&
-                  cropBox.width >= MIN_FIGURE_SELECTION_PX &&
-                  cropBox.height >= MIN_FIGURE_SELECTION_PX
-                )
-                  analysis.selectFigure(start.page, [
-                    (cropBox.left - start.bounds.left) / start.bounds.width,
-                    (cropBox.top - start.bounds.top) / start.bounds.height,
-                    cropBox.width / start.bounds.width,
-                    cropBox.height / start.bounds.height,
-                  ])
-                setCropBox(null)
-              }}
-              onPointerCancel={() => setSelectionDragSpan(null)}
             >
-              <div
-                data-testid="pdf-pages-track"
-                className={`box-border min-h-full${rightPanelOpen ? ' min-w-[calc(100%+var(--vds-layout-pdf-panel-width))] pr-[var(--vds-layout-pdf-panel-width)]' : ' min-w-full'}`}
+              <ResizablePanel
+                minSize={readingPanelOpen && !readingPanelExpanded ? READING_SPLIT_MINIMUM : 0}
+                maxSize={100}
+                className="relative flex min-h-0 min-w-0 overflow-hidden !p-0 bg-[var(--vds-bg-gray-light-default)]"
               >
-                {!pageCount && loadError === null && (
-                  <div className="px-[var(--vds-space-3)] py-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv1)] [overflow-wrap:anywhere]">
-                    {t('loading')}
+                {sidebar && (
+                  <ResizablePanel
+                    className="pointer-events-none! absolute inset-y-0 left-0 z-[var(--vds-z-surface-panel)] !rounded-none !border-0 [&>button]:pointer-events-auto! [&>div:first-child]:pointer-events-auto! [&>div:first-child]:overflow-hidden! [&>div:last-child]:pointer-events-none!"
+                    data-testid="pdf-navigation-resizable"
+                    leftPanel={
+                      <aside
+                        className="vds-pdf-sidebar box-border h-full w-full min-w-0 overflow-x-hidden! overflow-y-auto! p-0! bg-[var(--vds-bg-gray-light-default)]! [&_nav]:flex [&_nav]:flex-col [&_nav]:items-center [&_nav]:gap-[var(--vds-space-2)] [&_nav]:pt-[var(--vds-space-3)]"
+                        aria-label={t('navigation')}
+                      >
+                        <Tabs
+                          className="h-full min-h-0 !gap-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden [&>[role=tablist]]:!pt-[var(--vds-space-4)]"
+                          value={sidebarTab}
+                          onValueChange={(value) => update({ sidebarTab: value })}
+                        >
+                          <TabsList className="h-auto! w-full min-w-0 justify-start! gap-[var(--vds-space-1)]! rounded-none! border-b! border-solid! border-[var(--vds-divider-default)]! bg-transparent! px-[var(--vds-space-3)]! py-[var(--vds-space-2)]! [&>span[aria-hidden=true]]:hidden! [&_button[role=tab]]:!size-[var(--vds-control-height-md)] [&_button[role=tab]]:!rounded-[var(--vds-radius-4)] [&_button[role=tab]]:!p-0 [&_button[role=tab]_svg]:!size-[var(--vds-icon-7)] [&_button[role=tab]]:data-[state=active]:bg-[var(--vds-other-overlay-2)] [&_button[role=tab]]:data-[state=active]:text-[var(--vds-text-primary)]">
+                            <TabsTrigger
+                              value="outline"
+                              aria-label={t('outlineTab')}
+                              className="min-w-0 flex-none px-[var(--vds-space-2)]! whitespace-nowrap"
+                            >
+                              <Tooltip
+                                portalled
+                                content={t('outlineTab')}
+                                className="flex size-full items-center justify-center"
+                              >
+                                <span className="inline-flex size-full items-center justify-center">
+                                  <BookOpen size={14} />
+                                  <span className="sr-only">{t('outlineTab')}</span>
+                                </span>
+                              </Tooltip>
+                            </TabsTrigger>
+                            <TabsTrigger
+                              value="pages"
+                              aria-label={t('pagesTab')}
+                              className="min-w-0 flex-none px-[var(--vds-space-2)]! whitespace-nowrap"
+                            >
+                              <Tooltip
+                                portalled
+                                content={t('pagesTab')}
+                                className="flex size-full items-center justify-center"
+                              >
+                                <span className="inline-flex size-full items-center justify-center">
+                                  <SquareChartGantt size={14} />
+                                  <span className="sr-only">{t('pagesTab')}</span>
+                                </span>
+                              </Tooltip>
+                            </TabsTrigger>
+                            <TabsTrigger
+                              value="annotations"
+                              data-testid="pdf-annotations-tab"
+                              aria-label={t('pdfAnnotation.records')}
+                              className="min-w-0 flex-none px-[var(--vds-space-2)]! whitespace-nowrap"
+                            >
+                              <Tooltip
+                                portalled
+                                content={t('pdfAnnotation.records')}
+                                className="flex size-full items-center justify-center"
+                              >
+                                <span className="inline-flex size-full items-center justify-center">
+                                  <NotebookPen size={14} />
+                                  <span className="sr-only">{t('pdfAnnotation.records')}</span>
+                                </span>
+                              </Tooltip>
+                            </TabsTrigger>
+                            <TabsTrigger
+                              value="search"
+                              aria-label={t('searchTab')}
+                              title={t('searchTab')}
+                              className="ml-auto min-w-0 flex-none px-[var(--vds-space-2)]! whitespace-nowrap"
+                            >
+                              <Icon name="search" size={15} />
+                              <span className="sr-only">{t('searchTab')}</span>
+                            </TabsTrigger>
+                          </TabsList>
+                          <TabsContent
+                            value="outline"
+                            className="min-h-0 overflow-x-hidden overflow-y-auto !p-[var(--vds-space-3)] [&_nav]:!pt-0"
+                          >
+                            {!outline.length && (
+                              <EmptyState
+                                variant="compact"
+                                title={t('noOutline')}
+                                className="h-full [&>div>div]:text-[length:var(--vds-font-body-lv1)] [&>div>div]:leading-[var(--vds-lh-body-lv1)]"
+                              />
+                            )}
+                            <PdfOutline items={outline} onNavigate={navigate} />
+                          </TabsContent>
+                          <TabsContent
+                            value="pages"
+                            className="min-h-0 overflow-x-hidden overflow-y-auto"
+                          >
+                            <nav aria-label={t('thumbnails')} className="!gap-[var(--vds-space-3)]">
+                              {pageNumbers.map((number) => (
+                                <Button
+                                  key={number}
+                                  variant="ghost"
+                                  size="content"
+                                  data-testid={`pdf-thumbnail-${number}`}
+                                  aria-label={t('goToPage', { page: number })}
+                                  aria-current={currentPage === number ? 'page' : undefined}
+                                  onClick={() => navigate(number)}
+                                >
+                                  <span className="vds-pdf-thumbnail grid !gap-[var(--vds-space-2)] text-center">
+                                    <span className="flex h-[var(--vds-pdf-thumbnail-height)] w-[var(--vds-pdf-thumbnail-width)] items-center justify-center overflow-hidden rounded-[var(--vds-radius-4)] border border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)]">
+                                      <PdfPageSlot
+                                        estimatedSize={estimatedPageSize}
+                                        fonts={fonts}
+                                        initialPage={loadedPages.get(number)}
+                                        loadPage={loadPage}
+                                        pageNumber={number}
+                                        scale={Math.min(
+                                          THUMBNAIL_WIDTH / estimatedPageSize.width,
+                                          THUMBNAIL_HEIGHT / estimatedPageSize.height
+                                        )}
+                                        annotations={anchoredMarks.filter(
+                                          (mark) => mark.page === number
+                                        )}
+                                        comments={sidecar?.records.comments}
+                                        thumbnail
+                                      />
+                                    </span>
+                                    <span>{number}</span>
+                                  </span>
+                                </Button>
+                              ))}
+                            </nav>
+                          </TabsContent>
+                          <TabsContent value="annotations" className="min-h-0 overflow-hidden">
+                            <PdfAnnotations
+                              onActionMenuOpen={() => setActiveMark(null)}
+                              footer={documentPanels?.panels.map((panel) => (
+                                <React.Fragment key={panel.id}>
+                                  {panel.renderAnnotationAction?.({
+                                    context: documentPanels.context,
+                                    snapshot: sidecar ?? null,
+                                    disabled: saving,
+                                    dismissSelection: clearSelection,
+                                    openPanel: () => {
+                                      if (documentPanels.activePanelId !== panel.id)
+                                        documentPanels.toggle(panel.id)
+                                    },
+                                  })}
+                                </React.Fragment>
+                              ))}
+                              renderEditor={(mark, close, mode, inline) =>
+                                renderAnnotation(mark, close, mode, inline, true)
+                              }
+                              comments={sidecar?.records.comments ?? []}
+                              marks={anchoredMarks}
+                              saving={saving}
+                              onDelete={(markId) => {
+                                void deleteMark(markId)
+                              }}
+                              onFocus={(mark) => {
+                                navigate(mark.page)
+                                requestFocus({ kind: 'annotation', page: mark.page, id: mark.id })
+                              }}
+                            />
+                          </TabsContent>
+                          <TabsContent
+                            value="search"
+                            className="min-h-0 overflow-hidden !p-[var(--vds-space-3)]"
+                          >
+                            <div
+                              role="search"
+                              className="grid h-full min-h-0 grid-rows-[auto_auto_auto_minmax(0,1fr)]"
+                            >
+                              <Textarea
+                                className="w-full min-w-0 resize-none overflow-x-hidden"
+                                ref={searchInputRef}
+                                size="sm"
+                                aria-label={t('searchText')}
+                                placeholder={t('searchText')}
+                                data-testid="pdf-search"
+                                wrap="soft"
+                                value={query}
+                                onChange={(event) => update({ query: event.target.value })}
+                              />
+                              <span
+                                role="status"
+                                className="py-[var(--vds-space-3)] text-center text-xs text-[var(--text-3)]"
+                              >
+                                {query.trim()
+                                  ? searching
+                                    ? t('searching')
+                                    : searchError !== null
+                                      ? t('searchFailed', { detail: searchError })
+                                      : hits.length
+                                        ? t('matchCount', {
+                                            current: hitIndex + 1,
+                                            total: hits.length,
+                                          })
+                                        : ''
+                                  : ''}
+                              </span>
+                              <div className="flex gap-1">
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  disabled={!hits.length}
+                                  onClick={() => searchStep(-1)}
+                                >
+                                  {t('previousMatch')}
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  data-testid="pdf-search-next"
+                                  disabled={!hits.length}
+                                  onClick={() => searchStep(1)}
+                                >
+                                  {t('nextMatch')}
+                                </Button>
+                              </div>
+                              <nav
+                                aria-label={t('searchResults')}
+                                className="min-h-0 min-w-0 items-stretch! overflow-x-hidden overflow-y-auto"
+                              >
+                                {query.trim() &&
+                                !searching &&
+                                searchError === null &&
+                                !hits.length ? (
+                                  <EmptyState
+                                    variant="compact"
+                                    title={hasText ? t('noMatches') : t('noText')}
+                                    className="h-full [&>div>div]:text-[length:var(--vds-font-body-lv1)] [&>div>div]:leading-[var(--vds-lh-body-lv1)]"
+                                  />
+                                ) : null}
+                                {hits.map((hit, index) => (
+                                  <Button
+                                    key={`${hit.page}-${hit.ordinal}`}
+                                    size="content"
+                                    variant="ghost"
+                                    className="w-full min-w-0 justify-start text-left whitespace-normal! [overflow-wrap:anywhere]"
+                                    onClick={() => {
+                                      setHitIndex(index)
+                                      navigate(hit.page)
+                                      requestFocus({
+                                        kind: 'search',
+                                        page: hit.page,
+                                        ordinal: hit.ordinal,
+                                      })
+                                    }}
+                                  >
+                                    {t('page', { page: hit.page })} ·{' '}
+                                    <span className="min-w-0 [overflow-wrap:anywhere]">
+                                      {searchSnippet(hit.text, query)}
+                                    </span>
+                                  </Button>
+                                ))}
+                              </nav>
+                            </div>
+                          </TabsContent>
+                        </Tabs>
+                      </aside>
+                    }
+                    leftWidth={`${navigationWidth}px`}
+                    maxLeftWidth={PDF_NAVIGATION_MAX_WIDTH_PX}
+                    minLeftWidth={PDF_NAVIGATION_MIN_WIDTH_PX}
+                    rightPanel={<span aria-hidden />}
+                    onWidthChange={(width) => update({ navigationWidth: Number.parseFloat(width) })}
+                  />
+                )}
+                {citationTargets.length > 1 && (
+                  <div
+                    data-testid="pdf-citation-navigation"
+                    ref={citationNavigationRef}
+                    className="pointer-events-none absolute inset-x-[var(--vds-space-4)] top-[var(--vds-space-4)] z-[var(--vds-z-local-top)] flex justify-end"
+                    style={{
+                      left: sidebar ? `calc(${navigationWidth}px + var(--vds-space-4))` : undefined,
+                    }}
+                  >
+                    <FloatingToolbar
+                      label={t('citationNavigation')}
+                      className="pointer-events-auto max-w-full [&>[role=toolbar]]:flex-wrap [&>[role=toolbar]]:justify-center [&>[role=toolbar]]:gap-[var(--vds-space-2)]"
+                      actions={
+                        <>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="min-w-0 max-w-full"
+                            aria-label={t('previousEvidence')}
+                            icon={
+                              <ArrowUp className="size-[var(--vds-icon-7)] text-[var(--vds-icon-outline-default)]" />
+                            }
+                            disabled={citationTargetIndex <= 0}
+                            onClick={() => {
+                              const target = citationTargets[citationTargetIndex - 1]
+                              requestFocus({ kind: 'citation', ...target })
+                            }}
+                          >
+                            <EllipsisText tooltipPortalled>{t('previousEvidence')}</EllipsisText>
+                          </Button>
+                          <EllipsisText
+                            tooltipPortalled
+                            wrapperClassName="max-w-full"
+                            className="text-[length:var(--vds-font-body-lv1)] font-[var(--vds-fw-regular)] text-[var(--vds-text-secondary)] tabular-nums"
+                          >
+                            {citationTargetIndex < 0
+                              ? t('evidenceCount', { total: citationTargets.length })
+                              : `${citationTargetIndex + 1} / ${citationTargets.length}`}
+                          </EllipsisText>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="min-w-0 max-w-full"
+                            aria-label={t('nextEvidence')}
+                            icon={
+                              <ArrowDown className="size-[var(--vds-icon-7)] text-[var(--vds-icon-outline-default)]" />
+                            }
+                            disabled={citationTargetIndex === citationTargets.length - 1}
+                            onClick={() => {
+                              const target = citationTargets[citationTargetIndex + 1]
+                              requestFocus({ kind: 'citation', ...target })
+                            }}
+                          >
+                            <EllipsisText tooltipPortalled>{t('nextEvidence')}</EllipsisText>
+                          </Button>
+                        </>
+                      }
+                    />
                   </div>
                 )}
-                {pageNumbers.map((number) => {
-                  const sourcePage = (
-                    <PdfPageSlot
-                      estimatedSize={estimatedPageSize}
-                      fonts={fonts}
-                      initialPage={loadedPages.get(number)}
-                      key={number}
-                      loadPage={loadPage}
-                      pageNumber={number}
-                      scale={scale}
-                      keepRendered={
-                        selectionDragSpan !== null &&
-                        pageInSelectionSpan(
-                          number,
-                          selectionDragSpan.anchor,
-                          selectionDragSpan.focus
+                <div
+                  ref={viewportRef}
+                  data-ob="pdf-viewport"
+                  className={`vds-pdf-pages min-h-0 min-w-0 flex-1 overflow-auto bg-transparent px-[var(--vds-space-4)] pt-[var(--vds-space-4)] pb-[var(--vds-pdf-reading-bottom-inset)] [overflow-anchor:none] [scrollbar-gutter:stable_both-edges]${analysis.figure ? ' cursor-crosshair' : ''}`}
+                  style={{
+                    marginLeft: sidebar ? `${navigationWidth}px` : undefined,
+                    paddingTop: citationNavigationHeight
+                      ? `calc(${citationNavigationHeight}px + var(--vds-space-4) * 2)`
+                      : undefined,
+                  }}
+                  onScroll={onScroll}
+                  onMouseUp={() => {
+                    if (!analysis.figure) {
+                      captureSelection(true)
+                      setSelectionDragSpan(null)
+                    }
+                  }}
+                  onKeyUp={() => captureSelection()}
+                  onPointerDownCapture={(event) => {
+                    const element = (event.target as HTMLElement).closest<HTMLElement>(
+                      '.vds-pdf-page'
+                    )
+                    if (!analysis.figure) {
+                      const page = element ? Number(element.dataset.page) : null
+                      setSelectionDragSpan(page ? { anchor: page, focus: page } : null)
+                      return
+                    }
+                    if (!element) return
+                    event.preventDefault()
+                    event.stopPropagation()
+                    analysis.setFigureGuideOpen(false)
+                    cropStart.current = {
+                      x: event.clientX,
+                      y: event.clientY,
+                      bounds: element.getBoundingClientRect(),
+                      page: Number(element.dataset.page),
+                    }
+                    event.currentTarget.setPointerCapture(event.pointerId)
+                  }}
+                  onPointerMove={(event) => {
+                    if (!analysis.figure) {
+                      const element = (event.target as HTMLElement).closest<HTMLElement>(
+                        '.vds-pdf-page'
+                      )
+                      const page = element ? Number(element.dataset.page) : null
+                      if (page)
+                        setSelectionDragSpan((current) =>
+                          current && current.focus !== page ? { ...current, focus: page } : current
                         )
-                      }
-                      search={query}
-                      focus={
-                        focus?.page === number &&
-                        (focus.kind !== 'citation' ||
-                          citationPages?.some((target) => target.page === number))
-                          ? focus
-                          : undefined
-                      }
-                      annotations={anchoredMarks.filter((mark) => mark.page === number)}
-                      selectionQuads={
-                        workspace.selectionPresentations[tabId] &&
-                        session?.selection?.locator.kind === 'pdf'
-                          ? selections.find((selection) => selection.page === number)?.quads
-                          : undefined
-                      }
-                      citationQuads={citationPages?.find((item) => item.page === number)?.quads}
-                      visualRegionImageInputAvailable={analysis.visualRegionImageInputAvailable}
-                      copyingVisualRegionId={analysis.copyingFormulaRegionId}
-                      commentMarkIds={sidecar?.records.comments.map((comment) => comment.mark_id)}
-                      onAnnotationOpen={(mark) => {
-                        setSelections([{ page: mark.page, text: mark.text, quads: mark.quads }])
-                        setActiveMark(mark.id)
-                        setMarkColors((previous) => ({ ...previous, [mark.style]: mark.color }))
-                      }}
-                      onInternalLink={navigateInternalLink}
-                      onVisualRegionExplain={analysis.explainRegion}
-                      onVisualRegionCopy={(region) => {
-                        void copyVisualRegion(region)
-                      }}
-                      renderAnnotation={(mark, close) => (
-                        <PdfAnnotation
-                          analyzing={analysis.selectionAnalyzing}
-                          canAnalyze={analysis.canAnalyzeSelection}
-                          comments={
-                            sidecar?.records.comments.filter(
-                              (comment) => comment.mark_id === mark.id
-                            ) ?? []
-                          }
-                          mark={mark}
-                          saving={saving}
-                          onColorChange={(color) => {
-                            void updateMark(mark.id, { color })
-                          }}
-                          onComment={(body) => addMarkComment(mark.id, body)}
-                          onDelete={() => {
-                            void deleteMark(mark.id)
-                          }}
-                          onExplain={(instruction) => {
-                            analysis.explainSelection(
-                              { page: mark.page, text: mark.text, quads: mark.quads },
-                              instruction
+                      return
+                    }
+                    const start = cropStart.current
+                    if (!start) return
+                    const x = Math.max(
+                        start.bounds.left,
+                        Math.min(start.bounds.right, event.clientX)
+                      ),
+                      y = Math.max(start.bounds.top, Math.min(start.bounds.bottom, event.clientY))
+                    setCropBox({
+                      left: Math.min(x, start.x),
+                      top: Math.min(y, start.y),
+                      width: Math.abs(x - start.x),
+                      height: Math.abs(y - start.y),
+                    })
+                  }}
+                  onPointerUp={(event) => {
+                    const start = cropStart.current
+                    if (!start) return
+                    event.preventDefault()
+                    cropStart.current = undefined
+                    if (
+                      cropBox &&
+                      cropBox.width >= MIN_FIGURE_SELECTION_PX &&
+                      cropBox.height >= MIN_FIGURE_SELECTION_PX
+                    )
+                      analysis.selectFigure(start.page, [
+                        (cropBox.left - start.bounds.left) / start.bounds.width,
+                        (cropBox.top - start.bounds.top) / start.bounds.height,
+                        cropBox.width / start.bounds.width,
+                        cropBox.height / start.bounds.height,
+                      ])
+                    setCropBox(null)
+                  }}
+                  onPointerCancel={() => setSelectionDragSpan(null)}
+                >
+                  <div
+                    data-testid="pdf-pages-track"
+                    className={`box-border min-h-full${rightPanelOpen && !readingPanelOpen ? ' min-w-[calc(100%+var(--vds-layout-pdf-panel-width))] pr-[var(--vds-layout-pdf-panel-width)]' : ' min-w-full'}`}
+                  >
+                    {!pageCount && loadError === null && (
+                      <div className="px-[var(--vds-space-3)] py-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv1)] [overflow-wrap:anywhere]">
+                        {t('loading')}
+                      </div>
+                    )}
+                    {pageNumbers.map((number) => {
+                      const loadedPage = loadedPages.get(number)
+                      const sourcePage = (
+                        <PdfPageSlot
+                          estimatedSize={estimatedPageSize}
+                          fonts={fonts}
+                          initialPage={loadedPage}
+                          onCommentRail={handleCommentRail}
+                          key={number}
+                          loadPage={loadPage}
+                          pageNumber={number}
+                          scale={scale}
+                          keepRendered={
+                            selectionDragSpan !== null &&
+                            pageInSelectionSpan(
+                              number,
+                              selectionDragSpan.anchor,
+                              selectionDragSpan.focus
                             )
-                            close()
-                            setActiveMark(null)
+                          }
+                          search={query}
+                          focus={
+                            focus?.page === number &&
+                            (focus.kind !== 'citation' ||
+                              citationPages?.some((target) => target.page === number))
+                              ? focus
+                              : undefined
+                          }
+                          annotations={anchoredMarks.filter((mark) => mark.page === number)}
+                          selectionQuads={
+                            workspace.selectionPresentations[tabId] &&
+                            session?.selection?.locator.kind === 'pdf'
+                              ? selections.find((selection) => selection.page === number)?.quads
+                              : undefined
+                          }
+                          citationQuads={citationPages?.find((item) => item.page === number)?.quads}
+                          flashCitation={Boolean(selectionTarget)}
+                          visualRegionImageInputAvailable={analysis.visualRegionImageInputAvailable}
+                          copyingVisualRegionId={analysis.copyingFormulaRegionId}
+                          comments={sidecar?.records.comments}
+                          hideCommentPins={analysis.translationOpen}
+                          onAnnotationOpen={(mark) => {
+                            dismissSelectionActions(tabId)
+                            controller.setSelection(tabId, null)
+                            setCommentFormOpen(false)
+                            setSelections(
+                              mark.style === 'comment'
+                                ? []
+                                : [{ page: mark.page, text: mark.text, quads: mark.quads }]
+                            )
+                            setActiveMark(mark.id)
+                            if (mark.style !== 'comment')
+                              setMarkColors((previous) => ({
+                                ...previous,
+                                [mark.style]: mark.color,
+                              }))
                           }}
-                          onStyleChange={(style) => {
-                            void updateMark(mark.id, { style })
+                          onInternalLink={navigateInternalLink}
+                          onVisualRegionExplain={analysis.explainRegion}
+                          onVisualRegionCopy={(region) => {
+                            void copyVisualRegion(region)
                           }}
-                          onTranslate={() => {
-                            analysis.translateSelection({
-                              page: mark.page,
-                              text: mark.text,
-                              quads: mark.quads,
-                            })
-                            close()
-                            setActiveMark(null)
-                          }}
+                          renderAnnotation={renderAnnotation}
+                          expandedAnnotationResultId={analysis.expandedAnnotationResultId}
+                          pointCommentEnabled={
+                            !analysis.translationOpen &&
+                            activeTool === PDF_COMMENT_TOOL &&
+                            Boolean(session?.capabilities.can_annotate)
+                          }
+                          renderPointComment={(point, close) => (
+                            <PdfCommentDraft
+                              page={number}
+                              point={point}
+                              saving={saving}
+                              onCancel={close}
+                              onSave={(body) => addPointComment(number, point, body)}
+                            />
+                          )}
                         />
-                      )}
-                    />
-                  )
-                  return analysis.translationOpen ? (
-                    <div
-                      className="relative mx-auto mb-[var(--vds-space-4)] grid w-max items-start shadow-[var(--vds-shadow-2-center)] before:pointer-events-none before:absolute before:inset-y-0 before:left-[var(--pdf-source-page-width)] before:z-[var(--vds-z-content)] before:w-[var(--vds-border-width-1)] before:bg-[var(--vds-border-default)] before:content-[''] [&>.vds-pdf-page]:m-0 [&>.vds-pdf-page]:![box-shadow:none]"
-                      data-page-pair={number}
-                      data-testid={`pdf-page-pair-${number}`}
-                      key={number}
-                      style={
-                        {
-                          '--pdf-source-page-width': `${estimatedPageSize.width * scale}px`,
-                          gridTemplateColumns: `${estimatedPageSize.width * scale}px ${estimatedPageSize.width * scale * TRANSLATION_COLUMN_RATIO}px`,
-                        } as React.CSSProperties
-                      }
-                    >
-                      {sourcePage}
-                      {analysis.translationPage(
-                        number,
-                        {
-                          width: estimatedPageSize.width * scale * TRANSLATION_COLUMN_RATIO,
-                          height: estimatedPageSize.height * scale,
-                        },
-                        1
-                      )}
-                    </div>
-                  ) : (
-                    sourcePage
-                  )
-                })}
-              </div>
-            </div>
-            {analysis.sidePanel}
-            {recordsOpen && !analysis.panel && (
-              <PdfAnnotations
-                comments={sidecar?.records.comments ?? []}
-                marks={anchoredMarks}
-                saving={saving}
-                expanded={expandedPanel === PDF_RECORDS_PANEL_ID}
-                onToggleExpanded={() =>
-                  setExpandedPanel((value) =>
-                    value === PDF_RECORDS_PANEL_ID ? null : PDF_RECORDS_PANEL_ID
-                  )
+                      )
+                      return analysis.translationOpen ? (
+                        <div
+                          className="relative mx-auto mb-[var(--vds-space-4)] grid w-max items-start shadow-[var(--vds-shadow-2-center)] before:pointer-events-none before:absolute before:inset-y-0 before:left-[var(--pdf-source-page-width)] before:z-[var(--vds-z-content)] before:w-[var(--vds-border-width-1)] before:bg-[var(--vds-border-default)] before:content-[''] [&>.vds-pdf-page-frame]:m-0 [&_.vds-pdf-page]:![box-shadow:none]"
+                          data-page-pair={number}
+                          data-testid={`pdf-page-pair-${number}`}
+                          key={number}
+                          style={
+                            {
+                              '--pdf-source-page-width': `${translationSourceWidth * scale}px`,
+                              gridTemplateColumns: `var(--pdf-source-page-width) ${translationSourceWidth * scale * translationRatio}px`,
+                            } as React.CSSProperties
+                          }
+                        >
+                          {sourcePage}
+                          <ResizableHandle
+                            aria-label={t('reading.resizeTranslation')}
+                            aria-valuemin={PDF_TRANSLATION_MIN_RATIO * PERCENTAGE_TOTAL}
+                            aria-valuemax={PDF_TRANSLATION_MAX_RATIO * PERCENTAGE_TOTAL}
+                            aria-valuenow={Math.round(translationRatio * PERCENTAGE_TOTAL)}
+                            className="!absolute inset-y-0 left-[var(--pdf-source-page-width)] z-[var(--vds-z-local-control)] !h-auto !w-[var(--vds-space-2)] -translate-x-1/2 bg-transparent! before:invisible hover:before:visible focus-visible:before:visible data-[resizing=true]:before:visible"
+                            data-testid={`pdf-translation-resize-${number}`}
+                            onResizeStart={() => {
+                              translationResize.current = {
+                                page: translationSourceSize,
+                                viewport: fitViewport,
+                                mode,
+                                ratio: translationRatio,
+                                scale,
+                              }
+                            }}
+                            onOffsetChange={(offset) => {
+                              const initial = translationResize.current
+                              if (!initial) return
+                              const next = resizePdfTranslation(initial, offset)
+                              update({
+                                [PDF_TRANSLATION_WIDTH_STATE_KEY]: next.ratio,
+                                ...(initial.mode === 'custom' ? { scale: next.scale } : {}),
+                              })
+                            }}
+                            onResizeEnd={() => {
+                              translationResize.current = null
+                            }}
+                          />
+                          {analysis.translationPage(
+                            number,
+                            {
+                              width: translationSourceWidth * scale * translationRatio,
+                              height:
+                                loadedPage?.getViewport({ scale }).height ??
+                                estimatedPageSize.height * scale,
+                            },
+                            1
+                          )}
+                        </div>
+                      ) : (
+                        sourcePage
+                      )
+                    })}
+                  </div>
+                </div>
+              </ResizablePanel>
+              <ResizableHandle
+                aria-label={t('reading.resize')}
+                className={
+                  readingPanelOpen && !readingPanelExpanded
+                    ? '[&:not(:hover):not(:focus-visible):not([data-resizing=true])]:!bg-transparent [&:not(:hover):not(:focus-visible):not([data-resizing=true])]:[background:linear-gradient(var(--vds-border-default),var(--vds-border-default))_center/var(--vds-border-width-1)_100%_no-repeat]'
+                    : 'hidden'
                 }
-                onClose={() => {
-                  setExpandedPanel(null)
-                  update({ records: false })
-                }}
-                onDelete={(markId) => {
-                  void deleteMark(markId)
-                }}
-                onFocus={(mark) => {
-                  navigate(mark.page)
-                  requestFocus({ kind: 'annotation', page: mark.page, id: mark.id })
-                }}
               />
-            )}
-            {activeDocumentPanel && !analysis.panel && !recordsOpen && documentPanels ? (
-              <PdfPanel
-                ariaLabel={activeDocumentPanel.label(i18n)}
-                closeLabel={t('reading.close')}
-                expanded={expandedPanel === activeDocumentPanel.id}
-                icon={<NotepadText size={16} />}
-                testId={`document-panel-${activeDocumentPanel.id}`}
-                title={activeDocumentPanel.title}
-                onClose={() => {
-                  setExpandedPanel(null)
-                  documentPanels.toggle(activeDocumentPanel.id)
-                }}
-                onToggleExpanded={() =>
-                  setExpandedPanel((value) =>
-                    value === activeDocumentPanel.id ? null : activeDocumentPanel.id
-                  )
-                }
+              <ResizablePanel
+                minSize={readingPanelOpen && !readingPanelExpanded ? readingPanelMinimum : 0}
+                maxSize={100}
+                className="min-h-0 min-w-0 overflow-hidden !p-0"
               >
-                {activeDocumentPanel.render(documentPanels.context)}
-              </PdfPanel>
-            ) : null}
-            {isLiterature && (
+                {resizableDocumentPanel ? documentPanelContent : analysis.sidePanel}
+              </ResizablePanel>
+            </ResizablePanelGroup>
+            {!resizableDocumentPanel ? documentPanelContent : null}
+            {(isLiterature || translationBackend) && (
               <nav
                 aria-label={t('pdfToolbar.toolbar')}
                 data-ob="pdf-tools"
-                className="flex w-[var(--vds-layout-pdf-rail-width)] flex-none flex-col items-center gap-2 border-l border-[var(--vds-border-default)] bg-[var(--vds-surface-muted)] px-[var(--vds-space-1)] py-3"
+                className={`flex w-[var(--vds-layout-pdf-rail-width)] flex-none flex-col items-center gap-[var(--vds-space-2)] border-l border-[var(--vds-border-default)] bg-[var(--vds-bg-gray-light-default)] px-[var(--vds-space-4)] py-[var(--vds-space-4)] [&_button]:!size-[var(--vds-control-height-md)] [&_button]:!shrink-0 [&_button]:!p-0 ${analysis.expandedSelectionResult ? 'invisible' : ''}`}
               >
+                {documentPanelActions('start')}
                 {analysis.railActions}
-                {documentPanels?.panels.map((panel) => {
-                  const label = panel.label(i18n)
-                  return (
-                    <Tooltip key={panel.id} portalled content={label} side="left">
-                      <IconButton
-                        aria-pressed={documentPanels.activePanelId === panel.id}
-                        data-testid={`document-panel-toggle-${panel.id}`}
-                        label={label}
-                        title={undefined}
-                        icon={<NotepadText size={18} />}
-                        variant={documentPanels.activePanelId === panel.id ? 'secondary' : 'ghost'}
-                        onClick={() => {
-                          exitFigureSelection()
-                          analysis.setPanel(null)
-                          update({ records: false })
-                          setExpandedPanel(null)
-                          documentPanels.toggle(panel.id)
-                        }}
-                      />
-                    </Tooltip>
-                  )
-                })}
-                <Tooltip portalled content={t('pdfAnnotation.records')} side="left">
-                  <IconButton
-                    data-testid="pdf-annotation-toggle"
-                    variant={recordsOpen ? 'secondary' : 'ghost'}
-                    aria-pressed={recordsOpen}
-                    label={t('pdfAnnotation.records')}
-                    title={undefined}
-                    icon={<Pencil size={18} />}
-                    onClick={() => {
-                      exitFigureSelection()
-                      closeDocumentPanel()
-                      analysis.setPanel(null)
-                      update({ records: !recordsOpen })
-                    }}
-                  />
-                </Tooltip>
+                {documentPanelActions('end')}
               </nav>
+            )}
+            {analysis.expandedSelectionResult && (
+              <div
+                data-testid="pdf-selection-result-expanded"
+                className="absolute inset-0 z-[var(--vds-z-surface-panel)] flex min-h-0 flex-col bg-[var(--vds-bg-white-default)]"
+              >
+                {analysis.expandedSelectionResult}
+              </div>
             )}
           </div>
         </>

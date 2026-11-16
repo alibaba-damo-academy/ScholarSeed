@@ -51,7 +51,7 @@ for (const language of ['zh', 'en'] as const) {
       assert.equal(captured[0].body, expected)
       assert.equal(captured[0].title, summary)
       assert.ok(
-        notificationXml(captured[0], 'scholarseed://notification/test').includes(
+        notificationXml(captured[0], 'scholarseed-notification://notification/test').includes(
           '&amp;quot; &amp;#x2F;'
         )
       )

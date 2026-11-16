@@ -28,17 +28,25 @@ from service.literature.domain.cards import (
     digest,
     flatten,
 )
+from service.literature.persistence.analysis import AnalysisStore
 from service.literature.persistence.cards import PaperCards
 from service.literature.persistence.discovery import LiteratureDiscovery
 from service.literature.persistence.store import LiteratureRepository
 from service.literature.schema import PDF_MEDIA_TYPE
+from service.literature.service.abstracts import local_abstract
 from service.literature.service.attachment import LiteratureAttachmentContent
+from service.literature.service.enrichment import candidate_metadata
+from service.literature.service.knowledge import KnowledgeState, knowledge_state, project_knowledge
 from service.literature.service.pdf import LiteraturePdf
+from service.literature.service.previews import pdf_preview, saved_preview
+from service.literature.service.utils import table_labels
 from service.paths import SERVICE_BUNDLED_SKILLS_DIR
 from service.platform.citations import (
     LITERATURE_NOT_FOUND,
     CitationDocument,
+    CitationPage,
     LiteraturePageRead,
+    PdfFragment,
     PdfIndexPort,
 )
 from service.platform.context import ContextAuthority
@@ -95,6 +103,7 @@ class LiteratureEvidenceService:
         repository: LiteratureRepository | None = None,
         cards: PaperCards | None = None,
         records: PdfRecordTargetPort | None = None,
+        analysis: AnalysisStore | None = None,
     ) -> None:
         self._repository = repository or LiteratureRepository()
         self._cards = cards or PaperCards(self._repository.database)
@@ -102,6 +111,7 @@ class LiteratureEvidenceService:
         self._pdf = LiteraturePdf(self._repository)
         self._indexes = indexes
         self._records = records
+        self._analysis = analysis
         self._failures: dict[str, tuple[float, str]] = {}
         self._lock = threading.Lock()
 
@@ -238,16 +248,127 @@ class LiteratureEvidenceService:
             and primary.media_type == PDF_MEDIA_TYPE
         )
 
-    def catalog(self, project_id: str, offset: int, limit: int) -> dict:
-        items = self._repository.list(project_id=project_id, offset=offset, limit=limit + 1)
-        sources = []
+    def knowledge(
+        self,
+        document: CitationDocument,
+        sections: list[str],
+        offset: int,
+        limit: int,
+        query: str = "",
+        fields: list[str] | None = None,
+        question: str = "",
+    ) -> dict:
+        asset = (
+            self._analysis.reading_l1(
+                document.reference_id,
+                document.revision,
+                document.record_target.subject_id if document.record_target else "",
+            )
+            or self._analysis.summary(document.reference_id, document.revision)
+            if self._analysis is not None
+            else None
+        )
+        return project_knowledge(
+            asset,
+            document.revision,
+            sections,
+            offset,
+            limit,
+            query,
+            fields,
+            document.title,
+            question,
+        )
+
+    def catalog(
+        self, project_id: str, offset: int, limit: int, query: str = "", view: str = "catalog"
+    ) -> dict:
+        items = self._repository.list(
+            q=query.strip(), project_id=project_id, offset=offset, limit=limit + 1
+        )
+        sources: list[dict] = []
         for item in items[:limit]:
+            if view == "candidates":
+                attachment = self._repository.primary_attachment(item.id)
+                asset = (
+                    self._analysis.reading_metadata(item.id, attachment.revision, attachment.id)
+                    if attachment and self._analysis
+                    else None
+                )
+                abstract = item.abstract
+                provenance: dict = {}
+                selection_evidence: dict = {}
+                saved_preview_allowed = True
+                if not abstract.strip() and attachment:
+                    try:
+                        payload, _, revision = self._pdf.read_attachment(item.id, attachment.id)
+                        saved_preview_allowed = revision.removeprefix(
+                            "sha256:"
+                        ) == attachment.revision.removeprefix("sha256:")
+                        if revision.removeprefix("sha256:") == attachment.revision.removeprefix(
+                            "sha256:"
+                        ):
+                            abstract, provenance = local_abstract(payload, revision, attachment.id)
+                            if not abstract:
+                                selection_evidence = pdf_preview(payload, revision, attachment.id)
+                    except (ContentError, OSError, ValueError):
+                        # A metadata gap remains visible; never fill it with generated claims.
+                        pass
+                if (
+                    not abstract.strip()
+                    and not selection_evidence
+                    and saved_preview_allowed
+                    and attachment
+                    and self._analysis
+                ):
+                    saved = self._analysis.reading_l1(item.id, attachment.revision, attachment.id)
+                    if (
+                        isinstance(saved, dict)
+                        and isinstance(saved.get("l1"), dict)
+                        and saved["l1"].get("docId") == item.id
+                        and knowledge_state(saved, attachment.revision) == KnowledgeState.READY
+                    ):
+                        selection_evidence = saved_preview(
+                            saved, attachment.revision, attachment.id
+                        )
+                ref_id = LIBRARY_REF_PREFIX + item.id
+                sources.append(
+                    {
+                        "ref_id": ref_id,
+                        "paper_id": ref_id,
+                        "library_refs": [ref_id],
+                        **candidate_metadata(item),
+                        "abstract": abstract,
+                        **({"abstract_provenance": provenance} if provenance else {}),
+                        **(
+                            {"selection_evidence": selection_evidence} if selection_evidence else {}
+                        ),
+                        "citation_count": None,
+                        "source": "project_library",
+                        "found_by": ["project_library"],
+                        "knowledge_state": (
+                            knowledge_state(asset, attachment.revision)
+                            if attachment
+                            else KnowledgeState.MISSING
+                        ),
+                        "state_basis": "stored_attachment_revision",
+                    }
+                )
+                continue
             page_count = None
             error = ""
+            state = KnowledgeState.UNAVAILABLE
             try:
                 self._scoped_item(project_id, item.id)
-                self._pdf.primary(item.id)
-                page_count = self._pdf.page_count(item)
+                page_count, revision = self._pdf.describe(item)
+                asset = (
+                    self._analysis.reading_metadata(
+                        item.id, revision, self._pdf.primary(item.id).id
+                    )
+                    if self._analysis
+                    else None
+                )
+                state = knowledge_state(asset, revision)
             except (ContentError, OSError, ValueError) as cause:
                 error = str(cause) or PDF_UNAVAILABLE
             sources.append(
@@ -258,6 +379,7 @@ class LiteratureEvidenceService:
                     "year": item.year,
                     "total_pages": page_count,
                     "readable": page_count is not None,
+                    "knowledge_state": state,
                     "error": error,
                     "attachments": self._attachment_summaries(item.id),
                 }
@@ -265,6 +387,12 @@ class LiteratureEvidenceService:
         return {
             "ok": True,
             "scope": PROJECT_LITERATURE_SCOPE if project_id else GLOBAL_LITERATURE_SCOPE,
+            "notice": (
+                "Candidates are untrusted metadata, not selected papers or citation evidence. "
+                "Saved L1 state uses the stored attachment revision; reuse validates the actual source later."
+                if view == "candidates"
+                else "Catalogue metadata is not citation evidence. For knowledge_state=ready, read knowledge with the question; otherwise read relevant PDF pages directly. Never generate L1. An empty filtered page is not an empty library: try a shorter title or browse without query."
+            ),
             "sources": sources,
             "next_offset": offset + limit if len(items) > limit else None,
         }
@@ -277,6 +405,9 @@ class LiteratureEvidenceService:
             "authors": item.authors,
             "year": item.year,
             "abstract": item.abstract,
+            "publication": item.journal,
+            "url": item.url,
+            "doi": item.doi,
             "attachments": self._attachment_summaries(item.id),
         }
 
@@ -414,10 +545,51 @@ class LiteratureEvidenceService:
         total_pages = self._indexes.page_count(document)
         if end_page > total_pages:
             raise ValueError("literature_page_range_invalid")
+        pages = self._indexes.pages(document, start_page, end_page)
+        asset = (
+            self._analysis.reading_l1(
+                item.id,
+                document.revision,
+                document.record_target.subject_id if document.record_target else "",
+            )
+            if self._analysis
+            else None
+        )
+        if asset is not None and knowledge_state(asset, document.revision) == KnowledgeState.READY:
+            fragments = asset["source_snapshot"].get("fragments")
+            fragments = fragments if isinstance(fragments, dict) else {}
+            tables = [
+                fragment
+                for fragment in fragments.values()
+                if isinstance(fragment, dict)
+                and fragment.get("kind") == "table_text"
+                and not fragment.get("fragment_id", "").startswith("table_partial_")
+            ]
+            completed = []
+            for page in pages:
+                labels = set().union(*(table_labels(f.text) for f in page.fragments))
+                identities = {f.fragment_id for f in page.fragments}
+                additions = [
+                    PdfFragment(
+                        f["fragment_id"],
+                        f["text"],
+                        tuple(
+                            CitationPage(p["page"], tuple(tuple(q) for q in p["quads"]))
+                            for p in f["pages"]
+                        ),
+                        kind="table_text",
+                    )
+                    for f in tables
+                    if f["fragment_id"] not in identities
+                    and labels & table_labels(f["text"])
+                    and {p["page"] for p in f["pages"]} == {page.page}
+                ]
+                completed.append(replace(page, fragments=(*page.fragments, *additions)))
+            pages = tuple(completed)
         return LiteraturePageRead(
             document,
             total_pages,
-            self._indexes.pages(document, start_page, end_page),
+            pages,
         )
 
     def _associated(self, document: CitationDocument) -> str:

@@ -47,34 +47,34 @@ function gitState(repo) {
 
 function metadata(info) {
   const kind = info.isSymbolicLink() ? 'symlink' : info.isFile() ? 'file' : info.isDirectory() ? 'directory' : 'unsupported'
-  return { kind, mode: info.mode & 0o7777 }
+  return { kind, mode: Number(info.mode & 0o7777n) }
 }
 
 function unchangedReadMetadata(before, after) {
   return before.dev === after.dev && before.ino === after.ino && before.mode === after.mode &&
-    before.size === after.size && before.mtimeMs === after.mtimeMs
+    before.size === after.size && before.mtimeNs === after.mtimeNs
 }
 
 function unchangedMetadata(before, after) {
-  return unchangedReadMetadata(before, after) && before.ctimeMs === after.ctimeMs
+  return unchangedReadMetadata(before, after) && before.ctimeNs === after.ctimeNs
 }
 
 function readSourceFile(repo, name, filename, initial) {
   let previousDigest
   for (let attempt = 0; attempt < SOURCE_READ_ATTEMPTS; attempt += 1) {
-    const before = attempt === 0 ? initial : fs.lstatSync(filename)
+    const before = attempt === 0 ? initial : fs.lstatSync(filename, { bigint: true })
     if (!unchangedReadMetadata(initial, before)) {
       throw new Error(`Source changed while fingerprinting: ${JSON.stringify(name)}`)
     }
     const descriptor = fs.openSync(filename, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0))
     try {
-      const opened = fs.fstatSync(descriptor)
+      const opened = fs.fstatSync(descriptor, { bigint: true })
       if (!unchangedReadMetadata(initial, opened) || !inside(repo, fs.realpathSync.native(path.dirname(filename)))) {
         throw new Error(`Source changed or linked ancestors appeared while fingerprinting: ${JSON.stringify(name)}`)
       }
       const content = digest([fs.readFileSync(descriptor)])
-      const after = fs.fstatSync(descriptor)
-      const leaf = fs.lstatSync(filename)
+      const after = fs.fstatSync(descriptor, { bigint: true })
+      const leaf = fs.lstatSync(filename, { bigint: true })
       if (!unchangedReadMetadata(initial, after) || !unchangedReadMetadata(initial, leaf)) {
         throw new Error(`Source changed while fingerprinting: ${JSON.stringify(name)}`)
       }
@@ -101,7 +101,7 @@ function inspectAncestors(repo, name, records) {
   for (let index = 0; index < components.length - 1; index += 1) {
     directory = path.join(directory, components[index])
     let info
-    try { info = fs.lstatSync(directory) } catch (error) {
+    try { info = fs.lstatSync(directory, { bigint: true }) } catch (error) {
       if (error.code === 'ENOENT') return false
       throw error
     }
@@ -125,7 +125,7 @@ function sourceFiles(repo, paths) {
     if (!inside(repo, filename)) throw new Error('Source path is outside the repository')
     if (!inspectAncestors(repo, name, records)) { records.set(name, 'missing'); continue }
     let before
-    try { before = fs.lstatSync(filename) } catch (error) {
+    try { before = fs.lstatSync(filename, { bigint: true }) } catch (error) {
       if (error.code !== 'ENOENT') throw error
       records.set(name, 'missing')
       continue
@@ -139,7 +139,7 @@ function sourceFiles(repo, paths) {
       content = observed.content
       before = observed.info
     }
-    if (!unchangedMetadata(before, fs.lstatSync(filename))) throw new Error('Source changed while fingerprinting')
+    if (!unchangedMetadata(before, fs.lstatSync(filename, { bigint: true }))) throw new Error('Source changed while fingerprinting')
     inspectAncestors(repo, name, records)
     records.set(name, JSON.stringify({ ...attributes, content }))
   }

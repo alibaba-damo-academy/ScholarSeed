@@ -34,6 +34,7 @@ from scholarseed_codex.protocol.state import (
     CodexProcessState,
     CodexThreadAttachmentState,
 )
+from scholarseed_codex.rpc import RPC_INTERNAL_ERROR
 from scholarseed_codex.session import CodexRuntimeSession
 from scholarseed_codex.turn import CodexTurnRuntime
 from scholarseed_runtime.contract.command import InterruptRequest
@@ -108,6 +109,8 @@ class ScriptedNativeHost:
                 "nextCursor": None,
             }
         if method == NATIVE_THREAD_READ_METHOD:
+            if params["threadId"] not in self.threads:
+                raise AppServerError("fixture thread does not exist")
             return {"thread": copy.deepcopy(self.threads[params["threadId"]])}
         if method == NATIVE_GOAL_GET_METHOD:
             return {"goal": None}
@@ -302,6 +305,8 @@ class NativeActivityTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(state.complete)
         self.assertIn(NativeActivityBlocker.THREAD_PRESENT.value, state.blockers)
         host.threads = {SIBLING_THREAD: idle_thread(SIBLING_THREAD)}
+        self.assertTrue((await NativeActivity(host, ROOT_THREAD).inspect_absence()).complete)
+        host.threads[SIBLING_THREAD]["parentThreadId"] = "missing-parent"
         state = await NativeActivity(host, ROOT_THREAD).inspect_absence()
         self.assertFalse(state.complete)
         self.assertIn(NativeActivityBlocker.UNKNOWN_OWNERSHIP.value, state.blockers)
@@ -370,10 +375,225 @@ class NativeActivityTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_interrupt_unknown_ownership_has_no_mutations(self) -> None:
         host = ScriptedNativeHost()
-        host.threads["unknown"] = idle_thread("unknown")
+        host.threads[ROOT_THREAD]["status"] = {"type": "active", "activeFlags": []}
+        host.threads["unknown"] = idle_thread("unknown", "missing-parent")
         with self.assertRaises(ValueError):
-            await NativeActivity(host, ROOT_THREAD).interrupt()
-        self.assertFalse(any(method == "turn/interrupt" for method, _ in host.calls))
+            await NativeActivity(host, ROOT_THREAD).interrupt(cleanup_background_processes=True)
+        self.assertFalse(
+            any(
+                method in {"turn/interrupt", "thread/backgroundTerminals/terminate"}
+                for method, _ in host.calls
+            )
+        )
+
+    async def test_interrupt_rechecks_transient_foreign_thread_read(self) -> None:
+        for transient in (True, False):
+            with self.subTest(transient=transient):
+                host = ScriptedNativeHost()
+                host.threads[ROOT_THREAD]["status"] = {"type": "active", "activeFlags": []}
+                host.threads[SIBLING_THREAD] = idle_thread(SIBLING_THREAD)
+                request = host.request
+                reads = 0
+                writes = []
+
+                async def native(method, params, *, generation=None):
+                    nonlocal reads
+                    thread_id = params.get("threadId")
+                    if method == NATIVE_THREAD_READ_METHOD and thread_id == SIBLING_THREAD:
+                        reads += 1
+                        if reads == 1 or not transient:
+                            raise AppServerError(
+                                "native metadata temporarily unavailable",
+                                method=method,
+                                rpc_code=RPC_INTERNAL_ERROR,
+                            )
+                    if method == "thread/turns/list":
+                        return {"data": [{"id": "root-turn", "status": "inProgress"}]}
+                    if method == "turn/interrupt":
+                        writes.append(thread_id)
+                        host.threads[ROOT_THREAD]["status"] = {"type": "idle"}
+                        return {}
+                    return await request(method, params, generation=generation)
+
+                host.request = native
+                activity = NativeActivity(host, ROOT_THREAD)
+                if transient:
+                    await activity.interrupt()
+                    self.assertEqual(writes, [ROOT_THREAD])
+                else:
+                    with self.assertRaisesRegex(
+                        ValueError, NativeActivityBlocker.UNKNOWN_OWNERSHIP.value
+                    ):
+                        await activity.interrupt()
+                    self.assertEqual(writes, [])
+                self.assertGreaterEqual(reads, 2)
+
+    async def test_scoped_inspection_ignores_foreign_load_changes_and_reads_own_ancestry(
+        self,
+    ) -> None:
+        host = ScriptedNativeHost()
+        parent_id = "unloaded-parent"
+        host.threads[CHILD_THREAD] = idle_thread(CHILD_THREAD, parent_id)
+        host.threads[CHILD_THREAD]["status"] = {"type": "active", "activeFlags": []}
+        host.responses[(NATIVE_THREAD_READ_METHOD, parent_id, "")] = {
+            "thread": {**idle_thread(parent_id, ROOT_THREAD), "status": {"type": "notLoaded"}}
+        }
+
+        def load_foreign_root(method, _params, count):
+            if method == NATIVE_THREAD_LOADED_LIST_METHOD and count == 2:
+                host.threads[SIBLING_THREAD] = idle_thread(SIBLING_THREAD)
+                host.threads[SIBLING_THREAD]["status"] = {"type": "active", "activeFlags": []}
+
+        host.mutation = load_foreign_root
+        state = await NativeActivity(host, ROOT_THREAD).inspect()
+        self.assertTrue(state.complete)
+        self.assertEqual(state.blockers, (NativeActivityBlocker.TURN.value,))
+        self.assertIn(SIBLING_THREAD, state.loaded_thread_ids)
+        self.assertFalse(
+            any(
+                method == NATIVE_BACKGROUND_TERMINALS_LIST_METHOD
+                and params.get("threadId") == SIBLING_THREAD
+                for method, params in host.calls
+            )
+        )
+
+    async def test_foreign_descendant_evidence_cannot_authorize_an_interrupt(self) -> None:
+        for evidence in ("foreign", "foreign-without-parent", "absent", "conflicting"):
+            with self.subTest(evidence=evidence):
+                await self._assert_foreign_descendant_evidence(evidence)
+
+    async def _assert_foreign_descendant_evidence(self, evidence: str) -> None:
+        host = ScriptedNativeHost()
+        foreign_child = "foreign-child"
+        host.threads[SIBLING_THREAD] = idle_thread(SIBLING_THREAD)
+        host.threads[foreign_child] = idle_thread(foreign_child, "missing-parent")
+        active_status = {"type": "active", "activeFlags": []}
+        host.threads[ROOT_THREAD]["status"] = active_status
+        host.threads[foreign_child]["status"] = active_status
+        if evidence == "foreign-without-parent":
+            host.threads[foreign_child].pop("parentThreadId")
+        writes = []
+        request = host.request
+
+        async def native(method, params, *, generation=None):
+            if method == NATIVE_THREAD_LIST_METHOD:
+                self.assertTrue(params["useStateDbOnly"])
+                root = params["ancestorThreadId"]
+                listed = (root == SIBLING_THREAD and evidence != "absent") or (
+                    root == ROOT_THREAD and evidence == "conflicting"
+                )
+                return {
+                    "data": ([{"id": foreign_child}] if listed and not params["archived"] else [])
+                }
+            if method == "thread/turns/list":
+                self.assertEqual(params["threadId"], ROOT_THREAD)
+                return {"data": [{"id": "root-turn", "status": "inProgress"}]}
+            if method == "turn/interrupt":
+                writes.append(params["threadId"])
+                host.threads[ROOT_THREAD]["status"] = {"type": "idle"}
+                return {}
+            if method == NATIVE_BACKGROUND_TERMINALS_LIST_METHOD:
+                self.assertEqual(params["threadId"], ROOT_THREAD)
+            return await request(method, params, generation=generation)
+
+        host.request = native
+        activity = NativeActivity(host, ROOT_THREAD)
+        if evidence in ("absent", "conflicting"):
+            state = await activity.inspect()
+            self.assertFalse(state.complete)
+            with self.assertRaisesRegex(ValueError, NativeActivityBlocker.UNKNOWN_OWNERSHIP.value):
+                await activity.interrupt(cleanup_background_processes=True)
+            self.assertEqual(writes, [])
+        else:
+            state = await activity.inspect()
+            self.assertTrue(state.complete)
+            self.assertEqual(state.blockers, (NativeActivityBlocker.TURN.value,))
+            await activity.interrupt(cleanup_background_processes=True)
+            self.assertEqual(writes, [ROOT_THREAD])
+        self.assertEqual(host.threads[foreign_child]["status"], active_status)
+        host.calls.clear()
+        host_state = await NativeActivity(host, known_roots=(ROOT_THREAD, SIBLING_THREAD)).inspect()
+        self.assertFalse(host_state.complete)
+        self.assertFalse(any(method == NATIVE_THREAD_LIST_METHOD for method, _ in host.calls))
+
+    async def test_interrupt_isolates_loaded_descendants_below_unloaded_parents(self) -> None:
+        host = ScriptedNativeHost()
+        host.known_roots = (ROOT_THREAD, SIBLING_THREAD)
+        host.threads[SIBLING_THREAD] = idle_thread(SIBLING_THREAD)
+        foreign_thread = "foreign-child"
+        active_status = {"type": "active", "activeFlags": []}
+        for thread_id, root in ((CHILD_THREAD, ROOT_THREAD), (foreign_thread, SIBLING_THREAD)):
+            parent_id = f"{root}-unloaded-parent"
+            host.threads[thread_id] = {**idle_thread(thread_id, parent_id), "status": active_status}
+            host.responses[(NATIVE_THREAD_READ_METHOD, parent_id, "")] = {
+                "thread": {**idle_thread(parent_id, root), "status": {"type": "notLoaded"}}
+            }
+        writes: list[tuple[str, str]] = []
+        child_terminals = [{"processId": "child-process", "itemId": "child-command"}]
+        request = host.request
+
+        async def native(method, params, *, generation=None):
+            thread_id = params.get("threadId")
+            if method == "thread/turns/list":
+                self.assertEqual(thread_id, CHILD_THREAD)
+                return {"data": [{"id": "child-turn", "status": "inProgress"}]}
+            if method == "turn/interrupt":
+                writes.append((method, thread_id))
+                host.threads[thread_id]["status"] = {"type": "idle"}
+                return {}
+            if method == NATIVE_BACKGROUND_TERMINALS_LIST_METHOD:
+                self.assertIn(thread_id, (ROOT_THREAD, CHILD_THREAD))
+                return {"data": list(child_terminals) if thread_id == CHILD_THREAD else []}
+            if method == "thread/backgroundTerminals/terminate":
+                writes.append((method, thread_id))
+                child_terminals.clear()
+                return {"terminated": True}
+            return await request(method, params, generation=generation)
+
+        host.request = native
+        await NativeActivity(host, ROOT_THREAD, known_roots=host.known_roots).interrupt(
+            cleanup_background_processes=True
+        )
+        self.assertEqual(
+            writes,
+            [
+                ("turn/interrupt", CHILD_THREAD),
+                ("thread/backgroundTerminals/terminate", CHILD_THREAD),
+            ],
+        )
+        self.assertEqual(host.threads[foreign_thread]["status"], active_status)
+        host_state = await NativeActivity(host, known_roots=host.known_roots).inspect()
+        self.assertFalse(host_state.complete)
+        self.assertIn(NativeActivityBlocker.UNKNOWN_OWNERSHIP.value, host_state.blockers)
+
+    async def test_interrupt_does_not_write_with_unproven_unloaded_ancestry(self) -> None:
+        parent_id = "unloaded-parent"
+        for response in (
+            AppServerError("missing ancestor"),
+            {"thread": idle_thread(parent_id, ROOT_THREAD)},
+            {"thread": {**idle_thread(parent_id, CHILD_THREAD), "status": {"type": "notLoaded"}}},
+        ):
+            with self.subTest(response=response):
+                host = ScriptedNativeHost()
+                host.threads[ROOT_THREAD]["status"] = {"type": "active", "activeFlags": []}
+                host.threads[CHILD_THREAD] = idle_thread(CHILD_THREAD, parent_id)
+                host.responses[(NATIVE_THREAD_READ_METHOD, parent_id, "")] = response
+                with self.assertRaisesRegex(
+                    ValueError, NativeActivityBlocker.UNKNOWN_OWNERSHIP.value
+                ):
+                    await NativeActivity(host, ROOT_THREAD).interrupt(
+                        cleanup_background_processes=True
+                    )
+                self.assertIn(
+                    (NATIVE_THREAD_READ_METHOD, {"threadId": parent_id, "includeTurns": False}),
+                    host.calls,
+                )
+                self.assertFalse(
+                    any(
+                        method in {"turn/interrupt", "thread/backgroundTerminals/terminate"}
+                        for method, _ in host.calls
+                    )
+                )
 
     async def test_interrupt_reclaims_owned_terminals_after_root_ended(self) -> None:
         host = ScriptedNativeHost()
@@ -541,6 +761,7 @@ class NativeActivityTests(unittest.IsolatedAsyncioTestCase):
         snapshot = await self.runtime_session(host).activity()
         self.assertFalse(snapshot.execution_tree_complete)
         self.assertFalse(snapshot.execution_tree_idle)
+        self.assertFalse(snapshot.execution_tree_transient)
 
         host = ScriptedNativeHost()
         session = self.runtime_session(host)
@@ -568,6 +789,27 @@ class NativeActivityTests(unittest.IsolatedAsyncioTestCase):
         snapshot = await self.runtime_session(host).activity()
         self.assertFalse(snapshot.execution_tree_complete)
         self.assertFalse(snapshot.execution_tree_idle)
+        self.assertTrue(snapshot.execution_tree_transient)
+
+    async def test_only_same_generation_tree_membership_changes_are_transient(self) -> None:
+        for generation_changes in (False, True):
+            with self.subTest(generation_changes=generation_changes):
+                await self._assert_membership_change(generation_changes)
+
+    async def _assert_membership_change(self, generation_changes: bool) -> None:
+        host = ScriptedNativeHost()
+
+        def change_membership(method: str, _params: dict[str, Any], count: int) -> None:
+            if method == NATIVE_THREAD_LOADED_LIST_METHOD and count == 2:
+                host.threads[CHILD_THREAD] = idle_thread(CHILD_THREAD, ROOT_THREAD)
+                if generation_changes:
+                    host.process_generation += 1
+
+        host.mutation = change_membership
+        snapshot = await self.runtime_session(host).activity()
+        self.assertFalse(snapshot.execution_tree_complete)
+        self.assertFalse(snapshot.execution_tree_idle)
+        self.assertEqual(snapshot.execution_tree_transient, not generation_changes)
 
     async def test_other_root_output_does_not_invalidate_idle_tree(self) -> None:
         host = ScriptedNativeHost()
@@ -743,10 +985,10 @@ class NativeActivityTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(state.complete)
         self.assertIn(NativeActivityBlocker.UNKNOWN_OWNERSHIP.value, state.blockers)
 
-    async def test_unknown_parent_cycle_and_unowned_root_refuse_suspension(
+    async def test_unknown_parent_and_cycles_refuse_suspension(
         self,
     ) -> None:
-        for parent in (None, "missing-parent", CHILD_THREAD):
+        for parent in ("missing-parent", CHILD_THREAD):
             with self.subTest(parent=parent):
                 host = ScriptedNativeHost()
                 host.threads[CHILD_THREAD] = idle_thread(CHILD_THREAD, parent)

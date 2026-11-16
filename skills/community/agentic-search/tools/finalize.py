@@ -6,6 +6,7 @@ tool deterministically restores full metadata from pool.json, validates the set,
 and writes metadata.json plus report.md.
 """
 
+from catalog import labels
 import argparse
 import json
 import os
@@ -15,10 +16,31 @@ from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import state as search_state  # noqa: E402
+import dedup  # noqa: E402
+
+IDENTITY_FIELDS = ("paper_id", "paperhub_id", "library_refs")
+
+
+def _identifier(value, field):
+    if value is None:
+        return ""
+    if type(value) is int:
+        return str(value)
+    if isinstance(value, str):
+        return value.strip()
+    raise ValueError(f"{field}: expected a string or integer identifier, got {type(value).__name__}")
+
+
+def _identity_value(value, field):
+    if field == "library_refs":
+        if not isinstance(value, list) or any(not isinstance(ref, str) or not ref.strip() for ref in value):
+            raise ValueError("library_refs: expected a list of non-empty source references")
+        return list(dict.fromkeys(ref.strip() for ref in value))
+    return _identifier(value, field)
 
 
 def _title_key(title):
-    return re.sub(r"[^a-z0-9]+", "", (title or "").lower())
+    return dedup.title_key(title)
 
 
 def _load_selection(path):
@@ -33,26 +55,48 @@ def _load_selection(path):
 
 def _hydrate(selection_papers, pool):
     by_id = {
-        str(paper.get("paper_id")): paper for paper in pool.values()
+        _identifier(paper.get("paper_id"), "pool.paper_id"): paper for paper in pool.values()
         if paper.get("paper_id") not in (None, "")
     }
-    by_title = {_title_key(paper.get("title")): paper for paper in pool.values()}
+    by_title = {}
+    for paper in pool.values():
+        by_title.setdefault(_title_key(paper.get("title")), []).append(paper)
     hydrated = []
     unmatched = []
     for choice in selection_papers:
         if not isinstance(choice, dict):
             raise ValueError("every selected paper must be an object")
-        paper_id = str(choice.get("paper_id") or "")
+        paper_id = _identifier(choice.get("paper_id"), "paper_id")
         title_key = _title_key(choice.get("title", ""))
         base = by_id.get(paper_id) if paper_id else None
         if base is None and title_key:
-            base = by_title.get(title_key)
+            matches = by_title.get(title_key, [])
+            if len(matches) > 1:
+                raise ValueError("ambiguous title selection; use the paper ID")
+            base = matches[0] if matches else None
         if base is None:
             # Web-only papers may legitimately be absent from the PaperHub pool.
             base = {}
             unmatched.append(choice.get("title") or paper_id or "<missing identifier>")
         item = dict(base)
-        item.update({key: value for key, value in choice.items() if value is not None})
+        # Choices carry ranking and coverage, not authority to rebind a paper
+        # to a different provider ID or a different local evidence source.
+        for field in IDENTITY_FIELDS:
+            if field not in choice or choice[field] is None:
+                continue
+            value = _identity_value(choice[field], field)
+            if base:
+                expected = _identity_value(base.get(field, [] if field == "library_refs" else None), field)
+                equivalent = set(value) == set(expected) if field == "library_refs" else value == expected
+                if not equivalent:
+                    raise ValueError(f"{field}: selection conflicts with pool identity for {base.get('paper_id')}")
+            else:
+                item[field] = value
+        item.update({key: value for key, value in choice.items()
+                     if value is not None and key not in IDENTITY_FIELDS})
+        for field in ("paper_id", "paperhub_id"):
+            if field in item:
+                item[field] = _identifier(item[field], field)
         item.pop("_relevance_score", None)
         item.pop("relevance_score", None)
         item.setdefault("authors", [])
@@ -69,7 +113,7 @@ def _hydrate(selection_papers, pool):
             "access", "open" if item.get("is_open_access") is True else "closed_or_unknown",
         )
         item.setdefault("reason", "")
-        item.setdefault("subtopics_covered", [])
+        item["subtopics_covered"] = labels(item.get("subtopics_covered"))
         hydrated.append(item)
     return hydrated, unmatched
 
@@ -98,7 +142,8 @@ def _validate(papers, query):
             errors.append(f"{title or 'paper ' + str(index)} has invalid tier")
         if not str(paper.get("reason") or "").strip():
             warnings.append(f"{title or 'paper ' + str(index)} has no selection reason")
-    duplicates = [key for key, count in Counter(keys).items() if key and count > 1]
+    duplicates = [paper for index, paper in enumerate(papers)
+                  if any(dedup.same_paper(paper, prior) for prior in papers[:index])]
     if duplicates:
         errors.append(f"selection contains {len(duplicates)} duplicate normalized titles")
 

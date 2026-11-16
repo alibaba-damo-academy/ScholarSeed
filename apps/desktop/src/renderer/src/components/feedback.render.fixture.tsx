@@ -13,6 +13,10 @@ import enComponents from '../../../localization/locales/en/components.json'
 import { Feedback, FeedbackRecovery } from './business/Feedback'
 import { FloatingWindow } from './primitive/FloatingWindow'
 import { SearchFeedback } from '../features/resources/Feedback'
+import { ResourceSuggestion } from '../features/resources/Suggestion'
+import type { ResourceInput } from '../features/resources/ai'
+import { StoreContext } from '../storeContext'
+import type { Store } from '../store'
 import { Button, ToastProvider, Toaster, useToast } from './ui'
 import type { ToastInput } from './ui'
 import '../styles.css'
@@ -94,12 +98,34 @@ const SAMPLES: Record<string, ToastInput> = {
   },
 }
 
+const suggestionStore = {
+  state: {
+    catalog: { models: [], subscriptionGroups: [] },
+    model: '',
+    activeSession: null,
+    threads: {},
+    reasoningPreferences: {},
+  },
+  act: {},
+} as unknown as Store
+const suggestionSnapshot = Promise.resolve<ResourceInput>({
+  source: { project_id: 'project', source_id: 'document', source_revision: 'revision' },
+  scope: 'selection',
+  selection: {
+    locator: { kind: 'text', start_line: 0, start_column: 0, end_line: 0, end_column: 13 },
+    selected_text: 'Selected text',
+    selected_text_hash: 'selection-hash',
+  },
+})
+
 function Fixture(): React.JSX.Element {
   const { toast, toasts } = useToast()
   const [emissions, setEmissions] = useState(0)
   const [feedbackOpen, setFeedbackOpen] = useState(false)
   const [recordingRequested, setRecordingRequested] = useState(false)
   const [floatingOpen, setFloatingOpen] = useState(false)
+  const [suggestionOpen, setSuggestionOpen] = useState(false)
+  const [suggestionPinned, setSuggestionPinned] = useState(false)
   const recordingEnabled = !new URLSearchParams(window.location.search).has('withoutRecorder')
   if (new URLSearchParams(window.location.search).has('recovery'))
     return <FeedbackRecovery title="Service unavailable" detail="Backend startup failed" />
@@ -109,6 +135,23 @@ function Fixture(): React.JSX.Element {
       <Button onClick={() => void localization.changeLanguage('en')}>English</Button>
       <Button onClick={() => setFeedbackOpen(true)}>Open feedback</Button>
       <Button onClick={() => setFloatingOpen(true)}>Open reader floating window</Button>
+      <Button onClick={() => setSuggestionOpen(true)}>Open selection explanation</Button>
+      {suggestionOpen && (
+        <StoreContext.Provider value={suggestionStore}>
+          <ResourceSuggestion
+            action="explain"
+            identity="feedback-selection"
+            selectedText="Selected text"
+            point={{ x: 120, y: 100 }}
+            anchorPosition={{ left: 120, top: 100 }}
+            anchorWidth={520}
+            snapshot={suggestionSnapshot}
+            pinned={suggestionPinned}
+            onPinnedChange={setSuggestionPinned}
+            onClose={() => setSuggestionOpen(false)}
+          />
+        </StoreContext.Provider>
+      )}
       {floatingOpen && (
         <FloatingWindow title="翻译" onClose={() => setFloatingOpen(false)}>
           <p>Translation result</p>

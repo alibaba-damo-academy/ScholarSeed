@@ -6,10 +6,10 @@ import argparse
 import base64
 import json
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextlib import closing
 from io import BytesIO
-from typing import Any
+from typing import Any, cast
 
 import pypdfium2
 import pypdfium2.raw as pdfium
@@ -81,7 +81,8 @@ def _render(payload: bytes, page_number: int, scale: float) -> str:
     with pypdfium2.PdfDocument(payload, password="") as document:
         _pages(document, [page_number])
         with closing(document[page_number - 1]) as page:
-            with closing(page.render(scale=scale)) as bitmap:
+            renderPage = cast(Callable[[float], pypdfium2.PdfBitmap], page.render)
+            with closing(renderPage(scale)) as bitmap:
                 with bitmap.to_pil() as view:
                     image = view.convert(PDF_IMAGE_MODE)
             with image, BytesIO() as output:

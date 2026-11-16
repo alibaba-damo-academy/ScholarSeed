@@ -31,18 +31,34 @@ class PersistenceWorker:
         self._session_id = session_id
 
     async def run[T](self, function: Callable[..., T], *args: Any, **kwargs: Any) -> T:
+        return await self._finish(
+            self._submit(partial(function, *args, **kwargs), self._generation)
+        )
+
+    def enqueue(self, function: Callable[..., Any], *args: Any, **kwargs: Any) -> None:
+        self._submit(partial(function, *args, **kwargs), None).add_done_callback(
+            self._report_failure
+        )
+
+    def _submit[T](self, function: Callable[[], T], generation: int | None) -> asyncio.Task[T]:
         if self._closed:
             raise RuntimeError("session persistence closed")
-        operation = asyncio.create_task(
-            self._run(partial(function, *args, **kwargs), self._generation)
-        )
+        operation = asyncio.create_task(self._run(function, generation))
         self._operations.add(operation)
         operation.add_done_callback(self._operations.discard)
-        return await self._finish(operation)
+        return operation
 
-    async def _run[T](self, function: Callable[[], T], generation: int) -> T:
+    def _report_failure(self, operation: asyncio.Task[Any]) -> None:
+        if not operation.cancelled() and (failure := operation.exception()) is not None:
+            _log.error(
+                "persistence_background_failed session_id=%s",
+                self._session_id,
+                exc_info=failure,
+            )
+
+    async def _run[T](self, function: Callable[[], T], generation: int | None) -> T:
         async with self._admission:
-            if self._closed or generation != self._generation:
+            if generation is not None and (self._closed or generation != self._generation):
                 raise asyncio.CancelledError
             return await self._write(function)
 

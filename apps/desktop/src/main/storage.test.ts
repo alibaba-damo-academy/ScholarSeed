@@ -118,6 +118,8 @@ function fixture(
             },
           }
         if (name === './storage-record.ts') return storageRecord
+        if (name === '../../native/registry.cjs')
+          return { REGISTRY_DIRECTORY: '.scholarseed-locks-v2' }
         if (name === './writer') return { desktopDirectoryWriter: () => ({ close() {} }) }
         if (name === './journal.ts')
           return {
@@ -1109,7 +1111,7 @@ test('coordination root remains bound to the OS account across product home choi
   const fx = fixture()
   try {
     const select = fx.mod.coordinationRoot as () => string
-    const expected = join(userInfo().homedir, '.scholarseed-coordination')
+    const expected = join(userInfo().homedir, '.scholarseed-locks-v2')
     assert.equal(select(), expected)
     fx.setHomedir(join(fx.documents, 'different-environment-home'))
     fx.setEnv(join(fx.documents, 'different-product-home'))

@@ -15,6 +15,9 @@ export function nativeLease({ command } = {}) {
   const development = command === 'serve'
   return {
     name: 'scholarseed-native-lease',
+    resolveId(source) {
+      if (LIBRARIES.some(name => source === `./${name}`)) return { id: source, external: true }
+    },
     async buildStart() {
       const contextPath = process.env[CONTEXT_ENV]
       if (contextPath) {

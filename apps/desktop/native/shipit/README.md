@@ -163,12 +163,32 @@ native recovery UI. Context age and clock skew do not authorize deletion or
 default-profile fallback. An unrelated build or explicit conflicting selection
 preserves the context and refuses startup. A strictly newer build may restore a
 superseded context only after installed-version reconciliation, matching handoff
-candidate/target, absent native request and absent current-user/root ShipIt helpers.
+candidate/target, and absent installation-owned current-user/root ShipIt helpers.
+The helper scope includes the installed application and the bound candidate;
+canonical executable paths distinguish other applications' same-named helpers.
+Unreadable ShipIt paths or incomplete process output remain unconfirmed. A retained
+native request is accepted only with the same bundle, binding and source/target
+paths plus a nonzero, identity-bound failure acknowledgement. Process absence and
+the request snapshot are checked again; this path does not delete native evidence.
+It reuses the existing failure protocol, not an age-based or build-only override.
 Unknown inspection results still refuse admission. The context bytes and original
 home/profile/workspace identities remain checked, and admission is repeated before
 storage publication. Only the target or proved superseding build's workbench
 acknowledgement consumes the context through the normal completion path. The old
-handoff and user data are not deleted. Signed-product recovery remains a separate
+handoff is consumed by the existing completion path after revalidating superseded
+admission; the log distinguishes supersession from installation success. User data
+and native failure records are not deleted. A replaced application is verified
+against the configured signing Team and bundle identity, with its bundle and
+Contents identities fixed across verification. The historical ack must still
+match the frozen old target, the unchanged target parent and the live bound source;
+ordinary source recovery still requires the old target itself. Replaced source
+identities, missing acknowledgements and legacy unbound requests still refuse.
+A durable native terminal publication proves historical restoration and lets an
+independent new request advance after application replacement under the same parent.
+It never replays the failed source or bypasses the new candidate's signature and
+installation gates. Legacy journals without that publication retain their stricter
+live-target check. Retained ack evidence continues to veto replay after journal
+advancement; missing ack is not a permanent replay ledger. Signed-product recovery remains a separate
 acceptance requirement; deterministic tests do not prove that lifecycle.
 
 `binding.patch` and `transfer.patch` carry one bounded tuple through the existing
@@ -413,7 +433,8 @@ are serialized to their JSON wire representation before comparing the request.
 After verification, source/target captures, both qualifications, Cleanup state and
 the exact Preparation journal snapshot are checked again. Original journal bytes
 are retained in an immutable `superseded-<sha256>.plist` within the private Preparation
-directory before the active journal is atomically cleared and synchronized. An
+directory, and a deny-only ledger entry binds the old source to that journal before
+the active journal is atomically cleared and synchronized. An
 interrupted owned archive stage can be retried; an existing archive must match exactly.
 Archive publication uses exclusive rename, and uncertain synchronization/close poisons
 the qualification. Normal request binding, candidate copying, final signature checks,
@@ -536,10 +557,10 @@ launch-agent file deletion or privileged fallback occurs. The old updater can su
 a fresh job normally. Only released lock/parking contention gets bounded pre-transaction
 requalification; signature, binding and uncertain-release failures do not retry.
 
-The context is consumed first. Native repair then retains the exact original
+After durable intent and mutation reservation, native repair first retains the exact original
 Preparation journal and native request in separate private SHA-256 archives, retires
 the qualified legacy record and consumes only that unauthorized native request.
-Desktop consumes the handoff last and completes the existing mutation reservation.
+Desktop then consumes the context and handoff, and completes the existing mutation reservation.
 No rollback preference is cleared. Normal installation authorization is never replayed.
 Fresh snapshots and held qualifications fence every record consumption.
 The runtime receives its native capabilities explicitly; standalone tool discovery,
@@ -594,6 +615,54 @@ fixture success proves the signed installed lifecycle.
 
 ## Read-only terminal recovery preflight
 
+**current (internal foundation)**: `retirement.h` maintains a bounded, deny-only
+`retired.plist` beside the preparation journal. Entries bind an explicit operation,
+source/target paths, archived request digest and archived journal digest. The ledger
+is synced before the journal is cleared, survives independent later transactions,
+and never evicts old entries to make room. Missing legacy sources and acknowledgements
+do not require manufacturing new failure evidence. Candidate and application files
+are retained. A malformed ledger or uncertain write refuses progress.
+
+`SSPreparationRetireRequest` requires an existing exclusive preparation qualification
+and an empty, stable cleanup owner. It revalidates the named preparation directory
+and lock against their held identities, and the current journal against the loaded
+transaction before writing. It rejects read-only qualification and cannot clear a
+newer journal on retry, including when the cached transaction was empty. The API is an internal primitive, not a user recovery
+command or independent authorization to retire anything.
+
+**current (source)**: the signed repair App supports explicit retirement of a
+retained request, including absent source/ack, an unbound legacy journal/request,
+and a replacement target parent. Run a separate signed copy, so the installed
+target and its processes can remain stopped:
+
+```sh
+"/absolute/Repair/ScholarSeed.app/Contents/MacOS/ScholarSeed" \
+  --repair-update-target=/Applications/ScholarSeed.app \
+  --repair-update-mode=retire
+```
+
+The target must already contain the ledger-capable helper. The tool verifies its
+Developer ID signature and sealed receipt, including the actual helper Mach-O
+fingerprint and retirement overlay. An older target must first be replaced by the
+new signed CI package. No local signing or installer replacement is performed by
+recovery. If the launch context is absent, supply all three explicit original
+storage selections described above; the tool never guesses a profile.
+
+Data-domain and launch-record locks precede native qualification and service
+parking. Only the exact user-domain label, helper path, arguments and PID/birth/UID
+match can be stopped; system-domain jobs or unavailable service/process evidence
+refuse. Original native bytes are archived before service removal. Original TS
+bytes and native proof are held in a durable intent before consumption. The old
+source is denied durably before the journal advances; candidates and applications
+are retained. Partial private ledger staging is reconstructed on retry. Native
+and TS consumption is resumable and refuses new records or changed inodes.
+Unbound TS handoffs use a hash of their original bytes as a deny-only operation
+identifier, never as fabricated installation authorization. Orphan succession
+binds its deny entry to the archived legacy journal when old request bytes are
+already unavailable. Existing read-only `inspect` and strict source `apply`
+retain their previous prerequisites. Signed CI/fault-machine validation remains
+post-merge acceptance; native/TS fixtures are not that acceptance.
+
 **current (source)**: `scripts/recovery.ts` is a macOS-only stage-1 inspection
 entry. It correlates one retained launch context and Squirrel handoff with the
 existing native failure journal, acknowledgement, ShipIt state and pinned
@@ -637,15 +706,16 @@ directory without building, repairing or accepting an arbitrary executable path.
 Its signature operations verify/display the existing application; they do not sign it.
 
 **required**: before terminal failure can be observed, normally quit every source
-and target application instance, their owned backend/runtime processes, and ShipIt.
-Native process inspection scopes executable paths to the source
-and target application trees, including canonical aliases. If `proc_pidpath` returns
+and target application instance, their owned backend/runtime processes, and their
+ShipIt helpers. Native process inspection scopes executable paths to the source
+and target application trees, including canonical aliases. A resolvable third-party
+ShipIt (for example VS Code's) does not block recovery. If `proc_pidpath` returns
 `ENOENT` after an executable's old directory was removed, the observer uses the
 kernel's file-backed native image mappings to establish ownership. It walks the
 public region iterator to its end (at most 4096 regions), requires a native
 executable mapping, and compares two mapping snapshots between three unchanged
 PID/birth/UID observations. Every mapped vnode path is checked against the owned
-source/target trees.
+source/target trees, including the prepared candidate selected by maintenance.
 An owned image still blocks even when its directory entry has been removed.
 The kernel's vnode path and device/inode identify the mapped image; a process
 name, argv path, current replacement file or vendor allowlist cannot substitute.
@@ -662,6 +732,20 @@ the actual kernel commpage; synthetic contracts or arm64 runs do not prove Intel
 acceptance. The layout follows Apple's
 [comm region mapping](https://github.com/apple-oss-distributions/xnu/blob/xnu-8792.61.2/osfmk/vm/vm_shared_region.c)
 and [region reporting](https://github.com/apple-oss-distributions/xnu/blob/xnu-8792.61.2/osfmk/vm/bsd_vm.c).
+
+The default macOS native contract check runs seven ShipIt repair tests. Run the
+four real kernel mapping integration tests separately from the repository root
+on macOS, using a new output directory and a Node process native to the host
+architecture:
+
+```sh
+node apps/desktop/scripts/shared/native.cjs --output /absolute/path/to/new-directory --shipit-mappings-integration
+```
+
+macOS 默认原生契约检查运行 7 个 ShipIt 修复用例。其余 4 个真实内核映射集成用例
+使用上面的命令单独执行。请在仓库根目录运行，指定一个尚未创建的输出目录，并使用与
+宿主架构一致的原生 Node 进程。
+
 Missing/partial vnode evidence, other anonymous executable mappings, permission errors,
 mapping drift, limit/deadline exhaustion and other path errors still refuse.
 This fallback never grants the exact-helper parking exemption. It does not scan

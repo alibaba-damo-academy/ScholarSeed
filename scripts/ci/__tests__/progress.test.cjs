@@ -70,8 +70,11 @@ test('failure forwards complete stdout and stderr, success stays quiet', async t
   }
 })
 
-test('timeout forwards diagnostics emitted before termination', async t => {
-  const result = await launch(t, ['-e', "process.stderr.write('before timeout\\n');setInterval(()=>{},1000)"], { timeout: 1000 })
+test('controlled termination forwards diagnostics flushed before exit', async context => {
+  const result = process.platform === 'win32'
+    ? await launch(context, ['-e', "process.stderr.write('before termination\\n');setInterval(()=>{},1000)"], { timeout: 500 })
+    : await launch(context, ['-e', "process.stderr.write('before termination\\n',()=>process.kill(process.pid,'SIGTERM'))"])
   assert.equal(result.code, 1)
-  assert.match(result.log, /before timeout/)
+  assert.equal(result.result.error.code, 'ETIMEDOUT')
+  assert.match(result.log, /before termination/)
 })

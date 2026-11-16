@@ -9,13 +9,14 @@ export function useAssistantIngress(): AssistantIngress {
   const { act } = useApp()
   return useMemo(
     () => ({
+      captureContextTarget: act.captureContextTarget,
       addContext: act.addContext,
       addContexts: act.addContexts,
       invokeOnce: act.invokeOnce,
       translate: act.translate,
       invokeSelection: act.invokeSelection,
       stopSelection: act.stopSelection,
-      openPanel: act.openPanel
+      openPanel: act.openPanel,
     }),
     [act]
   )

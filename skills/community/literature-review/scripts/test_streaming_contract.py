@@ -1,7 +1,9 @@
 """Streaming completion, partial-output preservation and deadline regression tests."""
 import asyncio
+import hashlib
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 from types import SimpleNamespace as NS
@@ -65,10 +67,16 @@ class StreamingContractTest(unittest.TestCase):
             self.assertIn('interrupted',(folder/'progress.json').read_text())
 
     def test_processing_import_works_without_scripts_root_on_pythonpath(self):
-        import subprocess
+        before = {str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
+                  for path in ROOT.rglob('*.pyc')}
         code="import sys;sys.path.insert(0,"+repr(str(ROOT/'scripts/processing'))+");import llm;from request_capacity import configured_check;configured_check('qwen3.8-max',[],100)"
-        result=subprocess.run([sys.executable,'-I','-c',code],capture_output=True,text=True,timeout=10)
+        result=subprocess.run([sys.executable,'-I','-B','-c',code],capture_output=True,text=True,timeout=10)
         self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(
+            {str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
+             for path in ROOT.rglob('*.pyc')},
+            before,
+        )
 
 
 if __name__=='__main__':unittest.main()

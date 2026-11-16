@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import scholarseedLogoMark from '../../assets/logo.svg'
@@ -10,6 +10,8 @@ import {
 } from '../../features/updates/installation'
 import { Button, Divider, ProgressBar } from '../ui'
 import { UpdateMetadata } from './UpdateMetadata'
+import { UPDATE_PORTAL } from '../../../../portal'
+import { NativeModalPortal, NativeModalProvider } from '../../shell/Modal'
 
 // UpdateOverlay.tsx — 安装/重启期间的全屏遮罩。
 //
@@ -30,6 +32,41 @@ const OVERLAY_PROGRESS_CLASS_NAME = 'w-full'
 const OVERLAY_CANCEL_CLASS_NAME = 'w-full'
 
 export function UpdateOverlay(): React.JSX.Element | null {
+  const state = useUpdateState()
+  const phase = state?.phase
+  if (
+    state?.startupVerification !== 'starting' &&
+    (phase === 'preparing' ||
+      (phase !== 'installing' && phase !== 'restarting' && !state?.restartPending))
+  )
+    return null
+  return <UpdatePresentation />
+}
+
+function UpdatePresentation(): React.JSX.Element {
+  const [failed, setFailed] = useState(false)
+  const fail = (): void => {
+    console.error('[update-presentation] native modal unavailable')
+    setFailed(true)
+  }
+  return (
+    <NativeModalProvider
+      bridge={window.scholarseed.updatePortal}
+      name={UPDATE_PORTAL.name}
+      onFailure={fail}
+    >
+      {failed ? (
+        <UpdateContent failed />
+      ) : (
+        <NativeModalPortal open onFailure={fail}>
+          <UpdateContent />
+        </NativeModalPortal>
+      )}
+    </NativeModalProvider>
+  )
+}
+
+function UpdateContent({ failed = false }: { failed?: boolean }): React.JSX.Element {
   const { t, i18n } = useTranslation('components')
   const { t: accountText } = useTranslation('account')
   const state = useUpdateState()
@@ -40,12 +77,6 @@ export function UpdateOverlay(): React.JSX.Element | null {
   const installation = state?.installation
   const now = useInstallationClock(phase === 'installing')
   const starting = state?.startupVerification === 'starting'
-  if (
-    !starting &&
-    (phase === 'preparing' ||
-      (phase !== 'installing' && phase !== 'restarting' && !state?.restartPending))
-  )
-    return null
 
   const restarting = phase === 'restarting' || state?.installStage === 'restarting'
   const saving = installation?.step === 'saving' || state?.installStage === 'handoff'
@@ -90,10 +121,16 @@ export function UpdateOverlay(): React.JSX.Element | null {
       role="status"
       aria-live="polite"
       data-testid="update-overlay"
+      tabIndex={-1}
     >
       <div className={OVERLAY_CARD_CLASS_NAME}>
         <img className={OVERLAY_LOGO_CLASS_NAME} src={scholarseedLogoMark} alt="" aria-hidden />
         <span className={OVERLAY_TITLE_CLASS_NAME}>{label}</span>
+        {failed && (
+          <span role="alert" className={OVERLAY_TEXT_CLASS_NAME}>
+            {t('update.presentationFailed')}
+          </span>
+        )}
         <span className={OVERLAY_TEXT_CLASS_NAME} data-testid="update-overlay-version">
           <UpdateMetadata candidate={state?.candidate} />
         </span>

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import json
 import logging
 import os
@@ -11,6 +12,7 @@ import re
 import secrets
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, replace
+from enum import StrEnum
 from typing import Any, AsyncIterator, Awaitable, Callable, Mapping
 from urllib.parse import urlparse
 
@@ -163,10 +165,36 @@ BYOK_REQUEST_MAX_RETRIES = 1
 load_builtin_work_config = load_config_values
 
 
+class CatalogValidationReason(StrEnum):
+    SELECTED_MODEL_MISSING = "selected_model_missing"
+    REQUIRED_MODELS_CHANGED = "required_models_changed"
+    SUBSCRIPTIONS_UNAVAILABLE = "subscriptions_unavailable"
+    INVALID_MODELS = "invalid_models"
+    EMPTY_MODELS = "empty_models"
+    INVALID_MODEL = "invalid_model"
+    CONFLICTING_MODEL = "conflicting_model"
+    MISSING_MODELS = "missing_models"
+    REGISTRATION_MISMATCH = "registration_mismatch"
+
+
+class CatalogValidationPhase(StrEnum):
+    REGISTRATION = "registration"
+    BEFORE_FETCH = "before_fetch"
+    PAYLOAD = "payload"
+    AFTER_FETCH = "after_fetch"
+
+
 class SessionModelUnavailableError(ValueError):
     """The durable UI model key can no longer be projected to a runtime connection."""
 
     safe_error = MODEL_UNAVAILABLE_ERROR
+
+
+class ModelCatalogDefinitionConflict(SessionModelUnavailableError):
+    """Multiple runtime definitions occupy the same provider-facing model name."""
+
+    def __init__(self, model_ref: str) -> None:
+        super().__init__(f"{MODEL_CATALOG_CONFLICT}: {model_ref}")
 
 
 class PersonalConnectionRejectedError(ValueError):
@@ -848,7 +876,7 @@ class ModelService:
         self._profiles.set_enabled(profile_id, enabled, owner_id=owner_id)
         if not enabled:
             self._completions.revoke_connection(owner_id, profile_id)
-        return await self._selection(user_id=user_id)
+        return self.profiles(user_id=user_id)
 
     async def set_model_hidden(
         self, profile_id: str, model_id: str, hidden: bool, *, user_id: str = ""
@@ -860,10 +888,13 @@ class ModelService:
         缓存 —— 同一条连接上其余模型仍然可见可用。
         """
 
-        self._profiles.set_model_hidden(
-            profile_id, model_id, hidden, owner_id=self._owner_id(user_id)
-        )
-        return await self._selection(user_id=user_id)
+        # Admit the mutation before writing and retain its lease through the
+        # catalogue projection, so a concurrent drain cannot split the result.
+        with self._activities.enter(ActivityDomain.MODEL, root=True):
+            self._profiles.set_model_hidden(
+                profile_id, model_id, hidden, owner_id=self._owner_id(user_id)
+            )
+            return await self._selection(user_id=user_id)
 
     @staticmethod
     async def _validate_personal_connection(candidate: Mapping[str, Any]) -> None:
@@ -898,10 +929,21 @@ class ModelService:
     async def delete_profile(self, profile_id: str, *, user_id: str = "") -> dict[str, Any]:
         owner_id = self._owner_id(user_id)
         profile = self._profiles.profile(profile_id, owner_id=owner_id)
+        warning = ""
         if profile is not None and is_oauth_connection(profile) and self._subscriptions is not None:
-            await self._subscriptions.disconnect(owner_id, profile_id)
+            try:
+                await self._subscriptions.disconnect(owner_id, profile_id)
+            except OAuthFailure as error:
+                if error.code != "oauth_revocation_unconfirmed":
+                    raise
+                warning = error.code
         self._profiles.delete(profile_id, owner_id=owner_id)
-        return await self._selection(user_id=user_id)
+        # A committed mutation must not depend on a new model/catalog activity.
+        # The renderer refreshes the model menu independently of this receipt.
+        return {
+            **self.profiles(user_id=user_id),
+            **({"warning": warning} if warning else {}),
+        }
 
     def probe_profile(
         self, values: Mapping[str, Any], profile_id: str = "", *, user_id: str = ""
@@ -1007,6 +1049,7 @@ class ModelService:
         turn_id_provider: Callable[[str], str] | None = None,
         source_text: str | None = None,
         catalog_activity: ActivityLease | None = None,
+        allow_tools: bool = True,
     ) -> SessionModelSpec:
         """Project the selected model onto one session's private connection.
 
@@ -1031,7 +1074,9 @@ class ModelService:
         selected_row = next(
             row for row in self._catalog_models(config, document) if row["key"] == selected
         )
-        catalog_models = self._catalog_entries(config, document, selected_row, user_id=user_id)
+        catalog_rows, catalog_models = self._execution_catalog(
+            config, document, selected_row, user_id=user_id
+        )
         approval_model_name = str(selected_row.get(GATEWAY_APPROVAL_MODEL_KEY) or "")
         declared_options = selected_row.get(REASONING_OPTIONS_KEY)
         reasoning_options: list[dict[str, Any]] | None = list(declared_options or ()) or None
@@ -1067,13 +1112,14 @@ class ModelService:
                     ),
                     catalog_activity=catalog_activity,
                     catalog_resolver=self._catalog_resolver(
-                        config,
-                        document,
+                        catalog_rows,
                         selected_row,
                         user_id=user_id,
                         registration_owner=owner_id,
                         registration_connection=personal_profile_id,
+                        session_id=session_id,
                     ),
+                    allow_tools=allow_tools,
                 )
                 return SessionModelSpec(
                     key=selected,
@@ -1125,13 +1171,14 @@ class ModelService:
                     self._profiles.profile(personal_profile_id, owner_id=owner_id),
                 ),
                 catalog_resolver=self._catalog_resolver(
-                    config,
-                    document,
+                    catalog_rows,
                     selected_row,
                     user_id=user_id,
                     registration_owner="",
+                    session_id=session_id,
                     catalog_activity=catalog_activity,
                 ),
+                allow_tools=allow_tools,
             )
             return SessionModelSpec(
                 key=selected,
@@ -1166,13 +1213,14 @@ class ModelService:
             renewal_source=lambda: (owner_id, selected, self._config()),
             approval_model_ref=approval_model_name,
             catalog_resolver=self._catalog_resolver(
-                config,
-                document,
+                catalog_rows,
                 selected_row,
                 user_id=user_id,
                 registration_owner=user_id,
+                session_id=session_id,
                 catalog_activity=catalog_activity,
             ),
+            allow_tools=allow_tools,
         )
         return SessionModelSpec(
             key=selected,
@@ -1321,26 +1369,48 @@ class ModelService:
             capabilities=capabilities,
             context_window=_optional_int(row.get(CONTEXT_WINDOW_KEY)),
             approval_model_ref=str(row.get(GATEWAY_APPROVAL_MODEL_KEY) or ""),
+            native_catalog_source=(
+                str(row["profile_id"])
+                if capabilities.tool_protocol is ModelToolProtocol.PROVIDER_NATIVE
+                else ""
+            ),
         )
 
-    def _catalog_entries(
+    def _execution_catalog(
         self,
         config: dict[str, Any],
         document: Mapping[str, Any],
         selected_row: Mapping[str, Any],
         *,
         user_id: str,
-    ) -> tuple[ModelCatalogEntry, ...]:
-        entries: dict[str, ModelCatalogEntry] = {}
+    ) -> tuple[list[dict[str, Any]], tuple[ModelCatalogEntry, ...]]:
         rows = self._catalog_rows(config, document, selected_row, user_id=user_id)
+        try:
+            return rows, self._catalog_entries(rows)
+        except ModelCatalogDefinitionConflict:
+            # The runtime indexes its catalog by wire model name. Narrow an
+            # ambiguous snapshot to the authority of the selected product key.
+            connection = selected_row.get("profile_id")
+            rows = [row for row in rows if row.get("profile_id") == connection]
+        try:
+            return rows, self._catalog_entries(rows)
+        except ModelCatalogDefinitionConflict:
+            # Multiple product keys in one connection can normalize to the
+            # same wire name. The selected key still identifies one definition.
+            rows = [row for row in rows if row["key"] == selected_row["key"]]
+            return rows, self._catalog_entries(rows)
+
+    @classmethod
+    def _catalog_entries(cls, rows: list[dict[str, Any]]) -> tuple[ModelCatalogEntry, ...]:
+        entries: dict[str, ModelCatalogEntry] = {}
         for row in rows:
-            model_ref = wire_model_name(str(row.get("model_id") or row.get("model_name") or ""))
+            entry = cls._catalog_entry(row)
+            model_ref = entry.model_ref
             if not model_ref:
                 continue
-            entry = self._catalog_entry(row)
             previous = entries.setdefault(model_ref, entry)
             if previous != entry:
-                raise SessionModelUnavailableError(f"{MODEL_CATALOG_CONFLICT}: {model_ref}")
+                raise ModelCatalogDefinitionConflict(model_ref)
         for approval_model in sorted(
             {entry.approval_model_ref for entry in entries.values()} - {""}
         ):
@@ -1360,21 +1430,20 @@ class ModelService:
             )
             previous = entries.setdefault(approval_model, entry)
             if previous != entry:
-                raise SessionModelUnavailableError(f"{MODEL_CATALOG_CONFLICT}: {approval_model}")
+                raise ModelCatalogDefinitionConflict(approval_model)
         return tuple(entries[model_ref] for model_ref in sorted(entries))
 
     def _catalog_resolver(
         self,
-        config: dict[str, Any],
-        document: Mapping[str, Any],
+        frozen_rows: list[dict[str, Any]],
         selected_row: Mapping[str, Any],
         *,
         user_id: str,
         registration_owner: str,
         registration_connection: str = "",
         catalog_activity: ActivityLease | None = None,
+        session_id: str = "",
     ) -> Callable[[str, str], Awaitable[dict[str, Any]]] | None:
-        frozen_rows = self._catalog_rows(config, document, selected_row, user_id=user_id)
         native_connections = tuple(
             sorted(
                 {
@@ -1394,6 +1463,7 @@ class ModelService:
             }
             for connection_id in native_connections
         }
+        admitted_refs = set().union(*native_models.values())
         owner_id = self._owner_id(user_id)
         selected_key = str(selected_row["key"])
         required_rows = {
@@ -1402,7 +1472,40 @@ class ModelService:
             if row.get("billing") == SUBSCRIPTION_BILLING or row["key"] == selected_key
         }
 
-        def validate() -> None:
+        def rejected(
+            reason: CatalogValidationReason,
+            phase: CatalogValidationPhase,
+            error: str,
+            *,
+            connection_id: str = "",
+            model_ref: str = "",
+            row_index: int | None = None,
+            received_count: int | None = None,
+            missing_count: int | None = None,
+        ) -> SessionModelUnavailableError:
+            # Fingerprints correlate catalog entries without logging upstream text,
+            # credentials, account identifiers, or user-defined model/connection names.
+            diagnostic = {
+                "reason": reason,
+                "phase": phase,
+                "session_id": session_id,
+                "selected_ref": hashlib.sha256(selected_key.encode()).hexdigest(),
+                "connection_ref": (
+                    hashlib.sha256(connection_id.encode()).hexdigest() if connection_id else None
+                ),
+                "model_ref": hashlib.sha256(model_ref.encode()).hexdigest() if model_ref else None,
+                "connection_count": len(native_connections),
+                "required_count": len(native_models.get(connection_id, required_rows)),
+                "received_count": received_count,
+                "missing_count": missing_count,
+                "row_index": row_index,
+            }
+            LOGGER.warning(
+                "model_catalog_validation_failed %s", json.dumps(diagnostic, sort_keys=True)
+            )
+            return SessionModelUnavailableError(error)
+
+        def validate(phase: CatalogValidationPhase) -> None:
             current_config = self._config()
             current_document = self._profiles.list(owner_id=owner_id)
             current_row = next(
@@ -1414,7 +1517,9 @@ class ModelService:
                 None,
             )
             if current_row is None:
-                raise SessionModelUnavailableError(MODEL_CATALOG_STALE)
+                raise rejected(
+                    CatalogValidationReason.SELECTED_MODEL_MISSING, phase, MODEL_CATALOG_STALE
+                )
             current_rows = {
                 str(row["key"]): self._catalog_entry(row)
                 for row in self._catalog_rows(
@@ -1422,13 +1527,19 @@ class ModelService:
                 )
             }
             if any(current_rows.get(key) != entry for key, entry in required_rows.items()):
-                raise SessionModelUnavailableError(MODEL_CATALOG_STALE)
+                raise rejected(
+                    CatalogValidationReason.REQUIRED_MODELS_CHANGED, phase, MODEL_CATALOG_STALE
+                )
 
         async def read() -> dict[str, Any]:
-            validate()
+            validate(CatalogValidationPhase.BEFORE_FETCH)
             subscriptions = self._subscriptions
             if subscriptions is None:
-                raise SessionModelUnavailableError(MODEL_CATALOG_UNAVAILABLE)
+                raise rejected(
+                    CatalogValidationReason.SUBSCRIPTIONS_UNAVAILABLE,
+                    CatalogValidationPhase.BEFORE_FETCH,
+                    MODEL_CATALOG_UNAVAILABLE,
+                )
             payloads = await asyncio.gather(
                 *(
                     subscriptions.catalog(owner_id, connection_id)
@@ -1436,32 +1547,84 @@ class ModelService:
                 )
             )
             rows: dict[str, dict[str, Any]] = {}
+            extra_rows: dict[str, dict[str, Any]] = {}
+            conflicting_extras: set[str] = set()
             for connection_id, payload in zip(native_connections, payloads, strict=True):
                 source = payload.get("models")
                 if not isinstance(source, list) or not source:
-                    raise SessionModelUnavailableError(MODEL_CATALOG_UNAVAILABLE)
-                source_models: set[str] = set()
-                for row in source:
+                    raise rejected(
+                        (
+                            CatalogValidationReason.EMPTY_MODELS
+                            if isinstance(source, list)
+                            else CatalogValidationReason.INVALID_MODELS
+                        ),
+                        CatalogValidationPhase.PAYLOAD,
+                        MODEL_CATALOG_UNAVAILABLE,
+                        connection_id=connection_id,
+                        received_count=len(source) if isinstance(source, list) else None,
+                    )
+                definitions: dict[str, dict[str, Any]] = {}
+                for row_index, row in enumerate(source):
                     if (
                         not isinstance(row, dict)
                         or not isinstance(row.get("slug"), str)
                         or not row["slug"]
                     ):
-                        raise SessionModelUnavailableError(MODEL_CATALOG_UNAVAILABLE)
-                    source_models.add(row["slug"])
-                    previous = rows.setdefault(row["slug"], copy.deepcopy(row))
-                    if previous != row:
-                        raise SessionModelUnavailableError(
-                            f"{MODEL_CATALOG_CONFLICT}: {row['slug']}"
+                        raise rejected(
+                            CatalogValidationReason.INVALID_MODEL,
+                            CatalogValidationPhase.PAYLOAD,
+                            MODEL_CATALOG_UNAVAILABLE,
+                            connection_id=connection_id,
+                            row_index=row_index,
+                            received_count=len(source),
                         )
-                if not native_models[connection_id].issubset(source_models):
-                    raise SessionModelUnavailableError(MODEL_CATALOG_UNAVAILABLE)
-            validate()
+                    model_ref = row["slug"]
+                    previous = definitions.setdefault(model_ref, row)
+                    if previous != row:
+                        raise rejected(
+                            CatalogValidationReason.CONFLICTING_MODEL,
+                            CatalogValidationPhase.PAYLOAD,
+                            f"{MODEL_CATALOG_CONFLICT}: {model_ref}",
+                            connection_id=connection_id,
+                            model_ref=model_ref,
+                            row_index=row_index,
+                            received_count=len(source),
+                        )
+                required = native_models[connection_id]
+                missing = required.difference(definitions)
+                if missing:
+                    raise rejected(
+                        CatalogValidationReason.MISSING_MODELS,
+                        CatalogValidationPhase.PAYLOAD,
+                        MODEL_CATALOG_UNAVAILABLE,
+                        connection_id=connection_id,
+                        received_count=len(source),
+                        missing_count=len(missing),
+                    )
+                rows.update(
+                    {model_ref: copy.deepcopy(definitions[model_ref]) for model_ref in required}
+                )
+                for model_ref in definitions.keys() - admitted_refs:
+                    definition = definitions[model_ref]
+                    if extra_rows.setdefault(model_ref, definition) != definition:
+                        conflicting_extras.add(model_ref)
+            rows.update(
+                {
+                    model_ref: copy.deepcopy(definition)
+                    for model_ref, definition in extra_rows.items()
+                    if model_ref not in conflicting_extras
+                }
+            )
+            validate(CatalogValidationPhase.AFTER_FETCH)
             return {"models": [rows[model_ref] for model_ref in sorted(rows)]}
 
         async def resolve(owner: str, connection: str) -> dict[str, Any]:
             if owner != registration_owner or connection != registration_connection:
-                raise SessionModelUnavailableError(MODEL_CATALOG_UNAVAILABLE)
+                raise rejected(
+                    CatalogValidationReason.REGISTRATION_MISMATCH,
+                    CatalogValidationPhase.REGISTRATION,
+                    MODEL_CATALOG_UNAVAILABLE,
+                )
             if catalog_activity is None:
                 return await read()
             with self._activities.continue_from(catalog_activity, ActivityDomain.MODEL):
@@ -1631,8 +1794,19 @@ def _personal_capability(
 
     efforts = _declared_list(model, REASONING_EFFORTS_KEY)
     if efforts:
+        options = out.get(REASONING_OPTIONS_KEY) or []
+        effort = {
+            **(reasoning_option(options, EFFORT_FORM) or {}),
+            "kind": EFFORT_FORM,
+            "values": efforts,
+        }
+        effort.pop("default", None)
         out[REASONING_EFFORTS_KEY] = efforts
-        out[REASONING_OPTIONS_KEY] = [{"kind": EFFORT_FORM, "values": efforts}]
+        # An effort override does not revoke an independently verified toggle or budget.
+        out[REASONING_OPTIONS_KEY] = [
+            effort,
+            *(option for option in options if option.get("kind") != EFFORT_FORM),
+        ]
         provenance["reasoning"] = CAPABILITY_PROVENANCE_USER
     elif vendor is None or vendor.reasoning_options is None:
         out[REASONING_EFFORTS_KEY] = None
@@ -1691,6 +1865,7 @@ def _codex_provider(
     source_text: str | None = None,
     approval_model_ref: str = "",
     catalog_resolver: Callable[[str, str], Awaitable[dict[str, Any]]] | None = None,
+    allow_tools: bool = True,
     renewal_source: Callable[[], object] | None = None,
 ) -> tuple[dict[str, Any], dict[str, str]]:
     base_url = _base_url(config)
@@ -1712,6 +1887,8 @@ def _codex_provider(
     )
     if (
         chat_completions
+        or bool(session_id)
+        or not allow_tools
         or reasoning_effort is not None
         or account_tokens is not None
         or gateway_owned
@@ -1761,9 +1938,17 @@ def _codex_provider(
             reasoning_options=reasoning_options,
             thinking=thinking,
             provider=str(config.get("provider") or ""),
+            reasoning_summary_models=frozenset(
+                model
+                for model in allowed_models
+                if gateway_owned
+                and bundled_registry().lookup(model, GATEWAY_CONNECTION).responses_reasoning_summary
+                is True
+            ),
             approval_model_ref=approval_model_ref,
             catalog_resolver=catalog_resolver,
             request_policy=request_policy,
+            allow_tools=allow_tools,
             renewal_source=renewal_intent,
         )
         return {

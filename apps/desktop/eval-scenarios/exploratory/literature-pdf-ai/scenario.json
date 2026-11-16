@@ -1,7 +1,0 @@
-{
-  "id": "literature-pdf-ai",
-  "config": {
-    "language": "zh"
-  },
-  "drive": "cmd.jsonl"
-}

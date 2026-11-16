@@ -444,6 +444,10 @@ python -m service.cli.plugins pack ./paper-reading-notes --name paper-reading-no
 <td>Conversation components, connected to actual props and callbacks</td>
 </tr>
 <tr>
+<td>Compose charts, tables, evidence, or artifact previews</td>
+<td>Use the unified Skill and composition slots below first</td>
+</tr>
+<tr>
 <td>Collect choices for your own workflow</td>
 <td>A custom slot, data/action schemas, and component code</td>
 </tr>
@@ -491,18 +495,6 @@ python -m service.cli.plugins pack ./paper-reading-notes --name paper-reading-no
 <td><a href="../apps/desktop/src/renderer/src/features/literature/Choices.tsx">Choices</a></td>
 </tr>
 <tr>
-<td><code>display.literature-downloads</code></td>
-<td>Per-paper acquisition or import outcomes</td>
-<td>Shown after acquisition/import; users can open full text or the library.</td>
-<td><a href="../apps/desktop/src/renderer/src/features/literature/Downloads.tsx">Downloads</a></td>
-</tr>
-<tr>
-<td><code>display.literature-delivery</code></td>
-<td>Save location, file conflicts, and outcomes</td>
-<td>Started with <code>literature delivery</code>; the user chooses and confirms a destination.</td>
-<td><a href="../apps/desktop/src/renderer/src/features/literature/Delivery.tsx">Delivery</a></td>
-</tr>
-<tr>
 <td><code>display.literature-references</code></td>
 <td>References and source actions</td>
 <td>Shows cited literature, with source opening, import, and collection actions.</td>
@@ -534,9 +526,38 @@ python -m service.cli.plugins pack ./paper-reading-notes --name paper-reading-no
 <ul>
 <li><strong>Questions and paper selection:</strong> <code>interaction.question</code> shows choices; <code>literature.selection</code> shows a selectable subset. The outer interaction owns the question and whole-turn confirmation, not the option component alone.</li>
 <li><strong>Search summary and full results:</strong> <code>display.literature-search</code> summarizes results; <code>preview.literature-results</code> contains the full list, filters, and operations. See <code>results.json</code>, <code>details.json</code>, and <code>question.json</code> in <a href="../skills/community/agentic-search/components">agentic-search/components</a>.</li>
-<li><strong>Full-text authorization and acquisition:</strong> <code>literature.authorization</code> shows the requested papers; the native flow owns its buttons and authorization result. <code>display.literature-downloads</code> shows per-paper outcomes. Examples: <a href="../skills/community/literature-review/components/authorization.json">authorization.json</a> and <a href="../skills/community/precise-literature-search/components/downloads.json">downloads.json</a>; paper-subset examples use <code>scenario.json</code> in the corresponding component directory.</li>
-<li><strong>Delivery and references:</strong> <code>display.literature-delivery</code> covers save destinations and conflicts. <code>display.literature-references</code> presents cited papers and source operations. Their UI does not independently grant download, filesystem, or library permissions.</li>
+<li><strong>Full-text authorization:</strong> <code>literature.authorization</code> shows the requested papers. Managed acquisition supports authorized reading; it does not write to the library or save files for the user.</li>
+<li><strong>Research results:</strong> the results view keeps explicit library actions and BibTeX export. References continue to link to their sources.</li>
 </ul>
+<h2 id="cards--unified-skill-and-composition-slots">Unified Skill and Composition Slots</h2>
+<p>The Agent loads the conversation-card guide through <code>scholarseed-product-operations</code>, discovers current official UI, and reads its three references. The entry is <code>skills/community/scholarseed-product-operations/references/scholarseed-chat-ui/guides/conversation.md</code>. The three formerly separate conversation skills are consolidated here and are not installed separately.</p>
+<table>
+<thead>
+<tr>
+<th>Composition slot</th>
+<th>Purpose</th>
+<th>Contract and examples</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>rich-content.compose</code></td>
+<td>Charts, tables, formulas, diagrams, code, and prose</td>
+<td><code>references/scholarseed-chat-ui/guides/content.md</code></td>
+</tr>
+<tr>
+<td><code>research-evidence.select</code></td>
+<td>Complete evidence, locations, and selections</td>
+<td><code>references/scholarseed-chat-ui/guides/evidence.md</code></td>
+</tr>
+<tr>
+<td><code>artifacts-workbench.preview</code></td>
+<td>File paths, versions, and supplied previews</td>
+<td><code>references/scholarseed-chat-ui/guides/workbench.md</code></td>
+</tr>
+</tbody>
+</table>
+<p>Use schema-compliant JSON when a composition meets the need; do not generate another plugin. New interactions outside these compositions use <code>plugin-create</code> for creation, checks, and publication, followed by user installation confirmation. Domain slots remain driven by domain tools; an arbitrary Conversation export is not an invocable slot. Organize answers as explanation, component card, and interpretation rather than packing many unrelated components into one plugin page. Technical names and logs are debugging details.</p>
 <h2 id="cards--conversation-components">Conversation Components</h2>
 <p>Read components from <code>window.scholarseedUI.Conversation</code> and declare <code>Conversation</code> in <code>ui.exports</code>.</p>
 <table>
@@ -549,43 +570,43 @@ python -m service.cli.plugins pack ./paper-reading-notes --name paper-reading-no
 </thead>
 <tbody>
 <tr>
-<td>Research cards</td>
-<td><code>Choices</code>, <code>Results</code>, <code>Details</code>, <code>References</code>, <code>Downloads</code>, <code>Delivery</code>, <code>Review</code></td>
-<td>Real business data, operation ports, and authorization outcomes. Research cards generally take <code>content</code> and <code>ports</code>; Choices takes <code>data/status/slot/submit</code>.</td>
+<td>Prose and rich content</td>
+<td><code>Markdown</code>, <code>Code</code>, <code>Formula</code>, <code>Tabulation</code>, <code>Diagram</code>, <code>Canvas</code>, <code>Content</code></td>
+<td>Original content and controlled copy/open callbacks; display is not execution. Shared image implementations remain native; Markdown multi-image integration is separately planned.</td>
 </tr>
 <tr>
-<td>Prose and source content</td>
-<td><code>Markdown</code>, <code>Message</code>, <code>Code</code>, <code>Formula</code>, <code>Tabulation</code></td>
-<td>Original content, copy/open callbacks, citations, and mathematical meaning. Displaying code does not execute it.</td>
+<td>Charts and tables</td>
+<td><code>Plot</code>, <code>BarChart</code>, <code>GroupedBarChart</code>, <code>StackedBarChart</code>, <code>LineChart</code>, <code>ScatterChart</code>, <code>PieChart</code>, <code>DonutChart</code>, <code>Histogram</code>, <code>BoxPlot</code>, <code>Heatmap</code>, <code>DataTable</code></td>
+<td>Explicit columns, units, missing values, and sources; use official ECharts/TanStack components, not executable configuration.</td>
 </tr>
 <tr>
-<td>Artifacts</td>
-<td><code>Artifact</code>, <code>ArtifactGroup</code>, <code>ArtifactMenuItems</code>, <code>ArtifactDestination</code></td>
-<td>Immutable file/version identity and save/import/open operations and outcomes; groups only provide layout.</td>
+<td>Research results</td>
+<td><code>Results</code>, <code>Details</code>, <code>References</code>, <code>Downloads</code>, <code>Delivery</code>, <code>Review</code></td>
+<td>Real domain data and operation ports, normally supplied as <code>content</code> and <code>ports</code>.</td>
 </tr>
 <tr>
-<td>Images</td>
-<td><code>ImageView</code>, <code>Images</code>, <code>ImageThumbnail</code></td>
-<td>Authorized URLs, asset identity, load failures, selection, and actions; components do not read arbitrary local files.</td>
+<td>Citations and evidence</td>
+<td><code>CitationLink</code>, <code>CitationSources</code></td>
+<td>Complete excerpts, locations, historical snapshots, and navigation; labels are not read permission.</td>
 </tr>
 <tr>
-<td>Citations and context</td>
-<td><code>CitationLink</code>, <code>WebCitationLink</code>, <code>CitationSources</code>, <code>ConversationReference</code>, <code>ComposerRefChip</code></td>
-<td>Citation resolution, authorized previews, history snapshots, pagination, and navigation; a label is not read permission.</td>
-</tr>
-<tr>
-<td>Execution</td>
-<td><code>ExecutionProcess</code>, <code>ExecutionBatch</code>, <code>ToolExecution</code>, <code>ExecutionIO</code>, <code>ExecutionStatus</code>, <code>WebSearchRecord</code></td>
-<td>Actual turns, state, I/O, and time; unknown or interrupted results must not appear successful.</td>
-</tr>
-<tr>
-<td>Task support</td>
-<td><code>Plan</code>, <code>Failure</code>, <code>Suggestions</code>, <code>Attachments</code>, <code>FileFormatIcon</code></td>
-<td>Plan projection, recovery eligibility, sending, file identity, and opening; UI does not automatically resume tasks or send messages.</td>
+<td>Artifacts and workbench</td>
+<td><code>FileFormatIcon</code>, <code>Artifact</code>, <code>ArtifactGroup</code>, <code>ArtifactMenuItems</code>, <code>FileMenuItems</code>, <code>ArtifactDestination</code></td>
+<td>Immutable file/version identities and save/import/open outcomes; icons, groups, and menus are not independent business cards.</td>
 </tr>
 </tbody>
 </table>
+<p>User input and context, execution and plans, confirmation and clarification, next steps, failures, and empty answers use native ScholarSeed UI, with no corresponding official package export or iframe entry. <code>interaction.question</code> and <code>literature.authorization</code> remain native contributions. Shared content images, menus, and component-local error handling remain available.</p>
 <p>Inspect <code>catalog.composition.Conversation</code> for input guidance and <a href="#api--source-and-types">source and types</a> for exact signatures. Exported components do not imply that all internal callbacks are available to ordinary plugins.</p>
+<h3 id="cards--live-official-component-preview">Live Official Component Preview</h3>
+<p>After installing this checkout's Desktop frontend dependencies, run:</p>
+<pre><code class="language-sh">pnpm ops dev browser
+</code></pre>
+<p>Open the <a href="http://localhost:5173/?dev=components">Desktop component gallery</a> on the renderer's loopback address.</p>
+<p>Schema-backed seeded random data and JSON editing are preview tools, not real papers, saved results, or permission evidence. New components still need editable data contracts and safe interaction bindings. Preview does not call real business services or replace installation, copy, or Agent acceptance; documentation screenshots are not a live preview.</p>
+<h3 id="cards--copy-content-not-interface-controls">Copy Content, Not Interface Controls</h3>
+<p>Whole-message copying merges prose and registered card text in turn order, with no separate card copy button. Charts and tables retain complete data and units, code retains collapsed lines, evidence retains excerpts and saved selections, and artifact previews retain supplied content and versions without reading linked files.</p>
+<p>Layout, icons, and menus have no copyable business text. Register custom content through the <a href="#api--register-copyable-card-content">copy SDK</a>. Automatic registration uses <code>mount()</code> context; do not overwrite sibling components with <code>setCopyContent()</code>.</p>
 <h2 id="cards--ui-controls">UI Controls</h2>
 <ul>
 <li><strong>Input:</strong> Button, IconButton, Checkbox, Input, Textarea, RadioGroup, Select.</li>
@@ -727,8 +748,12 @@ scholarseed-bridge component request --help
 <p>Ordinary custom cards currently connect plugin-call only to <code>skills.list</code> and <code>navigation.skills</code>. Full text, classifications, and saving in literature cards use domain-specific ports. Copying names such as <code>literature.read</code> or <code>navigation.open</code> does not grant those operations to an ordinary card.</p>
 <h3 id="api--register-copyable-card-content">Register Copyable Card Content</h3>
 <p>Register text after UI state updates. When copying a message, ScholarSeed merges turn prose and card content in order. Public cards generate this text from business data; do not register it again.</p>
-<p>Inside <code>mount()</code>, official <code>Conversation.Choices</code>, <code>Results</code>, <code>Details</code>, <code>References</code>, <code>Downloads</code>, <code>Delivery</code>, and <code>Review</code> components automatically register text. Compositions merge their content. Collapsed review sections, citations, checks, and questions remain included. Artifacts retain titles and paths; their file contents are not automatically read.</p>
-<p><code>Markdown</code>, <code>Message</code>, <code>Code</code>, <code>Formula</code>, and <code>Artifact</code> also register automatically. Code retains its full source even when collapsed; formulas retain LaTeX, descriptions, and annotations. <code>Tabulation</code> requires <code>copyText</code> or <code>invalidSource</code> and does not infer data from table DOM.</p>
+<p>Inside <code>mount()</code>, official <code>Conversation.Results</code>, <code>Details</code>, <code>References</code>, <code>Downloads</code>, <code>Delivery</code>, and <code>Review</code> automatically register text. Compositions merge content, including collapsed review sections, citations, checks, and questions. Artifacts retain titles and paths without reading file contents.</p>
+<p><code>Markdown</code>, <code>Code</code>, <code>Formula</code>, and <code>Artifact</code> also register automatically. Code retains its full collapsed source; formulas retain LaTeX, descriptions, and annotations. <code>Tabulation</code> requires <code>copyText</code> or <code>invalidSource</code>; it does not infer data from table DOM.</p>
+<p>User input, context, execution, plans, confirmation, clarification, next steps, failures, and empty answers use native ScholarSeed UI, not official package exports. <code>interaction.question</code> and <code>literature.authorization</code> remain native entry points; review iframes display content without duplicating outline approval. Shared image and menu components retain their own loading, copy, and rendering error handling.</p>
+<p><code>Plot</code>, its ten concrete chart types, <code>DataTable</code>, and <code>Content</code> also register automatically. Charts and tables retain complete original rows and units through filtering, paging, and collapse, without replacing missing values with zero. Evidence retains full excerpts and locations; artifacts retain supplied previews without reading files. The three unified compositions register titles, content, and saved selections, not submit/cancel buttons.</p>
+<p>These texts feed the whole-turn copy action beneath the message; cards have no separate copy button. Layout, icons, and menus are not business text. Ordinary plugins retain their isolated bridge, with no direct <code>navigator.clipboard</code>, host DOM, or file access.</p>
+<p>Upgrades do not rewrite historical cards' frozen resources or registered text. Preserve original questions and final confirmed answers separately. Verify new registration capabilities with new versions and bindings; do not alter databases or use old cards as proof of new-component acceptance.</p>
 <p>For custom rendering, call <code>window.scholarseedUI.useCopyContent(text)</code> inside a component and declare <code>useCopyContent</code> in <code>ui.exports</code>. The Hook combines text from components and re-registers it after saved state updates; registration failures appear inside the card. Do not combine this Hook with direct <code>setCopyContent()</code> calls that replace the entire card's text.</p>
 <pre><code class="language-js">const { React, mount } = window.scholarseedUI;
 
@@ -834,14 +859,9 @@ mount(state =&gt; React.createElement(Notes, { state }));
 <td>Downloads and manages files; returns per-paper outcomes.</td>
 </tr>
 <tr>
-<td><code>literature ingest / import</code></td>
-<td>Import downloads or session files into the literature library</td>
-<td>Writes library entries and associates the current project; <code>import</code> follows an explicit user instruction.</td>
-</tr>
-<tr>
-<td><code>literature delivery</code></td>
-<td>Present the full-text saving workflow</td>
-<td>Pins a delivery batch, then saves or imports according to later user choices.</td>
+<td><code>literature import</code></td>
+<td>Import a session file into the literature library</td>
+<td>Writes to the current project only on explicit user instruction.</td>
 </tr>
 <tr>
 <td><code>literature collection.list / tag.list</code></td>
@@ -991,12 +1011,16 @@ mount(state =&gt; React.createElement(Notes, { state }));
 <p>Record input, tool results, and notes. Preserve screenshots or recordings of failures without exposing credentials or private research materials.</p>
 <h2 id="testing--check-ui-and-updates">Check UI and Updates</h2>
 <p>For a custom card, call <code>setCopyContent()</code> and use the message's copy button. Paste into a text editor and verify the order of prose, cards, and subsequent conclusions, including choices, citations, and links. Switch conversations and return: copying history must still include the card. Register new copy content after editing a draft; do not copy stale choices. Missing card text must be explicitly indicated when none is registered.</p>
+<p>When reusing official components, verify automatic registration without overwriting it. Compose prose, a bar chart, a table, citations/evidence, an artifact, and an explanation. Check copy order, complete data and units, missing values, collapsed code/excerpts, and unopened supplied artifact previews. Filtering, paging, and collapse must not truncate source content; a path is not proof that a file was read.</p>
+<p>Exercise <code>rich-content.compose</code>, <code>research-evidence.select</code>, and <code>artifacts-workbench.preview</code>. Copy immediately after saving a selection, then reopen the conversation and copy again. Check the latest saved selection and version. Registration failures must remain visible until retry or network recovery succeeds. The host enforces the 64 KiB limit: no silent truncation reported as success. Cards must not add independent copy buttons or direct clipboard access.</p>
+<p>Source preview catalogs, JSON editing, and HMR validate components and developer tooling only, not application copy/history recovery. Real Agent acceptance requires an explicit model budget and end-to-end evidence; document or fixture checks do not establish it.</p>
+<p>Keep historical regression separate from new-version acceptance. Old cards retain frozen resources and registered text; confirmation comes from answer receipts. New resources require new bindings. Never modify historical snapshots to make old conversations display new styles or text.</p>
 <ul>
-<li><strong>UI:</strong> Light/dark themes, narrow windows, keyboard use, long text, and errors.</li>
-<li><strong>State:</strong> Re-rendering preserves edits; old save responses do not overwrite new input; cancellation does not continue the task.</li>
-<li><strong>Updates:</strong> A new package, digest, and installation confirmation; slot conflicts do not take over other plugins; failures preserve the old version.</li>
-<li><strong>Historical cards:</strong> Restore their pinned version and recheck current permissions.</li>
-<li><strong>Platforms:</strong> Verify affected installation and runtime behavior separately on macOS and Windows.</li>
+<li><strong>UI:</strong> light/dark themes, narrow windows, keyboard, long text, and errors.</li>
+<li><strong>State:</strong> redraw preserves edits; old save receipts do not overwrite new input; cancellation does not continue the task.</li>
+<li><strong>Updates:</strong> new packages, hashes, and installation confirmation; slot conflicts do not take over other plugins, and failures retain the old version.</li>
+<li><strong>History:</strong> restore fixed versions and recheck current permissions.</li>
+<li><strong>Platforms:</strong> verify affected installation and runtime flows separately on macOS and Windows.</li>
 </ul>
 <h2 id="testing--troubleshooting">Troubleshooting</h2>
 <table>

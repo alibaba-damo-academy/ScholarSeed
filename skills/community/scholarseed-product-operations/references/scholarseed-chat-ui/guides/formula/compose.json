@@ -1,0 +1,9 @@
+{
+  "request_id": "replace-for-each-step",
+  "slot": "formula.view",
+  "title": "formula",
+  "data": {
+    "caption": "Percentage",
+    "source": "\\frac{80}{100}\\times100\\%"
+  }
+}

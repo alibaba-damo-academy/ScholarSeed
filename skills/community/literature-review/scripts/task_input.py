@@ -9,6 +9,8 @@ def task_input(ws, request=None):
     if current['user_instructions']: originals.append(current['user_instructions'])
     originals.extend(current['user_requests'])
     return {'original_user_requests': originals,
+            'deliverable': current.get('deliverable'), 'execution':current.get('execution'),
+            'sources':current.get('sources'),
             'effective_requirements': current['effective_requirements'] or current['intent'],
             'query_settings': query_view(current),
             'stage_instructions': current['stage_instructions'],

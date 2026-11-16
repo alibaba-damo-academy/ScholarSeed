@@ -237,6 +237,14 @@ class WebImportContract(unittest.TestCase):
         self.assertEqual(response.status_code, 404, response.text)
         self.assertEqual(response.json()["detail"], WEB_UNSAFE_URL)
 
+    def test_web_preview_rejects_private_network_targets(self) -> None:
+        self.client.app.state.web_preview_fetcher = HtmlFetcher()
+        response = self.client.get(
+            "/api/resource/web-preview", params={"url": "http://127.0.0.1/private"}
+        )
+        self.assertEqual(response.status_code, 503, response.text)
+        self.assertEqual(response.json()["detail"], "web_preview_unavailable")
+
     def test_site_icon_uses_a_controlled_provider_when_the_root_icon_is_missing(self) -> None:
         address = (
             socket.AF_INET,

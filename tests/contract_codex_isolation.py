@@ -32,6 +32,8 @@ INITIAL_REVISION = "first"
 UPDATED_REVISION = "second"
 MCP_CONNECTED_STATUS = "connected"
 MCP_STATUS_POLL_SECONDS = 0.05
+SHELL_SNAPSHOT_DIRECTORY = "shell_snapshots"
+DARWIN_PLATFORM = "darwin"
 
 
 def check(name: str, condition: bool, detail: str = "") -> None:
@@ -89,7 +91,9 @@ def test_managed_runtime() -> None:
         product_skill = _write_skill(product_root, PRODUCT_SKILL_NAME, "PRODUCT_SKILL")
         runtime_home.mkdir()
         (runtime_home / "config.toml").write_text(
-            f'[projects.{json.dumps(str(workspace.resolve()))}]\ntrust_level="trusted"\n[features]\nplugins=true\n',
+            f'[projects.{json.dumps(str(workspace.resolve()))}]\ntrust_level="trusted"\n'
+            f"[features]\nplugins=true\nshell_snapshot=true\n"
+            f"shell_snapshot_v2={json.dumps(sys.platform != DARWIN_PLATFORM)}\n",
             encoding="utf-8",
         )
         inherited = {"HOME": str(user_home), "PATH": os.environ.get("PATH", "")}
@@ -142,6 +146,17 @@ def test_managed_runtime() -> None:
             "managed plugin gate disables ambient marketplace startup tasks",
             dict(effective.get("features") or {}).get("plugins") is False,
             json.dumps(effective.get("features"), ensure_ascii=False),
+        )
+        features = dict(effective.get("features") or {})
+        check(
+            "managed launch disables legacy shell snapshots even if user config enables them",
+            features.get("shell_snapshot") is False,
+            json.dumps(features, ensure_ascii=False),
+        )
+        check(
+            "native config selects snapshot V2 only on macOS",
+            features.get("shell_snapshot_v2") is (sys.platform == DARWIN_PLATFORM),
+            json.dumps(features, ensure_ascii=False),
         )
         check(
             "derived shells recover the user's original home",
@@ -308,7 +323,30 @@ def test_loaded_thread_mcp_projection() -> None:
         )
         try:
             _initialize(server)
-            threads = [_start_thread(server, runtime_home) for _ in range(2)]
+            threads = [_start_thread(server, runtime_home) for _ in range(3)]
+            released, *remaining = threads
+            for thread_id in threads:
+                check(
+                    "shared App Server runs the projected MCP tool before unsubscribe",
+                    _call_revision(server, thread_id) == INITIAL_REVISION,
+                )
+            check(
+                "one native thread can unsubscribe without stopping the shared App Server",
+                server.request("thread/unsubscribe", {"threadId": released}).get("status")
+                == "unsubscribed",
+            )
+            check(
+                "surviving threads still run the projected MCP tool",
+                all(
+                    _call_revision(server, thread_id) == INITIAL_REVISION for thread_id in remaining
+                ),
+            )
+            snapshots = runtime_home / SHELL_SNAPSHOT_DIRECTORY
+            check(
+                "managed shared threads do not create legacy shell snapshot files",
+                not snapshots.is_dir() or not any(snapshots.iterdir()),
+            )
+            threads = remaining
             for thread_id in threads:
                 check(
                     "loaded thread calls original MCP process",

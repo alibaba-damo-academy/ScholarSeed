@@ -80,3 +80,24 @@ static inline BOOL SSVerifySuccession(NSDictionary *request, NSURL *state, NSStr
   if (!verified || ![before[@"snapshot"] isEqual:after[@"snapshot"]]) return SSObservationFail(error, EPERM);
   return YES;
 }
+static inline BOOL SSVerifyRetirementTrust(NSDictionary *request, NSString *label, NSError **error) {
+  NSString *bundle = request[@"bundleIdentifier"];
+  if (![bundle isKindOfClass:NSString.class] || [bundle rangeOfString:SSSuccessionBundlePattern options:NSRegularExpressionSearch].location != 0 ||
+      ![label isEqual:[bundle stringByAppendingString:SSSuccessionHelperSuffix]]) return SSObservationFail(error, EINVAL);
+  CFPropertyListRef rollback = CFPreferencesCopyValue((__bridge CFStringRef)SSSuccessionRollbackKey, (__bridge CFStringRef)label, kCFPreferencesCurrentUser, kCFPreferencesCurrentHost);
+  if (rollback) { CFRelease(rollback); return SSObservationFail(error, EBUSY); }
+  SecCodeRef running = NULL; CFDictionaryRef information = NULL; SecRequirementRef requirement = NULL;
+  OSStatus status = SecCodeCopySelf(kSecCSDefaultFlags, &running);
+  if (status == errSecSuccess) status = SecCodeCopySigningInformation(running, kSecCSSigningInformation, &information);
+  NSString *team = information ? ((__bridge NSDictionary *)information)[(__bridge NSString *)kSecCodeInfoTeamIdentifier] : nil;
+  if (running) CFRelease(running);
+  if (status == errSecSuccess && [team isKindOfClass:NSString.class] &&
+      [team rangeOfString:SSSuccessionTeamPattern options:NSRegularExpressionSearch].location == 0) {
+    NSString *text = [NSString stringWithFormat:@"anchor apple generic and certificate leaf[subject.OU] = \"%@\" and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and identifier \"%@\"", team, bundle];
+    status = SecRequirementCreateWithString((__bridge CFStringRef)text, kSecCSDefaultFlags, &requirement);
+  } else status = errSecCSUnsigned;
+  if (information) CFRelease(information);
+  BOOL valid = status == errSecSuccess && SSSuccessionSigned(request[@"targetBundleURL"], requirement, error);
+  if (requirement) CFRelease(requirement);
+  return valid ? YES : SSObservationFail(error, EPERM);
+}

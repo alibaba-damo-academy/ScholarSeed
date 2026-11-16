@@ -25,7 +25,7 @@ export interface ProductTaskOutcome {
 export type TaskTitle =
   | string
   | {
-      key: 'title.copy' | 'title.link'
+      key: 'title.copy' | 'title.link' | 'title.literatureJoin'
       names: string[]
     }
 
@@ -68,6 +68,8 @@ export interface ProductTask {
 export interface ProductTaskPresentation {
   title: string
   detail: string
+  row?: { summary: string; context: string; sourceListLabel: string }
+  progress?: TaskProgressPresentation
   announcement: string
   error: string
   failures: Array<{ name: string; reason: string }>

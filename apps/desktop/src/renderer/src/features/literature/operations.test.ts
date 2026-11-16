@@ -3,6 +3,22 @@ import test from 'node:test'
 import { cardRequest } from './operations.ts'
 import { CARD_ALLOWED_OPERATIONS, CARD_CAPABILITIES, type LiteratureCardPorts } from './ports.ts'
 import { pluginErrorCode } from '../../../../plugins.ts'
+import { conversationSearchSource } from './result.ts'
+import type { ConversationSearchPaper } from '../../contracts/literature.ts'
+
+test('search source navigation resolves only the bound paper and rejects unsafe destinations', () => {
+  const papers = [
+    { id: 'doi-paper', doi: '10.1000/example', url: 'https://example.org/paper' },
+    { id: 'unsafe', doi: null, url: 'javascript:alert(1)' },
+    { id: 'file', doi: null, url: 'file:///private/source.pdf' },
+    { id: 'web', doi: null, url: 'https://example.org/original#method' },
+  ] as ConversationSearchPaper[]
+  assert.equal(conversationSearchSource(papers, 'doi-paper'), 'https://doi.org/10.1000/example')
+  assert.equal(conversationSearchSource(papers, 'web'), 'https://example.org/original#method')
+  for (const id of ['unsafe', 'file', 'missing'])
+    assert.equal(conversationSearchSource(papers, id), null)
+  assert.equal(papers[0].url, 'https://example.org/paper')
+})
 
 test('card requests reject unknown operations and arguments before invoking a host port', async () => {
   const calls: unknown[] = []
@@ -16,69 +32,18 @@ test('card requests reject unknown operations and arguments before invoking a ho
   assert.deepEqual(calls, [])
   await request('open-results', {})
   assert.deepEqual(calls, ['open'])
-})
-
-test('save validates conflict decisions and forbids guest supplied filesystem destinations', async () => {
-  const calls: unknown[] = []
-  const request = cardRequest({
-    save: async (choice: unknown) => {
-      calls.push(choice)
-      return { ok: true }
-    },
-  } as unknown as LiteratureCardPorts)
-  const choice = {
-    target: 'project',
-    parent: '',
-    ticket: '',
-    add_to_library: false,
-    collection_id: '',
-  }
-  for (const extra of [
-    { directory: '/tmp' },
-    { project_id: null },
-    { project_id: 1 },
-    { versions: [] },
-    { versions: { paper: 'overwrite' } },
-    { versions: null },
-  ]) {
-    await assert.rejects(request('save', { choice: { ...choice, ...extra } }))
-  }
-  assert.deepEqual(calls, [])
-  await request('save', {
-    choice: { ...choice, project_id: 'selected-project', versions: { paper: 'keep_both' } },
-  })
-  assert.equal(calls.length, 1)
-})
-
-test('project selection reaches folder and collection ports without changing card scope', async () => {
-  const calls: unknown[] = []
-  const request = cardRequest({
-    folders: async (...args: unknown[]) => {
-      calls.push(args)
-      return null
-    },
-    collections: async (...args: unknown[]) => {
-      calls.push(args)
-      return []
-    },
-  } as unknown as LiteratureCardPorts)
-  await request('folders', { parent: '', offset: 0, projectId: 'selected-project' })
-  await request('collections', { projectId: 'selected-project' })
-  assert.deepEqual(calls, [['', 0, 'selected-project'], ['selected-project']])
-  await assert.rejects(request('folders', { parent: '', offset: 0, projectId: null }))
-  await assert.rejects(request('collections', { projectId: 1 }))
-})
-
-test('folder offsets must be finite nonnegative integers', async () => {
-  const request = cardRequest({ folders: async () => null } as unknown as LiteratureCardPorts)
-  for (const offset of [-1, 0.5, Infinity, '0'])
-    await assert.rejects(request('folders', { parent: '', offset }))
-  assert.equal(await request('folders', { parent: '', offset: 0 }), null)
+  await assert.rejects(request('open-source', { refId: 'paper', url: 'https://unbound.example' }))
+  await assert.rejects(request('open-source', { refId: 'paper', sessionId: 'another-session' }))
 })
 
 test('host scopes operations to the card domain rather than trusting package declarations', () => {
-  assert.deepEqual(CARD_ALLOWED_OPERATIONS['literature-search'], ['open-results'])
-  assert.equal(CARD_ALLOWED_OPERATIONS['literature-downloads'].includes('create-collection'), false)
+  assert.deepEqual(CARD_ALLOWED_OPERATIONS['literature-search'], ['open-results', 'open-source'])
+  assert.equal(CARD_ALLOWED_OPERATIONS['literature-search'].includes('add-reference'), false)
+  assert.equal(CARD_CAPABILITIES['open-source'], 'navigation.open')
+  assert.deepEqual(Object.keys(CARD_ALLOWED_OPERATIONS).sort(), [
+    'literature-review',
+    'literature-search',
+  ])
   assert.equal(CARD_ALLOWED_OPERATIONS['literature-review'].includes('save'), false)
   for (const operations of Object.values(CARD_ALLOWED_OPERATIONS)) {
     for (const operation of operations) assert.ok(CARD_CAPABILITIES[operation])

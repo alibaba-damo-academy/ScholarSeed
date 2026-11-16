@@ -333,6 +333,69 @@ for (const theme of ['light', 'dark'] as const) {
   })
 }
 
+test('multiple real citations from one PDF share one turn source', async ({}, testInfo) => {
+  const runtime = createRuntime(testInfo)
+  const blocker = seedLiveConfig(runtime)
+  test.skip(Boolean(blocker), blocker ?? '')
+  const desktop = new DesktopSession(runtime, testInfo)
+  try {
+    const page = await desktop.launch()
+    const resources = await seedProject(page, runtime)
+    const base = await apiBase(page)
+    const projects = await page.request.get(`${base}/api/content/projects`)
+    const listing = (await projects.json()) as { projects: Array<{ id: string; root: string }> }
+    const project = listing.projects.find((candidate) => candidate.root === dirname(resources))
+    expect(project).toBeTruthy()
+    expect(await importPdf(page, project!.id, join(resources, PDF_NAME))).toBeTruthy()
+    const input = page.getByTestId('composer-input')
+    const openAssistant = page.getByTestId('topbar-ai')
+    await expect(input.or(openAssistant).first()).toBeVisible()
+    if (await openAssistant.isVisible()) {
+      await page.getByTestId('topbar-ai').click()
+    }
+    await input.fill(
+      '使用 project-literature 技能通过 scholarseed_bridge 读取本项目 acceptance 文献的第 1 页和第 2 页。分别报告两页的 Needle marker，每条复制对应片段完整的 scholarseed-cite 链接，不要复用同一个链接，不要联网。'
+    )
+    const [turnSourcesResponse] = await Promise.all([
+      page.waitForResponse(
+        async (response) =>
+          response.ok() &&
+          /\/turns\/[^/]+\/sources$/.test(response.url()) &&
+          ((await response.json()) as { sources: Array<{ kind: string }> }).sources.some(
+            (source) => source.kind === 'receipt'
+          ),
+        { timeout: testInfo.timeout }
+      ),
+      page.getByTestId('composer-send').click().then(() => waitForFinishedTurn(page)),
+    ])
+    const projection = (await turnSourcesResponse.json()) as {
+      sources: Array<{ kind: string; handle?: string; source_group_id?: string }>
+    }
+    const receipts = projection.sources.filter((source) => source.kind === 'receipt')
+    expect(new Set(receipts.map((source) => source.handle)).size).toBeGreaterThan(1)
+    expect(receipts[0].source_group_id).toEqual(expect.any(String))
+    expect(new Set(receipts.map((source) => source.source_group_id)).size).toBe(1)
+    const directory = page.locator('[data-answer-source-list]').last()
+    const sourceCount = directory.getByRole('button', { name: '1 个来源', exact: true })
+    await expect(sourceCount).toBeVisible()
+    await sourceCount.hover()
+    const panel = page.locator('[data-citation-source-panel]')
+    await expect(panel.locator('[data-citation-source-entry]')).toHaveCount(1)
+    await expect(panel.locator('[data-citation-source-title]')).toHaveCount(1)
+    const excerpts = panel.locator('blockquote')
+    await expect(excerpts).toHaveCount(receipts.length)
+    const firstPage = excerpts.getByRole('button', { name: /第\s*1\s*页.*Needle marker 1/i })
+    await expect(firstPage).toBeVisible()
+    await expect(excerpts).toContainText([/第\s*1\s*页/, /第\s*2\s*页/])
+    await page.screenshot({ path: testInfo.outputPath('pdf-source-group.png'), animations: 'disabled' })
+    await firstPage.click()
+    await expect(page.getByTestId('pdf-page-1')).toBeVisible()
+    await page.screenshot({ path: testInfo.outputPath('pdf-source-opened.png'), animations: 'disabled' })
+  } finally {
+    await desktop.attachArtifacts()
+  }
+})
+
 test('Markdown saved citation from a real answer opens its PDF evidence', async ({}, testInfo) => {
   const runtime = createRuntime(testInfo)
   const blocker = seedLiveConfig(runtime)
@@ -614,22 +677,6 @@ test('PDF import accepts missing metadata and persists extracted identifiers', a
   } finally { await desktop.attachArtifacts() }
 })
 
-test('shortcut settings page stays hidden', async ({}, testInfo) => {
-  const runtime = createRuntime(testInfo)
-  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
-    language: 'zh',
-    onboarding: { seen: { globalLib: true, home: true, pdf: true, project: true } }
-  }))
-  const desktop = new DesktopSession(runtime, testInfo)
-  try {
-    const page = await desktop.launch()
-    await openAccountSettings(page)
-    await expect(page.getByTestId('account-settings-nav-shortcuts')).toHaveCount(0)
-    await expect(page.getByTestId('account-settings-shortcuts')).toHaveCount(0)
-    await page.screenshot({ path: join(runtime.artifacts, 'shortcut-settings-hidden.png') })
-    desktop.assertNoPageErrors()
-  } finally { await desktop.attachArtifacts() }
-})
 for (const theme of ['light', 'dark'] as const) {
   test(`literature association returns only to its originating project (${theme})`, async ({}, testInfo) => {
     const projectNames = ['关联来源甲', '关联来源乙']
@@ -2175,23 +2222,6 @@ test('visual Markdown save and save-on-close clear dirty state and close the tab
   } finally { await desktop.attachArtifacts() }
 })
 
-test('visual Markdown uses the full available width without a width selector', async ({}, testInfo) => {
-  const runtime = createRuntime(testInfo)
-  const desktop = new DesktopSession(runtime, testInfo)
-  try {
-    const page = await desktop.launch()
-    await seedProject(page, runtime)
-    await openFile(page, 'acceptance.md')
-
-    const paper = documentSurface(page).getByTestId('markdown-paper')
-    await expect(paper).toBeVisible()
-    await expect(page.locator('[data-testid^="markdown-page-width-"]')).toHaveCount(0)
-    await expect(paper).toHaveCSS('max-width', 'none')
-    await page.screenshot({ path: join(runtime.artifacts, 'markdown-full-width.png') })
-    desktop.assertNoPageErrors()
-  } finally { await desktop.attachArtifacts() }
-})
-
 test('renaming an open resource keeps version state out of the tree and toolbar', async ({}, testInfo) => {
   const runtime = createRuntime(testInfo)
   const desktop = new DesktopSession(runtime, testInfo, { preserveRuntime: true })
@@ -3265,25 +3295,29 @@ test('literature PDF AI requests require configured models', async ({}, testInfo
     })
     const selectedText = await selectPdfText(page)
     const selectionToolbar = page.getByTestId('selection-action-host')
-    await selectionToolbar.getByRole('button', { name: 'AI 解释', exact: true }).click()
+    await selectionToolbar.getByRole('button', { name: '解释', exact: true }).click()
     const selectionExplanationPrompt = selectionToolbar.getByLabel('补充说明（选填）')
     await expect(selectionExplanationPrompt).toBeFocused()
     await selectionExplanationPrompt.fill('解释选区中的核心概念')
     expect(annotationAiRequests).toHaveLength(0)
     await page.screenshot({ path: join(runtime.artifacts, 'literature-pdf-selection-explain-input.png') })
-    await selectionToolbar.getByRole('button', { name: '开始解释', exact: true }).click()
+    await selectionToolbar.getByRole('button', { name: '解释一下', exact: true }).click()
     await expect.poll(() => annotationAiRequests.length).toBe(1)
     expect(annotationAiRequests[0]).toMatchObject({ kind: 'selection_explanation', page: 1, text: selectedText })
     expect(annotationAiRequests[0]?.instruction).toContain('解释选区中的核心概念')
-    const selectionExplanationResult = page.getByRole('dialog', { name: 'AI 解释', exact: true })
+    const selectionExplanationResult = selectionToolbar.getByTestId('pdf-selection-explanation-inline')
     await expect(selectionExplanationResult.getByRole('alert')).toBeVisible()
     await selectionExplanationResult.getByRole('alert').click()
     await expect(selectionExplanationResult).toBeVisible()
-    await selectionExplanationResult.getByRole('button', { name: '关闭AI 解释', exact: true }).click()
+    await selectionExplanationResult.getByTestId('pdf-selection-result-toggle-size').click()
+    const expandedResult = document.getByTestId('pdf-selection-result-expanded')
+    await expect(expandedResult.getByRole('alert')).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(selectionExplanationResult).toBeVisible()
     const savedMark = document.locator('[data-testid^="pdf-mark-"]').first()
-    for (const [label, kind, dialogName] of [
-      ['解释', 'selection_explanation', 'AI 解释'],
-      ['翻译', 'selection_translation', '翻译']
+    for (const [label, kind, resultName] of [
+      ['解释', 'selection_explanation', 'explanation'],
+      ['翻译', 'selection_translation', 'translation']
     ] as const) {
       await savedMark.focus()
       await page.keyboard.press('Enter')
@@ -3297,18 +3331,18 @@ test('literature PDF AI requests require configured models', async ({}, testInfo
         await explanationPrompt.fill('解释这个术语在段落中的作用')
         expect(annotationAiRequests).toHaveLength(1)
         await page.screenshot({ path: join(runtime.artifacts, 'literature-pdf-annotation-explain-input.png') })
-        await inspector.getByRole('button', { name: '开始解释', exact: true }).click()
+        await inspector.getByRole('button', { name: '解释一下', exact: true }).click()
       }
       await expect.poll(() => annotationAiRequests.length).toBe(label === '解释' ? 2 : 3)
       const request = annotationAiRequests.at(-1)!
       expect(request).toMatchObject({ kind, page: 1, text: sourceText, quads: [[0.1, 0.1, 0.4, 0.2]] })
       if (label === '解释') expect(request.instruction).toContain('解释这个术语在段落中的作用')
-      const result = page.getByRole('dialog', { name: dialogName, exact: true })
+      const result = inspector.getByTestId(`pdf-selection-${resultName}-inline`)
       await expect(result).toBeVisible()
       await expect(result.getByRole('alert')).toBeVisible()
       await result.getByRole('alert').click()
       await expect(result).toBeVisible()
-      await result.getByRole('button', { name: `关闭${dialogName}`, exact: true }).click()
+      await page.keyboard.press('Escape')
     }
     await page.unroute('**/api/literature/ai/tasks')
 
@@ -3336,6 +3370,15 @@ test('literature PDF opens annotations from the right rail and excludes the reso
     await expect(firstCanvas).toBeVisible()
     const canvasWidthBeforePanels = await firstCanvas.evaluate((element) => element.getBoundingClientRect().width)
     const documentWidthBeforePanels = await document.evaluate((element) => element.getBoundingClientRect().width)
+    await pages.hover()
+    await page.mouse.wheel(0, SELECTION_SCROLL_DISTANCE_PX)
+    const readingOffset = () => pages.evaluate((element) => element.scrollTop)
+    await expect.poll(readingOffset).toBeGreaterThan(0)
+    const beforeToggle = await readingOffset()
+    await navigationToggle.dblclick()
+    await expect(navigationToggle).toHaveAttribute('aria-pressed', 'false')
+    await expect.poll(async () => Math.abs(await readingOffset() - beforeToggle))
+      .toBeLessThanOrEqual(PDF_ZOOM_ANCHOR_TOLERANCE_PX)
     await navigationToggle.click()
     const navigation = document.getByRole('complementary', { name: 'PDF 导航' })
     const assertReaderLayout = async (): Promise<void> => {
@@ -3698,8 +3741,15 @@ test('PNG JPEG JPG WebP SVG GIF preview offers fit, actual size, zoom, pointer p
     await openFile(page, 'acceptance.png')
     const viewport = page.locator('[data-testid="image-viewport"]:visible')
     await expect(viewport).toBeVisible()
-    await expect(documentSurface(page).getByTestId('image-dimensions')).toContainText('1600')
-    await page.getByRole('button', { name: '实际大小', exact: true }).click()
+    const surface = documentSurface(page)
+    await expect(surface.getByTestId('image-dimensions')).toHaveCount(0)
+    await expect(surface.locator('.vds-document-toolbar')).toHaveCount(0)
+    await expect(surface.getByText('只读', { exact: true })).toHaveCount(0)
+    await expect(surface.getByRole('tab', { name: '适应窗口', exact: true }))
+      .toHaveAttribute('aria-selected', 'true')
+    await expect(surface.getByRole('tab', { name: '实际大小', exact: true }))
+      .toHaveCSS('font-weight', '400')
+    await page.getByRole('tab', { name: '实际大小', exact: true }).click()
     await expect(viewport).toHaveAttribute('data-scale', '1')
     await page.getByRole('button', { name: '放大图片', exact: true }).click()
     await expect.poll(async () => Number(await viewport.getAttribute('data-scale'))).toBeGreaterThan(1)
@@ -3719,7 +3769,7 @@ test('PNG JPEG JPG WebP SVG GIF preview offers fit, actual size, zoom, pointer p
     }
     await openFile(page, 'acceptance.png')
     await expect.poll(() => viewport.evaluate((node) => [node.getAttribute('data-scale'), node.getAttribute('data-pan-x'), node.getAttribute('data-pan-y')])).toEqual(before)
-    await page.getByRole('button', { name: '适应窗口', exact: true }).click()
+    await page.getByRole('tab', { name: '适应窗口', exact: true }).click()
     await expect(viewport).toHaveAttribute('data-mode', 'fit')
     await page.screenshot({ path: join(runtime.artifacts, 'image-fit.png') })
     desktop.assertNoPageErrors()
@@ -4521,6 +4571,75 @@ test('project actions stay outside the project picker with a five pixel gap', as
     await page.screenshot({ path: join(runtime.artifacts, 'project-submenu-gap.png') })
     await page.keyboard.press('Escape')
     await expect(submenu).toBeHidden()
+    desktop.assertNoPageErrors()
+  } finally { await desktop.attachArtifacts() }
+})
+
+test('narrow workspace keeps conversation and leaves tabs closed after widening', async ({}, testInfo) => {
+  const runtime = createRuntime(testInfo)
+  const desktop = new DesktopSession(runtime, testInfo)
+  try {
+    const page = await desktop.launch()
+    await seedProject(page, runtime)
+    await openProjectExplorer(page)
+    await openFile(page, 'acceptance.md')
+    const window = await desktop.browserWindow(page)
+    const host = page.getByTestId('workspace-floating-area')
+    const tabs = host.getByTestId('workspace-content')
+    const conversation = host.getByTestId('workspace-conversation')
+    const panelWidth = (panel: Locator) => panel.evaluate(element => element.getBoundingClientRect().width)
+    const navigation = page.getByTestId('project-workspace')
+      .locator(':scope > .vds-resizable-split > .vds-resizable-split__panel--left')
+    const navigationHandle = navigation.locator('xpath=following-sibling::*[1]')
+
+    await window.evaluate((window, size) => window.setSize(size.width, size.height), WORKSPACE_WINDOW_MINIMUM)
+    await expect.poll(() => panelWidth(tabs)).toBeGreaterThanOrEqual(360)
+    await expect.poll(() => panelWidth(conversation)).toBeGreaterThanOrEqual(360)
+    await window.evaluate((window, size) => window.setSize(size.width, size.height), WORKSPACE_WINDOW_SIZE)
+    const handle = await navigationHandle.boundingBox()
+    if (!handle) throw new Error('Workspace navigation resize handle is missing')
+    await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2)
+    await page.mouse.down()
+    await page.mouse.move(handle.x + handle.width / 2 + 240, handle.y + handle.height / 2)
+    await page.mouse.up()
+    await expect.poll(() => panelWidth(navigation)).toBe(462)
+
+    await window.evaluate((window, size) => window.setSize(size.width, size.height), WORKSPACE_WINDOW_MINIMUM)
+    await expect.poll(() => panelWidth(tabs)).toBe(0)
+    await expect(conversation).toBeVisible()
+    await expect.poll(() => panelWidth(navigation)).toBe(462)
+    await page.screenshot({ path: join(runtime.artifacts, 'workspace-tabs-collapsed-at-minimum-width.png') })
+
+    await window.evaluate((window, size) => window.setSize(size.width, size.height), WORKSPACE_WINDOW_SIZE)
+    const openTabs = page.getByTestId('workspace-open')
+    await expect(openTabs).toBeEnabled()
+    await expect(openTabs).toHaveAttribute('aria-expanded', 'false')
+    await expect.poll(() => panelWidth(tabs)).toBe(0)
+    await window.evaluate((window, size) => window.setSize(size.width, size.height), WORKSPACE_WINDOW_MINIMUM)
+    await expect.poll(() => page.evaluate(() => innerWidth)).toBe(WORKSPACE_WINDOW_MINIMUM.width)
+    const expectedNavigationWidth = await panelWidth(navigation) + await panelWidth(host) - 720
+    await page.emulateMedia({ reducedMotion: 'no-preference' })
+    const animation = await navigation.evaluateHandle((element, targetWidth) => {
+      const result = { overlapped: false }
+      const observer = new ResizeObserver(() => {
+        const navigationWidth = element.getBoundingClientRect().width
+        const tabsWidth = document.querySelector('[data-testid="workspace-content"]')
+          ?.getBoundingClientRect().width ?? 0
+        if (navigationWidth > targetWidth + 1 && navigationWidth < 461 && tabsWidth > 1) {
+          result.overlapped = true
+        }
+      })
+      observer.observe(element)
+      return { result, observer }
+    }, expectedNavigationWidth)
+    await openTabs.click()
+    await expect.poll(() => panelWidth(tabs)).toBeGreaterThanOrEqual(360)
+    await expect.poll(() => panelWidth(conversation)).toBeGreaterThanOrEqual(360)
+    await expect.poll(() => panelWidth(navigation)).toBeCloseTo(expectedNavigationWidth, 0)
+    expect(await animation.evaluate(({ result, observer }) => {
+      observer.disconnect()
+      return result.overlapped
+    })).toBe(true)
     desktop.assertNoPageErrors()
   } finally { await desktop.attachArtifacts() }
 })

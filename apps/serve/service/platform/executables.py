@@ -27,6 +27,7 @@ from pathlib import Path
 _WINDOWS_OS_NAME = "nt"
 _WINDOWS_EXECUTABLE_SUFFIX = ".exe"
 SKILL_PYTHON_COMMAND = "scholarseed-skill-python"
+SKILL_PYTHON_ENV = "SCHOLARSEED_SKILL_PYTHON"
 BRIDGE_DIR_ENV = "SCHOLARSEED_BRIDGE_DIR"
 COMMAND_PROBE_TIMEOUT_SECONDS = 5
 # A fresh signed interpreter/launcher can spend tens of seconds in OS admission.

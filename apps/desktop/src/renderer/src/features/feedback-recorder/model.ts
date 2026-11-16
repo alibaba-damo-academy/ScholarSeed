@@ -68,6 +68,8 @@ export interface RecordedStep {
 
 export interface NetworkRecord {
   requestId: string
+  correlationId?: string
+  timing?: NetworkTiming
   startedAt: string
   endedAt: string
   durationMs: number
@@ -86,6 +88,23 @@ export interface NetworkRecord {
    */
   cancelled?: boolean
   stepId?: string
+}
+
+export interface NetworkTiming {
+  state: 'available' | 'unavailable' | 'ambiguous' | 'restricted'
+  timeOrigin: number
+  fetchCalledAt: number
+  fetchSettledAt: number
+  startTime?: number
+  fetchStart?: number
+  domainLookupStart?: number
+  domainLookupEnd?: number
+  secureConnectionStart?: number
+  requestStart?: number
+  responseStart?: number
+  responseEnd?: number
+  connectStart?: number
+  connectEnd?: number
 }
 
 export interface StepNote {

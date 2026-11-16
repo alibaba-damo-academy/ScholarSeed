@@ -1,6 +1,6 @@
 overrides:
-  esbuild: 0.25.12
-  rollup: 4.62.0
+  esbuild: 0.28.2
 allowBuilds:
+  '@openuidev/lang-core@1.0.2': false
   electron-winstaller@5.4.0: true
-  esbuild@0.25.12: true
+  esbuild@0.28.2: true

@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from contextlib import ExitStack, nullcontext
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from service.chat.api.routes import create_chat_app
 from service.chat.runtime.live import LiveSession
@@ -171,6 +171,7 @@ async def exercise_cleanup(case: str) -> None:
             raise RuntimeError("runtime start failed")
 
     original_feedback_close = FeedbackService.close
+    subscription_bridge_close = AsyncMock(wraps=state.subscriptions.bridge.close)
 
     def feedback_close(service):
         original_feedback_close(service)
@@ -186,6 +187,9 @@ async def exercise_cleanup(case: str) -> None:
     with ExitStack() as patches:
         patches.enter_context(patch.object(state.runtime_service, "start", start))
         patches.enter_context(patch.object(FeedbackService, "close", feedback_close))
+        patches.enter_context(
+            patch.object(state.subscriptions.bridge, "close", subscription_bridge_close)
+        )
         for name, owner, method in (
             ("turn", state.turn_service, "aclose"),
             ("runtime", state.runtime_service, "aclose"),
@@ -201,7 +205,9 @@ async def exercise_cleanup(case: str) -> None:
         except BaseException as error:
             collect(error)
     assert closed == ["turn", "runtime", "skill", "model", "subscriptions", "feedback"], closed
-    assert state.subscriptions.client.is_closed
+    subscription_bridge_close.assert_awaited_once_with()
+    # Default egress is per-operation, so the composition root owns no lasting client.
+    assert state.subscriptions.client is None
     expected = {
         "runtime-start": {"runtime start failed"},
         "prepare-start": {"preparation failed"},
@@ -222,8 +228,8 @@ async def exercise_cleanup(case: str) -> None:
         assert set(state.session_service._sessions) == {"failed-session"}
 
 
-async def exercise_pending_workbench() -> None:
-    ready = False
+async def exercise_pending_workbench(toolchain_pending: bool = False) -> None:
+    ready = toolchain_pending
     activities = Activities(workbench_ready=lambda: ready)
     app = create_chat_app(
         Path(os.environ["SCHOLARSEED_HOME"]),
@@ -232,9 +238,12 @@ async def exercise_pending_workbench() -> None:
         activities=activities,
     )
     reconciled = asyncio.Event()
+    if toolchain_pending:
+        app.state.runtime_service.toolchain.defer()
 
     async def start_mcp():
         activities.require_workbench()
+        app.state.runtime_service.toolchain.require_ready()
         reconciled.set()
 
     with patch.object(app.state.mcp_service, "start", start_mcp):
@@ -242,6 +251,8 @@ async def exercise_pending_workbench() -> None:
             assert not reconciled.is_set()
             ready = True
             activities.workbench_changed()
+            if toolchain_pending:
+                app.state.runtime_service.toolchain.complete(True)
             await asyncio.wait_for(reconciled.wait(), 2)
 
 
@@ -356,6 +367,9 @@ class LifecycleContract(unittest.TestCase):
 
     def test_pending_workbench_reconciles_mcp_after_admission(self):
         self.run_case("pending-workbench")
+
+    def test_pending_toolchain_reconciles_mcp_only_after_qualified_resources(self):
+        self.run_case("pending-toolchain")
 
     def test_abandoned_workbench_cancels_deferred_reconciliation(self):
         self.run_case("abandoned-workbench")

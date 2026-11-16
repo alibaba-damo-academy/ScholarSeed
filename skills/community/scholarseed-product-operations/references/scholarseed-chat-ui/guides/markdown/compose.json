@@ -1,0 +1,8 @@
+{
+  "request_id": "replace-for-each-step",
+  "slot": "markdown.view",
+  "title": "markdown",
+  "data": {
+    "text": "```python\nvalues = [80, 85, None]\nprint(values)\n```"
+  }
+}

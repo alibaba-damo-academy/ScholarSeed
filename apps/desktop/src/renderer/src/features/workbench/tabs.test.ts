@@ -4,6 +4,8 @@ import { createAvailabilityPolicy } from '../../app/policy.ts'
 
 import {
   activeNavigationTabId,
+  shouldRestoreDocumentFocus,
+  documentTabsVisibleInView,
   mergeNavigationTabOrder,
   reorderNavigationTabOrder,
   restoreProjectWorkbenchTab,
@@ -14,7 +16,9 @@ import {
   openFixedTab,
   LITERATURE_TAB,
   literatureNavigation,
+  literatureResultNavigation,
   literatureResultTab,
+  mainViewForWorkbenchTab,
   literatureSearchTab,
   openLiteratureSearchTabs,
   openWorkbenchTab,
@@ -30,6 +34,174 @@ import {
   versionDiffTab,
   type WorkbenchTab,
 } from './tabs.ts'
+
+test('document focus recovery cannot replace an open page that just left the dock', () => {
+  assert.equal(
+    shouldRestoreDocumentFocus({
+      document: false,
+      located: false,
+      openPage: true,
+      requestedId: 'new-browser',
+      previousFocusedId: 'new-browser',
+    }),
+    false
+  )
+  assert.equal(
+    shouldRestoreDocumentFocus({
+      document: false,
+      located: false,
+      openPage: false,
+      requestedId: 'closed-document',
+      previousFocusedId: 'closed-document',
+    }),
+    true
+  )
+  assert.equal(
+    shouldRestoreDocumentFocus({
+      document: true,
+      located: true,
+      openPage: false,
+      requestedId: 'document',
+      previousFocusedId: 'other-document',
+    }),
+    true
+  )
+})
+
+test('activating an existing browser tab does not insert a default browser tab', () => {
+  const browser = { ...FIXED_TAB_BY_VIEW.browser, id: 'existing-browser', browserPageId: 'page' }
+  const tabs = [browser]
+  assert.equal(openWorkbenchTab(tabs, 'browser', browser), tabs)
+})
+
+test('Canvas tabs are visible and eligible as close fallbacks only in their own session', () => {
+  const own: WorkbenchTab = {
+    id: 'canvas/own',
+    kind: 'canvas',
+    title: 'Own canvas',
+    closable: true,
+    projectId: 'project',
+    canvasSessionId: 'own',
+  }
+  const other = { ...own, id: 'canvas/other', canvasSessionId: 'other' }
+  assert.equal(workbenchTabVisible(own, 'resource', 'own'), true)
+  assert.equal(workbenchTabVisible(other, 'resource', 'own'), false)
+  assert.equal(workbenchTabVisible(own, 'resource', null), false)
+  assert.equal(
+    closeTab([own, other], own.id, own.id, {
+      projectId: 'project',
+      view: 'resource',
+      sessionId: 'own',
+    }).activeId,
+    OVERVIEW_TAB.id
+  )
+})
+
+test('conversation results open in the owning project workbench without exposing global or foreign tabs', () => {
+  const result = { session_id: 'session', card_id: 'card', title: 'Search results' }
+  const global = literatureResultTab(result)
+  assert.equal(global.projectId, null)
+  assert.equal(workbenchTabVisible(global, 'resource'), false)
+  assert.equal(tabVisibleInCurrentView(global.kind, 'resource'), false)
+  const navigation = literatureResultNavigation([global], result, 'project-a')
+  assert.equal(navigation.mainView, 'resource')
+  const owned = navigation.tabs.find((tab) => tab.id === navigation.activeTab)!
+  assert.equal(owned.projectId, 'project-a')
+  assert.equal(navigation.tabs.filter((tab) => tab.id === global.id).length, 1)
+  assert.equal(tabMatchesProject(owned, 'project-a'), true)
+  assert.equal(tabMatchesProject(owned, 'project-b'), false)
+  assert.equal(mainViewForWorkbenchTab(owned), 'resource')
+  assert.equal(mainViewForWorkbenchTab(global), 'literature')
+  assert.equal(workbenchTabVisible(owned, 'resource'), true)
+  assert.equal(workbenchTabVisible(owned, 'home'), false)
+  assert.equal(workbenchTabVisible(owned, 'skills'), false)
+  const search = literatureSearchTab('search', 'Query', 'project-a')
+  assert.equal(mainViewForWorkbenchTab(search), 'literature')
+  assert.equal(workbenchTabVisible(search, 'resource'), false)
+  const standalone = literatureResultNavigation([], result, null)
+  assert.equal(standalone.mainView, 'literature')
+  assert.equal(standalone.tabs.find((tab) => tab.id === standalone.activeTab)?.projectId, null)
+  const foreign = literatureResultTab({ ...result, card_id: 'foreign' }, 'project-b')
+  assert.equal(
+    closeTab([owned, foreign], owned.id, owned.id, { view: 'resource', projectId: 'project-a' })
+      .activeId,
+    OVERVIEW_TAB.id
+  )
+  assert.equal(
+    restoreProjectWorkbenchTab('project-a', owned.id, [owned], { focusedTabId: null, tabs: {} }),
+    owned.id
+  )
+  assert.equal(
+    restoreProjectWorkbenchTab('project-b', owned.id, [owned], { focusedTabId: null, tabs: {} }),
+    OVERVIEW_TAB.id
+  )
+})
+
+test('a browser tab keeps its project search results visible and can close back to them', () => {
+  const projectId = 'project-a'
+  const result = { session_id: 'session', card_id: 'card', title: 'Search results' }
+  const searchResult = literatureResultTab(result, projectId)
+  const foreignResult = literatureResultTab({ ...result, card_id: 'foreign' }, 'project-b')
+  const globalResult = literatureResultTab({ ...result, card_id: 'global' })
+  const browser = { ...FIXED_TAB_BY_VIEW.browser, browserPageId: 'paper-page' }
+  const tabs = openFixedTab([searchResult, foreignResult, globalResult], browser)
+  const policy = createAvailabilityPolicy(true)
+  const visibleInBrowser = (tab: WorkbenchTab) => workbenchTabVisible(tab, 'browser', null, policy)
+
+  assert.deepEqual(
+    tabs
+      .filter((tab) => tabMatchesProject(tab, projectId) && visibleInBrowser(tab))
+      .map((tab) => tab.id),
+    [searchResult.id, browser.id]
+  )
+  assert.equal(visibleInBrowser(globalResult), false)
+  assert.equal(visibleInBrowser(literatureSearchTab('search', 'Query', projectId)), false)
+  assert.equal(
+    workbenchTabVisible(searchResult, 'browser', null, createAvailabilityPolicy(false)),
+    false
+  )
+  assert.equal(mainViewForWorkbenchTab(searchResult), 'resource')
+  assert.deepEqual(closeTab(tabs, browser.id, browser.id, { view: 'browser', projectId, policy }), {
+    tabs: [searchResult, foreignResult, globalResult],
+    activeId: searchResult.id,
+  })
+})
+
+test('browser keeps the shared document navigation visible', () => {
+  for (const view of ['resource', 'literature', 'browser']) {
+    assert.equal(documentTabsVisibleInView(view), true)
+  }
+  for (const view of ['home', 'skills', 'projects']) {
+    assert.equal(documentTabsVisibleInView(view), false)
+  }
+})
+
+test('choosing browser replaces only the current blank tab even when other browser tabs exist', () => {
+  const tabs: WorkbenchTab[] = [
+    {
+      id: 'blank',
+      kind: 'new_tab',
+      title: '',
+      titleFallback: 'newTab',
+      closable: true,
+      projectId: 'project',
+    },
+    {
+      id: 'existing-browser',
+      kind: 'browser',
+      title: 'browser',
+      closable: true,
+      projectId: 'project',
+    },
+  ]
+  const result = resolveProjectTabSelection(tabs, 'blank', 'browser')
+  assert.equal(result.activeTab, 'blank')
+  assert.equal(result.tabs.length, tabs.length)
+  assert.equal(result.tabs[0].kind, 'browser')
+  assert.equal(result.tabs[0].titleFallback, undefined)
+  assert.equal(result.tabs[0].projectId, 'project')
+  assert.equal(result.tabs[1], tabs[1])
+})
 
 test('conversation results stay in their project workspace', () => {
   const result = { session_id: 'session', card_id: 'card', title: 'Results' }
@@ -235,6 +407,11 @@ test('project library remains visible in the project workbench and not in global
   assert.equal(tabVisibleInCurrentView('library', 'literature'), false)
 })
 
+test('task canvases open in the resource workbench without leaking into literature tabs', () => {
+  assert.equal(tabVisibleInCurrentView('canvas', 'resource'), true)
+  assert.equal(tabVisibleInCurrentView('canvas', 'literature'), false)
+})
+
 test('new project tabs are independent, closable and scoped to their project', () => {
   const first = newProjectTab('project-1')
   const second = newProjectTab('project-1')
@@ -324,10 +501,10 @@ test('closing a project page prefers the remaining document in its own pane', ()
   assert.deepEqual(result.tabs, [first])
 })
 
-test('browser is a non-closable global workbench surface retained across views', () => {
+test('browser is a closable workbench surface sharing project tabs and new tabs', () => {
   const browser = FIXED_TAB_BY_VIEW.browser
   assert.ok(browser)
-  assert.equal(browser.closable, false)
+  assert.equal(browser.closable, true)
   assert.equal(browser.kind, 'browser')
   const tabs = openFixedTab([OVERVIEW_TAB], browser)
   assert.equal(openFixedTab(tabs, browser), tabs)
@@ -347,10 +524,21 @@ test('browser is a non-closable global workbench surface retained across views',
     openWorkbenchTab([OVERVIEW_TAB], 'browser', browser, createAvailabilityPolicy(false)),
     [OVERVIEW_TAB]
   )
-  for (const view of ['home', 'projects', 'resource', 'literature', 'writing']) {
+  for (const view of ['home', 'projects', 'literature', 'writing']) {
     assert.equal(tabVisibleInCurrentView(browser.kind, view), false)
   }
-  assert.equal(tabVisibleInCurrentView('file', 'browser'), false)
+  assert.equal(tabVisibleInCurrentView('browser', 'resource', createAvailabilityPolicy(true)), true)
+  for (const kind of ['file', 'new_tab', 'library', 'explorer'] as const)
+    assert.equal(tabVisibleInCurrentView(kind, 'browser', createAvailabilityPolicy(true)), true)
+  const blank = newProjectTab('alpha')
+  const opened = openFixedTab([OVERVIEW_TAB, blank], browser)
+  const closed = closeTab(opened, browser.id, browser.id, { view: 'resource' })
+  assert.equal(closed.activeId, blank.id)
+  assert.equal(
+    closed.tabs.some((tab) => tab.id === browser.id),
+    false
+  )
+  assert.equal(openFixedTab([{ ...browser, closable: false }], browser)[0].closable, true)
 })
 
 test('project-scoped tabs are hidden outside their owner and remain available on return', () => {

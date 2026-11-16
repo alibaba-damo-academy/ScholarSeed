@@ -1,0 +1,25 @@
+{
+  "name": "deep-rnd-l1",
+  "version": "0.2.6",
+  "sha256": "1e99d38d1c191ab87b18a3529bf8d5bf72ccaad4f8d1a590e2295e9f3c3309b5",
+  "source_repository": "deep_rnd",
+  "source_commit": "b219889a32d3ae52c82a2bae0d3ab54ef871fc06",
+  "source_dirty": false,
+  "restored_base_commit": "0bf874d7e5ebd5a2b7820155a283d74d2230c06f",
+  "source_files": {
+    "knowledge_layer/__init__.py": "5c1d3924ba8171ba63476467ab43483566f8425d991ab55093080420820533d8",
+    "knowledge_layer/comprehend/__init__.py": "c770cf12ec7f0f5b383b5483cec59e8c282cb093d0848fe94fe15002c7ab74e3",
+    "knowledge_layer/comprehend/api.py": "00d21126a818f3c328ddc787331ced128f00d45e98a884b08296b835fb0e4041",
+    "knowledge_layer/comprehend/extract.py": "eeff0b89751f36d2ecb6a3baef1544139e470b2bb23f2cefb566f0ee87036496",
+    "knowledge_layer/comprehend/options.py": "6eb031290235b9db8677e16470c66e9385d83a0536f7a82f1d0bd6324f1a248f",
+    "knowledge_layer/comprehend/prompts.py": "605dedefa27953d230fde1160c46d24fff4d59c559187a2b2f25333e0124c7f6",
+    "knowledge_layer/comprehend/recovery.py": "38b2450be9f35e6afc826a74779327188050af37a3f65bc846ae404147f7d9ee",
+    "knowledge_layer/comprehend/schema.py": "5666fb73dc5c01a3e380856abe8aca0f112e75db79bac2b22f41c1e83482050e",
+    "knowledge_layer/core/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "knowledge_layer/core/control.py": "a6bab093eb85e94efee4b3bfbdc38d591d5fb6c41e8bf6123fed85cd9ea9c9de",
+    "knowledge_layer/core/docio.py": "a1a8369916910729629fd616a1f695e5f642aa08d2dc0d58416298697844af97",
+    "knowledge_layer/core/llm_call.py": "004859aeb64602c2a21d435ee722101a6723d2e82331a39e22abcb6bf2bb292e",
+    "knowledge_layer/core/untrusted.py": "33c654a681b5e0e785ce78cfff3b8179207196a4cc24cf8fe6e59da0faa10186"
+  },
+  "build_command": ".wheel-venv/bin/python scripts/cd/wheel.py --project <deep_rnd-source-at-source_commit> --outdir apps/serve/vendor --builder pip --no-build-isolation"
+}

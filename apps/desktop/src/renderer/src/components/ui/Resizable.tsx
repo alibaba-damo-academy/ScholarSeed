@@ -1,6 +1,7 @@
 import { useTranslation } from 'react-i18next'
 import type {
   CSSProperties,
+  ComponentPropsWithRef,
   HTMLAttributes,
   KeyboardEvent,
   PointerEvent,
@@ -81,6 +82,7 @@ export interface ResizablePanelProps extends HTMLAttributes<HTMLDivElement> {
   isLeftCollapsed?: boolean
   isMobile?: boolean
   resizeEnabled?: boolean
+  renderHandle?: (handle: ReactElement<ComponentPropsWithRef<'button'>>) => ReactNode
   reversed?: boolean
   leftPanel?: ReactNode
   leftWidth?: string
@@ -497,6 +499,7 @@ export const ResizablePanel = forwardRef<HTMLDivElement, ResizablePanelProps>(
       isLeftCollapsed = false,
       isMobile = false,
       resizeEnabled = true,
+      renderHandle = (handle) => handle,
       reversed = false,
       leftPanel,
       leftWidth = DEFAULT_LEFT_WIDTH,
@@ -523,6 +526,8 @@ export const ResizablePanel = forwardRef<HTMLDivElement, ResizablePanelProps>(
     const { t } = useTranslation('ui')
     const hostRef = useRef<HTMLDivElement | null>(null)
     const pointerStartRef = useRef<number | null>(null)
+    const resizePanelRef = useRef<HTMLElement | null>(null)
+    const resizeWidthStyleRef = useRef('')
     const widthStartRef = useRef(0)
     // 拖动开始时缓存的容器宽度：move 内不再 getBoundingClientRect，避免每步强制同步布局
     const hostWidthRef = useRef(0)
@@ -565,7 +570,7 @@ export const ResizablePanel = forwardRef<HTMLDivElement, ResizablePanelProps>(
           : constrainedPixels
       const nextWidth = `${clamp(steppedPixels, safeMinPixels, safeMaxPixels)}px`
       latestLeftWidthRef.current = nextWidth
-      hostRef.current?.style.setProperty(LEFT_WIDTH_PROPERTY, nextWidth)
+      if (resizePanelRef.current) resizePanelRef.current.style.width = nextWidth
       onWidthChange?.(nextWidth)
     }
     const commitRightSplitWidth = (nextPixels: number): void => {
@@ -585,10 +590,7 @@ export const ResizablePanel = forwardRef<HTMLDivElement, ResizablePanelProps>(
       )
       const nextWidth = `${clamp(nextPixels, safeMinPixels, safeMaxPixels)}px`
       latestRightWidthRef.current = nextWidth
-      // Keep pointer moves on the browser's layout path. The custom property is
-      // deliberately outside React state, so unrelated parent renders cannot restore
-      // a stale width midway through a drag and the content tree need not re-render.
-      hostRef.current?.style.setProperty(RIGHT_WIDTH_PROPERTY, nextWidth)
+      if (resizePanelRef.current) resizePanelRef.current.style.width = nextWidth
       onRightWidthChange?.(nextWidth)
     }
     const finishRightSplitResize = (): void => {
@@ -601,11 +603,17 @@ export const ResizablePanel = forwardRef<HTMLDivElement, ResizablePanelProps>(
     const splitPointer = useResizePointer(
       () => {
         pointerStartRef.current = null
-        if ((rightWidth ?? uncontrolledRightWidth) !== undefined) finishRightSplitResize()
-        else {
+        if ((rightWidth ?? uncontrolledRightWidth) !== undefined) {
+          if (latestRightWidthRef.current !== undefined)
+            hostRef.current?.style.setProperty(RIGHT_WIDTH_PROPERTY, latestRightWidthRef.current)
+          finishRightSplitResize()
+        } else {
+          hostRef.current?.style.setProperty(LEFT_WIDTH_PROPERTY, latestLeftWidthRef.current)
           setCurrentLeftWidth(latestLeftWidthRef.current)
           onWidthChangeEnd?.(latestLeftWidthRef.current)
         }
+        if (resizePanelRef.current) resizePanelRef.current.style.width = resizeWidthStyleRef.current
+        resizePanelRef.current = null
       },
       resizeEnabled && !isMobile && !isLeftCollapsed && !(isCollapsed ?? !rightPanel)
     )
@@ -703,52 +711,57 @@ export const ResizablePanel = forwardRef<HTMLDivElement, ResizablePanelProps>(
           >
             {leftPanel}
           </div>
-          {resizeEnabled && !collapsed && !isLeftCollapsed && !isMobile ? (
-            <button
-              aria-label={t('resize.action')}
-              className={cx(
-                resizableSplitHandleClassName,
-                'group/resizable-handle after:![background-image:none]'
-              )}
-              data-resizing={splitPointer.isResizing || undefined}
-              type="button"
-              onPointerDown={(event) => {
-                if (!splitPointer.start(event)) return
-                pointerStartRef.current = event.clientX
-                const hostWidth =
-                  event.currentTarget.parentElement?.getBoundingClientRect().width ?? 0
-                hostWidthRef.current = hostWidth
-                const renderedRightWidth =
-                  event.currentTarget.nextElementSibling?.getBoundingClientRect().width
-                widthStartRef.current =
-                  rightSized && renderedRightWidth !== undefined
-                    ? renderedRightWidth
-                    : widthToPixels(constrainedWidth, hostWidth)
-                if (!rightSized) latestLeftWidthRef.current = `${widthStartRef.current}px`
-                if (rightSized) latestRightWidthRef.current = `${widthStartRef.current}px`
-              }}
-              onPointerMove={(event) => {
-                if (!splitPointer.ownsPointer(event) || pointerStartRef.current === null) return
-                const delta = (event.clientX - pointerStartRef.current) * (reversed ? -1 : 1)
-                if (rightSized) commitRightSplitWidth(widthStartRef.current - delta)
-                else commitSplitWidth(widthStartRef.current + delta)
-              }}
-              onDoubleClick={() => {
-                if (rightSized && rightWidth !== undefined) {
-                  onRightWidthChange?.(rightWidth)
-                } else {
-                  latestLeftWidthRef.current = leftWidth
-                  hostRef.current?.style.setProperty(LEFT_WIDTH_PROPERTY, leftWidth)
-                  setCurrentLeftWidth(leftWidth)
-                  onWidthChange?.(leftWidth)
-                  onWidthChangeEnd?.(leftWidth)
-                }
-                onToggleCollapse?.()
-              }}
-            >
-              <ResizableGripDots />
-            </button>
-          ) : null}
+          {resizeEnabled && !collapsed && !isLeftCollapsed && !isMobile
+            ? renderHandle(
+                <button
+                  aria-label={t('resize.action')}
+                  className={cx(
+                    resizableSplitHandleClassName,
+                    'group/resizable-handle after:![background-image:none]'
+                  )}
+                  data-resizing={splitPointer.isResizing || undefined}
+                  type="button"
+                  onPointerDown={(event) => {
+                    if (!splitPointer.start(event)) return
+                    pointerStartRef.current = event.screenX
+                    const hostWidth = hostRef.current?.getBoundingClientRect().width ?? 0
+                    hostWidthRef.current = hostWidth
+                    const renderedPanel = (
+                      rightSized
+                        ? hostRef.current?.lastElementChild
+                        : hostRef.current?.firstElementChild
+                    ) as HTMLElement | null | undefined
+                    resizePanelRef.current = renderedPanel ?? null
+                    resizeWidthStyleRef.current = renderedPanel?.style.width ?? ''
+                    const renderedWidth = renderedPanel?.getBoundingClientRect().width
+                    widthStartRef.current =
+                      renderedWidth ?? widthToPixels(constrainedWidth, hostWidth)
+                    if (!rightSized) latestLeftWidthRef.current = `${widthStartRef.current}px`
+                    if (rightSized) latestRightWidthRef.current = `${widthStartRef.current}px`
+                  }}
+                  onPointerMove={(event) => {
+                    if (!splitPointer.ownsPointer(event) || pointerStartRef.current === null) return
+                    const delta = (event.screenX - pointerStartRef.current) * (reversed ? -1 : 1)
+                    if (rightSized) commitRightSplitWidth(widthStartRef.current - delta)
+                    else commitSplitWidth(widthStartRef.current + delta)
+                  }}
+                  onDoubleClick={() => {
+                    if (rightSized && rightWidth !== undefined) {
+                      onRightWidthChange?.(rightWidth)
+                    } else {
+                      latestLeftWidthRef.current = leftWidth
+                      hostRef.current?.style.setProperty(LEFT_WIDTH_PROPERTY, leftWidth)
+                      setCurrentLeftWidth(leftWidth)
+                      onWidthChange?.(leftWidth)
+                      onWidthChangeEnd?.(leftWidth)
+                    }
+                    onToggleCollapse?.()
+                  }}
+                >
+                  <ResizableGripDots />
+                </button>
+              )
+            : null}
           <div
             className={cx(
               resizableSplitPanelClassName,
@@ -834,11 +847,12 @@ export const ResizableHandle = forwardRef<HTMLDivElement, ResizableHandleProps>(
     },
     ref
   ) => {
-    const context = useContext(ResizableContext)
+    const inheritedContext = useContext(ResizableContext)
+    const context = onOffsetChange ? null : inheritedContext
     if (!context && !onOffsetChange)
       throw new Error('ResizableHandle requires a panel group or onOffsetChange')
     const direction = context?.direction ?? 'horizontal'
-    const isDisabled = context?.disabled || disabled
+    const isDisabled = inheritedContext?.disabled || disabled
     const pointerStartRef = useRef<number | null>(null)
     const sizeStartRef = useRef<number[]>([])
     const pointer = useResizePointer(() => {

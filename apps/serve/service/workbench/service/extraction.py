@@ -31,7 +31,7 @@ from service.workbench.service.fonts import GlyphResourceManager
 from service.workbench.service.layout import classify
 from service.workbench.service.sentences import TRUNCATED, SentenceBlock, assemble, sentence_ends
 
-EXTRACTOR_VERSION = f"pdfplumber-{pdfplumber.__version__}/pdfium-images/visual-regions-v14"
+EXTRACTOR_VERSION = f"pdfplumber-{pdfplumber.__version__}/pdfium-images/visual-regions-v15"
 MAX_DOCUMENT_FRAGMENTS = 100_000
 QUARTER_TURN = 90
 FULL_TURN = 360
@@ -49,6 +49,8 @@ START_PAGE_OPTION = "--start-page"
 END_PAGE_OPTION = "--end-page"
 PARSER_ENCODING = "utf-8"
 UNDECODED_CHARACTER = re.compile(r"\(cid:\d+\)|\ufffd")
+PAGE_NUMBER_MARGIN_RATIO = 0.06
+PAGE_NUMBER = re.compile(r"[\d\s–—-]+")
 POSITIONED_WORD = re.compile(r"\S+")
 CJK_CHARACTER = re.compile(
     r"[\u2e80-\u2fff\u3000-\u303f\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]"
@@ -177,6 +179,17 @@ def _fragment(
         )
         for chars in lines.values()
     )
+    # A bare number in a page margin is pagination, not paper evidence. Keep
+    # numbered headings and numeric content inside the body unchanged.
+    if (
+        PAGE_NUMBER.fullmatch(value)
+        and quads
+        and all(
+            quad[3] <= PAGE_NUMBER_MARGIN_RATIO or quad[1] >= 1 - PAGE_NUMBER_MARGIN_RATIO
+            for quad in quads
+        )
+    ):
+        return []
     offset = start + len(text[start:end]) - len(text[start:end].lstrip())
     spans = []
     for word in POSITIONED_WORD.finditer(value):

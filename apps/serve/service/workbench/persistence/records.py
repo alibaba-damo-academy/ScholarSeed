@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from service.paths import PROJECT_DB_RELATIVE
-from service.persistence.project import transaction
+from service.persistence.project import reader, transaction
 from service.platform.content import ContentPort
 from service.platform.records import RecordOwner, RecordTarget, decode_records, record_revision
 
@@ -82,8 +82,17 @@ class PdfRecordCatalog:
         )
 
     def linked_target(self, project_id: str, asset_id: str) -> RecordTarget | None:
-        with transaction(self._database(project_id)) as connection:
-            self._link_schema(connection)
+        with reader(
+            self._content.resolve(project_id, PROJECT_DB_RELATIVE, read_only=True)
+        ) as connection:
+            if (
+                connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                    (PDF_RECORD_LINK_TABLE,),
+                ).fetchone()
+                is None
+            ):
+                return None
             row = connection.execute(
                 f"SELECT owner,scope_id,subject_id FROM {PDF_RECORD_LINK_TABLE} WHERE asset_id=?",
                 (asset_id,),
@@ -136,6 +145,22 @@ class PdfRecordCatalog:
             self._schema(connection)
             row = connection.execute(
                 f"SELECT * FROM {PDF_RECORD_TABLE} WHERE asset_id = ?", (asset_id,)
+            ).fetchone()
+        return self._row(row)
+
+    def peek(self, project_id: str, asset_id: str) -> PdfRecordRow | None:
+        with reader(
+            self._content.resolve(project_id, PROJECT_DB_RELATIVE, read_only=True)
+        ) as connection:
+            if (
+                connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (PDF_RECORD_TABLE,)
+                ).fetchone()
+                is None
+            ):
+                return None
+            row = connection.execute(
+                f"SELECT * FROM {PDF_RECORD_TABLE} WHERE asset_id=?", (asset_id,)
             ).fetchone()
         return self._row(row)
 

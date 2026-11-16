@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import os
 import tempfile
@@ -9,23 +10,31 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 _HOME = tempfile.mkdtemp(prefix="scholarseed-curation-")
 os.environ["SCHOLARSEED_HOME"] = _HOME
 
 from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
+from httpx import ASGITransport, AsyncClient, AsyncHTTPTransport  # noqa: E402
 from pydantic import ValidationError  # noqa: E402
 
 from apps.serve.tests import pdf as pdf_fixture  # noqa: E402
+from service.assistant.service.authorization import FulltextAuthorizer  # noqa: E402
 from service.chat.constants import PRODUCT_EVENT_PRODUCT_DATA_CHANGED  # noqa: E402
+from service.chat.persistence.catalog import (  # noqa: E402
+    SessionCatalogStore,
+    SessionPrincipal,
+    SessionStatus,
+)
+from service.chat.runtime.interaction import SessionInteractions  # noqa: E402
 from service.chat.service.artifacts import (  # noqa: E402
     ARTIFACT_REVISION_CONFLICT,
     ArtifactReadError,
 )
 from service.chat.service.invalidation import SCOPE_LITERATURE  # noqa: E402
-from service.literature.api.catalogue import LITERATURE_NOT_FOUND  # noqa: E402
+from service.literature.api.catalogue import LITERATURE_NOT_FOUND, projects_payload  # noqa: E402
 from service.literature.api.curation import (  # noqa: E402
     NEXT_ACTIONS,
     PERMISSION_DENIED,
@@ -53,6 +62,8 @@ from service.platform.bridge import (  # noqa: E402
     LITERATURE_CURATION_ROUTES,
 )
 from service.platform.citations import PDF_INDEX_STATE  # noqa: E402
+from service.platform.content import ContentPort  # noqa: E402
+from service.platform.local import UNIX_SOCKET_FAMILY, local_listener  # noqa: E402
 from service.platform.queries import (  # noqa: E402
     DESTRUCTIVE_EFFECT,
     EXTERNAL_EFFECT,
@@ -127,6 +138,7 @@ def _live(decision: dict | None = None, mode: str = "ask") -> SimpleNamespace:
     )
     return SimpleNamespace(
         id=SESSION_ID,
+        project_id="",
         bridge_token=TOKEN,
         turn_activity=None,
         active_assistant_snapshot_id=SNAPSHOT_ID,
@@ -135,6 +147,7 @@ def _live(decision: dict | None = None, mode: str = "ask") -> SimpleNamespace:
         #: fulltext-attach 解析会话相对路径时的工作区根; 真实实现是 LiveSession 的属性。
         runtime_workdir=Path(_HOME),
         interactions=interactions,
+        component_for=AsyncMock(return_value=None),
         #: 粗失效广播的落点; 真实实现是 LiveSession.publish (持久化 + SSE 投递)。
         publish=AsyncMock(return_value=SimpleNamespace(product_seq=1)),
     )
@@ -145,6 +158,8 @@ def _app(
     cleanup=None,
     assistant: SimpleNamespace | None = None,
     pdf_indexes: Any = None,
+    authorizer: FulltextAuthorizer | None = None,
+    content: ContentPort | None = None,
 ) -> TestClient:
     activities = Activities()
     live.turn_activity = activities.enter(ActivityDomain.TURN)
@@ -160,7 +175,9 @@ def _app(
         app,
         sessions,
         assistant=_assistant() if assistant is None else assistant,
+        content=content if content is not None else Mock(spec=ContentPort),
         activities=activities,
+        authorizer=authorizer,
     )
     return TestClient(app)
 
@@ -199,7 +216,11 @@ class CurationRegistration(unittest.TestCase):
             self.assertEqual(entry.effect, expected_effect)
             self.assertEqual(
                 entry.approval,
-                USER_CONFIRM if name in LITERATURE_CURATION_DESTRUCTIVE else NO_APPROVAL,
+                (
+                    USER_CONFIRM
+                    if name in LITERATURE_CURATION_DESTRUCTIVE or name == "fulltext"
+                    else NO_APPROVAL
+                ),
             )
             self.assertTrue(request.model_config.get("extra") == "forbid")
             self.assertTrue(request.model_config.get("strict") is True)
@@ -214,7 +235,113 @@ class CurationRegistration(unittest.TestCase):
             )
 
 
+@unittest.skipUnless(os.name != "nt" and UNIX_SOCKET_FAMILY is not None, "Unix listener only")
+class CurationLocalContract(unittest.IsolatedAsyncioTestCase):
+    async def test_project_operations_use_the_same_content_port_on_the_unix_listener(self) -> None:
+        project = SimpleNamespace(
+            id="curation-local-project", name="Local Bridge", archived_at=None
+        )
+        content = Mock(spec=ContentPort)
+        content.project.return_value = project
+        content.projects.return_value = (project,)
+        repository = LiteratureRepository()
+        item = repository.save_all((LiteratureItem(id="lit-local-bridge", title="Local Bridge"),))[
+            0
+        ]
+        self.addCleanup(repository.delete, item.id, True)
+        collection = repository.create_collection("Local Bridge", None, project.id)
+        self.addCleanup(repository.delete_collection, collection["id"], project_id=project.id)
+        app = FastAPI()
+        live = _live()
+        live.project_id = project.id
+        activities = Activities()
+        live.turn_activity = activities.enter(ActivityDomain.TURN)
+        self.addCleanup(live.turn_activity.close)
+        router = register_curation_bridge(
+            app,
+            SimpleNamespace(
+                bridge_caller=lambda scope_id: live if scope_id == SESSION_ID else None
+            ),
+            assistant=_assistant(),
+            content=content,
+            activities=activities,
+        )
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+            async with local_listener(router, Path(directory)) as endpoint:
+                async with AsyncClient(
+                    transport=AsyncHTTPTransport(uds=str(endpoint)),
+                    base_url="http://localhost",
+                    trust_env=False,
+                    headers=HEADERS,
+                ) as client:
+
+                    async def call(operation: str, payload: dict) -> dict:
+                        response = await client.post(
+                            LITERATURE_CURATION_ROUTES[operation], json=payload
+                        )
+                        self.assertEqual(response.status_code, 200, response.text)
+                        result = response.json()
+                        self.assertTrue(result["ok"], result)
+                        return result
+
+                    with self.subTest(operation="projects"):
+                        projects = await call("projects", {})
+                        self.assertEqual(projects["current"], project.id)
+                        self.assertEqual(projects["projects"][0]["id"], project.id)
+                    with self.subTest(operation="bulk-project"):
+                        linked = await call(
+                            "bulk-project",
+                            {
+                                "literature_ids": [item.id],
+                                "project_id": project.id,
+                                "action": "link",
+                                "client_op_id": "local-bridge-link",
+                            },
+                        )
+                        self.assertEqual(linked["succeeded"], [item.id])
+                        self.assertEqual(
+                            repository.project_navigation((project.id,))[project.id]["count"], 1
+                        )
+                    with self.subTest(operation="bulk-collection"):
+                        filed = await call(
+                            "bulk-collection",
+                            {
+                                "literature_ids": [item.id],
+                                "project_id": project.id,
+                                "collection_ids": [collection["id"]],
+                                "client_op_id": "local-bridge-file",
+                            },
+                        )
+                        self.assertEqual(filed["succeeded"], [item.id])
+                        navigation = repository.project_navigation((project.id,))[project.id]
+                        self.assertEqual(navigation["collections"][0]["count"], 1)
+
+
 class CurationRoutes(unittest.TestCase):
+    def test_projects_current_uses_session_scope_not_workspace_default(self) -> None:
+        workspace = SimpleNamespace(id="workspace-project", name="Workspace", archived_at=None)
+        selected = SimpleNamespace(id="session-project", name="Selected", archived_at=None)
+        content = Mock(spec=ContentPort)
+        content.project.return_value = workspace
+        content.projects.return_value = (workspace, selected)
+        self.assertEqual(projects_payload(content, self.repository)["current"], workspace.id)
+        for project_id, expected in (
+            (selected.id, selected.id),
+            ("", ""),
+            ("unavailable-project", ""),
+        ):
+            with self.subTest(project_id=project_id):
+                live = _live()
+                live.project_id = project_id
+                client = _app(live, cleanup=self.addCleanup, content=content)
+                result = self._post(client, "projects", {})
+                self.assertTrue(result["ok"], result)
+                self.assertEqual(result["current"], expected)
+                self.assertEqual(
+                    [project["id"] for project in result["projects"]],
+                    [workspace.id, selected.id],
+                )
+
     def setUp(self) -> None:
         self.repository = LiteratureRepository()
         saved = self.repository.save_all((LiteratureItem(id="lit-1", title="Alpha"),))
@@ -236,6 +363,119 @@ class CurationRoutes(unittest.TestCase):
         self.assertGreaterEqual(counts["all"], 1)
         notes = self._post(client, "notes", {"literature_id": self.item_id})
         self.assertEqual(notes["items"], [])
+
+    def test_fulltext_without_confirmation_cannot_start_downloader(self) -> None:
+        client = self._client()
+        with patch(
+            "service.literature.api.curation.fetch_arxiv_fulltext",
+            return_value=self.repository.get(self.item_id),
+        ) as download:
+            result = self._post(
+                client,
+                "fulltext",
+                {
+                    "literature_id": self.item_id,
+                    "client_op_id": "curation-fulltext-no-consent",
+                },
+            )
+        self.assertFalse(result["ok"], "an unanswered request cannot authorize download")
+        download.assert_not_called()
+
+    def test_fulltext_waits_for_durable_confirmation_and_rechecks_scope(self) -> None:
+        async def scenario(outcome: str, mode: str) -> None:
+            temporary = tempfile.TemporaryDirectory()
+            self.addCleanup(temporary.cleanup)
+            database = Path(temporary.name) / "sessions.sqlite3"
+            catalog = SessionCatalogStore(database)
+            catalog.register(
+                SESSION_ID,
+                SessionPrincipal("owner"),
+                runtime_id="codex",
+                vendor_thread_id="thread",
+                vendor_session_id=None,
+                runtime_workdir=_HOME,
+                project_path=None,
+                output_root=_HOME,
+                codex_version="contract",
+                model_id="contract",
+                policy_id="contract",
+                status=SessionStatus.RUNNING,
+                title="curation",
+                created_at=1.0,
+            )
+            live = _live(mode=mode)
+            live.interactions = SessionInteractions(SESSION_ID, catalog, live.publish)
+            authorizer = FulltextAuthorizer(database, catalog)
+            app = _app(live, cleanup=self.addCleanup, authorizer=authorizer).app
+            with patch(
+                "service.literature.api.curation.fetch_arxiv_fulltext",
+                return_value=self.repository.get(self.item_id),
+            ) as download:
+                async with AsyncClient(
+                    transport=ASGITransport(app), base_url="http://contract"
+                ) as client:
+                    request = asyncio.create_task(
+                        client.post(
+                            LITERATURE_CURATION_ROUTES["fulltext"],
+                            json={
+                                "literature_id": self.item_id,
+                                "client_op_id": "fulltext-real-consent",
+                            },
+                            headers=HEADERS,
+                        )
+                    )
+                    try:
+                        async with asyncio.timeout(5):
+                            while not catalog.pending_hil(SESSION_ID) and not request.done():
+                                await asyncio.sleep(0)
+                        self.assertFalse(request.done())
+                        download.assert_not_called()
+                        record = catalog.pending_hil(SESSION_ID)[0]
+                        question = record.payload["questions"][0]
+                        self.assertEqual(question["papers"][0]["id"], "literature:" + self.item_id)
+                        self.assertEqual(question["papers"][0]["label"], "Alpha")
+                        if outcome == "stale":
+                            live.ledger.active_turn_id = "another-turn"
+                        if outcome == "readonly":
+                            live.applied_permission_mode = "read_only"
+                        decision = (
+                            {"cancelled": True}
+                            if outcome == "cancelled"
+                            else {
+                                "answers": {
+                                    record.product_request_id: (
+                                        "拒绝" if outcome == "rejected" else "一键授权"
+                                    )
+                                }
+                            }
+                        )
+                        await live.interactions.resolve(None, record.product_request_id, decision)
+                        result = (await asyncio.wait_for(request, 5)).json()
+                        self.assertEqual(result["ok"], outcome == "authorized")
+                        self.assertEqual(download.call_count, int(outcome == "authorized"))
+                        if outcome == "authorized":
+                            replay = await client.post(
+                                LITERATURE_CURATION_ROUTES["fulltext"],
+                                json={
+                                    "literature_id": self.item_id,
+                                    "client_op_id": "fulltext-real-consent",
+                                },
+                                headers=HEADERS,
+                            )
+                            self.assertTrue(replay.json()["replayed"])
+                            self.assertEqual(download.call_count, 1)
+                            self.assertEqual(
+                                catalog.hil(record.product_request_id).decision["decision_source"],
+                                "user_explicit",
+                            )
+                    finally:
+                        request.cancel()
+                        await asyncio.gather(request, return_exceptions=True)
+
+        for mode in ("ask", "safe_auto", "bypass"):
+            for outcome in ("authorized", "rejected", "cancelled", "stale", "readonly"):
+                with self.subTest(mode=mode, outcome=outcome):
+                    asyncio.run(scenario(outcome, mode))
 
     def test_unknown_field_is_rejected_by_the_strict_contract(self) -> None:
         client = self._client()
@@ -267,6 +507,73 @@ class CurationRoutes(unittest.TestCase):
         self.assertTrue(second["replayed"])
         notes = self.repository.notes(self.item_id) or ()
         self.assertEqual(len(notes), 1)
+
+    def test_note_update_preserves_omitted_title_and_distinguishes_errors(self) -> None:
+        client = self._client()
+        created = self.repository.create_note(self.item_id, "before", "Keep this title")
+        payload = {
+            "literature_id": self.item_id,
+            "note_id": created.id,
+            "text": "after",
+            "expected_version": created.version,
+        }
+        saved = self._post(client, "note-update", {**payload, "client_op_id": "op-note-save"})
+        self.assertTrue(saved["ok"], saved)
+        self.assertEqual(saved["note"]["title"], created.title)
+        self.assertEqual(saved["note"]["text"], "after")
+        self.assertEqual(saved["note"]["version"], created.version + 1)
+
+        stale = self._post(client, "note-update", {**payload, "client_op_id": "op-note-stale"})
+        self.assertEqual(stale["error"], "revision_conflict")
+        for field in ("title", "text"):
+            with self.subTest(field=field):
+                cleared = self._post(
+                    client,
+                    "note-update",
+                    {
+                        **payload,
+                        field: "",
+                        "expected_version": saved["note"]["version"],
+                        "client_op_id": f"op-note-clear-{field}",
+                    },
+                )
+                self.assertTrue(cleared["ok"], cleared)
+                self.assertEqual(cleared["note"][field], "")
+                self.assertEqual(cleared["note"]["title"], "")
+                self.assertEqual(cleared["note"]["version"], saved["note"]["version"] + 1)
+                saved = cleared
+        notes = self._post(client, "notes", {"literature_id": self.item_id})
+        self.assertEqual(notes["items"], [saved["note"]])
+
+    def test_note_add_accepts_title_only_but_rejects_completely_empty_notes(self) -> None:
+        client = self._client()
+        for index, empty in enumerate(("", " \n\t ")):
+            rejected = self._post(
+                client,
+                "note-add",
+                {
+                    "literature_id": self.item_id,
+                    "title": empty,
+                    "text": empty,
+                    "client_op_id": f"op-note-empty-{index}",
+                },
+            )
+            self.assertFalse(rejected["ok"], rejected)
+            self.assertEqual(rejected["error"], "literature_note_body_required")
+        self.assertEqual(self.repository.notes(self.item_id), ())
+        saved = self._post(
+            client,
+            "note-add",
+            {
+                "literature_id": self.item_id,
+                "title": "Title only",
+                "text": "",
+                "client_op_id": "op-note-title-only",
+            },
+        )
+        self.assertTrue(saved["ok"], saved)
+        self.assertEqual(saved["note"]["title"], "Title only")
+        self.assertEqual(saved["note"]["text"], "")
 
     def test_every_write_operation_survives_its_own_request_shape(self) -> None:
         # 回归: _execute 曾有一行无条件取 data["literature_ids"], 把请求体里没有这个
@@ -551,6 +858,7 @@ class CurationFulltextAttach(unittest.TestCase):
         self.item_id = saved[0].id
         self.addCleanup(self.repository.delete, self.item_id, True)
         self.forgotten: list[str] = []
+        self.prepared = Mock()
 
     def _client(
         self,
@@ -561,7 +869,8 @@ class CurationFulltextAttach(unittest.TestCase):
         indexes = None
         if with_indexes:
             indexes = SimpleNamespace(
-                forget_literature=lambda revisions: self.forgotten.extend(revisions) or 0
+                forget_literature=lambda revisions: self.forgotten.extend(revisions) or 0,
+                prepare=self.prepared,
             )
         return _app(
             _live(mode=mode), cleanup=self.addCleanup, assistant=assistant, pdf_indexes=indexes
@@ -635,6 +944,7 @@ class CurationFulltextAttach(unittest.TestCase):
         self.assertEqual(rows, [self._primary().id])
         self.assertNotIn(lost.id, rows)
         self.assertEqual(self.forgotten, [lost.revision])
+        self.prepared.assert_called_once()
         self.assertEqual(len(self._managed_names()), 1)
         self.assertEqual(Path(self._primary().path).read_bytes(), recovered_bytes)
 

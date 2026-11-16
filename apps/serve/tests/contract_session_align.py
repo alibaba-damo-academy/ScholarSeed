@@ -162,6 +162,8 @@ class _Live:
         self.runtime_session = _PermissionSession()
         self.runtime_binding = object()
         self.runtime_driver = None
+        self.prediction_task = None
+        self._events = SimpleNamespace(by_key=lambda *_args: None)
         self.project_path = None
         self.suspensions = 0
         self.writable_roots: tuple[Path, ...] = ()

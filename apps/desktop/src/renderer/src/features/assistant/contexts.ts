@@ -1,5 +1,29 @@
 import type { MessageReference } from '../../model.ts'
 
+export function isSelectionReference(reference: MessageReference): boolean {
+  return (
+    reference.type === 'assistant_context' &&
+    Boolean(reference.anchor) &&
+    (reference.kind === 'selection' || reference.kind === 'literature')
+  )
+}
+
+export function selectionReferenceGroups(
+  references: readonly MessageReference[]
+): Array<{ key: string; items: MessageReference[] }> {
+  const groups = new Map<string, { key: string; items: MessageReference[] }>()
+  references.forEach((reference, index) => {
+    if (!isSelectionReference(reference)) return
+    const key = reference.sourceId
+      ? JSON.stringify([reference.kind, reference.sourceId, reference.anchor?.documentId ?? null])
+      : JSON.stringify([reference.kind, null, reference.id, index])
+    const group = groups.get(key)
+    if (group) group.items.push(reference)
+    else groups.set(key, { key, items: [reference] })
+  })
+  return [...groups.values()]
+}
+
 export type OverviewReferenceKind = 'uploads' | 'files' | 'literature' | 'sessions'
 export const OVERVIEW_REFERENCE_KINDS: OverviewReferenceKind[] = [
   'uploads',

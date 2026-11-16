@@ -3,6 +3,8 @@ from __future__ import annotations
 import copy
 import json
 
+from authoring import authoring_card
+
 ROLES={'foundation','background','introduction','analysis','synthesis','conclusion','abstract','component'}
 TERMINAL={'synthesis','conclusion','abstract'}
 KINDS={'explain','compare','formalize','assess','synthesize'}
@@ -27,11 +29,9 @@ Keep description to a concise account of the chapter's job and boundary; do not
 repeat it in a second long writing instruction. Tasks set analytical depth; word
 counts are only used when explicitly requested. Do not prewrite conclusions,
 formulas, table cells or long step-by-step prose in the outline.
-requires and optional depends_on document conceptual dependencies used for
-planning and validation. They do not serialize model transport: all top-level
-chapter packets launch together, and the full-manuscript refinement reconciles
-cross-chapter wording. Do not make prerequisites depend on terminal sections or
-introduce cycles.'''
+requires and optional depends_on document conceptual dependencies for planning
+and validation. The selected execution strategy owns chapter scheduling and
+refinement. Prerequisite owners are substantive sections; dependencies are acyclic.'''
 
 
 def compile_plan(outline,available):
@@ -94,7 +94,7 @@ def compile_plan(outline,available):
             for kind in ('figures','tables'):
                 for asset in local.get(kind,[]):papers.extend(asset.get('paper_ids') or sorted(available))
         for p in prerequisites.values():
-            if owner_top(p.get('owner_section_id'))==sid:papers.extend(p.get('paper_ids',[]))
+            if owner_top(p.get('owner_section_id'))==sid or p['id'] in required:papers.extend(p.get('paper_ids',[]))
         if role in {'analysis','foundation','background'} and not papers:errors.append(f'{sid}: substantive chapter needs assigned papers')
         jobs.append({'section_id':sid,'role':role,'plan':copy.deepcopy(node),
                      'paper_ids':list(dict.fromkeys(papers)), 'dependencies':sorted(dependencies),
@@ -108,16 +108,6 @@ def compile_plan(outline,available):
     return {'version':1,'jobs':jobs,'navigation':[{'section_id':n['section_id'],'title':n.get('title',''),'role':n.get('role')} for n in chapters],
             'review_thesis':outline.get('review_thesis') or outline.get('topic',''),
             'organizing_axis':outline.get('organizing_axis',''),'prerequisites':values}
-
-
-# Only execution bookkeeping is removed. Unknown business fields are retained.
-BOOKKEEPING={'processing_log','request_log','cache_path','source_path','source_maps','source_map',
-             'processing_status','source_text_sha256','material_sha256','paperId','paper_id'}
-
-def business_card(record):
-    if isinstance(record,dict):return {k:business_card(v) for k,v in record.items() if k not in BOOKKEEPING}
-    if isinstance(record,list):return [business_card(v) for v in record]
-    return record
 
 
 def cards_plain(paper_ids,cards,keys):
@@ -134,5 +124,5 @@ def cards_plain(paper_ids,cards,keys):
         else:lines.append(prefix+json.dumps(value,ensure_ascii=False))
     for pid in paper_ids:
         lines.append(f'## Paper {keys[pid]}')
-        append(business_card(cards[pid]));lines.append('')
+        append(authoring_card(cards[pid]));lines.append('')
     return '\n'.join(lines)

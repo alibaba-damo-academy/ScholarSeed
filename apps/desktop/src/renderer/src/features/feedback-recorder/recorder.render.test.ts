@@ -1,16 +1,20 @@
 import assert from 'node:assert/strict'
-import test from 'node:test'
+import test, { after } from 'node:test'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { mkdir } from 'node:fs/promises'
 import { chromium, expect, type Browser } from '@playwright/test'
 import react from '@vitejs/plugin-react'
-import { createServer } from 'vite'
+
+import { renderServers } from '../../../../test-helpers/render.ts'
+
+const servers = renderServers({ after })
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..')
 const evidence = path.resolve(root, '../../../../tmp/feedback-ui')
 test('recorder pagination, pause, annotation undo and failure recovery', async () => {
-  const server = await createServer({
+  const server = await servers.create({
+    cacheKey: 'recorder',
     configFile: false,
     root,
     plugins: [react()],

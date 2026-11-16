@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 from scholarseed_codex.activity import NativeActivityState
+from scholarseed_codex.attachment import ThreadAttachment
 from scholarseed_codex.diagnostic import THREAD_HISTORY_MISSING_ERROR
 from scholarseed_codex.process import CodexProcessHost
 from scholarseed_codex.protocol.session import CodexSessionOpenRequest
@@ -47,6 +48,84 @@ TEST_WATERMARK = 5
 TEST_TIMEOUT_SECONDS = 5.0
 TEST_ROOT = "suspension-root"
 TEST_NAMESPACE = "suspension-attachment"
+
+
+class CodexUnloadContracts(unittest.IsolatedAsyncioTestCase):
+    async def test_missing_unload_confirmation_never_releases_the_attachment(self) -> None:
+        host = CodexProcessHost(executable="contract", rpc_timeout=0)
+        host._generation = TEST_GENERATION
+        attachment = ThreadAttachment(
+            request=CodexSessionOpenRequest(
+                request_id="unload", runtime_id="codex", cwd=Path.cwd()
+            ),
+            listener=None,
+            thread_id=TEST_ROOT,
+        )
+        host._threads[TEST_ROOT] = attachment
+        attachment.turn = SimpleNamespace(abandon_files=Mock())
+        host.suspend_blockers = Mock(return_value=())
+        host._watcher.close = AsyncMock()
+        host.request = AsyncMock(return_value={"status": "unsubscribed"})
+        with self.assertRaises(AppServerError) as raised:
+            await host.suspend_thread(TEST_ROOT, TEST_GENERATION, wait_closed=True)
+        self.assertEqual(raised.exception.safe_error, "codex_thread_unload_timeout")
+        self.assertIs(host._threads[TEST_ROOT], attachment)
+        self.assertIsNone(attachment.unload_confirmation)
+        host._watcher.close.assert_not_awaited()
+        host.request.return_value = {"status": "notLoaded"}
+        await host.suspend_thread(TEST_ROOT, TEST_GENERATION, wait_closed=True)
+        self.assertNotIn(TEST_ROOT, host._threads)
+
+    async def test_unsubscribe_ack_does_not_confirm_native_unload(self) -> None:
+        host = CodexProcessHost(executable="contract", rpc_timeout=TEST_TIMEOUT_SECONDS)
+        host._generation = TEST_GENERATION
+        attachment = ThreadAttachment(
+            request=CodexSessionOpenRequest(
+                request_id="unload", runtime_id="codex", cwd=Path.cwd()
+            ),
+            listener=None,
+            thread_id=TEST_ROOT,
+        )
+        host._threads[TEST_ROOT] = attachment
+        attachment.turn = SimpleNamespace(abandon_files=Mock())
+        host.suspend_blockers = Mock(return_value=())
+        host._watcher.close = AsyncMock()
+        acknowledged = asyncio.Event()
+
+        async def unsubscribe(*arguments, **keywords):
+            acknowledged.set()
+            return {"status": "unsubscribed"}
+
+        host.request = AsyncMock(side_effect=unsubscribe)
+        pending = asyncio.create_task(
+            host.suspend_thread(TEST_ROOT, TEST_GENERATION, wait_closed=True)
+        )
+        try:
+            await acknowledged.wait()
+            await asyncio.sleep(0)
+            self.assertFalse(pending.done())
+            self.assertIn(TEST_ROOT, host._threads)
+            await host._handle_notification(
+                "thread/closed", {"threadId": TEST_ROOT}, generation=TEST_CHANGED_GENERATION
+            )
+            self.assertFalse(pending.done())
+            await host._handle_notification(
+                "thread/closed", {"threadId": TEST_ROOT}, generation=TEST_GENERATION
+            )
+            await asyncio.wait_for(pending, TEST_TIMEOUT_SECONDS)
+            self.assertNotIn(TEST_ROOT, host._threads)
+        finally:
+            if not pending.done():
+                pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+
+    def test_owned_threads_unload_without_a_cache_delay(self) -> None:
+        host = CodexProcessHost(executable="contract")
+        request = CodexSessionOpenRequest(
+            request_id="unload", runtime_id="codex", cwd=Path.cwd(), model="model"
+        )
+        params = host._thread_params(request, include_dynamic_tools=False)
+        self.assertEqual(params["config"]["thread_unload_delay_secs"], 0)
 
 
 class SuspensionNative:

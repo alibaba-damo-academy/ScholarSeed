@@ -12,12 +12,16 @@ from scholarseed_codex.protocol.constants import MCP_TOOL_NAME_PREFIX
 from scholarseed_codex.protocol.mcp import JsonValue
 from scholarseed_codex.protocol.session import CodexNativeActivityCategory
 from scholarseed_codex.protocol.state import AppServerError
+from scholarseed_codex.rpc import RPC_INTERNAL_ERROR
 from scholarseed_codex.utils import path_identity
 from scholarseed_runtime.contract.session import RuntimeExecutionThread, RuntimeExecutionTreeBlocker
 
 NATIVE_ACTIVITY_PAGE_SIZE = 100
 LOGGER = logging.getLogger(__name__)
 NATIVE_ACTIVITY_MAX_PAGES = 100
+NATIVE_ANCESTRY_READ_LIMIT = 32
+NATIVE_ANCESTRY_READ_SECONDS = 2.0
+NATIVE_THREAD_READ_RETRY_SECONDS = 0.05
 NATIVE_THREAD_READ_METHOD = "thread/read"
 NATIVE_THREAD_LOADED_LIST_METHOD = "thread/loaded/list"
 NATIVE_THREAD_LIST_METHOD = "thread/list"
@@ -47,6 +51,7 @@ NATIVE_ID_FIELD = "id"
 NATIVE_PARENT_THREAD_ID_FIELD = "parentThreadId"
 NATIVE_EPHEMERAL_FIELD = "ephemeral"
 NATIVE_ANCESTOR_THREAD_ID_FIELD = "ancestorThreadId"
+NATIVE_USE_STATE_DB_ONLY_FIELD = "useStateDbOnly"
 NATIVE_SOURCE_KINDS_FIELD = "sourceKinds"
 NATIVE_ARCHIVED_FIELD = "archived"
 NATIVE_SUBAGENT_SOURCE_KINDS = (
@@ -66,6 +71,7 @@ NATIVE_CLIENT_USER_MESSAGE_ID_FIELD = "clientUserMessageId"
 NATIVE_INPUT_FIELD = "input"
 NATIVE_IDLE_STATUS = "idle"
 NATIVE_ACTIVE_STATUS = "active"
+NATIVE_THREAD_NOT_LOADED_STATUS = "notLoaded"
 NATIVE_SYSTEM_ERROR_STATUS = "systemError"
 NATIVE_QUIESCENT_THREAD_STATUSES = frozenset({NATIVE_IDLE_STATUS, NATIVE_SYSTEM_ERROR_STATUS})
 NATIVE_COMPLETE_GOAL_STATUS = "complete"
@@ -150,28 +156,12 @@ class NativeActivity:
         generation = self._host.process_generation
         if not self._root_thread_id:
             raise _NativeActivityError(NativeActivityBlocker.UNKNOWN_OWNERSHIP)
-        candidates: dict[str, dict[str, Any]] = {}
-        for archived in (False, True):
-            rows = await self._pages(
-                NATIVE_THREAD_LIST_METHOD,
-                {
-                    NATIVE_ANCESTOR_THREAD_ID_FIELD: self._root_thread_id,
-                    NATIVE_SOURCE_KINDS_FIELD: list(NATIVE_SUBAGENT_SOURCE_KINDS),
-                    NATIVE_ARCHIVED_FIELD: archived,
-                },
-                generation,
+        candidates = {
+            thread_id: await self._thread(thread_id, generation)
+            for thread_id in sorted(
+                await self._listed_descendants(self._root_thread_id, generation)
             )
-            for row in rows:
-                if not isinstance(row, dict):
-                    raise _NativeActivityError(NativeActivityBlocker.INVALID_RESPONSE)
-                thread_id = row.get(NATIVE_ID_FIELD)
-                if (
-                    not isinstance(thread_id, str)
-                    or not thread_id
-                    or thread_id == self._root_thread_id
-                ):
-                    raise _NativeActivityError(NativeActivityBlocker.INVALID_RESPONSE)
-                candidates[thread_id] = await self._thread(thread_id, generation)
+        }
         descendants: list[RuntimeExecutionThread] = []
         for thread_id, thread in candidates.items():
             parent_id = thread[NATIVE_PARENT_THREAD_ID_FIELD]
@@ -185,6 +175,31 @@ class NativeActivity:
             descendants.append(RuntimeExecutionThread(thread_id, parent_id))
         self._require_generation(generation)
         return tuple(sorted(descendants, key=lambda node: node.thread_id))
+
+    async def _listed_descendants(
+        self, root_thread_id: str, generation: int, *, db_only: bool = False
+    ) -> set[str]:
+        params: dict[str, Any] = {
+            NATIVE_ANCESTOR_THREAD_ID_FIELD: root_thread_id,
+            NATIVE_SOURCE_KINDS_FIELD: list(NATIVE_SUBAGENT_SOURCE_KINDS),
+        }
+        if db_only:
+            params[NATIVE_USE_STATE_DB_ONLY_FIELD] = True
+        candidates: set[str] = set()
+        for archived in (False, True):
+            rows = await self._pages(
+                NATIVE_THREAD_LIST_METHOD,
+                {**params, NATIVE_ARCHIVED_FIELD: archived},
+                generation,
+            )
+            for row in rows:
+                if not isinstance(row, dict):
+                    raise _NativeActivityError(NativeActivityBlocker.INVALID_RESPONSE)
+                thread_id = row.get(NATIVE_ID_FIELD)
+                if not isinstance(thread_id, str) or not thread_id or thread_id == root_thread_id:
+                    raise _NativeActivityError(NativeActivityBlocker.INVALID_RESPONSE)
+                candidates.add(thread_id)
+        return candidates
 
     async def inspect(self) -> NativeActivityState:
         return await self._inspect(root_absent=False)
@@ -204,21 +219,20 @@ class NativeActivity:
                 raise _NativeActivityError(NativeActivityBlocker.THREAD_PRESENT)
             if not root_absent and self._root_thread_id and self._root_thread_id not in loaded_ids:
                 raise _NativeActivityError(NativeActivityBlocker.THREAD_NOT_LOADED)
-            threads = {
-                thread_id: await self._thread(thread_id, generation) for thread_id in loaded_ids
-            }
-            owned_ids = self._owned_threads(threads)
-            for thread_id in owned_ids:
-                blockers.update(self._thread_blockers(threads[thread_id]))
+            threads = await self._scope(loaded_ids, generation)
+            for thread_id, thread in threads.items():
+                blockers.update(self._thread_blockers(thread))
                 await self._background(thread_id, generation, blockers)
-                if threads[thread_id].get(NATIVE_EPHEMERAL_FIELD) is not True:
+                if thread.get(NATIVE_EPHEMERAL_FIELD) is not True:
                     await self._goal(thread_id, generation, blockers)
                     await self._queue(thread_id, generation, blockers)
-            if await self._loaded(generation) != loaded_ids:
+            current_loaded = await self._loaded(generation)
+            if not await self._scope_unchanged(loaded_ids, current_loaded, threads, generation):
                 raise _NativeActivityError(NativeActivityBlocker.LOADED_THREADS_CHANGED)
+            loaded_ids = current_loaded
             # A second native status read closes an obvious polling race. Event
             # revisions still protect changes between this read and commit.
-            for thread_id in owned_ids:
+            for thread_id in threads:
                 blockers.update(self._thread_blockers(await self._thread(thread_id, generation)))
             self._require_generation(generation)
         except _NativeActivityError as error:
@@ -259,13 +273,12 @@ class NativeActivity:
             loaded = await self._loaded(generation)
             if self._root_thread_id not in loaded:
                 raise _NativeActivityError(NativeActivityBlocker.THREAD_NOT_LOADED)
-            threads = {key: await self._thread(key, generation) for key in loaded}
-            owned = self._owned_threads(threads)
+            threads = await self._scope(loaded, generation, deadline=deadline)
             # Resolve and validate the entire ownership snapshot before any write.
             turns: list[tuple[str, str]] = []
             terminals: list[tuple[str, str]] = []
-            for thread_id in owned:
-                if self._thread_blockers(threads[thread_id]):
+            for thread_id, thread in threads.items():
+                if self._thread_blockers(thread):
                     rows = await self._pages(
                         NATIVE_TURNS_LIST_METHOD,
                         {
@@ -312,10 +325,14 @@ class NativeActivity:
                 )
                 if not isinstance(result.get("terminated"), bool):
                     raise _NativeActivityError(NativeActivityBlocker.INVALID_RESPONSE)
-            active = any(self._thread_blockers(threads[key]) for key in owned)
+            active = any(self._thread_blockers(thread) for thread in threads.values())
             empty = (
                 empty + 1
-                if not active and not terminals and await self._loaded(generation) == loaded
+                if not active
+                and not terminals
+                and await self._scope_unchanged(
+                    loaded, await self._loaded(generation), threads, generation, deadline=deadline
+                )
                 else 0
             )
             if empty >= NATIVE_INTERRUPT_EMPTY_CONFIRMATIONS:
@@ -409,26 +426,180 @@ class NativeActivity:
             raise _NativeActivityError(NativeActivityBlocker.INVALID_RESPONSE)
         return thread
 
-    def _owned_threads(self, threads: dict[str, dict[str, Any]]) -> tuple[str, ...]:
+    async def _owned_threads(
+        self,
+        threads: dict[str, dict[str, Any]],
+        generation: int,
+        *,
+        read_deadline: float | None = None,
+        unreadable: set[str] | None = None,
+    ) -> tuple[str, ...]:
+        parents = {
+            thread_id: thread[NATIVE_PARENT_THREAD_ID_FIELD]
+            for thread_id, thread in threads.items()
+        }
+        ancestry_reads = 0
         owned: set[str] = set()
+        unresolved = set(unreadable or ())
+        unavailable_ancestors = set(unresolved)
         for thread_id in threads:
             path: set[str] = set()
             ancestor = thread_id
             while ancestor != self._root_thread_id:
-                if ancestor in path or ancestor not in threads:
+                if ancestor in path:
                     raise _NativeActivityError(NativeActivityBlocker.UNKNOWN_OWNERSHIP)
                 path.add(ancestor)
-                parent = threads[ancestor][NATIVE_PARENT_THREAD_ID_FIELD]
-                if parent is None:
-                    if ancestor not in self._known_roots:
+                if ancestor not in parents:
+                    if ancestor in unavailable_ancestors:
+                        unresolved.add(thread_id)
+                        break
+                    if read_deadline is None or ancestry_reads >= NATIVE_ANCESTRY_READ_LIMIT:
                         raise _NativeActivityError(NativeActivityBlocker.UNKNOWN_OWNERSHIP)
+                    ancestry_reads += 1
+                    try:
+                        parents[ancestor] = await self._read_unloaded_parent(
+                            ancestor, generation, read_deadline
+                        )
+                    except AppServerError:
+                        self._require_generation(generation)
+                        unavailable_ancestors.add(ancestor)
+                        unresolved.add(thread_id)
+                        break
+                parent = parents[ancestor]
+                if parent is None:
                     if not self._root_thread_id:
+                        if ancestor not in self._known_roots:
+                            raise _NativeActivityError(NativeActivityBlocker.UNKNOWN_OWNERSHIP)
                         owned.add(thread_id)
                     break
                 ancestor = parent
             else:
                 owned.add(thread_id)
+        if unresolved:
+            foreign_roots = {
+                thread_id
+                for thread_id, parent in parents.items()
+                if parent is None and thread_id != self._root_thread_id
+            }
+            if (
+                read_deadline is None
+                or not foreign_roots
+                or self._root_thread_id not in parents
+                or parents[self._root_thread_id] is not None
+            ):
+                raise _NativeActivityError(NativeActivityBlocker.UNKNOWN_OWNERSHIP)
+            await self._verify_foreign(unresolved, foreign_roots, generation, read_deadline)
         return tuple(sorted(owned))
+
+    async def _verify_foreign(
+        self, unresolved: set[str], foreign_roots: set[str], generation: int, deadline: float
+    ) -> None:
+        """A scoped listing may exclude a thread, but never grants write authority."""
+        try:
+            async with asyncio.timeout_at(deadline):
+                target = await self._listed_descendants(
+                    self._root_thread_id, generation, db_only=True
+                )
+                if (unresolved | foreign_roots).isdisjoint(target):
+                    for root_thread_id in sorted(foreign_roots):
+                        foreign = await self._listed_descendants(
+                            root_thread_id, generation, db_only=True
+                        )
+                        if self._root_thread_id in foreign:
+                            break
+                        unresolved -= foreign
+                        if not unresolved:
+                            return
+        except (AppServerError, TimeoutError) as error:
+            self._require_generation(generation)
+            raise _NativeActivityError(NativeActivityBlocker.UNKNOWN_OWNERSHIP) from error
+        raise _NativeActivityError(NativeActivityBlocker.UNKNOWN_OWNERSHIP)
+
+    async def _scope(
+        self, loaded: tuple[str, ...], generation: int, *, deadline: float | None = None
+    ) -> dict[str, dict[str, Any]]:
+        threads: dict[str, dict[str, Any]] = {}
+        unreadable: set[str] = set()
+        read_deadline = None
+        if self._root_thread_id:
+            read_deadline = asyncio.get_running_loop().time() + NATIVE_ANCESTRY_READ_SECONDS
+            if deadline is not None:
+                read_deadline = min(read_deadline, deadline)
+        for thread_id in loaded:
+            try:
+                threads[thread_id] = await self._read_scoped_thread(
+                    thread_id, generation, read_deadline
+                )
+            except _NativeActivityError as error:
+                if (
+                    not self._root_thread_id
+                    or thread_id == self._root_thread_id
+                    or error.blocker is not NativeActivityBlocker.UNKNOWN_OWNERSHIP
+                ):
+                    raise
+                unreadable.add(thread_id)
+            except AppServerError:
+                self._require_generation(generation)
+                if not self._root_thread_id or thread_id == self._root_thread_id:
+                    raise
+                unreadable.add(thread_id)
+        owned = await self._owned_threads(
+            threads, generation, read_deadline=read_deadline, unreadable=unreadable
+        )
+        return {thread_id: threads[thread_id] for thread_id in owned}
+
+    async def _read_scoped_thread(
+        self, thread_id: str, generation: int, deadline: float | None
+    ) -> dict[str, Any]:
+        try:
+            return await self._thread(thread_id, generation)
+        except AppServerError as error:
+            if deadline is None or error.rpc_code != RPC_INTERNAL_ERROR:
+                raise
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= NATIVE_THREAD_READ_RETRY_SECONDS:
+                raise
+            try:
+                async with asyncio.timeout_at(deadline):
+                    await asyncio.sleep(NATIVE_THREAD_READ_RETRY_SECONDS)
+                    return await self._thread(thread_id, generation)
+            except TimeoutError:
+                self._require_generation(generation)
+                raise error from None
+
+    async def _scope_unchanged(
+        self,
+        previous: tuple[str, ...],
+        current: tuple[str, ...],
+        threads: dict[str, dict[str, Any]],
+        generation: int,
+        *,
+        deadline: float | None = None,
+    ) -> bool:
+        if previous == current:
+            return True
+        if not self._root_thread_id or (
+            (self._root_thread_id in previous) != (self._root_thread_id in current)
+        ):
+            return False
+        return threads.keys() == (await self._scope(current, generation, deadline=deadline)).keys()
+
+    async def _read_unloaded_parent(
+        self, thread_id: str, generation: int, deadline: float
+    ) -> str | None:
+        try:
+            async with asyncio.timeout_at(deadline):
+                thread = await self._thread(thread_id, generation)
+        except TimeoutError as error:
+            self._require_generation(generation)
+            raise _NativeActivityError(NativeActivityBlocker.UNKNOWN_OWNERSHIP) from error
+        status = thread.get(NATIVE_STATUS_FIELD)
+        if (
+            not isinstance(status, dict)
+            or status.get(NATIVE_TYPE_FIELD) != NATIVE_THREAD_NOT_LOADED_STATUS
+        ):
+            raise _NativeActivityError(NativeActivityBlocker.UNKNOWN_OWNERSHIP)
+        return thread[NATIVE_PARENT_THREAD_ID_FIELD]
 
     @staticmethod
     def _thread_blockers(thread: dict[str, Any]) -> set[NativeActivityBlocker]:

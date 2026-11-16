@@ -29,7 +29,7 @@ class AssetChecksTest(unittest.TestCase):
 
     def test_caption_prefixes_with_and_without_punctuation(self):
         for caption in ('图1：2015—2026年方法演进。','表1总结了现有框架。','图2对比了架构。',
-                        'Table 2 compares methods.', 'Fig. 3.1: Mechanism', '表 ２：方法', '图一展示了机制'):
+                        'Table 2 compares methods.', 'Fig. 3.1: Mechanism', '表 ２：方法', '图一：机制'):
             with self.subTest(caption=caption): self.assertTrue(caption_errors(caption))
         for caption in ('2015—2026年方法演进。','二维图表示的比较。','Figure-ground separation.',
                         'Tableau methods and their assumptions.', 'The comparison uses 12% coverage.'):

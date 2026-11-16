@@ -172,6 +172,23 @@ test('download source policy permits same-origin local and public HTTP(S), not p
   )
 })
 
+test('an uncommitted tab only accepts a public download matching its pending navigation', () => {
+  const requested = 'https://example.org/download'
+  const destination = 'https://cdn.example.org/file'
+  const api = 'http://127.0.0.1:3000'
+  for (const blank of ['', 'about:blank']) {
+    assert.equal(downloadSourceAllowed([requested, destination], blank, null, api, requested), true)
+    assert.equal(downloadSourceAllowed([destination], blank, null, api, requested), false)
+    assert.equal(
+      downloadSourceAllowed([requested, `${api}/private`], blank, null, api, requested),
+      false
+    )
+    const blob = 'blob:https://example.org/id'
+    assert.equal(downloadSourceAllowed([blob], blank, null, api, blob), false)
+    assert.equal(downloadSourceAllowed([`${api}/file`], blank, api, api, `${api}/file`), false)
+  }
+})
+
 test('download directory preference persists and can be reset without accepting renderer paths', () => {
   const home = mkdtempSync(join(tmpdir(), 'browser-download-prefs-'))
   try {
@@ -184,7 +201,7 @@ test('download directory preference persists and can be reset without accepting 
       directory: defaultDirectory,
       isDefault: true,
       directoryAvailable: true,
-      askEveryTime: true,
+      askEveryTime: false,
       automaticAvailable: true,
     })
     first.select(chosenDirectory)
@@ -192,7 +209,7 @@ test('download directory preference persists and can be reset without accepting 
       directory: chosenDirectory,
       isDefault: false,
       directoryAvailable: true,
-      askEveryTime: true,
+      askEveryTime: false,
       automaticAvailable: true,
     })
     first.setAskEveryTime(false)
@@ -264,6 +281,27 @@ test('failed preference writes leave the current directory unchanged', () => {
   rmSync(home, { recursive: true })
   assert.throws(() => settings.select(chosenDirectory))
   assert.equal(settings.snapshot().directory, defaultDirectory)
+})
+
+test('fresh download defaults are off but stored and unreadable preferences stay conservative', () => {
+  const home = mkdtempSync(join(tmpdir(), 'browser-download-default-'))
+  const directory = join(home, 'default')
+  mkdirSync(directory)
+  try {
+    assert.equal(createDownloadPreferences(home, directory, true).snapshot().askEveryTime, false)
+    assert.equal(createDownloadPreferences(home, directory, false).snapshot().askEveryTime, true)
+    writeFileSync(
+      join(home, 'downloads.json'),
+      JSON.stringify({ directoryOverride: null, askEveryTime: true })
+    )
+    assert.equal(createDownloadPreferences(home, directory, true).snapshot().askEveryTime, true)
+    writeFileSync(join(home, 'downloads.json'), JSON.stringify({ directoryOverride: null }))
+    assert.equal(createDownloadPreferences(home, directory, true).snapshot().askEveryTime, true)
+    writeFileSync(join(home, 'downloads.json'), '{broken')
+    assert.equal(createDownloadPreferences(home, directory, true).snapshot().askEveryTime, true)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
 })
 
 test('pre-existing temporary hard link cannot redirect preference writes', () => {

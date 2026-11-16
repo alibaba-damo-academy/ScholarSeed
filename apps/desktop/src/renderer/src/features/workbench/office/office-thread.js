@@ -4,7 +4,7 @@
 
 const FAILURE_CODES = {
   officeDocumentUnavailable: 'office_document_unavailable',
-  processorMismatch: processor => `office_processor_mismatch:${processor}`,
+  processorMismatch: (processor) => `office_processor_mismatch:${processor}`,
 }
 
 let zetajs
@@ -32,6 +32,61 @@ let embedded
 let documentPolicy
 let documentKind
 let writerSelection
+let selectionRevealTimers = []
+const SELECTION_REVEAL_PULSES = 4
+
+function cancelSelectionReveal() {
+  selectionRevealTimers.forEach(clearTimeout)
+  selectionRevealTimers = []
+}
+
+function revealSelection(requestId, locator, text, duration, reducedMotion) {
+  cancelSelectionReveal()
+  try {
+    if (!xModel || !Number.isFinite(duration) || duration <= 0)
+      throw new Error('selection_unavailable')
+    const { controller, target, collapsed } = ScholarSeedOfficeSelection.locate(
+      xModel,
+      locator,
+      text
+    )
+    if (!reducedMotion) {
+      for (let pulse = 1; pulse <= SELECTION_REVEAL_PULSES; pulse++) {
+        selectionRevealTimers.push(
+          setTimeout(
+            () => {
+              try {
+                const selectedLength = ScholarSeedOfficeSelection.pulse(
+                  controller,
+                  target,
+                  collapsed,
+                  locator.kind,
+                  pulse % 2 === 0
+                )
+                console.info('[selection-reveal-pulse]', { pulse, selectedLength })
+                if (pulse === SELECTION_REVEAL_PULSES)
+                  post({ cmd: 'selection_revealed', requestId })
+              } catch {
+                cancelSelectionReveal()
+                post({ cmd: 'selection_reveal_failed', requestId })
+              }
+            },
+            (duration * pulse) / SELECTION_REVEAL_PULSES
+          )
+        )
+      }
+    }
+    if (reducedMotion) post({ cmd: 'selection_revealed', requestId })
+  } catch (error) {
+    console.warn(
+      '[selection-reveal-native]',
+      String(
+        error instanceof WebAssembly.Exception ? zetajs.catchUnoException(error)?.Message : error
+      )
+    )
+    post({ cmd: 'selection_reveal_failed', requestId })
+  }
+}
 let selectionDragging = false
 let pendingWriterAutoscroll
 let writerAutoscrollCursor
@@ -79,7 +134,9 @@ const WRITER_PROCESSORS = Object.freeze({
   docx: () => ScholarSeedOfficeDocxSelection,
 })
 
-function post(message) { zetajs.mainPort.postMessage(message) }
+function post(message) {
+  zetajs.mainPort.postMessage(message)
+}
 
 function transferableItems(sequence) {
   if (Array.isArray(sequence)) return sequence
@@ -88,25 +145,31 @@ function transferableItems(sequence) {
 }
 
 function cloneTransferable(transferable) {
-  const entries = transferableItems(transferable.getTransferDataFlavors()).map(flavor => ({
+  const entries = transferableItems(transferable.getTransferDataFlavors()).map((flavor) => ({
     flavor,
-    data: transferable.getTransferData(flavor)
+    data: transferable.getTransferData(flavor),
   }))
   return zetajs.unoObject([css.datatransfer.XTransferable], {
-    getTransferDataFlavors() { return entries.map(entry => entry.flavor) },
-    isDataFlavorSupported(candidate) { return entries.some(entry => entry.flavor.MimeType === candidate.MimeType) },
+    getTransferDataFlavors() {
+      return entries.map((entry) => entry.flavor)
+    },
+    isDataFlavorSupported(candidate) {
+      return entries.some((entry) => entry.flavor.MimeType === candidate.MimeType)
+    },
     getTransferData(candidate) {
-      const entry = entries.find(item => item.flavor.MimeType === candidate.MimeType)
+      const entry = entries.find((item) => item.flavor.MimeType === candidate.MimeType)
       if (!entry) throw new Error(`Unsupported clipboard flavor: ${candidate.MimeType}`)
       return entry.data
-    }
+    },
   })
 }
 
 function impressTransferableSupplier() {
   return {
     getTransferable() {
-      const clipboard = css.datatransfer.clipboard.SystemClipboard.create(zetajs.getUnoComponentContext())
+      const clipboard = css.datatransfer.clipboard.SystemClipboard.create(
+        zetajs.getUnoComponentContext()
+      )
       const existing = clipboard.getContents()
       if (!existing) return undefined
       const snapshot = cloneTransferable(existing)
@@ -116,7 +179,7 @@ function impressTransferableSupplier() {
       } finally {
         clipboard.setContents(snapshot, null)
       }
-    }
+    },
   }
 }
 
@@ -125,20 +188,29 @@ function applyPalette(palette) {
     ScholarSeedOfficePalette.apply(zetajs, css, palette)
     post({ cmd: 'theme_applied' })
   } catch (error) {
-    const detail = error instanceof WebAssembly.Exception ? zetajs.catchUnoException(error)?.Message : error
+    const detail =
+      error instanceof WebAssembly.Exception ? zetajs.catchUnoException(error)?.Message : error
     console.warn('[office-theme] palette unavailable', String(detail))
   }
 }
 
 function removeDocumentListener() {
   if (!xModel || !documentListener) return
-  try { xModel.removeDocumentEventListener(documentListener) } catch (error) { /* disposed */ }
+  try {
+    xModel.removeDocumentEventListener(documentListener)
+  } catch (error) {
+    /* disposed */
+  }
   documentListener = undefined
 }
 
 function removeLayoutListener() {
   if (!layoutBroadcaster || !layoutListener) return
-  try { layoutBroadcaster.removeDocumentEventListener(layoutListener) } catch (error) { /* disposed */ }
+  try {
+    layoutBroadcaster.removeDocumentEventListener(layoutListener)
+  } catch (error) {
+    /* disposed */
+  }
   layoutListener = undefined
   layoutBroadcaster = undefined
 }
@@ -164,7 +236,8 @@ function reportCaret() {
     caretUnavailable = false
     post({ cmd: CARET_COMMAND, ...caret })
   } catch (error) {
-    const detail = error instanceof WebAssembly.Exception ? zetajs.catchUnoException(error)?.Message : error
+    const detail =
+      error instanceof WebAssembly.Exception ? zetajs.catchUnoException(error)?.Message : error
     if (!caretUnavailable) console.warn('[office-caret] unavailable', String(detail))
     caretUnavailable = true
   }
@@ -177,6 +250,7 @@ function scheduleCaretReport() {
 }
 
 function closeDocument() {
+  cancelSelectionReveal()
   replacementAllowed = false
   caretTracked = false
   caretUnavailable = false
@@ -202,12 +276,22 @@ function closeDocument() {
   removeDocumentListener()
   removeLayoutListener()
   if (xModel && selectionListener) {
-    try { xModel.getCurrentController().removeSelectionChangeListener(selectionListener) } catch (error) { /* disposed */ }
+    try {
+      xModel.getCurrentController().removeSelectionChangeListener(selectionListener)
+    } catch (error) {
+      /* disposed */
+    }
     selectionListener = undefined
   }
   if (!xModel) return
-  try { xModel.close(true) } catch (error) {
-    try { xModel.dispose() } catch (disposeError) { /* already disposed */ }
+  try {
+    xModel.close(true)
+  } catch (error) {
+    try {
+      xModel.dispose()
+    } catch (disposeError) {
+      /* already disposed */
+    }
   }
   xModel = undefined
 }
@@ -230,9 +314,13 @@ function prepareWriterAutoscroll(message) {
     const horizontal = Number(message.x)
     const vertical = Number(message.y)
     const controller = xModel.getCurrentController()
-    writerAutoscrollCursor ??= readonlyWriterSelectionCursor(controller, Math.sign(vertical || horizontal))
+    writerAutoscrollCursor ??= readonlyWriterSelectionCursor(
+      controller,
+      Math.sign(vertical || horizontal)
+    )
     const cursor = writerAutoscrollCursor
-    if (cursor) pendingWriterAutoscroll = { requestId: message.requestId, cursor, horizontal, vertical }
+    if (cursor)
+      pendingWriterAutoscroll = { requestId: message.requestId, cursor, horizontal, vertical }
   }
   post({ cmd: SELECTION_AUTOSCROLL_READY_COMMAND, requestId: message.requestId })
 }
@@ -261,7 +349,10 @@ function reportPresentationState() {
     let current = total > 0 ? 1 : 0
     for (let index = 0; index < total; index += 1) {
       const page = pages.getByIndex(index)
-      if (page === currentPage || (currentName && typeof page?.getName === 'function' && page.getName() === currentName)) {
+      if (
+        page === currentPage ||
+        (currentName && typeof page?.getName === 'function' && page.getName() === currentName)
+      ) {
         current = index + 1
         break
       }
@@ -280,11 +371,12 @@ function fitPresentation() {
 
 function navigatePresentation(direction) {
   if (!releasePolicy || documentPolicy?.kind !== 'impress') return
-  const command = direction === PRESENTATION_PREVIOUS_DIRECTION
-    ? PRESENTATION_PREVIOUS_COMMAND
-    : direction === PRESENTATION_NEXT_DIRECTION
-      ? PRESENTATION_NEXT_COMMAND
-      : ''
+  const command =
+    direction === PRESENTATION_PREVIOUS_DIRECTION
+      ? PRESENTATION_PREVIOUS_COMMAND
+      : direction === PRESENTATION_NEXT_DIRECTION
+        ? PRESENTATION_NEXT_COMMAND
+        : ''
   if (!command || !ScholarSeedOfficePolicy.allows(documentPolicy, command)) return
   releasePolicy.dispatchNative(command, [])
   fitPresentation()
@@ -310,7 +402,10 @@ function receiveImage(message) {
       console.info('[office-image] dispatching embedded PNG', message.requestId)
       const provider = css.graphic.GraphicProvider.create(zetajs.getUnoComponentContext())
       const graphic = provider.queryGraphic([
-        new css.beans.PropertyValue({ Name: 'URL', Value: `file://${IMAGE_WASM_DIRECTORY}${message.requestId}.png` })
+        new css.beans.PropertyValue({
+          Name: 'URL',
+          Value: `file://${IMAGE_WASM_DIRECTORY}${message.requestId}.png`,
+        }),
       ])
       const physical = graphic.getPropertyValue('Size100thMM')
       const pixels = graphic.getPropertyValue('SizePixel')
@@ -320,7 +415,13 @@ function receiveImage(message) {
       const cursor = xModel.getCurrentController().getViewCursor()
       const pageName = cursor.getPropertyValue('PageStyleName')
       const page = xModel.getStyleFamilies().getByName(PAGE_STYLES).getByName(pageName)
-      const scale = Math.min(1, (page.getPropertyValue('Width') - page.getPropertyValue('LeftMargin') - page.getPropertyValue('RightMargin')) / width)
+      const scale = Math.min(
+        1,
+        (page.getPropertyValue('Width') -
+          page.getPropertyValue('LeftMargin') -
+          page.getPropertyValue('RightMargin')) /
+          width
+      )
       const object = xModel.createInstance(GRAPHIC_SERVICE)
       object.setPropertyValue('Graphic', graphic)
       object.setPropertyValue('AnchorType', css.text.TextContentAnchorType.AS_CHARACTER)
@@ -328,8 +429,11 @@ function receiveImage(message) {
       object.setPropertyValue('Height', Math.round(height * scale))
       const undo = xModel.getUndoManager()
       undo.enterUndoContext(message.undoLabel)
-      try { cursor.getText().insertTextContent(cursor, object, true) }
-      finally { undo.leaveUndoContext() }
+      try {
+        cursor.getText().insertTextContent(cursor, object, true)
+      } finally {
+        undo.leaveUndoContext()
+      }
       console.info('[office-image] native graphic inserted', message.requestId, width, height)
       reportModified()
     } else if (message.status === 'text') {
@@ -337,18 +441,34 @@ function receiveImage(message) {
         insertTransferable(message.requestId, message.formats)
         return
       }
-      const clipboard = css.datatransfer.clipboard.SystemClipboard.create(zetajs.getUnoComponentContext())
+      const clipboard = css.datatransfer.clipboard.SystemClipboard.create(
+        zetajs.getUnoComponentContext()
+      )
       const existing = clipboard.getContents()
       const flavor = new css.datatransfer.DataFlavor({
-        MimeType: TEXT_CLIPBOARD_FLAVOR, HumanPresentableName: 'Text', DataType: zetajs.type.string
+        MimeType: TEXT_CLIPBOARD_FLAVOR,
+        HumanPresentableName: 'Text',
+        DataType: zetajs.type.string,
       })
       // Keep the native rich transferable when copying within Office.
-      if (!existing?.isDataFlavorSupported(flavor) || existing.getTransferData(flavor) !== message.text) {
-        clipboard.setContents(zetajs.unoObject([css.datatransfer.XTransferable], {
-          getTransferDataFlavors() { return [flavor] },
-          isDataFlavorSupported(candidate) { return candidate.MimeType === TEXT_CLIPBOARD_FLAVOR },
-          getTransferData() { return message.text }
-        }), null)
+      if (
+        !existing?.isDataFlavorSupported(flavor) ||
+        existing.getTransferData(flavor) !== message.text
+      ) {
+        clipboard.setContents(
+          zetajs.unoObject([css.datatransfer.XTransferable], {
+            getTransferDataFlavors() {
+              return [flavor]
+            },
+            isDataFlavorSupported(candidate) {
+              return candidate.MimeType === TEXT_CLIPBOARD_FLAVOR
+            },
+            getTransferData() {
+              return message.text
+            },
+          }),
+          null
+        )
       }
       pending.fallback?.()
       reportModified()
@@ -385,26 +505,39 @@ function reportSelection() {
       const range = selection.getRangeAddress()
       const sheet = xModel.getSheets().getByIndex(range.Sheet)
       const cellFlags = css.sheet.CellFlags
-      const contentFlags = cellFlags.VALUE | cellFlags.DATETIME | cellFlags.STRING | cellFlags.FORMULA
+      const contentFlags =
+        cellFlags.VALUE | cellFlags.DATETIME | cellFlags.STRING | cellFlags.FORMULA
       const described = ScholarSeedOfficeSelection.describe(selection, sheet, range, contentFlags)
       post({
         cmd: 'selection',
-        selection: described
+        selection: described,
       })
       return
     }
     const writer = documentKind === 'writer' ? writerSelection?.describe(selection) : undefined
     if (writer) {
-      post({ cmd: 'selection', selection: writer.selection, extractionDurationMs: performance.now() - startedAt })
+      post({
+        cmd: 'selection',
+        selection: writer.selection,
+        extractionDurationMs: performance.now() - startedAt,
+      })
       return
     }
-    const currentImpressShape = documentKind === 'impress' ? ScholarSeedOfficeSelection.captureImpress(selection) : undefined
+    const currentImpressShape =
+      documentKind === 'impress' ? ScholarSeedOfficeSelection.captureImpress(selection) : undefined
     if (currentImpressShape) impressShape = currentImpressShape
-    const impress = documentKind === 'impress'
-      ? ScholarSeedOfficeSelection.describeImpress(xModel, controller, impressShape, impressTransferableSupplier(), (diagnostic) => {
-          console.info(OFFICE_SELECTION_LOG_PREFIX + JSON.stringify(diagnostic))
-        })
-      : undefined
+    const impress =
+      documentKind === 'impress'
+        ? ScholarSeedOfficeSelection.describeImpress(
+            xModel,
+            controller,
+            impressShape,
+            impressTransferableSupplier(),
+            (diagnostic) => {
+              console.info(OFFICE_SELECTION_LOG_PREFIX + JSON.stringify(diagnostic))
+            }
+          )
+        : undefined
     if (impress) {
       post({ cmd: 'selection', selection: impress })
       return
@@ -412,8 +545,11 @@ function reportSelection() {
     post({ cmd: 'selection', selection: { text: '' } })
   } catch (error) {
     if (documentKind === 'impress') {
-      const detail = error instanceof WebAssembly.Exception ? zetajs.catchUnoException(error)?.Message : error
-      console.info(OFFICE_SELECTION_LOG_PREFIX + JSON.stringify({ stage: 'failed', detail: String(detail) }))
+      const detail =
+        error instanceof WebAssembly.Exception ? zetajs.catchUnoException(error)?.Message : error
+      console.info(
+        OFFICE_SELECTION_LOG_PREFIX + JSON.stringify({ stage: 'failed', detail: String(detail) })
+      )
     } else {
       console.error('[office-selection] report failed', error)
     }
@@ -427,33 +563,40 @@ function scheduleSelectionReport() {
 }
 
 function replaceWriterSelection(requestId, locator, expectedText, replacement, undoLabel) {
-  if (!xModel
-    || !replacementAllowed
-    || typeof requestId !== 'string'
-    || locator?.kind !== 'writer'
-    || typeof expectedText !== 'string'
-    || typeof replacement !== 'string'
-    || typeof undoLabel !== 'string'
-    || !undoLabel.trim()) {
+  if (
+    !xModel ||
+    !replacementAllowed ||
+    typeof requestId !== 'string' ||
+    locator?.kind !== 'writer' ||
+    typeof expectedText !== 'string' ||
+    typeof replacement !== 'string' ||
+    typeof undoLabel !== 'string' ||
+    !undoLabel.trim()
+  ) {
     post({ cmd: 'selection_replace_failed', requestId, error: REPLACEMENT_UNSUPPORTED_ERROR })
     return
   }
   try {
     const current = writerSelection?.describe(xModel.getCurrentController().getSelection())
-    if (!current
-      || !current.writerRange
-      || current.selection.paragraph !== locator.paragraph
-      || current.selection.end_paragraph !== locator.end_paragraph
-      || current.selection.start !== locator.start
-      || current.selection.end !== locator.end
-      || current.selection.text !== expectedText) {
+    if (
+      !current ||
+      !current.writerRange ||
+      current.selection.paragraph !== locator.paragraph ||
+      current.selection.end_paragraph !== locator.end_paragraph ||
+      current.selection.start !== locator.start ||
+      current.selection.end !== locator.end ||
+      current.selection.text !== expectedText
+    ) {
       post({ cmd: 'selection_replace_failed', requestId, error: REPLACEMENT_STALE_ERROR })
       return
     }
     const undo = xModel.getUndoManager()
     undo.enterUndoContext(undoLabel)
-    try { current.writerRange.setString(replacement) }
-    finally { undo.leaveUndoContext() }
+    try {
+      current.writerRange.setString(replacement)
+    } finally {
+      undo.leaveUndoContext()
+    }
     reportModified()
     post({ cmd: 'selection_replaced', requestId })
   } catch (error) {
@@ -479,23 +622,33 @@ function runOfficeSearch(requestId, query, direction) {
 
 function byteSequence(value) {
   const encoded = new TextEncoder().encode(value)
-  return Array.from(encoded, item => item > 127 ? item - 256 : item)
+  return Array.from(encoded, (item) => (item > 127 ? item - 256 : item))
 }
 
 function insertTransferable(requestId, formats, error) {
-  if (!replacementAllowed || !xModel || pendingImage || embedded?.active || error || !Array.isArray(formats) || !formats.length) {
+  if (
+    !replacementAllowed ||
+    !xModel ||
+    pendingImage ||
+    embedded?.active ||
+    error ||
+    !Array.isArray(formats) ||
+    !formats.length
+  ) {
     post({ cmd: PASTE_FAILED_ERROR, requestId })
     return
   }
   try {
     const byteType = zetajs.type.sequence(zetajs.type.byte)
-    const preferred = formats.find(format => (
-      format.mime === 'text/html' || format.mime === 'text/rtf' || format.mime === 'text/plain'
-    ))
+    const preferred = formats.find(
+      (format) =>
+        format.mime === 'text/html' || format.mime === 'text/rtf' || format.mime === 'text/plain'
+    )
     if (!preferred) throw new Error('No supported clipboard flavor')
-    const flavors = [preferred].map(format => {
+    const flavors = [preferred].map((format) => {
       const isPlain = format.mime === 'text/plain'
-      const mime = format.mime === 'text/html' ? HTML_MIME : format.mime === 'text/rtf' ? RTF_MIME : PLAIN_MIME
+      const mime =
+        format.mime === 'text/html' ? HTML_MIME : format.mime === 'text/rtf' ? RTF_MIME : PLAIN_MIME
       return {
         data: isPlain ? format.data : byteSequence(format.data),
         flavor: new css.datatransfer.DataFlavor({
@@ -507,10 +660,14 @@ function insertTransferable(requestId, formats, error) {
       }
     })
     const transferable = zetajs.unoObject([css.datatransfer.XTransferable], {
-      getTransferDataFlavors() { return flavors.map(item => item.flavor) },
-      isDataFlavorSupported(flavor) { return flavors.some(item => item.flavor.MimeType === flavor.MimeType) },
+      getTransferDataFlavors() {
+        return flavors.map((item) => item.flavor)
+      },
+      isDataFlavorSupported(flavor) {
+        return flavors.some((item) => item.flavor.MimeType === flavor.MimeType)
+      },
       getTransferData(flavor) {
-        const item = flavors.find(candidate => candidate.flavor.MimeType === flavor.MimeType)
+        const item = flavors.find((candidate) => candidate.flavor.MimeType === flavor.MimeType)
         if (!item) throw new Error(`Unsupported clipboard flavor: ${flavor.MimeType}`)
         return new zetajs.Any(item.type, item.data)
       },
@@ -537,8 +694,7 @@ function observeDocument() {
       if (event.EventName === 'OnModifyChanged') {
         writerSelection?.invalidate()
         reportModified()
-      }
-      else if (event.EventName === 'OnSaveDone' && !programmaticSave) post({ cmd: 'persist' })
+      } else if (event.EventName === 'OnSaveDone' && !programmaticSave) post({ cmd: 'persist' })
       else if (event.EventName === 'OnSaveFailed') post({ cmd: 'save_failed' })
     },
     disposing() {},
@@ -558,14 +714,21 @@ function observeLayout(bindingId) {
   layoutBroadcaster.addDocumentEventListener(layoutListener)
 }
 
-function loadFile(filename, processor, expectedDocumentKind, readOnly, bindingId, readonlyReason = '') {
+function loadFile(
+  filename,
+  processor,
+  expectedDocumentKind,
+  readOnly,
+  bindingId,
+  readonlyReason = ''
+) {
   closeDocument()
   observeLayout(bindingId)
   // Native locks cover direct native entry points as well as UNO dispatch.
   // LockSave deliberately stays off: the host persists through XStorable.store().
-  const properties = ['LockEditDoc', 'LockExport', 'LockPrint'].map(Name => (
-    new css.beans.PropertyValue({ Name, Value: true })
-  ))
+  const properties = ['LockEditDoc', 'LockExport', 'LockPrint'].map(
+    (Name) => new css.beans.PropertyValue({ Name, Value: true })
+  )
   if (readOnly) properties.push(new css.beans.PropertyValue({ Name: 'ReadOnly', Value: true }))
   xModel = desktop.loadComponentFromURL(`file:///tmp/office/${filename}`, '_default', 0, properties)
   if (!xModel) {
@@ -574,9 +737,9 @@ function loadFile(filename, processor, expectedDocumentKind, readOnly, bindingId
     return
   }
   const controller = xModel.getCurrentController()
-  documentKind = Object.keys(ScholarSeedOfficePolicy.MODULES).find(kind => (
+  documentKind = Object.keys(ScholarSeedOfficePolicy.MODULES).find((kind) =>
     xModel.supportsService(ScholarSeedOfficePolicy.MODULES[kind].service)
-  ))
+  )
   if (expectedDocumentKind && documentKind !== expectedDocumentKind) {
     closeDocument()
     post({ cmd: 'policy_failed', message: FAILURE_CODES.processorMismatch(processor) })
@@ -587,34 +750,55 @@ function loadFile(filename, processor, expectedDocumentKind, readOnly, bindingId
     loadFile(filename, processor, expectedDocumentKind, true, bindingId)
     return
   }
-  const writerFormat = documentKind === 'writer'
-    ? ScholarSeedOfficeSelection.writerFormat(filename)
-    : undefined
+  const writerFormat =
+    documentKind === 'writer' ? ScholarSeedOfficeSelection.writerFormat(filename) : undefined
   const writerProcessor = writerFormat ? WRITER_PROCESSORS[writerFormat]?.() : undefined
   writerSelection = writerProcessor
     ? writerProcessor.createInspector((left, right) => zetajs.sameUnoObject(left, right))
     : undefined
-  if (writerSelection && typeof xModel.getText === 'function') writerSelection.prepare(xModel.getText())
+  if (writerSelection && typeof xModel.getText === 'function')
+    writerSelection.prepare(xModel.getText())
   if (policy.editable) {
     try {
-      protection = ScholarSeedOfficeProtection.install(zetajs, css, xModel, message => {
-        console.warn('[office-protection]', message)
-        post({ cmd: 'operation_rejected', message })
-        post({ cmd: 'modified', dirty: xModel.isModified() })
-      }, policy.module.contentGuard)
+      protection = ScholarSeedOfficeProtection.install(
+        zetajs,
+        css,
+        xModel,
+        (message) => {
+          console.warn('[office-protection]', message)
+          post({ cmd: 'operation_rejected', message })
+          post({ cmd: 'modified', dirty: xModel.isModified() })
+        },
+        policy.module.contentGuard
+      )
     } catch (error) {
-      const detail = error instanceof WebAssembly.Exception ? zetajs.catchUnoException(error) : error
+      const detail =
+        error instanceof WebAssembly.Exception ? zetajs.catchUnoException(error) : error
       console.error('[office-protection] installation failed', detail?.Message || String(detail))
-      loadFile(filename, processor, expectedDocumentKind, true, bindingId, 'office_editing_unavailable')
+      loadFile(
+        filename,
+        processor,
+        expectedDocumentKind,
+        true,
+        bindingId,
+        'office_editing_unavailable'
+      )
       return
     }
   }
   try {
     releasePolicy = ScholarSeedOfficeGovernance.install(
-      zetajs, css, xModel, policy, documentKind === 'writer' && policy.editable ? {
-        [INSERT_IMAGE_COMMAND]: () => requestImage('file'),
-        [PASTE_COMMAND]: (dispatch, command, args) => requestImage('clipboard', () => dispatch.dispatch(command, args))
-      } : {}
+      zetajs,
+      css,
+      xModel,
+      policy,
+      documentKind === 'writer' && policy.editable
+        ? {
+            [INSERT_IMAGE_COMMAND]: () => requestImage('file'),
+            [PASTE_COMMAND]: (dispatch, command, args) =>
+              requestImage('clipboard', () => dispatch.dispatch(command, args)),
+          }
+        : {}
     )
   } catch (error) {
     console.error('[office-policy] document unavailable', String(error))
@@ -625,13 +809,22 @@ function loadFile(filename, processor, expectedDocumentKind, readOnly, bindingId
   replacementAllowed = policy.editable && documentKind === 'writer'
   caretTracked = replacementAllowed
   documentPolicy = policy
-  if (documentKind === 'writer') embedded = ScholarSeedOfficeEmbedded.observe(zetajs, css, xModel, policy.editable, change => {
-    if (change.dirty && policy.editable) post({ cmd: 'modified', dirty: true })
-    if (typeof change.active === 'boolean') post({ cmd: 'embedded_active', active: change.active })
-  }, error => {
-    console.error('[office-embedded] governance failed', String(error))
-    post({ cmd: 'policy_failed', message: OFFICE_FORMULA_POLICY_FAILED })
-  })
+  if (documentKind === 'writer')
+    embedded = ScholarSeedOfficeEmbedded.observe(
+      zetajs,
+      css,
+      xModel,
+      policy.editable,
+      (change) => {
+        if (change.dirty && policy.editable) post({ cmd: 'modified', dirty: true })
+        if (typeof change.active === 'boolean')
+          post({ cmd: 'embedded_active', active: change.active })
+      },
+      (error) => {
+        console.error('[office-embedded] governance failed', String(error))
+        post({ cmd: 'policy_failed', message: OFFICE_FORMULA_POLICY_FAILED })
+      }
+    )
   calcSelectionSheet = documentKind === 'calc' ? controller.getActiveSheet().getName() : undefined
   officeSearch = ScholarSeedOfficeSearch.create(documentKind, controller, xModel)
   observeDocument()
@@ -647,7 +840,13 @@ function loadFile(filename, processor, expectedDocumentKind, readOnly, bindingId
     disposing() {},
   })
   controller.addSelectionChangeListener(selectionListener)
-  post({ cmd: 'ui_ready', bindingId, documentKind, editable: policy.editable, readonlyReason: readonlyReason || policy.readonlyReason })
+  post({
+    cmd: 'ui_ready',
+    bindingId,
+    documentKind,
+    editable: policy.editable,
+    readonlyReason: readonlyReason || policy.readonlyReason,
+  })
   if (documentKind === 'impress') {
     fitPresentation()
     reportPresentationState()
@@ -665,8 +864,11 @@ function saveDocument() {
     if (protection) protection.store()
     else xModel.store()
     post({ cmd: 'persist' })
-  } catch (error) { post({ cmd: 'save_failed', message: String(error) }) }
-  finally { programmaticSave = false }
+  } catch (error) {
+    post({ cmd: 'save_failed', message: String(error) })
+  } finally {
+    programmaticSave = false
+  }
 }
 
 function start() {
@@ -675,12 +877,25 @@ function start() {
     switch (event.data.cmd) {
       case 'upload':
         try {
-          loadFile(event.data.filename, event.data.processor, event.data.expectedDocumentKind, event.data.readOnly, event.data.bindingId)
+          loadFile(
+            event.data.filename,
+            event.data.processor,
+            event.data.expectedDocumentKind,
+            event.data.readOnly,
+            event.data.bindingId
+          )
         } catch (error) {
-          post({ cmd: 'document_failed', bindingId: event.data.bindingId, message: OFFICE_DOCUMENT_UNAVAILABLE, detail: String(error) })
+          post({
+            cmd: 'document_failed',
+            bindingId: event.data.bindingId,
+            message: OFFICE_DOCUMENT_UNAVAILABLE,
+            detail: String(error),
+          })
         }
         break
-      case 'theme': applyPalette(event.data.palette); break
+      case 'theme':
+        applyPalette(event.data.palette)
+        break
       case VIEWPORT_RESIZE_COMMAND:
         // Qt owns the transferred OffscreenCanvas and updates both screen geometry and backing pixels.
         Module.qtResizeAllScreens(undefined)
@@ -695,14 +910,44 @@ function start() {
         reportPresentationState()
         scheduleCaretReport()
         break
-      case 'save': saveDocument(); break
-      case 'image_request': requestImage('clipboard', () => releasePolicy.dispatchNative(PASTE_COMMAND, [])); break
-      case 'image_result': receiveImage(event.data); break
-      case 'replace_selection': replaceWriterSelection(event.data.requestId, event.data.locator, event.data.expectedText, event.data.replacement, event.data.undoLabel); break
-      case 'office_search': runOfficeSearch(event.data.requestId, event.data.query, event.data.direction); break
-      case PRESENTATION_NAVIGATE_COMMAND: navigatePresentation(event.data.direction); break
-      case 'paste': insertTransferable(event.data.requestId, event.data.formats, event.data.error); break
+      case 'save':
+        saveDocument()
+        break
+      case 'image_request':
+        requestImage('clipboard', () => releasePolicy.dispatchNative(PASTE_COMMAND, []))
+        break
+      case 'image_result':
+        receiveImage(event.data)
+        break
+      case 'replace_selection':
+        replaceWriterSelection(
+          event.data.requestId,
+          event.data.locator,
+          event.data.expectedText,
+          event.data.replacement,
+          event.data.undoLabel
+        )
+        break
+      case 'office_search':
+        runOfficeSearch(event.data.requestId, event.data.query, event.data.direction)
+        break
+      case 'reveal_selection':
+        revealSelection(
+          event.data.requestId,
+          event.data.locator,
+          event.data.text,
+          event.data.duration,
+          event.data.reducedMotion
+        )
+        break
+      case PRESENTATION_NAVIGATE_COMMAND:
+        navigatePresentation(event.data.direction)
+        break
+      case 'paste':
+        insertTransferable(event.data.requestId, event.data.formats, event.data.error)
+        break
       case SELECTION_DRAG_COMMAND:
+        cancelSelectionReveal()
         selectionDragging = Boolean(event.data.active)
         writerAutoscrollCursor = undefined
         if (!selectionDragging) pendingWriterAutoscroll = undefined
@@ -717,14 +962,21 @@ function start() {
       case SELECTION_AUTOSCROLL_COMMIT_COMMAND:
         commitWriterAutoscroll(event.data)
         break
-      case SELECTION_COMMIT_COMMAND: cancelSelectionReport(); reportSelection(); break
+      case SELECTION_COMMIT_COMMAND:
+        cancelSelectionReport()
+        reportSelection()
+        break
       case 'host_saved':
         protection?.saved()
         if (xModel && typeof xModel.setModified === 'function') xModel.setModified(false)
         post({ cmd: 'modified', dirty: false })
         break
-      case 'dispose': closeDocument(); zetajs.mainPort.close(); break
-      default: throw new Error(`Unknown message command: ${String(event.data.cmd)}`)
+      case 'dispose':
+        closeDocument()
+        zetajs.mainPort.close()
+        break
+      default:
+        throw new Error(`Unknown message command: ${String(event.data.cmd)}`)
     }
   }
   post({ cmd: 'thr_running' })

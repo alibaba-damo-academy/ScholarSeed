@@ -2,10 +2,29 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   conversationInlinePadding,
+  messageFocusSpacerHeight,
   createFollowScroll,
   createScrollbarVisibility,
   SCROLLBAR_IDLE_DELAY_MS,
 } from './scroll.ts'
+
+test('message focus uses the actual content bottom even when history is shorter than the viewport', () => {
+  const viewport = {
+    clientHeight: 632,
+    scrollTop: 0,
+    clientTop: 0,
+    getBoundingClientRect: () => ({ top: 48 }) as DOMRect,
+  }
+  const spacer = { getBoundingClientRect: () => ({ top: 502 }) as DOMRect }
+  assert.equal(messageFocusSpacerHeight(viewport, spacer, 153), 331)
+  assert.equal(messageFocusSpacerHeight(viewport, spacer, 0), 178)
+  assert.equal(messageFocusSpacerHeight({ ...viewport, scrollTop: 300 }, spacer, 153), 31)
+  assert.equal(messageFocusSpacerHeight({ ...viewport, scrollTop: 900 }, spacer, 153), 0)
+  const longHistory = { getBoundingClientRect: () => ({ top: 1248 }) as DOMRect }
+  assert.equal(messageFocusSpacerHeight(viewport, longHistory, 900), 332)
+  assert.equal(messageFocusSpacerHeight(viewport, longHistory, 300), 0)
+  assert.equal(messageFocusSpacerHeight({ ...viewport, clientTop: 2 }, longHistory, 900), 334)
+})
 
 test('conversation padding compensates only the actual reserved scrollbar gutters', () => {
   assert.equal(

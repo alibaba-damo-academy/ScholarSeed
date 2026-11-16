@@ -104,7 +104,7 @@ def check_documents(value: object, values: Sequence[DocumentSource]) -> tuple[Do
             raise ValueError("startup document coverage differs")
         source = sources[name]
         if (
-            type(entry["source_present"]) is not bool
+            not isinstance(entry["source_present"], bool)
             or entry["source_present"] != (source.observed is not None)
             or entry["source_digest"] != _digest(source.observed)
         ):

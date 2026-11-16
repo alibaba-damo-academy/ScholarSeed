@@ -120,6 +120,7 @@ class WorkflowTest(unittest.TestCase):
         self.ws = Path(self.tmp.name)
         self.calls = []
         self.responses = {}
+        configure(self.ws, task({'outline_review': 'required'}))
         self.retrieval = {'output_count': 40, 'corpus_plan': {'combined_target': 40},
                           'flagged_for_review': [], 'must_include': [],
                           'outside_time_range_retained': {'count': 2, 'papers': ['old1', 'old2']}}
@@ -163,6 +164,22 @@ class WorkflowTest(unittest.TestCase):
         self.assertEqual(result['boundary'], 'outline_display')
         self.assertIn('outline', result['result'])
         self.assertNotIn('outline', compact(result)['result'])
+
+    def test_agreed_standard_outline_prepares_inventory_without_extra_main_command(self):
+        configure(self.ws, {'execution': {'mode': 'standard'}, 'outline_review': 'plan'})
+        self.responses['prepare'] = (0, {'status': 'SUCCESS', 'figure_slots': ['F1'], 'figure_brief': 'brief.json'})
+        result = self.run_phase(start='processing')
+        self.assertEqual(result['boundary'], 'writing_ready')
+        self.assertEqual(self.calls[-1], ['manuscript', 'prepare'])
+        self.assertEqual(result['result']['figure_slots'], ['F1'])
+
+    def test_preparation_failure_preserves_completed_evidence_and_reports_error(self):
+        configure(self.ws, {'execution': {'mode': 'standard'}, 'outline_review': 'plan'})
+        self.responses['prepare'] = (1, {'status': 'FAILED', 'code': 'ASSET_SCOPE', 'next_action': 'Correct the approved asset scope.'})
+        result = self.run_phase(start='processing')
+        self.assertEqual(result['boundary'], 'error')
+        self.assertEqual(result['code'], 'ASSET_SCOPE')
+        self.assertEqual(self.calls[-1], ['manuscript', 'prepare'])
 
     def test_partial_retrieval_stops_before_acquisition(self):
         self.responses['retrieval_adapt'] = (0, {'status': 'PARTIAL_SUCCESS', 'status_reason': 'thin corpus'})

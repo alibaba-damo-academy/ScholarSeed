@@ -8,6 +8,11 @@ export const FOCUS_SCOPE_EXTENSION_ATTRIBUTE = 'data-vds-focus-scope-extension'
 const FOCUS_SCOPE_EXTENSION_SELECTOR = `[${FOCUS_SCOPE_EXTENSION_ATTRIBUTE}]`
 const modalScopes: HTMLElement[] = []
 
+function focusWindow(document: Document): (Window & typeof globalThis) | null {
+  const view = document.defaultView
+  return view && !view.closed ? view : null
+}
+
 function topModalScope(): HTMLElement | undefined {
   return modalScopes
     .filter(visibleContent)
@@ -18,8 +23,12 @@ function topModalScope(): HTMLElement | undefined {
 }
 
 export function visibleContent(element: HTMLElement | null): element is HTMLElement {
+  const view = element && focusWindow(element.ownerDocument)
   return Boolean(
-    element && element.getClientRects().length && getComputedStyle(element).visibility !== 'hidden'
+    element &&
+    view &&
+    element.getClientRects().length &&
+    view.getComputedStyle(element).visibility !== 'hidden'
   )
 }
 
@@ -50,8 +59,10 @@ export function inFocusScope(
   target: EventTarget | null,
   includeExtensions = false
 ): boolean {
-  return (
-    target instanceof Node &&
+  const view = focusWindow(content.ownerDocument)
+  return Boolean(
+    view &&
+    target instanceof view.Node &&
     focusRegions(content, includeExtensions).some((region) => region.contains(target))
   )
 }
@@ -75,7 +86,7 @@ function tabStops(content: HTMLElement, includeExtensions: boolean): HTMLElement
 }
 
 export function useFocusScope(
-  ref: RefObject<HTMLDivElement>,
+  ref: RefObject<HTMLDivElement | null>,
   active: boolean,
   modal: boolean,
   autoFocus = modal,
@@ -85,15 +96,34 @@ export function useFocusScope(
     const content = ref.current
     if (!active || !visibleContent(content)) return
     const document = content.ownerDocument
-    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const view = focusWindow(document)
+    if (!view) return
+    const previous =
+      document.activeElement instanceof view.HTMLElement ? document.activeElement : null
     if (modal) modalScopes.push(content)
     const first = (): HTMLElement => tabStops(content, modal)[0] ?? content
+    const frame = view.frameElement
+    const focusReady = (): boolean => !content.closest('[inert]') && !frame?.closest('[inert]')
+    let deferredFocus: MutationObserver | undefined
     if (
       autoFocus &&
       (!modal || topModalScope() === content) &&
       !inFocusScope(content, document.activeElement, modal)
     )
-      first().focus({ preventScroll: true })
+      if (focusReady()) first().focus({ preventScroll: true })
+      else {
+        deferredFocus = new MutationObserver(() => {
+          if (!focusReady()) return
+          deferredFocus?.disconnect()
+          if (visibleContent(content)) first().focus({ preventScroll: true })
+        })
+        deferredFocus.observe(document.body, { attributes: true, attributeFilter: ['inert'] })
+        if (frame)
+          deferredFocus.observe(frame.ownerDocument.body, {
+            attributes: true,
+            attributeFilter: ['inert'],
+          })
+      }
 
     const onFocus = (event: FocusEvent): void => {
       if (
@@ -134,7 +164,7 @@ export function useFocusScope(
           const focused = document.activeElement
           if (
             focused === document.body ||
-            (focused instanceof HTMLElement &&
+            (focused instanceof view.HTMLElement &&
               inFocusScope(content, focused, true) &&
               (focused.matches(':disabled') ||
                 focused.closest('[inert]') ||
@@ -150,14 +180,17 @@ export function useFocusScope(
       subtree: true,
     })
     return () => {
+      deferredFocus?.disconnect()
       observer?.disconnect()
       const scopeIndex = modalScopes.indexOf(content)
       if (scopeIndex >= 0) modalScopes.splice(scopeIndex, 1)
       document.removeEventListener('focusin', onFocus)
       document.removeEventListener('keydown', onKey)
+      if (focusWindow(document) !== view) return
       const restoreTarget = restoreRef?.current ?? previous
       if (
         restoreTarget?.isConnected &&
+        focusWindow(restoreTarget.ownerDocument) &&
         (inFocusScope(content, document.activeElement, modal) ||
           document.activeElement === document.body)
       ) {

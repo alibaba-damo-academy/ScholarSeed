@@ -1,12 +1,50 @@
 /* Page composition defaults. Reading width is inferred; see docs/design/vibe-coding.md. */
 :root {
+  --vds-file-notice-inset: 6px;
+  --vds-file-notice-radius: 16px;
+  --vds-file-notice-padding-x: 14px;
+  --vds-file-notice-padding-y: 10px;
+  --vds-file-notice-padding-bottom: 24px;
+  --vds-file-notice-overlap: 16px;
+  --vds-file-notice-icon-size: 26px;
+  --vds-file-notice-text-basis: 240px;
+  --vds-file-notice-title-size: 13.5px;
+  --vds-file-notice-description-size: 12px;
+  --vds-file-notice-button-size: 13px;
+  --vds-file-notice-button-height: 30px;
+  --vds-access-footer-gap: 10px;
+  --vds-authorization-list-max-height: 204px;
   --vds-preview-width: min(var(--vds-layout-reading-width), 90vw);
   --vds-preview-content-max-height: 60dvh;
+  --vds-selection-reveal-duration: 1600ms;
+  --vds-selection-reveal-opacity: 0.32;
+  --vds-attachment-max-width: 360px;
+  --vds-attachment-card-width: 148px;
+  --vds-attachment-card-height: 44px;
+  --vds-attachment-card-padding: 6px;
+  --vds-composer-attachment-gap: 10px;
+  --vds-selection-preview-width: 300px;
+  --vds-answer-annotation-editor-width: 388px;
+  --vds-answer-annotation-editor-max-width: calc(100vw - var(--vds-space-8));
+  --vds-answer-annotation-editor-min-height: calc(var(--vds-lh-body-lv2) * 2);
+  --vds-answer-annotation-editor-max-height: 120px;
+  --vds-answer-annotation-save-min-width: 52px;
+  --vds-selection-preview-max-height: 392px;
+  --vds-selection-preview-content-max-height: calc(
+    var(--vds-selection-preview-max-height) - var(--vds-space-2) * 2
+  );
+  --vds-selection-preview-lines: 3;
+  --vds-user-message-collapsed-lines: 6;
+  --vds-user-message-line-height: 1.62;
+  --vds-user-message-fade-height: 1lh;
+  --vds-message-actions-margin-top: 7px;
   --vds-app-shell-viewport-height: 100vh;
   --vds-app-shell-drag-region-height: 15px;
   --vds-app-shell-drag-region-z-index: 210;
   --vds-message-center-width: 408px;
   --vds-message-center-list-height: 292px;
+  --vds-preview-editor-width: min(1100px, calc(100vw - var(--vds-space-8)));
+  --vds-preview-editor-height: min(860px, calc(100dvh - var(--vds-space-8)));
   --vds-message-center-content-gap: 6px;
   --vds-workbench-window-controls-left-space: 77px;
   --vds-workbench-window-controls-left-space-win32: 16px;
@@ -22,7 +60,10 @@
   --vds-workbench-light-text-muted: #7c7767;
   --vds-workbench-light-border: #ded8c9;
   --vds-workbench-light-divider: #e9e4d6;
-  --vds-skills-content-width: 832px;
+  --vds-skills-content-width: 1000px;
+  --vds-skills-card-min-width: 320px;
+  --vds-skills-card-max-width: 380px;
+  --vds-skills-installed-card-max-width: 520px;
   --vds-skills-detail-width: 512px;
   --vds-skills-upload-height: 178px;
   --vds-skills-upload-icon-size: 42px;
@@ -36,7 +77,7 @@
   --vds-library-material-action-column: 80px;
   --vds-library-paper-width: 800px;
   --vds-library-paper-filter-width: 146px;
-  --vds-library-paper-filter-compact-width: 80px;
+  --vds-library-paper-filter-compact-width: 32px;
   --vds-library-group-menu-width: 196px;
   --vds-explorer-open-menu-width: 196px;
   --vds-library-tag-menu-width: 256px;
@@ -118,6 +159,8 @@
   --vds-library-output-list-width: 640px;
   --vds-library-output-search-width: 360px;
   --vds-library-toolbar-search-width: 200px;
+  --vds-library-toolbar-tabs-min-width: 640px;
+  --vds-library-toolbar-category-width: 88px;
   --vds-library-toolbar-height: 48px;
   --vds-library-output-row-height: var(--vds-library-row-height);
   --vds-library-output-group-height: var(--vds-library-row-height);
@@ -234,20 +277,83 @@
   /* Image details use the available window while leaving a dismissible gutter. */
   --vds-image-preview-width: calc(100vw - var(--vds-space-8));
   --vds-image-preview-height: calc(100dvh - var(--vds-space-8));
+  --vds-image-preview-padding: 24px;
+  --vds-image-preview-control-size: 44px;
+  --vds-image-preview-navigation-size: 52px;
+  --vds-image-preview-dot-size: 6px;
+  --vds-image-preview-blur: 4px;
+  --vds-image-preview-mask: var(--vds-bg-mask);
+  --vds-image-preview-control-bg: var(--vds-other-mask);
+  --vds-image-preview-control-fill: radial-gradient(
+    circle closest-side,
+    var(--vds-image-preview-control-bg) 100%,
+    transparent 100%
+  );
+  --vds-image-preview-control-hover-fill: radial-gradient(
+    circle closest-side,
+    var(--vds-image-preview-control-hover) 100%,
+    transparent 100%
+  );
+  --vds-image-preview-control-hover: color-mix(
+    in srgb,
+    var(--vds-static-black) 65%,
+    var(--vds-static-white)
+  );
+  --vds-image-preview-toolbar-width: calc(
+    var(--vds-image-preview-control-size) * 3 + var(--vds-space-2) * 2 +
+      var(--vds-image-preview-padding) * 2
+  );
+  --vds-image-preview-stage-inset: calc(
+    var(--vds-image-preview-padding) + var(--vds-image-preview-navigation-size) + var(--vds-space-3)
+  );
+  --vds-image-preview-stage-top: calc(
+    var(--vds-image-preview-padding) + var(--vds-image-preview-control-size)
+  );
+  --vds-image-preview-stage-bottom: calc(var(--vds-image-preview-padding) + var(--vds-space-10));
+  --vds-attachment-thumbnail-size: 44px;
+  --vds-attachment-remove-bg: color-mix(
+    in srgb,
+    var(--vds-static-black) 88%,
+    var(--vds-static-white)
+  );
+  --vds-image-strip-size: 120px;
+  --vds-image-strip-gap: 10px;
+  --vds-image-strip-control-size: 24px;
   --vds-feedback-recorder-width: 380px;
   --vds-feedback-note-height: 76px;
   --vds-feedback-dialog-width: min(900px, calc(100vw - var(--vds-space-8)));
   --vds-feedback-dialog-height: min(736px, calc(100dvh - var(--vds-space-8)));
   --vds-feedback-recorder-width-expanded: 460px;
-  --vds-layout-pdf-rail-width: calc(
-    var(--vds-control-height-md) + var(--vds-space-1) * 2 + var(--vds-border-width-1)
-  );
+  --vds-layout-pdf-rail-width: 64px;
+  --vds-pdf-outline-inset: 10px;
+  --vds-pdf-outline-row-height: var(--vds-control-height-sm);
+  --vds-pdf-thumbnail-width: 120px;
+  --vds-pdf-thumbnail-height: 160px;
+  --vds-pdf-annotation-tab-height: 21px;
+  --vds-pdf-annotation-menu-width: 120px;
+  --vds-pdf-reading-bottom-inset: 30px;
+  --vds-pdf-selection-font-size: 13px;
+  --vds-pdf-selection-margin: var(--vds-space-5);
+  --vds-pdf-rail-label-size: 11px;
+  --vds-pdf-reading-font-size: 13px;
+  --vds-pdf-selection-result-max-height: calc(var(--vds-lh-body-lv2) * 10);
+  --vds-pdf-comment-width: 340px;
+  --vds-pdf-comment-input-min-height: 50px;
+  --vds-reading-info-field-font-size: var(--vds-font-body-lv1);
+  --vds-reading-info-field-line-height: var(--vds-lh-body-lv1);
+  --vds-reading-info-label-width: 36px;
+  --vds-reading-info-heading-height: 40px;
+  --vds-reading-info-body-font-size: var(--vds-font-body-lv1);
+  --vds-reading-info-title-line-height: var(--vds-lh-subhead);
   --vds-layout-pdf-panel-width: 390px;
   --vds-layout-pdf-translation-model-width: 96px;
+  --vds-layout-pdf-selection-model-min-width: 100px;
   --vds-layout-pdf-translation-language-width: 100px;
+  --vds-layout-pdf-translation-select-width: 92px;
   --vds-layout-session-output-max-height: 120px;
   --vds-layout-search-row-max-height: 180px;
   --vds-layout-search-row-min-height: 112px;
+  --vds-literature-search-row-height: 164px;
   --vds-literature-results-detail-width: max(300px, 38%);
   --vds-reference-picker-list-height: 265px;
   --vds-composer-suggestion-list-max-height: min(300px, 36vh);
@@ -278,6 +384,7 @@
   --vds-model-menu-disabled-opacity: 0.45;
   --vds-model-menu-list-max-height: 300px;
   --vds-model-menu-viewport-max-width: calc(100vw - var(--vds-space-6));
+  --vds-composer-mode-menu-viewport-max-width: calc(100vw - var(--vds-space-8));
   --vds-model-menu-line-height: 1.625;
   --vds-language-menu-min-width: 128px;
   --vds-language-menu-radius: 14px;
@@ -285,8 +392,20 @@
   --vds-language-menu-mark-font-size: 13px;
   --vds-ref-chip-suffix-line-height: 14px;
   --vds-stream-status-card-min-height: 64px;
+  --vds-access-body-padding: 14px 18px;
+  --vds-access-footer-padding: 12px 18px;
+  --vds-access-body-max-height: 240px;
+  --vds-access-label-width: 62px;
+  --vds-access-body-font-size: 13px;
+  --vds-access-body-line-height: 1.7;
+  --vds-access-code-padding: 5px 9px;
+  --vds-access-heading-gap: 9px;
   --vds-stream-status-card-icon-size: 42px;
   --vds-stream-content-line-height: 1.65;
+  --vds-stream-stopped-margin-bottom: 6px;
+  --vds-stream-stopped-gap: 10px;
+  --vds-stream-stopped-padding-y: 9px;
+  --vds-stream-stopped-font-size: 13.5px;
   --vds-todo-status-mark-min-height: 1lh;
   --vds-update-notes-hero-size: 42px;
   --vds-carousel-indicator-height: 4px;
@@ -295,7 +414,7 @@
   --vds-dock-result-max-width: min(52vw, 560px);
   --vds-dock-breadcrumb-max-width: 45%;
   --vds-external-resource-menu-width: 224px;
-  --vds-pdf-page-number-width: 48px;
+  --vds-pdf-page-number-width: var(--vds-control-height-sm);
   --vds-office-search-status-min-width: calc(var(--vds-space-10) + var(--vds-space-4));
   --vds-markdown-slash-menu-width: 244px;
   --vds-markdown-slash-menu-max-height: 426px;
@@ -312,23 +431,38 @@
   --vds-pdf-reading-content-line-height: 32px;
   --vds-pdf-reading-body-line-height: 28px;
   --vds-pdf-reading-toolbar-font-size: 11px;
-  --vds-pdf-translation-line-height: 1.5;
+  --vds-pdf-translation-line-height: 1.85;
+  --vds-pdf-translation-heading-line-height: 1.65;
+  --vds-pdf-translation-body-font-size: 13px;
+  --vds-pdf-translation-heading-font-size: 15px;
   --vds-project-menu-item-radius: 7px;
   --vds-workspace-ai-panel-height: 70%;
   --vds-workspace-ai-panel-max-height: 80%;
   --vds-workspace-ai-panel-width: min(560px, calc(100% - 32px));
   --vds-letter-spacing-normal: normal;
   --vds-assistant-citation-font-scale: 0.72em;
+  --vds-assistant-web-citation-height: 22px;
   --vds-assistant-citation-list-max-height: 208px;
   --vds-assistant-citation-expanded-max-height: 288px;
   --vds-assistant-citation-panel-width: 320px;
+  --vds-assistant-citation-marker-max-width: 160px;
+  --vds-assistant-literature-citation-marker-max-width: 160px;
+  --vds-assistant-citation-group-width: 340px;
+  --vds-assistant-citation-footer-line-height: 14px;
   --vds-assistant-citation-panel-height: 70vh;
+  --vds-assistant-citation-excerpt-collapsed-lines: 3;
   --vds-assistant-source-list-height: 384px;
-  --vds-assistant-source-list-width: 384px;
-  --vds-artifact-card-min-width: 300px;
-  --vds-artifact-card-max-width: 520px;
+  --vds-assistant-source-list-scrollbar-width: 6px;
+  --vds-assistant-source-list-width: 340px;
+  --vds-assistant-source-title-line-height: 20px;
+  --vds-artifact-card-height: 64px;
+  --vds-artifact-card-min-width: calc((650px - var(--vds-space-2)) / 2);
   --vds-assistant-citation-line-height: 1.625;
-  --vds-assistant-notes-max-height: 320px;
+  --vds-assistant-notes-max-height: min(600px, calc(100dvh - var(--vds-space-8)));
+  --vds-assistant-notes-width: 300px;
+  --vds-assistant-notes-max-width: calc(100vw - var(--vds-space-8));
+  --vds-assistant-notes-number-width: 20px;
+  --vds-assistant-notes-content-gap: 6px;
   --vds-feedback-annotator-min-width: 208px;
   --vds-feedback-annotator-width: 256px;
   --vds-feedback-capture-preview-max-width: 192px;
@@ -345,6 +479,12 @@
   --vds-resource-node-menu-width: 204px;
   --vds-resource-node-menu-max-height: calc(100vh - var(--vds-space-4));
   --vds-literature-search-result-line-height: 24px;
+  /* MasterGo 669:89837: review table cells, outline descriptions and metric labels. */
+  --vds-literature-review-text-line-height: 20px;
+  --vds-literature-search-preview-height: calc(
+    5 * var(--vds-literature-search-result-line-height) + 4 * var(--vds-space-1)
+  );
+  --vds-literature-receipt-preview-height: 240px;
   --vds-global-search-panel-shadow: var(--shadow);
   --vds-ai-context-empty-line-height: 1.7;
   --vds-ai-context-empty-padding: calc(var(--vds-space-3) + var(--vds-space-half))
@@ -445,7 +585,7 @@
   --vds-project-welcome-width: 620px;
   --vds-project-welcome-top: 52px;
   --vds-project-starters-width: 550px;
-  --vds-conversation-interaction-reply-max-width: 400px;
+  --vds-conversation-interaction-reply-max-width: 100%;
   --vds-conversation-inline-gutter: calc(
     var(--vds-space-4) - var(--vds-conversation-scrollbar-width)
   );

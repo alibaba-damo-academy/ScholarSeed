@@ -6,7 +6,7 @@ import json
 import sys
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'lib'))
-from paper_source_parser import parse_source
+from service.literature.service.atomic import parse_source
 
 def main():
     ap=argparse.ArgumentParser(description=__doc__)

@@ -1,5 +1,13 @@
-import type { ConvItem, DisplayCardData, SubagentProgress, TurnOutcome } from './model'
+import type {
+  ConvItem,
+  DisplayCardData,
+  SubagentProgress,
+  TurnOutcome,
+  WebSearchAction,
+  WebSearchResult,
+} from './model'
 import { artifactIsOutput } from './model.ts'
+import { commandOutcome } from './command.ts'
 
 export type ActivityItem = Extract<
   ConvItem,
@@ -8,6 +16,30 @@ export type ActivityItem = Extract<
   }
 >
 export type ArtifactItem = Extract<ConvItem, { kind: 'artifact' }>
+
+export const WEB_SEARCH_PRESENTATION = { previewCount: 3 } as const
+
+export function webSearchPresentation(
+  item: { query?: string; action: WebSearchAction; results: WebSearchResult[] },
+  expanded: boolean,
+  previewCount: number = WEB_SEARCH_PRESENTATION.previewCount
+): { queries: string[]; results: WebSearchResult[]; hiddenCount: number; total: number } {
+  const submitted = item.action.queries
+  const queries =
+    Array.isArray(submitted) && submitted.length
+      ? submitted.filter(
+          (query): query is string => typeof query === 'string' && Boolean(query.trim())
+        )
+      : [item.action.query || item.query || ''].filter(Boolean)
+  const results = item.results.filter((result) => Boolean(result.title || result.url))
+  const visible = expanded ? results : results.slice(0, Math.max(0, previewCount))
+  return {
+    queries,
+    results: visible,
+    hiddenCount: results.length - visible.length,
+    total: results.length,
+  }
+}
 
 type NativeActivity = Extract<ConvItem, { kind: 'native_activity' }>
 
@@ -51,7 +83,17 @@ export function webSearchRecordData(item: Extract<ConvItem, { kind: 'web_search'
           id: JSON.stringify([result.url, index]),
           title: result.title || result.url || '',
           url: externalUrl ?? undefined,
-          site: externalUrl ? new URL(externalUrl).hostname : undefined,
+          site:
+            (typeof result.site_name === 'string' && result.site_name.trim()) ||
+            (externalUrl ? new URL(externalUrl).hostname : undefined),
+          publishedDate:
+            typeof result.published_date === 'string'
+              ? result.published_date.trim() || undefined
+              : undefined,
+          contentType:
+            typeof result.content_type === 'string'
+              ? result.content_type.trim() || undefined
+              : undefined,
         }
       }),
   }
@@ -149,12 +191,91 @@ export type ActivityRow =
 
 export type ActivityRunState = 'running' | 'completed' | 'failed' | 'interrupted'
 
+export interface ExecutionProcess {
+  turnId: string
+  indices: number[]
+  rows: ActivityRow[]
+}
+
+export function fallbackDurationRows(rows: readonly ActivityRow[]): ReadonlySet<number> {
+  const answered = new Set<string>()
+  const lastRows = new Map<string, number>()
+  rows.forEach((row, index) => {
+    const turnId = rowTurnId(row)
+    if (!turnId) return
+    lastRows.set(turnId, index)
+    if (row.kind === 'item' && row.item.kind === 'agent' && row.item.text.trim())
+      answered.add(turnId)
+  })
+  return new Set([...lastRows].flatMap(([turnId, index]) => (answered.has(turnId) ? [] : [index])))
+}
+
+export function executionProcesses(rows: readonly ActivityRow[]): ExecutionProcess[] {
+  const processes = new Map<string, ExecutionProcess>()
+  rows.forEach((row, index) => {
+    const included =
+      row.kind === 'activity' ||
+      (row.kind === 'item' && row.item.kind === 'thinking' && row.item.commentary === true)
+    const turnId = rowTurnId(row)
+    if (!included || !turnId) return
+    const process = processes.get(turnId) ?? { turnId, indices: [], rows: [] }
+    process.indices.push(index)
+    process.rows.push(row)
+    processes.set(turnId, process)
+  })
+  return [...processes.values()]
+}
+
+export function executionDisclosureOpen(userExpanded: boolean | null, running: boolean): boolean {
+  return running || userExpanded === true
+}
+
+export function executionFailures(
+  items: readonly ConvItem[],
+  turnId: string | undefined
+): Extract<ConvItem, { kind: 'tool' }>[] {
+  if (!turnId) return []
+  const resolved = new Set(
+    items.flatMap((item) =>
+      item.kind === 'tool' && item.turnId === turnId && item.status === 'done' && item.retryOf
+        ? [item.retryOf]
+        : []
+    )
+  )
+  const failures = items.filter(
+    (item): item is Extract<ConvItem, { kind: 'tool' }> =>
+      item.kind === 'tool' &&
+      item.turnId === turnId &&
+      item.status === 'error' &&
+      commandOutcome(item) !== 'noMatches' &&
+      !(
+        item.recoveredBy &&
+        items.some(
+          (recovery) =>
+            recovery.kind === 'tool' &&
+            recovery.toolId === item.recoveredBy &&
+            recovery.turnId === item.turnId &&
+            recovery.status === 'done'
+        )
+      ) &&
+      !resolved.has(item.retryOf || item.toolId)
+  )
+  return [...new Map(failures.map((item) => [item.retryOf || item.toolId, item])).values()]
+}
+
 export type ProcessRow =
   | { kind: 'row'; row: ActivityRow; index: number; key: string }
-  | { kind: 'process'; entries: { row: ActivityRow; index: number }[]; turnId: string; key: string }
+  | {
+      kind: 'process'
+      entries: { row: ActivityRow; index: number }[]
+      turnId: string
+      key: string
+      statusOwner: boolean
+    }
 
 export function processRows(rows: readonly ActivityRow[]): ProcessRow[] {
   const projected: ProcessRow[] = []
+  const latest = new Map<string, Extract<ProcessRow, { kind: 'process' }>>()
   const candidate = (row: ActivityRow): boolean =>
     row.kind === 'activity' ||
     (row.kind === 'item' && row.item.kind === 'thinking' && row.item.commentary === true)
@@ -172,7 +293,17 @@ export function processRows(rows: readonly ActivityRow[]): ProcessRow[] {
       index += 1
     }
     if (entries.some((entry) => entry.row.kind === 'activity')) {
-      projected.push({ kind: 'process', entries, turnId, key: `process:${turnId}:${first.key}` })
+      const previous = latest.get(turnId)
+      if (previous) previous.statusOwner = false
+      const section: Extract<ProcessRow, { kind: 'process' }> = {
+        kind: 'process',
+        entries,
+        turnId,
+        key: `process:${turnId}:${first.key}`,
+        statusOwner: true,
+      }
+      latest.set(turnId, section)
+      projected.push(section)
     } else {
       projected.push(
         ...entries.map((entry) => ({ kind: 'row' as const, ...entry, key: entry.row.key }))
@@ -221,7 +352,7 @@ export function answerInteractionCapabilities(
 ): AnswerInteractionCapabilities {
   return {
     citationEnabled: outcome !== 'running',
-    forkEnabled: false,
+    forkEnabled: outcome === 'completed',
     selectionEnabled: true,
   }
 }
@@ -268,7 +399,7 @@ export function hasVisibleTurnProgress(rows: readonly ActivityRow[], turnId?: st
   return (
     tail?.kind === 'item' &&
     (tail.item.kind === 'agent' ||
-      (tail.item.kind === 'thinking' && tail.item.commentary === true)) &&
+      (tail.item.kind === 'thinking' && tail.item.commentary === true && !tail.item.completed)) &&
     Boolean(tail.item.text.trim())
   )
 }
@@ -305,7 +436,7 @@ export function activityIdentity(item: ActivityItem, fallback: number): string |
   return fallback
 }
 
-function rowTurnId(row: ActivityRow): string | undefined {
+export function rowTurnId(row: ActivityRow): string | undefined {
   return row.kind === 'item' ? row.item.turnId : row.turnId
 }
 
@@ -398,6 +529,7 @@ export function activityRows(
   const rows: ActivityRow[] = []
   for (let index = 0; index < items.length; index += 1) {
     const item = items[index]
+    if (item.kind === 'status' && item.turnBoundary && !item.text && !item.displayMessage) continue
     if (postDeliveryCard(item) && (!item.turnId || outcomes?.[item.turnId] !== 'completed'))
       continue
     if (item.kind === 'artifact' && artifactDeferred(item)) continue
@@ -420,18 +552,25 @@ export function activityRows(
       continue
     }
     if (!isGroupedActivity(item)) {
-      rows.push({ kind: 'item', item, key: `item-${item.itemId || index}` })
+      const identity =
+        item.kind === 'hil' || item.kind === 'interaction_reply'
+          ? `interaction-${item.requestId}`
+          : `item-${item.itemId || index}`
+      rows.push({ kind: 'item', item, key: identity })
       continue
     }
 
     const segment: ActivityItem[] = [item]
+    let batchId = item.batchId
     while (
       index + 1 < items.length &&
       isGroupedActivity(items[index + 1]) &&
-      items[index + 1].turnId === item.turnId
+      items[index + 1].turnId === item.turnId &&
+      (!batchId || !items[index + 1].batchId || items[index + 1].batchId === batchId)
     ) {
       index += 1
       segment.push(items[index] as ActivityItem)
+      batchId ||= items[index].batchId
     }
     const identity = activityIdentity(item, index)
     rows.push({

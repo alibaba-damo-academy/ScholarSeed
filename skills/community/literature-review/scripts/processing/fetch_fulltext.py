@@ -10,14 +10,13 @@ reaches `03_process` with nothing but its abstract produces a card built from a
 correspondingly thin. So full-text coverage is not a nice-to-have metric, it is
 the single biggest lever on output quality in the whole pipeline.
 
-PaperHub is queried with GET /paperdownload/?id=<ES document ID> and a Bearer
-credential read only from SCHOLARSEED_API_KEY. The response is a binary PDF or
-LaTeX archive, parsed locally by paper_source_parser. Figure/table captions are
-retained; image regions and table data are excluded from the indexed text.
-Raw files, parser identity, sentence indexes and captions are cached separately.
-The output schema consumed by existing card extraction stays unchanged.
+PaperHub is queried with GET /paperdownload/?id=<ES document ID>&pdf=true and
+a Bearer credential read only from SCHOLARSEED_API_KEY. PDF bytes use the same
+framework parser and machine-asset input as library reading. The product owns
+source versions, regions and extraction assets; the review consumes content.
 
-The default profile tries PaperHub, then a known arXiv ID with a short deadline.
+The default profile tries PaperHub, then a known arXiv ID with a short fallback
+deadline. Direct arXiv acquisition uses the configured request budget.
 Explicit --sources options may add PDF URL/DOI sources. Table layout findings
 are advisory; other fatal parsing failures remain explicit.
 
@@ -69,6 +68,7 @@ _slr_paths.bootstrap(__file__)
 # --- end slr path bootstrap ---
 
 import argparse
+from contextlib import nullcontext
 import asyncio
 import hashlib
 import json
@@ -77,13 +77,24 @@ import re
 import threading
 import time
 import unicodedata
+from datetime import datetime, timezone
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib import error, parse, request
 
 import pypdfium2
+from pypdf import PdfReader
+from pypdf.errors import PdfReadError
 import httpx
+import paperhub_download
+
+from reading import import_assets
+from materials import local_document
+from local_papers import file_hash, load_local
+from service.literature.service.atomic import parse_source, parser_fingerprint, ParseError, usable_source
+from paper_materials import material_state
+from diagnostics import EvidenceLog, text_size
 
 RETRIEVAL_DIR = "02_retrieval"
 SELECTED_FILENAME = "selected_paper.json"
@@ -97,6 +108,9 @@ DEFAULT_CONCURRENCY = 8
 ARXIV_CONNECT_TIMEOUT = 3.0
 ARXIV_TOTAL_TIMEOUT = 10.0
 ARXIV_CONCURRENCY = 1
+ARXIV_VERSION_PAGES = 2
+ARXIV_VERSION_PATTERN = re.compile(r'arXiv:\s*([0-9]{4}\.[0-9]{4,5}v[0-9]+|[a-z.-]+/[0-9]{7}v[0-9]+)', re.I)
+ARXIV_FILENAME_VERSION = re.compile(r'^([0-9]{4}\.[0-9]{4,5}v[0-9]+)(?:\.(?:tar\.gz|tgz|gz|zip|tex|pdf))?$', re.I)
 DOWNLOAD_CHUNK_BYTES = 65536
 _ARXIV_SLOTS = threading.BoundedSemaphore(ARXIV_CONCURRENCY)
 
@@ -297,24 +311,35 @@ def _get(req: request.Request, timeout: float, max_bytes: int) -> tuple[dict, by
         raise FetchError("fetch_failed", f"{type(exc).__name__}: {exc}", True) from exc
 
 
-def fetch_paperhub(paper_id: str, base_url: str, timeout: float, cache_dir: Path, use_cache=True) -> dict:
+def observed_parse(source, directory, paper_id, route, diagnostic=None, **options):
+    context = diagnostic.measure('parse', paper_id, source=route) if diagnostic else nullcontext({})
+    with context as detail:
+        parsed = parse_source(source, directory, **options)
+        detail.update(parsed_size=text_size(parsed.get('sentences', '')),
+                      source_sha256=parsed.get('source_sha256'),
+                      source_coverage=parsed.get('source_coverage'))
+        return parsed
+
+
+def fetch_paperhub(paper_id: str, base_url: str, timeout: float, cache_dir: Path, use_cache=True, diagnostic=None) -> dict:
     """GET /paperdownload/?id=ES_ID, then locally parse source into #N text."""
-    from paperhub_download import download, DownloadError
-    from paper_source_parser import parse_source, ParseError
     try:
-        source, meta = download(paper_id, cache_dir, base_url, timeout, use_cache=use_cache)
-        parsed = parse_source(source, cache_dir / 'parsed')
-        fatal_warnings = parsed.get('fatal_warnings', parsed.get('warnings', []))
-        if parsed['status'] != 'ok':
-            raise FetchError('extract_failed', '; '.join(fatal_warnings), False)
+        observer = (lambda event, **values: diagnostic.event(event, paper_id=paper_id, source='paperhub', **values)) if diagnostic else None
+        context = diagnostic.measure('download', paper_id, source='paperhub') if diagnostic else nullcontext({})
+        with context as detail:
+            source, meta = paperhub_download.download(paper_id, cache_dir, base_url, timeout, use_cache=use_cache,
+                                                    **({'observer': observer} if observer else {}))
+            detail.update(cached=meta.get('cached'), bytes=meta.get('bytes'), attempts=meta.get('attempts'))
+        parsed = observed_parse(source, cache_dir / 'parsed', paper_id, 'paperhub', diagnostic)
+        usable_source(parsed)
         record = blank_record('', parsed['info_type'], parsed['sentences'])
         record['paperhub_id'] = paper_id
         record['source_file'] = str(source)
         record['parse_report'] = {k:v for k,v in parsed.items() if k != 'sentences'}
         record['download'] = meta
         return record
-    except DownloadError as exc:
-        outcome = 'not_in_paperhub' if exc.status == 404 else 'auth_failed' if exc.status == 401 else 'fetch_failed'
+    except paperhub_download.DownloadError as exc:
+        outcome = 'not_in_paperhub' if exc.status == 404 else 'auth_failed' if exc.status in (401,403) else 'fetch_failed'
         raise FetchError(outcome, str(exc), exc.status in (None,429,500,502,503,504)) from exc
     except (ParseError, OSError, ValueError) as exc:
         raise FetchError('extract_failed', str(exc), False) from exc
@@ -342,17 +367,26 @@ async def _arxiv_request(url: str, budget: float) -> bytes:
     return await asyncio.wait_for(_arxiv_bytes(url, budget), timeout=budget)
 
 
-def download_arxiv(url: str) -> bytes:
+def download_arxiv(url: str, timeout: float | None = None) -> bytes:
+    budget = ARXIV_TOTAL_TIMEOUT if timeout is None else float(timeout)
+    if not 0 < budget < float('inf'):
+        raise ValueError('arXiv request budget must be finite and positive')
     started = time.monotonic()
-    if not _ARXIV_SLOTS.acquire(timeout=ARXIV_TOTAL_TIMEOUT):
+    if not _ARXIV_SLOTS.acquire(timeout=budget):
         raise FetchError('timeout', 'arXiv download queue exceeded its deadline', False)
     try:
-        remaining = ARXIV_TOTAL_TIMEOUT - (time.monotonic() - started)
+        remaining = budget - (time.monotonic() - started)
         if remaining <= 0:
             raise FetchError('timeout', 'arXiv download deadline exhausted', False)
         return asyncio.run(_arxiv_request(url, remaining))
-    except (TimeoutError, httpx.TimeoutException) as exc:
-        raise FetchError('timeout', f'arXiv download exceeded {ARXIV_TOTAL_TIMEOUT:g}s', True) from exc
+    except httpx.TimeoutException as exc:
+        elapsed = time.monotonic() - started
+        raise FetchError('timeout', f'arXiv {type(exc).__name__} after {elapsed:.3f}s '
+                         f'(request budget {budget:g}s, connect cap {min(ARXIV_CONNECT_TIMEOUT, budget):g}s)', True) from exc
+    except TimeoutError as exc:
+        elapsed = time.monotonic() - started
+        raise FetchError('timeout', f'arXiv overall deadline exhausted after {elapsed:.3f}s '
+                         f'(request budget {budget:g}s)', True) from exc
     except httpx.HTTPError as exc:
         raise FetchError('fetch_failed', f'{type(exc).__name__}: {exc}', True) from exc
     finally:
@@ -621,6 +655,16 @@ class Cache:
 
 # ------------------------------------------------------------------- records --
 
+def source_access(record, route):
+    revision = (record.get('parse_report') or {}).get('source_sha256')
+    if not re.fullmatch(r'[0-9a-f]{64}', str(revision or '')):
+        return
+    record['source_access'] = {'at': datetime.now(timezone.utc).isoformat(),
+                               'kind': 'original_source_consultation', 'route': route,
+                               'source_sha256': revision,
+                               'arxiv_version': record.get('actual_arxiv_id') or record.get('declared_arxiv_id')}
+
+
 def blank_record(arxiv_id: str, info_type: str, sentences: str) -> dict:
     """
     The output contract, with everything the PDF path cannot know left empty.
@@ -694,10 +738,33 @@ def record_is_usable(record: dict | None) -> bool:
 
 # ------------------------------------------------------------------ per-paper --
 
+def observed_arxiv_version(source: Path, requested: str) -> str | None:
+    """Read a version from actual PDF furniture; unknown versions stay unknown."""
+    with source.open('rb') as handle:
+        if not handle.read(16).lstrip().startswith(b'%PDF'):
+            return None
+        handle.seek(0)
+        try:
+            document = PdfReader(handle)
+            matches = set()
+            for page in document.pages[:ARXIV_VERSION_PAGES]:
+                matches.update(ARXIV_VERSION_PATTERN.findall(page.extract_text() or ''))
+        except (PdfReadError, ValueError, KeyError, IndexError, TypeError):
+            return None
+    if len(matches) != 1:
+        return None
+    actual = next(iter(matches)).casefold()
+    requested = requested.casefold()
+    if requested and (re.sub(r'v\d+$','',requested) != re.sub(r'v\d+$','',actual)
+                      or re.search(r'v\d+$', requested) and requested != actual):
+        raise ValueError('downloaded arXiv source does not match the requested identity/version')
+    return actual
+
+
 def acquire(paper_id: str, paper: dict, *, hub_base: str, cache: Cache,
             breaker: Breaker, timeout: float,
             sources: tuple[str, ...] = DEFAULT_SOURCES,
-            use_cache: bool = True) -> tuple[dict | None, dict]:
+            use_cache: bool = True, diagnostic=None) -> tuple[dict | None, dict]:
     """
     Run the cascade for one paper. Returns (record_or_None, outcome_row).
 
@@ -716,6 +783,7 @@ def acquire(paper_id: str, paper: dict, *, hub_base: str, cache: Cache,
         "info_type": None,
         "detail": "",
         "chars": 0,
+        "failures": [],
     }
     arxiv_id = _norm_arxiv_id(paper)
 
@@ -728,6 +796,10 @@ def acquire(paper_id: str, paper: dict, *, hub_base: str, cache: Cache,
         nonlocal last_outcome
         last_outcome = err.outcome
         attempts.append(f"{source}: {err.detail}")
+        row['failures'].append({'source': source, 'outcome': err.outcome, 'detail': err.detail})
+        if diagnostic:
+            diagnostic.event('source_failed', paper_id=paper_id, source=source,
+                             outcome=err.outcome, error=err.detail)
         if not err.blames_source:
             breaker.record_success(source)  # the source answered; this record missed
         elif breaker.record_failure(source, err.detail):
@@ -736,16 +808,17 @@ def acquire(paper_id: str, paper: dict, *, hub_base: str, cache: Cache,
 
     # User bytes have priority even when network sources are disabled.
     if paper.get('local_source'):
-        from local_papers import file_hash
-        from paper_source_parser import parse_source
         local=paper['local_source'];source=Path(local['path'])
         try:
             if file_hash(source)!=local['sha256']:raise ValueError('local snapshot hash mismatch; reimport the PDF')
-            parsed=parse_source(source,source.parent/'parsed')
-            if parsed['status']!='ok':raise ValueError('; '.join(parsed['warnings']))
+            parsed=observed_parse(source,source.parent/'parsed',paper_id,'local_pdf',diagnostic,
+                                  materialized_text=local.get('format')=='text')
+            usable_source(parsed)
             record=blank_record(arxiv_id,parsed['info_type'],parsed['sentences'])
+            record['actual_arxiv_id']=observed_arxiv_version(source, arxiv_id)
             record.update(source_file=str(source),local_source_sha256=local['sha256'],
                           parse_report={k:v for k,v in parsed.items() if k!='sentences'})
+            source_access(record, 'local_pdf')
             row.update(outcome='ok_local_pdf',source='local_pdf',info_type=record['info_type'],
                        chars=len(record['sentences']),detail='user PDF parsed locally; no network request')
             return record,row
@@ -764,13 +837,29 @@ def acquire(paper_id: str, paper: dict, *, hub_base: str, cache: Cache,
     elif not breaker.is_open('paperhub'):
         try:
             record = fetch_paperhub(str(hub_id), hub_base, timeout,
-                                   cache.path_for(paper_id, '.source'), use_cache)
+                                   cache.path_for(paper_id, '.source'), use_cache,
+                                   **({'diagnostic': diagnostic} if diagnostic else {}))
             record['arxiv_id'] = arxiv_id
+            record['actual_arxiv_id'] = observed_arxiv_version(Path(record['source_file']), arxiv_id)
+            declared = ARXIV_FILENAME_VERSION.fullmatch(str(record.get('download', {}).get('filename', '')))
+            if declared:
+                version = declared[1].casefold()
+                if record['actual_arxiv_id'] and record['actual_arxiv_id'] != version:
+                    raise ValueError('PaperHub source filename and actual PDF version conflict')
+                if arxiv_id and (re.sub(r'v\d+$','',arxiv_id.casefold()) != re.sub(r'v\d+$','',version)
+                                 or re.search(r'v\d+$',arxiv_id) and arxiv_id.casefold()!=version):
+                    raise ValueError('PaperHub source filename conflicts with the requested arXiv version')
+                record['declared_arxiv_id'] = version
+                record['version_basis'] = 'download_content_disposition'
+            elif record['actual_arxiv_id']:
+                record['version_basis'] = 'original_pdf_header'
             breaker.record_success('paperhub')
+            source_access(record, 'paperhub')
             row.update(outcome='ok_paperhub', source='paperhub', info_type=record['info_type'],
                        chars=len(record['sentences']), detail='downloaded source parsed locally; figure/table bodies omitted, captions retained')
             return record, row
-        except FetchError as err:
+        except (FetchError, ValueError) as exc:
+            err = exc if isinstance(exc, FetchError) else FetchError('version_mismatch', str(exc), False)
             note_failure('paperhub', err)
     else:
         attempts.append('paperhub: disabled by circuit breaker')
@@ -798,20 +887,46 @@ def acquire(paper_id: str, paper: dict, *, hub_base: str, cache: Cache,
 
     pdf_bytes = cache.read_pdf(paper_id) if use_cache else None
     used_source = "cache" if pdf_bytes else None
+    if pdf_bytes and diagnostic:
+        diagnostic.event('download_cache_hit', paper_id=paper_id, source='pdf_cache', bytes=len(pdf_bytes))
 
     if pdf_bytes is None:
         for source, url in candidates:
             if breaker.is_open(source):
                 attempts.append(f"{source}: disabled by circuit breaker")
                 continue
+            arxiv_request = None
+            if source == 'arxiv_pdf':
+                fallback = bool(row['failures'])
+                budget = min(timeout, ARXIV_TOTAL_TIMEOUT) if fallback else timeout
+                arxiv_request = {'url': url, 'timeout_sec': budget,
+                                 'role': 'fallback' if fallback else 'primary'}
+                row['arxiv_request'] = arxiv_request
+            request_started = time.monotonic()
             try:
-                pdf_bytes = download_arxiv(url) if source == 'arxiv_pdf' else download_pdf(url, timeout)
+                if diagnostic:
+                    diagnostic.event('download_started', paper_id=paper_id, source=source)
+                pdf_bytes = (download_arxiv(url, timeout=budget) if source == 'arxiv_pdf'
+                             else download_pdf(url, timeout))
+                if arxiv_request is not None:
+                    arxiv_request['outcome'] = 'downloaded'
+                if diagnostic:
+                    diagnostic.event('download_completed', paper_id=paper_id, source=source,
+                                     bytes=len(pdf_bytes), elapsed_seconds=time.monotonic()-request_started)
                 breaker.record_success(source)
                 used_source = source
                 cache.write_pdf(paper_id, pdf_bytes)
                 break
             except FetchError as err:
+                if diagnostic:
+                    diagnostic.event('download_failed', paper_id=paper_id, source=source,
+                                     elapsed_seconds=time.monotonic()-request_started, outcome=err.outcome)
+                if arxiv_request is not None:
+                    arxiv_request.update(outcome=err.outcome, detail=err.detail)
                 note_failure(source, err)
+            finally:
+                if arxiv_request is not None:
+                    arxiv_request['elapsed_sec'] = round(time.monotonic() - request_started, 3)
 
     if pdf_bytes is None:
         row.update(outcome=last_outcome if attempts else "no_identifier",
@@ -820,13 +935,11 @@ def acquire(paper_id: str, paper: dict, *, hub_base: str, cache: Cache,
 
     # --- source 3: extraction -------------------------------------------------
     try:
-        from paper_source_parser import parse_source, ParseError
         source = cache.path_for(paper_id, '.pdf')
         if not source.exists(): source.write_bytes(pdf_bytes)
-        parsed = parse_source(source, cache.path_for(paper_id, '.parsed'))
-        fatal_warnings = parsed.get('fatal_warnings', parsed.get('warnings', []))
-        if parsed['status'] != 'ok': raise FetchError('extract_failed', '; '.join(fatal_warnings), False)
-        blob = parsed['sentences']
+        parsed = observed_parse(source, cache.path_for(paper_id, '.parsed'), paper_id, used_source, diagnostic)
+        blob = usable_source(parsed)
+        actual_arxiv_id = observed_arxiv_version(source, arxiv_id)
     except (FetchError, ValueError, OSError) as exc:
         err = exc if isinstance(exc, FetchError) else FetchError("extract_failed", str(exc), False)
         attempts.append(f"extract: {err.detail}")
@@ -837,8 +950,10 @@ def acquire(paper_id: str, paper: dict, *, hub_base: str, cache: Cache,
     row.update(outcome="ok_pdf", source=used_source, info_type="origin_pdf",
                chars=len(blob), detail="; ".join(attempts))
     record = blank_record(arxiv_id, "origin_pdf", blob)
+    record['actual_arxiv_id'] = actual_arxiv_id
     record['parse_report'] = {k:v for k,v in parsed.items() if k != 'sentences'}
     record['source_file'] = str(source)
+    source_access(record, used_source)
     return record, row
 
 
@@ -855,6 +970,15 @@ def build_report(rows: list[dict], records: dict, breaker: Breaker,
         bucket = per_level.setdefault(level, {"total": 0, "with_full_text": 0, "usable": 0})
         bucket["total"] += 1
         record = records.get(row["paper_id"])
+        source_file = (record or {}).get('source_file')
+        source_format = (record or {}).get('parse_report', {}).get('source_format')
+        if not source_format:
+            source_format = {'origin_pdf': 'pdf', 'origin_latex': 'latex'}.get((record or {}).get('info_type'))
+        row.update(text_ready=record_has_text(record), source_format=source_format,
+                   pdf_ready=bool(source_format == 'pdf' and source_file and Path(source_file).is_file()),
+                   l1_ready=row['outcome']=='saved_l1', actual_arxiv_id=(record or {}).get('actual_arxiv_id'),
+                   declared_arxiv_id=(record or {}).get('declared_arxiv_id'),
+                   source_sha256=(record or {}).get('parse_report', {}).get('source_sha256'))
         if record_has_text(record):
             bucket["with_full_text"] += 1
         if record_is_usable(record):
@@ -871,6 +995,8 @@ def build_report(rows: list[dict], records: dict, breaker: Breaker,
         "skipped_already_present": skipped,
         "resolved": usable,
         "with_full_text": with_text,
+        "partial_source_ids": [pid for pid, record in records.items()
+                               if (record or {}).get("parse_report", {}).get("source_coverage", {}).get("complete") is False],
         # `coverage` counts every paper that will NOT be abstract-only downstream,
         # which includes a hub record that carried a reusable card but no text.
         "coverage": round(usable / total, 3) if total else 0.0,
@@ -878,6 +1004,7 @@ def build_report(rows: list[dict], records: dict, breaker: Breaker,
         "coverage_by_relevance_level": dict(sorted(per_level.items())),
         "by_source": dict(Counter(r["source"] for r in rows if r["source"])),
         "by_outcome": dict(Counter(r["outcome"] for r in rows)),
+        "by_failure": dict(Counter(failure['outcome'] for row in rows for failure in row.get('failures', []))),
         # Which sources this run was allowed to use. Without it, a deliberately
         # narrowed cascade and a broadly failing one produce the same numbers.
         "sources_enabled": list(sources),
@@ -903,7 +1030,7 @@ def decide_status(report: dict, breaker: Breaker) -> dict:
         return {"status": "FAILED", "task": "FULLTEXT",
                 "status_reason": "selected_paper.json contains no papers"}
 
-    if report['by_outcome'].get('auth_failed'):
+    if report['by_outcome'].get('auth_failed') or report.get('by_failure', {}).get('auth_failed'):
         return {'status':'FAILED','task':'FULLTEXT',
                 'status_reason':'PaperHub authentication failed; check SCHOLARSEED_API_KEY. This is not a missing-paper result.'}
 
@@ -963,6 +1090,22 @@ def run(workspace: Path, concurrency: int, timeout: float, force: bool,
         return ({}, {"status": "FAILED", "task": "FULLTEXT",
                      "status_reason": f"{SELECTED_FILENAME} is not an object keyed by paper_id"})
 
+    diagnostic = EvidenceLog(workspace, 'fulltext')
+
+    reuse = import_assets(workspace)
+    library_documents = {}
+    document_errors = {}
+    for pid, paper in selected.items():
+        if isinstance(paper, dict) and paper.get("local_source"):
+            continue  # Explicit user-supplied bytes keep priority over a library match.
+        try:
+            document = local_document(workspace, pid)
+            if document:
+                library_documents[pid] = document
+        except (OSError, ValueError, TypeError) as error:
+            document_errors[pid] = str(error)
+
+
     # Merge, never overwrite: paper_info.json may hold entries for papers that
     # are no longer selected, and re-running must not discard them.
     paper_info: dict = {}
@@ -978,14 +1121,13 @@ def run(workspace: Path, concurrency: int, timeout: float, force: bool,
     cache = Cache(retrieval / CACHE_DIRNAME)
     breaker = Breaker()
 
-    from local_papers import load_local
     load_local(workspace)  # validate supplied snapshots even when parsed text is cached
-    from paper_source_parser import parser_fingerprint
     fingerprint = parser_fingerprint()
     pending = [(pid, p) for pid, p in selected.items()
-               if isinstance(p, dict) and (force or not paper_info.get(pid) or
+               if isinstance(p, dict) and pid not in reuse['imports'] and (force or not paper_info.get(pid) or
                    (paper_info[pid].get('parse_report') or {}).get('parser_sha256') != fingerprint or
-                   p.get('local_source') and paper_info[pid].get('local_source_sha256')!=p['local_source']['sha256'])]
+                   p.get('local_source') and paper_info[pid].get('local_source_sha256')!=p['local_source']['sha256'] or
+                   pid in document_errors or pid in library_documents and paper_info[pid].get('local_source_sha256') != library_documents[pid]['sha256'])]
     skipped = len(selected) - len(pending)
 
     log(f"fulltext: {len(selected)} papers ({len(pending)} to fetch, {skipped} already done, "
@@ -1013,10 +1155,21 @@ def run(workspace: Path, concurrency: int, timeout: float, force: bool,
         os.replace(tmp, output_path)
 
     def worker(pid: str, paper: dict) -> dict:
+        paper_started = time.monotonic()
+        diagnostic.event('paper_started', paper_id=pid)
         try:
-            record, row = acquire(pid, paper, hub_base=hub_base, cache=cache,
+            if pid in document_errors:
+                raise ValueError(document_errors[pid])
+            # Ephemeral acquisition input only: never change selected papers or
+            # user-supplied PDF sizing/exclusion policy.
+            source_paper = {**paper, 'local_source': library_documents[pid]} if pid in library_documents else paper
+            record, row = acquire(pid, source_paper, hub_base=hub_base, cache=cache,
                                   breaker=breaker, timeout=timeout,
-                                  sources=sources, use_cache=not force)
+                                  sources=sources, use_cache=not force, diagnostic=diagnostic)
+            if pid in library_documents and record:
+                record['library_source'] = library_documents[pid]
+                row['source'] = 'library_pdf'
+                row['detail'] = 'selection-bound library PDF parsed locally; no network request'
         except Exception as exc:  # last-resort net: an unforeseen bug is one null, not a dead run
             record, row = None, {
                 "paper_id": pid, "title": (paper.get("title") or "")[:120],
@@ -1027,6 +1180,8 @@ def run(workspace: Path, concurrency: int, timeout: float, force: bool,
         with write_lock:
             paper_info[pid] = record
             snapshot()
+        diagnostic.event('paper_finished', paper_id=pid, elapsed_seconds=time.monotonic()-paper_started,
+                         outcome=row['outcome'], source=row['source'], failures=row.get('failures', []))
         log(f"  {row['outcome']:<14} {pid[:36]:<36} {row['source'] or '-':<10} "
             f"{row['chars'] or '':>8} {row['detail'][:70]}")
         return row
@@ -1047,16 +1202,18 @@ def run(workspace: Path, concurrency: int, timeout: float, force: bool,
             continue
         paper = paper if isinstance(paper, dict) else {}
         record = paper_info.get(pid) or {}
+        diagnostic.event('paper_reused', paper_id=pid, source='saved_l1' if pid in reuse['imports'] else 'already_present',
+                         parsed_size=text_size(record.get('sentences') or ''))
         carried = bool(record)
         rows.append({
             "paper_id": pid,
             "title": (paper.get("title") or "")[:120],
             "relevance_level": paper.get("relevance_level") or "L3",
-            "outcome": ("ok_pdf" if record.get("info_type") == "origin_pdf" else "ok_paperhub")
+            "outcome": "saved_l1" if pid in reuse['imports'] else ("ok_pdf" if record.get("info_type") == "origin_pdf" else "ok_paperhub")
                        if carried else "no_identifier",
-            "source": "already_present" if carried else None,
+            "source": "saved_l1" if pid in reuse['imports'] else "already_present" if carried else None,
             "info_type": record.get("info_type"),
-            "detail": "carried over from a previous run" if carried
+            "detail": "verified saved L1; source coverage retained in card" if pid in reuse['imports'] else "carried over from a previous run" if carried
                       else "selected_paper entry is not an object; nothing to fetch",
             "chars": len(record.get("sentences") or ""),
         })
@@ -1064,7 +1221,6 @@ def run(workspace: Path, concurrency: int, timeout: float, force: bool,
     with write_lock:
         snapshot(final=True)
 
-    from paper_materials import material_state
     report = build_report(rows, paper_info, breaker, skipped,
                           time.perf_counter() - started, sources)
     (retrieval / REPORT_FILENAME).write_text(
@@ -1072,14 +1228,19 @@ def run(workspace: Path, concurrency: int, timeout: float, force: bool,
     counts = {state:sum(material_state(p, paper_info.get(pid))==state for pid,p in selected.items())
               for state in ('fulltext','abstract_only','no_text')}
     unresolved=[pid for pid,p in selected.items() if material_state(p,paper_info.get(pid))=='no_text']
-    report.update(material_counts=counts,unresolved_ids=unresolved)
+    report.update(material_counts=counts,unresolved_ids=unresolved,reading_reuse=reuse,
+        material_usage={'saved_l1': len(reuse['imports']), 'library_pdf': sum(bool((paper_info.get(pid) or {}).get('library_source')) for pid in selected),
+                        'acquisition_this_run': dict(Counter(row['source'] for row in rows if row.get('source') not in (None, 'saved_l1', 'already_present'))),
+                        'historical_l1_cost': 'excluded_from_this_run; report separately', 'model_calls_in_acquisition': 0})
     (retrieval / REPORT_FILENAME).write_text(json.dumps(report,ensure_ascii=False,indent=2))
     status = decide_status(report, breaker)
     if counts['no_text']:
         status.update(status='FAILED', status_reason='Selected papers have neither usable source text nor an abstract. Check local PDF parsing/import or upstream metadata; no abstract recovery is performed.')
     elif counts['fulltext'] + counts['abstract_only']:
         status.update(status='SUCCESS', status_reason='Selected source text is available; reading depth is recorded per paper.')
-    status.update(material_counts=counts, unresolved_ids=unresolved)
+    status.update(material_counts=counts, unresolved_ids=unresolved,reading_reused_count=reuse['reused_count'])
+    diagnostic.event('run_finished', status=status['status'], elapsed_seconds=report['elapsed_sec'],
+                     papers=report['total_papers'], resolved=report['resolved'])
     return report, status
 
 

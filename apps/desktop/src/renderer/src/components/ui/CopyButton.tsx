@@ -1,3 +1,4 @@
+import type * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import type { ButtonHTMLAttributes, MouseEvent, ReactNode } from 'react'
 import { forwardRef, useEffect, useRef, useState } from 'react'
@@ -17,6 +18,7 @@ interface CopyButtonBaseProps extends Omit<
   children?: ReactNode
   copiedLabel?: string
   copiedIcon?: ReactNode
+  copy?: () => Promise<void>
   errorLabel?: string
   feedbackDuration?: number
   idleLabel?: string
@@ -43,6 +45,7 @@ export const CopyButton = forwardRef<HTMLButtonElement, CopyButtonProps>(functio
     className,
     copiedLabel,
     copiedIcon,
+    copy,
     disabled,
     errorLabel,
     feedbackDuration = DEFAULT_COPY_FEEDBACK_DURATION_MS,
@@ -63,11 +66,11 @@ export const CopyButton = forwardRef<HTMLButtonElement, CopyButtonProps>(functio
     ...props
   },
   ref
-): JSX.Element {
+): React.JSX.Element {
   const { t } = useTranslation('ui')
   const [status, setStatus] = useState<CopyStatus>('idle')
   const [copying, setCopying] = useState(false)
-  const resetTimer = useRef<ReturnType<typeof setTimeout>>()
+  const resetTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const idleText = idleLabel ?? t('copy.idle')
   const copiedText = copiedLabel ?? t('copy.success')
   const errorText = errorLabel ?? t('copy.error')
@@ -92,15 +95,19 @@ export const CopyButton = forwardRef<HTMLButtonElement, CopyButtonProps>(functio
       return
     }
 
+    const clipboard =
+      event.currentTarget.ownerDocument.defaultView?.navigator.clipboard ?? navigator.clipboard
     setCopying(true)
     setStatus('idle')
     if (resetTimer.current) clearTimeout(resetTimer.current)
     try {
-      const text = getValue ? await getValue() : value
-      if (typeof text !== 'string') {
-        throw new Error('CopyButton requires value or getValue')
+      if (copy) {
+        await copy()
+      } else {
+        const text = getValue ? await getValue() : value
+        if (typeof text !== 'string') throw new Error('CopyButton requires value or getValue')
+        await (writeText ?? clipboard.writeText.bind(clipboard))(text)
       }
-      await (writeText ?? navigator.clipboard.writeText.bind(navigator.clipboard))(text)
       showFeedback('success')
     } catch {
       showFeedback('error')
@@ -131,7 +138,7 @@ export const CopyButton = forwardRef<HTMLButtonElement, CopyButtonProps>(functio
   )
 
   if (iconOnly) {
-    return (
+    const button = (
       <IconButton
         {...buttonProps}
         icon={status === 'success' && copiedIcon ? copiedIcon : icon}
@@ -140,6 +147,13 @@ export const CopyButton = forwardRef<HTMLButtonElement, CopyButtonProps>(functio
       >
         {feedback}
       </IconButton>
+    )
+    return tooltip ? (
+      <Tooltip content={label} portalled>
+        {button}
+      </Tooltip>
+    ) : (
+      button
     )
   }
 

@@ -7,11 +7,14 @@ import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { build } from 'esbuild'
 import { _electron, chromium } from '@playwright/test'
 import type { BrowserWindow, Session, WebPreferences } from 'electron'
 import type { ChromiumInspectorHost, InspectorState } from './inspector.ts'
+
+const DESKTOP = fileURLToPath(new URL('../../', import.meta.url))
 
 interface InspectorProbe {
   ready: Promise<void>
@@ -60,7 +63,7 @@ async function launchInspectorProbe() {
       globalThis.host = createChromiumInspectorHost(pipe, { onState: state => globalThis.states.push(state) })
     })
   `,
-      resolveDir: resolve('.'),
+      resolveDir: DESKTOP,
     },
     outfile: entry,
     platform: 'node',
@@ -413,7 +416,7 @@ test(
   async () => {
     const temporary = await mkdtemp(join(tmpdir(), 'browser-inspector-real-'))
     const entry = join(temporary, 'main.cjs')
-    const screenshotDirectory = resolve('../../tmp/test_snapshot/desktop')
+    const screenshotDirectory = resolve(DESKTOP, '../../tmp/test_snapshot/desktop')
     const pageMarkup =
       '<title>Sidecar inspector probe</title><input id="name"><button id="go" onclick="this.textContent=document.querySelector(\'#name\').value">go</button>'
     const consoleMarker = `sidecar-console-${randomUUID()}`
@@ -495,7 +498,7 @@ test(
       }
     })
   `,
-          resolveDir: resolve('.'),
+          resolveDir: DESKTOP,
         },
         outfile: entry,
         platform: 'node',

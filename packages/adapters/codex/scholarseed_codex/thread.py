@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import inspect
 import random
-import sys
 import uuid
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -17,7 +16,6 @@ from scholarseed_codex.control import CodexRuntimeControl
 from scholarseed_codex.mcp import MCP_STATUS_LIST_METHOD, CodexMcpControl
 from scholarseed_codex.permission import (
     PERMISSION_SCOPE_SESSION,
-    WINDOWS_PLATFORM,
     PermissionUpdate,
     sandbox_policy,
 )
@@ -160,13 +158,13 @@ class CodexThreadSession:
     async def suspend(self, expected_generation: int, *, retry: bool = False) -> None:
         host = self.host
         if self._opened:
-            await host.suspend_thread(self.session_id, expected_generation)
+            await host.suspend_thread(self.session_id, expected_generation, wait_closed=True)
             self._opened = False
         if self._mcp_unsubscribe is not None:
             self._mcp_unsubscribe()
             self._mcp_unsubscribe = None
         if self._lease is not None:
-            retain = bool(self.request.process_sharing_scope) and sys.platform != WINDOWS_PLATFORM
+            retain = bool(self.request.process_sharing_scope)
             if retry:
                 await self._lease.retry_close(
                     expected_generation=expected_generation, retain=retain
@@ -218,7 +216,9 @@ class CodexThreadSession:
     async def reopen(self, request: CodexSessionOpenRequest) -> None:
         if not self._opened or self._lease is None or request.resume_session_id != self.session_id:
             raise AppServerError("Codex thread cannot be reopened in place")
-        await self.host.suspend_thread(self.session_id, self.host.process_generation)
+        await self.host.suspend_thread(
+            self.session_id, self.host.process_generation, wait_closed=True
+        )
         if self._mcp_unsubscribe is not None:
             self._mcp_unsubscribe()
             self._mcp_unsubscribe = None
@@ -509,9 +509,11 @@ class CodexThreadSession:
         }
         return result
 
-    async def steer(self, turn_input: TurnInput) -> str:
+    async def steer(self, turn_input: TurnInput, *, expected_turn_id: str = "") -> str:
         await self.open()
-        return await self.host.attachment(self.session_id).turn.steer(turn_input)
+        return await self.host.attachment(self.session_id).turn.steer(
+            turn_input, expected_turn_id=expected_turn_id
+        )
 
     async def update_permissions(self, request: CodexSessionOpenRequest) -> PermissionUpdate:
         applied = PermissionUpdate(PERMISSION_SCOPE_SESSION)

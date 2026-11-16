@@ -135,10 +135,12 @@ test('selection toolbar centers its measured intrinsic width and clamps it to th
 
 test('resource actions use independent transport while context addition retains AssistantIngress', () => {
   const host = readFileSync(new URL('./Selection.tsx', import.meta.url), 'utf8')
+  const context = readFileSync(new URL('./context.ts', import.meta.url), 'utf8')
   const api = readFileSync(new URL('./api.ts', import.meta.url), 'utf8')
 
   assert.match(host, /useAssistantIngress/)
-  assert.match(host, /ingress\.addContext/)
+  assert.match(host, /addSelectionContext\(session, selection, controller, ingress\)/)
+  assert.match(context, /ingress\.addContext/)
   assert.match(host, /ResourceSuggestion/)
   const resourceApi = readFileSync(new URL('../resources/ai.ts', import.meta.url), 'utf8')
   assert.match(resourceApi, /\/api\/resource\/ai/)
@@ -148,7 +150,7 @@ test('resource actions use independent transport while context addition retains 
 })
 
 test('dirty project selections commit before Assistant context captures the source revision', () => {
-  const host = readFileSync(new URL('./Selection.tsx', import.meta.url), 'utf8')
+  const host = readFileSync(new URL('./context.ts', import.meta.url), 'utf8')
 
   assert.match(host, /session\.dirty[\s\S]*controller\.save\(session\.id\)/)
   assert.match(host, /controller\.getSnapshot\(\)\.sessions\[session\.id\]/)
@@ -157,16 +159,17 @@ test('dirty project selections commit before Assistant context captures the sour
 
 test('literature PDF selections expose add-to-conversation through AssistantIngress', () => {
   const host = readFileSync(new URL('./Selection.tsx', import.meta.url), 'utf8')
+  const context = readFileSync(new URL('./context.ts', import.meta.url), 'utf8')
 
   assert.match(host, /source\.kind === ['"]literature['"]/)
-  assert.match(host, /source\.literatureId/)
-  assert.match(host, /document_id: source\.attachmentId/)
+  assert.match(context, /source\.literatureId/)
+  assert.match(context, /document_id: source\.attachmentId/)
   assert.match(host, /w\(['"]selection\.add['"]\)/)
-  assert.match(host, /kind: literature \? ['"]literature['"] : ['"]selection['"]/)
+  assert.match(context, /kind: literature \? ['"]literature['"] : ['"]selection['"]/)
 })
 
 test('all add-to-conversation selections freeze the complete text for the next turn', () => {
-  const host = readFileSync(new URL('./Selection.tsx', import.meta.url), 'utf8')
+  const host = readFileSync(new URL('./context.ts', import.meta.url), 'utf8')
 
   assert.match(host, /let snapshotText = selection\.text/)
   assert.match(host, /snapshot_text: snapshotText/)
@@ -190,10 +193,10 @@ test('PDF selection actions share one compact order across resource and literatu
   assert.match(host, /size=['"]sm['"]/)
   assert.match(document, /id: ['"]pdf-records['"],\s*order: 1/)
   assert.match(document, /id: ['"]pdf-copy['"],\s*order: 100/)
-  assert.match(reader, /useTranslation\(['"]workbench['"]\)/)
+  assert.match(reader, /useTranslation\(\[['"]pdf['"],\s*['"]ui['"]\]\)/)
   assert.match(reader, /id: ['"]pdf-ai['"],\s*order: 5/)
-  assert.match(reader, /selection\.explain/)
-  assert.match(reader, /selection\.translate/)
+  assert.match(reader, /selectionExplain/)
+  assert.match(reader, /selectionTranslate/)
   assert.match(reader, /size=['"]sm['"]/)
   assert.match(icons, /strikethrough:[\s\S]*M16 4H9/)
 })
@@ -257,7 +260,7 @@ test('selection AI results remain suggestions until an editable viewer replaces 
   assert.match(host, /expectedFingerprint/)
   assert.doesNotMatch(host, /documentWorkspace\.save/)
   assert.match(suggestion, /item\.key === selectedModel && !item\.disabled/)
-  assert.match(suggestion, /z-\[var\(--vds-z-popover\)\]/)
+  assert.match(suggestion, /z-\[var\(--vds-z-floating-panel\)\]/)
 })
 
 test('resource AI freezes selected PDF text in the click-time request snapshot', () => {
@@ -304,7 +307,8 @@ test('resource AI input keeps the selection toolbar visible and marks the active
   assert.match(host, /toolbarActions=\{toolbarActions\}/)
   assert.match(host, /anchorWidth=\{position\?\.width\}/)
   assert.match(host, /ref=\{toolbarRef\}/)
-  assert.match(host, /getBoundingClientRect\(\)\.width/)
+  assert.match(host, /const bounds = node.getBoundingClientRect\(\)/)
+  assert.match(host, /setWidth\(bounds.width\)/)
   assert.doesNotMatch(host, /useLayoutEffect\(\(\) => \{[\s\S]*if \(!toolbarRef\.current\) return;/)
   assert.equal(host.match(/<ResourceSuggestion\b/g)?.length, 1)
   assert.match(suggestion, /toolbarActions\?: ReactNode/)

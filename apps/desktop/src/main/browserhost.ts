@@ -24,14 +24,7 @@ export type BrowserAgentHostPort = AgentBrowserPort &
 export interface ActiveBrowserHost {
   readonly ui: BrowserUiPort
   readonly agent: BrowserAgentHostPort
-  readonly search: Pick<
-    BrowserRegistry,
-    | 'createSearchTarget'
-    | 'takeSearchRedirect'
-    | 'agentTarget'
-    | 'prepareSearchForm'
-    | 'executeSearchForm'
-  >
+  readonly search: BrowserSearchHostPort
   readonly historyAgent: BrowserRegistry['historyAgent']
   readonly automation: Pick<CdpBroker, 'start' | 'stop' | 'copyEndpoint' | 'syncTargets'>
   snapshot(): BrowserSnapshot
@@ -39,9 +32,18 @@ export interface ActiveBrowserHost {
   dispose(): Promise<void>
 }
 
+export type BrowserSearchHostPort = Pick<
+  BrowserRegistry,
+  | 'createSearchTarget'
+  | 'takeSearchRedirect'
+  | 'agentTarget'
+  | 'prepareSearchForm'
+  | 'executeSearchForm'
+>
+
 export function createLegacyBrowserHost(
   registry: BrowserRegistry,
-  broker: CdpBroker,
+  broker: CdpBroker | null,
   automation: () => BrowserSnapshot['automation']
 ): ActiveBrowserHost {
   let disposed = false
@@ -58,6 +60,7 @@ export function createLegacyBrowserHost(
     automation: {
       start() {
         assertActive()
+        if (!broker) throw new Error(BROWSER_ERROR.desktopBridgeUnavailable)
         const task = broker.start()
         pendingStarts.add(task)
         void task.then(
@@ -66,14 +69,15 @@ export function createLegacyBrowserHost(
         )
         return task
       },
-      stop: () => broker.stop(),
+      stop: async () => broker?.stop(),
       copyEndpoint() {
         assertActive()
+        if (!broker) throw new Error(BROWSER_ERROR.desktopBridgeUnavailable)
         broker.copyEndpoint()
       },
-      syncTargets() {
+      async syncTargets() {
         assertActive()
-        return broker.syncTargets()
+        await broker?.syncTargets()
       },
     },
     snapshot: () => ({ ...registry.snapshot(), automation: automation() }),
@@ -87,7 +91,7 @@ export function createLegacyBrowserHost(
       disposeTask = (async () => {
         try {
           await Promise.allSettled([...pendingStarts])
-          await broker.stop()
+          await broker?.stop()
         } finally {
           await registry.dispose()
         }

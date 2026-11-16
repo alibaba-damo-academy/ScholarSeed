@@ -31,6 +31,28 @@ CONTROL_FIXTURE = (
 
 
 class WatchTests(unittest.TestCase):
+    def test_failed_bootstrap_reaps_launched_child_and_closes_owner(self):
+        for missingInput in (False, True):
+            with self.subTest(missingInput=missingInput):
+                with (
+                    patch.object(serve_watch.subprocess, "Popen") as launch,
+                    patch.object(serve_watch, "ParentChannel") as channels,
+                    patch.object(serve_watch, "stop") as stop,
+                ):
+                    child = launch.return_value
+                    if missingInput:
+                        child.stdin = None
+                    else:
+                        channels.return_value.bootstrap.side_effect = RuntimeError(
+                            "bootstrap failed"
+                        )
+                    with self.assertRaises(RuntimeError):
+                        supervise(["child"], ["directory"])
+                    stop.assert_called_once_with(child)
+                    channels.return_value.close.assert_called_once()
+                    if child.stdin is not None:
+                        child.stdin.close.assert_called_once()
+
     def test_busy_change_remains_pending_until_idle(self):
         def events(*_arguments, **_keywords):
             yield {("change", "file.py")}

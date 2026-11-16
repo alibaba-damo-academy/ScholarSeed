@@ -6,6 +6,34 @@ import { PassThrough } from 'node:stream'
 import test from 'node:test'
 import { appsForFile, openPathWith } from './appsForFile.ts'
 
+test('open-with deduplicates paths before limiting candidates and keeps the actual default', async (context) => {
+  const preferred = { name: 'Viewer', path: '/Applications/Viewer.app', isDefault: true }
+  const alternative = { name: 'Viewer', path: '/Volumes/Viewer.app', isDefault: false }
+  const candidates = [
+    ...Array.from({ length: 12 }, () => ({ ...preferred, isDefault: false })),
+    alternative,
+    preferred,
+  ]
+  const child = Object.assign(new EventEmitter(), {
+    stdout: new PassThrough(),
+    stderr: new PassThrough(),
+  })
+  const spawning = context.mock.method(childProcess, 'spawn', () => {
+    queueMicrotask(() => {
+      child.stdout.end(JSON.stringify({ default: preferred.path, apps: candidates }))
+      setImmediate(() => child.emit('close', 0))
+    })
+    return child as unknown as ChildProcess
+  })
+  syncBuiltinESMExports()
+  try {
+    assert.deepEqual(await appsForFile('/sample.png'), [preferred, alternative])
+  } finally {
+    spawning.mock.restore()
+    syncBuiltinESMExports()
+  }
+})
+
 test('open-with preserves application names and paths across every UTF-8 byte boundary', async (context) => {
   const application = { name: '书深 😀', path: '/Applications/书深 😀.app', isDefault: true }
   const payload = Buffer.from(JSON.stringify({ default: application.path, apps: [application] }))

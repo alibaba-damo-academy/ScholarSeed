@@ -291,6 +291,61 @@ def _service(root: Path, projects: set[Path]):
     return service, catalog, runtime, sessions
 
 
+def writable_root_access_contract() -> None:
+    project = Path("/registered-project")
+    external = Path("/authorized-output")
+    providers = []
+    artifact_providers = []
+    app = FastAPI()
+    app.state.session_service = SimpleNamespace(
+        bind_writable_roots=providers.append,
+        bind_artifact_roots=artifact_providers.append,
+        bind_session_directory=lambda _provider: None,
+    )
+    selected = SimpleNamespace(root=str(project), id="project", available=True)
+    content = SimpleNamespace(
+        project_for_path=lambda _scope: selected,
+        writable_roots=lambda _project: (str(external), str(project)),
+    )
+    _bind_writable_roots(app, content)
+    provider = providers[0]
+    check(
+        "artifact roots use the same project authorization",
+        artifact_providers[0](project) == (project, external),
+    )
+    with patch("service.bootstrap.grant_current_user_directory_access") as access:
+        roots = provider(project)
+        check(
+            "authorized writable roots retain host access exactly once",
+            roots == (project, external)
+            and [call.args[0] for call in access.call_args_list] == list(roots),
+            str(access.call_args_list),
+        )
+        access.reset_mock()
+        check(
+            "artifact roots preserve the same scope without requesting host write access",
+            artifact_providers[0](project) == roots and not access.called,
+        )
+    with patch(
+        "service.bootstrap.grant_current_user_directory_access",
+        side_effect=PermissionError("host access initialization denied"),
+    ):
+        rejected = False
+        try:
+            provider(project)
+        except PermissionError:
+            rejected = True
+        check("host access initialization fails closed", rejected)
+    for selection in (None, SimpleNamespace(available=False)):
+        content.project_for_path = lambda _scope, value=selection: value
+        with patch("service.bootstrap.grant_current_user_directory_access") as access:
+            roots = provider(project)
+            check(
+                "unregistered or unavailable scopes receive no host access grants",
+                roots == () and not access.called,
+            )
+
+
 async def scenario() -> None:
     root = Path(tempfile.mkdtemp(prefix="session-workspace-contract-")).resolve()
     project = root / "registered-project"
@@ -298,7 +353,7 @@ async def scenario() -> None:
     unregistered = root / "unregistered-project"
     unregistered.mkdir()
     conflict_project = root / "conflict-project"
-    user_outputs = conflict_project / "sessions"
+    user_outputs = conflict_project / "output"
     user_outputs.mkdir(parents=True)
     user_file = user_outputs / "keep.txt"
     user_file.write_text("existing user data", encoding="utf-8")
@@ -316,9 +371,9 @@ async def scenario() -> None:
 
     conflict, conflict_status = await _open({"project_path": str(conflict_project)}, owner)
     check(
-        "project output collision is explicit and never adopts user files",
-        conflict_status == 409
-        and conflict.get("error") == "owned_root_conflict"
+        "existing output is left to the agent without programmatic adoption",
+        conflict_status == 200
+        and conflict.get("runtime_workdir") == str(conflict_project)
         and user_file.read_text(encoding="utf-8") == "existing user data",
         str(conflict),
     )
@@ -349,13 +404,14 @@ async def scenario() -> None:
     project_open, project_status = await _open({"project_path": str(project)}, owner)
     project_record = catalog.get(project_open["session_id"])
     check(
-        "registered project sessions isolate cwd and output together",
+        "registered project sessions use the project cwd without allocating output",
         project_status == 200
-        and project_open["runtime_workdir"]
-        == str(project / "sessions" / project_open["session_id"])
+        and project_open["runtime_workdir"] == str(project)
         and project_open["project_path"] == str(project)
         and project_record is not None
-        and Path(project_record.output_root) == project / "sessions" / project_open["session_id"],
+        and Path(project_record.output_root) == project
+        and not (project / "sessions").exists()
+        and not (project / "output").exists(),
         str(project_open),
     )
     rejected, rejected_status = await _open({"project_path": str(unregistered)}, owner)
@@ -363,7 +419,7 @@ async def scenario() -> None:
         "unregistered project roots fail before runtime assembly",
         rejected_status == 409
         and rejected.get("error") == "project_path_not_registered"
-        and len(runtime.opens) == 3,
+        and len(runtime.opens) == 4,
         str(rejected),
     )
 
@@ -614,15 +670,15 @@ async def scenario() -> None:
         "project relocation preserves the Codex thread and rebinds all runtime roots",
         relocate_status == 200
         and relocated.get("project_path") == str(project)
-        and relocated.get("runtime_workdir") == str(project / "sessions" / first_id)
-        and relocated.get("output_root") == str(project / "sessions" / first_id)
+        and relocated.get("runtime_workdir") == str(project)
+        and relocated.get("output_root") == str(project)
         and relocated_record is not None
         and relocated_record.project_path == str(project)
-        and relocated_record.runtime_workdir == str(project / "sessions" / first_id)
-        and relocated_record.output_root == str(project / "sessions" / first_id)
-        and runtime.rebinds[-1]["cwd"] == project / "sessions" / first_id
+        and relocated_record.runtime_workdir == str(project)
+        and relocated_record.output_root == str(project)
+        and runtime.rebinds[-1]["cwd"] == project
         and sessions[first_id].vendor_thread_id == original_vendor_thread_id
-        and sessions[first_id].runtime_workdir == project / "sessions" / first_id
+        and sessions[first_id].runtime_workdir == project
         and sessions[first_id].project_path == project,
         str(relocated),
     )
@@ -704,9 +760,53 @@ async def scenario() -> None:
         str(idle_move),
     )
 
+    old_root, _, old_output = service._project_paths(first_id, project, session_scoped=True)
+    old_file = old_root / "old-report.md"
+    old_file.write_text("retained old report", encoding="utf-8")
+    catalog.relocate(
+        first_id,
+        owner,
+        runtime_workdir=str(old_root),
+        project_path=str(project),
+        output_root=str(old_output),
+    )
+    sessions.pop(first_id)
+    old_thread = catalog.get(first_id).vendor_thread_id
+    old_resumed, old_resume_status = await _open({"resume_session_id": first_id}, owner)
+    check(
+        "old project sessions cold-resume their saved cwd and native thread without migration",
+        old_resume_status == 200
+        and old_resumed.get("runtime_workdir") == str(old_root)
+        and runtime.opens[-1]["resume_vendor_thread_id"] == old_thread
+        and service.file_content(first_id, "old-report.md")["content"] == "retained old report",
+        str(old_resumed),
+    )
+    old_attachment = service.save_attachment(
+        first_id, filename="old.txt", content=b"old input", media_type="text/plain"
+    )
+    check(
+        "old session uploads keep their original attachment root",
+        Path(old_attachment["path"]).parent == old_root / "attachments",
+        str(old_attachment),
+    )
+    old_moved, old_move_status = await service.assign_project(
+        session_id=first_id,
+        principal=owner,
+        project_path=str(conflict_project),
+    )
+    check(
+        "moving an old project session retains a session-scoped Content workdir",
+        old_move_status == 200
+        and Path(old_moved["runtime_workdir"]).parent == conflict_project / "sessions"
+        and old_moved["output_root"] == old_moved["runtime_workdir"]
+        and old_file.read_text(encoding="utf-8") == "retained old report",
+        str(old_moved),
+    )
+
 
 def main() -> int:
     print("native Codex session workspace contract")
+    writable_root_access_contract()
     asyncio.run(scenario())
     print(f"passed={PASS} failed={FAIL}")
     return 1 if FAIL else 0

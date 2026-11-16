@@ -876,6 +876,65 @@ def inspect_rows(
             previous = row["session_id"], row["block_no"], row["committed_end"]
 
 
+def _cleanup_directory(store: BlockStore) -> storage.DirectoryHandle | None:
+    try:
+        return store._open()
+    except FileNotFoundError:
+        if store.directory_path.exists():
+            raise
+        return None
+
+
+def _orphaned_files(
+    store: BlockStore,
+    directory: storage.DirectoryHandle,
+    names: Iterable[str],
+    check_budget: Callable[[], None] | None = None,
+) -> Generator[tuple[str, os.stat_result], None, None]:
+    for name in names:
+        if check_budget is not None:
+            check_budget()
+        if name == NAMESPACE:
+            continue
+        fd = directory.open_private(name, os.O_RDONLY)
+        try:
+            identity = os.fstat(fd)
+            os.lseek(fd, 0, os.SEEK_SET)
+            raw = os.read(fd, HEADER_LIMIT)
+            line = raw.split(b"\n", 1)[0] + b"\n"
+            header = json.loads(line)
+            if (
+                not isinstance(header, list)
+                or len(header) != 4
+                or header[:3] != ["session", VERSION, store._token]
+                or not isinstance(header[3], str)
+                or _name(header[3]) != name
+                or line != store._header(header[3])
+            ):
+                raise RuntimeError("unowned event block file retained")
+        finally:
+            os.close(fd)
+        if not store.connection.execute(
+            f"SELECT 1 FROM {TABLE} WHERE session_id=? LIMIT 1", (header[3],)
+        ).fetchone():
+            yield name, identity
+
+
+def cleanup_needed(
+    connection: sqlite3.Connection, database: Path, check_budget: Callable[[], None]
+) -> bool:
+    with BlockStore(connection, database) as store:
+        directory = _cleanup_directory(store)
+        if directory is None:
+            return False
+        with os.scandir(store.directory_path) as entries:
+            files = _orphaned_files(
+                store, directory, (entry.name for entry in entries), check_budget
+            )
+            with closing(files):
+                return next(files, None) is not None
+
+
 def cleanup(database: Path) -> int:
     """Delete only namespace-proven files without committed blocks; caller is exclusive."""
     with (
@@ -884,38 +943,12 @@ def cleanup(database: Path) -> int:
         BlockStore(connection, database) as store,
     ):
         connection.execute("BEGIN IMMEDIATE")
-        try:
-            directory = store._open()
-        except FileNotFoundError:
-            if store.directory_path.exists():
-                raise
+        directory = _cleanup_directory(store)
+        if directory is None:
             return 0
         removed = 0
-        for name in os.listdir(store.directory_path):
-            if name == NAMESPACE:
-                continue
-            fd = directory.open_private(name, os.O_RDONLY)
-            try:
-                identity = os.fstat(fd)
-                os.lseek(fd, 0, os.SEEK_SET)
-                raw = os.read(fd, HEADER_LIMIT)
-                line = raw.split(b"\n", 1)[0] + b"\n"
-                header = json.loads(line)
-                if (
-                    not isinstance(header, list)
-                    or len(header) != 4
-                    or header[:3] != ["session", VERSION, store._token]
-                    or not isinstance(header[3], str)
-                    or _name(header[3]) != name
-                    or line != store._header(header[3])
-                ):
-                    raise RuntimeError("unowned event block file retained")
-            finally:
-                os.close(fd)
-            if not connection.execute(
-                f"SELECT 1 FROM {TABLE} WHERE session_id=? LIMIT 1", (header[3],)
-            ).fetchone():
-                directory.unlink(name, expected=identity)
-                directory.sync()
-                removed += 1
+        for name, identity in _orphaned_files(store, directory, os.listdir(store.directory_path)):
+            directory.unlink(name, expected=identity)
+            directory.sync()
+            removed += 1
         return removed

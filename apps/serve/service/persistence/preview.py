@@ -54,6 +54,9 @@ class SchemaOwner:
     read_rows: Callable[[sqlite3.Connection], None] | None = None
     # Declarations come only from this version's code, never from wire data.
     triggers: Callable[[], Sequence[tuple[str, str, str]]] | None = None
+    # Only the equal-row-digest path may omit receipt rows already inspected in
+    # the source. Different rows always require the normal full inspector.
+    inspect_layout: Callable[[sqlite3.Connection], SchemaState] | None = None
 
 
 @dataclass(frozen=True)
@@ -303,7 +306,8 @@ def require_candidate_layout(
         installing_triggers = False
         connection.execute("PRAGMA query_only=ON")
         for owner in owners:
-            if owner.inspect(connection).needs_write:
+            inspect = owner.inspect if different_rows else owner.inspect_layout or owner.inspect
+            if inspect(connection).needs_write:
                 raise ValueError("candidate layout is not directly readable by source")
             if different_rows and owner.read_rows is not None:
                 owner.read_rows(connection)

@@ -10,6 +10,7 @@ from typing import Any, Mapping, Protocol
 SANDBOX_SETUP_ERROR = "windows_sandbox_setup_failed"
 SANDBOX_PREPARING_ERROR = "windows_sandbox_setup_in_progress"
 SANDBOX_UNKNOWN_ERROR = "windows_sandbox_setup_unknown"
+SANDBOX_PASSWORD_POLICY_ERROR = "windows_sandbox_password_policy_rejected"
 SANDBOX_POLICY_ERROR = "windows_sandbox_policy_rejected"
 SANDBOX_CANCELLED_ERROR = "windows_sandbox_setup_cancelled"
 SANDBOX_RESOURCE_ERROR = "windows_sandbox_tool_access_failed"
@@ -22,6 +23,7 @@ SANDBOX_STARTUP_ERRORS = frozenset(
         SANDBOX_RESOURCE_ERROR,
         SANDBOX_PROBE_ERROR,
         SANDBOX_POLICY_ERROR,
+        SANDBOX_PASSWORD_POLICY_ERROR,
         SANDBOX_CANCELLED_ERROR,
     }
 )

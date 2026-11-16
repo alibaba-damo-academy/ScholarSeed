@@ -18,6 +18,8 @@ const CATALOG_SUMMARY_FIELDS = [
   'runtime_workdir',
   'runtime_id',
   'project_path',
+  'display_parent_session_id',
+  'detached_parent_session_id',
   'archived',
   'pinned',
   'kind',

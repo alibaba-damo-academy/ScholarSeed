@@ -15,11 +15,11 @@ const bridge: MenuViewBridge = {
   },
   seed: () => ipcRenderer.invoke(MENU_CHANNEL.seed),
   subscribe(callback) {
-    const handler = (_event: unknown, model: MenuModel) => callback(model)
+    const handler = (_event: unknown, model: MenuModel | null) => callback(model)
     ipcRenderer.on(MENU_CHANNEL.model, handler)
     return () => ipcRenderer.removeListener(MENU_CHANNEL.model, handler)
   },
-  send: event => ipcRenderer.invoke(MENU_CHANNEL.event, event),
-  paintReady: ack => ipcRenderer.invoke(MENU_CHANNEL.paintReady, ack)
+  send: (event) => ipcRenderer.invoke(MENU_CHANNEL.event, event),
+  paintReady: (ack) => ipcRenderer.invoke(MENU_CHANNEL.paintReady, ack),
 }
 contextBridge.exposeInMainWorld('menu', bridge)

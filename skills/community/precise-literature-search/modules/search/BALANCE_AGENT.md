@@ -18,7 +18,15 @@ Plain `context` restores initialization; `--evidence-only` omits it.
 CLI control fields stay at the root on success and failure: `status,error,
 phase_state,budget,allowed_actions,next_commands,next_action`. `metadata` holds
 non-control context; `records` holds intact papers in `record` with `view/kind`
-provenance. Follow `next_command` until `next_cursor` is null. The first page has
+provenance. Execute one returned `next_command` at a time as a foreground tool
+call; stop when `next_cursor` is JSON null and `next_command` is null. Do not write shell pagination loops
+or reconstruct continuation commands from a cursor. Python prints JSON null as `None`,
+not the shell string `null`; comparing those strings can leave a loop running forever.
+Check the exit code and root `status` before reading records or continuation fields.
+Stop on a failed command or invalid JSON and use the reported recovery action;
+do not swallow the error and retry with an empty cursor. If a tool call yields a
+background session, inspect it and confirm its exit before declaring the search finished.
+Do not terminate unrelated or still-required background work. The first page has
 executable `next_commands`; continuation pages use `{}`. Each paper carries its
 own `review_ref`: copy that paper's reference when selecting it. `counts.pool`
 is pool size; `counts.view` counts evidence; `page/total` include metadata segments.

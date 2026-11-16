@@ -1,3 +1,4 @@
+import type * as React from 'react'
 import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { I18nextProvider } from 'react-i18next'
@@ -67,12 +68,12 @@ import {
   useFormField
 } from './ui'
 
-function FormFieldPreview(): JSX.Element {
+function FormFieldPreview(): React.JSX.Element {
   const field = useFormField()
   return <output data-testid="compat-form-field-id">{field.id}</output>
 }
 
-function Fixture(): JSX.Element {
+function Fixture(): React.JSX.Element {
   const [otpValue, setOtpValue] = useState('135')
   const [selectValue, setSelectValue] = useState('quick')
 

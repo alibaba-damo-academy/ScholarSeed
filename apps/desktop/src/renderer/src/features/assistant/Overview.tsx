@@ -21,6 +21,8 @@ import {
 import { activeThread, useApp } from '../../store'
 import { OverviewReferences } from './References'
 import { OverviewFileActions, OverviewLiteratureActions } from './Artifacts'
+import type { SessionArtifact } from '../../model'
+import { ArtifactDirectory } from './Directory'
 
 const OverviewLayoutContext = React.createContext<{
   reserveSpace: boolean
@@ -48,21 +50,23 @@ export function TaskOverviewLayout({
 
 export function TaskOverviewBody({ children }: { children: React.ReactNode }): React.JSX.Element {
   const host = React.useContext(OverviewLayoutContext)
-  if (!host?.reserveSpace) return <>{children}</>
+  const reserved = host?.reserveSpace ?? false
   return (
-    <div className="flex min-h-0 min-w-0 flex-1">
+    <div className={reserved ? 'flex min-h-0 min-w-0 flex-1' : 'contents'}>
       <div
-        className="flex min-h-0 min-w-0 flex-1 flex-col"
+        className={reserved ? 'flex min-h-0 min-w-0 flex-1 flex-col' : 'contents'}
         data-testid="task-overview-conversation"
       >
         {children}
       </div>
-      <div
-        ref={host.setTarget}
-        hidden={!host.open}
-        className="h-full min-h-0 w-[calc(var(--vds-task-overview-width)+var(--vds-space-8))] shrink-0 px-[var(--vds-space-4)] pb-[var(--vds-space-3)] pt-[var(--vds-space-4)]"
-        data-testid="task-overview-dock"
-      />
+      {host?.reserveSpace && (
+        <div
+          ref={host.setTarget}
+          hidden={!host.open}
+          className="h-full min-h-0 w-[calc(var(--vds-task-overview-width)+var(--vds-space-8))] shrink-0 px-[var(--vds-space-4)] pb-[var(--vds-space-3)] pt-[var(--vds-space-4)]"
+          data-testid="task-overview-dock"
+        />
+      )}
     </div>
   )
 }
@@ -73,6 +77,34 @@ export function TaskOverview({ menuItem = false }: { menuItem?: boolean }): Reac
 }
 
 function Overview({ menuItem }: { menuItem: boolean }): React.JSX.Element {
+  const { state, act } = useApp()
+  const thread = activeThread(state)
+  const [directory, setDirectory] = React.useState<SessionArtifact | null>(null)
+  return (
+    <>
+      <OverviewPanel
+        menuItem={menuItem}
+        onOpenDirectory={thread.sessionId ? setDirectory : undefined}
+      />
+      {directory && thread.sessionId && (
+        <ArtifactDirectory
+          artifact={directory}
+          sessionId={thread.sessionId}
+          onClose={() => setDirectory(null)}
+          onOpen={act.openFilePreview}
+        />
+      )}
+    </>
+  )
+}
+
+function OverviewPanel({
+  menuItem,
+  onOpenDirectory,
+}: {
+  menuItem: boolean
+  onOpenDirectory?: (artifact: SessionArtifact) => void
+}): React.JSX.Element {
   const { t } = useTranslation('components')
   const [open, setOpen] = React.useState(false)
   const host = React.useContext(OverviewLayoutContext)
@@ -167,6 +199,7 @@ function Overview({ menuItem }: { menuItem: boolean }): React.JSX.Element {
         <div ref={bindBoundary} className="px-[var(--vds-space-2)] py-[var(--vds-space-3)]">
           <SessionArtifacts
             boundaryRef={boundaryRef}
+            onOpenDirectory={onOpenDirectory}
             onOpened={menuItem ? () => setOpen(false) : undefined}
             renderActions={(file) => <OverviewFileActions file={file} boundaryRef={boundaryRef} />}
             renderLiteratureActions={(document) => (

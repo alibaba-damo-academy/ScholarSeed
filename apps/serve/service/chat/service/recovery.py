@@ -875,6 +875,12 @@ class RecoveryService:
                     return
                 activity = await session.activity()
                 snapshot = await session.snapshot()
+                resumeValue = (
+                    snapshot.get("resume_turns", ()) if isinstance(snapshot, Mapping) else ()
+                )
+                if not isinstance(resumeValue, (list, tuple)):
+                    raise ValueError("runtime resume snapshot has invalid turns")
+                resumedTurns = tuple(resumeValue)
                 status = self._resumed_status(snapshot, checkpoint)
                 checkpoint.action = (
                     RecoveryAction.CONTINUE
@@ -900,11 +906,7 @@ class RecoveryService:
                     ),
                     resumed_turns=[
                         {key: row.get(key) for key in ("client_id", "turn_id", "terminal_status")}
-                        for row in (
-                            snapshot.get("resume_turns", ())
-                            if isinstance(snapshot, Mapping)
-                            else ()
-                        )
+                        for row in resumedTurns
                         if isinstance(row, Mapping)
                         and row.get("turn_id") == checkpoint.native_turn_id
                     ],

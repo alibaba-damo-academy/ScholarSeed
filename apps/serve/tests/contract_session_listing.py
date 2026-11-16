@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import dataclasses
 import json
 import os
 import shutil
@@ -46,8 +47,13 @@ from service.chat.constants import (  # noqa: E402
     PRODUCT_EVENT_USER_MESSAGE,
 )
 from service.chat.persistence.catalog import (  # noqa: E402
+    SessionListScope,
     SessionPrincipal,
     SessionStatus,
+)
+from service.chat.persistence.events import (  # noqa: E402 -- after SCHOLARSEED_HOME isolation
+    SESSION_FORK_EVENT,
+    SESSION_FORK_KEY,
 )
 from service.identity.utils import (  # noqa: E402
     OWNERSHIP_AXIS_MACHINE,
@@ -670,6 +676,64 @@ def pagination(app: Any, client: TestClient, root: Path, principal: SessionPrinc
         [row["session_id"] for row in pinned_search["sessions"] + pinned_search_tail["sessions"]]
         == [expected[-1], *expected[:3]],
     )
+    catalog.set_pinned(expected[-1], principal, False)
+    original = catalog.owned(principal)
+    moved = client.put(
+        f"/api/serve/sessions/{expected[-1]}/display-order",
+        json={"target_session_id": expected[0], "placement": "before"},
+    )
+    check(
+        "relative ordering accepts a session beyond the first 500 rows",
+        moved.status_code == 200,
+        moved.text,
+    )
+    reopened = type(catalog)(shared_ownership=catalog.shared_ownership)
+    check(
+        "relative ordering changes only presentation ranks in the complete sibling set",
+        all(
+            record == dataclasses.replace(original[session_id], display_order=record.display_order)
+            for session_id, record in reopened.owned(principal).items()
+        ),
+    )
+    ordered_first = client.get("/api/serve/sessions", params=params).json()
+    ordered_tail = client.get(
+        "/api/serve/sessions", params={**params, "cursor": ordered_first.get("next_cursor")}
+    ).json()
+    ordered_expected = [expected[-1], *expected[:-1]]
+    check(
+        "durable manual order paginates all 503 sessions without omission or duplication",
+        [row["session_id"] for row in ordered_first["sessions"] + ordered_tail["sessions"]]
+        == ordered_expected
+        and ordered_tail.get("next_cursor") is None,
+    )
+    moved_to_tail = client.put(
+        f"/api/serve/sessions/{expected[0]}/display-order",
+        json={"target_session_id": expected[-2], "placement": "after"},
+    )
+    reordered = reopened.listed(
+        principal,
+        runtime_id=RUNTIME_ID,
+        scope=SessionListScope.PROJECT,
+        project_path=project,
+        limit=None,
+        archived=False,
+    )
+    check(
+        "relative ordering resolves a target beyond the first 500 rows from durable metadata",
+        moved_to_tail.status_code == 200
+        and [record.session_id for record in reordered]
+        == [expected[-1], *expected[1:-1], expected[0]],
+        moved_to_tail.text,
+    )
+    for body in (
+        {"target_session_id": expected[0], "placement": "invalid"},
+        {"target_session_id": expected[0]},
+        {"target_session_id": 12, "placement": "before"},
+    ):
+        rejected = client.put(f"/api/serve/sessions/{expected[-1]}/display-order", json=body)
+        check(
+            "invalid relative order request is rejected", rejected.status_code == 422, rejected.text
+        )
     for values in (
         [True, "id"],
         [-1, "id"],
@@ -686,6 +750,26 @@ def pagination(app: Any, client: TestClient, root: Path, principal: SessionPrinc
             f"invalid cursor shape rejected: {values}",
             client.get("/api/serve/sessions", params={"cursor": cursor}).status_code == 422,
         )
+    for operation in ("archive", "delete"):
+        cursor_page = client.get("/api/serve/sessions", params={**params, "limit": 1}).json()
+        anchor_id = cursor_page["sessions"][0]["session_id"]
+        removed = (
+            client.put(f"/api/serve/sessions/{anchor_id}/archive", json={"archived": True})
+            if operation == "archive"
+            else client.delete(f"/api/serve/sessions/{anchor_id}")
+        )
+        stale_page = client.get(
+            "/api/serve/sessions", params={**params, "cursor": cursor_page["next_cursor"]}
+        )
+        check(
+            f"{operation} of a cursor anchor explicitly invalidates the project page",
+            removed.status_code == 200
+            and stale_page.status_code == 422
+            and stale_page.json().get("detail") == "session_list_cursor_invalid",
+            stale_page.text,
+        )
+        if operation == "archive":
+            catalog.set_archived(anchor_id, principal, False)
 
 
 def project_scopes(app: Any, client: TestClient, root: Path, principal: SessionPrincipal) -> None:
@@ -786,8 +870,108 @@ def project_scopes(app: Any, client: TestClient, root: Path, principal: SessionP
         unassigned.status_code == 200 and unassigned_ids == {"oldest", "middle", "newest"},
         f"status={unassigned.status_code}; ids={unassigned_ids}",
     )
+    child_id = "project-a-2"
+    catalog.set_display_parent(child_id, principal, "project-a-0")
+    events = app.state.product_events
+    events.append(
+        session_id=child_id,
+        runtime_id=RUNTIME_ID,
+        vendor_thread_id=f"vendor-{child_id}",
+        vendor_turn_id=None,
+        vendor_item_id=None,
+        kind=SESSION_FORK_EVENT,
+        payload={
+            "source_session_id": "project-a-1",
+            "source_turn_id": "original-turn",
+            "source_product_seq": 1,
+        },
+        idempotency_key=SESSION_FORK_KEY,
+    )
+    before_detach = catalog.get(child_id)
+    assert before_detach is not None
+    before_events = events.replay(child_id)
+    children = client.get("/api/serve/sessions/project-a-0/display-children")
+    check(
+        "delete confirmation counts attached children",
+        children.status_code == 200 and children.json()["child_count"] == 1,
+        children.text,
+    )
+    for _ in range(2):
+        detached = client.delete(f"/api/serve/sessions/{child_id}/display-parent")
+        check(
+            "detach clears only the display parent and is idempotent",
+            detached.status_code == 200
+            and detached.json()
+            == {
+                "ok": True,
+                "session_id": child_id,
+                "display_parent_session_id": None,
+            }
+            and catalog.get(child_id)
+            == dataclasses.replace(
+                before_detach,
+                display_parent_session_id=None,
+                detached_parent_session_id=before_detach.display_parent_session_id,
+                display_order=0,
+            ),
+            detached.text,
+        )
+        check(
+            "detach preserves the sibling source, fork anchor and complete event history",
+            events.replay(child_id) == before_events,
+        )
+    reopened = type(catalog)(shared_ownership=catalog.shared_ownership)
+    denied_parent = client.put(
+        f"/api/serve/sessions/{child_id}/display-parent", json={"parent_session_id": "project-a-1"}
+    )
+    check(
+        "returning rejects an unrelated parent",
+        denied_parent.status_code == 422,
+        denied_parent.text,
+    )
+    returned = client.put(
+        f"/api/serve/sessions/{child_id}/display-parent", json={"parent_session_id": "project-a-0"}
+    )
+    check(
+        "returning restores only the recorded parent",
+        returned.status_code == 200
+        and returned.json()["display_parent_session_id"] == "project-a-0",
+        returned.text,
+    )
+    client.delete(f"/api/serve/sessions/{child_id}/display-parent")
+    check(
+        "detached display parent survives reopening the catalog",
+        reopened.get(child_id) == catalog.get(child_id),
+    )
+    check(
+        "missing detach targets remain non-enumerating",
+        client.delete("/api/serve/sessions/missing/display-parent").status_code == 404,
+    )
     archived_id = "project-a-2"
-    archived = client.put(f"/api/serve/sessions/{archived_id}/archive", json={"archived": True})
+    catalog.update_status(archived_id, SessionStatus.RUNNING)
+    denied_stop = client.put(
+        f"/api/serve/sessions/{archived_id}/archive",
+        json={"archived": True, "stop_running": False},
+    )
+    check(
+        "archive API forwards the absence of stop consent before any runtime activation",
+        denied_stop.status_code == 409
+        and denied_stop.json()["error"] == "session_archive_stop_required"
+        and not catalog.get(archived_id).archived,
+        denied_stop.text,
+    )
+    check(
+        "archive stop consent rejects string booleans",
+        client.put(
+            f"/api/serve/sessions/{archived_id}/archive",
+            json={"archived": True, "stop_running": "false"},
+        ).status_code
+        == 422,
+    )
+    catalog.update_status(archived_id, SessionStatus.COMPLETED)
+    archived = client.put(
+        f"/api/serve/sessions/{archived_id}/archive", json={"archived": True, "stop_running": False}
+    )
     check("idle task archives through the public owner route", archived.status_code == 200)
     visible = client.get(
         "/api/serve/sessions",
@@ -814,11 +998,26 @@ def project_scopes(app: Any, client: TestClient, root: Path, principal: SessionP
         ("POST", f"/api/serve/sessions/{archived_id}/turns", {"text": "no new turn"}),
         ("PATCH", f"/api/serve/sessions/{archived_id}", {"title": "no edit"}),
         ("PUT", f"/api/serve/sessions/{archived_id}/pin", {"pinned": True}),
+        ("DELETE", f"/api/serve/sessions/{archived_id}/display-parent", None),
+        (
+            "PUT",
+            f"/api/serve/sessions/{archived_id}/display-order",
+            {"target_session_id": "project-a-0", "placement": "before"},
+        ),
     ):
         response = client.request(method, path, json=body)
         check(
             "archived conversation mutations are rejected: " + method, response.status_code == 409
         )
+    archived_target = client.put(
+        "/api/serve/sessions/project-a-0/display-order",
+        json={"target_session_id": archived_id, "placement": "before"},
+    )
+    check(
+        "archived ordering targets are rejected as a state conflict",
+        archived_target.status_code == 409,
+        archived_target.text,
+    )
     check(
         "archived tasks cannot restore ordinary navigation",
         client.get(f"/api/serve/sessions/{archived_id}/navigation").status_code == 404,
@@ -844,6 +1043,21 @@ def project_scopes(app: Any, client: TestClient, root: Path, principal: SessionP
         "an unregistered project scope is non-enumerating",
         denied.status_code == 404,
         denied.text,
+    )
+    catalog.set_display_parent(child_id, principal, "project-a-0")
+    for source_id in ("project-a-0", "project-a-1"):
+        removed = client.delete(f"/api/serve/sessions/{source_id}")
+        check("detachment fixture removes its parent or sibling source", removed.status_code == 200)
+    preserved = catalog.get(child_id)
+    assert preserved is not None
+    detached = client.delete(f"/api/serve/sessions/{child_id}/display-parent")
+    check(
+        "unavailable parent and actual source do not prevent owned child detachment",
+        detached.status_code == 200
+        and catalog.get(child_id) == preserved
+        and preserved.display_parent_session_id is None
+        and events.replay(child_id) == before_events,
+        detached.text,
     )
 
 
@@ -887,9 +1101,14 @@ def machine_axis(root: Path) -> None:
             if cursor is None:
                 break
         check("machine 轴下别的账号建的会话可见", "foreign" in ids, str(ids))
+        expected = {"oldest", "middle", "newest", "foreign", "project-a-2"}
+        expected.update(f"project-b-{index}" for index in range(4))
+        expected.update(f"paged-{index:04d}" for index in range(505))
         check(
             "machine pagination reaches all sessions once",
-            len(ids) == 516 and len(set(ids)) == len(ids),
+            set(ids) == expected and len(set(ids)) == len(ids),
+            f"count={len(ids)}; unique={len(set(ids))}; "
+            f"missing={sorted(expected - set(ids))}; extra={sorted(set(ids) - expected)}",
         )
 
 

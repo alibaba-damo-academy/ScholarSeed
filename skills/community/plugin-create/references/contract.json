@@ -56,6 +56,12 @@
             "title": "Public",
             "type": "boolean"
           },
+          "workbench": {
+            "default": false,
+            "description": "Allow this packaged component to move from the conversation to the workbench.",
+            "title": "Workbench",
+            "type": "boolean"
+          },
           "entry": {
             "anyOf": [
               {
@@ -159,7 +165,10 @@
         "additionalProperties": false,
         "properties": {
           "compatibility": {
-            "const": "1.0",
+            "enum": [
+              "1.0",
+              "2.0"
+            ],
             "title": "Compatibility",
             "type": "string"
           },
@@ -611,24 +620,24 @@
   "grants_permissions": false,
   "runtime_verified": false,
   "public_slots": [
-    "display.literature-delivery",
-    "display.literature-downloads",
-    "display.literature-references",
+    "canvas.ui",
+    "conversation.ui",
     "display.literature-search",
     "interaction.question",
     "literature.authorization",
+    "literature.outline",
     "literature.selection",
     "preview.literature-results"
   ],
   "public_providers": {
+    "canvas.ui": "host",
+    "conversation.ui": "host",
     "interaction.question": "host",
     "display.literature-search": "host",
     "preview.literature-results": "host",
-    "literature.selection": "official-ui",
+    "literature.selection": "host",
     "literature.authorization": "host",
-    "display.literature-downloads": "host",
-    "display.literature-delivery": "host",
-    "display.literature-references": "host"
+    "literature.outline": "host"
   },
   "component_invocation_schema": {
     "$defs": {
@@ -641,6 +650,12 @@
         "minLength": 1,
         "title": "Request Id",
         "type": "string"
+      },
+      "revision": {
+        "default": 0,
+        "minimum": 0,
+        "title": "Revision",
+        "type": "integer"
       },
       "slot": {
         "maxLength": 64,
@@ -723,6 +738,27 @@
       },
       "write": {
         "$defs": {
+          "PlanEstimate": {
+            "additionalProperties": false,
+            "properties": {
+              "lower_seconds": {
+                "minimum": 0,
+                "title": "Lower Seconds",
+                "type": "integer"
+              },
+              "upper_seconds": {
+                "exclusiveMinimum": 0,
+                "title": "Upper Seconds",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "lower_seconds",
+              "upper_seconds"
+            ],
+            "title": "PlanEstimate",
+            "type": "object"
+          },
           "PlanItem": {
             "additionalProperties": false,
             "properties": {
@@ -793,6 +829,18 @@
         },
         "additionalProperties": false,
         "properties": {
+          "estimate": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/PlanEstimate"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional total processing-time range for the agreed execution plan, excluding user waits. Submit only after the execution agreement is resolved; never estimate from skill selection. The host displays it only after a step starts. Omit to preserve on update; null clears it. Create and revise without an estimate clear it. On revise provide a new total for the whole plan including work already performed, not remaining time."
+          },
           "operation": {
             "description": "request.operation is the plan mutation, not action; outer operation is always write.",
             "enum": [
@@ -828,6 +876,7 @@
             "type": "string"
           },
           "items": {
+            "description": "Complete snapshot of every current root and step, including unchanged items; never send only the changed step. For progress updates preserve all ids, root content and parent links, changing only intended statuses.",
             "items": {
               "$ref": "#/$defs/PlanItem"
             },
@@ -863,6 +912,27 @@
       },
       "structure": {
         "$defs": {
+          "PlanEstimate": {
+            "additionalProperties": false,
+            "properties": {
+              "lower_seconds": {
+                "minimum": 0,
+                "title": "Lower Seconds",
+                "type": "integer"
+              },
+              "upper_seconds": {
+                "exclusiveMinimum": 0,
+                "title": "Upper Seconds",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "lower_seconds",
+              "upper_seconds"
+            ],
+            "title": "PlanEstimate",
+            "type": "object"
+          },
           "PlanNode": {
             "additionalProperties": false,
             "properties": {
@@ -948,6 +1018,18 @@
             "title": "Reason",
             "type": "string"
           },
+          "estimate": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/PlanEstimate"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional total processing-time range for the agreed execution plan, excluding user waits. Submit only after the execution agreement is resolved; never estimate from skill selection. The host displays it only after a step starts. Omit to preserve on update; null clears it. Create and revise without an estimate clear it. On revise provide a new total for the whole plan including work already performed, not remaining time."
+          },
           "operation": {
             "enum": [
               "create",
@@ -988,6 +1070,28 @@
       },
       "action": {
         "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "action": {
+                  "const": "complete"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "reason": {
+                  "minLength": 1,
+                  "pattern": "\\S"
+                }
+              },
+              "required": [
+                "reason"
+              ]
+            }
+          }
+        ],
         "properties": {
           "plan_id": {
             "maxLength": 128,
@@ -1026,7 +1130,8 @@
               "block",
               "fail",
               "partial",
-              "reconcile"
+              "reconcile",
+              "complete"
             ],
             "title": "Action",
             "type": "string"
@@ -1053,7 +1158,7 @@
         ],
         "title": "PlanAction",
         "type": "object",
-        "x-bridge-guidance": "Read plan/get and choose from actions for the stable step IDs. Start before work, finish after actual work, pause for a checkpoint and start before handling its result. If work already completed without a start, verify its result and use reconcile with a reason stating the observed completion evidence. Reconcile records completion without a start or execution time; never fabricate a bookkeeping start/finish. Block only for an actual obstacle. These actions preserve the entire tree and real timing rules.",
+        "x-bridge-guidance": "Read plan/get and choose from actions for the stable step IDs. Start before work. After verifying actual results, prefer complete with a nonempty reason citing observed completion evidence. Complete atomically handles started and unstarted leaves together without inventing starts or execution time. Finish remains strict and requires recorded starts; reconcile accepts only unstarted leaves. Pause for a checkpoint and start before handling its result. Never fabricate bookkeeping start/finish. Block only for an actual obstacle. These actions preserve the entire tree and real timing rules.",
         "x-bridge-prerequisites": [
           {
             "capability": "plan",
@@ -1130,9 +1235,8 @@
     "result": "published is not installed; independent card actions never gate creation",
     "revision": "immutable workspace-relative ZIP path and SHA256 per request_id"
   },
-  "bridge_request_max_bytes": 16384,
   "identity": {
     "version": "1.0.0",
-    "sha256": "41a5a266538b8eba457445a8b0e9a3b692d6587d7f2f86dfddcbbf3f5bf435f6"
+    "sha256": "f8480ea9fbe744094cdfef7402144f088b46c42ca38ca6b9337c6acb8ecac49f"
   }
 }

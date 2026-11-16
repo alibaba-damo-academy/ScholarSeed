@@ -22,6 +22,7 @@ from service.content.service.port import ContentService, ProjectRegistry
 from service.literature.api.catalogue import (
     EXPORT_TOO_MANY_ITEMS,
     FACET_ENTRIES_LIMIT,
+    _summaries,
     register_global_routes,
 )
 from service.literature.domain.model import (
@@ -31,6 +32,7 @@ from service.literature.domain.model import (
 )
 from service.literature.persistence import files as literature_files
 from service.literature.persistence import store as persistence
+from service.literature.persistence.analysis import AnalysisStore
 from service.literature.persistence.store import (
     LiteratureRepository,
     connect,
@@ -97,6 +99,59 @@ class LiteratureStoreTests(unittest.TestCase):
         with edit_library(self.project.id) as edit:
             edit.view = LiteratureView(items=(self.item,))
 
+    def test_note_provenance_is_separate_and_survives_edit_and_reopen(self):
+        self.seed()
+        repository = LiteratureRepository()
+        provenance = {
+            "version": 1,
+            "paragraphs": [{"id": "p01", "text": "Clean body.", "sources": []}],
+        }
+        note = repository.create_note(self.item.id, "Clean body.", "Title", provenance=provenance)
+        self.assertEqual(note.text, "Clean body.")
+        self.assertEqual(note.provenance, provenance)
+        changed = repository.update_note(
+            self.item.id,
+            note.id,
+            title="Moved",
+            text="Heading\n\nClean body.",
+            expected_version=note.version,
+        )
+        self.assertEqual(changed.provenance, provenance)
+        reopened = LiteratureRepository().get(self.item.id).notes[-1]
+        self.assertEqual(reopened.provenance, provenance)
+
+    def test_reading_presence_requires_saved_summary_for_current_attachment(self):
+        self.seed()
+        repository = LiteratureRepository()
+        path = Path(self.temporary.name) / "paper.pdf"
+        path.write_bytes(b"paper")
+        attachment = repository.add_attachment(
+            self.item.id,
+            "paper.pdf",
+            str(path),
+            kind="pdf",
+            revision="sha256:current",
+            role=AttachmentRole.PRIMARY,
+            media_type=PDF_MEDIA_TYPE,
+        )
+
+        def present():
+            return _summaries((self.item,), repository, {})[0]["has_reading"]
+
+        self.assertFalse(present())
+        store = AnalysisStore(self.database)
+        result = {
+            "literature_id": self.item.id,
+            "revision": "current",
+            "modules": {"summary": {"text": "Saved"}},
+        }
+        store.save_l1(self.item.id, "current", attachment["id"], result, "extraction")
+        self.assertFalse(present())
+        store.publish({**result, "revision": "old"}, "old")
+        self.assertFalse(present())
+        store.publish(result, "current")
+        self.assertTrue(present())
+
     def legacy_column_database(self) -> Path:
         database = Path(self.temporary.name) / "legacy-columns.sqlite3"
         with closing(sqlite3.connect(database)) as connection, connection:
@@ -130,7 +185,7 @@ class LiteratureStoreTests(unittest.TestCase):
             connection.execute("INSERT INTO literature_collection_items VALUES('child','kept')")
             connection.execute("INSERT INTO literature_projects VALUES('project','kept',1)")
             connection.execute(
-                "INSERT INTO literature_notes VALUES('note','kept','kept text',1,'Note',2,3,4)"
+                "INSERT INTO literature_notes(id,literature_id,text,created_at,title,updated_at,version,position) VALUES('note','kept','kept text',1,'Note',2,3,4)"
             )
             connection.execute(
                 "INSERT INTO literature_attachments VALUES"
@@ -434,6 +489,7 @@ class LiteratureStoreTests(unittest.TestCase):
                 "updated_at",
                 "version",
                 "position",
+                "provenance",
             },
         )
         self.assertNotIn("literature_marks", tables)
@@ -1008,6 +1064,30 @@ class LiteratureStoreTests(unittest.TestCase):
         self.assertEqual(stored.notes[0].text, "final body")
         self.assertEqual(stored.notes[0].version, updated.version)
 
+    def test_note_api_round_trips_saved_provenance_after_reload_and_edit(self) -> None:
+        self.seed()
+        provenance = {"version": 1, "paragraphs": [], "status": "unverified"}
+        created = LiteratureRepository().create_note(
+            self.item.id, "Raw [[hint:reader_thought|A048]]", provenance=provenance
+        )
+        app = FastAPI()
+        app.state.content = self.content
+        register_global_routes(app)
+        client = TestClient(app)
+        listed = client.get(f"/api/v1/literatures/{self.item.id}/notes").json()["items"]
+        self.assertEqual(listed[0].get("provenance"), provenance)
+        updated = client.patch(
+            f"/api/v1/literatures/{self.item.id}/notes/{created.id}",
+            json={"title": "Review", "text": created.text, "version": created.version},
+        )
+        self.assertEqual(updated.json().get("provenance"), provenance)
+        self.assertEqual(
+            client.get(f"/api/v1/literatures/{self.item.id}/notes").json()["items"][0][
+                "provenance"
+            ],
+            provenance,
+        )
+
     def test_structured_note_api_supports_create_update_list_and_delete(self) -> None:
         self.seed()
         app = FastAPI()
@@ -1047,6 +1127,52 @@ class LiteratureStoreTests(unittest.TestCase):
         deleted = client.delete(f"/api/v1/literatures/{self.item.id}/notes/{note['id']}")
         self.assertEqual(deleted.status_code, 200)
         missing = client.delete(f"/api/v1/literatures/{self.item.id}/notes/{note['id']}")
+        self.assertEqual(missing.status_code, 404)
+
+    def test_note_api_allows_title_only_creation_and_clearing_existing_fields(self) -> None:
+        self.seed()
+        app = FastAPI()
+        app.state.content = self.content
+        register_global_routes(app)
+        client = TestClient(app)
+        endpoint = f"/api/v1/literatures/{self.item.id}/notes"
+        for empty in ("", " \n\t "):
+            rejected = client.post(endpoint, json={"title": empty, "text": empty})
+            self.assertEqual(rejected.status_code, 422)
+        self.assertEqual(client.get(endpoint).json()["items"], [])
+
+        created = client.post(endpoint, json={"title": "Title only", "text": ""})
+        self.assertEqual(created.status_code, 201, created.text)
+        original = created.json()
+        saved = original
+        for fields in (
+            {"text": ""},
+            {"title": "", "text": "Body only"},
+            {"title": "Title only", "text": ""},
+            {"title": "", "text": ""},
+            {"title": " \t ", "text": " \n "},
+        ):
+            with self.subTest(fields=fields):
+                response = client.patch(
+                    f"{endpoint}/{original['id']}", json={**fields, "version": saved["version"]}
+                )
+                self.assertEqual(response.status_code, 200, response.text)
+                updated = response.json()
+                self.assertEqual(updated["title"], fields.get("title", saved["title"]).strip())
+                self.assertEqual(updated["text"], fields["text"].strip())
+                self.assertEqual(updated["id"], original["id"])
+                self.assertEqual(updated["created_at"], original["created_at"])
+                self.assertEqual(updated["position"], original["position"])
+                self.assertEqual(updated["version"], saved["version"] + 1)
+                self.assertEqual(client.get(endpoint).json()["items"], [updated])
+                saved = updated
+        stale = client.patch(
+            f"{endpoint}/{original['id']}",
+            json={"title": "", "text": "", "version": original["version"]},
+        )
+        self.assertEqual(stale.status_code, 409)
+        self.assertEqual(client.get(endpoint).json()["items"], [saved])
+        missing = client.patch(f"{endpoint}/missing", json={"title": "", "text": "", "version": 1})
         self.assertEqual(missing.status_code, 404)
 
     def legacy_notes_database(self):

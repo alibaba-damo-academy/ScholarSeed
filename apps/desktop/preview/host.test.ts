@@ -8,13 +8,13 @@ import test from 'node:test'
 import { chromium, expect } from '@playwright/test'
 import react from '@vitejs/plugin-react'
 import { createServer } from 'vite'
-import { RENDERER_OPTIMIZE_DEPS, supportedFontSources } from '../renderer.ts'
+import { RENDERER_SHARED_DEPENDENCIES, RENDERER_OPTIMIZE_DEPS, supportedFontSources } from '../renderer.ts'
 import { WORKSPACE_WINDOW_SIZE } from '../src/window.ts'
 import { createPreviewService } from './service.ts'
 
 const DESKTOP_ROOT = fileURLToPath(new URL('../', import.meta.url))
 const CONSUMER_ENTRY = '/__settings-consumer.tsx'
-const HIDDEN_PAGES = ['account', 'preferences', 'skills', 'permissions', 'shortcuts'] as const
+const HIDDEN_PAGES = ['account', 'preferences', 'permissions', 'shortcuts'] as const
 const SCREENSHOT_ROOT = join(DESKTOP_ROOT, 'test-results/preview-host/settings-corrections')
 const HOST = '127.0.0.1'
 
@@ -68,7 +68,7 @@ test('hidden settings reuse real content and providers while production navigati
           if (query.has('production')) {
             const { mountRenderer } = await import(${JSON.stringify(source('src/renderer/src/app/root.tsx'))});
             const { AccountPanel } = await import(${JSON.stringify(source('src/renderer/src/components/business/AccountPanel.tsx'))});
-            mountRenderer(React.createElement(AccountPanel, { embedded: true, page: page.replace('settings-', ''), onPage() {}, onClose() {}, onLogin() {}, onLogout: async () => ({ok:true,data:{local_cleared:true}}) }));
+            mountRenderer(React.createElement(AccountPanel, { embedded: true, page: query.get('settingsPage') ?? page.replace('settings-', ''), onPage() {}, onClose() {}, onLogin() {}, onLogout: async () => ({ok:true,data:{local_cleared:true}}) }));
           } else {
             const { mountPreviewHost } = await import(${JSON.stringify(source('preview/host.tsx'))});
             mountPreviewHost(page);
@@ -79,7 +79,8 @@ test('hidden settings reuse real content and providers while production navigati
       configureServer(vite) { vite.middlewares.use(service.middleware) },
     }],
     optimizeDeps: RENDERER_OPTIMIZE_DEPS,
-    server: { host: HOST, port, strictPort: true, fs: { allow: [DESKTOP_ROOT] } },
+    resolve: { dedupe: RENDERER_SHARED_DEPENDENCIES },
+    server: { host: HOST, port, strictPort: true, fs: { allow: [DESKTOP_ROOT, join(DESKTOP_ROOT, '../../packages/ui')] } },
   })
   let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined
   try {
@@ -122,10 +123,6 @@ test('hidden settings reuse real content and providers while production navigati
       try {
         await expect(page.getByTestId(`account-settings-${name}`)).toBeVisible({ timeout: 10_000 })
         if (name === 'account') await expect(page.getByTestId('account-profile-retry')).toBeVisible()
-        if (name === 'skills') {
-          await page.getByTestId('skills-tab-user').click()
-          await expect(page.getByTestId('skill-card-preview-notes')).toBeVisible()
-        }
         if (name === 'permissions') await expect(page.getByTestId('permissions-refresh')).toBeEnabled()
       } catch (error) { await diagnose(`hidden-${name}`); throw error }
       assert.equal(await page.getByTestId('account-settings-nav-notifications').count(), 0)
@@ -193,8 +190,8 @@ test('hidden settings reuse real content and providers while production navigati
         } catch (error) { await capture(`failure-account-${language}-${variant}`); throw error }
       })
     }
-    for (const name of HIDDEN_PAGES) {
-      await page.goto(`${origin}?previewInstance=production-${name}&page=settings-${name}&scene=settings-${name}-states&production=1`)
+    for (const name of [...HIDDEN_PAGES, 'skills']) {
+      await page.goto(`${origin}?previewInstance=production-${name}&page=settings-notifications&scene=settings-notifications-states&production=1&settingsPage=${name}`)
       try {
         await expect(page.getByTestId('account-settings-notifications')).toBeVisible({ timeout: 10_000 })
       } catch (error) {

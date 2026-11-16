@@ -48,7 +48,6 @@ from service.platform.bridge import (  # noqa: E402
 )
 from service.platform.local import UNIX_SOCKET_FAMILY, WINDOWS_PLATFORM  # noqa: E402
 from service.platform.vocabulary import (  # noqa: E402 - requires SCHOLARSEED_HOME isolation
-    BRIDGE_MAX_REQUEST_BYTES,
     BRIDGE_SESSION_HEADER,
     BRIDGE_TOKEN_HEADER,
 )
@@ -151,7 +150,7 @@ class BridgeRoutesContract(unittest.TestCase):
             response = client.post(CONTRACT_DESCRIBE_ROUTE, headers=headers, json=target)
             self.assertEqual(response.status_code, HTTP_403_FORBIDDEN)
 
-    def test_describe_bounds_requests_and_does_not_echo_invalid_input(self):
+    def test_describe_accepts_large_requests_and_does_not_echo_invalid_input(self):
         live = SimpleNamespace(
             id="session",
             bridge_token="private",
@@ -176,9 +175,10 @@ class BridgeRoutesContract(unittest.TestCase):
             response = client.post(
                 CONTRACT_DESCRIBE_ROUTE,
                 headers=headers,
-                content=b" " * (BRIDGE_MAX_REQUEST_BYTES + 1),
+                content=b" " * 20000 + b'{"target_capability":"plan","target_operation":"write"}',
             )
-            self.assertEqual(response.json()["error"], "bridge_request_too_large")
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("request_schema", response.json())
 
     def test_describe_rechecks_active_scope_after_reading_body(self):
         live = SimpleNamespace(
@@ -269,9 +269,8 @@ class BridgeRoutesContract(unittest.TestCase):
     )
     def test_local_socket_serves_the_same_capability_registry(self) -> None:
         # Keep AF_UNIX paths short even when the host's default temp path is long.
-        with tempfile.TemporaryDirectory(prefix="br-", dir=_SOCKET_ROOT) as temporary:
-            root = Path(temporary).resolve()
-            app = create_app(root, auth=False, local_bridge_root=root / "bridge")
+        with directory("bridge-local-") as root:
+            app = create_app(root, auth=False, local_bridge_root=_SOCKET_ROOT / "bridge")
             with self.product_client(app):
                 endpoint = app.state.runtime_service._local_socket
                 self.assertIsNotNone(endpoint)

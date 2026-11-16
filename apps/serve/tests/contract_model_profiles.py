@@ -43,6 +43,7 @@ from service.identity.service.account_token import (  # noqa: E402
     CONV_TURN_ID_HEADER,
 )
 from service.identity.utils import LOCAL_USER_ID, OWNERSHIP_AXIS_MACHINE  # noqa: E402
+from service.inference.reasoning import effort_parameters, minimum_parameters  # noqa: E402
 from service.settings.catalog import (  # noqa: E402
     DEFAULT_GATEWAY_MODEL_KEY,
     GATEWAY_VISIBLE_MODEL_KEYS,
@@ -293,7 +294,10 @@ def test_header_only_openai_profile() -> None:
 
 
 def build_service(
-    store: ModelProfileStore, *, activities: Activities | None = None
+    store: ModelProfileStore,
+    *,
+    activities: Activities | None = None,
+    bridge: CompletionBridge | None = None,
 ) -> tuple[Any, dict[str, str]]:
     """Return a ModelService bound to the isolated store plus its selection state."""
     selected = {"model": ""}
@@ -304,7 +308,7 @@ def build_service(
     )
     service = ModelService(
         settings,  # type: ignore[arg-type]
-        CompletionBridge("http://127.0.0.1:9999"),
+        bridge or CompletionBridge("http://127.0.0.1:9999"),
         profiles=store,
         activities=activities or Activities(),
     )
@@ -454,7 +458,7 @@ def test_execution_catalog_groups_only_compatible_connections() -> None:
         )
 
 
-def test_execution_catalog_rejects_ambiguous_model_definitions() -> None:
+def test_execution_catalog_prefers_selected_api_connection() -> None:
     with tempfile.TemporaryDirectory() as directory:
         store = ModelProfileStore(Path(directory) / "profiles.json")
         service, _selected = build_service(store)
@@ -471,17 +475,85 @@ def test_execution_catalog_rejects_ambiguous_model_definitions() -> None:
                 "identical model definitions deduplicate across bridged connections",
                 len(spec.catalog_models) == 1,
             )
+            unrelated = store.upsert(
+                profile_values(wire_api="chat_completions", models=("other-model",))
+            )
             store.upsert(
                 {**values, "selected_models": [{"id": "same-slug", "context_window": 64000}]},
                 second["id"],
             )
-            try:
-                service.session_spec(key)
-            except SessionModelUnavailableError as error:
-                conflict = "model_catalog_definition_conflict" in str(error)
-            else:
-                conflict = False
-        check("different definitions sharing one slug fail closed instead of overwriting", conflict)
+            first_spec = service.session_spec(key)
+            second_spec = service.session_spec(personal_model_key(second["id"], "same-slug"))
+            check(
+                "same wire model retains the context window of the selected connection",
+                [spec.catalog_models[0].context_window for spec in (first_spec, second_spec)]
+                == [32000, 64000],
+            )
+            other_spec = service.session_spec(personal_model_key(unrelated["id"], "other-model"))
+            check(
+                "an unrelated selection remains usable in the presence of collisions",
+                [entry.model_ref for entry in other_spec.catalog_models] == ["other-model"],
+            )
+            store.upsert(
+                {
+                    **values,
+                    "selected_models": [
+                        {"id": "same-slug", "context_window": 32000},
+                        {"id": "SAME-SLUG", "context_window": 64000},
+                    ],
+                },
+                first["id"],
+            )
+            alias_specs = [
+                service.session_spec(personal_model_key(first["id"], model))
+                for model in ("same-slug", "SAME-SLUG")
+            ]
+            check(
+                "same-connection aliases retain the definition of the exact selected key",
+                [spec.catalog_models[0].context_window for spec in alias_specs] == [32000, 64000]
+                and all(len(spec.catalog_models) == 1 for spec in alias_specs),
+            )
+
+
+def test_execution_catalog_keeps_builtin_and_dashscope_approval_distinct() -> None:
+    preset = next(row for row in ModelService.providers()["providers"] if row["id"] == "dashscope")
+    with tempfile.TemporaryDirectory() as directory:
+        store = ModelProfileStore(Path(directory) / "profiles.json")
+        bridge = CompletionBridge("http://127.0.0.1:9999", source_endpoints=(GATEWAY_BASE_URL,))
+        service, _selected = build_service(store, bridge=bridge)
+        profile = store.upsert(
+            profile_values(
+                preset_id=preset["id"],
+                base_url=preset["base_url"],
+                wire_api=preset["wire_api"],
+                models=(GATEWAY_MODEL_KEY,),
+            )
+        )
+        for key, endpoint in (
+            (GATEWAY_MODEL_KEY, GATEWAY_BASE_URL),
+            (personal_model_key(profile["id"], GATEWAY_MODEL_KEY), preset["base_url"]),
+            (DEFAULT_GATEWAY_MODEL_KEY, GATEWAY_BASE_URL),
+        ):
+            spec = service.session_spec(key, user_id="catalog-owner", session_id=key)
+            intent, _credential = spec.runtime_model()
+            entries = {entry.model_ref: entry for entry in intent.catalog_models}
+            selected_entry = entries[intent.model_ref]
+            upstream = next(item for item in bridge._upstreams.values() if item.session_id == key)
+            check(
+                "selection keeps its own upstream endpoint", upstream.endpoint.startswith(endpoint)
+            )
+            check(
+                "selection keeps its own approval model in the runtime catalog",
+                intent.approval_model_ref
+                == selected_entry.approval_model_ref
+                == upstream.approval_model_ref
+                == ("qwen3-next-80b-a3b-thinking" if endpoint == GATEWAY_BASE_URL else ""),
+            )
+            check(
+                "Qwen Max retains its declared multimodal inputs",
+                entries[GATEWAY_MODEL_KEY].capabilities.input_modalities
+                == ("text", "image", "video"),
+            )
 
 
 def test_unsaved_model_api_probe() -> None:
@@ -658,6 +730,50 @@ def test_official_personal_endpoint_uses_verified_vendor_capabilities() -> None:
         proxy_row.get("reasoning_options") is None and proxy_row.get("max_output_tokens") is None,
         str(proxy_row),
     )
+
+
+def test_effort_override_preserves_independent_verified_thinking_controls() -> None:
+    store = ModelProfileStore()
+    for existing in store.list()["profiles"]:
+        store.delete(existing["id"])
+    for endpoint, expected in (
+        ("https://dashscope.aliyuncs.com/compatible-mode/v1", {"enable_thinking": False}),
+        ("https://proxy.example.test/v1", {"reasoning_effort": "low"}),
+    ):
+        profile = store.upsert(
+            profile_values(
+                base_url=endpoint,
+                wire_api="chat_completions",
+                selected_models=[
+                    {"id": "qwen3.8-flash", "label": "", "reasoning_efforts": ["low", "medium"]}
+                ],
+            )
+        )
+        service, _selected = build_service(store)
+        connection = service.inference_connection(
+            personal_model_key(profile["id"], "qwen3.8-flash"), user_id="local"
+        )
+        options = connection["reasoning_options"]
+        controls = minimum_parameters(options, connection["wire_api"], connection["provider"])
+        check(
+            "effort override preserves only verified independent thinking controls",
+            controls.parameters == expected,
+            str(controls),
+        )
+        effort = next(option for option in options if option["kind"] == "effort")
+        check(
+            "user effort restriction remains authoritative",
+            effort["values"] == ["low", "medium"] and effort.get("default", "low") == "low",
+            str(effort),
+        )
+        chat_controls = effort_parameters(
+            options, connection["wire_api"], connection["provider"], ""
+        )
+        check(
+            "ordinary chat effort default remains unchanged",
+            chat_controls.parameters == {"reasoning_effort": "low"},
+            str(chat_controls),
+        )
 
 
 def test_official_personal_endpoint_keeps_catalog_and_inference_modalities_aligned() -> None:
@@ -2134,8 +2250,10 @@ def main() -> int:
     test_personal_profile_is_a_catalog_source()
     test_catalog_and_selection_preserve_the_owning_service_instance()
     test_execution_catalog_groups_only_compatible_connections()
-    test_execution_catalog_rejects_ambiguous_model_definitions()
+    test_execution_catalog_prefers_selected_api_connection()
+    test_execution_catalog_keeps_builtin_and_dashscope_approval_distinct()
     test_official_personal_endpoint_uses_verified_vendor_capabilities()
+    test_effort_override_preserves_independent_verified_thinking_controls()
     test_official_personal_endpoint_keeps_catalog_and_inference_modalities_aligned()
     test_catalog_display_provenance_preserves_user_labels_and_model_identity()
     test_hidden_model_leaves_the_catalog_and_stays_recoverable()

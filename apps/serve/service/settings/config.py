@@ -5,13 +5,12 @@ from __future__ import annotations
 import json
 import os
 import sys
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Protocol
 
 from service.paths import CONFIG_PATH
-from service.platform.privacy import protect_path
+from service.platform.privacy import publish_private
 from service.settings.catalog import (
     RETIRED_CONNECTION_KEYS,
     converge_gateway_model_config,
@@ -30,7 +29,6 @@ DEFAULT_CONFIG_PATH = Path(__file__).with_name("default.json")
 CONFIG_MODEL = "model_name"
 SETUP_FIELDS = (CONFIG_MODEL,)
 CONFIG_DIRECTORY_MODE = 0o700
-CONFIG_FILE_MODE = 0o600
 
 
 CONFIG_SEED_ENV = "SCHOLARSEED_CONFIG_SEED_PATH"
@@ -94,25 +92,8 @@ def publish_config_seed(seed: ConfigSeed) -> bool:
     if target.exists():
         return False
     target.parent.mkdir(parents=True, exist_ok=True)
-    staged: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="wb", dir=target.parent, prefix=f"{target.name}.", delete=False
-        ) as config_file:
-            staged = Path(config_file.name)
-            protect_path(staged, CONFIG_FILE_MODE, config_file.fileno())
-            config_file.write(seed.payload)
-            config_file.flush()
-            os.fsync(config_file.fileno())
-        try:
-            # Publishing a complete same-volume inode must never replace a
-            # config which another startup or the user created meanwhile.
-            os.link(staged, target)
-        except FileExistsError:
-            return False
-    finally:
-        if staged is not None:
-            staged.unlink(missing_ok=True)
+    if not publish_private(target, seed.payload, exclusive=True):
+        return False
     print(f"[scholarseed serve] initialized packaged config: {target}", file=sys.stderr)
     if seed.dropped:
         print(

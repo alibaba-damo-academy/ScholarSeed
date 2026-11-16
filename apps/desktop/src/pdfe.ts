@@ -1,4 +1,5 @@
 import type { OfficeFontCache, OfficeFontCatalog } from './fonts.ts'
+import { WORKSPACE_WINDOW_MINIMUM, WORKSPACE_WINDOW_SIZE } from './window.ts'
 
 export const PDFE_CHANNEL = {
   boot: 'scholarseed:pdfe-boot',
@@ -59,6 +60,14 @@ export interface PdfeNativeBridge {
   readOfficeFont: (id: string) => Promise<Uint8Array>
   readOfficeFontCache: (fingerprint: string) => Promise<OfficeFontCache | null>
   writeOfficeFontCache: (fingerprint: string, cache: OfficeFontCache) => Promise<void>
+}
+
+export function pdfeWindowWidth(available: number): number {
+  if (!Number.isInteger(available) || available <= 0) throw new Error('Invalid PDFE display width')
+  return Math.max(
+    WORKSPACE_WINDOW_MINIMUM.width,
+    Math.min(available, WORKSPACE_WINDOW_SIZE.width + PDFE_CONTROL_SIZE.width)
+  )
 }
 
 export function pdfeDockWidth(available: number, requested: unknown): number {

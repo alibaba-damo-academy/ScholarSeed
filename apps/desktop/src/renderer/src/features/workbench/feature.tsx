@@ -6,6 +6,10 @@ import { EmptyState } from '../../components/ui'
 import type { FeatureModule } from '../../contracts/features'
 import { Pending } from '../../shell/Pending'
 import { useApp } from '../../store'
+import { availabilityPolicy } from '../../app/policy'
+import { isHtmlDocument } from './html'
+import { useDocumentWorkspace } from './workspace'
+import { DocumentFallbackActions } from './External'
 
 /**
  * 每个 viewer 单独成 chunk，按 kind 真正被打开时才加载。
@@ -20,6 +24,9 @@ const MarkdownDocument = React.lazy(() =>
 )
 const MonacoDocument = React.lazy(() =>
   import('./MonacoDocument').then((module) => ({ default: module.MonacoDocument }))
+)
+const HtmlDocument = React.lazy(() =>
+  import('./HtmlDocument').then((module) => ({ default: module.HtmlDocument }))
 )
 const PdfDocument = React.lazy(() =>
   import('./PdfDocument').then((module) => ({ default: module.PdfDocument }))
@@ -110,6 +117,7 @@ export function workbenchFeature(): FeatureModule {
       },
       {
         kind: 'image',
+        toolbar: 'viewer',
         render: ({ documentSessionId, tabId }) =>
           documentSessionId && tabId ? (
             <ImageDocument sessionId={documentSessionId} tabId={tabId} />
@@ -147,8 +155,13 @@ export function workbenchFeature(): FeatureModule {
       },
       {
         kind: 'unsupported',
-        render: ({ path, contentKind }) => (
-          <UnavailableViewer kind="unsupported" path={path} contentKind={contentKind} />
+        render: ({ path, contentKind, documentSessionId }) => (
+          <UnavailableViewer
+            kind="unsupported"
+            path={path}
+            contentKind={contentKind}
+            sessionId={documentSessionId}
+          />
         ),
       },
     ],
@@ -184,6 +197,23 @@ function MonacoDocumentHost(props: {
   viewKind: 'preview' | 'edit' | 'source'
 }): React.JSX.Element {
   const { editorRuntimeRevision, formatOnSave } = useApp().state
+  const session = useDocumentWorkspace().sessions[props.sessionId]
+  if (session && isHtmlDocument(session) && availabilityPolicy.routeAvailable('browser')) {
+    return (
+      <HtmlDocument
+        sessionId={props.sessionId}
+        toolbarActions={props.toolbarActions}
+        source={
+          <MonacoDocument
+            key={`${props.tabId}:${editorRuntimeRevision}`}
+            {...props}
+            toolbarActions={undefined}
+            formatOnSave={formatOnSave}
+          />
+        }
+      />
+    )
+  }
   return (
     <MonacoDocument
       key={`${props.tabId}:${editorRuntimeRevision}`}
@@ -237,12 +267,16 @@ function UnavailableViewer({
   kind,
   path = '',
   contentKind,
+  sessionId,
 }: {
   kind: keyof typeof VIEWER_MESSAGE_KEYS
   path?: string
   contentKind?: string
+  sessionId?: string
 }): React.JSX.Element {
   const { t } = useTranslation('workbench')
+  const documents = useDocumentWorkspace()
+  const session = sessionId ? documents.sessions[sessionId] : undefined
   const detail =
     kind === 'unsupported'
       ? contentKind === 'oversized'
@@ -260,6 +294,8 @@ function UnavailableViewer({
           className="gap-[var(--vds-space-6)]"
           image={{ src: emptyImage, alt: '' }}
           title={t('viewer.previewUnavailable')}
+          description={detail}
+          action={session ? <DocumentFallbackActions session={session} /> : undefined}
         />
       </div>
     )

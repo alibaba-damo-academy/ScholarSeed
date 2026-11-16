@@ -9,17 +9,18 @@ const AUTH_RESTORED_EVENT = 'scholarseed:auth-restored'
 interface AccountAccess {
   authenticated: boolean
   revision: number
+  identity: number
 }
 
 const listeners = new Map<(access: AccountAccess) => void, boolean>()
-let access: AccountAccess = { authenticated: false, revision: 0 }
+let access: AccountAccess = { authenticated: false, revision: 0, identity: 0 }
 let resolved = false
 let request = 0
 let pending: Promise<void> | null = null
 let eventsAttached = false
 
-const changed = (authenticated = access.authenticated): void => {
-  access = { authenticated, revision: access.revision + 1 }
+const changed = (authenticated = access.authenticated, identity = access.identity): void => {
+  access = { authenticated, revision: access.revision + 1, identity }
   for (const listener of listeners.keys()) listener(access)
 }
 
@@ -46,13 +47,14 @@ const clear = (): void => {
   request += 1
   pending = null
   resolved = true
-  changed(false)
+  changed(false, access.identity + 1)
 }
 
 const restored = (): void => {
   request += 1
   pending = null
   resolved = false
+  changed(false, access.identity + 1)
   refresh()
 }
 
@@ -66,27 +68,21 @@ const attachEvents = (): void => {
   window.addEventListener(SKILL_CATALOG_CHANGED_EVENT, revisionChanged)
 }
 
-const detachEvents = (): void => {
-  if (!eventsAttached || listeners.size > 0) return
-  eventsAttached = false
-  window.removeEventListener(AUTH_REQUIRED_EVENT, clear)
-  window.removeEventListener(AUTH_RESTORED_EVENT, restored)
-  window.removeEventListener(SKILL_CATALOG_CHANGED_EVENT, revisionChanged)
-}
-
-export function watchAccountAccess(ready: boolean, onChange: (access: AccountAccess) => void): () => void {
+export function watchAccountAccess(
+  ready: boolean,
+  onChange: (access: AccountAccess) => void
+): () => void {
   listeners.set(onChange, ready)
   attachEvents()
   onChange(access)
   if (ready) refresh()
   return () => {
     listeners.delete(onChange)
-    detachEvents()
   }
 }
 
 export function useAccountAccess(ready: boolean): AccountAccess {
-  const [access, setAccess] = React.useState<AccountAccess>({ authenticated: false, revision: 0 })
-  React.useEffect(() => watchAccountAccess(ready, setAccess), [ready])
-  return access
+  const [snapshot, setSnapshot] = React.useState<AccountAccess>(() => access)
+  React.useEffect(() => watchAccountAccess(ready, setSnapshot), [ready])
+  return snapshot
 }

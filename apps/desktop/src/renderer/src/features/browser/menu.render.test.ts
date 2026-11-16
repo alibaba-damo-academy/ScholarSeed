@@ -1,27 +1,97 @@
 import assert from 'node:assert/strict'
 import path from 'node:path'
-import test from 'node:test'
+import test, { after } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { chromium, expect } from '@playwright/test'
 import react from '@vitejs/plugin-react'
-import { createServer } from 'vite'
+
 import type { MenuModel } from '../../../../menu.ts'
 import type { FindState } from '../../../../browser.ts'
+import { renderServers } from '../../../../test-helpers/render.ts'
+
+const servers = renderServers({ after })
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 
 test(
-  'actual Browser zoom model renders three horizontal menuitems, preserves keep-open focus and disables noisy endpoints',
+  'reused menu resets submenus and executes only the new session actions',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'menu',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
+    try {
+      const page = await browser.newPage({ viewport: { width: 1280, height: 680 } })
+      await page.goto(
+        new URL('/features/browser/menu.render.fixture.html', server.resolvedUrls!.local[0]).href
+      )
+      await page.getByRole('menuitem', { name: 'Tools', exact: true }).click()
+      await expect(
+        page.getByRole('menuitemcheckbox', { name: 'Developer tools', exact: true })
+      ).toBeVisible()
+      await page.evaluate(() => (window as unknown as { resetMenu(): void }).resetMenu())
+      await expect(page.getByRole('menu')).toHaveCount(0)
+      await page.mouse.move(0, 0)
+      await page.evaluate(() =>
+        (window as unknown as { reopenMenu(sessionId: string, revision: number): void }).reopenMenu(
+          'reopened',
+          2
+        )
+      )
+      await expect(
+        page.getByRole('menuitemcheckbox', { name: 'Developer tools', exact: true })
+      ).toBeHidden()
+      await page.getByRole('menuitem', { name: 'Browser settings', exact: true }).click()
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () =>
+              (window as unknown as { menuEvents: Array<{ sessionId: string }> }).menuEvents.at(-1)
+                ?.sessionId
+          )
+        )
+        .toBe('reopened')
+      await page.evaluate(() =>
+        (window as unknown as { reopenMenu(sessionId: string, revision: number): void }).reopenMenu(
+          'stale',
+          1
+        )
+      )
+      await page.getByRole('menuitem', { name: 'Browser settings', exact: true }).click()
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () =>
+              (window as unknown as { menuEvents: Array<{ sessionId: string }> }).menuEvents.at(-1)
+                ?.sessionId
+          )
+        )
+        .toBe('reopened')
+    } finally {
+      await browser.close()
+    }
+  }
+)
+
+test(
+  'actual Browser zoom model renders three horizontal menuitems, preserves keep-open focus and disables noisy endpoints',
+  { timeout: 60_000 },
+  async () => {
+    const server = await servers.create({
+      cacheKey: 'menu',
+      configFile: false,
+      root: ROOT,
+      plugins: [react()],
+      server: { host: '127.0.0.1', port: 0 },
+    })
+    await server.listen()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const product = await browser.newPage({ viewport: { width: 1280, height: 680 } })
       const scene = await browser.newPage({ viewport: { width: 1280, height: 680 } })
@@ -42,8 +112,14 @@ test(
         (window as unknown as { menuModels: MenuModel[] }).menuModels.at(-1)!
       )
       assert.deepEqual(
-        model.items.slice(0, 3).map((item) => item.id),
-        ['browser.find', 'browser.print', 'browser.zoom']
+        model.items.slice(0, 5).map((item) => item.id),
+        [
+          'browser.find',
+          'browser.print',
+          'browser.menu.page.separator',
+          'browser.copy',
+          'browser.zoom',
+        ]
       )
       await product.evaluate(() =>
         (window as unknown as { finishMenu(ok: boolean): void }).finishMenu(true)
@@ -57,6 +133,23 @@ test(
         model
       )
       const group = scene.getByRole('group', { name: 'Zoom', exact: true })
+      const developerTools = scene.getByRole('menuitemcheckbox', {
+        name: 'Open developer tools',
+        exact: true,
+      })
+      const copyAddress = scene.getByRole('menuitem', { name: 'Copy address', exact: true })
+      assert.equal(
+        await developerTools.evaluate((element) => getComputedStyle(element).paddingLeft),
+        await copyAddress.evaluate((element) => getComputedStyle(element).paddingLeft)
+      )
+      await scene.mouse.move(0, 0)
+      await expect(scene.locator('[role="menu"] :focus')).toHaveCSS(
+        'background-color',
+        'rgba(0, 0, 0, 0)'
+      )
+      await copyAddress.hover()
+      await expect(copyAddress).not.toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
+      await scene.mouse.move(0, 0)
       await expect(group.getByText('Zoom', { exact: true })).toBeVisible()
       await expect(group.getByRole('menuitem')).toHaveCount(3)
       await expect(group.getByText('175%', { exact: true })).toBeVisible()
@@ -65,6 +158,23 @@ test(
         group.getByRole('menuitem', { name: 'Zoom in', exact: true }),
         group.getByRole('menuitem', { name: 'Reset zoom', exact: true }),
       ]
+      for (const control of controls) {
+        await expect(control.locator('svg')).toHaveCount(1)
+        const padding = await control.evaluate((element) => {
+          const style = getComputedStyle(element)
+          return {
+            left: style.paddingLeft,
+            right: style.paddingRight,
+            width: element.getBoundingClientRect().width,
+            height: element.getBoundingClientRect().height,
+          }
+        })
+        assert.equal(padding.left, padding.right)
+        assert.equal(padding.width, padding.height)
+      }
+      await controls[2].hover()
+      await expect(scene.getByRole('tooltip', { name: 'Reset zoom' })).toBeVisible()
+      await scene.mouse.move(0, 0)
       const bounds = await Promise.all(controls.map((control) => control.boundingBox()))
       assert.ok(
         bounds.every(
@@ -125,6 +235,9 @@ test(
         if (index < 2) await expect(controls[index]).toBeFocused()
       }
       await expect(controls[2]).toBeDisabled()
+      await controls[2].hover()
+      await expect(scene.getByRole('tooltip', { name: 'Reset zoom' })).toBeVisible()
+      await scene.mouse.move(0, 0)
       await repaint(4.999999999999999)
       await expect(controls[1]).toBeDisabled()
       await expect(controls[0]).toBeEnabled()
@@ -142,14 +255,15 @@ test(
   'native find React scene uses Popover positioning and shared focus, preserves selection on repaint, and suppresses IME submission',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'menu',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage({ viewport: { width: 1280, height: 680 } })
       await page.goto(
@@ -161,6 +275,17 @@ test(
       await expect(page.getByRole('menu')).toHaveCount(0)
       const bounds = await page.getByTestId('browser-find').boundingBox()
       assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= 1280 && bounds.y >= 72)
+      const handle = page.getByRole('button', { name: 'Move find bar' })
+      const grip = await handle.boundingBox()
+      assert.ok(grip)
+      await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2)
+      await page.mouse.down()
+      await page.mouse.move(grip.x + grip.width / 2 - 120, grip.y + grip.height / 2 + 80)
+      await page.mouse.up()
+      const moved = await page.getByTestId('browser-find').boundingBox()
+      assert.ok(
+        moved && Math.abs(moved.x - bounds.x + 120) < 1 && Math.abs(moved.y - bounds.y - 80) < 1
+      )
       await input.fill('needle')
       await page.evaluate(() =>
         (window as unknown as { emitFound(state: FindState): void }).emitFound({
@@ -173,6 +298,87 @@ test(
         })
       )
       await expect(page.getByRole('status')).toHaveText('1 of 3')
+      for (const direction of ['Next match', 'Previous match']) {
+        await page.getByRole('button', { name: direction, exact: true }).click()
+        await expect(page.getByRole('status')).toHaveText('1 of 3')
+        const sequence = await page.evaluate(
+          () =>
+            (window as unknown as { menuEvents: { querySequence?: number }[] }).menuEvents.at(-1)
+              ?.querySequence
+        )
+        await page.evaluate(
+          (querySequence) =>
+            (window as unknown as { emitFound(state: FindState): void }).emitFound({
+              querySequence: querySequence!,
+              requestId: querySequence!,
+              phase: 'searching',
+              ordinal: 0,
+              count: 0,
+              final: false,
+            }),
+          sequence
+        )
+        await expect(page.getByRole('status')).toHaveText('1 of 3')
+        await page.evaluate(
+          (querySequence) =>
+            (window as unknown as { emitFound(state: FindState): void }).emitFound({
+              querySequence: querySequence!,
+              requestId: querySequence!,
+              phase: 'ready',
+              ordinal: 0,
+              count: 3,
+              final: false,
+            }),
+          sequence
+        )
+        await expect(page.getByRole('status')).toHaveText('1 of 3')
+      }
+      await page.evaluate(() =>
+        (window as unknown as { emitFound(state: FindState): void }).emitFound({
+          querySequence: 3,
+          requestId: 3,
+          phase: 'ready',
+          ordinal: 2,
+          count: 3,
+          final: true,
+        })
+      )
+      await expect(page.getByRole('status')).toHaveText('2 of 3')
+      await page.evaluate(() =>
+        (window as unknown as { emitFound(state: FindState): void }).emitFound({
+          querySequence: 2,
+          requestId: 2,
+          phase: 'ready',
+          ordinal: 0,
+          count: 0,
+          final: true,
+        })
+      )
+      await expect(page.getByRole('status')).toHaveText('2 of 3')
+      await input.fill('new needle')
+      await expect(page.getByRole('status')).toHaveText('Searching…')
+      await input.fill('needle')
+      await page.evaluate(() =>
+        (window as unknown as { emitFound(state: FindState): void }).emitFound({
+          querySequence: 5,
+          requestId: 1,
+          phase: 'ready',
+          ordinal: 0,
+          count: 0,
+          final: true,
+        })
+      )
+      await expect(page.getByRole('status')).toHaveText('0 of 0')
+      await page.evaluate(() =>
+        (window as unknown as { emitFound(state: FindState): void }).emitFound({
+          querySequence: 5,
+          requestId: 1,
+          phase: 'ready',
+          ordinal: 1,
+          count: 3,
+          final: true,
+        })
+      )
       await input.evaluate((element) => (element as HTMLInputElement).setSelectionRange(1, 3))
       await page.evaluate(() =>
         (window as unknown as { updateMenu(revision: number): void }).updateMenu(2)
@@ -208,6 +414,8 @@ test(
         .toBe('backward')
       await page.getByRole('button', { name: 'Close find' }).focus()
       await page.keyboard.press('Tab')
+      await expect(handle).toBeFocused()
+      await page.keyboard.press('Tab')
       await expect(input).toBeFocused()
       await page.keyboard.press('Escape')
       await expect
@@ -226,17 +434,18 @@ test(
 )
 
 test(
-  'browser tab bar extends the owning gray seam through trailing action without height or active-opening changes',
+  'browser navigation sits directly below the workspace header without an inner tab row',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'menu',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       for (const variation of [
         { query: '', width: 1280 },
@@ -253,45 +462,14 @@ test(
         )
         const workspace = page.getByTestId('browser-workspace')
         await expect(workspace).toBeVisible()
-        if (variation.single) {
-          await page.getByRole('tab', { name: 'Second' }).hover()
-          await page.getByRole('button', { name: '关闭 Second' }).click()
-        }
-        const bar = workspace.locator('.vds-navigation-tabs__bar')
-        await expect(bar).toBeVisible({ timeout: 2000 })
-        const geometry = await bar.evaluate((element) => {
-          const list = element.querySelector('[role="tablist"]') as HTMLElement
-          const action = element.querySelector('button[aria-label="打开新的标签页"]') as HTMLElement
-          const bounds = element.getBoundingClientRect()
-          const listBounds = list.getBoundingClientRect()
-          return {
-            right: bounds.right,
-            bottom: bounds.bottom,
-            height: bounds.height,
-            listRight: listBounds.right,
-            listBottom: listBounds.bottom,
-            actionLeft: action.getBoundingClientRect().left,
-            actionRight: action.getBoundingClientRect().right,
-            background: getComputedStyle(element).backgroundImage,
-            divider: getComputedStyle(
-              list.querySelector('[aria-selected="true"] [class*="border-b-0"]')!
-            ).borderTopColor,
-            expectedHeight: parseFloat(
-              getComputedStyle(element).getPropertyValue('--vds-workbench-header-height')
-            ),
-            activeBackground: getComputedStyle(list.querySelector('[aria-selected="true"]')!)
-              .backgroundColor,
-          }
-        })
+        await expect(workspace.getByRole('tablist')).toHaveCount(0)
+        await expect(workspace.getByRole('button', { name: '打开新的标签页' })).toHaveCount(0)
+        const navigation = workspace.getByRole('form', { name: '网页导航' })
+        await expect(navigation).toBeVisible()
+        const navigationBounds = await navigation.boundingBox()
         const workspaceBounds = await workspace.boundingBox()
-        assert.equal(geometry.right, workspaceBounds!.x + workspaceBounds!.width)
-        assert.equal(geometry.height, geometry.expectedHeight)
-        assert.equal(geometry.bottom, geometry.listBottom)
-        assert.equal(geometry.actionLeft, geometry.listRight)
-        assert.ok(geometry.actionRight <= geometry.right)
-        assert.match(geometry.background, /linear-gradient/)
-        assert.ok(geometry.background.includes(geometry.divider))
-        assert.notEqual(geometry.activeBackground, 'rgba(0, 0, 0, 0)')
+        assert.equal(navigationBounds!.y, workspaceBounds!.y)
+        await expect(navigation.getByRole('textbox', { name: '网址' })).toBeInViewport()
         await page.close()
       }
     } finally {
@@ -305,20 +483,21 @@ test(
   'browser more menu entrance awaits native paint without duplicate DOM or webpage layout change',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'menu',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
       await page.goto(
         new URL('/features/browser/browser.render.fixture.html', server.resolvedUrls!.local[0]).href
       )
-      await page.getByRole('tab', { name: 'First' }).waitFor()
+      await expect(page.getByRole('button', { name: '刷新', exact: true })).toBeEnabled()
       const more = page.getByRole('button', { name: '更多浏览器功能', exact: true })
       await expect(more).toBeVisible({ timeout: 2000 })
       const before = await page.locator('[data-browser-viewport]').boundingBox()
@@ -355,6 +534,10 @@ test(
         (window as unknown as { finishMenu(ok: boolean): void }).finishMenu(false)
       )
       await expect(page.getByText('浏览器操作失败，请重试。', { exact: true })).toBeVisible()
+      await expect(page.locator('.vds-toaster [role="alert"]')).toHaveText(
+        '浏览器操作失败，请重试。'
+      )
+      await expect(page.getByTestId('browser-workspace').getByRole('alert')).toHaveCount(0)
       assert.deepEqual(await page.locator('[data-browser-viewport]').boundingBox(), resized)
     } finally {
       await browser.close()
@@ -367,14 +550,15 @@ test(
   'browser settings consumes exact revoked action lease into existing settings entry',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'menu',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
       await page.goto(
@@ -417,14 +601,15 @@ test(
   'actual React menu skips disabled items, submenu Escape precedes root Escape and keeps update focus',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'menu',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
       await page.goto(
@@ -479,14 +664,15 @@ test(
   'outside first click only dismisses actual React menu and never replays it',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'menu',
       configFile: false,
       root: ROOT,
       plugins: [react()],
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
       await page.goto(

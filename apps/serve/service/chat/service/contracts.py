@@ -125,3 +125,21 @@ def list_contracts(query: ContractList, *, project_id: str | None = None) -> dic
             query.offset + query.limit if query.offset + query.limit < len(entries) else None
         ),
     }
+
+
+def bundled_contracts() -> dict[str, bytes]:
+    groups: dict[str, list[str]] = {}
+    for capability, operation in sorted(BRIDGE_REQUESTS):
+        contract = describe_contract(capability, operation)
+        if not contract["ok"]:
+            raise ValueError(
+                f"Cannot export Bridge contract {capability}/{operation}: {contract['error']}"
+            )
+        del contract["availability"]
+        groups.setdefault(capability, []).append(
+            json.dumps(contract, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        )
+    return {
+        f"{capability}.jsonl": ("\n".join(contracts) + "\n").encode("utf-8")
+        for capability, contracts in groups.items()
+    }

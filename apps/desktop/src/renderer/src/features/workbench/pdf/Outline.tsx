@@ -24,7 +24,13 @@ function OutlineBranch({
   onNavigate: (page: number) => void
 }): React.JSX.Element {
   return (
-    <ul className={depth === 0 ? 'm-0 grid list-none p-0' : 'm-0 grid list-none py-0 pl-5 pr-0'}>
+    <ul
+      className={
+        depth === 0
+          ? 'm-0 grid w-full list-none p-0'
+          : 'm-0 grid min-w-0 list-none py-0 pl-[var(--vds-pdf-outline-inset)] pr-0'
+      }
+    >
       {items.map((item, index) => {
         const itemPath = `${path}${index}`
         const row = (
@@ -32,7 +38,7 @@ function OutlineBranch({
             variant="ghost"
             size="content"
             aria-disabled={item.page === null}
-            className="min-w-0 flex-1 justify-start overflow-hidden text-left whitespace-nowrap! aria-disabled:cursor-not-allowed aria-disabled:text-[var(--vds-text-disabled)] aria-disabled:hover:bg-transparent"
+            className="!h-[var(--vds-pdf-outline-row-height)] min-w-0 flex-1 justify-start overflow-hidden rounded-[var(--vds-radius-4)] !px-[var(--vds-pdf-outline-inset)] !py-0 text-left text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)] whitespace-nowrap! aria-disabled:cursor-not-allowed aria-disabled:text-[var(--vds-text-disabled)] aria-disabled:hover:bg-transparent"
             data-outline-depth={depth}
             data-testid={`pdf-outline-row-${itemPath}`}
             onClick={() => {
@@ -54,11 +60,12 @@ function OutlineBranch({
         return (
           <li key={`${item.title}-${index}`} className="min-w-0">
             {item.children.length > 0 ? (
-              <Collapsible defaultOpen className="gap-0">
-                <div className="flex min-w-0 items-start gap-[var(--vds-space-1)]">
+              <Collapsible className="gap-0">
+                <div className="flex min-w-0 items-center">
+                  {row}
                   <CollapsibleTrigger asChild>
                     <IconButton
-                      className="group mt-[var(--vds-space-half)] flex-none"
+                      className="group flex-none"
                       data-testid={`pdf-outline-toggle-${itemPath}`}
                       icon={
                         <span className="inline-flex transition-transform group-data-[state=open]:rotate-90">
@@ -66,11 +73,10 @@ function OutlineBranch({
                         </span>
                       }
                       label={item.title}
-                      size="xs"
+                      size="sm"
                       variant="ghost"
                     />
                   </CollapsibleTrigger>
-                  {row}
                 </div>
                 <CollapsibleContent className="!rounded-none !border-0 !bg-transparent !p-0">
                   <OutlineBranch
@@ -82,10 +88,7 @@ function OutlineBranch({
                 </CollapsibleContent>
               </Collapsible>
             ) : (
-              <div className="flex min-w-0 items-start gap-[var(--vds-space-1)]">
-                <span aria-hidden="true" className="w-[var(--vds-control-height-xs)] flex-none" />
-                {row}
-              </div>
+              <div className="flex min-w-0 items-center">{row}</div>
             )}
           </li>
         )

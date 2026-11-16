@@ -666,7 +666,7 @@ class InitialVersionPlan:
     observation_id: str
 
     def validate(self) -> None:
-        if type(self.now_ms) is not int or self.now_ms < 0:
+        if (not isinstance(self.now_ms, int) or isinstance(self.now_ms, bool)) or self.now_ms < 0:
             raise ValueError("invalid initial version timestamp")
         for value in (self.file_id, self.path_id, self.version_id, self.observation_id):
             if (
@@ -1108,7 +1108,7 @@ class VersionStore:
         """Apply the real observation transition in a live or private transaction."""
         if not connection.in_transaction:
             raise ValueError("resource observation requires a transaction")
-        if type(now) is not int or now < 0:
+        if (not isinstance(now, int) or isinstance(now, bool)) or now < 0:
             raise ValueError("invalid resource observation timestamp")
         identity = f"{EXTERNAL_OBSERVATION_REASON}:{file_id}"
         values = (
@@ -5607,7 +5607,7 @@ class VersionStore:
         """
         if not connection.in_transaction:
             raise ValueError("working head recovery requires a transaction")
-        if type(now) is not int or now < 0:
+        if (not isinstance(now, int) or isinstance(now, bool)) or now < 0:
             raise ValueError("invalid working head timestamp")
         required = (() if file_id is not None else (new_file_id, new_path_id)) + (
             () if reason == EXTERNAL_OBSERVATION_REASON else (observation_id,)

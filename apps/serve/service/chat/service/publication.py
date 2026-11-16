@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from hashlib import sha256
 from pathlib import Path
 from threading import RLock
@@ -21,11 +21,14 @@ from service.chat.persistence.publications import PublicationRecord, Publication
 from service.chat.runtime.projection import ARTIFACT_CHANGE_UPDATE, artifact_payload
 from service.paths import SESSION_ARTIFACT_OBJECTS_RELATIVE, SESSION_RUNTIME_DIR
 from service.platform.content import (
+    ArtifactContentKind,
+    ArtifactFileEntry,
     ArtifactScope,
     ArtifactScopeKind,
     ArtifactStorageLocation,
     ContentPort,
     RootKind,
+    VerifiedArtifactContent,
 )
 
 INVALID_PUBLICATION = "artifact_publication_invalid"
@@ -37,11 +40,20 @@ PROJECT_CONTEXT_INSTRUCTIONS = (
     "Authorized linked roots are also project resources, not necessarily files inside "
     "the Shared Resources directory. Use resource/list for their logical inventory and "
     "resource/read for entries without a supplied real filesystem locator. "
+    "For an unlinked external file, use resource/read-external with its absolute path. "
+    "The product handles task-scoped approval; never bypass a denied read with terminal tools. "
     "Use the supplied literature references and literature/PDF tools to access the Literature library; "
     "do not assume that it is a folder below the working directory. "
     "Read applicable project instructions (including AGENTS.md at the project root) before "
-    "working on project files. Keep new files inside this session unless the user requests "
+    "working on project files. Follow the session output layout instructions unless the user requests "
     "a different destination. Do not create project metadata or a project database here."
+)
+GLOBAL_CONTEXT_INSTRUCTIONS = (
+    "Use resource/read-external for explicitly requested local files outside this session; "
+    "the product handles task-scoped read approval. Never bypass a denied read with terminal tools. "
+    "This is a global session. Its Literature library is the user's global catalogue, "
+    "accessible through literature tools, not a folder in the session working directory. "
+    "For a named paper, check this library before external retrieval."
 )
 
 
@@ -95,7 +107,7 @@ class PublicationService:
 
     def project_context(self, project_id: str, cwd: Path) -> str:
         if not project_id:
-            return ""
+            return GLOBAL_CONTEXT_INSTRUCTIONS
         return PROJECT_CONTEXT_INSTRUCTIONS.format(
             project=self._content.resolve(project_id, ""),
             cwd=str(cwd),
@@ -108,7 +120,8 @@ class PublicationService:
         """Translate execution-relative files at the Content ownership boundary."""
         if not project_id:
             return path
-        return self._content.project_relative(project_id, str((cwd / path).resolve()))
+        project = Path(self._content.resolve(project_id, ""))
+        return (cwd / path).relative_to(project).as_posix()
 
     def outside_session_root(self, project_id: str, output_root: Path, path: Path) -> bool:
         """Registered session roots are private output scopes even for project-cwd sessions."""
@@ -149,10 +162,44 @@ class PublicationService:
     def delete_session(self, project_id: str, session_id: str) -> None:
         with self._lock:
             store = self.store(project_id, session_id)
-            for publication in store.list_session(session_id):
-                if not store.snapshot_shared(session_id, publication.content.sha256):
-                    self._content.remove_artifact(publication.content)
+            retained = {
+                (content.scope, content.sha256)
+                for publication in store.other_sessions(session_id)
+                for content in self._objects(publication.content)
+            }
+            removed: set[tuple[ArtifactScope, str]] = set()
+            obsolete = tuple(
+                content
+                for publication in store.list_session(session_id)
+                for content in self._objects(publication.content)
+            )
+            for content in obsolete:
+                key = (content.scope, content.sha256)
+                if key not in retained and key not in removed:
+                    self._content.remove_artifact(content)
+                    removed.add(key)
             store.remove_session(session_id)
+
+    def _objects(self, content: VerifiedArtifactContent) -> tuple[VerifiedArtifactContent, ...]:
+        if content.kind != ArtifactContentKind.DIRECTORY:
+            return (content,)
+        manifest = self._content.artifact_manifest(content)
+        return (
+            content,
+            *(
+                replace(
+                    content,
+                    source_path=f"{content.source_path}/{entry.path}",
+                    name=Path(entry.path).name,
+                    media_type=entry.media_type,
+                    size=entry.size,
+                    sha256=entry.sha256,
+                    kind=ArtifactContentKind.FILE,
+                )
+                for entry in manifest.entries
+                if isinstance(entry, ArtifactFileEntry)
+            ),
+        )
 
     def _publish(
         self, command: PublicationCommand, *, provenance: dict[str, Any]
@@ -193,9 +240,10 @@ class PublicationService:
         declaration_id = (
             command.declaration_id
             or sha256(
-                f"{command.turn_id}\0{command.path}\0{command.role.value}\0{content.sha256}".encode(
-                    "utf-8"
-                )
+                (
+                    f"{command.turn_id}\0{command.path}\0{command.role.value}\0{content.sha256}"
+                    + ("\0directory" if content.kind == ArtifactContentKind.DIRECTORY else "")
+                ).encode("utf-8")
             ).hexdigest()
         )
         return store.publish(
@@ -264,6 +312,11 @@ class PublicationService:
                     "media_type": content.media_type,
                     "size": content.size,
                     "sha256": content.sha256,
+                    "kind": (
+                        content.kind.value
+                        if isinstance(content.kind, ArtifactContentKind)
+                        else content.kind
+                    ),
                 },
                 idempotency_key=f"{key}:source",
                 connection=connection,

@@ -1,4 +1,15 @@
 {
+  "taskArchive": {
+    "confirmTitle": "Archive this task?",
+    "stopTitle": "Stop and archive this task?",
+    "confirmDescription": "Are you sure you want to archive “{{title}}”? The task will move to “Archived” at the bottom of the sidebar and can be restored at any time. Conversation history and task artifacts will be kept.",
+    "confirm": "Archive",
+    "stopConfirm": "Stop and archive",
+    "cancel": "Cancel",
+    "loading": "Checking task status…",
+    "statusFailed": "Could not confirm this task's status. Cancel and reopen the archive confirmation.",
+    "failed": "Archiving did not complete. The task remains listed. Please retry."
+  },
   "defaultName": "Default Project",
   "title": "Projects",
   "archive": {

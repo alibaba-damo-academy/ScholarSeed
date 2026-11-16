@@ -1,5 +1,10 @@
 import React from 'react'
 import { mountRenderer } from './app/root'
 import { App } from './App'
+import { LiveTranslationProvider } from './features/translation/live'
 
-mountRenderer(<App />)
+mountRenderer(
+  <LiveTranslationProvider>
+    <App />
+  </LiveTranslationProvider>
+)

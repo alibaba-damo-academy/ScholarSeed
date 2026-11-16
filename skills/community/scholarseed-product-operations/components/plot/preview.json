@@ -1,0 +1,160 @@
+{
+  "data": {
+    "title": "合成示例 / Synthetic example",
+    "model": {
+      "kind": "bar",
+      "dataset": {
+        "columns": [
+          {
+            "key": "method",
+            "label": "示例方法 / Sample method"
+          },
+          {
+            "key": "score",
+            "label": "示例得分 / Sample score",
+            "unit": "%"
+          }
+        ],
+        "rows": [
+          {
+            "id": "sample-a",
+            "values": [
+              "A",
+              80
+            ]
+          },
+          {
+            "id": "sample-b",
+            "values": [
+              "B",
+              85
+            ]
+          },
+          {
+            "id": "sample-c",
+            "values": [
+              "C",
+              null
+            ]
+          }
+        ]
+      },
+      "x": 0,
+      "y": [
+        1
+      ]
+    }
+  },
+  "responses": {
+    "continue": {
+      "state": "resolved",
+      "data": {
+        "title": "合成示例 / Synthetic example",
+        "model": {
+          "kind": "bar",
+          "dataset": {
+            "columns": [
+              {
+                "key": "method",
+                "label": "示例方法 / Sample method"
+              },
+              {
+                "key": "score",
+                "label": "示例得分 / Sample score",
+                "unit": "%"
+              }
+            ],
+            "rows": [
+              {
+                "id": "sample-a",
+                "values": [
+                  "A",
+                  80
+                ]
+              },
+              {
+                "id": "sample-b",
+                "values": [
+                  "B",
+                  85
+                ]
+              },
+              {
+                "id": "sample-c",
+                "values": [
+                  "C",
+                  null
+                ]
+              }
+            ]
+          },
+          "x": 0,
+          "y": [
+            1
+          ]
+        }
+      }
+    },
+    "cancel": {
+      "state": "cancelled",
+      "data": {
+        "title": "合成示例 / Synthetic example",
+        "model": {
+          "kind": "bar",
+          "dataset": {
+            "columns": [
+              {
+                "key": "method",
+                "label": "示例方法 / Sample method"
+              },
+              {
+                "key": "score",
+                "label": "示例得分 / Sample score",
+                "unit": "%"
+              }
+            ],
+            "rows": [
+              {
+                "id": "sample-a",
+                "values": [
+                  "A",
+                  80
+                ]
+              },
+              {
+                "id": "sample-b",
+                "values": [
+                  "B",
+                  85
+                ]
+              },
+              {
+                "id": "sample-c",
+                "values": [
+                  "C",
+                  null
+                ]
+              }
+            ]
+          },
+          "x": 0,
+          "y": [
+            1
+          ]
+        }
+      }
+    }
+  },
+  "submissions": {
+    "continue": [
+      {
+        "selected": []
+      }
+    ],
+    "cancel": [
+      {
+        "selected": []
+      }
+    ]
+  }
+}

@@ -1,3 +1,4 @@
+import type * as React from 'react'
 import { type ButtonHTMLAttributes, type HTMLAttributes, type ReactNode } from 'react'
 import { Portal } from './portal'
 
@@ -9,26 +10,30 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  ToneContext,
+  type DialogTone,
 } from './Dialog'
 import { createOpenContext, renderTrigger, type OpenRootProps } from './floating'
 import { cx } from './utils'
 import { useFocusScope } from './focus'
+import { usePortalDocument } from './portal'
 
 const alertDialogContext = createOpenContext('AlertDialog', { dismissOutside: false })
 
 export type AlertDialogProps = OpenRootProps
 
-export function AlertDialog(props: AlertDialogProps): JSX.Element {
+export function AlertDialog(props: AlertDialogProps): React.JSX.Element {
   return <alertDialogContext.Provider {...props} />
 }
 
 export function AlertDialogTrigger(
   props: HTMLAttributes<HTMLElement> & { asChild?: boolean; children?: ReactNode }
-): JSX.Element {
+): React.JSX.Element {
   return renderTrigger(alertDialogContext.useOpenContext(), props)
 }
 
 export interface AlertDialogContentProps extends HTMLAttributes<HTMLDivElement> {
+  tone?: DialogTone
   overlayClassName?: string
   showCloseButton?: boolean
 }
@@ -38,13 +43,14 @@ export function AlertDialogContent({
   className,
   overlayClassName,
   showCloseButton = false,
+  tone = 'default',
   ...props
-}: AlertDialogContentProps): JSX.Element | null {
+}: AlertDialogContentProps): React.JSX.Element | null {
   const { contentId, contentRef, open, setOpen } = alertDialogContext.useOpenContext()
   useFocusScope(contentRef, open, true)
   if (!open) return null
   return (
-    <>
+    <ToneContext.Provider value={tone}>
       <div className={cx(dialogOverlayClassName, overlayClassName)} />
       <div
         tabIndex={-1}
@@ -58,7 +64,7 @@ export function AlertDialogContent({
         {children}
         {showCloseButton ? <DialogDismissButton onClose={() => setOpen(false)} /> : null}
       </div>
-    </>
+    </ToneContext.Provider>
   )
 }
 
@@ -66,7 +72,7 @@ export function AlertDialogCancel({
   children,
   className,
   ...props
-}: ButtonHTMLAttributes<HTMLButtonElement>): JSX.Element {
+}: ButtonHTMLAttributes<HTMLButtonElement>): React.JSX.Element {
   const { setOpen } = alertDialogContext.useOpenContext()
   return (
     <Button
@@ -89,7 +95,7 @@ export function AlertDialogAction({
   className,
   variant = 'primary',
   ...props
-}: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: ButtonVariant }): JSX.Element {
+}: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: ButtonVariant }): React.JSX.Element {
   const { setOpen } = alertDialogContext.useOpenContext()
   return (
     <Button
@@ -114,12 +120,13 @@ export const AlertDialogDescription = DialogDescription
 export function AlertDialogOverlay({
   className,
   ...props
-}: HTMLAttributes<HTMLDivElement>): JSX.Element | null {
+}: HTMLAttributes<HTMLDivElement>): React.JSX.Element | null {
   const { open } = alertDialogContext.useOpenContext()
   if (!open) return null
   return <div className={cx(dialogOverlayClassName, className)} {...props} />
 }
-export const AlertDialogPortal = ({ children }: { children?: ReactNode }): JSX.Element => {
+export const AlertDialogPortal = ({ children }: { children?: ReactNode }): React.JSX.Element => {
+  const document = usePortalDocument()
   if (typeof document === 'undefined') return <>{children}</>
   return <Portal>{children}</Portal>
 }

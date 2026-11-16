@@ -19,9 +19,7 @@ export interface SaveCopyBridge {
 
 /** 落盘结果: 已保存 / 用户取消 / 失败。取消不是错误, 调用方必须区别对待。 */
 export type BibtexSave =
-  | { kind: 'saved'; path?: string }
-  | { kind: 'canceled' }
-  | { kind: 'failed'; error?: string }
+  { kind: 'saved'; path?: string } | { kind: 'canceled' } | { kind: 'failed'; error?: string }
 
 /** 导出文件的建议名; 真正落到哪里由用户在保存对话框里决定。 */
 export const BIBTEX_SUGGESTED_NAME = 'literature.bib'
@@ -31,17 +29,18 @@ const BRIDGE_UNAVAILABLE = 'desktop save bridge unavailable'
 /**
  * 把 BibTeX 文本交给原生保存对话框落盘。
  *
- * bridge 可注入以便测试; 默认取桌面/浏览器两种形态都会装好的 window.scholarseed。
+ * The owning host supplies the save capability explicitly; shared views never
+ * acquire an ambient Desktop bridge.
  */
 export async function saveBibtex(
   bibtex: string,
-  bridge: SaveCopyBridge | undefined = window.scholarseed
+  bridge: SaveCopyBridge | undefined
 ): Promise<BibtexSave> {
   if (!bridge) return { kind: 'failed', error: BRIDGE_UNAVAILABLE }
   try {
     const result = await bridge.saveFileCopy({
       suggestedName: BIBTEX_SUGGESTED_NAME,
-      bytes: new TextEncoder().encode(`${bibtex}\n`)
+      bytes: new TextEncoder().encode(`${bibtex}\n`),
     })
     if (result.ok) return { kind: 'saved', path: result.path }
     return result.canceled ? { kind: 'canceled' } : { kind: 'failed', error: result.error }

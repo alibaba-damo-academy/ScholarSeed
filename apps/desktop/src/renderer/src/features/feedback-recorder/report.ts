@@ -23,6 +23,7 @@ const REPORT_IDENTITY_FIELDS = new Set([
   'sessionId',
   'stepId',
   'requestId',
+  'correlationId',
   'screenshotId',
   'startedAt',
   'endedAt',

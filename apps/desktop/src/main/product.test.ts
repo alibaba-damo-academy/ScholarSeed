@@ -100,6 +100,35 @@ test('shipped browser feature is enabled, explicit off and missing policy remain
   assert.equal(SECURE_PACKAGED_FALLBACK.features.browser, false)
 })
 
+test('advanced browser settings default to hidden without changing browser availability', () => {
+  const manifest = JSON.parse(
+    readFileSync(new URL('../../resources/product.json', import.meta.url), 'utf8')
+  )
+  for (const platform of ['darwin', 'win32'] as const) {
+    const { features } = parseDesktopProductConfig(manifest, platform)
+    assert.equal(features.browser, true)
+    assert.equal(features.browserAdvancedSettings, false)
+    const enabled = { ...manifest.features, browser_advanced_settings: true }
+    assert.equal(
+      parseDesktopProductConfig({ ...manifest, features: enabled }, platform).features
+        .browserAdvancedSettings,
+      true
+    )
+    assert.throws(
+      () =>
+        parseDesktopProductConfig(
+          {
+            ...manifest,
+            features: { ...enabled, browser_advanced_settings: 'true' },
+          },
+          platform
+        ),
+      /features.browser_advanced_settings/
+    )
+  }
+  assert.equal(SECURE_PACKAGED_FALLBACK.features.browserAdvancedSettings, false)
+})
+
 test('packaged product config enables account authentication', () => {
   const config = parseDesktopProductConfig({
     product_id: 'scholarseed',

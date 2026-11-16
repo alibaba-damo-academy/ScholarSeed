@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { gunzipSync } from 'node:zlib'
-import { API_DIAGNOSTIC_PREFIX } from '../requests.ts'
+import { API_DIAGNOSTIC_PREFIX, HTTP_LATENCY_DIAGNOSTIC_PREFIX } from '../requests.ts'
 
 import {
   LOG_BACKUPS,
@@ -241,7 +241,11 @@ test('registered renderer diagnostics persist even at info level without capturi
     '[session-recovery]',
     '[notification]',
     '[account-menu]',
+    '[reading-first-text]',
+    '[reading-background-observation]',
     API_DIAGNOSTIC_PREFIX,
+    HTTP_LATENCY_DIAGNOSTIC_PREFIX,
+    '[browser-failure]',
   ]) {
     assert.equal(isRendererDiagnostic(`${prefix} {"stage":"live"}`), true)
   }

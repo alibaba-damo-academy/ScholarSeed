@@ -177,8 +177,9 @@ def _hold(
 ) -> None:
     handle = None
     owned = False
+    kernel = None
     try:
-        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)
         kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
         kernel.WaitForSingleObject.restype = wintypes.DWORD
         kernel.ReleaseMutex.argtypes = [wintypes.HANDLE]
@@ -216,7 +217,7 @@ def _hold(
         if not acquired.done():
             acquired.set_exception(error)
     finally:
-        if handle:
+        if handle and kernel is not None:
             if owned:
                 kernel.ReleaseMutex(handle)
             kernel.CloseHandle(handle)

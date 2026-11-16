@@ -32,6 +32,7 @@ from service.capabilities.service.install import (
     update_skill_archive,
 )
 from service.capabilities.service.skills import SkillCatalog, SkillProductState
+from service.capabilities.service.utils import integer
 from service.platform.activity import Activities
 from service.platform.storage import DirectoryHandle
 
@@ -58,6 +59,12 @@ def catalogue(rows, page=0, total=None):
 
 
 class ClawHubContract(unittest.IsolatedAsyncioTestCase):
+    def test_download_integer_guard_excludes_bool_and_fractional_counts(self):
+        for value in (0, 1):
+            self.assertTrue(integer(value))
+        for value in (True, False, 1.0, "1", None):
+            self.assertFalse(integer(value))
+
     def test_upload_metadata_is_excluded_from_preview_and_installed_content(self):
         document = "---\nname: metadata-skill\ndescription: Metadata regression\n---\nRead me.\n"
         for prefix in ("", "wrapped/"):
@@ -132,7 +139,7 @@ class ClawHubContract(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(SkillPackageError):
             preview_skill_upload(output.getvalue(), "multiple.zip")
 
-    async def test_local_copy_reuses_marketplace_language_without_changing_identity(self):
+    async def test_local_copy_uses_current_marketplace_language_without_mutating_installation(self):
         origin = {
             "source": "clawhub",
             "registry": BASE,
@@ -140,112 +147,107 @@ class ClawHubContract(unittest.IsolatedAsyncioTestCase):
             "slug": SLUG,
             "version": VERSION,
         }
-        descriptions = {"zh": "Package summary", "fr": "Résumé local"}
-        row = {
-            "name": "local-id",
-            "display_name": "Old title",
-            "description": "Original summary",
-            "descriptions": descriptions,
-            "hub": origin,
-        }
         for locale, title, summary in (
-            ("zh", "论文工具", "中文市场说明"),
-            ("en", "Paper tools", "English marketplace summary"),
-            ("zh-CN", "论文工具", "简体中文市场说明"),
+            ("zh", "论文工具", "阅读论文"),
+            ("en", "Paper tools", "Read papers"),
+            ("zh-CN", "论文工具", "阅读论文"),
         ):
-            with self.subTest(locale=locale):
+            for localized in ({}, {"zh": "旧中文", "en": "Old English", "fr": "Français"}):
+                with self.subTest(locale=locale, localized=localized):
+                    requests = []
 
-                def handle(request, title=title, locale=locale, summary=summary):
-                    self.assertEqual(request.headers["accept-language"], locale)
-                    metadata = {**item(), "displayName": title, "summary": summary, "labels": []}
-                    if request.url.path == "/api/web/skills":
-                        return httpx.Response(200, json=catalogue([metadata]))
-                    return httpx.Response(200, json=metadata)
+                    def handle(
+                        request, locale=locale, title=title, summary=summary, requests=requests
+                    ):
+                        requests.append(request)
+                        self.assertEqual(request.headers["accept-language"], locale)
+                        return httpx.Response(
+                            200, json={**item(), "displayName": title, "summary": summary}
+                        )
 
-                hub = ClawHub(url=BASE, locale=locale, transport=httpx.MockTransport(handle))
-                market = (await hub.list())["items"][0]
-                local = (await hub.enrich_local([row]))[0]
-                self.assertEqual(local["display_name"], market["name"])
-                self.assertEqual(local["descriptions"][locale.lower()], market["description"])
-                self.assertEqual(local["descriptions"]["fr"], "Résumé local")
-                self.assertEqual(local["description"], "Original summary")
-                self.assertEqual(local["name"], row["name"])
-                self.assertEqual(local["hub"], origin)
-                self.assertEqual(row["display_name"], "Old title")
-                self.assertEqual(row["descriptions"], descriptions)
-                self.assertEqual(descriptions["zh"], "Package summary")
+                    row = {
+                        "name": SLUG,
+                        "path": "/skills/paper-tools/SKILL.md",
+                        "version": VERSION,
+                        "enabled": True,
+                        "display_name": "Package title",
+                        "description": "Package summary",
+                        "display_names": dict(localized),
+                        "descriptions": dict(localized),
+                        "hub": origin,
+                    }
+                    snapshot = json.loads(json.dumps(row))
+                    result = (
+                        await ClawHub(
+                            url=BASE, locale=locale, transport=httpx.MockTransport(handle)
+                        ).enrich_local([row])
+                    )[0]
+                    self.assertEqual(result["display_names"], {**localized, locale.lower(): title})
+                    self.assertEqual(result["descriptions"], {**localized, locale.lower(): summary})
+                    for field in ("name", "path", "version", "enabled", "hub", "description"):
+                        self.assertEqual(result[field], row[field])
+                    self.assertEqual(row, snapshot)
+                    self.assertEqual(len(requests), 1)
 
-    async def test_local_descriptions_preserve_fallback_when_summary_is_unavailable(self):
+    async def test_local_copy_preserves_fallback_for_missing_fields_and_metadata_failures(self):
         row = {
-            "name": "local-id",
-            "description": "Original summary",
+            "name": SLUG,
+            "display_name": "Package title",
+            "description": "Package summary",
+            "display_names": {"zh": "本地名称"},
             "descriptions": {"zh": "本地说明"},
-            "hub": {
-                "source": "clawhub",
-                "registry": BASE,
-                "namespace": "global",
-                "slug": SLUG,
-            },
+            "hub": {"source": "clawhub", "registry": BASE, "namespace": "global", "slug": SLUG},
         }
-        for summary in (None, "", "   ", 42):
-            with self.subTest(summary=summary):
+        for value in (None, "", "   ", 42):
+            with self.subTest(value=value):
                 hub = ClawHub(
                     url=BASE,
                     locale="zh",
                     transport=httpx.MockTransport(
-                        lambda request, summary=summary: httpx.Response(
-                            200,
-                            json={**item(), "summary": summary, "labels": []},
+                        lambda request, value=value: httpx.Response(
+                            200, json={**item(), "displayName": value, "summary": value}
                         )
                     ),
                 )
                 result = (await hub.enrich_local([row]))[0]
-                self.assertEqual(result["descriptions"], row["descriptions"])
-                self.assertEqual(result["description"], row["description"])
-        failed = await ClawHub(
-            url=BASE,
-            locale="zh",
-            transport=httpx.MockTransport(lambda request: httpx.Response(503)),
-        ).enrich_local([row])
-        self.assertEqual(failed[0]["descriptions"], row["descriptions"])
-        self.assertEqual(failed[0]["description"], row["description"])
+                for field in ("display_name", "description", "display_names", "descriptions"):
+                    self.assertEqual(result[field], row[field])
+        for response in (
+            httpx.Response(503),
+            httpx.Response(200, json={**item(), "namespace": "another"}),
+        ):
+            hub = ClawHub(
+                url=BASE,
+                locale="zh",
+                transport=httpx.MockTransport(lambda request, response=response: response),
+            )
+            result = (await hub.enrich_local([row]))[0]
+            for field in ("display_name", "description", "display_names", "descriptions"):
+                self.assertEqual(result[field], row[field])
 
-    async def test_local_titles_preserve_fallback_when_unmapped_or_metadata_unavailable(self):
-        origin = {
-            "source": "clawhub",
-            "registry": BASE,
-            "namespace": "team",
-            "slug": "team--" + SLUG,
-        }
-        rows = [
-            {"name": "local", "display_name": "Local title"},
-            {"name": "installed", "display_name": "Saved title", "hub": origin},
-            {"name": "other", "hub": {**origin, "registry": BASE + "/other"}},
-        ]
-        for title in (None, "", "Remote title"):
-            with self.subTest(title=title):
-                hub = ClawHub(
-                    url=BASE,
-                    transport=httpx.MockTransport(
-                        lambda request, title=title: httpx.Response(
-                            200,
-                            json={
-                                "slug": SLUG,
-                                "namespace": "team",
-                                "displayName": title,
-                                "labels": [],
-                            },
-                        )
-                    ),
-                )
-                result = await hub.enrich_local(rows)
-                self.assertEqual(result[0]["display_name"], "Local title")
-                self.assertEqual(result[1]["display_name"], title or "Saved title")
-                self.assertNotIn("display_name", result[2])
-        failed = await ClawHub(
-            url=BASE, transport=httpx.MockTransport(lambda request: httpx.Response(503))
-        ).enrich_local(rows)
-        self.assertEqual(failed[1]["display_name"], "Saved title")
+    async def test_installed_copy_is_bilingual_and_checks_exact_identity(self):
+        def handle(request):
+            locale = request.headers["accept-language"]
+            return httpx.Response(
+                200,
+                json={
+                    "slug": SLUG,
+                    "namespace": "global",
+                    "displayName": "论文工具" if locale == "zh" else "Paper tools",
+                    "summary": "阅读论文" if locale == "zh" else "Read papers",
+                },
+            )
+
+        hub = ClawHub(url=BASE, transport=httpx.MockTransport(handle))
+        self.assertEqual(
+            await hub.localized_copy("global", SLUG),
+            {
+                "display_names": {"en": "Paper tools", "zh": "论文工具"},
+                "descriptions": {"en": "Read papers", "zh": "阅读论文"},
+            },
+        )
+        with self.assertRaises(ClawHubError):
+            await hub.localized_copy("another", SLUG)
 
     async def test_local_updates_distinguish_available_current_unknown_and_unmapped(self):
         origin = {
@@ -388,6 +390,12 @@ class ClawHubContract(unittest.IsolatedAsyncioTestCase):
                     }
                 ),
                 download=AsyncMock(return_value=payload.getvalue()),
+                localized_copy=AsyncMock(
+                    return_value={
+                        "display_names": {"en": "Paper tools", "zh": "论文工具"},
+                        "descriptions": {"en": "Read papers", "zh": "阅读论文"},
+                    }
+                ),
             )
             with (
                 patch("service.capabilities.service.management.ClawHub", return_value=remote),
@@ -832,6 +840,12 @@ class ClawHubContract(unittest.IsolatedAsyncioTestCase):
                 base=BASE,
                 detail=AsyncMock(return_value={"moderation": "clean", "namespace": "global"}),
                 download=AsyncMock(return_value=payload.getvalue()),
+                localized_copy=AsyncMock(
+                    return_value={
+                        "display_names": {"en": "Paper tools", "zh": "论文工具"},
+                        "descriptions": {"en": "Read papers", "zh": "阅读论文"},
+                    }
+                ),
             )
             with (
                 patch("service.capabilities.service.management.ClawHub", return_value=remote),
@@ -1271,6 +1285,12 @@ class ClawHubContract(unittest.IsolatedAsyncioTestCase):
                 base=BASE + "/skillhub",
                 detail=AsyncMock(return_value={"moderation": "unknown", "namespace": "research"}),
                 download=AsyncMock(return_value=payload.getvalue()),
+                localized_copy=AsyncMock(
+                    return_value={
+                        "display_names": {"en": "Paper tools", "zh": "论文工具"},
+                        "descriptions": {"en": "Read papers", "zh": "阅读论文"},
+                    }
+                ),
                 list=AsyncMock(
                     return_value={"items": [item()], "nextCursor": None, "registry": BASE}
                 ),
@@ -1296,6 +1316,8 @@ class ClawHubContract(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(response.status_code, 200, response.text)
                 runtime.configure_skills.assert_awaited_once()
                 origin = json.loads((user / SLUG / ".origin.json").read_text())
+                self.assertEqual(origin["display_names"]["zh"], "论文工具")
+                self.assertEqual(origin["descriptions"]["en"], "Read papers")
                 self.assertEqual(origin["registry"], BASE + "/skillhub")
                 self.assertEqual(origin["version"], VERSION)
                 self.assertEqual(origin["namespace"], "research")

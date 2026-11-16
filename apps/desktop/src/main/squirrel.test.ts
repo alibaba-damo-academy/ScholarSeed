@@ -16,7 +16,7 @@ import {
   readSquirrelHandoff,
   squirrelFeed,
   shipItDiagnostics,
-  SQUIRREL_NATIVE_ERROR_EVENT,
+  SQUIRREL_HANDOFF_FAILED_EVENT,
   type SquirrelHandoff,
   type SquirrelArchive,
   type SquirrelNativeRequest,
@@ -81,7 +81,7 @@ class InstallationFixture extends SquirrelInstallation {
   constructor(
     updater: Updater,
     record: string,
-    diagnostic: (event: string) => void,
+    diagnostic: (event: string, errorCode?: string) => void,
     timeout?: number,
     bind: (identity: SquirrelHandoff) => Promise<SquirrelNativeRequest> = async (candidate) => {
       const source = {
@@ -358,7 +358,7 @@ test('a native error while request binding is pending cannot publish a late down
   updater.check = () => updater.emit('update-downloaded')
   const preparing = owner.prepare(archive, identity, async () => () => {})
   await started
-  const rejected = assert.rejects(preparing, /outcome unknown/)
+  const rejected = assert.rejects(preparing, /reported an installation error/)
   updater.emit('error', new Error('native failed'))
   await rejected
   release!()
@@ -514,7 +514,7 @@ test('native signature rejection before download completion never permits restar
   updater.check = () => updater.emit('error', new Error('native signature rejected'))
   await assert.rejects(
     owner.prepare(archive, identity, async () => () => {}),
-    /outcome unknown/
+    /reported an installation error/
   )
   assert.equal(owner.ready, false)
   assert.equal(owner.committed, true)
@@ -558,12 +558,26 @@ test('native error and timeout retain the consumed handoff; neither authorizes a
   for (const timeout of [false, true]) {
     const { archive, record } = await fixture(t)
     const updater = new Updater()
-    if (!timeout) updater.check = () => updater.emit('error', new Error('native failed'))
-    const owner = new InstallationFixture(updater, record, () => {}, 20)
+    if (!timeout)
+      updater.check = () =>
+        updater.emit('error', Object.assign(new Error('native failed'), { code: 7 }))
+    const events: [string, string?][] = []
+    const owner = new InstallationFixture(
+      updater,
+      record,
+      (event, code) => {
+        events.push([event, code])
+      },
+      20
+    )
     await assert.rejects(
       owner.prepare(archive, identity, async () => () => {}),
-      /outcome unknown/
+      timeout ? /outcome unknown/ : /reported an installation error/
     )
+    assert.deepEqual(events.slice(1), [
+      [timeout ? 'handoff-timeout' : 'native-error', timeout ? undefined : '7'],
+      [SQUIRREL_HANDOFF_FAILED_EVENT, undefined],
+    ])
     assert.equal(owner.committed, true)
     assert.equal(readSquirrelHandoff(record)?.state, 'failed')
     await assert.rejects(
@@ -647,10 +661,13 @@ test('terminal native failure consumes the launch context discard exactly once',
   let remaining = discardOnTerminalSquirrelFailure('handoff-requested', discard)
   assert.equal(remaining, discard)
   assert.equal(calls, 0)
-  remaining = discardOnTerminalSquirrelFailure(SQUIRREL_NATIVE_ERROR_EVENT, remaining)
+  remaining = discardOnTerminalSquirrelFailure(SQUIRREL_HANDOFF_FAILED_EVENT, remaining)
   assert.equal(remaining, undefined)
   assert.equal(calls, 1)
-  assert.equal(discardOnTerminalSquirrelFailure(SQUIRREL_NATIVE_ERROR_EVENT, remaining), undefined)
+  assert.equal(
+    discardOnTerminalSquirrelFailure(SQUIRREL_HANDOFF_FAILED_EVENT, remaining),
+    undefined
+  )
   assert.equal(calls, 1)
 })
 

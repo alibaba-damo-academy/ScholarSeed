@@ -230,6 +230,10 @@ export function createWindowController(options: WindowControllerOptions): Window
     }
     if (platform === WINDOW_CLOSE_PLATFORM) nativeTheme.on('updated', updateTheme)
     options.log(`[tray] created window=${window.id} destroyed=${tray.isDestroyed()}\n`)
+    const nativeContextMenu = platform === WINDOW_CLOSE_PLATFORM
+    let menuOpen = false
+    let popupAfterRefresh = false
+    let deferredSnapshot: TraySnapshot | null | undefined
     const buildMenu = (snapshot: TraySnapshot | null): Menu => {
       const t = options.localizer().getFixedT(null, 'native')
       const title = (
@@ -296,19 +300,48 @@ export function createWindowController(options: WindowControllerOptions): Window
         }
       )
       const menu = Menu.buildFromTemplate(items)
-      menu.on('menu-will-show', () => options.log('[tray] context menu opening\n'))
-      menu.on('menu-will-close', () => options.log('[tray] context menu closing\n'))
+      menu.on('menu-will-show', () => {
+        menuOpen = true
+        popupAfterRefresh = false
+        options.log('[tray] context menu opening\n')
+      })
+      menu.on('menu-will-close', () => {
+        menuOpen = false
+        options.log('[tray] context menu closing\n')
+        if (deferredSnapshot === undefined) return
+        // Let the closing menu dispatch its selected command before replacing it.
+        setImmediate(() => {
+          if (!active() || menuOpen || deferredSnapshot === undefined) return
+          const snapshot = deferredSnapshot
+          deferredSnapshot = undefined
+          buildMenu(snapshot)
+        })
+      })
       trayMenu = menu
+      if (nativeContextMenu) ownedTray.setContextMenu(menu)
       return menu
     }
     buildMenu(null)
-    const openMenu = (): void => {
-      if (!active() || trayRequest) return
-      trayMenu?.removeAllListeners()
-      trayMenu = null
+    const refreshMenu = (popup: boolean): void => {
+      if (!active() || (nativeContextMenu && menuOpen)) return
+      popupAfterRefresh ||= popup
+      if (trayRequest) return
+      if (!nativeContextMenu) {
+        trayMenu?.removeAllListeners()
+        trayMenu = null
+      }
       const id = ++trayRequestId
       const show = (snapshot: TraySnapshot | null): void => {
-        if (active()) ownedTray.popUpContextMenu(buildMenu(snapshot))
+        const shouldPopup = popupAfterRefresh
+        popupAfterRefresh = false
+        if (!active()) return
+        if (nativeContextMenu && menuOpen) {
+          deferredSnapshot = snapshot
+          return
+        }
+        deferredSnapshot = undefined
+        const menu = buildMenu(snapshot)
+        if (shouldPopup) ownedTray.popUpContextMenu(menu)
       }
       const timer = setTimeout(() => {
         if (trayRequest?.id !== id) return
@@ -324,8 +357,11 @@ export function createWindowController(options: WindowControllerOptions): Window
         show(null)
       }
     }
+    const prepareNativeMenu = (): void => refreshMenu(false)
+    if (nativeContextMenu) window.on('hide', prepareNativeMenu)
     window.once('closed', () => {
       if (tray !== ownedTray) return
+      if (nativeContextMenu) window.removeListener('hide', prepareNativeMenu)
       if (platform === WINDOW_CLOSE_PLATFORM) nativeTheme.removeListener('updated', updateTheme)
       // Revoke callbacks before releasing native resources (including any
       // menu callback retained by the OS during a pending quit).
@@ -342,17 +378,20 @@ export function createWindowController(options: WindowControllerOptions): Window
       options.log(`[tray] disposed window=${windowId}\n`)
     })
     tray.on('mouse-enter', () => {
-      if (active()) options.log('[tray] mouse entered\n')
-    })
-    tray.on('right-click', () => {
       if (!active()) return
-      options.log(`[tray] right click window=${windowId} destroyed=${window.isDestroyed()}\n`)
-      openMenu()
+      options.log('[tray] mouse entered\n')
+      if (nativeContextMenu) prepareNativeMenu()
     })
+    if (!nativeContextMenu)
+      tray.on('right-click', () => {
+        if (!active()) return
+        options.log(`[tray] right click window=${windowId} destroyed=${window.isDestroyed()}\n`)
+        refreshMenu(true)
+      })
     tray.on('click', () => {
       if (!active()) return
       options.log(`[tray] click window=${windowId} destroyed=${window.isDestroyed()}\n`)
-      openMenu()
+      refreshMenu(true)
     })
   }
 

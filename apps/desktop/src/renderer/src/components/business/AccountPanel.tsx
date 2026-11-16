@@ -1,4 +1,6 @@
 import { availabilityPolicy } from '../../app/policy'
+import { TranslationSettings } from '../../features/translation/Settings'
+import { GeneralSettings } from './General'
 import { markAllAttentionRead } from '../../features/assistant/attention'
 
 import { VersionScope } from './VersionScope'
@@ -21,6 +23,7 @@ import {
   providerPresetText,
 } from './profile'
 import type { ModelApiKeyDraft, ProbeFailureDetail, ProbeFailureTitle } from './profile'
+import { inventoryRevision, reconcileInventory } from './inventory'
 import { modelDefaultEffort, reasoningLabel } from '../../reasoning'
 import type {
   PersonalApiFailure,
@@ -32,7 +35,6 @@ import type {
   PersonalApiProfilesResp,
   PersonalApiProbeResult,
   PersonalApiWireApi,
-  ModelSelectionResp,
 } from '../../api'
 import { DEFAULT_LANGUAGE, LOCALES } from '../../../../localization/catalog'
 import { createFormatters } from '../../../../localization/format'
@@ -42,20 +44,19 @@ import { SubscriptionConnections } from './SubscriptionConnections'
 import React from 'react'
 import {
   Archive,
-  ArrowDown,
-  ArrowUp,
   Bell,
   BrainCircuit,
-  CircleCheck,
   Copy,
   CircleQuestionMark,
   Files,
   Globe,
   HardDrive,
   // Keyboard,
-  Mail,
   RotateCw,
+  Search,
   TriangleAlert,
+  Server,
+  Trash2,
   UserShield,
   X,
   type LucideIcon,
@@ -191,6 +192,8 @@ import {
   TabsList,
   TabsTrigger,
   Textarea,
+  Tooltip,
+  usePortalDocument,
   useToast,
 } from '../ui'
 import { cx } from '../ui/utils'
@@ -199,7 +202,7 @@ import { PreferenceControls } from './Preferences'
 import { Skills } from './Skills'
 import { BrowserSettings } from '../../features/browser/Settings'
 import { Shortcuts } from './Shortcuts'
-import { SettingsPage } from './Settings'
+import { SettingsGroup, SettingsPage } from './Settings'
 import { createArchiveReader, type ArchiveReader } from './archives'
 import type { ProjectRef } from '../../contracts/content'
 import {
@@ -256,6 +259,8 @@ function formatUpdateDiagnosis(diagnosis: RendererUpdateDiagnosis): string {
 }
 
 type AccountPanelNavKey =
+  | 'general'
+  | 'translation'
   | 'prompts'
   | 'account'
   | 'preferences'
@@ -275,6 +280,10 @@ function accountPanelNavLabel(
   browserText: TFunction<'browser'>
 ): string {
   switch (key) {
+    case 'general':
+      return t('followUp.general')
+    case 'translation':
+      return t('accountPanel.nav.translation')
     case 'prompts':
       return t('accountPanel.nav.prompts')
     case 'account':
@@ -309,14 +318,16 @@ const NAV_ITEMS: {
   lucideIcon?: LucideIcon
   showInSidebar?: boolean
 }[] = [
+  { id: 'general', labelKey: 'general', icon: 'settings' },
   // TODO: 暂时隐藏「账号」「偏好设置」入口，后续恢复
   // { id: 'account', labelKey: 'account', lucideIcon: UserRound },
   // { id: 'preferences', labelKey: 'preferences', lucideIcon: Palette },
   { id: 'notifications', labelKey: 'notifications', lucideIcon: Bell },
+  { id: 'translation', labelKey: 'translation', lucideIcon: Globe },
   { id: 'prompts', labelKey: 'prompts', icon: 'sparkle' },
   { id: 'models', labelKey: 'models', lucideIcon: BrainCircuit },
   { id: 'developer', labelKey: 'developer', lucideIcon: UserShield },
-  { id: 'browser', labelKey: 'browser', lucideIcon: Globe, showInSidebar: false },
+  { id: 'browser', labelKey: 'browser', lucideIcon: Globe },
   { id: 'files', labelKey: 'files', lucideIcon: Files },
   { id: 'storage', labelKey: 'storage', lucideIcon: HardDrive },
   // TODO: 暂时隐藏「键盘快捷键」页面，恢复时一并恢复 Keyboard / Shortcuts。
@@ -379,14 +390,14 @@ const SELECTION_PROMPT_LABELS = {
 
 function PromptsPage(): React.JSX.Element {
   const { t } = useTranslation('components')
-  const { state, act } = useApp()
+  const { state, act, set } = useApp()
   const defaults = defaultSelectionPrompts(state.lang)
   const [draft, setDraft] = React.useState(() => ({
     ...state.selectionPrompts,
   }))
   const [saving, setSaving] = React.useState(false)
   const changed = SELECTION_PROMPT_ACTIONS.some(
-    (action) => draft[action] !== state.selectionPrompts[action]
+    (action) => action !== 'translate' && draft[action] !== state.selectionPrompts[action]
   )
   const valid = SELECTION_PROMPT_ACTIONS.every(
     (action) => draft[action].trim() && draft[action].length <= MAX_SELECTION_PROMPT_CHARS
@@ -394,7 +405,7 @@ function PromptsPage(): React.JSX.Element {
   const save = async (): Promise<void> => {
     setSaving(true)
     try {
-      await act.saveSelectionPrompts({ ...draft })
+      await act.saveSelectionPrompts({ ...draft, translate: state.selectionPrompts.translate })
     } finally {
       setSaving(false)
     }
@@ -404,57 +415,84 @@ function PromptsPage(): React.JSX.Element {
       data-testid="account-settings-prompts"
       title={t('accountPanel.prompts.title')}
       description={t('accountPanel.prompts.description')}
+      descriptionAsNotice
+      overlayScroll
+      className="gap-[var(--vds-space-5)] [&>[data-slot=page-body]]:gap-[var(--vds-space-5)]"
     >
-      <PageBody>
-        {SELECTION_PROMPT_ACTIONS.map((action) => (
+      <div className="contents">
+        <PageSection>
+          <SettingsGroup>
+            <div className="px-[var(--vds-card-padding-md)]">
+              <SettingsRow
+                title={t('composer.predictionsEnabled')}
+                description={t('composer.predictionsDescription')}
+              >
+                <Toggle
+                  checked={state.composerPredictionsEnabled}
+                  testid="composer-predictions-enabled"
+                  label={t('composer.predictionsEnabled')}
+                  onChange={(composerPredictionsEnabled) => set({ composerPredictionsEnabled })}
+                />
+              </SettingsRow>
+            </div>
+          </SettingsGroup>
+        </PageSection>
+        {SELECTION_PROMPT_ACTIONS.filter((action) => action !== 'translate').map((action) => (
           <PageSection key={action}>
-            <label className="grid gap-[var(--vds-space-1)]">
-              <span className="text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-medium)] text-[var(--vds-text-primary)]">
+            <div className="flex items-center justify-between gap-[var(--vds-space-2)]">
+              <span className="text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] text-[var(--vds-text-tertiary)]">
                 {t(SELECTION_PROMPT_LABELS[action])}
               </span>
-              <span className="relative">
-                <Textarea
-                  rows={3}
-                  value={draft[action]}
-                  disabled={saving}
-                  className="!rounded-[var(--vds-settings-prompt-radius)] pb-[var(--vds-space-7)]"
-                  data-testid={`selection-prompt-${action}`}
-                  maxLength={MAX_SELECTION_PROMPT_CHARS}
-                  onChange={(event) =>
-                    setDraft((current) => ({
-                      ...current,
-                      [action]: event.target.value,
-                    }))
-                  }
-                />
-                <span className="pointer-events-none absolute bottom-[var(--vds-space-2)] right-[var(--vds-space-3)] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-tertiary)]">
-                  {draft[action].length}-{MAX_SELECTION_PROMPT_CHARS}
+              <Tooltip
+                portalled
+                side="top"
+                contentClassName="!z-[var(--vds-z-modal-nested-flyout)]"
+                content={t('accountPanel.prompts.restore')}
+              >
+                <span className="inline-flex">
+                  <IconButton
+                    size="sm"
+                    variant="ghost"
+                    icon={<RotateCw />}
+                    title={undefined}
+                    disabled={saving || draft[action] === defaults[action]}
+                    label={t('accountPanel.prompts.restoreAction', {
+                      action: t(SELECTION_PROMPT_LABELS[action]),
+                    })}
+                    data-testid={`selection-prompt-restore-${action}`}
+                    onClick={() =>
+                      setDraft((current) => ({
+                        ...current,
+                        [action]: defaults[action],
+                      }))
+                    }
+                  />
                 </span>
-              </span>
-            </label>
-            <div className="flex items-center justify-between gap-[var(--vds-space-2)]">
-              <span />
-              <Button
-                size="sm"
-                variant="ghost"
-                disabled={saving || draft[action] === defaults[action]}
-                aria-label={t('accountPanel.prompts.restoreAction', {
-                  action: t(SELECTION_PROMPT_LABELS[action]),
-                })}
-                data-testid={`selection-prompt-restore-${action}`}
-                onClick={() =>
+              </Tooltip>
+            </div>
+            <span className="relative">
+              <Textarea
+                rows={3}
+                aria-label={t(SELECTION_PROMPT_LABELS[action])}
+                value={draft[action]}
+                disabled={saving}
+                className="h-[var(--vds-settings-prompt-height)] !rounded-[var(--vds-settings-prompt-radius)] pb-[var(--vds-space-7)] font-[var(--vds-fw-regular)]"
+                data-testid={`selection-prompt-${action}`}
+                maxLength={MAX_SELECTION_PROMPT_CHARS}
+                onChange={(event) =>
                   setDraft((current) => ({
                     ...current,
-                    [action]: defaults[action],
+                    [action]: event.target.value,
                   }))
                 }
-              >
-                {t('accountPanel.prompts.restore')}
-              </Button>
-            </div>
+              />
+              <span className="pointer-events-none absolute bottom-[var(--vds-space-2)] right-[var(--vds-space-3)] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-tertiary)]">
+                {draft[action].length}-{MAX_SELECTION_PROMPT_CHARS}
+              </span>
+            </span>
           </PageSection>
         ))}
-      </PageBody>
+      </div>
       <div className="flex justify-end">
         <Button
           variant="primary"
@@ -608,9 +646,13 @@ export function DataStoragePage(): React.JSX.Element {
                 : t('accountPanel.storage.dataHomeDescription')}
             </div>
             {storage && (
-              <div className={STORAGE_PATH_CLASS_NAME} data-testid="storage-data-home-value">
-                {storage.home}
-              </div>
+              <Input
+                className="mt-[var(--vds-space-2)]"
+                disabled
+                value={storage.home}
+                aria-label={t('accountPanel.storage.dataHomeTitle')}
+                data-testid="storage-data-home-value"
+              />
             )}
             {homePhase === 'loading' && (
               <div data-testid="storage-data-home-loading">
@@ -636,7 +678,10 @@ export function DataStoragePage(): React.JSX.Element {
             )}
           </div>
         </div>
-        <div className={SETTINGS_ROW_CLASS_NAME} data-testid="storage-container-root">
+        <div
+          className={`${SETTINGS_ROW_CLASS_NAME} !items-end`}
+          data-testid="storage-container-root"
+        >
           <div className={SETTINGS_ROW_COPY_CLASS_NAME}>
             <div className={NOTIFICATION_ROW_TITLE_CLASS_NAME}>
               {t('accountPanel.storage.containerRootTitle')}
@@ -645,9 +690,13 @@ export function DataStoragePage(): React.JSX.Element {
               {t('accountPanel.storage.containerRootDescription')}
             </div>
             {workspace && (
-              <div className={STORAGE_PATH_CLASS_NAME} data-testid="storage-container-root-value">
-                {workspace.configured || workspace.root}
-              </div>
+              <Input
+                className="mt-[var(--vds-space-2)]"
+                disabled
+                value={workspace.configured || workspace.root}
+                aria-label={t('accountPanel.storage.containerRootTitle')}
+                data-testid="storage-container-root-value"
+              />
             )}
             {workspacePhase === 'loading' && (
               <div data-testid="storage-container-root-loading">
@@ -776,24 +825,6 @@ function AboutPage(): React.JSX.Element {
   // 与更新卡、两个入口胶囊同一份判据：安装失败时相位停在 ready，这一行不能报「已下载完成」。
   const failure = updateFailureOf(update)
   const copyrightYear = new Date().getFullYear()
-
-  const VersionIcon: LucideIcon = failure
-    ? TriangleAlert
-    : phase === 'available'
-      ? ArrowUp
-      : downloading || phase === 'verifying'
-        ? ArrowDown
-        : phase === 'ready' ||
-            phase === 'installing' ||
-            phase === 'restarting' ||
-            phase === 'manual'
-          ? RotateCw
-          : CircleCheck
-  const versionIconTone = failure
-    ? ABOUT_VERSION_ICON_ALERT_CLASS_NAME
-    : phase === 'available' || downloading || phase === 'verifying' || phase === 'ready'
-      ? ABOUT_VERSION_ICON_NEW_CLASS_NAME
-      : ''
 
   // PRD 第 11 条：只有「当前版本」这一行随状态变化，其余各行保持原样。
   // 失败呈现独立于相位：failed / rolled-back / ready+error 三种情形共用这一块。
@@ -987,9 +1018,6 @@ function AboutPage(): React.JSX.Element {
       <PageBody>
         <div className={SECURITY_CARD_CLASS_NAME}>
           <div className={ABOUT_ROW_CLASS_NAME}>
-            <span className={cx(ABOUT_ICON_CLASS_NAME, versionIconTone)}>
-              <VersionIcon size={15} strokeWidth={1.6} />
-            </span>
             <div className={ABOUT_COPY_CLASS_NAME}>
               <div className="flex min-w-0 flex-wrap items-center gap-[var(--vds-space-2)]">
                 <strong
@@ -1051,9 +1079,6 @@ function AboutPage(): React.JSX.Element {
             data-testid="about-site"
             onClick={() => void window.scholarseed.openExternal(siteBase)}
           >
-            <span className={ABOUT_ICON_CLASS_NAME}>
-              <Icon name="globe" size={15} />
-            </span>
             <span className={ABOUT_COPY_CLASS_NAME}>
               <strong className={ABOUT_ROW_TITLE_CLASS_NAME}>{t('accountPanel.about.site')}</strong>
             </span>
@@ -1070,9 +1095,6 @@ function AboutPage(): React.JSX.Element {
             data-testid="about-mail"
             onClick={() => void copyMail()}
           >
-            <span className={ABOUT_ICON_CLASS_NAME}>
-              <Mail size={15} strokeWidth={1.6} />
-            </span>
             <span className={ABOUT_COPY_CLASS_NAME}>
               <strong className={ABOUT_ROW_TITLE_CLASS_NAME}>{t('accountPanel.about.mail')}</strong>
             </span>
@@ -1094,9 +1116,6 @@ function AboutPage(): React.JSX.Element {
             data-testid="about-community"
             onClick={() => void window.scholarseed.openExternal(siteBase)}
           >
-            <span className={ABOUT_ICON_CLASS_NAME}>
-              <Icon name="agents" size={15} />
-            </span>
             <span className={ABOUT_COPY_CLASS_NAME}>
               <strong className={ABOUT_ROW_TITLE_CLASS_NAME}>
                 {t('accountPanel.about.community')}
@@ -1115,9 +1134,6 @@ function AboutPage(): React.JSX.Element {
             data-testid="about-manual"
             onClick={() => void window.scholarseed.openExternal(manualUrl)}
           >
-            <span className={ABOUT_ICON_CLASS_NAME}>
-              <Icon name="books" size={15} />
-            </span>
             <span className={ABOUT_COPY_CLASS_NAME}>
               <strong className={ABOUT_ROW_TITLE_CLASS_NAME}>
                 {t('accountPanel.about.manual')}
@@ -1544,21 +1560,23 @@ const SETTINGS_SHELL_CLASS_NAME =
 const SETTINGS_DIALOG_SHELL_CLASS_NAME = `${SETTINGS_SHELL_CLASS_NAME} h-full rounded-[inherit]`
 const SETTINGS_DRAG_CLASS_NAME = 'absolute inset-x-0 top-[var(--vds-space-0)] z-[3] h-[38px]'
 const SETTINGS_NAV_CLASS_NAME =
-  'relative z-[4] w-[210px] flex-none border-r border-[var(--border-soft)] bg-[var(--sidebar-surface)] px-[10px] pb-[18px] pt-[0px] max-[760px]:w-[168px]'
+  'relative z-[4] w-[210px] flex-none border-r border-[var(--border-soft)] bg-[var(--vds-bg-component)] px-[10px] pb-[18px] pt-[0px] max-[760px]:w-[168px]'
 const SETTINGS_DIALOG_NAV_CLASS_NAME =
   'w-[150px] px-[8px] pb-[18px] pt-0 max-[760px]:w-[150px] max-[760px]:!w-[calc(var(--vds-space-6)*2+var(--vds-space-2))] max-[760px]:!px-[var(--vds-space-1)]'
 const SETTINGS_DIALOG_TITLE_CLASS_NAME =
   'flex h-[56px] items-center px-[16px] text-[16px] font-[var(--vds-fw-medium)] leading-[22px] text-[var(--vds-text-primary)]'
 const SETTINGS_BACK_CLASS_NAME =
   'no-drag mb-[14px] !flex !h-8 !w-full !justify-start !gap-[10px] !rounded-[7px] !border-0 !bg-transparent !px-[10px] !py-[var(--vds-space-0)] !text-left !text-[11.5px] !font-[var(--vds-fw-regular)] !text-[var(--text-3)] hover:!bg-transparent [&_svg]:rotate-180'
-const SETTINGS_NAV_LIST_CLASS_NAME = 'grid gap-[3px] px-[var(--vds-space-2)]'
+const SETTINGS_NAV_LIST_CLASS_NAME = 'grid grid-cols-1 gap-[3px] px-[var(--vds-space-2)]'
 const SETTINGS_NAV_BUTTON_CLASS_NAME =
-  '!flex !min-h-[38px] !w-full !justify-start !gap-[10px] !rounded-lg !border-0 !bg-transparent !px-[var(--vds-space-3)] !py-[var(--vds-space-0)] !text-left !text-[length:var(--vds-font-body-lv1)] !font-[var(--vds-fw-regular)] !text-[var(--text-3)] hover:![background:color-mix(in_srgb,var(--active-bg)_55%,transparent)] data-[active=true]:![background:var(--active-bg)] data-[active=true]:!font-[650] data-[active=true]:!text-[var(--c-experience)]'
+  '!flex !min-h-[38px] !w-full !min-w-0 !justify-start !gap-[10px] !rounded-lg !border-0 !bg-transparent !px-[var(--vds-space-3)] !py-[var(--vds-space-0)] !text-left !text-[length:var(--vds-font-body-lv2)] !font-[var(--vds-fw-regular)] !text-[var(--text-3)] [&_svg]:shrink-0 hover:![background:color-mix(in_srgb,var(--active-bg)_55%,transparent)] data-[active=true]:![background:var(--active-bg)] data-[active=true]:!font-[650] data-[active=true]:!text-[var(--c-experience)]'
 const SETTINGS_DIALOG_NAV_BUTTON_CLASS_NAME =
-  '!min-h-9 !gap-[8px] !rounded-[8px] !px-[12px] !text-[14px] !font-[var(--vds-fw-regular)] !leading-5 !text-[var(--vds-text-secondary)] hover:![background:var(--vds-other-overlay-1)] hover:!text-[var(--vds-text-primary)] data-[active=true]:![background:var(--vds-other-overlay-1)] data-[active=true]:!font-[var(--vds-fw-medium)] data-[active=true]:!text-[var(--vds-text-primary)]'
+  '!min-h-9 !gap-[8px] !rounded-[8px] !px-[12px] !text-[14px] !font-[var(--vds-fw-regular)] !leading-5 !text-[var(--vds-text-secondary)] hover:![background:var(--vds-other-overlay-1)] hover:!text-[var(--vds-text-primary)] data-[active=true]:![background:var(--vds-other-overlay-1)] data-[active=true]:!font-[var(--vds-fw-medium)] data-[active=true]:!text-[var(--vds-text-primary)] max-[760px]:!px-[var(--vds-space-1)] max-[760px]:!justify-center'
 const SETTINGS_NAV_BUTTON_ACTIVE_CLASS_NAME = ''
 const SETTINGS_MAIN_CLASS_NAME =
-  'no-drag min-w-0 flex-1 overflow-auto bg-[var(--paper)] ![padding:0_32px_56px] max-[760px]:![padding-right:18px] max-[760px]:![padding-left:18px]'
+  'no-drag min-w-0 flex-1 overflow-auto bg-[var(--vds-bg-gray-light-default)]'
+const SETTINGS_MAIN_PADDING_CLASS_NAME =
+  '![padding:0_var(--vds-space-8)_calc(var(--vds-space-7)*2)] max-[760px]:![padding-right:calc(var(--vds-space-4)+var(--vds-space-half))] max-[760px]:![padding-left:calc(var(--vds-space-4)+var(--vds-space-half))]'
 const SETTINGS_CONTENT_CLASS_NAME =
   'w-full pb-[var(--vds-space-5)] animate-[cardIn_0.14s_ease_both]'
 const SETTINGS_PAGE_HEADER_CLASS_NAME =
@@ -1568,7 +1586,9 @@ const SETTINGS_PAGE_HEADER_COPY_CLASS_NAME =
 const SETTINGS_PAGE_HEADER_ACTION_CLASS_NAME = 'flex flex-none items-center'
 const SETTINGS_H1_CLASS_NAME =
   'm-[var(--vds-space-0)] flex-none text-[14px] font-[var(--vds-fw-medium)] leading-[22px] text-[var(--vds-text-primary)]'
-const SETTINGS_H2_CLASS_NAME = 'mb-[10px] mt-[6px] text-[12.5px] font-[650] text-[var(--text-2)]'
+const SETTINGS_H2_CLASS_NAME =
+  'mb-[var(--vds-space-2)] mt-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] text-[var(--vds-text-tertiary)]'
+const SETTINGS_HEADING_ROW_CLASS_NAME = 'flex items-center justify-between gap-[var(--vds-space-4)]'
 const SETTINGS_LEAD_CLASS_NAME =
   'm-[var(--vds-space-0)] min-w-0 truncate text-[11.5px] leading-[18px] text-[var(--vds-text-tertiary)]'
 const SETTINGS_CARD_CLASS_NAME =
@@ -1587,18 +1607,19 @@ const PANEL_BUTTON_CLASS_NAME =
   '!min-h-[30px] flex-none !rounded-[7px] !border ![border-color:var(--border)] !bg-transparent !px-[var(--vds-space-3)] !py-[var(--vds-space-0)] !text-[11px] !text-[var(--text-2)] hover:enabled:![border-color:var(--c-experience)] hover:enabled:!bg-transparent disabled:!cursor-not-allowed disabled:!opacity-45'
 const SECURITY_CARD_CLASS_NAME = `${SETTINGS_CARD_CLASS_NAME} px-[18px]`
 const SETTINGS_ROW_CLASS_NAME =
-  'flex min-h-[72px] items-center gap-[18px] border-b border-[var(--border-soft)] last:border-b-0 max-[760px]:gap-[10px]'
+  'flex min-h-[var(--vds-space-9)] items-center gap-[var(--vds-space-4)] border-b border-[var(--vds-divider-default)] py-[var(--vds-space-4)] last:border-b-0 [&>button]:shrink-0 max-[760px]:gap-[var(--vds-space-2)]'
 const SETTINGS_ROW_COPY_CLASS_NAME = 'min-w-0 flex-1'
-const SETTINGS_ROW_TITLE_CLASS_NAME = 'text-[12.5px] font-semibold text-[var(--text)]'
+const SETTINGS_ROW_TITLE_CLASS_NAME =
+  'text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-primary)]'
 const SETTINGS_ROW_DESCRIPTION_CLASS_NAME =
-  'mt-[2px] text-[10.5px] leading-[1.45] text-[var(--text-3)] [overflow-wrap:anywhere]'
-const DEVELOPER_ROW_TITLE_CLASS_NAME =
-  'text-[14px] font-semibold leading-[20px] text-[var(--vds-text-primary)]'
-const DEVELOPER_ROW_DESCRIPTION_CLASS_NAME =
-  'mt-[2px] text-[12px] leading-[18px] text-[var(--vds-text-tertiary)] [overflow-wrap:anywhere]'
-const NOTIFICATION_ROW_TITLE_CLASS_NAME = 'text-[14px] font-semibold text-[var(--text)]'
-const NOTIFICATION_ROW_DESCRIPTION_CLASS_NAME =
-  'mt-[2px] text-[12px] leading-[1.45] text-[var(--text-3)] [overflow-wrap:anywhere]'
+  'mt-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] font-[var(--vds-fw-regular)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-tertiary)] [overflow-wrap:anywhere]'
+const DEVELOPER_SECTION_HEADING_CLASS_NAME =
+  'mb-[var(--vds-space-2)] mt-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-tertiary)]'
+const DEVELOPER_SECTION_HEADING_SPACED_CLASS_NAME = `${DEVELOPER_SECTION_HEADING_CLASS_NAME} !mt-[30px]`
+const DEVELOPER_ROW_TITLE_CLASS_NAME = SETTINGS_ROW_TITLE_CLASS_NAME
+const DEVELOPER_ROW_DESCRIPTION_CLASS_NAME = SETTINGS_ROW_DESCRIPTION_CLASS_NAME
+const NOTIFICATION_ROW_TITLE_CLASS_NAME = SETTINGS_ROW_TITLE_CLASS_NAME
+const NOTIFICATION_ROW_DESCRIPTION_CLASS_NAME = SETTINGS_ROW_DESCRIPTION_CLASS_NAME
 const SECTION_HEADING_CLASS_NAME = `${SETTINGS_H2_CLASS_NAME} !mt-[30px]`
 const INLINE_FORM_CLASS_NAME =
   'mb-[var(--vds-space-2)] rounded-[9px] bg-[color-mix(in_srgb,var(--active-bg)_42%,transparent)] p-[14px]'
@@ -1635,11 +1656,8 @@ const RESET_BUTTON_CLASS_NAME =
 const RESET_ACTIONS_CLASS_NAME =
   'flex justify-end gap-[var(--vds-space-2)] px-[var(--vds-space-5)] pb-[var(--vds-space-5)] pt-[var(--vds-space-2)]'
 const NOTIFICATION_CARD_CLASS_NAME = SECURITY_CARD_CLASS_NAME
-// 路径值块：mono + bg-3 底 + 可断行；全部取 token，不引入固定视觉值（standards 棘轮）。
-const STORAGE_PATH_CLASS_NAME =
-  'mt-[var(--vds-space-2)] break-all rounded-[var(--vds-space-2)] bg-[var(--bg-3)] px-[var(--vds-space-3)] py-[var(--vds-space-2)] text-[var(--vds-font-caption)] leading-[var(--vds-lh-caption)] [font-family:var(--font-mono)] [color:var(--text-2)]'
 const STORAGE_FOOTNOTE_CLASS_NAME =
-  'space-y-[var(--vds-space-1)] border-t border-[var(--border-soft)] py-[var(--vds-space-3)] text-[var(--vds-font-caption)] leading-[var(--vds-lh-caption)] text-[var(--text-3)] [overflow-wrap:anywhere]'
+  'space-y-[var(--vds-space-1)] py-[var(--vds-space-3)] text-[length:var(--vds-font-body-lv1)] font-[var(--vds-fw-regular)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-tertiary)] [overflow-wrap:anywhere]'
 const PERMISSION_CARD_CLASS_NAME = SECURITY_CARD_CLASS_NAME
 const PREFERENCE_CARD_CLASS_NAME = `${SETTINGS_CARD_CLASS_NAME} grid gap-[14px] px-[18px] py-[16px]`
 const PERMISSION_ROW_CLASS_NAME =
@@ -1666,20 +1684,13 @@ const SHARING_SEGMENT_ACTIVE_CLASS_NAME =
   'bg-[var(--bg-2)] font-[650] text-[var(--c-experience)] shadow-[0_1px_3px_rgb(0_0_0_/_0.1)]'
 const ABOUT_ROW_CLASS_NAME =
   'flex min-h-[62px] items-center gap-[var(--vds-space-3)] border-b border-[var(--border-soft)] py-[var(--vds-space-2)] last:border-b-0'
-const ABOUT_LINK_ROW_CLASS_NAME = `${ABOUT_ROW_CLASS_NAME} !w-full !justify-start !rounded-[var(--vds-space-0)] !border-x-0 !border-t-0 !bg-transparent !px-[var(--vds-space-0)] !py-[var(--vds-space-0)] !text-left !shadow-none hover:!bg-transparent max-[760px]:grid max-[760px]:[grid-template-columns:auto_minmax(0,1fr)] max-[760px]:[&>span:first-child]:row-span-2 max-[760px]:[&>span:last-child]:col-start-2`
-const ABOUT_ICON_CLASS_NAME =
-  'grid size-[30px] flex-none place-items-center rounded-full bg-[var(--active-bg)] text-[var(--c-experience)]'
+const ABOUT_LINK_ROW_CLASS_NAME = `${ABOUT_ROW_CLASS_NAME} !w-full !justify-start !rounded-[var(--vds-space-0)] !border-x-0 !border-t-0 !bg-transparent !px-[var(--vds-space-0)] !py-[var(--vds-space-0)] !text-left !shadow-none hover:!bg-transparent max-[760px]:grid max-[760px]:grid-cols-1`
 const ABOUT_COPY_CLASS_NAME = 'grid min-w-0 flex-1 gap-[2px]'
-const ABOUT_ROW_TITLE_CLASS_NAME = 'text-[14px] font-[650] leading-[20px] text-[var(--text)]'
-const ABOUT_ROW_DESCRIPTION_CLASS_NAME = 'text-[12px] leading-[18px] text-[var(--text-3)]'
+const ABOUT_ROW_TITLE_CLASS_NAME = SETTINGS_ROW_TITLE_CLASS_NAME
+const ABOUT_ROW_DESCRIPTION_CLASS_NAME = SETTINGS_ROW_DESCRIPTION_CLASS_NAME
 const ABOUT_VALUE_CLASS_NAME =
-  'flex min-w-0 items-center justify-end gap-[5px] break-words text-right text-[12px] leading-[18px] text-[var(--text-3)] [overflow-wrap:anywhere] max-[760px]:justify-start max-[760px]:text-left'
+  'flex min-w-0 items-center justify-end gap-[var(--vds-space-1)] break-words text-right text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-tertiary)] [overflow-wrap:anywhere] max-[760px]:justify-start max-[760px]:text-left'
 const ABOUT_COPIED_CLASS_NAME = 'text-[12px] not-italic leading-[18px] text-[var(--c-experience)]'
-/** 「当前版本」行的状态图标色调：有新版本可下/已就绪用品牌实心，失败用错误浅色。 */
-const ABOUT_VERSION_ICON_NEW_CLASS_NAME =
-  'bg-[var(--vds-brand-bg-default)] text-[var(--vds-text-on-brand)]'
-const ABOUT_VERSION_ICON_ALERT_CLASS_NAME =
-  'bg-[var(--vds-error-light-bg-default)] text-[var(--vds-error-text-primary)]'
 const ABOUT_VERSION_SUB_CLASS_NAME = 'flex min-w-0 items-center gap-[6px]'
 const ABOUT_VERSION_CHIP_CLASS_NAME =
   'inline-flex flex-none items-center rounded-[var(--vds-radius-pill)] border border-[var(--vds-brand-light-border)] bg-[var(--vds-brand-light-bg-default)] px-[8px] py-[1px] text-[10.5px] font-[var(--vds-fw-semibold)] leading-[var(--vds-lh-caption)] text-[var(--vds-brand-text-primary)] tabular-nums'
@@ -1754,6 +1765,7 @@ function ChangePhoneDialog({
   onClose: () => void
   onSessionInvalid: () => void
 }): React.JSX.Element {
+  const document = usePortalDocument()
   const { t } = useTranslation('components')
   const { t: accountText } = useTranslation('account')
   const [targetPhone, setTargetPhone] = React.useState('')
@@ -1913,6 +1925,7 @@ function ResetPasswordDialog({
   onClose: () => void
   onSessionInvalid: () => void
 }): React.JSX.Element {
+  const document = usePortalDocument()
   const { t } = useTranslation('components')
   const { t: accountText } = useTranslation('account')
   const [targetPhone, setTargetPhone] = React.useState(phone)
@@ -2681,8 +2694,10 @@ function DeveloperPage(): React.JSX.Element {
 
 const MODEL_FORM_GRID_CLASS_NAME = 'grid gap-[10px]'
 const MODEL_FIELD_CLASS_NAME = 'grid gap-[5px]'
-const MODEL_FIELD_LABEL_CLASS_NAME = 'text-[14px] font-[650] text-[var(--text-2)]'
-const MODEL_FIELD_HINT_CLASS_NAME = 'text-[12px] leading-[1.45] text-[var(--text-3)]'
+const MODEL_FIELD_LABEL_CLASS_NAME =
+  'text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] text-[var(--text-2)]'
+const MODEL_FIELD_HINT_CLASS_NAME =
+  'text-[length:var(--vds-font-body-lv1)] font-[var(--vds-fw-regular)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-tertiary)]'
 const MODEL_ROW_ACTIONS_CLASS_NAME = 'flex flex-none items-center gap-[var(--vds-space-2)]'
 const MODEL_NAME_ROW_CLASS_NAME = 'flex items-center gap-[var(--vds-space-2)]'
 
@@ -2693,7 +2708,6 @@ const MODEL_CONFIGURATION_TABS_CLASS_NAME =
 const MODEL_SERVICE_TAB_CONTENT_CLASS_NAME = 'min-h-0 flex-1 overflow-hidden'
 const MODEL_SETTINGS_TAB_CONTENT_CLASS_NAME = 'min-h-0 flex-1 overflow-hidden'
 const MODEL_SETTINGS_EMBEDDED_CLASS_NAME = 'flex h-full min-h-0 flex-col'
-const MODEL_SETTINGS_ACTIONS_CLASS_NAME = 'mb-[12px] flex justify-end'
 const MODEL_SETTINGS_TABLE_CLASS_NAME =
   'min-h-0 flex-1 overflow-auto rounded-[var(--vds-settings-card-radius)] border border-[var(--vds-line-1)] bg-[var(--vds-surface-raised)] shadow-none'
 const MODEL_SETTINGS_TABLE_INNER_CLASS_NAME = 'min-w-[920px]'
@@ -2702,7 +2716,7 @@ const MODEL_SETTINGS_TABLE_GRID_CLASS_NAME =
 const MODEL_SETTINGS_TABLE_HEADER_CLASS_NAME = `${MODEL_SETTINGS_TABLE_GRID_CLASS_NAME} border-b border-[var(--vds-line-1)] bg-[var(--vds-other-overlay-1)] px-4 py-3 text-[14px] font-semibold text-[var(--vds-text-secondary)]`
 const MODEL_SETTINGS_TABLE_ROW_CLASS_NAME = `${MODEL_SETTINGS_TABLE_GRID_CLASS_NAME} items-center border-b border-[var(--vds-line-1)] px-4 py-3 last:border-b-0`
 const MODEL_SHELL_CLASS_NAME = [
-  'grid min-h-0 flex-1 grid-cols-[248px_minmax(0,1fr)]',
+  'grid min-h-0 flex-1 grid-cols-2',
   'overflow-hidden rounded-[var(--vds-settings-model-panel-radius)] border border-[var(--border-soft)]',
 ].join(' ')
 const MODEL_PANE_CLASS_NAME =
@@ -2710,7 +2724,7 @@ const MODEL_PANE_CLASS_NAME =
 const MODEL_PANE_TITLE_CLASS_NAME =
   'flex items-baseline justify-between gap-[var(--vds-space-2)] px-[12px] pb-[6px] pt-[12px]'
 const MODEL_PANE_TITLE_TEXT_CLASS_NAME = 'text-[14px] font-[650] text-[var(--text-2)]'
-const MODEL_PANE_COUNT_CLASS_NAME = 'text-[12px] text-[var(--text-3)]'
+const MODEL_PANE_COUNT_CLASS_NAME = MODEL_FIELD_HINT_CLASS_NAME
 const MODEL_PANE_SEARCH_CLASS_NAME = 'px-[12px] pb-[8px]'
 const MODEL_PANE_LIST_CLASS_NAME =
   'flex min-h-0 flex-1 flex-col gap-[3px] overflow-y-auto px-[8px] pb-[8px]'
@@ -2719,7 +2733,7 @@ const MODEL_FOOT_CLASS_NAME =
 const MODEL_CONNECTION_ROW_CLASS_NAME = (selected: boolean): string =>
   [
     'flex items-center gap-[var(--vds-space-2)] rounded-[var(--vds-radius-3)] px-[8px] py-[6px]',
-    selected ? 'bg-[var(--accent-soft)]' : 'bg-transparent hover:bg-[var(--bg-3)]',
+    selected ? 'bg-[var(--vds-other-overlay-2)]' : 'bg-transparent hover:bg-[var(--bg-3)]',
   ].join(' ')
 const MODEL_CONNECTION_PICK_CLASS_NAME =
   'flex min-w-0 flex-1 items-center gap-[var(--vds-space-2)] text-left'
@@ -2730,19 +2744,14 @@ const MODEL_CONNECTION_META_CLASS_NAME =
   'w-full overflow-hidden text-ellipsis whitespace-nowrap text-[12px] text-[var(--text-3)]'
 const MODEL_PANE_EMPTY_CLASS_NAME =
   'px-[12px] py-[10px] text-[12px] leading-[1.5] text-[var(--text-3)]'
-const MODEL_DETAIL_CLASS_NAME = 'flex min-h-0 flex-col'
+const MODEL_DETAIL_CLASS_NAME = 'flex min-h-0 flex-col bg-[var(--vds-bg-white-default)]'
 const MODEL_DETAIL_SCROLL_CLASS_NAME =
   'flex min-h-0 flex-1 flex-col gap-[10px] overflow-y-auto p-[16px]'
 const MODEL_DETAIL_FOOT_CLASS_NAME = `${MODEL_FOOT_CLASS_NAME} justify-between gap-[var(--vds-space-2)]`
 const MODEL_SECTION_HEAD_CLASS_NAME =
   'flex items-center justify-between gap-[var(--vds-space-2)] border-t border-[var(--border-soft)] pt-[10px]'
-const MODEL_SELECTION_ROW_CLASS_NAME = (checked: boolean): string =>
-  [
-    'flex items-center gap-[var(--vds-space-2)] rounded-[var(--vds-radius-3)] border px-[8px] py-[6px]',
-    checked
-      ? 'border-[var(--border)] bg-[var(--accent-soft)]'
-      : 'border-transparent hover:bg-[var(--bg-3)]',
-  ].join(' ')
+const MODEL_SELECTION_ROW_CLASS_NAME =
+  'flex items-center gap-[var(--vds-space-2)] rounded-[var(--vds-radius-3)] border border-transparent px-[8px] py-[6px] hover:bg-[var(--bg-3)]'
 const MODEL_SELECTION_NAME_CLASS_NAME =
   'min-w-0 flex-1 break-all font-[var(--vds-font-code)] text-[length:var(--vds-font-body-lv2)] text-[var(--text)]'
 // 不给它 overflow: 右栏已经是滚动容器, 再套一层内滚会变成滚动套滚动 —— 指针停在
@@ -2750,7 +2759,7 @@ const MODEL_SELECTION_NAME_CLASS_NAME =
 const MODEL_SELECTION_LIST_CLASS_NAME = 'flex flex-col gap-[2px]'
 const MODEL_DETAIL_HEAD_CLASS_NAME =
   'flex flex-none items-center gap-[var(--vds-space-2)] border-b border-[var(--border-soft)] px-[var(--vds-space-4)] py-[var(--vds-space-3)]'
-const MODEL_DETAIL_HEAD_TEXT_CLASS_NAME = 'flex min-w-0 flex-col'
+const MODEL_DETAIL_HEAD_TEXT_CLASS_NAME = 'flex min-w-0 flex-1 flex-col'
 const MODEL_STATUS_ROW_CLASS_NAME = 'flex flex-none items-center gap-[var(--vds-space-2)]'
 const MODEL_STATUS_DOT_CLASS_NAME = (state: 'idle' | 'ok' | 'fail'): string =>
   [
@@ -2761,21 +2770,10 @@ const MODEL_STATUS_DOT_CLASS_NAME = (state: 'idle' | 'ok' | 'fail'): string =>
         ? 'bg-[var(--c-tension)]'
         : 'bg-[var(--text-3)]',
   ].join(' ')
-const MODEL_PANE_ADD_CLASS_NAME =
-  'flex w-full flex-none items-center gap-[var(--vds-space-1)] border-t border-[var(--border-soft)] px-[var(--vds-space-3)] py-[var(--vds-space-2)] text-[var(--text-2)] hover:bg-[var(--bg-3)] hover:text-[var(--text)]'
 // 连接测试结果弹窗嵌套在「设置」modal（--vds-z-modal:6000）内, 必须抬到 modal-nested 层级,
 // 否则被设置面板盖住而点不动关闭按钮。
 const PROBE_RESULT_OVERLAY_CLASS_NAME = 'z-[var(--vds-z-modal-nested-overlay)]'
 const PROBE_RESULT_DIALOG_CLASS_NAME = 'z-[var(--vds-z-modal-nested)]'
-
-// 头像缩写只服务显示: 优先取拉丁词首字母, 纯中文厂商标题退回首两字, 保证任何
-// 新增预设都有稳定缩写而不需要回来改表。
-function providerInitials(label: string): string {
-  const tokens = label.match(/[A-Za-z][A-Za-z0-9]*/g)
-  if (!tokens || tokens.length === 0) return label.slice(0, 2).toUpperCase()
-  if (tokens.length >= 2) return `${tokens[0][0]}${tokens[1][0]}`.toUpperCase()
-  return tokens[0].slice(0, 2).toUpperCase()
-}
 
 // 上下文徽章沿用工程记法: 满百万写 M, 满千写 K, 不随界面语言做本地化数字格式。
 function formatContextBadge(tokens: number): string {
@@ -2889,13 +2887,20 @@ function ModelEndpointField({
   )
 }
 
-function ModelServicePage({ embedded = false }: { embedded?: boolean } = {}): React.JSX.Element {
+function ModelServicePage({
+  embedded = false,
+  actionsHost,
+}: {
+  embedded?: boolean
+  actionsHost?: HTMLElement | null
+} = {}): React.JSX.Element {
   const { t: accountActions } = useTranslation('account')
   const { t: subscriptionText } = useTranslation('subscription')
   const { act, state } = useApp()
   const { t } = useTranslation('components')
   const [profiles, setProfiles] = React.useState<PersonalApiProfile[]>([])
   const [presets, setPresets] = React.useState<ModelProviderPreset[]>([])
+  const [presetsReady, setPresetsReady] = React.useState(false)
   // 左栏焦点, 不是「生效的那条」: 多条连接可以同时启用。
   const [selectedId, setSelectedId] = React.useState('')
   const [query, setQuery] = React.useState('')
@@ -2903,6 +2908,8 @@ function ModelServicePage({ embedded = false }: { embedded?: boolean } = {}): Re
   const apiKeyInputRef = React.useRef<HTMLInputElement>(null)
   const [manualModel, setManualModel] = React.useState('')
   const [modelQuery, setModelQuery] = React.useState('')
+  const [modelSearchOpen, setModelSearchOpen] = React.useState(false)
+  const modelSearchInputRef = React.useRef<HTMLInputElement>(null)
   const [manualOpen, setManualOpen] = React.useState(false)
   const [busy, setBusy] = React.useState(false)
   const [error, setError] = React.useState<string | PersonalApiFailure | ModelPageFailure>('')
@@ -2922,25 +2929,47 @@ function ModelServicePage({ embedded = false }: { embedded?: boolean } = {}): Re
     [act]
   )
 
+  // This page's inventory reads and mutation receipts share one revision: only the
+  // newest may land, otherwise a read issued before a delete restores the removed
+  // connection. Reads from other pages are not covered by it.
+  const revision = React.useRef(inventoryRevision()).current
+
+  // A mutation owns the newest inventory, so it settles the page as well; a load it
+  // supersedes would otherwise leave the pane in loading.
+  const settle = React.useCallback(
+    (payload: PersonalApiProfilesResp): void => {
+      absorb(payload)
+      setLoadState('ready')
+    },
+    [absorb]
+  )
+
   const load = React.useCallback((): void => {
     setLoadState('loading')
     setError('')
-    void getPersonalApiProfiles().then(async (payload) => {
-      if (!payload) {
+    void reconcileInventory(
+      revision,
+      getPersonalApiProfiles,
+      async (payload) => {
+        settle(payload)
+        const ticket = revision.next()
+        const catalog = await getModels()
+        if (revision.current(ticket)) act.applyModelCatalog(catalog)
+      },
+      () => {
         setError({ messageKey: 'models.loadFailed' })
         setLoadState('error')
-        return
       }
-      absorb(payload)
-      act.applyModelCatalog(await getModels())
-      setLoadState('ready')
-    })
-  }, [absorb])
+    )
+  }, [act, revision, settle])
 
   React.useEffect(() => {
     load()
     // 预置项只是填空提示, 拿不到也不该阻断本页 —— 用户照样能选「自定义」手填地址。
-    void getModelProviders().then((payload) => setPresets(payload?.providers ?? []))
+    void getModelProviders().then((payload) => {
+      setPresets(payload?.providers ?? [])
+      setPresetsReady(true)
+    })
   }, [load])
 
   // 两个 tab 同时挂载(隐藏的那个只是 hidden), 所以「模型配置」页改掉某个模型的显示状态后,
@@ -2957,6 +2986,7 @@ function ModelServicePage({ embedded = false }: { embedded?: boolean } = {}): Re
     setProbeFailure(null)
     setManualModel('')
     setModelQuery('')
+    setModelSearchOpen(false)
     setManualOpen(false)
     setForm(next)
   }
@@ -2968,11 +2998,25 @@ function ModelServicePage({ embedded = false }: { embedded?: boolean } = {}): Re
   }
 
   React.useEffect(() => {
-    if (selectedId || form || profiles.length === 0) return
-    const first = profiles[0]
-    setSelectedId(first.id)
-    if (first.authentication !== 'oauth') setForm(formOf(first))
-  }, [profiles, selectedId, form])
+    if (selectedId || form || loadState !== 'ready' || !presetsReady) return
+    const preset = presets[0]
+    const first = preset
+      ? profiles.find(
+          (profile) => profile.preset_id === preset.id && profile.authentication !== 'oauth'
+        )
+      : profiles[0]
+    if (first) {
+      setSelectedId(first.id)
+      if (first.authentication !== 'oauth') setForm(formOf(first))
+    } else if (preset) {
+      setForm({
+        ...EMPTY_MODEL_ENDPOINT_FORM,
+        providerId: preset.id,
+        baseUrl: preset.base_url,
+        wireApi: preset.wire_api || EMPTY_MODEL_ENDPOINT_FORM.wireApi,
+      })
+    }
+  }, [profiles, presets, presetsReady, selectedId, form, loadState])
 
   const startNewConnection = (providerId: string): void => {
     setSelectedId('')
@@ -2983,27 +3027,6 @@ function ModelServicePage({ embedded = false }: { embedded?: boolean } = {}): Re
       baseUrl: preset?.base_url ?? '',
       wireApi: preset?.wire_api || EMPTY_MODEL_ENDPOINT_FORM.wireApi,
     })
-  }
-
-  const pickProvider = (providerId: string): void => {
-    if (!form || busy) return
-    setError('')
-    setProbe('')
-    setProbeFailure(null)
-    const preset = presets.find((item) => item.id === providerId)
-    setForm(
-      preset
-        ? {
-            ...form,
-            providerId,
-            selectedModels: [],
-            candidates: [],
-            smallModelName: '',
-            baseUrl: preset.base_url,
-            wireApi: preset.wire_api || 'responses',
-          }
-        : { ...form, providerId }
-    )
   }
 
   const activePreset = form ? presets.find((item) => item.id === form.providerId) : undefined
@@ -3027,20 +3050,6 @@ function ModelServicePage({ embedded = false }: { embedded?: boolean } = {}): Re
   const connectingPreset = Boolean(
     form && !customConnection && (!form.id || form.apiKey.value.trim())
   )
-
-  // 启停/删除会同时改变模型目录与当前选中项, 所以要把整份投影写回 store,
-  // 否则模型选择器还停在旧的选中项上。
-  const absorbSelection = (
-    payload: ModelSelectionResp | null,
-    fallback: ModelPageFailure
-  ): void => {
-    if (!payload) {
-      setError(fallback)
-      return
-    }
-    absorb(payload)
-    act.applyModelCatalog(payload)
-  }
 
   const save = async (): Promise<void> => {
     if (!form) return
@@ -3083,7 +3092,9 @@ function ModelServicePage({ embedded = false }: { embedded?: boolean } = {}): Re
       failProbe(result, 'connection')
       return
     }
+    revision.next()
     absorb(result.data)
+    setLoadState('ready')
     // 双栏页的右栏始终显示当前选中的连接, 保存后停在这条上并按回包刷新草稿。
     const saved = result.data.profile
     if (saved) {
@@ -3091,7 +3102,9 @@ function ModelServicePage({ embedded = false }: { embedded?: boolean } = {}): Re
       setForm({ ...formOf(saved), candidates: ready.candidates })
     }
     // 勾选变化会改变模型菜单里的条目, 所以顺带把目录也刷新。
-    act.applyModelCatalog(await getModels())
+    const ticket = revision.next()
+    const catalog = await getModels()
+    if (revision.current(ticket)) act.applyModelCatalog(catalog)
   }
 
   const vendorLabelOf = (draft: ModelEndpointForm): string => {
@@ -3241,19 +3254,40 @@ function ModelServicePage({ embedded = false }: { embedded?: boolean } = {}): Re
     setError('')
     const result = await setPersonalApiProfileEnabled(profile.id, !profile.enabled)
     if (result.ok) {
+      revision.next()
       absorb(result.data)
-      act.applyModelCatalog(result.data)
+      setLoadState('ready')
     } else {
       setError(result)
+      // A failed response does not prove that the write was rolled back.
+      await reconcileInventory(revision, getPersonalApiProfiles, settle, () => {
+        setLoadState('ready')
+      })
     }
     setBusy(false)
+    const ticket = revision.next()
+    void getModels().then((catalog) => {
+      if (revision.current(ticket)) act.applyModelCatalog(catalog)
+    })
   }
 
   const remove = async (id: string): Promise<void> => {
     setBusy(true)
     setError('')
-    absorbSelection(await deletePersonalApiProfile(id), {
-      messageKey: 'models.deleteFailed',
+    const result = await deletePersonalApiProfile(id)
+    if (!result) setError({ messageKey: 'models.deleteFailed' })
+    if (result) {
+      revision.next()
+      absorb(result)
+      setLoadState('ready')
+    } else {
+      await reconcileInventory(revision, getPersonalApiProfiles, settle, () => {
+        setLoadState('ready')
+      })
+    }
+    const ticket = revision.next()
+    void getModels().then((catalog) => {
+      if (revision.current(ticket)) act.applyModelCatalog(catalog)
     })
     setBusy(false)
     setForm((current) => (current && current.id === id ? null : current))
@@ -3344,22 +3378,18 @@ function ModelServicePage({ embedded = false }: { embedded?: boolean } = {}): Re
     return known?.context_window ? formatContextBadge(known.context_window) : ''
   }
 
-  const cancelDraft = (): void => {
-    setError('')
-    setProbe('')
-    if (form?.id) {
-      const current = profiles.find((profile) => profile.id === form.id)
-      if (current) {
-        openForm(formOf(current))
-        return
-      }
-    }
-    if (profiles.length > 0) pickConnection(profiles[0])
-    else {
-      setForm(null)
-      setSelectedId('')
-    }
-  }
+  const addProvider = (
+    <Button
+      type="button"
+      variant="outline"
+      disabled={busy || loadState !== 'ready'}
+      data-testid="model-connection-add"
+      onClick={() => startNewConnection(CUSTOM_PROVIDER_ID)}
+    >
+      <Icon name="plus" size={13} sw={1.8} />
+      {t('accountPanel.modelsPage.customAdd')}
+    </Button>
+  )
 
   return (
     <div
@@ -3372,6 +3402,9 @@ function ModelServicePage({ embedded = false }: { embedded?: boolean } = {}): Re
           description={t('accountPanel.modelsPage.description')}
         />
       )}
+      {actionsHost
+        ? createPortal(addProvider, actionsHost)
+        : !embedded && <div className="flex justify-end">{addProvider}</div>}
       <div className={MODEL_SHELL_CLASS_NAME}>
         <aside className={MODEL_PANE_CLASS_NAME}>
           <div className={MODEL_PANE_TITLE_CLASS_NAME}>
@@ -3437,9 +3470,15 @@ function ModelServicePage({ embedded = false }: { embedded?: boolean } = {}): Re
                           : startNewConnection(row.providerId)
                       }
                     >
-                      <Avatar size="sm" fallback={providerInitials(row.label)} aria-hidden={true} />
                       <span className={MODEL_CONNECTION_TEXT_CLASS_NAME}>
-                        <span className={MODEL_CONNECTION_NAME_CLASS_NAME}>{row.label}</span>
+                        <EllipsisText
+                          className="text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] text-[var(--text)]"
+                          wrapperClassName="w-full"
+                          tooltipPortalled
+                          tooltipContentClassName="!z-[var(--vds-z-modal-nested-flyout)]"
+                        >
+                          {row.label}
+                        </EllipsisText>
                         <span className={MODEL_CONNECTION_META_CLASS_NAME}>
                           {row.kind === 'empty'
                             ? t('accountPanel.modelsPage.notAdded')
@@ -3461,45 +3500,68 @@ function ModelServicePage({ embedded = false }: { embedded?: boolean } = {}): Re
                         </span>
                       </span>
                     </Button>
-                    <Switch
-                      checked={row.kind === 'profile' && row.profile.enabled}
-                      disabled={busy || row.kind === 'empty'}
-                      aria-label={accountActions('models.enableNamed', {
-                        name: row.label,
-                      })}
-                      data-testid={`model-connection-enabled-${row.key}`}
-                      onCheckedChange={() => {
-                        if (row.kind === 'profile') void toggleEnabled(row.profile)
-                      }}
-                    />
+                    <Tooltip
+                      portalled
+                      className="self-start"
+                      disabled={row.kind !== 'empty'}
+                      contentClassName="!z-[var(--vds-z-modal-nested-flyout)]"
+                      content={t('accountPanel.modelsPage.enableRequiresService')}
+                    >
+                      <span
+                        className={cx(
+                          'inline-flex h-lh items-center text-[length:var(--vds-font-body-lv2)]',
+                          (busy || row.kind === 'empty') && 'cursor-not-allowed'
+                        )}
+                        tabIndex={row.kind === 'empty' ? 0 : undefined}
+                      >
+                        <Switch
+                          checked={row.kind === 'profile' && row.profile.enabled}
+                          disabled={busy || row.kind === 'empty'}
+                          className={row.kind === 'empty' ? 'pointer-events-none' : undefined}
+                          aria-label={accountActions('models.enableNamed', {
+                            name: row.label,
+                          })}
+                          data-testid={`model-connection-enabled-${row.key}`}
+                          onCheckedChange={() => {
+                            if (row.kind === 'profile') void toggleEnabled(row.profile)
+                          }}
+                        />
+                      </span>
+                    </Tooltip>
                   </div>
                 )
               })}
           </div>
-          <Button
-            type="button"
-            size="content"
-            unstyled
-            className={MODEL_PANE_ADD_CLASS_NAME}
-            disabled={busy || loadState !== 'ready'}
-            data-testid="model-connection-add"
-            onClick={() => startNewConnection(CUSTOM_PROVIDER_ID)}
-          >
-            <Icon name="plus" size={13} sw={1.8} />
-            {t('accountPanel.modelsPage.customAdd')}
-          </Button>
         </aside>
 
         <section className={MODEL_DETAIL_CLASS_NAME}>
           {(form || selectedSubscription) && (
             <div className={MODEL_DETAIL_HEAD_CLASS_NAME}>
-              <Avatar size="md" fallback={providerInitials(detailLabel)} aria-hidden={true} />
               <span className={MODEL_DETAIL_HEAD_TEXT_CLASS_NAME}>
-                <span className={MODEL_CONNECTION_NAME_CLASS_NAME}>{detailLabel}</span>
-                <span className={MODEL_FIELD_HINT_CLASS_NAME}>
-                  {t('accountPanel.modelsPage.configureHint')}
+                <span
+                  className={MODEL_CONNECTION_NAME_CLASS_NAME}
+                  data-testid="model-endpoint-title"
+                >
+                  {detailLabel}
                 </span>
               </span>
+              {form && !newSubscription && (
+                <div
+                  className={MODEL_STATUS_ROW_CLASS_NAME}
+                  data-testid="model-endpoint-status"
+                  role="status"
+                >
+                  <span
+                    className={MODEL_STATUS_DOT_CLASS_NAME(
+                      probe ? (probeOk ? 'ok' : 'fail') : 'idle'
+                    )}
+                    aria-hidden={true}
+                  />
+                  <span className={MODEL_FIELD_HINT_CLASS_NAME}>
+                    {probe || t('accountPanel.modelsPage.unverified')}
+                  </span>
+                </div>
+              )}
             </div>
           )}
           {selectedSubscription && !form && (
@@ -3518,38 +3580,6 @@ function ModelServicePage({ embedded = false }: { embedded?: boolean } = {}): Re
             <>
               <div className={MODEL_DETAIL_SCROLL_CLASS_NAME} data-testid="model-endpoint-form">
                 <div className={MODEL_FORM_GRID_CLASS_NAME}>
-                  {!form.id && (
-                    <ModelEndpointField
-                      label={t('accountPanel.modelsPage.provider')}
-                      hint={
-                        providerPresetText(activePreset, accountActions).note ||
-                        t('accountPanel.modelsPage.providerHint')
-                      }
-                    >
-                      <Select value={form.providerId} disabled={busy} onValueChange={pickProvider}>
-                        <SelectTrigger
-                          data-testid="model-endpoint-provider"
-                          aria-label={t('accountPanel.modelsPage.provider')}
-                        >
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value={CHATGPT_PROVIDER_ID}>
-                            {accountActions('models.chatgptSubscription')}
-                          </SelectItem>
-                          {presets.map((preset) => (
-                            <SelectItem key={preset.id} value={preset.id}>
-                              {providerPresetText(preset, accountActions).label}
-                            </SelectItem>
-                          ))}
-                          <SelectItem value={CUSTOM_PROVIDER_ID}>
-                            {accountActions('models.customProvider')}
-                          </SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </ModelEndpointField>
-                  )}
-
                   {!newSubscription && (
                     <>
                       {customConnection && (
@@ -3678,30 +3708,6 @@ function ModelServicePage({ embedded = false }: { embedded?: boolean } = {}): Re
                         </div>
                       </ModelEndpointField>
 
-                      <div className={MODEL_STATUS_ROW_CLASS_NAME}>
-                        <span
-                          className={MODEL_STATUS_DOT_CLASS_NAME(
-                            probe ? (probeOk ? 'ok' : 'fail') : 'idle'
-                          )}
-                          aria-hidden={true}
-                        />
-                        <span className={MODEL_FIELD_HINT_CLASS_NAME}>
-                          {probe || t('accountPanel.modelsPage.unverified')}
-                        </span>
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="secondary"
-                          disabled={busy || modelApiKeyNeedsReplacement(form.apiKey)}
-                          data-testid="model-endpoint-probe"
-                          onClick={() => void test()}
-                        >
-                          {busy
-                            ? t('accountPanel.modelsPage.busy')
-                            : t('accountPanel.modelsPage.test')}
-                        </Button>
-                      </div>
-
                       {customConnection && (
                         <ModelEndpointField
                           label={t('accountPanel.modelsPage.small')}
@@ -3734,32 +3740,59 @@ function ModelServicePage({ embedded = false }: { embedded?: boolean } = {}): Re
                 )}
                 {!newSubscription && (
                   <>
-                    {connectingPreset && form.candidates.length === 0 && (
-                      <div role="status" className={FORM_NOTICE_CLASS_NAME}>
-                        {t('accountPanel.modelsPage.connectHint')}
-                      </div>
-                    )}
                     {(customConnection || !connectingPreset || form.candidates.length > 0) && (
                       <>
                         <div className={MODEL_SECTION_HEAD_CLASS_NAME}>
                           <span className={MODEL_FIELD_LABEL_CLASS_NAME}>
                             {t('accountPanel.modelsPage.models')}
                           </span>
-                          <div className={MODEL_ROW_ACTIONS_CLASS_NAME}>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="secondary"
-                              disabled={busy || modelApiKeyNeedsReplacement(form.apiKey)}
-                              data-testid="model-endpoint-fetch-models"
-                              onClick={() => void fetchModels()}
+                          <div className="flex flex-none items-center gap-[var(--vds-space-1)]">
+                            <Tooltip
+                              portalled
+                              content={t('accountPanel.modelsPage.filter')}
+                              contentClassName="!z-[var(--vds-z-modal-nested-flyout)]"
                             >
-                              {t('accountPanel.modelsPage.refresh')}
-                            </Button>
+                              <span className="inline-flex">
+                                <IconButton
+                                  type="button"
+                                  size="sm"
+                                  variant="ghostIcon"
+                                  icon={<Search />}
+                                  label={t('accountPanel.modelsPage.filter')}
+                                  title={undefined}
+                                  aria-expanded={modelSearchOpen}
+                                  aria-pressed={modelSearchOpen}
+                                  data-testid="model-endpoint-search-toggle"
+                                  onClick={() => {
+                                    setModelSearchOpen(!modelSearchOpen)
+                                    if (modelSearchOpen) setModelQuery('')
+                                  }}
+                                />
+                              </span>
+                            </Tooltip>
+                            <Tooltip
+                              portalled
+                              content={t('accountPanel.modelsPage.refresh')}
+                              contentClassName="!z-[var(--vds-z-modal-nested-flyout)]"
+                            >
+                              <span className="inline-flex">
+                                <IconButton
+                                  type="button"
+                                  size="sm"
+                                  variant="ghostIcon"
+                                  icon={<RotateCw />}
+                                  label={t('accountPanel.modelsPage.refresh')}
+                                  title={undefined}
+                                  disabled={busy || modelApiKeyNeedsReplacement(form.apiKey)}
+                                  data-testid="model-endpoint-fetch-models"
+                                  onClick={() => void fetchModels()}
+                                />
+                              </span>
+                            </Tooltip>
                             <Button
                               type="button"
                               size="sm"
-                              variant="secondary"
+                              variant="outline"
                               disabled={busy}
                               data-testid="model-endpoint-manual-toggle"
                               onClick={() => setManualOpen((open) => !open)}
@@ -3772,12 +3805,14 @@ function ModelServicePage({ embedded = false }: { embedded?: boolean } = {}): Re
 
                         {(customConnection || manualOpen) && (
                           <div className={MODEL_NAME_ROW_CLASS_NAME}>
-                            <Input
-                              value={manualModel}
-                              placeholder={t('accountPanel.modelsPage.manual')}
-                              data-testid="model-endpoint-manual-model"
-                              onChange={(event) => setManualModel(event.target.value)}
-                            />
+                            <div className="min-w-0 flex-1">
+                              <Input
+                                value={manualModel}
+                                placeholder={t('accountPanel.modelsPage.manual')}
+                                data-testid="model-endpoint-manual-model"
+                                onChange={(event) => setManualModel(event.target.value)}
+                              />
+                            </div>
                             <Button
                               type="button"
                               size="sm"
@@ -3791,45 +3826,49 @@ function ModelServicePage({ embedded = false }: { embedded?: boolean } = {}): Re
                           </div>
                         )}
 
-                        <Input
-                          value={modelQuery}
-                          onChange={(event) => setModelQuery(event.target.value)}
-                          placeholder={t('accountPanel.modelsPage.searchModels')}
-                          aria-label={t('accountPanel.modelsPage.filter')}
-                          data-testid="model-endpoint-model-search"
-                        />
-                        {form.candidates.length > 0 && (
-                          <div className={MODEL_SELECTION_ROW_CLASS_NAME(false)}>
-                            <Checkbox
-                              checked={
-                                visibleCandidates.length > 0 &&
-                                visibleCandidates.every((id) => checkedIds.has(id))
-                              }
-                              disabled={busy || visibleCandidates.length === 0}
-                              aria-label={t('accountPanel.modelsPage.selectAll')}
-                              data-testid="model-endpoint-select-all"
-                              onCheckedChange={() => toggleAllModels()}
-                            />
-                            <span className={MODEL_FIELD_HINT_CLASS_NAME}>
-                              {t('accountPanel.modelsPage.selectionSimple', {
-                                selected: form.selectedModels.length,
-                                total: form.candidates.length,
-                              })}
-                            </span>
-                          </div>
-                        )}
-
-                        {visibleCandidates.length === 0 && (
-                          <div className={MODEL_FIELD_HINT_CLASS_NAME}>
-                            {t('accountPanel.modelsPage.noModels')}
-                          </div>
+                        {modelSearchOpen && (
+                          <Input
+                            ref={modelSearchInputRef}
+                            autoFocus
+                            value={modelQuery}
+                            onChange={(event) => setModelQuery(event.target.value)}
+                            placeholder={t('accountPanel.modelsPage.searchModels')}
+                            aria-label={t('accountPanel.modelsPage.filter')}
+                            data-testid="model-endpoint-model-search"
+                          />
                         )}
                         <div className={MODEL_SELECTION_LIST_CLASS_NAME}>
+                          {visibleCandidates.length > 0 && (
+                            <div className={MODEL_SELECTION_ROW_CLASS_NAME}>
+                              <Checkbox
+                                checked={
+                                  visibleCandidates.length > 0 &&
+                                  visibleCandidates.every((id) => checkedIds.has(id))
+                                }
+                                disabled={busy || visibleCandidates.length === 0}
+                                aria-label={t('accountPanel.modelsPage.selectAll')}
+                                data-testid="model-endpoint-select-all"
+                                onCheckedChange={() => toggleAllModels()}
+                              />
+                              <span className={MODEL_FIELD_HINT_CLASS_NAME}>
+                                {t('accountPanel.modelsPage.selectAll')}
+                              </span>
+                              <span className={cx(MODEL_FIELD_HINT_CLASS_NAME, 'ml-auto')}>
+                                {t('accountPanel.modelsPage.selectionSimple', {
+                                  selected: form.selectedModels.length,
+                                  total: form.candidates.length,
+                                })}
+                              </span>
+                            </div>
+                          )}
+
+                          {visibleCandidates.length === 0 && (
+                            <div className={MODEL_FIELD_HINT_CLASS_NAME}>
+                              {t('accountPanel.modelsPage.noModels')}
+                            </div>
+                          )}
                           {visibleCandidates.map((modelId) => (
-                            <div
-                              key={modelId}
-                              className={MODEL_SELECTION_ROW_CLASS_NAME(checkedIds.has(modelId))}
-                            >
+                            <div key={modelId} className={MODEL_SELECTION_ROW_CLASS_NAME}>
                               <Checkbox
                                 checked={checkedIds.has(modelId)}
                                 disabled={busy}
@@ -3959,31 +3998,41 @@ function ModelServicePage({ embedded = false }: { embedded?: boolean } = {}): Re
               </div>
 
               {!newSubscription && (
-                <div className={MODEL_DETAIL_FOOT_CLASS_NAME}>
+                <div className={MODEL_DETAIL_FOOT_CLASS_NAME} data-testid="model-endpoint-footer">
                   <div className={MODEL_ROW_ACTIONS_CLASS_NAME}>
                     {form.id && (
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="danger"
-                        disabled={busy}
-                        data-testid={`model-endpoint-delete-${form.id}`}
-                        onClick={() => void remove(form.id)}
+                      <Tooltip
+                        portalled
+                        content={accountActions('models.delete')}
+                        contentClassName="!z-[var(--vds-z-modal-nested-flyout)]"
                       >
-                        {accountActions('models.delete')}
-                      </Button>
+                        <span className="inline-flex">
+                          <IconButton
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            icon={<Trash2 />}
+                            label={accountActions('models.delete')}
+                            title={undefined}
+                            className="!text-[var(--vds-error-text-primary)] hover:![background:var(--vds-error-light-bg-default)] active:![background:var(--vds-error-light-bg-active)]"
+                            disabled={busy}
+                            data-testid={`model-endpoint-delete-${form.id}`}
+                            onClick={() => void remove(form.id)}
+                          />
+                        </span>
+                      </Tooltip>
                     )}
                   </div>
                   <div className={MODEL_ROW_ACTIONS_CLASS_NAME}>
                     <Button
                       type="button"
                       size="sm"
-                      variant="secondary"
-                      disabled={busy}
-                      data-testid="model-endpoint-cancel"
-                      onClick={cancelDraft}
+                      variant="outline"
+                      disabled={busy || modelApiKeyNeedsReplacement(form.apiKey)}
+                      data-testid="model-endpoint-probe"
+                      onClick={() => void test()}
                     >
-                      {t('accountPanel.common.cancel')}
+                      {busy ? t('accountPanel.modelsPage.busy') : t('accountPanel.modelsPage.test')}
                     </Button>
                     <Button
                       type="button"
@@ -4252,7 +4301,11 @@ function ModelReasoningSetting({ model }: { model: ModelInfo }): React.JSX.Eleme
   )
 }
 
-function ModelSettingsPage({ embedded = false }: { embedded?: boolean } = {}): React.JSX.Element {
+function ModelSettingsPage({
+  embedded = false,
+}: {
+  embedded?: boolean
+} = {}): React.JSX.Element {
   const { t } = useTranslation('account')
   const { t: subscription } = useTranslation('subscription')
   const { state, act } = useApp()
@@ -4265,12 +4318,9 @@ function ModelSettingsPage({ embedded = false }: { embedded?: boolean } = {}): R
     [hiddenModels]
   )
   const [contextOverrides, setContextOverrides] = React.useState<Record<string, number>>({})
-  const [saved, setSaved] = React.useState(false)
   const [busyKey, setBusyKey] = React.useState('')
   const [error, setError] = React.useState<PersonalApiFailure | null>(null)
 
-  // 显示状态是即时落盘的开关, 与「模型服务」页的连接开关同一种语义, 不经「保存设置」——
-  // 那个按钮只管本页尚未接后端的上下文滑杆。
   const toggleVisibility = async (model: ModelInfo, hidden: boolean): Promise<void> => {
     if (!model.profile_id || !model.model_id) return
     setBusyKey(model.key)
@@ -4296,11 +4346,6 @@ function ModelSettingsPage({ embedded = false }: { embedded?: boolean } = {}): R
           description={t('modelSettings.description')}
         />
       )}
-      <div className={MODEL_SETTINGS_ACTIONS_CLASS_NAME}>
-        <Button type="button" variant="primary" onClick={() => setSaved(true)}>
-          {saved ? t('modelSettings.saved') : t('modelSettings.save')}
-        </Button>
-      </div>
       <div className={MODEL_SETTINGS_TABLE_CLASS_NAME}>
         <div className={MODEL_SETTINGS_TABLE_INNER_CLASS_NAME}>
           <div className={MODEL_SETTINGS_TABLE_HEADER_CLASS_NAME}>
@@ -4347,7 +4392,6 @@ function ModelSettingsPage({ embedded = false }: { embedded?: boolean } = {}): R
                       MODEL_CONTEXT_TICKS.findIndex((value) => value === selected)
                     )}
                     onValueChange={(value: number) => {
-                      setSaved(false)
                       setContextOverrides((current) => ({
                         ...current,
                         [model.key]: MODEL_CONTEXT_TICKS[value],
@@ -4376,6 +4420,8 @@ function ModelSettingsPage({ embedded = false }: { embedded?: boolean } = {}): R
 
 function ModelConfigurationPage(): React.JSX.Element {
   const { t } = useTranslation('components')
+  const [tab, setTab] = React.useState('service')
+  const [serviceActionsHost, setServiceActionsHost] = React.useState<HTMLDivElement | null>(null)
 
   return (
     <SettingsPage
@@ -4385,18 +4431,21 @@ function ModelConfigurationPage(): React.JSX.Element {
       scroll="none"
     >
       <PageBody className="min-h-0 flex-1 grid-rows-[minmax(0,1fr)]">
-        <Tabs className={MODEL_CONFIGURATION_TABS_CLASS_NAME} defaultValue="service">
-          <TabsList
-            className="w-fit justify-self-start"
-            aria-label={t('accountPanel.modelsPage.tabsLabel')}
-          >
-            <TabsTrigger value="service">{t('accountPanel.modelsPage.serviceTab')}</TabsTrigger>
-            <TabsTrigger value="configuration">
-              {t('accountPanel.modelsPage.configurationTab')}
-            </TabsTrigger>
-          </TabsList>
+        <Tabs className={MODEL_CONFIGURATION_TABS_CLASS_NAME} value={tab} onValueChange={setTab}>
+          <div className="flex min-w-0 items-center justify-between gap-[var(--vds-space-3)]">
+            <TabsList
+              className="w-fit justify-self-start"
+              aria-label={t('accountPanel.modelsPage.tabsLabel')}
+            >
+              <TabsTrigger value="service">{t('accountPanel.modelsPage.serviceTab')}</TabsTrigger>
+              <TabsTrigger value="configuration">
+                {t('accountPanel.modelsPage.configurationTab')}
+              </TabsTrigger>
+            </TabsList>
+            <div ref={setServiceActionsHost} hidden={tab !== 'service'} />
+          </div>
           <TabsContent className={MODEL_SERVICE_TAB_CONTENT_CLASS_NAME} value="service">
-            <ModelServicePage embedded />
+            <ModelServicePage embedded actionsHost={serviceActionsHost} />
           </TabsContent>
           <TabsContent className={MODEL_SETTINGS_TAB_CONTENT_CLASS_NAME} value="configuration">
             <ModelSettingsPage embedded />
@@ -4497,6 +4546,7 @@ function ArchivedProjectsPage(): React.JSX.Element {
   const { toast } = useToast()
   const [projects, setProjects] = React.useState<ProjectRef[] | null>(null)
   const [selectedIds, setSelectedIds] = React.useState<ReadonlySet<string>>(() => new Set<string>())
+  const [selectionMode, setSelectionMode] = React.useState(false)
   // 删除确认对单个与批量共用一条通道: 单个存一项, 批量存选中项。
   const [deleteTargets, setDeleteTargets] = React.useState<ProjectRef[]>([])
   const [busy, setBusy] = React.useState(false)
@@ -4685,6 +4735,24 @@ function ArchivedProjectsPage(): React.JSX.Element {
           }
         />
       )}
+      {Boolean(projects?.length) && (
+        <div className="flex justify-end">
+          <Button
+            variant="outline"
+            disabled={unavailable}
+            data-testid="account-archived-selection-mode"
+            aria-pressed={selectionMode}
+            onClick={() => {
+              setSelectionMode(!selectionMode)
+              setSelectedIds(new Set())
+            }}
+          >
+            {selectionMode
+              ? t('accountPanel.archives.exitSelection')
+              : t('accountPanel.archives.select')}
+          </Button>
+        </div>
+      )}
       {projects?.length === 0 && !loading && !loadFailed ? (
         <div
           className="text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-tertiary)]"
@@ -4693,62 +4761,67 @@ function ArchivedProjectsPage(): React.JSX.Element {
           {t('accountPanel.archives.empty')}
         </div>
       ) : projects?.length ? (
-        <div className="flex min-w-0 max-w-full flex-col gap-[var(--vds-space-2)]">
-          <div
-            className="flex min-w-0 max-w-full items-center gap-[var(--vds-space-3)] px-[var(--vds-space-1)]"
-            data-testid="account-archived-batch-bar"
-          >
-            <Checkbox
-              checked={allSelected ? true : someSelected ? 'mixed' : false}
-              label={t('accountPanel.archives.selectAll')}
-              disabled={unavailable}
-              data-testid="account-archived-select-all"
-              onCheckedChange={(checked) => toggleAll(checked)}
-            />
-            <span
-              className="min-w-0 flex-1 text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-tertiary)]"
-              data-testid="account-archived-selected-count"
+        <Card padding="none" className="overflow-hidden">
+          {selectionMode && (
+            <div
+              className="flex min-w-0 max-w-full items-center gap-[var(--vds-space-3)] border-b border-[var(--vds-divider-default)] px-[var(--vds-space-4)] py-[var(--vds-space-3)]"
+              data-testid="account-archived-batch-bar"
             >
-              {t('accountPanel.archives.selectedCount', {
-                total: selectedProjects.length,
-              })}
-            </span>
-            <Button
-              type="button"
-              variant="outline"
-              disabled={unavailable || selectedProjects.length === 0}
-              data-testid="account-archived-batch-unarchive"
-              onClick={() => void batchUnarchive()}
-            >
-              {t('accountPanel.archives.batchUnarchive')}
-            </Button>
-            <Button
-              type="button"
-              variant="destructive"
-              disabled={unavailable || selectedProjects.length === 0}
-              data-testid="account-archived-batch-delete"
-              onClick={() => setDeleteTargets(selectedProjects)}
-            >
-              {t('accountPanel.archives.batchDelete')}
-            </Button>
-          </div>
+              <Checkbox
+                checked={allSelected ? true : someSelected ? 'mixed' : false}
+                label={t('accountPanel.archives.selectAll')}
+                className="!gap-[var(--vds-space-3)]"
+                disabled={unavailable}
+                data-testid="account-archived-select-all"
+                onCheckedChange={(checked) => toggleAll(checked)}
+              />
+              <span
+                className="min-w-0 flex-1 text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-tertiary)]"
+                data-testid="account-archived-selected-count"
+              >
+                {t('accountPanel.archives.selectedCount', {
+                  total: selectedProjects.length,
+                })}
+              </span>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={unavailable || selectedProjects.length === 0}
+                data-testid="account-archived-batch-unarchive"
+                onClick={() => void batchUnarchive()}
+              >
+                {t('accountPanel.archives.batchUnarchive')}
+              </Button>
+              <Button
+                type="button"
+                variant="destructive"
+                disabled={unavailable || selectedProjects.length === 0}
+                data-testid="account-archived-batch-delete"
+                onClick={() => setDeleteTargets(selectedProjects)}
+              >
+                {t('accountPanel.archives.batchDelete')}
+              </Button>
+            </div>
+          )}
           {projects.map((project) => (
             <div
               key={project.id}
-              className="flex min-w-0 max-w-full items-center gap-[var(--vds-space-3)] rounded-[var(--vds-settings-card-radius)] border border-[var(--vds-border-default)] px-[var(--vds-space-4)] py-[var(--vds-space-3)] bg-[var(--vds-bg-white-default)] shadow-none"
+              className="flex min-w-0 max-w-full items-center gap-[var(--vds-space-3)] border-b border-[var(--vds-divider-default)] px-[var(--vds-space-4)] py-[var(--vds-space-3)] last:border-b-0"
               data-testid={`account-archived-${project.id}`}
             >
-              <Checkbox
-                checked={selectedIds.has(project.id)}
-                label={project.name}
-                disabled={unavailable}
-                data-testid={`account-archived-select-${project.id}`}
-                onCheckedChange={(checked) => toggleProject(project.id, checked)}
-              />
+              {selectionMode && (
+                <Checkbox
+                  checked={selectedIds.has(project.id)}
+                  aria-label={project.name}
+                  disabled={unavailable}
+                  data-testid={`account-archived-select-${project.id}`}
+                  onCheckedChange={(checked) => toggleProject(project.id, checked)}
+                />
+              )}
               <span className="min-w-0 flex-1">
                 <EllipsisText
                   wrapperClassName="w-full"
-                  className="text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-medium)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-primary)]"
+                  className="text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-primary)]"
                   tooltipPortalled
                 >
                   {project.name}
@@ -4761,27 +4834,47 @@ function ArchivedProjectsPage(): React.JSX.Element {
                   {project.root}
                 </EllipsisText>
               </span>
-              <Button
-                type="button"
-                variant="outline"
-                disabled={unavailable}
-                data-testid={`account-archived-restore-${project.id}`}
-                onClick={() => void unarchive(project)}
+              <Tooltip
+                content={t('accountPanel.archives.unarchive')}
+                contentClassName="z-[var(--vds-z-modal-nested-flyout)]"
+                portalled
               >
-                {t('accountPanel.archives.unarchive')}
-              </Button>
-              <Button
-                type="button"
-                variant="destructive"
-                disabled={unavailable}
-                data-testid={`account-archived-delete-${project.id}`}
-                onClick={() => setDeleteTargets([project])}
+                <span className="inline-flex">
+                  <IconButton
+                    type="button"
+                    variant="ghost"
+                    label={t('accountPanel.archives.unarchive')}
+                    className="[&_svg]:!size-[var(--vds-icon-8)] [&_svg]:!text-[var(--vds-icon-outline-default)] [&_svg]:[stroke-width:var(--vds-settings-archive-icon-stroke)]"
+                    title={undefined}
+                    icon={<RotateCw />}
+                    disabled={unavailable}
+                    data-testid={`account-archived-restore-${project.id}`}
+                    onClick={() => void unarchive(project)}
+                  />
+                </span>
+              </Tooltip>
+              <Tooltip
+                content={t('accountPanel.archives.delete')}
+                contentClassName="z-[var(--vds-z-modal-nested-flyout)]"
+                portalled
               >
-                {t('accountPanel.archives.delete')}
-              </Button>
+                <span className="inline-flex">
+                  <IconButton
+                    type="button"
+                    variant="ghost"
+                    label={t('accountPanel.archives.delete')}
+                    className="[&_svg]:!size-[var(--vds-icon-8)] [&_svg]:!text-[var(--vds-error-text-primary)] [&_svg]:[stroke-width:var(--vds-settings-archive-icon-stroke)]"
+                    title={undefined}
+                    icon={<Trash2 />}
+                    disabled={unavailable}
+                    data-testid={`account-archived-delete-${project.id}`}
+                    onClick={() => setDeleteTargets([project])}
+                  />
+                </span>
+              </Tooltip>
             </div>
           ))}
-        </div>
+        </Card>
       ) : null}
       <AlertDialog
         open={deleteTargets.length > 0}
@@ -4793,6 +4886,7 @@ function ArchivedProjectsPage(): React.JSX.Element {
           <AlertDialogContent
             className="!z-[var(--vds-z-modal-nested)]"
             overlayClassName="!z-[var(--vds-z-modal-nested-overlay)]"
+            tone="danger"
           >
             <AlertDialogHeader>
               <AlertDialogTitle>
@@ -4817,6 +4911,7 @@ function ArchivedProjectsPage(): React.JSX.Element {
                 aria-disabled={busy}
                 disabled={busy}
                 data-testid="account-archived-delete-confirm"
+                variant="danger"
                 onClick={(event) => {
                   event.preventDefault()
                   if (!busy) void confirmDelete()
@@ -5050,30 +5145,37 @@ export function AccountPanel({
           </Button>
         )}
         <nav className={SETTINGS_NAV_LIST_CLASS_NAME} aria-label={t('accountPanel.navLabel')}>
-          {VISIBLE_NAV_ITEMS.filter((item) => item.showInSidebar !== false).map((item) => (
-            <Button
-              type="button"
-              variant="ghost"
-              className={cx(
-                SETTINGS_NAV_BUTTON_CLASS_NAME,
-                embedded ? SETTINGS_DIALOG_NAV_BUTTON_CLASS_NAME : undefined,
-                activePage === item.id ? SETTINGS_NAV_BUTTON_ACTIVE_CLASS_NAME : undefined
-              )}
-              data-active={activePage === item.id ? 'true' : undefined}
-              data-testid={`account-settings-nav-${item.id}`}
-              key={item.id}
-              onClick={() => onPage(item.id)}
-            >
-              <SettingsNavIcon
-                icon={item.icon}
-                lucideIcon={item.lucideIcon}
-                size={embedded ? 15 : 14}
-              />
-              {item.labelKey
-                ? accountPanelNavLabel(item.labelKey, t, browserText)
-                : shortcutText('nav')}
-            </Button>
-          ))}
+          {VISIBLE_NAV_ITEMS.filter((item) => item.showInSidebar !== false).map((item) => {
+            const label = item.labelKey
+              ? accountPanelNavLabel(item.labelKey, t, browserText)
+              : shortcutText('nav')
+            return (
+              <Button
+                type="button"
+                variant="ghost"
+                className={cx(
+                  SETTINGS_NAV_BUTTON_CLASS_NAME,
+                  embedded ? SETTINGS_DIALOG_NAV_BUTTON_CLASS_NAME : undefined,
+                  activePage === item.id ? SETTINGS_NAV_BUTTON_ACTIVE_CLASS_NAME : undefined
+                )}
+                data-active={activePage === item.id ? 'true' : undefined}
+                data-testid={`account-settings-nav-${item.id}`}
+                aria-label={label}
+                title={label}
+                key={item.id}
+                onClick={() => onPage(item.id)}
+              >
+                <SettingsNavIcon
+                  icon={item.icon}
+                  lucideIcon={item.lucideIcon}
+                  size={embedded ? 15 : 14}
+                />
+                <span className={cx('min-w-0 truncate', embedded && 'max-[760px]:sr-only')}>
+                  {label}
+                </span>
+              </Button>
+            )
+          })}
         </nav>
       </aside>
       <SettingsContent
@@ -5105,12 +5207,19 @@ export function SettingsContent({
     <main
       className={cx(
         SETTINGS_MAIN_CLASS_NAME,
+        '[&>[data-slot=page]]:!overflow-visible [&>[data-slot=page]>[data-slot=page-body]]:mr-[calc(-1*var(--settings-scroll-inset))] [&>[data-slot=page]>[data-slot=page-body]]:pr-[var(--settings-scroll-inset)]',
+        activePage === 'browser'
+          ? '[--settings-scroll-inset:var(--vds-space-4)]'
+          : '[--settings-scroll-inset:var(--vds-space-8)] max-[760px]:[--settings-scroll-inset:calc(var(--vds-space-4)+var(--vds-space-half))]',
+        activePage === 'browser' ? 'px-[var(--vds-space-4)]' : SETTINGS_MAIN_PADDING_CLASS_NAME,
         activePage === 'skills'
           ? '!overflow-hidden !pb-[calc(var(--vds-space-6)*2)]'
           : 'min-h-0 !overflow-hidden !pb-0'
       )}
     >
       {activePage === 'prompts' && <PromptsPage />}
+      {activePage === 'translation' && <TranslationSettings />}
+      {activePage === 'general' && <GeneralSettings />}
       {activePage === 'preferences' && <PreferencesPage />}
       {activePage === 'account' && <AccountPage onLogin={onLogin} onLogout={onLogout} />}
       {activePage === 'models' && <ModelConfigurationPage />}
@@ -5135,9 +5244,13 @@ export function SettingsContent({
           section={browserSettingsSection ?? undefined}
           isSurfaceCurrent={isBrowserSettingsCurrent}
           onSection={(section) => onPage('browser', section)}
-          onHistoryReopened={() => {
+          onHistoryReopened={(browserPageId) => {
             onClose()
-            act.openWorkbenchView('browser', { preserveProject: true })
+            act.openWorkbenchView('browser', {
+              preserveProject: true,
+              browserPageId,
+              browserPageOwned: true,
+            })
           }}
         />
       )}

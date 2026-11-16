@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -89,6 +89,11 @@ class ResourceDiff(QueryModel):
 
 class LiteratureSearch(QueryModel):
     query: str = Field(default="", max_length=QUERY_CHARS)
+    collection_ids: list[Annotated[str, Field(min_length=1, max_length=IDENTITY_CHARS)]] = Field(
+        default_factory=list,
+        max_length=PAGE_MAX,
+        description="Exact current-project collection IDs; empty means the current project library. Metadata only.",
+    )
     offset: int = Field(default=0, ge=0, le=OFFSET_MAX)
     limit: int = Field(default=PAGE_DEFAULT, ge=1, le=PAGE_MAX)
 

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { expressions } from './syntax.ts'
+import { expressions, jsxWithAttributes } from './syntax.ts'
 
 test('expression contracts ignore only formatting, comments and literal quote spelling', () => {
   const contains = expressions(`
@@ -58,6 +58,21 @@ test('expression contracts cannot satisfy one owner from a different variable', 
 })
 
 test('expression contracts preserve JSX attribute ownership and reject swapped handlers', () => {
+  const source =
+    '<section data-testid="hint"><Action variant="danger" disabled={busy || children.count === null} /></section>'
+  const hint = jsxWithAttributes(source, { 'data-testid': 'hint' })
+  const action = jsxWithAttributes(hint, { variant: 'danger' })
+  expressions(action)('busy || children.count === null', { attribute: 'disabled' })
+  assert.throws(() => jsxWithAttributes(source, {}), /expected literal JSX attributes/)
+  assert.throws(() => jsxWithAttributes(source, { variant: 'missing' }), /expected one JSX owner/)
+  assert.throws(
+    () => jsxWithAttributes(`<>${source}${source}</>`, { 'data-testid': 'hint' }),
+    /expected one JSX owner/
+  )
+  assert.throws(
+    () => jsxWithAttributes('<Action variant={mode} />', { variant: 'danger' }),
+    /expected one JSX owner/
+  )
   const contains = expressions(
     '<Widget onExplain={() => explain()} onTranslate={() => translate()} />'
   )

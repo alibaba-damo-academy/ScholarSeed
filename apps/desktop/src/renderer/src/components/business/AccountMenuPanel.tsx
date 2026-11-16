@@ -1,3 +1,4 @@
+import type * as React from 'react'
 import { useRef, useState } from 'react'
 import {
   Compass,
@@ -45,7 +46,7 @@ export function AccountMenuPanel({
 }: {
   view: AccountMenuView
   onAction(action: AccountMenuAction, value: MenuValue): void
-}): JSX.Element {
+}): React.JSX.Element {
   const [languageOpen, setLanguageOpen] = useState(false)
   const languageTrigger = useRef<HTMLButtonElement | null>(null)
   const translate = accountMenuText(view.locale)

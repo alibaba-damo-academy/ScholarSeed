@@ -9,6 +9,7 @@ import type {
   LiteratureSummary,
   LiteratureTagFacet,
 } from '../../contracts/literature'
+import type { NoteEditingSession, NoteEditorSnapshot } from './editor'
 
 interface LiteraturePanelSnapshot {
   counts: LiteratureCounts
@@ -68,6 +69,7 @@ let state: CatalogueState = {
 }
 const scopes = new Map<string | null, CatalogueState>()
 const listeners = new Set<() => void>()
+const noteEditors = new Map<string, NoteEditingSession>()
 const CACHE_FRESHNESS_MS = 30_000
 const emit = (): void => listeners.forEach((listener) => listener())
 const update = (patch: Partial<CatalogueState>): void => {
@@ -119,7 +121,22 @@ export function useCatalogue(): CatalogueState {
 }
 
 export const catalogue = {
+  noteEditorSnapshot(itemId: string): NoteEditorSnapshot | null {
+    return noteEditors.get(itemId)?.getSnapshot() ?? null
+  },
   getSnapshot: (): CatalogueState => state,
+  noteEditor(
+    itemId: string,
+    create: (onUnused: () => void) => NoteEditingSession
+  ): NoteEditingSession {
+    const existing = noteEditors.get(itemId)
+    if (existing) return existing
+    const editor = create(() => {
+      if (noteEditors.get(itemId) === editor) noteEditors.delete(itemId)
+    })
+    noteEditors.set(itemId, editor)
+    return editor
+  },
   selectedForTurn(projectId: string | null, visible: boolean): string[] {
     return visible && state.projectId === projectId ? [...state.selected] : []
   },
@@ -183,21 +200,7 @@ export const catalogue = {
     })
   },
   navigate(patch: Partial<LiteratureQuery> = {}): void {
-    if (state.query.download_session_id) replaceQuery(patch)
-    else catalogue.query(patch)
-  },
-  downloads(
-    sessionId: string,
-    run: string,
-    projectId: string | null,
-    excludedPapers: string[]
-  ): void {
-    catalogue.scope(projectId)
-    replaceQuery({
-      download_session_id: sessionId,
-      download_run: run,
-      exclude_paper_id: [...excludedPapers],
-    })
+    catalogue.query(patch)
   },
   /**
    * 只收窄筛选条件, 保留勾选与已打开的文献。
@@ -264,6 +267,29 @@ export const catalogue = {
   },
   items(items: LiteratureSummary[]): void {
     update({ items, itemsReady: true, itemsLoadedAt: Date.now() })
+  },
+  updateItem(item: LiteratureSummary, sourceProjectId?: string): void {
+    const refresh = (snapshot: CatalogueState): CatalogueState => {
+      let changed = false
+      const items = snapshot.items.map((current) => {
+        if (current.id !== item.id || current.version > item.version) return current
+        changed = true
+        return {
+          ...item,
+          project_collections:
+            snapshot.query.project_id === sourceProjectId
+              ? item.project_collections
+              : current.project_collections,
+        }
+      })
+      return changed ? { ...snapshot, items, itemsLoadedAt: 0 } : snapshot
+    }
+    for (const [scope, snapshot] of scopes) scopes.set(scope, refresh(snapshot))
+    const next = refresh(state)
+    if (next !== state) {
+      state = next
+      emit()
+    }
   },
   itemsFresh(): boolean {
     return state.itemsReady && Date.now() - state.itemsLoadedAt < CACHE_FRESHNESS_MS

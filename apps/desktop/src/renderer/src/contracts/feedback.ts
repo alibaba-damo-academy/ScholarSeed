@@ -1,11 +1,17 @@
 import type { i18n, ParseKeys } from 'i18next'
+import { RECONFIGURATION_ERRORS } from '../../../reconfiguration.ts'
 import { ASSISTANT_CONTEXT_REVISION_CONFLICT } from './assistant.ts'
+
+export const SESSION_OPEN_UNKNOWN = 'runtime_session_open_unknown'
+const INTERRUPT_FAILURE_CODE = 'harness_interrupt_failed'
+const PREVIOUS_TURN_ACTIVITY_UNAVAILABLE = 'previous_turn_activity_unavailable'
+const RUNTIME_PREPARATION_BUSY_KEY = 'runtimePreparation.busy'
 
 const TURN_ADMISSION_MESSAGE_KEYS = {
   [ASSISTANT_CONTEXT_REVISION_CONFLICT]: 'composer.contextChanged',
   previous_turn_pending_hil: 'composer.previousTurnPendingHil',
   previous_turn_background_active: 'composer.previousTurnBackgroundActive',
-  previous_turn_activity_unavailable: 'composer.previousTurnActivityUnavailable',
+  [PREVIOUS_TURN_ACTIVITY_UNAVAILABLE]: 'composer.previousTurnActivityUnavailable',
   previous_turn_settling: 'composer.previousTurnSettling',
   turn_outcome_unconfirmed: 'composer.turnOutcomeUnconfirmed',
 } as const satisfies Record<string, ParseKeys<'components'>>
@@ -17,12 +23,23 @@ export function turnAdmissionMessageKey(code: unknown) {
     : undefined
 }
 
+export function runtimePreparationMessageKey(code: unknown) {
+  return code === RECONFIGURATION_ERRORS.hostBusy
+    ? RUNTIME_PREPARATION_BUSY_KEY
+    : 'runtimePreparation.failed'
+}
+
 const FEEDBACK_KEYS = {
   conversation: {
+    'authorization.renewed': 'none',
+    'clarification.useCard': 'none',
+    'clarification.editingFailed': 'none',
+    'queue.sessionOpenUnknown': 'none',
     'request.historyUnavailable': 'none',
     'request.timeout': 'none',
     'request.unavailable': 'none',
     'request.invalidRecovery': 'none',
+    'request.stopStateUnconfirmed': 'none',
     'request.failed': 'none',
     'request.authentication': 'none',
     'request.httpFailure': 'status',
@@ -39,8 +56,14 @@ const FEEDBACK_KEYS = {
     'retry.regenerateUnknown': 'none',
   } satisfies Partial<Record<ParseKeys<'conversation'>, 'none' | 'status' | 'detail'>>,
   components: {
+    'followUp.failed': 'none',
+    [RUNTIME_PREPARATION_BUSY_KEY]: 'none',
     'runtimePreparation.failed': 'none',
+    'runtimePreparation.unknown': 'none',
+    'runtimeSwitch.restartRequired': 'none',
+    'runtimeSwitch.unsupported': 'none',
     'stream.stopped': 'none',
+    'stream.interrupted': 'none',
     'stream.runtimeInterrupted': 'none',
     'stream.automaticRecovery': 'none',
     'stream.automaticRecoveryCancelled': 'none',
@@ -91,6 +114,7 @@ const FEEDBACK_KEYS = {
     'composer.sourceContextChanged': 'name',
     'composer.sourceContextMissing': 'name',
     'composer.stateChanged': 'none',
+    'composer.steerFailed': 'none',
     'composer.submissionRecovered': 'none',
     'composer.terminated': 'none',
     'composer.withdrawFailed': 'none',
@@ -161,6 +185,20 @@ export type FeedbackDescriptor = {
 }[FeedbackNamespace]
 export type ForegroundMessage = string | FeedbackDescriptor
 
+export function isRuntimePreparationBusyFeedback(message: ForegroundMessage | null): boolean {
+  return (
+    typeof message === 'object' &&
+    message?.ns === 'components' &&
+    message.key === RUNTIME_PREPARATION_BUSY_KEY
+  )
+}
+
+export function runtimePreparationBusyFeedback(code: unknown) {
+  return code === RECONFIGURATION_ERRORS.hostBusy
+    ? feedback('components', RUNTIME_PREPARATION_BUSY_KEY)
+    : undefined
+}
+
 type ParametersFor<
   N extends FeedbackNamespace,
   K extends FeedbackKey<N>,
@@ -180,6 +218,18 @@ export function feedback<N extends FeedbackNamespace, K extends FeedbackKey<N>>(
   ...[values]: ParametersFor<N, K>
 ): Extract<FeedbackDescriptor, { ns: N }> {
   return { ns, key, values } as Extract<FeedbackDescriptor, { ns: N }>
+}
+
+export function stopFailureFeedback(
+  code: unknown,
+  applicationFailure?: FeedbackDescriptor
+): FeedbackDescriptor {
+  const reason =
+    applicationFailure ??
+    (code === INTERRUPT_FAILURE_CODE || code === PREVIOUS_TURN_ACTIVITY_UNAVAILABLE
+      ? feedback('conversation', 'request.stopStateUnconfirmed')
+      : feedback('components', 'composer.unknownError'))
+  return feedback('components', 'composer.stopFailed', { error: reason })
 }
 
 export function renderFeedback(instance: i18n, message: ForegroundMessage): string {

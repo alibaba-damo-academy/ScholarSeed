@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import {
   readRecord,
   writeJson,
+  writeRecord,
   type RecordWriteEvent,
   type RecordWriteObserver,
 } from './journal.ts'
@@ -13,6 +14,37 @@ import * as fs from 'node:fs'
 import * as pathModule from 'node:path'
 import { runInNewContext } from 'node:vm'
 import ts from 'typescript'
+
+test('qualified creation publishes exact bytes and preserves the prior record on refusal', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'qualified-record-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const target = join(root, 'credential.enc')
+  const bytes = Buffer.from([0, 255, 1, 128])
+  let creations = 0
+  const writer = {
+    create(name: string, data: Buffer) {
+      assert.equal(pathModule.basename(name), name)
+      assert.deepEqual(data, bytes)
+      creations++
+      fs.writeFileSync(join(root, name), data, { flag: 'wx', mode: 0o600 })
+    },
+  }
+  writeRecord(target, bytes, undefined, writer)
+  assert.equal(creations, 1)
+  assert.deepEqual(readFileSync(target), bytes)
+  const denied = Object.assign(new Error('private creation refused'), { code: 'EACCES' })
+  assert.throws(
+    () =>
+      writeRecord(target, Buffer.from('replacement'), undefined, {
+        create() {
+          throw denied
+        },
+      }),
+    (error) => error === denied
+  )
+  assert.deepEqual(readFileSync(target), bytes)
+  assert.deepEqual(readdirSync(root), ['credential.enc'])
+})
 
 test('bounded record reads preserve bytes and reject oversized or non-file inputs', (t) => {
   const root = mkdtempSync(join(tmpdir(), 'record-reader-'))

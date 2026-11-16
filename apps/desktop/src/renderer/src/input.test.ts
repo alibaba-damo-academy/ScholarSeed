@@ -16,10 +16,12 @@ import {
   composerHasContent,
   composerSubmissionOutcome,
   isComposerSubmissionAccepted,
+  isComposerSubmissionRejectedBeforeEnqueue,
   composerObscured,
   composerTrigger,
   describeTurnAdmissionFailure,
   isAbsoluteInputPath,
+  queuedContextSummary,
   queuedReferenceLabel,
   queuedReferenceSummary,
   replaceComposerTrigger,
@@ -309,6 +311,33 @@ test('distinguishes a server rejection from an unconfirmed transport outcome', (
   assert.equal(composerSubmissionOutcome(null), 'unknown')
 })
 
+test('only proven pre-enqueue refusals restore the draft without creating an unknown queue row', () => {
+  assert.equal(
+    isComposerSubmissionRejectedBeforeEnqueue({
+      ok: false,
+      error: 'runtime_session_open_unknown',
+      submissionOutcome: 'rejected',
+    }),
+    true
+  )
+  assert.equal(
+    isComposerSubmissionRejectedBeforeEnqueue({
+      ok: false,
+      preparation_error: true,
+      submissionOutcome: 'rejected',
+    }),
+    true
+  )
+  for (const response of [
+    null,
+    { ok: false, error: 'runtime_session_open_unknown' },
+    { ok: false, error: 'runtime_session_open_unknown', submissionOutcome: 'unknown' as const },
+    { ok: false, error: 'internal_error', submissionOutcome: 'rejected' as const },
+  ]) {
+    assert.equal(isComposerSubmissionRejectedBeforeEnqueue(response), false)
+  }
+})
+
 test('maps structured Assistant context failures to actionable localized messages', () => {
   assert.equal(
     describeTurnAdmissionFailure(translate, {
@@ -452,6 +481,27 @@ test('summarizes frozen queue references without exposing paths', async () => {
   assert.equal(summary.includes('/secret'), false)
   assert.equal(summary.includes('private-id'), false)
   assert.equal(queuedReferenceSummary([{ type: 'text', text: '纯文本' }], [], t), '')
+  assert.equal(queuedContextSummary([{ type: 'text', text: '纯文本' }], [], t), '')
+
+  const input = [
+    { type: 'file' as const, name: 'report.pdf', path: '/secret/report.pdf' },
+    { type: 'skill' as const, name: 'paper-search', path: '/secret/skill' },
+  ]
+  const references = [
+    { kind: 'pdf_comment', anchor: {}, label: 'PDF 注释' },
+    { kind: 'literature', anchor: {}, label: '文献划词' },
+    { kind: 'selection', label: '旧版划词' },
+    { kind: 'session', label: '前序任务' },
+  ]
+  assert.equal(
+    queuedContextSummary(input, references, t, () => '论文检索'),
+    '[report.pdf]、[1 条注释]、[2 条划词] [论文检索][前序任务]'
+  )
+  await locale.changeLanguage('en')
+  assert.equal(
+    queuedContextSummary(input, references, t),
+    '[report.pdf], [1 annotation], [2 selections] [paper-search][前序任务]'
+  )
 })
 
 test('keeps skill identity typed without polluting natural-language text', () => {
@@ -623,6 +673,9 @@ test('session open projects only fields owned by the frozen product contract', (
   assert.deepEqual(buildSessionOpenRequest({ forkSessionId: 'source', forkTurnId: 'turn-two' }), {
     fork_session_id: 'source',
     fork_turn_id: 'turn-two',
+  })
+  assert.deepEqual(buildSessionOpenRequest({ forkSessionId: 'source' }), {
+    fork_session_id: 'source',
   })
   assert.deepEqual(buildSessionOpenRequest({ resumeSessionId: 'product-session' }), {
     resume_session_id: 'product-session',

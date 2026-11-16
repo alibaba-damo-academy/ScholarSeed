@@ -17,6 +17,9 @@ from scholarseed_codex.protocol.state import AppServerError
 from scholarseed_codex.session import CodexRuntimeSession
 from scholarseed_runtime.contract import (
     CommandState,
+    ModelConnectionMode,
+    ModelIntent,
+    ModelTransport,
     OpenSessionRequest,
     RuntimeConfigurationIntent,
 )
@@ -27,6 +30,12 @@ from scholarseed_runtime.contract.permission import (
     RuntimePermissionMode,
 )
 
+MODEL = ModelIntent(
+    transport=ModelTransport(
+        mode=ModelConnectionMode.REMOTE, endpoint="https://models.example.test/v1"
+    )
+)
+
 
 @pytest.mark.parametrize("mode", list(RuntimePermissionMode))
 @pytest.mark.parametrize("profile", [False, True])
@@ -35,7 +44,9 @@ def test_roots_only_stages_turn_policy_without_native_confirmation(mode, profile
     async def scenario():
         intent = PermissionIntent(mode=mode, revision="initial")
         session = CodexRuntimeSession(
-            OpenSessionRequest(product_session_id="roots", cwd=Path.cwd(), permission=intent)
+            OpenSessionRequest(
+                product_session_id="roots", cwd=Path.cwd(), permission=intent, model=MODEL
+            )
         )
         host, state, _requested = _host()
         session._native._host = host
@@ -132,7 +143,10 @@ def test_roots_and_mode_change_still_require_native_confirmation() -> None:
         intent = PermissionIntent()
         session = CodexRuntimeSession(
             OpenSessionRequest(
-                product_session_id="mixed-permission", cwd=Path.cwd(), permission=intent
+                product_session_id="mixed-permission",
+                cwd=Path.cwd(),
+                permission=intent,
+                model=MODEL,
             )
         )
         permission = replace(
