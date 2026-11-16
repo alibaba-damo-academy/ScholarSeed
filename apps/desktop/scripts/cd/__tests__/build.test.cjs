@@ -2075,7 +2075,6 @@ test('artifact verification imports the packaged runtime and starts its real hea
     'damoatrace',
     'service.cli.serve',
     'scholarseed_codex',
-    'scholarseed_dsh',
   ]) {
     assert.match(RUNTIME_PROBE_SCRIPT, new RegExp(moduleName.replaceAll('.', '\\.')))
   }
@@ -2605,7 +2604,7 @@ test('frozen distribution product policy is product-scoped and HTTPS-only', () =
   assert.equal(product.runtimes.codex.executable_sha256, REVIEWED_BINARIES.codex.executable_sha256)
   assert.equal(Object.hasOwn(product.runtimes.codex, 'inspection'), false)
   assert.equal(product.default_runtime, 'codex')
-  assert.equal(product.runtimes.dsh.enabled, false)
+  assert.equal(product.runtimes.dsh, undefined)
   assert.throws(
     () =>
       frozenProductConfiguration(

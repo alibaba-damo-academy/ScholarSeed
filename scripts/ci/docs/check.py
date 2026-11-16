@@ -61,7 +61,6 @@ REQUIRED = (
     "packages/damoatrace/README.md",
     "packages/adapters/codex/AGENTS.md",
     "packages/adapters/codex/README.md",
-    "packages/adapters/dsh/README.md",
     "docs/runbooks/build.md",
 )
 NAMED = (

@@ -1,7 +1,7 @@
 # ScholarSeed 产品后端 (FastAPI Serve + composition root) —— distribution `scholarseed`。
 #
 # 边界: 本包只拥有 apps/serve/service/**。runtime kernel (damoagent)、证据查询
-# (damoatrace) 与各 runtime adapter (scholarseed-codex / scholarseed-dsh) 都是独立发行包,
+# (damoatrace) 与 runtime adapter (scholarseed-codex) 都是独立发行包,
 # 这里只作依赖声明, 绝不打包它们的 namespace。
 
 [build-system]
@@ -59,10 +59,8 @@ dependencies = [
 # Explicit optional integrations; not part of the default Desktop backend.
 docker = ["docker"]                     # DockerBackend
 claude-sdk = ["claude-agent-sdk"]
-# runtime adapter: 产品默认随 codex adapter 一起交付; dsh 为第二 runtime。
-# 两者都只依赖 DamoAgent 公开 proto/surface, 由 product.json 决定启用哪些。
+# runtime adapter: 产品默认随 codex adapter 一起交付。
 codex = ["scholarseed-codex==0.2.1"]
-dsh = ["scholarseed-dsh==0.2.1"]
 serve = [
     "fastapi",
     "uvicorn",
@@ -79,7 +77,6 @@ all = [
     "docker",
     "claude-agent-sdk",
     "scholarseed-codex==0.2.1",
-    "scholarseed-dsh==0.2.1",
     "fastapi",
     "uvicorn",
     "python-multipart",

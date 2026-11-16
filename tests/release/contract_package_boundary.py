@@ -16,7 +16,6 @@ PRODUCTION_ROOTS = (
     "apps/serve/service",
     "packages/runtime/scholarseed_runtime",
     "packages/adapters/codex/scholarseed_codex",
-    "packages/adapters/dsh/scholarseed_dsh",
 )
 
 # account 边界: 独立 composition root，不得引入产品内部包
@@ -148,9 +147,8 @@ def main() -> int:
         not (root / "damoasub").exists() and not (root / "packages/damoasub").exists(),
     )
     check(
-        "each runtime adapter is an independent package",
-        (root / "packages/adapters/codex/pyproject.toml").is_file()
-        and (root / "packages/adapters/dsh/pyproject.toml").is_file(),
+        "Codex runtime adapter is an independent package",
+        (root / "packages/adapters/codex/pyproject.toml").is_file(),
     )
     violations = _scan(root)
     check("production has no legacy Python imports", not violations, str(violations[:12]))

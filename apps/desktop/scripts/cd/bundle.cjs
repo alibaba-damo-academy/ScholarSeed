@@ -47,7 +47,6 @@ const PROJECTS = [
   ['runtime', 'packages/runtime'],
   ['damoatrace', 'packages/damoatrace'],
   ['codex', 'packages/adapters/codex'],
-  ['dsh', 'packages/adapters/dsh'],
   ['serve', 'apps/serve']
 ]
 const PYTHON_INDEX = 'https://mirrors.aliyun.com/pypi/simple/'
