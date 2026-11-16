@@ -1,55 +1,76 @@
-# 图片查看
+<a id="图片查看"></a>
+# Image Viewing
 
-目标版本图片查看完整窗口参考
+## Target-Version Complete-Window Reference for Image Viewing
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-12；展示合成图片适应窗口状态及工具栏，不证明缩放动作、限幅或异常分支。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-12. Shows a synthetic image fitted to the window and its toolbar; does not prove zoom actions, clamping, or error branches.
 
-图片查看页面参考
+Image-viewer page reference
 
-参考：macOS arm64，0.3.2 / 202611121104，2026-11-12；展示合成图片的一个缩放状态，不代表限幅、拖动或失败状态。
+Reference: macOS arm64, 0.3.2 / 202611121104, 2026-11-12. Shows one zoom state for a synthetic image; does not represent clamping, dragging, or failure states.
 
-已核实的正常图片加载、尺寸及观看操作已采用为v`0.3`需求；仅已采用的正常自动要点参与默认快评，未确认分支及专项另列。004极端fit与限幅关系、005拖动边缘/手势语义、006失败操作资格及未核实格式/编辑能力仍待确认。
+Verified normal image loading, dimensions, and viewing actions are adopted as v`0.3` requirements. Only adopted normal automatic subcriteria enter the default quick review; unconfirmed branches and focused scenarios remain separate.
 
-在项目工作台辨认已打开图片，按需要调整观看比例和位置。语义入口为项目资料中图片的正常打开；图片查看器及工具栏的真实可达性待授权观察，菜单或格式注册本身不证明可达。
+The extreme fit-versus-clamping relationship in 004, edge dragging/gesture semantics in 005, operation eligibility after failure in 006, and unverified format/editing capabilities remain pending confirmation.
 
-## 看清正确的图片
+Identify an opened image in the project workbench and adjust its viewing scale and position as needed. The semantic entry point is the normal open action for an image in project materials. Reachability of the viewer and toolbar requires an authorized observation; a menu or format registration alone does not prove reachability.
 
-### 加载与文档身份（IMAGE-OBS-001 · v`0.3`）
-动态与条件：打开后，活动标签身份和画面中的已知图案对应同一获准图片，不串用另一文档；加载中有等待反馈，成功后出现可辨图片与可用查看操作。对照原文件摘要、已知内容及本轮项目/路径，不以标签标题或加载接口成功单独证明图片已经显示。
+<a id="看清正确的图片"></a>
+## Identify the Correct Image
 
-### 原始尺寸与内容（IMAGE-OBS-002 · v`0.3`）
-动态：图片工具栏的“宽 × 高”与原文件独立解码的像素尺寸一致，不随缩放改变；画面保持原图长宽比例及可辨内容。透明图片的透明区随查看背景呈现，不把原图不存在的固定底色作为要求；动图、矢量固有尺寸及方向元数据语义另待样本与依据。
+<a id="加载与文档身份image-obs-001--v03"></a>
+### Loading and Document Identity (IMAGE-OBS-001 · v`0.3`)
 
-## 调整观看方式
+Dynamic/conditional: After opening, the active-tab identity and known visual pattern correspond to the same authorized image; do not show another document. Show a loading state while loading; after success, show a discernible image and available viewing actions. Compare the original-file digest, known content, and this run's project/path. A matching tab title or successful load API alone does not prove the image is displayed.
 
-### 适应窗口与实际大小（IMAGE-OBS-003 · v`0.3`）
-动态与轻量交互：“适应窗口”使完整图片按比例居中容纳于当前图片视口，支持窗口或窗格改变后仍完整可见；“实际大小”回到100%，图像显示宽高对应原始像素尺寸的CSS像素，不等同于高分屏截图的物理像素。以原图尺寸、实际可见视口和图像几何比较，不能只看百分比。
+<a id="原始尺寸与内容image-obs-002--v03"></a>
+### Original Dimensions and Content (IMAGE-OBS-002 · v`0.3`)
 
-### 放大、缩小与限幅（IMAGE-OBS-004 · v`0.3`）
-动态与轻量交互：通过工具栏放大或缩小，百分比与可见图像几何同步变化且不变形；手动缩放在1%至3200%内，到达边界后相应方向操作不可继续越界。以动作前后可辨图案及图像几何、原始尺寸为参照；“适应窗口”与手动限幅的极端尺寸关系尚待确认，不把异常跳变批准为要求。
+Dynamic: The “width × height” in the image toolbar matches pixel dimensions independently decoded from the original file and does not change with zoom. Preserve the original aspect ratio and discernible content. For transparent images, transparency is displayed against the current viewer background; do not require a fixed background absent from the original. Semantics for animated images, intrinsic vector dimensions, and orientation metadata await samples and evidence.
 
-### 拖动与找回图片（IMAGE-OBS-005 · v`0.3`）
-动态与轻量交互：图片就绪后主指针拖动改变观看位置，结束或取消拖动后不继续跟随；图片被视口裁切不等于源文件被裁剪，使用“适应窗口”或“实际大小”能重新居中。拖动边缘钳制、允许移出画面程度及滚轮/手势支持尚待确认，不凭当前实现宣布必须无限拖动或必须支持未证实手势。
+<a id="调整观看方式"></a>
+## Adjust the Viewing Mode
 
-## 遇到不能显示的文件
+<a id="适应窗口与实际大小image-obs-003--v03"></a>
+### Fit to Window and Actual Size (IMAGE-OBS-003 · v`0.3`)
 
-### 失败反馈与操作资格（IMAGE-OBS-006 · v`0.3`）
-条件专项：获准的真实读取失败或不可解码图片不能冒充已成功加载，显示可理解的失败反馈，不继续提供依赖图片就绪的查看操作；成功打开另一正常图片后仍能辨认正确内容。错误外壳可能因失败阶段不同而不同，不要求所有失败均出现同一句文案。
+Dynamic/light interaction: “适应窗口” (“Fit to Window”) scales the complete image proportionally and centers it within the current image viewport; it remains fully visible after window or pane resizing. “实际大小” (“Actual Size”) returns to 100%; displayed image width/height correspond to the original pixel dimensions in CSS pixels, not physical pixels in a high-DPI screenshot. Compare original dimensions, actual visible viewport, and image geometry; percentage alone is insufficient.
 
-## 验证归属与数据
+<a id="放大缩小与限幅image-obs-004--v03"></a>
+### Zoom In/Out and Clamping (IMAGE-OBS-004 · v`0.3`)
 
-001–005已采用的正常分支归独立图片快评；未确认边界不据此纳入，006仍为待确认的异常专项，执行还需已授权且来源明确的损坏/读取失败条件。加载瞬态不可观察时如实保留缺证；小样本不能证明极端缩放、长宽比或大图表现。
+Dynamic/light interaction: Use toolbar zoom in/out; percentage and visible image geometry change together without distortion. Manual zoom is limited to 1%–3200%; once a boundary is reached, the corresponding direction cannot move beyond it. Use pre/post-action visible patterns and image geometry plus original dimensions as references. The relationship between “Fit to Window” and manual limits at extreme sizes remains unconfirmed; do not approve an anomalous jump as expected behavior.
 
-可用原图及独立尺寸见[输入资料](./build.md#输入与覆盖缺口)，准备状态以本轮收据为准；数据准备不等于导入功能测试，导入由人工确认。文件内容保存能力只引用[保存场景SAVE-OBS-001](../saving/requirements.md)的适用资格，干净关闭复用[标签场景TABS-OBS-002](../tabs/requirements.md)，未保存保护仅在真实可写编辑专项适用时复用TABS-OBS-008；不把查看比例变化当成文件编辑。独立旋转、裁剪、变换入口尚未核实，不能由查看器注册推断支持；另有已确认编辑要求时仍须核其写入专项。
+<a id="拖动与找回图片image-obs-005--v03"></a>
+### Dragging and Recovering the Image (IMAGE-OBS-005 · v`0.3`)
 
-## 发布快评层
+Dynamic/light interaction: Once the image is ready, dragging with the primary pointer changes viewing position; after ending or canceling the drag, the image no longer follows the pointer. Cropping by the viewport does not mean the source file was cropped. “Fit to Window” or “Actual Size” can recenter it. Edge clamping, how far the image may be moved off-screen, and wheel/gesture support remain unconfirmed; current implementation does not establish a requirement for unlimited dragging or unverified gestures.
 
-采用v`0.3`的正常子要点：IMAGE-OBS-001–003；仅代表下述范围，不代表这些ID全部细则通过。
+<a id="遇到不能显示的文件"></a>
+## When a File Cannot Be Displayed
 
-正常打开PNG应可辨白色圆角底的绿色书页/芽图案，自然尺寸为1024×1024；作一次普通适应窗口，完整图像内容与可用视口相符，以原图及动作前后几何核对，不依赖内部scale/store。
+<a id="失败反馈与操作资格image-obs-006--v03"></a>
+### Failure Feedback and Operation Eligibility (IMAGE-OBS-006 · v`0.3`)
 
-必要参照：共享评测项目的[icon.png](../../../../../examples/projects/evaluation/files/icon.png)获准隔离副本、项目/路径映射与原图独立尺寸/内容；透明区域不假定固定背景。
+Conditional focused scenario: An authorized real read failure or undecodable image cannot be presented as successfully loaded. Show understandable failure feedback and do not continue to offer viewing operations that depend on an image being ready. After opening another normal image successfully, its correct content remains discernible. The error shell may differ depending on when failure occurs; not every failure must use identical wording.
 
-## 专项层
+<a id="验证归属与数据"></a>
+## Verification Ownership and Data
 
-本层未选：实际大小往返、手动1%–3200%限幅、拖动/边缘、极端fit、瞬态、006错误及图像编辑。原完整判据、稳定ID、版本和历史结果保留；未确认分支不因分层获批。
+Adopted normal branches of 001–005 belong to the independent image quick review; unconfirmed boundaries are not included on that basis. 006 remains a pending-confirmation error scenario and requires an authorized, traceable corrupt/read-failure condition for execution. If a loading transient cannot be observed, retain the evidence gap. Small samples cannot prove extreme zoom, aspect ratios, or large-image behavior.
+
+See the [Build Basis](./build.md#输入与覆盖缺口) for original images and independent dimensions; use the current run's receipt for preparation state. Data preparation is not an import-feature test; import requires user confirmation. File-content saving eligibility is referenced from [saving scenario SAVE-OBS-001](../saving/requirements.md); clean close reuses [tab scenario TABS-OBS-002](../tabs/requirements.md); unsaved-change protection reuses TABS-OBS-008 only when an actual writable editing scenario applies. Do not treat a change in viewing scale as file editing. Independent rotate/crop/transform entry points have not been verified and cannot be inferred from viewer registration; if there is a separately confirmed editing requirement, still verify its write scenario.
+
+<a id="发布快评层"></a>
+## Release Quick-Review Layer
+
+Adopted normal v`0.3` subcriteria: IMAGE-OBS-001–003. This covers only the scope below, not every detail under these IDs.
+
+Opening the normal PNG should show a discernible green book-page/sprout pattern on a white rounded background; natural size is 1024×1024. Perform one ordinary Fit to Window; verify complete image content against the available viewport using the original and before/after geometry, without relying on internal `scale`/store.
+
+Required reference: an authorized isolated copy of [icon.png](../../../../../examples/projects/evaluation/files/icon.png) in the shared evaluation project, project/path mapping, and independently measured original dimensions/content. Do not assume a fixed background for transparent regions.
+
+<a id="专项层"></a>
+## Focused Scenarios
+
+Not selected in this layer: Actual Size round-trip, manual 1%–3200% limits, dragging/edges, extreme Fit to Window, transients, 006 errors, or image editing. Preserve original full criteria, stable IDs, versions, and historical results; layering does not authorize unconfirmed branches.

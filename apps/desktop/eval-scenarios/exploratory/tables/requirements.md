@@ -1,52 +1,65 @@
-# CSV与表格阅读
+<a id="csv与表格阅读"></a>
+# CSV and Table Reading
 
-工作簿网格参考
+Workbook grid reference
 
-参考：macOS arm64，0.3.2 / 202611121104，2026-11-12；仅展示合成工作簿一个工作表，不代表 CSV 编辑、导出或失败状态。
+Reference: macOS arm64, 0.3.2 / 202611121104, 2026-11-12; shows one worksheet in a synthetic workbook only, not CSV editing, export, or a failure state.
 
-已核实的正常表格展示、工作表/网格、读写资格及CSV编辑行为已采用为v`0.3`需求；仅已采用的正常自动要点参与默认快评，006为写入专项，须核当轮授权。002特殊方言/截断、复杂格式与未绑定来源、007导出及008异常仍待确认。
+Verified normal table display, worksheets/grid, read/write eligibility, and CSV editing behavior has been adopted as v`0.3` requirements. Only adopted normal automatic subpoints enter default quick review. 006 is a write-operation specialty and requires authorization for the current run. Special dialect/truncation in 002, complex formats and unbound sources, export in 007, and errors in 008 remain unconfirmed.
 
-在项目工作台查看分隔文本或工作簿，辨认单元格、工作表及实际读写资格。语义入口为项目资料中对应文件的正常打开；真实入口及引擎可用性待授权观察，扩展名或Viewer注册不单独证明已可使用。
+View delimited text or a workbook in the project workbench and identify cells, worksheets, and actual read/write eligibility. Semantic entry: normally open the corresponding file in project resources. Actual reachability and engine availability require authorized observation; a file extension or registered viewer alone does not prove the feature is usable.
 
-## 看清表格内容
+<a id="看清表格内容"></a>
+## Read Table Content
 
-### 身份、加载与内容（TABLE-OBS-001 · v`0.3`）
-动态与条件：活动标签、文件身份及网格内容对应本轮同一项目、路径和原文件，不串用其它文档；加载完成后，已知行列和单元格值与独立解析的原始数据一致。CSV/TSV与工作簿按实际能力分别判断，不把二进制工作簿当普通文本，也不拿网格自身导出的结果作唯一答案。
+<a id="身份加载与内容table-obs-001--v03"></a>
+### Identity, loading, and content (TABLE-OBS-001 · v`0.3`)
+Dynamic and conditional: The active tab, file identity, and grid content correspond to the same project, path, and original file in this run; they do not come from another document. After loading finishes, known rows, columns, and cell values match an independent parse of the original data. Judge CSV/TSV and workbooks separately according to actual capabilities. Do not treat a binary workbook as plain text or use values exported from the grid itself as the sole answer.
 
-### 记录、字段与方言（TABLE-OBS-002 · v`0.3`）
-动态与条件：字段与记录边界对照原文件已知的编码、分隔符、引号、换行及空字段语义。CSV首条记录是网格第1行数据，不自动升为字段表头；TSV首条记录显示为字段表头，其余为数据行。若显示记录总数，应与独立解析的全部记录数一致（含TSV表头），不能把可见数据行数混作总数；截断须明确仅展示部分，不冒充源总数。跨行引号、空白记录、其他方言及大文件截断保留专项，不将实现局限批准为正确结果。
+<a id="记录字段与方言table-obs-002--v03"></a>
+### Records, fields, and dialects (TABLE-OBS-002 · v`0.3`)
+Dynamic and conditional: Check field and record boundaries against the source's known encoding, delimiter, quoting, line breaks, and empty-field semantics. For CSV, the first record is row 1 of grid data; it is not automatically promoted to a field-header row. For TSV, the first record appears as the field-header row and the rest as data rows. If the total record count is shown, it must match an independent parse of all records (including the TSV header); do not confuse visible data-row count with the total. Truncation must be identified as partial display, not represented as the source total. Multiline quotes, blank records, other dialects, and large-file truncation remain specialties; implementation limitations are not thereby approved as correct behavior.
 
-### 工作表与当前网格（TABLE-OBS-003 · v`0.3`）
-动态与轻量交互：支持多工作表的工作簿，其可见工作表名称、顺序、选中态和切换后的已知内容与原文件一致；隐藏表不强求显示为可选标签。CSV只提供单张数据网格，其底部名称是文件派生的显示标签，不应被当成原文件内有多个工作表的证据；TSV旧预览没有工作表切换要求。
+<a id="工作表与当前网格table-obs-003--v03"></a>
+### Worksheets and active grid (TABLE-OBS-003 · v`0.3`)
+Dynamic with lightweight interaction: For a workbook with multiple worksheets, visible worksheet names, order, selected state, and known content after switching match the source file. Hidden sheets do not have to appear as selectable tabs. CSV has a single data grid; its bottom label is derived from the file name and is not evidence that the source contains multiple worksheets. The old TSV preview has no worksheet-switching requirement.
 
-以下参考图来自 macOS `0.3.2 / 202611121823 / preview` 隔离实例中的合成工作簿，分别展示 Main 和 Secondary 状态；静图不单独证明切换动作或其他表格能力。
+The following reference images come from a synthetic workbook in an isolated macOS `0.3.2 / 202611121823 / preview` instance; they show Main and Secondary respectively. Static images alone do not prove the switching action or other table capabilities.
 
-Main 工作表参考
+Reference for the Main worksheet
 
-Secondary 工作表参考
+Reference for the Secondary worksheet
 
-### 网格定位与可读性（TABLE-OBS-004 · v`0.3`）
-动态与条件：支持网格导航的Viewer中，滚动或键盘移动后能看到对应行列的已知内容，选择位置与实际单元格一致；长表不因视口外未挂载而被误判丢行。工作簿合并、隐藏行列及格式化内容仅在有独立样本参照时核对，不承诺所有复杂格式或公式重算；源数据与显示值的区别须事前明确。
+<a id="网格定位与可读性table-obs-004--v03"></a>
+### Grid navigation and readability (TABLE-OBS-004 · v`0.3`)
+Dynamic and conditional: In a viewer that supports grid navigation, after scrolling or keyboard movement the known content for the corresponding rows/columns is visible and the selection matches the actual cell. Offscreen virtualization in a long table must not be misjudged as dropped rows. Check workbook merges, hidden rows/columns, and formatted content only when independent sample references exist; do not promise every complex format or formula recalculation. Clarify beforehand the distinction between source data and displayed values.
 
-## 确认可做哪些操作
+<a id="确认可做哪些操作"></a>
+## Confirm Which Operations Are Supported
 
-### 只读与可编辑资格（TABLE-OBS-005 · v`0.3`）
-动态与条件：以文档来源、当前公开能力、实际预览/编辑视图和运行期限制共同判断资格；只读文件不得因后缀相同而提供实际写入能力。当前项目CSV、TSV、XLS与XLSX不能一概当作可编辑Excel，未绑定的会话产物或其它来源也不能借项目能力结论代替。
+<a id="只读与可编辑资格table-obs-005--v03"></a>
+### Read-only and editable eligibility (TABLE-OBS-005 · v`0.3`)
+Dynamic and conditional: Determine eligibility jointly from document source, current public capabilities, actual preview/edit view, and runtime restrictions. A read-only file must not gain real write access merely because it has the same suffix. Project CSV, TSV, XLS, and XLSX files cannot all be assumed to be editable in Excel. Unbound conversation artifacts or other sources cannot inherit a conclusion based on project capabilities.
 
-### CSV编辑与保存边界（TABLE-OBS-006 · v`0.3`）
-写入专项：仅对明确获准且实际可编辑的CSV副本，修改、取消、撤销/重做应对应已知单元格内容，预览/只读状态不接受同类编辑；保存后重新取得的同一文件应保留本轮改动及未改字段语义，不把脏点消失当成功。保存资格、终态、失败与冲突直接复用[保存场景SAVE-OBS-001/002/004/005](../saving/requirements.md)的适用部分，关闭保护复用[标签场景TABS-OBS-008](../tabs/requirements.md)，不另复制标准。
+<a id="csv编辑与保存边界table-obs-006--v03"></a>
+### CSV editing and saving boundaries (TABLE-OBS-006 · v`0.3`)
+Write-operation specialty: Only on an explicitly authorized, actually editable CSV copy, edit, cancel, undo, and redo must correspond to known cell content; preview/read-only states do not accept the same edits. After saving, reacquire the same file and verify that the current changes and untouched field semantics remain; disappearance of a dirty marker is not success. Save eligibility, outcome, failure, and conflict reuse applicable parts of [saving scenarios SAVE-OBS-001/002/004/005](../saving/requirements.md); close protection reuses [tab scenario TABS-OBS-008](../tabs/requirements.md). Do not duplicate those standards here.
 
-### 导出、另存与外部打开边界（TABLE-OBS-007 · v`0.3`）
-条件专项：只有真实可达且明确支持的动作才可作为导出/另存能力；外部应用打开、复制单元格、历史快照下载和保存当前原文件是不同工作，不能互相替代成功。独立表格格式转换/导出入口及产物规范尚待确认；若后续选入，须有获准目标格式、输出路径、工作表与已知内容的独立终态依据，不以按钮或接口存在宣布导出完成。
+<a id="导出另存与外部打开边界table-obs-007--v03"></a>
+### Export, Save As, and external-open boundaries (TABLE-OBS-007 · v`0.3`)
+Conditional specialty: Count an action as export/Save As capability only when it is both actually reachable and explicitly supported. Opening in an external application, copying cells, downloading a historical snapshot, and saving the current original file are different operations and cannot substitute for one another. Independent output specifications and a table-format conversion/export entry remain to be confirmed. If selected later, require an authorized target format, output path, worksheets, and independent references for known output content; a button or interface alone does not prove export completed.
 
-## 遇到异常
+<a id="遇到异常"></a>
+## Handle Errors
 
-### 不可读取或解析失败（TABLE-OBS-008 · v`0.3`）
-条件专项：获准的读取、解析或引擎失败不能冒充空表/成功加载，反馈能区分当前结果不可用；出现重试入口时，恢复前提后应重新显示正确文档而非旧文件残留。真实空表另按已知源数据判断，不将失败时没有行列当成空表的正确预期。
+<a id="不可读取或解析失败table-obs-008--v03"></a>
+### Unreadable or failed parsing (TABLE-OBS-008 · v`0.3`)
+Conditional specialty: An authorized read, parse, or engine failure must not masquerade as an empty table or successful load; feedback must distinguish the unavailable result. If a retry is offered, after the prerequisite is restored it must show the correct document, not stale content from a previous file. Judge a genuinely empty table using known source data; no rows/columns during a failure is not a correct empty-table result.
 
-## 验证归属与数据
+<a id="验证归属与数据"></a>
+## Verification Ownership and Data
 
-001、003–005及002中已具备独立格式参照的已采用正常展示归单独表格快评；002特殊方言/截断、007导出及008异常仍为待确认专项，006已采用正常CSV写入仍需专项授权，引用的保存异常不因此批准。普通输入为共享评测项目的[sample.csv](../../../../../examples/projects/evaluation/files/sample.csv)及[sample.tsv](../../../../../examples/projects/evaluation/files/sample.tsv)，均为UTF-8无BOM、LF且末尾有换行；CSV逗号分隔，TSV为TAB分隔，独立解析均为下列4条记录、4字段（含表头这一条源记录）。CSV显示4行网格数据；TSV显示1行字段表头及3行数据，记录总数含表头为4。数据准备不等于导入功能测试，导入由人工确认。
+Adopted normal display for 001, 003–005 and 002 with an independent format reference belongs in a dedicated table quick review. Special dialect/truncation in 002, export in 007, and errors in 008 remain unconfirmed specialties. Normal CSV writing in adopted 006 still requires specialty authorization; citing save failure criteria does not approve those operations. Normal inputs are shared evaluation-project [sample.csv](../../../../../examples/projects/evaluation/files/sample.csv) and [sample.tsv](../../../../../examples/projects/evaluation/files/sample.tsv), both UTF-8 without BOM, LF line endings, and a trailing newline. CSV is comma-delimited; TSV is TAB-delimited. Independent parses contain four records and four fields each (including the header as a source record). CSV displays four grid data rows; TSV displays one field-header row and three data rows, with total record count four including the header. Data preparation is not an import test; a human confirms import.
 
 | sample_id | label | quantity | note |
 | --- | --- | --- | --- |
@@ -54,20 +67,22 @@ Secondary 工作表参考
 | S-002 | | 0 | 空标签 |
 | S-003 | 样本丙 | -3 | 负数 |
 
-S-002的label为空字符串，不是0。共享评测项目的[sample.xlsx](../../../../../examples/projects/evaluation/files/sample.xlsx)有两张可见工作表，顺序为Main、Secondary；Main的A1:D4与上表相同，C2:C4为数值2、0、-3，B3为空；Secondary的A1:B2依次为字段名`sample_id`、`label`和数据`S-004`、`SECOND-SHEET`。切表应显示各自内容；不把第1行自动变为应用表头。
+The `label` value for S-002 is the empty string, not 0. The shared evaluation project's [sample.xlsx](../../../../../examples/projects/evaluation/files/sample.xlsx) has two visible worksheets, ordered Main and Secondary. Main A1:D4 matches the table above; C2:C4 are numeric values 2, 0, and -3, and B3 is empty. Secondary A1:B2 contains the headers `sample_id`, `label` followed by `S-004`, `SECOND-SHEET`. Switching sheets should show the respective content; do not automatically treat row 1 as application headers.
 
-[独立长表 CSV](../../../../../examples/projects/table-long/files/long.csv)为 UTF-8 无 BOM、LF、末尾换行的 120 条记录、每条 12 个字段，均为数据行；第 1、60、120 行第 1 列依次为 `R001C01`、`R060C01`、`R120C01`，第 12 列依次为 `R001C12`、`R060C12`、`R120C12`。每格以行列编号唯一标识，可供 TABLE-OBS-004 的远行远列定位参照；实际视口及可达性仍须本轮核实。输入准备状态以本轮收据为准，文件不代表已导入或产品通过，导入由人工确认。隐藏表、复杂格式及异常/写入等专项数据仍缺；现有XLS只核文件身份，不据文件名承诺100行内容。
+The [independent long-table CSV](../../../../../examples/projects/table-long/files/long.csv) is UTF-8 without BOM, LF with a trailing newline, and has 120 records of 12 fields each, all data rows. In column 1, rows 1, 60, and 120 are `R001C01`, `R060C01`, and `R120C01`; in column 12 they are `R001C12`, `R060C12`, and `R120C12`. Each cell has a unique row/column identifier for distant-row/distant-column navigation references under TABLE-OBS-004. Actual viewport and reachability still need to be checked in this run. Use this run's receipt for input-preparation status; the file does not mean it was imported or the product passed. A human confirms import. Specialty data for hidden sheets, complex formats, errors, and writing is still missing. The existing XLS only has verified file identity; its name does not promise 100 rows of content.
 
-本页集中持有CSV/TSV及工作簿的表格语义；后续“Office与表格文档”中XLS/XLSX的同类内容、工作表、网格与资格要求应引用本页，Office通用引擎、字体、格式专项另持有，不重复两套判据。输入文件或源码不充当产品证据。
+This page owns table semantics for CSV/TSV and workbooks. Later “Office and table documents” requirements for XLS/XLSX that cover similar content, worksheets, grids, and eligibility should reference this page. Office-wide engine, font, and format specialties are owned separately; do not duplicate criteria sets. Input files or source code are not product evidence.
 
-## 发布快评层
+<a id="发布快评层"></a>
+## Release Quick-Review Layer
 
-采用v`0.3`的正常子要点：TABLE-OBS-001、003、005；仅代表下述范围，不代表这些ID全部细则通过。
+The adopted normal subpoints from v`0.3` are TABLE-OBS-001, 003, and 005. This covers only the scope below and does not mean every detail of these IDs passes.
 
-正常打开双工作表XLSX，Main网格应与独立4×4矩阵一致（quantity为2/0/-3、一个空label）；Main→Secondary一次，标签/当前网格共同切换，出现sample_id,label及S-004,SECOND-SHEET。仅观察实际资格，不输入单元格。
+Normally open the two-sheet XLSX and compare the Main grid against the independent 4×4 matrix (quantity values 2/0/-3 and one empty `label`). Switch Main → Secondary once; the tab and active grid must switch together and show `sample_id`, `label`, `S-004`, and `SECOND-SHEET`. Inspect actual eligibility only; do not enter cell data.
 
-必要参照：[sample.xlsx](../../../../../examples/projects/evaluation/files/sample.xlsx)的获准隔离副本及本轮项目/路径映射；标准库ZIP/XML独立矩阵、可见工作表Main/Secondary及build摘要。
+Required references: authorized isolated copy of [sample.xlsx](../../../../../examples/projects/evaluation/files/sample.xlsx) and this run's project/path mapping; standard-library ZIP/XML independent matrix, visible worksheets Main/Secondary, and build digest.
 
-## 专项层
+<a id="专项层"></a>
+## Specialized Layer
 
-本层未选：CSV/TSV全部格式、键盘网格定位、特殊方言/复杂格式、006写入、007导出与008错误。原完整判据、稳定ID、版本和历史结果保留；未确认分支不因分层获批。
+Not selected in this layer: all CSV/TSV formats, keyboard grid navigation, special dialects/complex formats, writing under 006, export under 007, and errors under 008. The original full criteria, stable IDs, versions, and historical results remain; unconfirmed branches are not approved merely by this layering.

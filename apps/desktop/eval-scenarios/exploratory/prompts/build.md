@@ -1,89 +1,97 @@
-# AI提示词基线构建依据
+<a id="ai提示词基线构建依据"></a>
+# AI Prompts Baseline Build Basis
 
-当前资产修订：`prompts/11`；本次补充翻译服务配置候选和滚动视口参考，采用依据及提示词映射见[已确认当前承载映射](#已确认当前承载映射2026-11-04)。原四字段要求、稳定ID及需求v`0.3`保留，不自行推算新需求版本。
+Current asset revision: `prompts/11`; this revision adds a translation-service configuration candidate and a scrolling-viewport reference. Adoption basis and prompt mapping are described in [Confirmed Current Hosting Mapping](#已确认当前承载映射2026-11-04). Preserve the original four-field requirements, stable IDs, and requirements version v`0.3`; do not infer a new requirements version.
 
-## 翻译服务配置候选与参考
+<a id="翻译服务配置候选与参考"></a>
+## Translation-Service Configuration Candidate and Reference
 
-翻译计划记录用户需求及 PDFE Mock 范围，包括默认服务与划词开关；交付记录记录后续真实 macOS 开发实例观察及其未完成的合并后真实复测。Mock 策略、历史默认值和开发实例不证明目标包适用或真实翻译通过；`TRANSLATION-CONFIG-CAND-001` 与已采用翻译提示词展示分开，偏好写入、凭据、联网与模型调用分别核授权。
+The translation plan records user requirements and the PDFE Mock scope, including the default service and the text-selection translation toggle. The delivery record documents a later observation in a real macOS development instance and the fact that a real post-merge retest was not completed. The Mock strategy, historical defaults, and development instance do not prove target-package applicability or successful real translation. Keep `TRANSLATION-CONFIG-CAND-001` separate from the adopted translation-prompt display; authorization for preference writes, credentials, network access, and model calls must be checked separately.
 
-`translation-services-20261112.png` 是 `tmp/test_snapshot/desktop/baseline-1823-batch4/capture/evidence/translation-02.png` 原字节副本，SHA-256 `6eb1b248532cf27fafc8a81a08a152a78c93fa7dfc1699a9c08ceaff66405633`；采集于 2026-11-12 的 macOS arm64 `0.3.2 / 202611121823 / preview` 隔离实例，同批截图命令见 `capture/index.md` 第 19 项。图中为滚动视口与当时折叠服务状态，未展示各服务展开字段，不证明配置、验证或翻译；目标制品磁盘摘要见下节，不证明运行内存字节。
+`translation-services-20261112.png` is a byte-for-byte copy of `tmp/test_snapshot/desktop/baseline-1823-batch4/capture/evidence/translation-02.png`, SHA-256 `6eb1b248532cf27fafc8a81a08a152a78c93fa7dfc1699a9c08ceaff66405633`. It was captured in an isolated macOS arm64 `0.3.2 / 202611121823 / preview` instance on 2026-11-12; see item 19 in `capture/index.md` for the screenshot command from that batch. The image shows the scrolling viewport and the service state as it was then collapsed; it does not show each service's expanded fields and does not prove configuration, validation, or translation. The target artifact's on-disk digest is given in the next section; it does not prove the bytes in runtime memory.
 
-## 202611121823 目标版本参考图
+<a id="202611121823-目标版本参考图"></a>
+## Reference Image for Target Version 202611121823
 
-`window-20261112-1823.png` 是目标版本真实完整窗口原图的字节一致副本，来源 `tmp/test_snapshot/desktop/baseline-1823-batch4/dynamic-followup/evidence/prompts.png`，2026-11-12 20:31:30 +0800，SHA-256 `ffa01c77418c13b722e0cad41c8fb324d350e0cab8d67b316e4654255cabb5c6`。目标为 macOS arm64 `0.3.2 / 202611121823 / preview`，`app.asar` SHA-256 `0111fd20bd58bf72517a1255d2d1bbf7ef2a3d4281898baed50d250f13c9d91a`；原始运行记录位于本机忽略目录。展示 AI 提示词，不证明恢复、保存或模型调用。参考图不替代本轮执行或判定；本次仅补图，不改变需求版本、判据和历史结果。
+`window-20261112-1823.png` is a byte-identical copy of the original real complete-window image for the target version. Its source is `tmp/test_snapshot/desktop/baseline-1823-batch4/dynamic-followup/evidence/prompts.png`, captured at 2026-11-12 20:31:30 +0800, SHA-256 `ffa01c77418c13b722e0cad41c8fb324d350e0cab8d67b316e4654255cabb5c6`. The target is macOS arm64 `0.3.2 / 202611121823 / preview`; `app.asar` SHA-256 is `0111fd20bd58bf72517a1255d2d1bbf7ef2a3d4281898baed50d250f13c9d91a`. The original runtime record is in a locally ignored directory. The image shows AI prompts; it does not prove restoration, saving, or model calls. A reference image does not replace execution or evaluation in this round. This change only adds an image and does not change the requirements version, criteria, or historical results.
 
-## 202611121823 翻译提示词参考图
+<a id="202611121823-翻译提示词参考图"></a>
+## Translation-Prompt Reference Image for 202611121823
 
-`translation-20261112.png` 为 2026-11-12 macOS arm64 安装版 `0.3.2 / 202611121823 / preview` 隔离实例的真实页面原图副本，原图位于 `tmp/test_snapshot/desktop/baseline-1823-batch4/capture/evidence/translation-01.png`，SHA-256 `c49e9b2114caf9cd70244a4c1dbbd2be44a97d82e54ab194c8074f6df1f39a5a`；目标 `app.asar` SHA-256 `0111fd20bd58bf72517a1255d2d1bbf7ef2a3d4281898baed50d250f13c9d91a`。图中翻译提示词区域、长度和恢复入口分别对应 PROMPT-OBS-001–003 的可见部分，具体文本和状态随当前偏好变化；不以静图证明恢复、保存或翻译请求。原始运行证据位于忽略目录，仅本机可回查；原需求、判据和历史裁决不变。
+`translation-20261112.png` is a copy of the original real page image from an isolated macOS arm64 installer instance `0.3.2 / 202611121823 / preview` on 2026-11-12. The original is `tmp/test_snapshot/desktop/baseline-1823-batch4/capture/evidence/translation-01.png`, SHA-256 `c49e9b2114caf9cd70244a4c1dbbd2be44a97d82e54ab194c8074f6df1f39a5a`; target `app.asar` SHA-256 is `0111fd20bd58bf72517a1255d2d1bbf7ef2a3d4281898baed50d250f13c9d91a`. The translation-prompt area, length, and restore entry point correspond to the visible portions of PROMPT-OBS-001–003; exact text and state vary with current preferences. A static image does not prove restoration, saving, or a translation request. Original runtime evidence is in an ignored directory and can only be checked locally; the original requirements, criteria, and historical decisions are unchanged.
 
-## 202611121823 正常展示沿用
+<a id="202611121823-正常展示沿用"></a>
+## Bounded Reuse of Normal Display for 202611121823
 
-依用户统一采用已核正常行为的记录及本页用户确认的四字段承载映射，针对 macOS arm64 `0.3.2 / 202611121823 / preview` 有界沿用 PROMPT-OBS-001–003 已采用快评子点：AI 提示词页的解释、润色、图表解释与翻译配置页的翻译字段各自只读展示、长度及恢复状态；显式保存按钮仅按已确认映射适用。已核本页既有采用与后续记录，未发现该子范围被确认退役或更改；这不是完整变更史、源码制品同源或产品通过证明。原编号、需求版本、判据和历史裁决不变。
+Under the record of the user's unified adoption of verified normal behavior and this page's user-confirmed four-field hosting mapping, boundedly reuse the adopted quick-review subcriteria of PROMPT-OBS-001–003 for macOS arm64 `0.3.2 / 202611121823 / preview`: the explanations, polishing, and chart explanation on the AI Prompts page, plus read-only display, length, and restore state for the translation field on the translation-settings page. The explicit Save button applies only as specified by the confirmed mapping. Existing adoption and subsequent records for this page were checked; no retirement or change to this sub-scope was found to have been confirmed. This is not proof of a complete change history, source/artifact correspondence, or product acceptance. Original IDs, requirements version, criteria, and historical decisions are unchanged.
 
-执行前须在同一隔离实例核四项偏好、目标包对应语言默认值及独立 JavaScript 字符串长度，确认参照时点；下文旧包读取契约及默认原文不能直接证明本包。缺失或陈旧的独立参照保留缺口，不由输入框反推。翻译字段 onChange 及恢复动作可能写偏好，仅观察不输入、不触发恢复或保存；模型请求和真实保存仍属专项。
+Before execution, verify in the same isolated instance the four preferences, the target package's language-specific defaults, and independent JavaScript string lengths; confirm the reference time point. The older-package read contract and default source text below do not directly prove this package. Missing or stale independent references remain gaps; do not infer them from an input field. The translation field's `onChange` and restore action may write preferences, so observe only: do not type, trigger restore, or save. Model requests and actual saving remain special-scope work.
 
-## 202611121104安装版复核
+<a id="202611121104安装版复核"></a>
+## Installer Review for 202611121104
 
-资产修订 `prompts/6` 仅更新已采用判据的有界制品依据，不新增要求或改变快评、专项、历史运行与需求版本。macOS arm64 安装版 `0.3.2 / 202611121104 / preview` 的 `Contents/Resources/app.asar` SHA-256 为 `a95870ec674b95c3184c5e36c4bf2140cf8f5c86fbe38226644b26b6db107ab6`；构建号和渠道来自同包 `Contents/Resources/product.json`。源码提交未绑定，不能把当前 checkout 视为安装包源码。
+Asset revision `prompts/6` updates only bounded artifact evidence for the adopted criteria; it adds no requirements and does not change quick review, special-scope work, historical runs, or the requirements version. The `Contents/Resources/app.asar` SHA-256 for the macOS arm64 installer `0.3.2 / 202611121104 / preview` is `a95870ec674b95c3184c5e36c4bf2140cf8f5c86fbe38226644b26b6db107ab6`; the build number and channel come from `Contents/Resources/product.json` in the same package. The source commit is not bound to this artifact; do not treat the current checkout as the installer's source.
 
-直接核对该安装目录下松散 renderer 资源：`renderer/assets/shortcuts-BjK5lSWM.js` SHA-256 `e85b298b86c027574f2928c68a37a57920d500426534e41b2c27dd4ef24c7436`；`renderer/assets/WorkspaceFiles-CrlTtgoY.js` SHA-256 `3614ce05137d0407c0ac06d5f01ff39ddc0b37a3f67cfe8221573baa7426ee11`；`renderer/assets/store-B5hz8xdR.js` SHA-256 `1350291d59f5671d650eb788fcc12125622f2a353e2e5b5ffae5bc95db50b83f`。这些文件的对应关系是包内静态证据，不表示所有模块或仓库源码已绑定。
+Loose renderer resources in that installation directory were checked directly: `renderer/assets/shortcuts-BjK5lSWM.js`, SHA-256 `e85b298b86c027574f2928c68a37a57920d500426534e41b2c27dd4ef24c7436`; `renderer/assets/WorkspaceFiles-CrlTtgoY.js`, SHA-256 `3614ce05137d0407c0ac06d5f01ff39ddc0b37a3f67cfe8221573baa7426ee11`; and `renderer/assets/store-B5hz8xdR.js`, SHA-256 `1350291d59f5671d650eb788fcc12125622f2a353e2e5b5ffae5bc95db50b83f`. Their correspondence is static evidence from within the package, not proof that every module or repository source is bound to it.
 
-- 固定及动态：`shortcuts-BjK5lSWM.js:160` 持有四字段、语言对应默认值和 2000 上限；`:186` 对缺失、空白或超长值逐项回退当前语言默认值。长度按 JavaScript 字符串长度，不把当前偏好或一次显示固化为默认值。
-- 承载及状态：`WorkspaceFiles-CrlTtgoY.js:113329` 的 `PromptsPage` 排除 translate，比较草稿与当前状态，按 changed、valid、saving 控制保存及恢复；`:110230` 的 `TranslationSettings` 独立读取 translate，显示长度与默认比较状态。`:110250` 和 `:110318` 表明翻译输入与恢复会调用保存，仍只纳入只读展示，写入及模型行为留专项。
-- 偏好 Owner：`store-B5hz8xdR.js:8053` 将 `selectionPrompts` 提交至偏好写入器。后续执行仍须取得同一任务实例的四键独立只读参照并核其时效，不能从待判输入框反推已保存值；无法取得时保留缺口。
+- Fixed, dynamic, and conditional behavior: `shortcuts-BjK5lSWM.js:160` owns the four fields, language-specific defaults, and a 2000-character limit; `:186` falls back field by field to the current-language default for missing, blank, or overlong values. Length is JavaScript string length; do not treat the current preference or one display as a fixed default.
+- Hosting and state: `PromptsPage` at `WorkspaceFiles-CrlTtgoY.js:113329` excludes translate, compares the draft with current state, and controls save and restore using changed, valid, and saving. `TranslationSettings` at `:110230` reads translate separately and displays its length and comparison with the default. `:110250` and `:110318` show that translation input and restore call saving; these remain in scope only for read-only display, while writes and model behavior are special-scope work.
+- Preference owner: `store-B5hz8xdR.js:8053` submits `selectionPrompts` to the preference writer. Later execution must obtain an independent, read-only reference to the four keys from the same task instance and verify it is current. Do not infer the saved value from the input under evaluation.
 
-本次复核是静态来源更新，不新增产品操作授权、不证明保存成功或产品通过。旧参考图及其来源不变；其它页面不因本页复核自动视为已适配本包。
+This review updates static source evidence only. It grants no new authorization for product operations and does not prove a successful save or product acceptance. The old reference image and its source are unchanged; this review does not automatically establish that other pages are adapted to this package.
 
-历史建库说明：修订：prompts/3（仅补参考图来源，修订1判据不变）。用户本轮采用指定包现有功能；三项自动快评，全部首次纳入v`0.3`。
+Historical baseline note: revision `prompts/3` (added only the reference-image source; revision 1 criteria unchanged). The user adopted existing functionality in the specified package in this round; all three items were included in v`0.3` for the first time as automatic quick reviews.
 
-来源：macOS arm64 0.3.0 / 202610281438 / preview；`app.asar` SHA256 `1e4c075a908ba990e54b6ccf173d3af3f811587a4436a9866042e46d8b4656d3`。安装renderer `assets/index-C4-PYlXk.js`的PromptsPage第77774行，与[AccountPanel.tsx](../../../src/renderer/src/components/business/AccountPanel.tsx)的对应函数有界核对；不证明全仓对应。
+Source: macOS arm64 `0.3.0 / 202610281438 / preview`; `app.asar` SHA-256 `1e4c075a908ba990e54b6ccf173d3af3f811587a4436a9866042e46d8b4656d3`. The PromptsPage at line 77774 of installed renderer `assets/index-C4-PYlXk.js` was checked within bounds against the corresponding function in [AccountPanel.tsx](../../../src/renderer/src/components/business/AccountPanel.tsx); this does not prove correspondence across the whole repository.
 
-| 要点 | 固定 / 动态 / 条件与来源 |
+| Item | Fixed / dynamic / conditional behavior and source |
 | --- | --- |
-| 001 | [prompts.ts](../../../src/prompts.ts)持有explain/translate/polish/figure四类及默认提示词 |
-| 002 | selectionPrompts由profile偏好解析，缺失/非法值逐项采用目标包默认值；字符串length及2000上限，不限定字数分隔符样式 |
-| 003 | changed/valid/saving控制保存可用性；恢复按钮按draft与对应默认值相等禁用 |
+| 001 | [prompts.ts](../../../src/prompts.ts) owns the four categories `explain`, `translate`, `polish`, and `figure`, and their default prompts. |
+| 002 | `selectionPrompts` is resolved from profile preferences; missing/invalid values independently use the target package's defaults. Uses string `length` and a 2000-character limit; does not constrain the visual style of the character-count separator. |
+| 003 | `changed` / `valid` / `saving` control save availability; the restore button is disabled when the draft equals the corresponding default. |
 
-独立参照仅采本实例偏好白名单及目标包默认常量；默认原文保留运行冻结参照，不从画面反推。第四类及底部保存入口须可见；读取textarea.value不触发编辑。保存、恢复、真实模型采用另行专项。
+The independent reference is limited to the current instance's preference allowlist and target-package default constants; preserve the default source text in the runtime freeze reference rather than inferring it from the screen. All four categories and the bottom Save entry point must be visible; reading `textarea.value` does not trigger editing. Saving, restoring, and real model use require separate special-scope evaluation.
 
-参考图为已检查原始PNG的未改动副本，来源版本/日期见正文：reference.png来自ai-prompts.png（SHA256 `33823ef20e627af65195a7465117b7b598ea7c7a78e3b805acaca4304bb40f00`），bottom.png来自ai-prompts-bottom.png（`f09a56025374c0806329b0d56b0f1d369f195bf459af69b2fae9cce42bfd1bd2`）。动态值不固化；原冻结修订1保留，不追改运行输入。
+Reference images are unchanged copies of inspected original PNGs; their source version/date are stated in the main text. `reference.png` comes from `ai-prompts.png` (SHA-256 `33823ef20e627af65195a7465117b7b598ea7c7a78e3b805acaca4304bb40f00`), and `bottom.png` comes from `ai-prompts-bottom.png` (`f09a56025374c0806329b0d56b0f1d369f195bf459af69b2fae9cce42bfd1bd2`). Dynamic values are not fixed; preserve historical freeze revision 1 and do not retroactively alter the run inputs.
 
-## 发布快评分层（2026-10-30）
+<a id="发布快评分层2026-10-30"></a>
+## Release Quick-Review Layer (2026-10-30)
 
-本资产修订为prompts/3；按用户发布前快评目标和统一采用规则，在同一requirements追加快评层与专项层，复用本页已绑定源码、精确产物与既有Review，旧v`0.3`业务版本和完整判据不变。所选来源为PROMPT-OBS-001–003的正文明确子要点；必要参照为任务实例当前获准偏好/原build默认内容及独立字符计数。未选范围为编辑、长度边界、恢复默认与保存，缺依据部分仍待确认。
+This asset revision is `prompts/3`. In line with the user's pre-release quick-review objective and unified adoption rule, the quick-review and special-scope layers were added to the same requirements document, reusing this page's bound source, exact artifact, and existing Review. The old business version v`0.3` and full criteria are unchanged. The selected source is the explicit subcriteria of PROMPT-OBS-001–003; required references are the task instance's currently authorized preferences, the original build defaults, and an independent character count. Editing, length boundaries, restoring defaults, and saving are out of scope; parts without evidence remain unconfirmed.
 
-本次仅完成执行前分层，不产生产品通过结论，不覆盖历史完整运行；后续运行消费经独立Review冻结的子要点，不能将快评结果宣称覆盖原ID全量。当前构建未新增产品操作或数据写入权限。
+This only establishes the pre-execution layers. It does not conclude product acceptance or replace the complete historical run. Later runs consume the subcriteria frozen through an independent Review and must not claim that a quick-review result covers the full original IDs. This build adds no product operation or data-write permission.
 
+<a id="历史制品复核"></a>
+## Historical Artifact Review
 
-## 历史制品复核
+Historical asset revision: `prompts/4` (2026-10-30). This update only incrementally refreshes artifact location and independent references; it does not change stable IDs, v`0.3`, full criteria, or the quick-review/special-scope boundary. Package numbers, old source line numbers, layer revisions, and results above are historical records, not package binding or pass conclusions for this run. Reference images retain their original source dates/builds.
 
-历史资产修订：`prompts/4`（2026-10-30）。本次仅增量更新制品定位与独立参照，不改变稳定ID、v`0.3`、完整判据或快评/专项边界；前文包号、旧源码行号、分层修订与结果均是历史记录，不作为本轮包绑定或通过结论。参考图仍保留原来源日期/构建。
+This run's source is the verified installer `0.3.0 / 202610301343 / preview / macOS arm64`; app.asar SHA-256 `1de63a11e99c47836053f546963db121ff0298c87b678dfb6d33b0855f2566ee`. Direct evidence is the actual loose release file `renderer/assets/index-CddcCmKt.js`, SHA-256 `1b6e44c4557e06929bb82900f6147a456167e2f95b0173bacf561dd65bc668d3`; compiled function names and line numbers below refer to this file unless another file is named explicitly. The referenced `out/preload/index.js` SHA-256 is `754a7f2fc34f7f1c6ac7f21c256c156f9c3b9dcf88c2c64a20b3d82bcb992219`; `out/main/index.js` SHA-256 is `921baf36722c44629451c89048a9658727efc5150546535fa5428242250b504c`; the preference constants are in `renderer/assets/AccountMenuPanel-CHQ1thBC.js`, SHA-256 `d8770acf89b086f5876c04d741dbf539d5b1b463d1c4a30ed82a2e311fa74e54`. The source commit is not bound; repository Owner links above are supporting clues only and do not make the checkout or remote HEAD equivalent to this package.
 
-本轮来源为已核安装包 `0.3.0 / 202610301343 / preview / macOS arm64`；app.asar SHA-256 `1de63a11e99c47836053f546963db121ff0298c87b678dfb6d33b0855f2566ee`。直接证据为实际松散发布目录 `renderer/assets/index-CddcCmKt.js`，SHA-256 `1b6e44c4557e06929bb82900f6147a456167e2f95b0173bacf561dd65bc668d3`；下述编译函数/行号均指此文件，另名文件明确标出。引用的 `out/preload/index.js` SHA-256 `754a7f2fc34f7f1c6ac7f21c256c156f9c3b9dcf88c2c64a20b3d82bcb992219`，`out/main/index.js` SHA-256 `921baf36722c44629451c89048a9658727efc5150546535fa5428242250b504c`；偏好常量所在 `renderer/assets/AccountMenuPanel-CHQ1thBC.js` SHA-256 `d8770acf89b086f5876c04d741dbf539d5b1b463d1c4a30ed82a2e311fa74e54`。源码提交未绑定；前文仓库Owner链接仅为辅助线索，不将checkout/远端HEAD等同本包。
+- Fixed, dynamic, and conditional behavior: `PromptsPage:79492` creates drafts for explain/translate/polish/figure, and `changed`/`valid`/`saving` control saving; restore-default compares each item with its default. The four categories, default text, and per-item sanitization are in `AccountMenuPanel-CHQ1thBC.js:264–279`; the JavaScript `string.length` limit is 2000. Do not substitute byte counts or Unicode code-point counts.
+- The independent preference is the startup snapshot `preload.preferences.selectionPrompts`, projected to the four keys only; `INITIAL_PREFERENCES:9198` → state initialization → page is not a second independent source. Each item must be a nonblank string of at most 2000 characters; otherwise it falls back to the target artifact's default constant. If unavailable, do not infer “saved” content from `textarea` values.
+- Preserve the target artifact's four default-text summary chain: explain = “Explain the selected content in context, describe key concepts, and distinguish evidence in the source from inference.”; translate = “Accurately translate the selected content while preserving technical terms, citations, numbers, and paragraph formatting.”; polish = “Improve the clarity, fluency, and grammar of the selected content while preserving its meaning, facts, citations, and formatting.”; figure = “Explain what the chart depicts, its axes and legend, key trends, and conclusions, distinguishing information directly shown in the chart from inference.” These are only the target defaults; do not fix user-saved text.
+- If the page was edited/saved after startup or the latest preference cannot be independently confirmed, mark the corresponding content check as lacking evidence; character count can still be computed independently. Do not call `savePreferences` or `reconcilePreferences`, read other preferences or user files, or treat reading `textarea.value` as save/edit verification.
 
-- 固定/动态/条件：`PromptsPage:79492` 按 explain/translate/polish/figure 四类建立草稿，changed/valid/saving 控制保存，恢复默认比较各项默认值。四类、默认原文及逐项 sanitize 见 `AccountMenuPanel-CHQ1thBC.js:264–279`，JS string.length上限2000，不用字节数或Unicode码点计数替换。
-- 独立偏好为 preload.preferences.selectionPrompts 启动快照，仅投影四个键；`INITIAL_PREFERENCES:9198`→state 初始化→页面不是另一独立来源。每项须为非空白字符串且length≤2000，否则回退目标制品默认常量；不可用时不能从textarea值反推“已保存”内容。
-- 默认内容保留目标制品四项原文摘要链：解释=“结合上下文解释所选内容，说明关键概念，区分原文依据与推断。”；翻译=“准确翻译所选内容，保留专业术语、引用、数字和段落格式。”；润色=“改善所选内容的清晰度、流畅度和语法，保留原意、事实、引用和格式。”；图表=“解释图表展示的对象、坐标与图例、关键趋势和结论，区分图中直接信息与推断。”。仅目标默认常量，不固定用户已保存文本。
-- 若启动后已编辑/保存或最新偏好无法独立确认，则相应内容核对留缺证，字数仍可独立计算；不调 savePreferences/reconcilePreferences，不读取其他偏好或用户文件，不把读取textarea.value当编辑/保存验证。
+This review only inspected extracted artifacts and assets; it did not start/connect to the product, read user state, or make requests. No new runtime screenshot or product acceptance conclusion was produced. A later run still needs an independent reference from the same authorized instance and time period; a missing, stale, or failed reference cannot be self-verified from the page under evaluation.
 
-本次只核提取制品与资产，未启动/连接产品、读取用户状态或发起请求；未产生新运行截图或产品验收结论。后续run仍须在获准实例取得同一时段独立参照；缺少、陈旧或失败参照不能从待判页面自证。
+<a id="已确认当前承载映射2026-11-04"></a>
+## Confirmed Current Hosting Mapping (2026-11-04)
 
-## 已确认当前承载映射（2026-11-04）
+Asset revision `prompts/5`. The adoption basis is the user's explicit confirmation in this task conversation of the real product migration: retain the original four criteria; verify the three AI prompts and the translation-configuration prompt in their separate locations using read-only checks; increase the automatic-page denominator from 20 to 21. This does not authorize editing, automatic-save operations, translation requests, or product model costs. This confirmation is the adoption basis for the current mapping; it was not inferred from implementation or the old Mock design. No accessible exact message timestamp is available, so none is fabricated. Only new frozen runs may use this mapping; `candidate-02` and earlier runs retain their original standard, denominator, and decision, and are not retroactively credited as passes.
 
-资产修订`prompts/5`。采用依据为本任务聊天中用户明确确认真实产品迁移：保留原四项判据，AI三项与翻译配置一项分别只读验证，自动页面分母20→21；不授权编辑、自动保存操作、翻译请求或产品模型费用。此确认是当前映射采用依据，非由实现或旧Mock设计自行批准；无可访问的精确消息时间戳，不编造。仅供后续新冻结运行，candidate-02及更早运行仍保留原标准、分母与裁决，不追认旧轮通过。
+The source baseline is commit `d178f12d91ad3d82e797df6f9455ed49f13bbd2b` on target branch `shushen_release/mvp_v0.3.1.1_preview`. The following are summaries of source actually read in that worktree; neither HEAD nor these digests are claimed to bind any installer. A run must separately verify target-artifact identity and applicability. This change updates baseline documentation only; it did not change product code or test the new translation page.
 
-源码基点为目标分支`shushen_release/mvp_v0.3.1.1_preview`的提交`d178f12d91ad3d82e797df6f9455ed49f13bbd2b`。以下为该worktree实际源码读取摘要；不将HEAD或这些摘要冒称绑定任意安装包，run另核目标产物身份与适用性。本次仅改基线文档，未改产品代码或实测新翻译页面。
-
-| Owner/来源 | 当前摘要与有界事实 |
+| Owner / source | Current summary and bounded facts |
 | --- | --- |
-| [AccountPanel.tsx](../../../src/renderer/src/components/business/AccountPanel.tsx) | SHA256 `ecc337f17d197a766370781751be4a74509686f44ca1fa90c2ca74f3137c49d9`；317导航translation、429过滤translate，398保存三项时保留现有translate；5115渲染TranslationSettings。prompts承载explain/polish/figure及原显式保存初态。 |
-| [translation/Settings.tsx](../../../src/renderer/src/features/translation/Settings.tsx) | SHA256 `086440ea07233cef89bc1a0550ad17795838691fa81535867695aee62ad1d9d1`；249起读取同一selectionPrompts.translate，提示词textarea及length/2000、恢复默认状态在同页独立承载；onChange进入savePrompt并调用saveSelectionPrompts，仅作副作用事实。 |
-| [prompts.ts](../../../src/prompts.ts) | SHA256 `0fa3b5e581444b41b4b201204addfd4a4108a68ee4ddbe9e46dd14414b6f97a8`；仍持有explain/translate/polish/figure四键、原默认全文、JS string.length≤2000及逐项非法/缺失回退，不因迁移删字段。 |
-| [store.tsx](../../../src/renderer/src/store.tsx) | SHA256 `0dc59a6ca915ec797e71b040633b79ea4fb8959238e91963645e0dc9d689bb6f`；2682的saveSelectionPrompts经PreferenceWriter.submit持久化，两个页面不是两套翻译提示词来源。 |
-| [shell/Settings.tsx](../../../src/renderer/src/shell/Settings.tsx) | SHA256 `5394b8ae7576226a6b66fb3fd92ac3ef3666689feaa5bdf97f389ccab8b5a8ad`；原AccountPanel由设置portal承载；设置子窗不因此获得主renderer公开preload桥。 |
+| [AccountPanel.tsx](../../../src/renderer/src/components/business/AccountPanel.tsx) | SHA-256 `ecc337f17d197a766370781751be4a74509686f44ca1fa90c2ca74f3137c49d9`; line 317 navigates to translation, line 429 filters translate, line 398 preserves the existing translate value when saving the other three. Prompts hosts explain/polish/figure and their original explicit-save initial state. |
+| [translation/Settings.tsx](../../../src/renderer/src/features/translation/Settings.tsx) | SHA-256 `086440ea07233cef89bc1a0550ad17795838691fa81535867695aee62ad1d9d1`; from line 249 it reads the same `selectionPrompts.translate`; the prompt textarea, length/2000, and restore-default state are hosted independently on that page. `onChange` calls `savePrompt` and `saveSelectionPrompts`; this is recorded only as a side effect. |
+| [prompts.ts](../../../src/prompts.ts) | SHA-256 `0fa3b5e581444b41b4b201204addfd4a4108a68ee4ddbe9e46dd14414b6f97a8`; still owns the four keys explain/translate/polish/figure, original full defaults, JS `string.length` ≤ 2000, and per-field fallback for invalid/missing values. Do not remove a field because of the migration. |
+| [store.tsx](../../../src/renderer/src/store.tsx) | SHA-256 `0dc59a6ca915ec797e71b040633b79ea4fb8959238e91963645e0dc9d689bb6f`; `saveSelectionPrompts` at line 2682 persists through `PreferenceWriter.submit`; the two pages are not separate sources of translation prompts. |
+| [shell/Settings.tsx](../../../src/renderer/src/shell/Settings.tsx) | SHA-256 `5394b8ae7576226a6b66fb3fd92ac3ef3666689feaa5bdf97f389ccab8b5a8ad`; the original AccountPanel is hosted through the settings portal. A settings child window does not thereby gain the main renderer's public preload bridge. |
 
-映射：PROMPT-OBS-001四类分别落在prompts三类和translation-prompts一类；002的四字段默认、当前偏好、字符串长度和2000展示全部保留；003的恢复入口状态逐项保留，AI页初始显式保存禁用仍选入，翻译页旧显式保存条件不强造同名按钮。翻译onChange自动保存及恢复点击会写偏好，不纳入只读快评；自动保存文案不证明真实写入成功，旧保存能力/生命周期留专项待独立验收。需求正文保留旧全文与v`0.3`，此修订只记录用户已确认承载及有界只读子范围，不编造新版本或保存能力已通过。
+Mapping: the four PROMPT-OBS-001 categories are hosted as three on Prompts and one on translation-prompts; all of PROMPT-OBS-002's four-field defaults, current preferences, string lengths, and 2000 display remain; PROMPT-OBS-003's restore-entry state is retained field by field. The AI page's initially disabled explicit Save remains in scope; do not invent a same-named button to match the translation page's older explicit-save condition. Translation `onChange` auto-saves, and clicking restore writes preferences; neither is included in read-only quick review. Automatic-save copy does not prove a real write succeeded. The older save capability/lifecycle remains special-scope work pending independent acceptance. The requirements body retains its old full text and v`0.3`; this revision records only the user-confirmed hosting and bounded read-only sub-scope, does not invent a new version, and does not claim that save capability passed.
 
-独立参照仍为精确任务实例获准公共白名单selectionPrompts四键与目标默认常量原文，分别对两个页面的textarea.value、独立JS长度和恢复状态比较；不能从待判textarea反推保存状态。启动后编辑/保存或快照陈旧则内容留缺口。设置portal只读DOM用于实际页面观察，公共偏好从已核主renderer对应桥安全投影，不用window.opener、复制桥或扫描任意about:blank；不能安全核实则缺证。进入翻译配置前仍需核当前挂载/取数安全前提，不把GET、自然挂载或本映射当零副作用保证，不读取凭据或操作其他设置。
+The independent reference remains the exact task instance's authorized public allowlist of the four `selectionPrompts` keys and the target defaults. Compare each page's `textarea.value`, independently computed JS length, and restore state; do not infer saved state from the textarea under evaluation. If edited/saved after startup or the snapshot is stale, leave the content as a gap. For read-only DOM observation, use the actual settings portal; project public preferences safely from the verified main-renderer bridge. Do not use `window.opener`, copy a bridge, or scan arbitrary `about:blank`; if verification cannot be done safely, record missing evidence. Before entering translation settings, verify current mount/data-fetch safety prerequisites. Do not treat GET, natural mounting, or this mapping as proof of zero side effects; do not read credentials or operate other settings.
 
-页面计数是一份资产→两个实际页面，不新建translation-prompts目录或第二套requirements；全库22份资产/137原条目不变，含saving专项共22物理页面，现行自动快评21页面/3核心流程。当前build维护及结构检查不等于新映射已在宿主调用或产品验证；后续run须按新冻结原件实际采两页。
+One asset maps to two actual pages; do not create a `translation-prompts` directory or a second requirements file. The library remains 22 assets / 137 original entries, including the saving special-scope item: 22 physical pages, 21 current automatic quick-review pages, and 3 core flows. Maintaining this build and passing structural checks does not mean the new mapping has been invoked in its host or validated in the product; a later run must actually capture both pages under a new freeze.

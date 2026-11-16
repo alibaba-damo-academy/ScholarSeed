@@ -1,138 +1,112 @@
-# Vibe Coding 页面视觉契约
+<a id="vibe-coding-页面视觉契约"></a>
+
+# Vibe Coding Page Visual Contract
 
 ## Scope / Non-goals
 
-适用于所有 Desktop 页面、面板、表单和列表，包括尚无业务设计稿的新功能。
-默认布局是产品设计决策，不代表 MasterGo 已提供相应画板。业务数据、路由和提交逻辑归业务 owner。
+Applies to all Desktop pages, panels, forms, and lists, including new features without business-specific designs.
+Default layouts are product design decisions and do not imply that MasterGo contains a corresponding artboard. Business data, routing, and submission logic belong to the business owner.
 
 ## Source of truth
 
-[DESIGN.md](../../DESIGN.md) 是入口；本页持有页面组合规则。
-[基础规范](foundations.md) 持有视觉规则，[交互规范](interaction.md) 持有行为规则，
-[组件资产](assets.md) 与 UI registry 持有实际 API；参数只在 [design](../../src/renderer/src/design/index.css)
-定义并生成到 [token 库存](../_generated/tokens.md)，文档不再复制第二份完整数值表。
-[公开设计契约](foundations.md) 按图层和状态记录直接证据。
-详细视觉值留在 design owner，不复制到 AGENTS/CLAUDE 指令或业务页面模板。
+[DESIGN.md](../../DESIGN.md) is the entry point; this page owns page-composition rules.
+[Foundations](foundations.md) owns visual rules, [interaction](interaction.md) owns behavior rules, and [component assets](assets.md) plus the UI registry own the actual APIs. Values are defined only in [design](../../src/renderer/src/design/index.css) and generated into the [token inventory](../_generated/tokens.md); this document does not duplicate the full value table.
+The [public design contract](foundations.md) records direct evidence by layer and state.
+Detailed visual values remain with the design owner and are not copied into AGENTS/CLAUDE instructions or business-page templates.
 
 ## Current / Required / Gap / Advisory
 
-- **current**：`Page`、`PageHeader`、`PageBody`、`PageSection` 组合族已提供公共布局；设置的通知、提示词和关于页面接入。
-- **required**：有无业务设计稿都必须选择页面组合、滚动 owner、语义 `--vds-*` token 和状态策略；默认遵循下面的组合表。设计证据与推导默认值分开记录，不把推导当作逐稿证据。
-- **gap**：2026-09-15 MasterGo CLI 缺 `MASTERGO_TOKEN`，MCP 节点读取返回 `Network Error`。
-  仓库中的逐稿证据日期为 2026-09-09；新页面类型、阅读宽度与响应式是推导，不能声称最新设计还原。
-- **advisory**：同类页面优先复用同一组合；出现真实新需求时扩展所属组件，不用业务名字增加模板分支。
+- **current**: The `Page`, `PageHeader`, `PageBody`, and `PageSection` composition family provides shared layouts; Settings notifications, prompts, and About pages use it.
+- **required**: With or without a business-specific design, select a page composition, scroll owner, semantic `--vds-*` tokens, and state policy. Use the composition table below by default. Record design evidence separately from inferred defaults; do not present inference as evidence from an individual design.
+- **gap**: On 2026-09-15, the MasterGo CLI lacked `MASTERGO_TOKEN`, and MCP node reads returned `Network Error`. The repository's per-design evidence dates from 2026-09-09; new page types, reading width, and responsive behavior are inferred and must not be described as reproductions of the latest design.
+- **advisory**: Prefer the same composition for similar pages. When a real new need arises, extend its owning component instead of adding template branches named after business areas.
 
-## 业务无关的页面类型
+<a id="业务无关的页面类型"></a>
 
-以下是信息架构类型，**不是八个可导入的 React 组件名**。
+## Business-Agnostic Page Types
 
-| 类型 / 何时选择 | 组合方式 | 滚动与宽度 | 窄窗策略 |
+These are information-architecture types, **not names of eight importable React components**.
+
+| Type / when to use | Composition | Scrolling and width | Narrow-window strategy |
 | --- | --- | --- | --- |
-| 单列 / 内容与操作围绕一个对象 | Page + PageHeader + PageBody | 默认宿主滚动；长文用 width=reading | 标题说明换行、操作组换行 |
-| 列表 / 批量查找与筛选 | 单列 + 筛选控件 + Table/列表 + Pagination | 只有列表区需要持续滚动时用 scroll=content | 筛选换行；表格在自身区域横向滚动，不裁掉关键列 |
-| 表单 / 提交一个任务 | Page + PageHeader + PageBody + PageSection | width=reading；错误就近显示，操作置末尾 | 标签与控件纵向排列，不固定表单高度 |
-| 主从 / 选择记录后查看详情 | 两个 Page 组合 + 现有 Resizable 或 Sheet | pane 独立滚动，保留当前选择 | 详情切至 Sheet 或独立视图，并保留明确返回入口 |
-| 并列工作区 / 两个同时编辑区域 | 工作台槽位 + Resizable + PageBody | 由 shell 限定高度与 pane 最小尺寸 | 用户显式切换 pane，不能静默隐藏编辑内容 |
-| 概览 / 多组指标或卡片 | Page + PageHeader + PageBody + Card | 内容全宽；按可用宽度自然换行 | 卡片降为单列，内容决定高度 |
-| 设置 / 按类别编辑偏好 | 宿主导航 + Page padding=none + PageSection | 导航/滚动由宿主负责；不得双加内距 | 导航不能挤压表单至不可用；保留切换入口 |
-| 全屏工作区 / 编辑器或画布 | 现有 shell + 工具栏 + PageBody | 内部滚动，工具栏保持可达 | 优先重排工具；可选 pane 通过可见控件收起 |
+| Single column / content and actions center on one object | Page + PageHeader + PageBody | Host scrolls by default; use width=reading for long-form content | Let title/description and action groups wrap |
+| List / bulk search and filtering | Single column + filters + Table/list + Pagination | Use scroll=content only when the list area needs persistent scrolling | Filters wrap; table scrolls horizontally within its own area without clipping key columns |
+| Form / submit one task | Page + PageHeader + PageBody + PageSection | width=reading; show errors beside their fields and put actions at the end | Stack labels and controls; do not fix the form height |
+| Master-detail / select a record and inspect it | Two Page compositions + existing Resizable or Sheet | Panes scroll independently and preserve the current selection | Move details into a Sheet or separate view and retain a clear way back |
+| Side-by-side workspace / two areas edited at once | Workbench slots + Resizable + PageBody | Shell constrains height and pane minimum sizes | Let users explicitly switch panes; do not silently hide edited content |
+| Overview / groups of metrics or cards | Page + PageHeader + PageBody + Card | Full-width content wraps naturally to available width | Cards become a single column; content determines height |
+| Settings / edit preferences by category | Host navigation + Page padding=none + PageSection | Host owns navigation and scrolling; do not apply padding twice | Navigation must not squeeze the form until unusable; keep the switcher accessible |
+| Full-screen workspace / editor or canvas | Existing shell + toolbar + PageBody | Scroll internally and keep the toolbar reachable | Reflow tools first; collapse optional panes through visible controls |
 
-未知业务先按“是否列表、是否需要保留选择上下文、是否并列编辑”选择最接近的组合，
-避免因为没有同名业务画板而自行造间距、标题或弹窗。状态复杂度由业务决定，布局规则由 UI 决定。
+For an unfamiliar business area, choose the closest composition by asking whether it is a list, must preserve selection context, or supports side-by-side editing. Do not invent spacing, headings, or dialogs just because there is no artboard with a matching business name. Business determines state complexity; UI determines layout rules.
 
-## 默认视觉决策
+<a id="默认视觉决策"></a>
 
-- 页面外围用 `--vds-layout-page-padding`，分区用 `--vds-layout-section-gap`，相关控件用
-  `--vds-layout-control-gap`。Page 已设默认值，宿主已设边距时显式 `padding="none"`。
-- 阅读型表单用 `width="reading"`；上限在 `--vds-layout-reading-width` 定义，是推导值，
-  表格与编辑器不要强套阅读上限。避免将画板宽高复制成页面固定尺寸。
-- 紧凑状态行里的可选辅助元数据（例如耗时或预估）使用
-  `--vds-layout-inline-metadata-max-width` 限宽并由 `EllipsisText` 提供完整提示，给标题、
-  当前状态和折叠控件保留空间。该值是无对应 MasterGo 状态时的响应式推导，不能在业务页
-  重写为固定像素或 viewport 表达式；真实会话和窄窗仍需单独验收。
-- 标题用 PageHeader；分区用 PageSection；正文与辅助信息沿 font/lh/text 语义成对选择。
-  标题和说明自然换行，辅助说明不要默认截断；代码/路径使用代码字体，字号不因文本很长而缩小。
-- **required**：设置子页使用 `SettingsPage` 的标题位承载面包屑。面包屑继承一级设置页标题的字号和行高（`--vds-font-subhead` / `--vds-lh-subhead`）。
+## Default Visual Decisions
+
+- Use `--vds-layout-page-padding` around pages, `--vds-layout-section-gap` between sections, and `--vds-layout-control-gap` between related controls. Page has defaults; when the host already supplies padding, explicitly set `padding="none"`.
+- Use `width="reading"` for reading-oriented forms. Its maximum, defined by `--vds-layout-reading-width`, is inferred; do not force that limit on tables or editors. Avoid copying artboard dimensions as fixed page sizes.
+- Optional metadata in compact status rows (such as elapsed time or estimates) uses `--vds-layout-inline-metadata-max-width` for a width limit and `EllipsisText` for the full text, preserving space for the title, current status, and collapse control. This value is an inferred responsive rule where MasterGo has no corresponding state; do not replace it in business pages with fixed pixels or viewport expressions. Real sessions and narrow windows still need separate acceptance.
+- Use PageHeader for titles and PageSection for sections. Pair body and supporting text according to font/lh/text semantics. Let titles and descriptions wrap naturally; do not truncate supporting copy by default. Use a code font for code/paths and do not shrink the font just because the text is long.
+- **required**: In Settings subpages, use the `SettingsPage` title slot for breadcrumbs. Breadcrumbs inherit the top-level Settings title's font size and line height (`--vds-font-subhead` / `--vds-lh-subhead`).
   In settings, render breadcrumbs in the `SettingsPage` title slot so they inherit the top-level title’s font size and line height.
-- 页面背景、卡片表面、主次文本、边框分别选 bg/surface/text/border 语义。
-  优先用分区和留白建立层次；阴影只用于确实浮起的表面；每个操作组最多一个主要操作。
-- 卡片继续用 Card 的 padding/variant 与既有圆角 token，PageSection 不复制卡片样式。
-  控件优先使用其 size/variant；需要标准表单高度时 Button/Input/Select 用 size=standard。
-- 新增固定视觉数值必须进入 design owner 的语义定义，同时查重并验证显式明暗和系统主题。
-  `0`（不含 z-index）、`auto`、`full`、分数比例是结构表达；文档坐标、拖拽、进度等数据须说明真实来源。
+- Select bg/surface/text/border semantics separately for page backgrounds, card surfaces, primary/secondary text, and borders. Prefer hierarchy through sections and whitespace; use shadows only for genuinely raised surfaces. Have at most one primary action per action group.
+- Keep using Card's padding/variant and existing radius tokens; PageSection does not duplicate card styling. Prefer the control's size/variant props; use `size=standard` for Button/Input/Select when standard form-control height is needed.
+- New fixed visual values must be added to the design owner's semantic definitions, checked for duplicates, and verified in explicit light/dark and system themes. `0` (except for z-index), `auto`, `full`, and fractional ratios are structural expressions. Document the actual source of values such as coordinates, drag positions, and progress.
 
-## 滚动、响应式和状态
+<a id="滚动响应式和状态"></a>
 
-Page 默认没有独立滚动；PageBody 的 `scroll="content"` 仅适用于受约束高度的 flex 父级。
-一个轴每个区域只指定一个滚动 owner，标题和操作不能因 overflow:hidden 永久不可达。
-内容默认可收缩；长路径、中文、英文说明都要测试。不能用空白 filler 固定高度。
+## Scrolling, Responsiveness, and State
 
-设置页的可见页签（技能除外）通过 business `SettingsPage` 组合 `Page`、`PageHeader`、
-`PageBody`：宿主限定高度但不滚动，标题和描述不参与正文滚动，普通页只由正文滚动。
-模型服务页使用 `scroll="none"`，把滚动继续交给已有的模型列表和详情区域，避免双重滚动。
-技能页保留原有布局和滚动所有权；隐藏的账号、偏好和权限页不在当前导航中。
+Page has no independent scrolling by default. `scroll="content"` on PageBody is only for a flex parent with a constrained height.
+Assign only one scroll owner to each area on each axis; headings and actions must not become permanently unreachable because of `overflow:hidden`.
+Content should shrink by default. Test long paths and both Chinese and English descriptions. Do not use blank filler to force a fixed height.
 
-响应式先依靠 flex-wrap、min-width:0、内容宽度和已有 Resizable；需要条件切换时由
-所属组件维护命名阈值。窄窗验收应包含实际最小支持窗口、文本放大和长内容，不把
-“随便设一个手机断点”当作 Desktop 的产品约定。
+Visible Settings tabs (except Skills) compose `Page`, `PageHeader`, and `PageBody` through the business `SettingsPage`: the host constrains height without scrolling, the title and description do not scroll with the body, and ordinary pages scroll only their body.
+The model-services page uses `scroll="none"`, leaving scrolling to the existing model list and details areas to avoid nested scrolling.
+The Skills page keeps its existing layout and scroll ownership. Hidden account, preference, and permission pages are not in current navigation.
 
-### Desktop 窗口布局边界
+For responsive behavior, first use flex-wrap, min-width: 0, content sizing, and existing Resizable components. When conditional switching is needed, the owning component maintains a named breakpoint. Narrow-window acceptance must include the actual minimum supported window, text zoom, and long content; do not treat an arbitrary mobile breakpoint as a Desktop product requirement.
 
-主工作台窗口尺寸的唯一来源是 `src/window.ts`：`WORKSPACE_WINDOW_SIZE` 当前为
-1280 × 840，`WORKSPACE_WINDOW_MINIMUM` 当前为 1040 × 660，单位为 Electron
-逻辑像素（DIP），不是截图的物理像素。macOS 与 Windows 的主窗口均通过
-`BrowserWindow` 的 `minWidth` / `minHeight` 应用相同下限；登录窗口采用独立尺寸契约。
+<a id="desktop-窗口布局边界"></a>
 
-Desktop 页面和设置弹层的常规布局验收覆盖默认窗口及真实最小支持窗口，不要求
-480px、600px 等低于主窗口下限的移动端式视口。测试应引用窗口常量，并优先通过
-真实窗口缩放取证；`page.setViewportSize()` 可以绕过原生窗口约束，不能据此扩张
-产品支持范围。高 DPI 截图、文本放大和长内容仍需在支持的窗口范围内验证。
+### Desktop Window Layout Boundaries
 
-内部分栏或弹层的可用宽度可能小于整窗宽度，仍应按各自容器处理换行和滚动。
-设置外壳已有 `760px` 导航折叠规则属于容器布局策略，不是主窗口最小宽度。
-历史 480px 截图仅为额外压力测试，不作为 Desktop 支持尺寸或必跑验收要求。
+The sole source of main workbench window dimensions is `src/window.ts`: `WORKSPACE_WINDOW_SIZE` is currently 1280 × 840, and `WORKSPACE_WINDOW_MINIMUM` is currently 1040 × 660. These are Electron logical pixels (DIP), not physical screenshot pixels. On macOS and Windows, the main window applies the same minimum through `BrowserWindow`'s `minWidth` / `minHeight`; the login window has its own size contract.
 
-业务 owner 显式组合 Spinner/EmptyState/Alert/Toast：loading 保留稳定框架，empty 提供
-下一步，error 提供原因与可用重试，pending 防重复提交。公共 Page 不伪造加载结果或错误。
-表单保留 label、说明、错误关联；保存与取消位置稳定，切换页面时未保存内容策略明确。
+Routine layout acceptance for Desktop pages and Settings dialogs covers the default window and actual minimum supported window. It does not require mobile-style 480px or 600px viewports below the main-window minimum. Tests should reference window constants and, where possible, gather evidence by resizing the real window. `page.setViewportSize()` can bypass native window constraints and must not be used to expand the product's supported range. High-DPI screenshots, text zoom, and long content still need verification within the supported window range.
 
-全屏替换型工作区（例如在对话上打开文件浏览器）由业务 surface 保留其工具栏和面包屑，
-不为复用 `PageHeader` 重复标题或改变宿主 landmark；它仍必须复用 `Spinner`、`EmptyState`、
-`Button`、`IconButton` 等已有 UI 能力。该类 surface 的遮盖顺序使用 `zindex.css` 语义 token，
-不得写裸数字。失败态在实际可重试时提供按钮；不能读取数据时的截图仅证明该状态，不能替代
-成功列表、右键菜单、文件预览或窄窗验收。
+Internal panes and dialogs may have less available width than the whole window; handle wrapping and scrolling within their own containers.
+The Settings shell's existing `760px` navigation-collapse rule is a container-layout policy, not the main-window minimum width.
+Historical 480px screenshots are additional stress tests, not Desktop supported sizes or required acceptance cases.
 
-## 浮层与 z-index
+The business owner explicitly composes Spinner/EmptyState/Alert/Toast: loading preserves a stable frame, empty provides a next step, error provides a cause and available retry, and pending prevents duplicate submission. Shared Page does not fabricate loading results or errors.
+Forms preserve labels, descriptions, and error associations. Keep Save and Cancel in stable positions and define what happens to unsaved content when navigating away.
 
-选择器与操作菜单区分 Select/DropdownMenu；短提示用 Tooltip，可交互说明用 Popover，
-模态流程用 Dialog，侧向详情用 Sheet，危险操作用 AlertDialog。按照[交互规范](interaction.md)
-验证 Escape、初始焦点、Tab 与关闭后的焦点恢复；页面不能复制浮层机制。
+Full-screen replacement workspaces (for example, opening a file browser over a conversation) retain their toolbar and breadcrumbs in the business surface; do not duplicate the title or change the host landmark merely to reuse `PageHeader`. They must still reuse existing UI capabilities such as `Spinner`, `EmptyState`, `Button`, and `IconButton`. Use semantic `zindex.css` tokens for layering these surfaces; never use bare numbers. Provide a retry button when the failure can actually be retried. A screenshot of an unreadable-data failure proves only that state; it does not replace acceptance of a successful list, context menu, file preview, or narrow window.
 
-**required**：层级按 `design/zindex.css` 的语义角色选择；不能用裸数字或 token 加一猜覆盖关系。
-局部装饰层与全局 portal 不是同一坐标系；增加隔离上下文前检查祖先 transform/isolation/overflow。
-在相对定位的可点击卡片内，覆盖整卡触发器的更多操作等局部命中控件使用
-`--vds-z-local-control`；菜单内容仍由 `DropdownMenu` portal 自己管理，不能把触发器提升到
-全局浮层层级。
-在一个表单 Dialog 内打开不可逆确认时，确认内容必须改用 `AlertDialog`；它的遮罩和内容分别
-消费 `--vds-z-dialog-nested-overlay` 与 `--vds-z-dialog-nested`，只覆盖父 Dialog，不借用
-Dropdown、Popover 或全局 modal 带。普通表单/多步过程仍使用 `Dialog`。
-项目、视图等导航切换的 `PopoverContent` 是 portal 浮层，但仍属于非模态导航 flyout：使用
-`--vds-z-inline-flyout`，使它盖住工作台 chrome，同时留在 Dialog、全局搜索和设置表面之下。
-工作区内的粘性头部使用 `--vds-z-sticky-header`，局部运行状态 gate 使用
-`--vds-z-surface-gate`；gate 只拦住所在 surface，不能借此遮住全局搜索、设置或 Dialog。
-常驻工作区兄弟面板使用 `--vds-z-surface-panel`，会话内滚动控制使用
-`--vds-z-scroll-control`，会话回退确认使用 `--vds-z-session-confirm`；这些 token 只表达
-当前 surface 的相对顺序，不能替代跨 portal 的 Dialog、Popover 或全局 modal family。
-**gap**：部分现有 family（例如 Dialog、Sheet、Toast）仍有局部数值或独立层级 alias，
-不能把全局 z-token 表当作所有消费者已经迁移的证明。复杂嵌套逐场景取证再统一。
+<a id="浮层与z-index"></a>
+
+<a id="浮层与-z-index"></a>
+## Overlays and z-index
+
+Use Select for value selection and DropdownMenu for actions; Tooltip for brief hints and Popover for interactive explanations; Dialog for modal flows, Sheet for side details, and AlertDialog for dangerous actions. Follow the [interaction rules](interaction.md) to verify Escape, initial focus, Tab navigation, and focus restoration after dismissal. Pages must not duplicate overlay mechanisms.
+
+**required**: Choose layers by semantic role in `design/zindex.css`; do not guess the overlay order with bare numbers or by adding one to a token. Local decorative layers and global portals use different coordinate systems; before adding an isolation context, inspect ancestor transform/isolation/overflow.
+Within a relatively positioned clickable card, local hit targets such as a More action that overlays the card-wide trigger use `--vds-z-local-control`. Menu content is still managed by the `DropdownMenu` portal; do not raise the trigger into a global overlay layer.
+For an irreversible confirmation opened from a form Dialog, the confirmation content must use `AlertDialog`. Its overlay and content consume `--vds-z-dialog-nested-overlay` and `--vds-z-dialog-nested`, respectively, and cover only the parent Dialog; do not use Dropdown, Popover, or the global modal band. Ordinary forms and multistep flows continue to use `Dialog`.
+Navigation-switching `PopoverContent` for projects and views is a portal overlay but remains a non-modal navigation flyout. Use `--vds-z-inline-flyout` so it covers workbench chrome while staying below Dialog, global search, and Settings surfaces.
+Use `--vds-z-sticky-header` for sticky headers in a workspace and `--vds-z-surface-gate` for local runtime-state gates. A gate blocks only its own surface; it must not cover global search, Settings, or Dialog.
+Use `--vds-z-surface-panel` for persistent sibling panels in a workspace, `--vds-z-scroll-control` for in-session scroll controls, and `--vds-z-session-confirm` for session rewind confirmation. These tokens express relative ordering within the current surface; they do not replace cross-portal Dialog, Popover, or global modal families.
+**gap**: Some existing families (such as Dialog, Sheet, and Toast) still have local numeric values or separate layer aliases. The global z-token table does not prove that all consumers have migrated. Gather evidence for complex nesting by scenario before consolidating it.
 
 ## Ownership / Dependency
 
-`feature/shell/business → components/ui → design`。Page 不读 API/store，不创建第二个 main
-landmark，也不封装业务文案。已有应用 shell 持有导航/助手/文档槽位；登录、独立设置和
-全屏编辑器不被强制塞入同一个 WorkbenchShell。
+`feature/shell/business → components/ui → design`. Page does not read API/store, create a second main landmark, or wrap business copy. The existing application shell owns navigation, assistant, and document slots; login, standalone Settings, and full-screen editors are not forced into one WorkbenchShell.
 
-## 正反例
+<a id="正反例"></a>
+
+## Examples and anti-patterns
 
 ```tsx
 import { Page, PageHeader, PageBody, PageSection, Input, Button } from '../../components/ui'
@@ -151,26 +125,21 @@ import { Page, PageHeader, PageBody, PageSection, Input, Button } from '../../co
 </Page>
 ```
 
-反例：导入不存在的 FormPage；复制 SettingsPageHeader 后添加固定 gap；为所有页面加
-同一个固定宽高；用空截图证明数据为空时的产品流程已经验收。
+Counterexamples: importing a nonexistent FormPage; copying SettingsPageHeader and adding a fixed gap; imposing the same fixed dimensions on every page; or using an empty screenshot to claim acceptance of the product flow for empty data.
 
 ## Enforced by
 
-[新增视觉值门禁](visual-gate.md) 接入 docs:check 与 npm test，按 owner/完整值/次数拒绝
-新增固定样式；registry、barrel、预览与类型检查约束可发现的 API。它们不证明组件选型和审美。
-**required**：新增固定视觉值和数字层级须通过 Desktop 标准门禁；门禁通过不替代真实主题、窄窗、键盘与交互验证。
-提交前运行 docs:write、docs:check、npm test、typecheck 与相关真实产品流程，并阅读截图。
+[The new-visual-value gate](visual-gate.md) is wired into docs:check and npm test. It rejects new fixed styles by owner, full value, and count; the registry, barrel, preview, and type checks constrain discoverable APIs. These checks do not prove component choice or visual quality.
+**required**: New fixed visual values and numeric layers must pass the Desktop standards gate. Passing the gate does not replace real-theme, narrow-window, keyboard, and interaction verification.
+Before delivery, run docs:write, docs:check, npm test, typecheck, and relevant real-product flows, and inspect the screenshots.
 
-每次验收记录页面入口、组合类型、使用组件、主题/窗口/长内容/键盘状态、截图和交互结果。
-缺稿标推导，无法运行标 gap；已有失败用相同命令和未修改基线对比，不能降低门禁掩盖。
+For each acceptance run, record the page entry point, composition type, components used, theme/window/long-content/keyboard states, screenshots, and interaction results.
+Mark missing design artifacts as inferred and unavailable runtime cases as gaps. Compare existing failures with an unchanged baseline using the same command; do not weaken gates to hide them.
 
 ## Update triggers
 
-视觉决策、Page API、token、组件状态或设计证据变化时同步所属规范、registry/示例、
-派生库存与设计映射。AGENTS/CLAUDE 只维护执行入口；本页不复制业务逐稿报告。
+When visual decisions, Page APIs, tokens, component states, or design evidence change, update the owning standards, registry/examples, derived inventory, and design mappings. AGENTS/CLAUDE maintain only execution entry points; this page does not duplicate business-specific design reports.
 
 ## Stop condition
 
-新页面能从本页选出默认组合并通过真实 API 编译，新增违规被普通门禁阻断，
-实际交互与截图没有未解释的布局问题，才记录该页面完成。整个项目的视觉统一须逐页面
-记录覆盖，代表页面通过不代表所有业务、操作系统和浮层状态均已验收。
+Record a page as complete only after a default composition can be selected from this page and compiled against the real API, ordinary gates block new violations, and actual interaction and screenshots show no unexplained layout issues. Track visual consistency page by page; passing a representative page does not mean that all business areas, operating systems, or overlay states have been accepted.

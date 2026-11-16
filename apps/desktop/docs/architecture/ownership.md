@@ -1,63 +1,49 @@
-# Desktop 所有权与依赖规范
+<a id="desktop-所有权与依赖规范"></a>
+# Desktop Ownership and Dependency Rules
 
 ## Scope / Non-goals
 
-覆盖 main、preload、renderer 以及 renderer 内 app/shell/features/components/design 的职责。本文不复制 IPC channel、feature 或组件动态清单。
+Covers the responsibilities of main, preload, renderer, and app/shell/features/components/design within renderer. This document does not duplicate the dynamic inventory of IPC channels, features, or components.
 
 ## Source of truth
 
-`src/main/`、`src/preload/index.ts`、`src/renderer/src/contracts/`、`src/renderer/src/app/composition.tsx` 和各 owner 的实际测试是当前事实源。
+`src/main/`, `src/preload/index.ts`, `src/renderer/src/contracts/`, `src/renderer/src/app/composition.tsx`, and the actual tests for each owner are the current sources of truth.
 
 ## Current / Required / Gap / Advisory
 
-- **current**：main 持有 Electron、文件系统、进程与窗口能力；preload 是隔离桥；renderer 使用 typed browser-facing API。
-- **required**：renderer MUST NOT 导入 Node/Electron 或绕过 preload；新增能力 MUST 同时确定 main handler、preload 暴露、renderer 类型契约与失败语义。
-- **required**：领域代码放 `features/<domain>`；跨领域业务组件放 `components/business`；无业务语义的复用构件放 `components/primitive`；设计系统原子放 `components/ui`。
-- **gap**：历史 `App.tsx`、root renderer modules 和旧 `components/` 仍有混合职责，应渐进收敛，不能作为新增放置依据。
-- **advisory**：MAY 先扩稳定 contract 再迁调用者；不要创建只转发名称的空壳层。
+- **current**: main owns Electron, filesystem, process, and window capabilities; preload is the isolated bridge; renderer uses a typed browser-facing API.
+- **required**: renderer MUST NOT import Node/Electron or bypass preload; new capabilities MUST define the main handler, preload exposure, renderer type contract, and failure semantics together.
+- **required**: Put domain code in `features/<domain>`, cross-domain business components in `components/business`, reusable constructs without business semantics in `components/primitive`, and design-system atoms in `components/ui`.
+- **gap**: The legacy `App.tsx`, root renderer modules, and old `components/` still have mixed responsibilities and should converge gradually; they are not grounds for placing new code.
+- **advisory**: MAY extend a stable contract before migrating callers; do not create empty forwarding layers that only relay names.
 
 ## Ownership / Dependency
 
-`renderer → preload contract → main handler → OS/service`。业务 UI 的允许方向为 `app/shell/features/business → ui/primitive/contracts/design`；`components/ui` MAY 使用无业务语义的 `components/primitive`，不得读取 API/store 或任何 feature。
+`renderer → preload contract → main handler → OS/service`. The permitted direction for business UI is `app/shell/features/business → ui/primitive/contracts/design`; `components/ui` MAY use `components/primitive` when it has no business semantics, but MUST NOT read API/store or any feature.
 
-## 对话卡片的绑定校验
+<a id="对话卡片的绑定校验"></a>
+## Conversation Card Binding Validation
 
-**current（源码）**：main 的 `skills.ts` 持有绑定校验请求的响应生命周期。校验通过窗口
-Session 访问既有 binding 接口，逐块读完并丢弃响应正文后才返回状态；成功与错误状态都
-必须收尾。读取异常或达到独立校验预算时中止原请求，不能只取消 Response body，
-也不能把收到 HTTP 状态当作网络资源已释放。校验预算短于卡片 RPC 预算，由所属代码常量持有。
+**current (source)**: main's `skills.ts` owns the response lifecycle for binding-validation requests. Validation accesses the existing binding endpoint through the window Session and returns a status only after reading and discarding the response body in chunks; both successful and error statuses must be fully drained. If reading fails or the independent validation budget expires, abort the original request: cancelling only the Response body is insufficient, and receiving an HTTP status does not mean the network resources have been released. The owning code constants define a validation budget shorter than the card RPC budget.
 
-主窗口来源、本机后端、Host-Key、用户/reference 与 revision 校验保持原边界；异步读取
-结束后 main 仍复核 lease。生命周期校验不额外要求 pending，历史卡片的复制路径仍可使用。
-轻量回执接口与改变发现根不属于这项响应收尾机制。
+The main-window origin, local backend, Host-Key, user/reference, and revision checks retain their existing boundaries; main rechecks the lease after asynchronous reading finishes. Lifecycle validation does not add a pending requirement, and copying historical cards remains available. Lightweight receipt endpoints and changed discovery roots are outside this response-draining mechanism.
 
-**required**：除完整正文、错误状态、断流与截止回归外，真实产品需在任务/SSE 存活时
-反复操作卡片，并核对技能页和会话请求持续可用；macOS 结果不替代 Windows。
+**required**: In addition to regressions for complete bodies, error statuses, stream breaks, and deadlines, exercise cards repeatedly in the real product while a task/SSE stream is active, and verify that the Skills page and conversation requests remain available; macOS results do not substitute for Windows.
 
-## Feature 贡献与工作台能力
+<a id="feature-贡献与工作台能力"></a>
+## Feature Contributions and Workbench Capabilities
 
-领域贡献由各自 `features/<domain>/feature.tsx` 暴露，在
-[`app/composition.tsx`](../../src/renderer/src/app/composition.tsx) 汇总，
-[`contracts/features.ts`](../../src/renderer/src/contracts/features.ts) 定义插槽与注册表。
-新增功能先使用适用贡献项，不在 Shell 按文件扩展名、库类型或业务状态增加特例，
-也不为接线复制领域 Store。当前协议包含任务源、上下文来源、文档面板等插槽，
-不能照抄历史文档里的字段或路由清单；新增导航键须同时核对类型与实际消费者。
+Each domain exposes its contributions from `features/<domain>/feature.tsx`; they are collected in
+[`app/composition.tsx`](../../src/renderer/src/app/composition.tsx), while
+[`contracts/features.ts`](../../src/renderer/src/contracts/features.ts) defines the slots and registry.
+New functionality should first use the applicable contribution point. Do not add Shell special cases based on file extension, library type, or business state, and do not copy a domain Store just to wire things together. The current protocol includes slots such as task sources, context sources, and document panels; do not copy field or route lists from historical documents. When adding a navigation key, check both its type and its actual consumers.
 
-组合顺序决定需要去重的贡献项优先级，冲突时保留先注册项并告警；不是静默覆盖，
-也不能推断所有贡献数组具有同一种去重规则。Viewer 的装配期加载/错误边界在组合根
-统一施加，避免 Feature 作者和各 Shell 消费点重复负责。产品启用策略决定哪些模块
-参与装配，模块源码存在不等于产品入口已启用。
+Composition order determines priority for contributions that require deduplication. On conflict, retain the first registered item and log a warning; do not silently overwrite, and do not assume that every contribution array uses the same deduplication rule. The composition root applies Viewer loading and error boundaries uniformly during assembly, rather than making Feature authors and each Shell consumer handle them separately. Product enablement policy determines which modules participate in assembly; source code existing does not mean the product entry point is enabled.
 
-Workbench 持有文档会话与查看器；业务面板接收稳定身份和窄贡献上下文，不接收
-工作台可变 Store 或其他领域私有 API。Viewer 能力匹配以 Serve 返回的查看器与能力
-契约为依据，不在前端按扩展名另建“能否编辑”的第二份判断。选区加入和发送的边界见
-[选区快照知识](../../../../docs/features/selections.md)，不能将冻结文字当作当前来源的写回授权。
+Workbench owns document sessions and viewers; business panels receive stable identity and a narrow contribution context, not the mutable Workbench Store or another domain's private API. Match Viewer capabilities against the viewer and capability contract returned by Serve; do not create a second frontend decision about editability based on file extension. See
+[selection snapshot guidance](../../../../docs/features/selections.md); frozen text does not authorize writing back to the current source.
 
-**current（源码）**：会话 Artifact 的 `/open` 投影通过已注入的 `DocumentFormatPort`
-复用资料库的格式注册表，renderer 与文献附件共用投影加载分支，不再根据 Artifact 的
-MIME 或展示提示另选编辑器。目录成员沿同一入口保持只读；产物版本、大小和来源限制仍
-由 Artifact Owner 裁决，不继承项目文件的版本管理或标注权限。兼容表格预览复用格式
-Port，原始字节及写回修订不被转换结果替代。
+**current (source)**: The session Artifact `/open` projection reuses the literature library's format registry through the injected `DocumentFormatPort`. The renderer and literature attachments share the projection-loading branch, which no longer chooses a different editor based on Artifact MIME or display hints. Directory members remain read-only through the same entry point. Artifact version, size, and source restrictions remain under the Artifact Owner and do not inherit project-file versioning or annotation permissions. Compatibility spreadsheet previews reuse the format Port; converted output does not replace original bytes or written-back revisions.
 
 **Current (source)**: Session artifacts use the injected `DocumentFormatPort` and the
 project Workbench format registry through their authorized `/open` projection. The
@@ -67,9 +53,7 @@ revision and edit restrictions still apply. Compatibility previews use the same 
 port without replacing original bytes or write revisions. Project versioning and
 annotation permissions are not granted to artifacts.
 
-**current（源码）**：产物选区资格使用格式投影的 `can_select`，不与编辑或标注权限绑定。
-PDF 解释与翻译携带 session/artifact/member 身份，后端经产物 Owner 校验会话访问权、
-发布成员及源修订；选区添加到会话使用稳定产物文档身份和完整冻结文字，不冒充项目路径。
+**current (source)**: Artifact selection eligibility uses the format projection's `can_select` and is independent of editing or annotation permissions. PDF explanation and translation carry session/artifact/member identity; the backend's Artifact Owner validates session access, published membership, and source revision. Adding a selection to a session uses stable artifact-document identity and the complete frozen text, without pretending it is a project path.
 
 **Current (source)**: Artifact selection follows the format projection's `can_select`,
 independently of editing and annotation permissions. PDF explanation and translation
@@ -77,541 +61,302 @@ carry session/artifact/member identity; the artifact owner checks session access
 published membership, and analysis validates the source revision. Adding a selection
 uses stable artifact document identity and frozen text, not a fabricated project path.
 
-修改贡献协议时核对所有注册/消费方及禁用模块路径；类型与注册表测试不替代实际入口、
-文档打开、主题/语言切换和真实任务交互。动态贡献清单留给源码，不在本页镜像数量。
+When changing the contribution protocol, check all registrants/consumers and disabled-module paths. Type and registry tests do not replace the actual entry point, document opening, theme/language switching, or real task interaction. Keep the dynamic contribution inventory in source rather than duplicating its counts here.
 
-## 会话提醒与原生通知
+<a id="会话提醒与原生通知"></a>
+## Session Reminders and Native Notifications
 
-- **current（源码）**：main 在既有提醒快照 GET 中携带已接受的 `epoch` / `after_revision`；同一归属代次内仅新增完成提醒附带临时 `markdown` 原文，不新增正文接口或持久副本。冷启动及代次不匹配不带原文、不补弹历史；原文绑定提醒的 turn/item/source sequence。序列化 UTF-8 原文单条最多 1 MiB、批次最多 4 MiB，缺失或超限返回 `null`，不传截断 Markdown。main 与正文共用 `src/markdown/` 的纯解析规则，提取可见文字后脱敏并按字素边界截断；原文不可用时记录错误并使用本地化兜底。附带原文不保留到 main 快照或传给 renderer IPC。
+- **current (source)**: main includes the accepted `epoch` / `after_revision` in the existing reminder snapshot GET. Only newly completed reminders within the same ownership epoch carry transient original `markdown`; it is bound to the reminder's turn/item/source sequence. No content endpoint or persisted copy is added. Cold starts and epoch mismatches carry no original text and do not replay historical notifications. Serialized UTF-8 originals are limited to 1 MiB per item and 4 MiB per batch; missing or oversized values return `null`, never truncated Markdown. main and the answer renderer share the pure parsing rules in `src/markdown/`: extract visible text, redact it, and truncate at grapheme boundaries. If original text is unavailable, log an error and use localized fallback text. The attached original is not retained in the main snapshot or forwarded through renderer IPC.
 - **Current (source)**: Main sends its accepted `epoch` and `after_revision` on the existing attention snapshot GET. Only new completed reminders in the same ownership epoch carry transient `markdown`, anchored to their turn, item and source sequence, without a separate content endpoint or persisted copy. Cold starts and epoch mismatches neither fetch original text nor replay notifications. Serialized UTF-8 originals are limited to 1 MiB per answer and 4 MiB per batch; missing or oversized sources are `null`, never partial Markdown. Main and the answer renderer share pure rules in `src/markdown/`; notifications extract visible text, redact it and truncate on grapheme boundaries. Unavailable sources log an error and use localized fallback text. Originals are discarded before retaining the main snapshot or forwarding renderer IPC.
 
-- **current（源码）**：Serve 的 `chat/persistence/attention.py` 在产品事件事务内投影待处理、每轮完成和最终失败提醒；未查看条数与已读水位保存在现有会话目录数据库，不从侧栏状态或消息时间推算。历史会话不批量回填提醒，业务请求、失败及结果不因已读而删除。
-- **current（源码）**：已结束的交互请求不生成待处理提醒；收到交互已处理事件时，仅撤销同会话、同请求的待处理提醒投影，并在同一事务内推进提醒版本以触发桌面刷新。授权与事件历史保留，不冒充用户已读；查询不追加过滤，启动不扫描或清理历史残留，旧提醒仍由用户通过全部已读处理。
-- **current（源码）**：main 的 `reminders.ts` 持有一条共享通知 SSE，按提交后的失效消息合并拉取归属范围内的提醒快照，经受控 IPC 供 renderer 复用；快照失败独立退避重试，空闲时不定时读取。`attention.ts` 在原生提交前持久化交付水位。启动先建立基线并恢复角标，不补弹历史；任何本应用可见且聚焦的窗口都抑制通知和声音。renderer 不直接发通知或独立蜂鸣。无 Desktop bridge 的 Web 提醒仍保留原轮询路径。
-- **current（源码）**：renderer 的 assistant 提醒模块负责未查看投影和内容可见后的确认；通知与托盘点击由 `shell/Background.tsx` 统一订阅，`app/background.ts` 持有同一导航请求序号，异步读取后只有最新请求可以发布项目、打开会话或关闭设置。后端实例、工作台就绪或登录状态变化及卸载使旧请求失效。全部已读带快照 epoch 与 revision，覆盖所有项目和三类提醒，保留并发新提醒；进入会话、点击或关闭系统通知本身不等于已读。
-- **required**：点击只传不透明提醒 ID，Serve 按任务当前状态解析项目、会话及待处理、结果或失败锚点；不执行授权、重试或其他业务动作。旧目标无效时只恢复应用窗口。
-- **current（源码）**：macOS 使用系统通知及 Dock 数量；Windows 复用既有原生 Toast 与任务栏数字覆盖图标，隐藏到托盘、无任务栏按钮时不承诺可见角标。系统设置入口分别打开 macOS 通知首页和 Windows 通知页。声音开关只决定通知是否请求静音，最终受系统权限、静音和专注设置控制。
-- **required / gap**：源码与确定性测试不证明原生弹出、声音、角标或历史通知激活通过；每个平台需独立真实产品证据。系统拒绝投递或清理失败不回滚已读状态，也不自动反复补发。
+- **current (source)**: Serve's `chat/persistence/attention.py` projects pending, per-turn completion, and final-failure reminders inside product-event transactions. The unread count and read watermark are stored in the existing session catalog database, not inferred from sidebar state or message timestamps. Historical sessions are not backfilled in bulk; read status does not delete business requests, failures, or results.
+- **current (source)**: Ended interaction requests do not produce pending reminders. When an interaction-handled event arrives, only the pending reminder projection for that same session and request is withdrawn, and the reminder revision advances in the same transaction to refresh Desktop. Authorization and event history are retained; this does not pretend the user read the item. Queries add no filtering, startup neither scans nor cleans historical residue, and users still clear old reminders through Mark all as read.
+- **current (source)**: main's `reminders.ts` owns one shared notification SSE. It coalesces post-commit invalidation messages, fetches reminder snapshots within the authorized scope, and exposes them to renderer through controlled IPC. Snapshot failures use independent backoff retries; idle periods do not trigger timed reads. `attention.ts` persists the delivery watermark before native submission. Startup establishes a baseline and restores the badge without replaying history; any visible and focused window in this app suppresses notifications and sounds. renderer does not send notifications or beep independently. Web reminders without a Desktop bridge retain their original polling path.
+- **current (source)**: renderer's assistant reminder module owns the unread projection and acknowledgment after content becomes visible. `shell/Background.tsx` centrally subscribes to notification and tray clicks; `app/background.ts` owns the shared navigation request sequence. After asynchronous reads, only the newest request may publish a project, open a session, or close settings. Backend-instance, Workbench-readiness, or login-state changes and unmounting invalidate older requests. Mark all as read carries snapshot epoch and revision, covers all projects and all three reminder types, and preserves concurrent new reminders. Entering a session, clicking, or dismissing a system notification does not itself mark it read.
+- **required**: Clicks pass only an opaque reminder ID. Serve resolves the project, session, and pending/result/failure anchor from the task's current state; it performs no authorization, retry, or other business action. If the old target is invalid, only restore the application window.
+- **current (source)**: macOS uses system notifications and the Dock count. Windows reuses the existing native Toast and taskbar numeric overlay icon; no visible badge is promised when the app is hidden to the tray or has no taskbar button. The system-settings entry opens the macOS Notifications home or Windows Notifications page, respectively. The sound toggle only controls whether the notification requests silence; system permissions, mute, and focus settings remain authoritative.
+- **required / gap**: Source code and deterministic tests do not prove native popup, sound, badge, or historical-notification activation. Each platform needs independent real-product evidence. A system delivery refusal or cleanup failure does not roll back read state or trigger repeated automatic redelivery.
 
-## 工作台驻留与资源释放
+<a id="工作台驻留与资源释放"></a>
+## Workbench Residency and Resource Release
 
-**current（源码）**：Serve 在准备会话遇到已知共享 Host 配置冲突时自动发起后台
-受控切换，触发请求先退出，后台再等真实任务和资源排空。Composer 的 business
-`Reconfigure` 只读 current/UUID 状态并显示非阻塞 Alert，不再提供确认弹窗、
-mutation IPC 或客户端切换 POST。组件卸载不取消后台操作；未知提交不触发切换，
-未知查询仅有界读回，页面恢复不创建操作，原消息不自动重发。
-状态观察的错误分类、退避策略及业务错误码归 `src/reconfiguration.ts`：可恢复故障
-每个观察周期最多连续失败四次，间隔依次为 500、1000、2000 ms；成功后重置计数。
-永久 HTTP 错误或无效响应立即停止，耗尽后只提示查询不可用，不推断存在切换。
-重新打开任务重新开始观察；已取得 UUID 后的暂时查询故障才表示切换结果待确认。
-`Reconfigure` 的纯状态解析同时决定翻译 key 与 Alert tone，不分别维护平行判断。
-**gap**：确定性契约、UI render 与类型检查不证明两平台真实模型切换成功。
+**current (source)**: When Serve prepares a session and encounters a known shared Host configuration conflict, it automatically initiates a controlled background switch. The triggering request exits first; the background operation then waits for real tasks and resources to drain. The Composer business `Reconfigure` reads current/UUID state and displays a non-blocking Alert; it no longer provides a confirmation dialog, mutation IPC, or a client-side switch POST. Unmounting the component does not cancel the background operation. Unknown submissions do not trigger a switch; unknown queries perform only a bounded readback; restoring the page creates no operation, and the original message is not resent automatically.
 
-Office 字体准备由 `src/main/fontfiles.ts` 持有系统字体文件目录与读取身份，
-`native/fonts.c` 仅通过 CoreText / DirectWrite 异步发现字体来源。preload 暴露目录和
-opaque ID 读取，不接受 renderer 文件路径。目录按实际文件身份合并 TTC 的多字体引用，
-保留系统公开的 face 和字重；读取前后核对文件身份及修改状态，不静默忽略失败字体。
-不同 Office 宿主共享进行中的枚举，不在 main 持久缓存字体内容。浏览器独立运行模式
-不获得该本机能力。字体与宿主的生命周期一致，同宿主切换文档沿用已安装的完整字体。
+Error classification, backoff policy, and business error codes for state observation belong to `src/reconfiguration.ts`: recoverable failures may occur at most four consecutive times per observation cycle, with intervals of 500, 1000, and 2000 ms; success resets the count. Permanent HTTP errors or invalid responses stop immediately. When retries are exhausted, the UI only reports that querying is unavailable; it does not infer that a switch exists. Reopening a task starts observation again; only a transient query failure after obtaining a UUID means that the switch result is awaiting confirmation. `Reconfigure`'s pure state parser determines both the translation key and Alert tone, avoiding parallel decision logic.
+**gap**: Deterministic contracts, UI rendering, and type checking do not prove that real model switching succeeds on both platforms.
 
-**current**：主工作区、导航恢复及后端就绪后，OfficeRuntimeProvider 在首帧后的空闲调度中
-准备一个隐藏的单例宿主，不等待文档需求。prepare 负责完整字体和 WASM 初始化，bind
-负责文档；引擎 running 前仅保留绑定，不提前上传。提前开档、后续 DOC/PPT/XLS 切换和
-关闭最后文档都复用同一宿主。CSV/DOCX/PPTX/XLSX 原生预览不绑定该宿主，也不创建
-第二个引擎。无文档锚点时后台准备和失败重试均不展示进度或通知；预热恢复计时归宿主，
-不随文档绑定变化重置。现有字体权限、清单完整性、缓存校验及卸载清理保持原边界。
+Office font preparation is owned by `src/main/fontfiles.ts`, which holds the system font-file directories and read identities. `native/fonts.c` discovers font sources asynchronously through CoreText / DirectWrite only. preload exposes directory and opaque-ID reads; it does not accept renderer file paths. Directories merge TTC face references by actual file identity and preserve the faces and weights exposed by the system. File identity and modification state are checked before and after reading; failed fonts are not silently ignored. Different Office hosts share an in-progress enumeration, and main does not persistently cache font contents. Browser standalone mode does not receive this local capability. Fonts share the host's lifecycle, and switching documents within the same host reuses the complete installed font set.
 
-**current（源码）**：`src/main/fontcache.ts` 在 desktop userData 的 `office-fontconfig`
-目录原子保存一份有界 Fontconfig 派生索引，不保存字体字节或文档。身份涵盖完整来源文件
-元数据、face 选择、安装顺序及冻结引擎/字体制品清单；变化、损坏或不完整的记录作为未命中。
-`office/fontcache.js` 等待完整字体和资源安装后恢复索引及原目录时间，未命中时由
-[`native/fontconfig`](../../native/fontconfig/README.md) 的固定 wasm32 生成器使用同一份
-字体字节生成。该生成器绕开冻结引擎的硬链接锁失败；原 Office 引擎保持不变。生成失败
-保留诊断并让引擎扫描完整字体，字体读取失败仍由原 gate 阻止启动。
-**required**：安装命名、TTC 选择或缓存语义变化且制品未变化时，递增
-`OFFICE_FONT_CACHE_SCHEMA`。兼容验证须包含真实引擎首开、独立进程重启和切换文档。
+**current**: After the main workspace, navigation restoration, and backend are ready, `OfficeRuntimeProvider` prepares a hidden singleton host during idle time after the first frame, without waiting for a document request. `prepare` initializes the complete font set and WASM; `bind` handles the document. Before the engine is running, only the binding is retained; no upload is started early. Opening a document early, subsequent DOC/PPT/XLS switches, and closing the last document all reuse the same host. Native CSV/DOCX/PPTX/XLSX previews do not bind to that host or create a second engine. Without a document anchor, background preparation and failure retries show no progress or notification. The host owns the warm-up recovery timer, which is not reset when document bindings change. Existing font permissions, manifest integrity, cache validation, and uninstall cleanup retain their current boundaries.
 
-`office/frame.ts` 同时准备完整字体和 WASM 资源，locale 参数先于 loader 捕获。
-`local-fonts.js` 在同步 preRun 中持有 run dependency；完整字体写入 FS 后才释放。
-字体、资源或脚本失败不会放行该 gate，销毁后的异步结果不能访问旧 FS；失败重试
-沿用宿主的 frameEpoch 重建机制，正常切换文档继续复用已初始化的引擎。
+**current (source)**: `src/main/fontcache.ts` atomically stores a bounded derived Fontconfig index in the desktop userData `office-fontconfig` directory; it stores neither font bytes nor documents. Its identity covers complete source-file metadata, face selection, installation order, and the frozen engine/font artifact manifest; changed, corrupt, or incomplete records are treated as cache misses. `office/fontcache.js` restores the index and original directory timestamps after all fonts and resources are installed. On a miss, the fixed wasm32 generator in [`native/fontconfig`](../../native/fontconfig/README.md) generates the index from the same font bytes. This generator avoids the frozen engine's hard-link locking failure; the Office engine itself remains unchanged. Generation failures retain diagnostics and let the engine scan the complete font set; font-read failures still block startup through the existing gate.
 
-历史材料中的 LFS 指 Least Frequently Selected，不是 Git Large File Storage。
-现行驻留策略是关闭合资格的 LRU Tab，不沿用保留 Tab 后把 Session 标为
-`suspended/restoring` 的旧预算方案；重新打开已淘汰文档走正常 Loader，而不是
-宣称存在该旧状态机。不要按历史 `implemented` 标记恢复选择次数或字节预算机制。
+**required**: Increment `OFFICE_FONT_CACHE_SCHEMA` when installation naming, TTC selection, or cache semantics change without an artifact change. Compatibility validation must include the real engine's first open, restart in a separate process, and document switching.
 
-- **current**：[workspace.ts](../../src/renderer/src/features/workbench/workspace.ts) 的注册表跨项目持有 Tab 选择序列与统一上限；候选按最近使用顺序淘汰，当前活动项目可见 Tab、dirty Session 和非 clean 保存状态受到保护。没有安全候选时允许暂时超限，不通过自动保存、回退或丢弃编辑强行收敛。
-- **current / required**：Tab 是共享 Session 的投影。自动关闭走 `closeCleanTab` 的防御性检查和既有关闭原语；最后一个 Tab 引用消失才删除 Session、保存代理与文本历史。隐藏 Tab 或组件卸载不能等同于共享模型释放，分屏中的剩余引用仍须有效。
-- **current**：离开文档区时的自动保存通过普通 `save` 流程先准备编辑器本地文本，再判断 Session 是否 dirty，避免遗漏尚未投影的输入。无变化的文本沿既有保存流程结束，焦点保存只处理当前文档。
-- **current**：[reclaim.ts](../../src/renderer/src/features/workbench/reclaim.ts) 以实际存活 Session/Tab 集合调用已注册 Viewer 回收器。Viewer 负责自己的缓存释放，工作台不能为调用回收辅助函数静态导入具体 Viewer 实现并扩大首屏依赖。
-- **current**：[limits.ts](../../src/renderer/src/features/workbench/limits.ts) 持有大文件与 Markdown 轻量路径阈值；字节数或行数严格超过对应边界才关闭高开销编辑辅助能力。这是编辑性能策略，不修改正文或保存语义，也不是全局按内存字节拒绝打开的准入机制。
-- **required**：修改驻留策略时验证跨项目淘汰、dirty/可见/保存中保护、分屏共享引用、最后引用释放与大文件边界。纯策略测试不证明真实 Monaco/PDF/Office 缓存回收或 renderer OOM 消失；仍需真实 Desktop 超限打开与最终截图。两平台产品验证分别保留，不由本轮 macOS 文档核验替代。
+`office/frame.ts` prepares the complete font set and WASM resources together, with the locale parameter captured before the loader. `local-fonts.js` holds a run dependency during synchronous `preRun` and releases it only after all fonts have been written to FS. Font, resource, or script failures do not open this gate. Async results arriving after destruction cannot access the old FS. Failure retries use the host's existing `frameEpoch` rebuild mechanism; normal document switches continue to reuse the initialized engine.
 
-- **required**：renderer 崩溃后，窗口对象存活不保证 WebContents 可发送；向主窗口发送前须核对两者生命周期。`src/main/index.ts` 的 `aliveMainWindow` / `sendToMainWindow` 是现有接点，不等于全部发送点已覆盖，也不授权自动重启或掩盖未保存数据风险。
+In historical materials, LFS means Least Frequently Selected, not Git Large File Storage. The current residency policy closes eligible LRU Tabs; it does not use the old budget design that retained Tabs while marking Sessions `suspended/restoring`. Reopening an evicted document goes through the normal Loader; do not imply that the old state machine still exists. Do not restore selection counts or byte-budget mechanisms based on historical `implemented` labels.
 
-## 正反例
+- **current**: The registry in [workspace.ts](../../src/renderer/src/features/workbench/workspace.ts) tracks Tab selection order across projects and enforces one shared limit. Candidates are evicted in least-recently-used order; visible Tabs in the active project, dirty Sessions, and non-clean save states are protected. The limit may be exceeded temporarily when there is no safe candidate; it is not forcibly met by autosaving, reverting, or discarding edits.
+- **current / required**: A Tab is a projection of a shared Session. Automatic closure uses `closeCleanTab`'s defensive checks and the existing close primitive. The Session, save proxy, and text history are removed only when the final Tab reference disappears. Hiding a Tab or unmounting a component does not release the shared model; remaining references in split view must stay valid.
+- **current**: Autosave when leaving the document area first prepares editor-local text through the ordinary `save` flow, then checks whether the Session is dirty, so input not yet projected is not missed. Unchanged text completes through the existing save flow; focus-triggered saving handles only the current document.
+- **current**: [reclaim.ts](../../src/renderer/src/features/workbench/reclaim.ts) invokes registered Viewer reclaimers using the actual live Session/Tab set. Each Viewer releases its own cache. The Workbench must not statically import concrete Viewer implementations just to call reclaim helpers and thereby enlarge first-screen dependencies.
+- **current**: [limits.ts](../../src/renderer/src/features/workbench/limits.ts) owns the large-file and lightweight Markdown-path thresholds. High-cost editing assistance is disabled only when bytes or line count strictly exceed the corresponding boundary. This is an editing-performance policy; it does not change document content or save semantics, nor does it globally reject opening files based on memory bytes.
+- **required**: When changing the residency policy, validate cross-project eviction, protection of dirty/visible/saving Tabs, shared split-view references, release of the final reference, and large-file boundaries. Policy tests alone do not prove that real Monaco/PDF/Office caches are reclaimed or that renderer OOM is eliminated; real Desktop over-limit opening and final screenshots are still required. Product validation is needed on each platform; this macOS documentation review does not replace it.
+
+- **required**: After a renderer crash, a live window object does not guarantee that its WebContents can receive messages; check the lifecycle of both before sending to the main window. `aliveMainWindow` / `sendToMainWindow` in `src/main/index.ts` are existing integration points, not proof that every send site is covered, and they do not authorize automatic restart or conceal the risk of unsaved data.
+
+<a id="正反例"></a>
+## Examples and anti-patterns
 
 ```ts
-// 正例：renderer 使用 preload 声明的受限能力
+// Positive example: renderer uses a restricted capability declared by preload
 await window.scholarseed.saveDocument(request)
 
-// 反例：renderer 直接拥有系统能力
+// Negative example: renderer directly owns a system capability
 import { ipcRenderer } from 'electron'
 ```
 
 ## Enforced by
 
-TypeScript 的 node/web project 边界、`scripts/ci/__tests__/standards.test.mjs` 的 UI 依赖检查，以及 main/preload/renderer 对应 tests。
+Enforced by TypeScript's node/web project boundaries, the UI dependency check in `scripts/ci/__tests__/standards.test.mjs`, and the corresponding main/preload/renderer tests.
 
 ## Update triggers
 
-模型订阅登录的 current 边界：`src/subscriptions.ts` 定义 IPC 合同，main 校验主窗口、
-本机托管服务与授权 URL，并用窗口账号 session 请求登录、打开系统浏览器。preload 只投影
-事务状态；renderer 不接收 host key、授权 URL 或上游 token。浏览器/远程 attach 明确报告不可用。
+Current boundary for model-subscription sign-in: `src/subscriptions.ts` defines the IPC contract. Main validates the main window, locally hosted service, and authorization URL, then uses the window's account session to request sign-in and open the system browser. preload only projects transaction state; renderer does not receive the host key, authorization URL, or upstream token. Browser/remote attach explicitly reports this capability as unavailable.
 
-新增 IPC/OS 能力、一级目录职责、跨域 contract 或依赖方向时更新。
+Update this document when adding IPC/OS capabilities, changing top-level directory responsibilities, or changing cross-domain contracts or dependency directions.
 
-### 文献检索结果与授权读取
+<a id="文献检索结果与授权读取"></a>
+### Literature Search Results and Authorized Reads
 
-- 科研结果承接加入文献库、仅添加元信息及 BibTeX 导出；只有精确检索卡片、且勾选论文中已有下载完成时，批量入库才提供“元信息和全文”，复用已下载字节作为主附件。不提供独立全文下载卡、文件夹交付卡或 PDF 保存操作，也不为入库重新下载全文。
-- Serve 继续提供经授权的托管全文读取和历史引用解析，不将内部获取写为用户入库或保存成功；已下载全文的判定与挂载同样由 Serve 持有，renderer 只带回可复用篇数并据此决定是否渲染该选项。
+- Research results support adding items to the literature library, adding metadata only, and BibTeX export. Bulk library import offers “metadata and full text” only from an exact search-result card when the selected paper's download is already complete, reusing the downloaded bytes as the primary attachment. There is no standalone full-text download card, folder-delivery card, or PDF save action, and import does not download full text again.
+- Serve continues to provide authorized hosted full-text reads and historical citation resolution; internal retrieval is not recorded as a user library import or successful save. Serve also owns the determination and mounting of already downloaded full text. The renderer only returns the reusable item count and uses it to decide whether to display that option.
 
-### 登录窗口尺寸
+<a id="登录窗口尺寸"></a>
+### Sign-in Window Size
 
-登录窗口尺寸由 `src/window.ts` 定义，renderer 仅报告登录页是否可见，
-preload 转交 main；main 校验发送窗口与布尔参数并管理尺寸，浏览器模式不调整宿主。
-退出登录页时恢复进入前的工作台位置、尺寸和最大化状态；重复通知不重置用户调整。
+The sign-in window size is defined in `src/window.ts`. The renderer only reports whether the sign-in page is visible, and preload forwards that state to main. Main validates the sending window and boolean parameter and manages the size; browser mode does not resize its host. On leaving the sign-in page, restore the Workbench's previous position, size, and maximized state. Duplicate notifications must not reset user adjustments.
 
-| 平台 | required：登录页 | required：退出登录页 | 验证边界 |
+| Platform | required: sign-in page | required: leaving sign-in page | Verification boundary |
 | --- | --- | --- | --- |
-| macOS | 原生窗口外框 900×600，先降低最小尺寸 | 恢复工作台窗口 | 真实 Desktop 截图与尺寸检查 |
-| Windows | 同一 Electron `setSize` 外框尺寸语义，系统缩放使用 DIP | 同一恢复逻辑 | 尚需 Windows 真实 Desktop 验证 |
+| macOS | Native window frame 900×600; lower the minimum size first | Restore the Workbench window | Real Desktop screenshot and size check |
+| Windows | Same Electron `setSize` frame-size semantics; system scaling uses DIP | Same restoration logic | Real Windows Desktop verification still required |
 
-## 前后端并行启动
+<a id="前后端并行启动"></a>
+## Parallel Frontend and Backend Startup
 
-**current**：main 的 `assets.ts` 在 loopback 独立托管只读前端制品，主窗口不再等待
-Python 健康检查才加载。静态服务不提供 API 代理；Serve 保留业务 API。第一次导航仍
-安装 CSP、COOP/COEP 与权限控制，可信账号地址由同一启动配置供两端使用。
+**current**: Main's `assets.ts` independently hosts read-only frontend artifacts on loopback, so the main window no longer waits for a Python health check before loading. The static server does not proxy APIs; Serve retains the business APIs. The first navigation still installs CSP, COOP/COEP, and permission controls, and both sides use the trusted account address from the same startup configuration.
 
-主窗口的显示与业务 ready 分开：Windows 安装版只有原生组件检查确认可复用后，
-才在 `ready-to-show` 交接到主窗口；若本轮进入过下载/准备，继续保留组件进度窗口，
-待后端及窗口服务完成再交接。macOS 的组件随包交付，开发版无该原生组件准备阶段，
-均可在首屏绘制后显示。交接按窗口和启动代次校验且只执行一次，后端完成不会再次
-抢回用户已隐藏的窗口；失败页也不绕过首次绘制和退出检查。
+Main-window display is separate from business readiness. On Windows packaged builds, hand off to the main window at `ready-to-show` only after native-component checks confirm the component can be reused. If this run entered download/preparation, keep the component progress window until the backend and window service are ready. macOS ships the component with the app, and development builds have no native-component preparation phase, so both may display after the first frame is rendered. Handoff is validated against the window and startup generation and occurs only once; backend completion does not reclaim a window the user has hidden. The failure page also does not bypass first-render or exit checks.
 
-Desktop 在固定 Python 来源、版本、SQLite、架构与环境，并建立后端进程后，使用
-相同环境在后端私有通道完成认证后运行 `service.platform.executables` 探针，避免与冷导入争用资源。
-认证仅确定探针的启动时序，不代表工具链或业务就绪。探针仍执行产品拥有的
-Skill Python launcher `--version`，不以解释器版本检查代替 launcher 校验；结果通过
-继承 stdin 建立的私有认证通道一次性交给 Serve。Serve 的 lifespan 等待该回执，
-不再串行重复探测；失败或断链不开放 HTTP。独立 Serve 仍本地查找、验证及整理 PATH。
-launcher 的版本与诊断入口只校验实际解释器和 Serve 身份，不代表全部技能依赖健康；
-脚本与任务经同解释器的 `service.cli.skill` 入口加载完整静态依赖并执行原准入校验，
-依赖加载、冻结清单或在线准入失败均不执行脚本。
-TeX 回执和 AI 执行门控保持独立。探针属于启动资源，退出需收束；Windows 在放行
-探针前绑定 Job，macOS 使用独立进程组处理取消，均不继承后端控制 stdin。
-Windows 在主进程退出后先有界等待 Job 成员自然退出，再对仍未退出的成员强制清理；
-退出事件不等于 Job 已归零。发生过强制清理的进程族即使后续归零或重试，仍不能作为
-干净退出或探针就绪的依据；取消与探针超时仍立即终止其拥有的进程族。
+After Desktop pins the Python source, version, SQLite, architecture, and environment and creates the backend process, it runs the `service.platform.executables` probe in the same environment after authenticating over the backend's private channel, avoiding contention with cold imports. Authentication determines only the probe's startup ordering; it does not mean the toolchain or business services are ready. The probe still runs the product-owned Skill Python launcher with `--version`; checking the interpreter version does not substitute for launcher validation. The result is sent once to Serve over the private authenticated channel established through inherited stdin. Serve's lifespan waits for this receipt and does not repeat the probe serially; failure or disconnection keeps HTTP closed. Standalone Serve still discovers and validates locally and normalizes PATH.
 
-`startup.ts` 定义带 generation/revision 的启动快照；main 发布，preload 在读取初值前
-订阅并缓存，renderer 的 `app/connection.ts` 读取。未就绪端点不可用于业务请求。
-`app/Startup.tsx` 提前绘制启动状态，首次 ready 后才挂载业务 Store；后端重启不重挂
-整个业务树，健康轮询和实时订阅按代次恢复。关闭窗口入口不依赖后端挂载。
+The launcher's version and diagnostic entry point validate only the actual interpreter and Serve identity; they do not establish that all Skill dependencies are healthy. Scripts and tasks load their full static dependencies through the `service.cli.skill` entry point using the same interpreter and run the existing admission checks. Scripts do not run if dependency loading, the frozen manifest, or online admission fails.
 
-**required**：窗口已显示不代表工作台、模型或更新候选健康确认完成。原生资格、存储
-检查和更新确认门槛不变；应用退出要关闭资源监听并收束后端。首次安装中 Electron
-之前的下载、解包与原生激活不在这段并行范围内。
+The TeX receipt and AI execution gate remain independent. The probe is a startup resource and must be brought to a stop on exit. Windows binds a Job before releasing the probe; macOS handles cancellation with a separate process group. Neither inherits the backend control stdin. After the Windows main process exits, wait for Job members to exit naturally for a bounded period, then forcibly clean up any remaining members; an exit event does not mean the Job is empty. A process family that required forced cleanup cannot count as cleanly exited or probe-ready, even if it later drains or a retry succeeds. Cancellation and probe timeout still immediately terminate the process family owned by the operation.
 
-**gap**：目前仅 macOS 源码 Electron 的隔离启动、重载和退出有真实验证；两平台
-安装版首装/升级、异常恢复、Office 和账号全链路仍需独立验收，不能以首屏替代。
+`startup.ts` defines a startup snapshot with generation/revision. Main publishes it; preload subscribes and caches it before reading the initial value, and the renderer reads it through `app/connection.ts`. Endpoints that are not ready cannot be used for business requests. `app/Startup.tsx` renders startup status early and mounts the business Store only after the first ready state. A backend restart does not remount the entire business tree; health polling and live subscriptions resume by generation. The window-close entry point does not depend on the backend being mounted.
 
-### 基础健康与 AI 就绪
+**required**: A visible window does not mean that Workbench, model, or update-candidate health checks are complete. Native eligibility, storage checks, and update confirmation thresholds remain unchanged. Application exit must close resource listeners and shut down the backend. Downloads, extraction, and native activation before Electron starts during first installation are outside this parallel-startup scope.
 
-后端早期诊断不参与准入：`window.log` 的 `[startup] backend checkpoint` 区分
-spawn 调用返回、spawn 事件、Windows Job 绑定/放行排队及首份输出接收；排队不等于
-子进程已放行，spawn 事件也不等于 Python 已执行。`backend.log` 的 `startup_checkpoint`
-由子进程直接写出，覆盖 Windows wrapper 入口、握手放行、模块分派以及 Serve 的
-前置依赖、默认环境、bootstrap 和剩余导入完成。子进程标记携带 PID、单调时钟和 Unix
-时间；同进程间隔用单调时钟，跨进程以 Unix 时间辅助对齐，不直接相减不同格式的单调
-时钟。wrapper 前仍包含解释器初始化，不能将整段空白归为业务导入。macOS 保持 `-m`
-启动，只有父进程与 Serve 标记，不产生 Windows 握手标记。日志不输出参数或凭据，
-不修改健康期限、签名策略或就绪定义；Windows 安装版效果需重新采集验证。
+**gap**: So far, only isolated startup, reload, and exit of the macOS source Electron build have real validation. First install/upgrade, abnormal recovery, Office, and the complete account flow in packaged builds on both platforms still need separate acceptance; the first screen is not a substitute.
 
-托管 backend 使用 `/api/healthz/backend` 确认基础服务，attach 保留完整健康探测。
-旧独立 Serve 不支持轻健康时，renderer 仅对 404/405 回退完整健康；
-认证、维护和服务错误不触发回退。
-renderer 分别轮询基础健康与完整 AI 诊断，实例/代次改变后忽略旧响应；
-AI 未知继续禁止发送，目录未知不覆盖已打开会话的就绪事实。
-更新健康回执仍等待完整 AI 诊断返回，不以基础服务提前开放替代原有门槛。
-开发态 Codex 热缓存解析改为完整库存/no-links/哈希核验，执行兼容性由 Adapter 探测；
-默认构建、首次供应和并发发布仍保留原有精确版本验证。安装态不走该开发解析路径，
-因此开发态去重收益不能直接外推安装版。
+<a id="基础健康与-ai-就绪"></a>
+### Baseline Health and AI Readiness
 
-Python 身份检查使用异步子进程，版本、SQLite、平台/架构、来源与 venv 校验不变。
-TeX 使用独立准备任务，基本后端不等待其完成；完整 PATH、字体/cache 环境在 spawn
-前冻结，AI 执行通过私有控制回执等待准备完成。失败只关闭执行准入，不冒充全部就绪。
-退出取消供应并等待实际下载/解压/探测收尾，不遗弃仍写 staging 的任务。Windows
-legacy 组件供应允许延后 TeX；native resident 在 Electron 前的全组件供应不在此优化内。
+Early backend diagnostics do not participate in admission. `[startup] backend checkpoint` in `window.log` distinguishes the return from the spawn call, the spawn event, Windows Job binding/release being queued, and receipt of the first output. Queued does not mean the child process has been released, and the spawn event does not mean Python has executed. `startup_checkpoint` in `backend.log` is written directly by the child process and covers the Windows wrapper entry, handshake release, module dispatch, and completion of Serve's prerequisite dependencies, default environment, bootstrap, and remaining imports. Child-process markers carry the PID, monotonic-clock value, and Unix time. Use the monotonic clock for intervals within one process; use Unix time only to help align events across processes, and do not subtract monotonic-clock values with different origins. Interpreter initialization still occurs before the wrapper, so the entire preceding gap cannot be attributed to business imports. macOS retains `-m` startup and has only parent-process and Serve markers, with no Windows handshake markers. Logs expose no arguments or credentials and do not change health deadlines, signing policy, or readiness definitions. Recollect evidence to validate behavior in Windows packaged builds.
 
-## 主窗口 CSP 生命周期
+Managed backends use `/api/healthz/backend` to confirm baseline service health; attach retains the full health probe. When an older standalone Serve does not support lightweight health checks, the renderer falls back to full health only for 404/405; authentication, maintenance, and service errors do not trigger fallback. The renderer polls baseline health and full AI diagnostics separately and ignores stale responses when the instance/generation changes. Unknown AI readiness continues to block sending; unknown directory state does not override readiness already established for an open session. Update-health acknowledgment still waits for the full AI diagnosis; baseline health does not open the gate earlier than before.
 
-- **current（源码）**：`src/main/loading.ts` 持有主窗口首次导航的 commit/load/ready-to-show 联合终态，失败、取消和截止后清理本 attempt 的监听与 timer，并阻止迟到完成继续启动；导航成功即解除截止，后端仍使用自己的启动预算。`index.ts` 在首次工作台交接前继续保护 renderer 崩溃终态，失败使用既有启动失败表面，不自动刷新已有会话。
-- **current（源码）**：`child-process-gone` 在启动窗前注册，记录原始 type/reason/exitCode/serviceName/name、时间与导航 attempt；Electron 未提供 child PID 时不编造。存储发布前只输出并有界缓存，发布后经现有目录 writer 和轮转日志落盘；事件本身不触发重载或降低权限。两平台真实验收仍需独立证据。
+Development-mode Codex hot-cache resolution now checks the complete inventory, no-links condition, and hashes; the Adapter probes execution compatibility. Default builds, first-time provisioning, and concurrent publication retain their existing exact-version checks. Packaged builds do not use this development resolution path, so deduplication gains in development cannot be extrapolated directly to packaged builds.
 
-- **current / required**：[csp.ts](../../src/main/csp.ts) 持有主窗口 CSP 构造与安装；Session 响应回调必须在注册时捕获稳定的 `webContentsId`，不能在回调内访问可能已销毁的 `BrowserWindow` / `WebContents`。保持只向目标主框架注入策略，不通过移除 CSP 或吞异常处理退出竞争。
-- **required**：定向回归在仓库根运行 `node --experimental-transform-types --test apps/desktop/src/main/csp.test.ts apps/desktop/src/main/index.test.ts`；真实产品回归先运行 `pnpm ops cd build local --stage app`，再运行 `pnpm ops ci test e2e --scope desktop -- --project=smoke e2e/csp.spec.ts`。Electron 注入的 CSP 在 Playwright 响应头视图中可能不可见，真实策略验收应触发受限请求并断言 `securitypolicyviolation` 的 directive 与 originalPolicy。构建验收的成功 JSON 必须与进程正常退出分别核对；文档给出命令不自动授权产品启动。
-- **required**：macOS / Windows 使用相同的 Electron Session 回调与稳定内容 ID，但 macOS 实机结果不替代 Windows 实机与安装包验收。当前知识迁移不修改两平台的进程、路径、权限或终止语义，源码接线与确定性契约也不证明真实平台验收已完成。
+Python identity checks use an asynchronous child process; version, SQLite, platform/architecture, source, and venv validation remain unchanged. TeX uses a separate preparation task, and the base backend does not wait for it. Freeze the full PATH and font/cache environment before spawn; AI execution waits for preparation through a private control receipt. Failure closes only execution admission and must not be presented as full readiness. On exit, cancel provisioning and wait for actual downloads, extraction, and probes to finish; do not abandon tasks still writing to staging. Windows legacy-component provisioning may defer TeX; native-resident provisioning of all components before Electron starts is outside this optimization.
 
-## 浏览器原生浮层
+<a id="主窗口-csp-生命周期"></a>
+## Main-Window CSP Lifecycle
 
-- **current（源码）**：安装/重启遮罩通过更新专属 Portal 投影原 React 内容，复用设置的模态生命周期与绘制确认；`blocking` 原生层高于设置、对话及菜单，低层模态不能抢回焦点。更新状态、取消和进度仍由原更新 Owner 持有，不隐藏或缩小网页。原生呈现失败显式记录并提示，DOM 回退不构成覆盖成功；两平台真实更新生命周期验收仍需独立证据。
+- **current (source)**: `src/main/loading.ts` owns the combined commit/load/ready-to-show terminal state for the main window's first navigation. On failure, cancellation, or deadline, it cleans up listeners and timers for that attempt and prevents late completion from continuing startup; successful navigation clears the deadline, while the backend keeps its own startup budget. `index.ts` continues to guard renderer-crash terminal states until the first Workbench handoff. Failure uses the existing startup-failure surface and does not automatically refresh an existing session.
+- **current (source)**: Register `child-process-gone` before the startup window and record the raw type/reason/exitCode/serviceName/name, time, and navigation attempt; do not fabricate a child PID when Electron does not provide one. Before storage is available, output and cache events with a bound; afterward, persist through the existing directory writer and rolling log. The event itself does not trigger reload or lower permissions. Independent real-product evidence is still required on both platforms.
+
+- **current / required**: [csp.ts](../../src/main/csp.ts) owns construction and installation of the main-window CSP. The Session response callback must capture a stable `webContentsId` when registered; it must not access a possibly destroyed `BrowserWindow` / `WebContents` inside the callback. Inject policy only into the target main frame; do not resolve exit races by removing CSP or swallowing exceptions.
+- **required**: From the repository root, run the focused regression with `node --experimental-transform-types --test apps/desktop/src/main/csp.test.ts apps/desktop/src/main/index.test.ts`. For real-product regression, first run `pnpm ops cd build local --stage app`, then `pnpm ops ci test e2e --scope desktop -- --project=smoke e2e/csp.spec.ts`. Electron-injected CSP may not appear in Playwright's response-header view; real policy acceptance should trigger a restricted request and assert the directive and originalPolicy in `securitypolicyviolation`. Verify the build's success JSON separately from normal process exit; a command in documentation does not itself authorize launching the product.
+- **required**: macOS / Windows use the same Electron Session callback and stable content ID, but macOS real-device results do not replace Windows real-device and packaged-build acceptance. This knowledge migration changes no process, path, permission, or termination semantics on either platform. Source wiring and deterministic contracts also do not establish that real platform acceptance is complete.
+
+<a id="浏览器原生浮层"></a>
+## Native Overlays over Embedded Web Content
+
+- **current (source)**: Installation/restart overlays project the original React content through a dedicated update Portal, reusing settings' modal lifecycle and paint confirmation. The native `blocking` layer sits above settings, conversation panels, and menus; lower modals cannot reclaim focus. The update owner retains update state, cancellation, and progress; web pages are not hidden or resized. Native presentation failures are explicitly logged and surfaced; a DOM fallback does not count as successful coverage. Independent real update-lifecycle evidence is still required on both platforms.
 - **Current (source)**: Installation and restart screens project the original React content through a dedicated update Portal, sharing the modal lifecycle and paint handshake with settings. The native `blocking` layer stays above settings, conversation panels, and menus; lower modal surfaces cannot reclaim focus. Update state, cancellation, and progress remain with the update owner without hiding or resizing web pages. Native presentation failures are reported explicitly; a DOM fallback is not successful native coverage. Real update lifecycle acceptance requires independent evidence on both platforms.
 
 
-- **required**：内置网页是独立 `WebContentsView`，主 renderer 的 DOM 层级不是跨原生视图的合成层级。相交的产品提示和地址建议由 main 管理的隔离原生浮层展示，不能通过隐藏、移动或缩小网页解决覆盖问题。
-- **required**：共享展示 contract 校验纯数据；preload 只暴露最小浮层通道；main 校验发送者与主 frame、限制本地资源和权限、持有生命周期。浮层不是网页注册表或 CDP/Agent 目标。非交互提示与地址建议须保持独立状态与焦点边界。
-- **current（源码）**：`renderer/src/layout.ts` 在同一 renderer 帧内依次准备全部锚点、测量全部投影、提交位置；网页视口与 `shell/Floating.tsx` 共用调度，不由各自的观察器立即交错写入。Portal 的异步位置请求仍串行合并最新值；这不是原生 compositor 原子提交保证。网页 bounds 更新不广播未变化的业务快照，菜单位置资格检查与原生显示状态变化分开。
-- **current（源码）**：`src/main/layers.ts` 统一维护控件、面板、菜单/提示、模态的原生顺序，仅在实际顺序失配时重排；浮层新建时不能盖住已打开的菜单或模态。两个分栏拖拽条分别占用有界 `RESIZE_PORTAL` 槽位，关闭一个不得撤销另一个，不允许合并成跨网页的透明大矩形。
-- **required**：最终版本验收覆盖连续拖动的中间帧、左右交换后的导航分栏、折叠恢复、键盘焦点、窄宽度视口，以及菜单/提示先打开再创建原生面板的顺序。网页采用真实视口尺寸与原站点响应式规则；不得注入第三方 CSS、伪造 UA 或自动改变用户缩放来掩盖固定最小宽度。
-- **required**：原生提示只占内容及主题阴影的绘制矩形，原生视图与提示页面背景同时透明；内容锚点不能随绘制边界扩展而移动。不能承诺 `WebContentsView` 鼠标穿透或转发底层网页点击。保留模态遮挡保护与主 renderer 无障碍描述。
-- **current（源码）**：浏览器相邻分栏的拖拽条由独立 `RESIZE_PORTAL` 承载，复用 `src/main/portal.ts` 的主 frame 预约、无脚本页面、绘制确认与回收边界；`shell/Divider.tsx` 通过 `ResizablePanel.renderHandle` 投影原控件。占位几何与网页 bounds 不变，拖动仍由原分栏宿主计算。原生范围只覆盖控件及实际焦点阴影，不与对话浮层合并为透明大矩形；设置和对话浮层保持在其上方。macOS/Windows 原生拖动、焦点与合成截图分别验收，不以 fixture 代替。
-- **required**：可滚动的纯文本标题提示沿原生提示通道投影；hover 只向当前 revision 回传悬停状态以保持原 tooltip 生命周期，不获得菜单动作、网页或焦点能力，滚动/点击内容不得直接撤销提示。
-- **required**：可交互菜单由 `src/main/menuhost.ts` 校验实际窗口/网页资格，固定动作与有界 view 属于 `src/menu.ts`；原生 seed/publish 失败不得降级挂被网页遮挡的 DOM 菜单。共享 `components/primitive/presenter.ts` 的 consumer handle 按 surface/lease 隔离，旧消费者卸载不得撤销新菜单。
-- **required**：账户请求与导航留在原业务宿主，普通/native 共用纯 `AccountMenuPanel`；paint ACK 前的业务或主题更新须在同 lease ACK 后串行合并补投影，替换/身份变化后禁止旧补发。renderer epoch 不是 Main/Serve 凭据安全保证，两者分别验证。
-- **current（源码）**：普通设置与浏览器对话浮窗的原生呈现 owner 为 `src/main/portal.ts`，分别采用模态全窗口与有界非模态策略，原 React 树与业务 owner 不变；`shell/Settings.tsx`、`shell/Floating.tsx` 仅向无脚本子文档 Portal，`components/ui/Portal.tsx` 提供所属文档作用域，不复制 Store、不扩展业务 IPC 的 sender 权限。具体生命周期及验收缺口见下述浏览器边界。
+- **required**: Embedded web content is a separate `WebContentsView`; the main renderer's DOM stacking order is not a compositing order across native views. Overlapping product tips and address suggestions must use isolated native overlays managed by main. Do not solve occlusion by hiding, moving, or shrinking the web page.
+- **required**: The shared presentation contract validates plain data; preload exposes only the minimum overlay channels; main validates the sender and main frame, restricts local resources and permissions, and owns the lifecycle. An overlay is not a web-page registry or a CDP/Agent target. Non-interactive tips and address suggestions must keep separate state and focus boundaries.
+- **current (source)**: `renderer/src/layout.ts` prepares all anchors, measures all projections, and commits positions in sequence within one renderer frame. The web viewport and `shell/Floating.tsx` share a scheduler rather than having independent observers interleave immediate writes. Asynchronous Portal position requests are still serialized and coalesced to the latest value; this does not guarantee an atomic native-compositor commit. Web bounds updates do not broadcast unchanged business snapshots, and menu-position eligibility checks are separate from native visibility changes.
+- **current (source)**: `src/main/layers.ts` centrally maintains native ordering for controls, panels, menus/tips, and modals, and reorders only when the actual order is wrong. Creating an overlay must not cover an already open menu or modal. The two column dividers occupy separate bounded `RESIZE_PORTAL` slots; closing one must not revoke the other, and they must not be merged into a large transparent rectangle spanning web content.
+- **required**: Final-version acceptance must cover intermediate frames during continuous dragging, navigation columns after left/right swapping, collapse and restoration, keyboard focus, narrow viewports, and the ordering where a menu/tip is opened before a native panel is created. Use the real viewport size and the original site's responsive rules; do not inject third-party CSS, spoof the UA, or automatically change user zoom to conceal a fixed minimum width.
+- **required**: A native tip occupies only the painted rectangle of its content and themed shadow, with both the native view and tip-page background transparent. The content anchor must not move when the painted bounds expand. Do not promise mouse pass-through or forwarding of underlying web-page clicks through `WebContentsView`. Preserve modal occlusion protection and accessibility descriptions in the main renderer.
+- **current (source)**: Browser-adjacent column dividers use a dedicated `RESIZE_PORTAL` and reuse the main-frame reservation, script-free page, paint confirmation, and reclamation boundaries in `src/main/portal.ts`. `shell/Divider.tsx` projects the original control through `ResizablePanel.renderHandle`. Placeholder geometry and web bounds are unchanged; dragging is still computed by the original column host. Native bounds cover only the control and actual focus shadow, not a large transparent rectangle merged with conversation overlays; settings and conversation overlays remain above it. Verify native dragging, focus, and composited screenshots separately on macOS and Windows; fixtures are not substitutes.
+- **required**: Scrollable plain-text title tips are projected through the native tip channel. Hover reports only the current revision's hover state to preserve the original tooltip lifecycle; it grants no menu-action, web-page, or focus capability. Scrolling or clicking the content must not directly dismiss the tip.
+- **required**: Interactive menus use `src/main/menuhost.ts` to validate actual window/web-page eligibility; fixed actions and the bounded view belong to `src/menu.ts`. Failure to seed/publish the native menu must not fall back to a DOM menu obscured by web content. Consumer handles for the shared `components/primitive/presenter.ts` are isolated by surface/lease; unmounting an old consumer must not revoke a new menu.
+- **required**: Account requests and navigation remain in the original business host, while ordinary/native presentations share the pure `AccountMenuPanel`. Business or theme updates before paint ACK must be serialized and coalesced for projection after ACK for that same lease; after replacement or identity change, old updates must not be replayed. A renderer epoch is not a credential-security guarantee for Main/Serve; validate those independently.
+- **current (source)**: `src/main/portal.ts` owns native presentation for ordinary settings and browser conversation overlays, using modal full-window and bounded non-modal strategies respectively, without changing the original React tree or business owner. `shell/Settings.tsx` and `shell/Floating.tsx` project only into script-free child-document Portals; `components/ui/Portal.tsx` provides document-scoped ownership. Do not copy Stores or widen business-IPC sender permissions. See the browser boundary below for lifecycle details and acceptance gaps.
 
-根因、取舍和后续开发检查路径见[浏览器原生网页与产品浮层](../browser.md#原生网页与产品浮层开发设计约束)。
+For root causes, tradeoffs, and follow-up development checks, see [Native Browser Pages and Product Overlays](../browser.md#原生网页与产品浮层开发设计约束).
 
-## 窗口关闭确认与后台菜单
+<a id="窗口关闭确认与后台菜单"></a>
+## Window-Close Confirmation and Background Menu
 
-- **current**：`src/main/tray.ts` 管理 Windows 关闭请求与偏好，并持有 macOS 菜单栏 / Windows 系统托盘的原生菜单；`src/window.ts` 定义关闭 IPC，`src/tray.ts` 定义有界后台菜单快照与导航动作。main 只接受所属主窗口主 frame 对当前菜单请求的合法回复；渲染层不持有系统窗口生命周期。
-- **current**：每次左键或右键展开均请求新快照；`shell/Background.tsx` 接桥，`app/background.ts` 读取真实项目与任务 API，复用现有导航。最近项目是最近进入的项目，独立保存在 `recentProjectId` 偏好中，进入文献全览不清空；任务按活跃时间倒序最多三条，无任务隐藏整组。无可用项目显示打开应用，读取失败或超时显示不可用提示，不使用过期列表。
-- **current**：托盘项目名与任务名仅在 main 菜单展示层归一为空白单行并按字符簇中间省略；整行预算包含本地化操作前后缀，ASCII 字符簇计 1、其余计 2，预算为 48，不代表固定像素宽度。完整名称保留在可访问标签与 macOS 原生悬停提示中；Windows 通过打开对应页面查看。原始数据、协议长度限制及导航 ID 不变。
-- **required**：展开菜单不唤起主窗口；选择项目、新建对话、任务或文献全览才恢复窗口，点击项目/任务后重新核验目标归属与可用性。新建对话进入该项目草稿，不发送消息；退出复用 `app.quit()` 和现有保存排空。用户标题不得成为 IPC 指令或文件路径。
-- **current**：`shell/Close.tsx` 组合统一 `Dialog` / `Button` / `Checkbox`，复用主题及本地化；内容自适应高度，底部按钮整颗换行，极端小视口才允许弹窗内部滚动。窗口级确认使用 `design/zindex.css` 的专属层级，覆盖设置、登录与反馈弹层。
-- **required**：使用真实非 headless Desktop 的关闭事件验证；测试不得伪造 `process.platform` 或注入关闭 IPC 充当 Windows 验收。
-- **current（源码）**：`src/main/window.ts` 协调 macOS 关闭隐藏：原生全屏先请求退出，收到 `leave-full-screen` 后才隐藏；重复关闭只保留一个待办。恢复入口撤销待办，销毁释放监听，退出或维护期间不执行延迟隐藏。窗口及 renderer 不销毁，Windows 的确认与托盘策略不变。时序单测不替代真实全屏 Space、红色按钮及恢复操作验收。
-- **current**：托盘与窗口生命周期诊断写入 `$SCHOLARSEED_HOME/logs/window.log`，复用滚动日志，记录时间、进程、关闭选择、托盘鼠标进入/点击、原生菜单打开、恢复前后窗口状态与退出事件。日志用于区分事件未送达、恢复失败和进程退出，不把诊断改动当作托盘失效已修复。
+- **current**: `src/main/tray.ts` manages Windows close requests and preferences, and owns the native menus for the macOS menu bar / Windows system tray. `src/window.ts` defines close IPC; `src/tray.ts` defines bounded background-menu snapshots and navigation actions. Main accepts only valid replies to the current menu request from the owning main window's main frame; the rendering layer does not own system-window lifecycle.
+- **current**: Each left- or right-click menu opening requests a fresh snapshot. `shell/Background.tsx` connects the bridge, while `app/background.ts` reads the real project and task APIs and reuses existing navigation. The recent project is the most recently entered project, stored separately in the `recentProjectId` preference; entering the literature overview does not clear it. Tasks are sorted by activity time, with at most three shown; if there are no tasks, the entire group is hidden. If no project is available, show Open app; on read failure or timeout, show an unavailable message instead of stale results.
+- **current**: In the main menu presentation layer only, tray project and task names are normalized to a single blank-free line and middle-ellipsized at grapheme boundaries. The row budget includes localized prefix/suffix actions; ASCII graphemes count as 1 and others as 2, with a budget of 48. This is not a fixed pixel width. Full names remain in accessible labels and native macOS hover hints; on Windows, open the corresponding page to view them. Raw data, protocol length limits, and navigation IDs are unchanged.
+- **required**: Opening the menu must not activate the main window. Only selecting a project, new conversation, task, or literature overview restores it. After a project/task click, revalidate target ownership and availability. A new conversation opens a draft in that project without sending a message. Exit reuses `app.quit()` and the existing save drain. User titles must never become IPC commands or file paths.
+- **current**: `shell/Close.tsx` composes the shared `Dialog` / `Button` / `Checkbox` components and reuses the theme and localization. Content height is adaptive; bottom buttons wrap as whole buttons, and dialog-internal scrolling is allowed only in extremely small viewports. The window-level confirmation uses the dedicated layer in `design/zindex.css`, above settings, sign-in, and feedback overlays.
+- **required**: Verify close events in a real non-headless Desktop. Tests must not fake `process.platform` or inject close IPC as a substitute for Windows acceptance.
+- **current (source)**: `src/main/window.ts` coordinates hide-on-close on macOS: native fullscreen first requests exit, and the window is hidden only after `leave-full-screen`; repeated close requests keep just one pending action. A restore entry point cancels that action, destruction releases listeners, and delayed hiding does not run during exit or maintenance. The window and renderer are not destroyed; Windows confirmation and tray policies are unchanged. Timing unit tests do not replace real acceptance of fullscreen Space transitions, the red close button, and restoration.
+- **current**: Tray and window-lifecycle diagnostics are written to `$SCHOLARSEED_HOME/logs/window.log` using the existing rolling log. They record timestamps, process, close choice, tray pointer enter/click, native menu opening, window state before/after restoration, and exit events. The log distinguishes undelivered events, restore failures, and process exit; adding diagnostics does not mean tray failure has been fixed.
 
-| 平台 | 关闭窗口 | 真正退出 | 验证边界 |
+| Platform | Closing the window | Actually quitting | Verification boundary |
 | --- | --- | --- | --- |
-| macOS | 保持原有隐藏窗口，不展示 Windows 确认 | 应用菜单或菜单栏图标退出 | 后台菜单需真实菜单栏展开、隐藏/唤起与退出验证；确定性测试不能替代原生验收 |
-| Windows | 默认显示统一确认；取消不改变偏好；托盘操作保留后台工作；记住偏好保持原有下次直接隐藏语义 | 确认退出或托盘退出交给 `app.quit()` | 确定性测试覆盖请求与动作；Windows 真机主题、DPI 与交互验收仍为 **gap** |
+| macOS | Preserve the existing hide-window behavior; do not show the Windows confirmation | Quit from the app menu or menu-bar icon | Background-menu acceptance must exercise real menu-bar opening, hide/activate, and quit; deterministic tests do not replace native acceptance |
+| Windows | Show the shared confirmation by default; cancel does not change preferences; tray actions keep background work alive; the remembered preference retains the existing behavior of hiding directly next time | Confirmed or tray-initiated exit calls `app.quit()` | Deterministic tests cover requests and actions; real Windows theme, DPI, and interaction acceptance remains a **gap** |
 
-## 反馈录制的探针所有权与停止快照
+<a id="反馈录制的探针所有权与停止快照"></a>
+## Feedback Recording Probe Ownership and Stop Snapshot
 
-- **current**：问题反馈弹窗的录制按钮向所有用户开放，通过共享启动事件进入同一 Recorder；先关闭弹窗并等待渲染提交，再采集初始页面。右下角问号入口向所有用户显示，悬停提示“问题反馈”和快捷键。点击与空闲态快捷键共用身份策略：内部开关开启且已登录时启动录制，外部或未登录用户打开既有反馈表单。macOS 使用 `⌘+⌥+F`，Windows 使用 `Ctrl+Alt+F`；录制或暂停中快捷键仍执行截图，其余录制阶段不触发新流程。不新增第二套录制或反馈表单状态。
-- **gap**：Windows、外部已登录用户、暗色主题及最小原生窗口尚未完成真实验收；不以纯策略测试或 macOS 结果代替。
-- **current**：[probe](../../src/renderer/src/features/feedback-recorder/probe.ts) 只维护一个活动 lease，安装新探针前释放旧 lease。`dispose` 先同步提交防抖中的输入，再标记 inactive 并卸载监听；仅当 fetch、XHR 或 History 的当前实现仍是该探针的 wrapper 时恢复原函数，不覆盖后来安装者。
-- **required**：停止不能只清定时器丢弃最后输入，也不能先生成 review 快照再释放探针。[Recorder.stop](../../src/renderer/src/features/feedback-recorder/Recorder.tsx) 在 dispose 后读取权威 session ref，使最后一步进入 stopped 快照；后续调整须保持该顺序与幂等释放，不复制第二份录制业务状态。
-- **current（2026-10-28，源码）**：录制栏输入按步骤自动暂存在本轮 Renderer 会话，不再提供“记录”按钮、Enter 提交或逐条记录 toast；普通 Enter 换行。截图标记同样不单独请求后台；底部“提交”停止录制并打开补充说明弹窗，弹窗确认后才统一提交全部步骤、各步最新说明、截图和诊断信息。失败保留录制供手动重试；退出清空本轮暂存，不删除历史远端反馈。确定性回归覆盖自动保留、多步关联、确认前零提交、失败重试和退出隔离；最终实机上传仍须单独验收。
-- **current**：密码类型、凭据名称及敏感 autocomplete 输入不会由 `inputValue` 提取普通值。这只说明该输入机制的保护，不能外推请求正文、响应或截图自动去除所有秘密；录制与诊断日志的授权及实际提交范围仍分别核验。
-- **required**：Renderer 持有语义录制与状态，截图交由 Main 的 typed 能力；Desktop 经 preload 的受限提交协议，由 Main 校验附件、取得托管凭据并向产品配置的 `feedback_base_url` 提交。Renderer 不指定远端、凭据或宿主文件路径。Serve 仅作为可选的完整诊断 ZIP 收集器；不可用时 Main 打包已有录制、Renderer 报告和有界脱敏宿主日志，界面明确提示诊断不完整。远端失败不自动改道或重试，避免重复反馈。独立 Web/Serve 保留原有提交入口。不把探针搬入 Runtime 或 Trace，也不为反馈新增通用监控框架。截图覆盖原生网页时还须核对当前合成层，不把主 Renderer 的 capture 当作全窗口证据。
-- **gap**：旧评审的提交ID、截图及“无未解决发现”只证明当时范围；本页不追认当前或 Windows 实机验收。改动时先运行 [probe 契约](../../src/renderer/src/features/feedback-recorder/probe.test.ts)，再真实验证立即停止、暂停/恢复、多次安装、敏感输入、截图、审核与提交错误。fixture 中普通输入被保留不证明产品提交或凭据零泄漏。
-- **current（源码）**：Windows 勾选日志且 Serve 收集失败时，Main 从同一启动 Home 的有界持久后端日志提取白名单沙箱事件，另附 `host/sandbox-diagnostics.log`。保留 setup 尝试、固定探针、工具检查失败、RPC 关联字段和已报告的原生阶段/系统码，不复制整份后端或原生私有日志。记录缺失仍保持部分诊断；此兜底不代表完整原生阶段或真实提交已验收。
-- **current（源码）**：仅在最新可关联的 runner 管道握手失败未报告系统码时，Main 才在该请求时间窗查询 Windows System 的 Application Popup。唯一匹配的官方 runner 记录只导出 NTSTATUS、事件编号和时间、RPC 关联字段，标注为时间窗关联，不当作同一进程的证明或 Win32 错误码；缺失、歧义或读取失败不影响已有诊断，不导出系统事件原文。
+- **current**: The recording button in the issue-feedback dialog is available to all users and enters the same Recorder through a shared start event. Close the dialog and wait for the render commit before capturing the initial page. The bottom-right question-mark entry is visible to all users and shows “问题反馈” and the shortcut on hover. Clicks and the idle-state shortcut use the same identity policy: when the internal switch is enabled and the user is signed in, start recording; external or signed-out users open the existing feedback form. macOS uses `⌘+⌥+F`; Windows uses `Ctrl+Alt+F`. The shortcut still captures a screenshot while recording or paused; in other recording stages it does not start a new flow. Do not add a second set of recording or feedback-form state.
+- **gap**: Real acceptance is still outstanding for Windows, externally signed-in users, dark theme, and the minimum native window size; strategy-only tests or macOS results are not substitutes.
+- **current**: [probe](../../src/renderer/src/features/feedback-recorder/probe.ts) maintains only one active lease and releases the old lease before installing a new probe. `dispose` synchronously commits debounced input before marking the probe inactive and removing listeners. It restores the original implementation only if the current fetch, XHR, or History implementation is still that probe's wrapper, so it does not overwrite a later installer.
+- **required**: Stopping must neither clear a timer and discard the last input nor create the review snapshot before releasing the probe. [Recorder.stop](../../src/renderer/src/features/feedback-recorder/Recorder.tsx) reads the authoritative session ref after `dispose`, so the final step enters the stopped snapshot. Future changes must preserve this ordering and idempotent release without duplicating recording business state.
+- **current (2026-10-28, source)**: Recording-bar input is automatically staged per step in the current Renderer session. There is no longer a “Record” button, Enter-to-submit, or per-entry toast; ordinary Enter inserts a newline. Screenshot markers likewise make no separate backend request. The bottom “Submit” action stops recording and opens the supplemental-details dialog; only after confirmation are all steps, each step's latest description, screenshots, and diagnostics submitted together. Failures retain the recording for manual retry; exiting clears this run's staged data without deleting historical remote feedback. Deterministic regression coverage includes automatic retention, multi-step association, zero submissions before confirmation, retry after failure, and isolation on exit; final real-device upload still requires separate acceptance.
+- **current**: Password-type, credential-name, and sensitive autocomplete inputs are not extracted as ordinary values by `inputValue`. This describes protection in that input mechanism only; it does not imply that request bodies, responses, or screenshots automatically remove every secret. Authorization for recording and diagnostic logs, and their actual submission scope, must still be checked separately.
+- **required**: Renderer owns semantic recording and its state; screenshots go through Main's typed capability. Desktop submits through the restricted preload protocol; Main validates attachments, obtains hosted credentials, and submits to the product-configured `feedback_base_url`. Renderer does not choose the remote destination, credentials, or host file paths. Serve is only an optional collector for a complete diagnostic ZIP. If it is unavailable, Main packages the existing recording, Renderer report, and bounded redacted host logs, and the UI explicitly says diagnostics are incomplete. Remote failure does not trigger automatic rerouting or retry, to avoid duplicate feedback. Standalone Web/Serve retains its existing submission entry point. Do not move the probe into Runtime or Trace, or add a generic monitoring framework for feedback. When screenshots cover native web content, also verify the current compositor layer; a main Renderer capture is not evidence of the whole window.
+- **gap**: Submission IDs, screenshots, and “no unresolved findings” from the old review establish only its scope at that time; this page does not attest to current or Windows real-device acceptance. On changes, first run the [probe contract](../../src/renderer/src/features/feedback-recorder/probe.test.ts), then verify actual immediate stop, pause/resume, repeated installations, sensitive input, screenshots, review, and submission errors. A fixture retaining ordinary input does not prove product submission or zero credential leakage.
+- **current (source)**: On Windows, when log collection is selected and Serve collection fails, Main extracts allowlisted sandbox events from the bounded persistent backend log under the same startup Home and attaches them as `host/sandbox-diagnostics.log`. It retains setup attempts, fixed probes, tool-check failures, RPC correlation fields, and already reported native stage/system codes, without copying the entire backend or private native logs. Missing records still yield partial diagnostics; this fallback does not establish that full native-stage diagnostics or real submission has been accepted.
+- **current (source)**: Main queries Application Popup in Windows System only when the latest correlatable runner-pipe handshake failure has no reported system code, and only within that request's time window. The sole matching official runner record exports only NTSTATUS, event number and time, and RPC correlation fields. It is labeled as a time-window correlation, not proof of the same process or a Win32 error code. Missing, ambiguous, or failed reads do not affect existing diagnostics, and raw system-event text is not exported.
 
 ## Stop condition
 
-确定能力 owner、跨边界 contract 和覆盖测试后读对应源文件；不要把 preload 当业务层。
+After identifying the capability owner, cross-boundary contract, and coverage tests, read the corresponding source files; do not treat preload as a business layer.
 
-## Preview 更新范围
+<a id="preview-更新范围"></a>
+## Preview Update Scope
 
-**current（源码，安装包验收待完成）**：Desktop main 的 `preview.ts` 定义仅 preview
-使用的范围与固定候选判定；`updater.ts` 在既有更新状态目录保存 `preview.json`。
-默认 current-line，只接收当前 major.minor 的修复；current-version 只接收当前完整
-版本号的新构建。显式跨线选择绑定已查询且服务端允许的具体制品，取消后回到原范围，
-成功更新消耗一次性选择并保留范围偏好。release 不读取该状态，也不显示该入口。
+**current (source; packaged-build acceptance pending)**: Desktop main's `preview.ts` defines the scope and fixed-candidate rules used only by preview; `updater.ts` stores `preview.json` in the existing update-state directory. The default `current-line` accepts fixes for the current major.minor only; `current-version` accepts builds of the current full version only. Explicit cross-line selection is bound to a specific artifact that has been queried and allowed by the server. Cancellation returns to the original scope; a successful update consumes the one-time selection while retaining the scope preference. Release neither reads this state nor displays the entry point.
 
-**current（源码）**：preview 的 ready / preparation 候选记录使用更新状态目录内的
-`preview/`，DMG 载荷使用系统更新缓存内的 `preview/`；release 保持原路径。
-取消或重置在准备任务排空后回收该目录中尚无 ready 记录的部分下载，仍遵守活跃挂载保护。
-旧共享目录中的候选不会被 preview 认领或无归属删除；安装交接和恢复日志保持原路径，
-不以候选隔离绕过历史交接恢复。Windows Velopack 的安装根缓存和共享 runtime 另由其
-既有 Owner 管理，不因取消 preview 而清空。
+**current (source)**: Preview ready/preparation candidate records use `preview/` inside the update-state directory; DMG payloads use `preview/` inside the system update cache. Release keeps its original paths. After preparation tasks drain, cancellation or reset reclaims partial downloads in that directory that have no ready record, while preserving active-mount protection. Preview does not claim or orphan-delete candidates in the old shared directory. Installation handoff and recovery logs keep their original paths; candidate isolation does not bypass historical handoff recovery. The existing Owner separately manages the Windows Velopack installation-root cache and shared runtime; cancelling preview does not clear them.
 
-**required**：范围改变须排空准备任务、失效旧候选并拒绝迟到检查结果；启动恢复、
-下载和安装授权再次核对范围及服务端发布状态。仅展示已缓存候选不构成安装许可。
-设置关于页的 Preview 入口复用 Select、Dialog、Button，使用现有更新确认层级；
-无对应新版 MasterGo 画板，布局为沿既有设置与组件的语义推导。
+**required**: A scope change must drain preparation tasks, invalidate old candidates, and reject late check results. Startup recovery, download, and installation authorization must recheck the scope and server publication state. Merely displaying a cached candidate does not grant installation permission. The Preview entry on Settings > About reuses Select, Dialog, and Button and the existing update-confirmation layer. There is no corresponding updated MasterGo artboard; the layout is a semantic derivation from existing settings and components.
 
-**gap**：旧客户端的无来源上下文安装授权仍保持既有 published 与制品身份校验，
-新服务端只能在旧检查请求处默认同线，无法可靠撤销旧客户端已经缓存的跨线包。
-真实 macOS / Windows 签名包与配套发布服务的升级、取消及重启验收不能由组件测试替代。
+**gap**: Installation authorization without source context in old clients retains the existing published-state and artifact-identity checks. The new server can default to the same line only when handling an old check request; it cannot reliably revoke a cross-line package already cached by an old client. Component tests cannot replace upgrade, cancellation, and restart acceptance with real signed macOS / Windows packages and the corresponding release service.
 
-## macOS 启动交接记录续接
+<a id="macos-启动交接记录续接"></a>
+## Resuming macOS Startup-Handoff Records
 
-**current（源码）**：macOS 安装版将未决更新与一般启动故障分开。两处更新准入拒绝、
-交接观察失败，以及已观察事务中的目录恢复或最终复核失败，由 `admission.ts` 尝试发出
-非阻塞系统通知并以非零码退出，不显示会持续占用目标 App 的恢复对话框、不自动重启。
-不创建业务 BrowserWindow/Session、不启动后端、不发布存储选择，不消费或改写更新记录。
-无更新事务的一般存储故障仍使用独立 OS 原生恢复对话框。文案来自随包资源；主进程
-语言尚未初始化时使用默认语言，不读取未准入目录的偏好。
+**current (source)**: The macOS packaged app separates unresolved updates from general startup failures. For either of the two update-admission rejections, a handoff-observation failure, or a directory-restoration/final-verification failure in an observed transaction, `admission.ts` attempts a non-blocking system notification and exits with a nonzero code. It does not display a recovery dialog that would keep the target app occupied, and it does not restart automatically. It creates no business BrowserWindow/Session, starts no backend, publishes no storage selection, and does not consume or rewrite update records. General storage failures with no update transaction still use a separate native OS recovery dialog. Copy comes from bundled resources; if the main-process locale is not initialized, use the default language and do not read preferences from an unadmitted directory.
 
-原生 helper 活跃且失败回执已经通过绑定与目录身份核验时，观察结果为 `restoring`，
-不能因此启动旧版。它与 `installing` 一样保留既有五秒有界观察；helper 退出后重新
-检查回执才可能得到 `failed`。观察结束仍未决时退出，不能把原生的启动请求接受标记
-当作工作台恢复成功，也不通过延长原生安装超时掩盖竞争。
+When a native helper is active and the failure receipt has passed binding and directory-identity checks, the observed result is `restoring`; this must not cause the old version to start. As with `installing`, retain the existing bounded five-second observation. Only after the helper exits can a rechecked receipt yield `failed`. If the state is still unresolved when observation ends, exit. Do not treat the native acceptance of a launch request as successful Workbench restoration, and do not mask races by extending the native installation timeout.
 
-未决更新诊断通过 macOS `/usr/bin/logger` 写入系统日志，消息包含 `ScholarSeedStartup`、
-状态、PID、版本和有界脱敏错误，不初始化未准入 Home。可在 macOS“控制台”搜索该标记，
-或运行 `log show --last 1h --style compact --predicate 'eventMessage CONTAINS "ScholarSeedStartup"'`。
-`installing` / `restoring` 使用 `user.notice`，`failed` / `unconfirmed` 使用 `user.err`；
-状态文案与日志级别由同一穷尽映射持有。通知对象保留强引用至报告完成，完成回调幂等释放。
-通知的 `show` 事件不再提前结束报告，留用既有两秒总预算的剩余时间供系统呈现，
-失败则提前结束；不追加固定延时、不延长原生安装等待，也不承诺通知必达。
-通知与日志报告各有两秒上限；通知被系统禁用、日志失败或 app ready 未完成都不能保活
-目标 App，也不回退到阻塞错误框。headless 仅尝试系统诊断并退出。此报告不授予重装、
-删除记录或再次安装权限。手动覆盖必须先区分旧构建、精确目标和超越目标，验证原生终态、
-签名、渠道及遗留交接；残留原生请求或变化的目标目录身份仍可能拒绝，不能保证任意新包覆盖可恢复。
+Unresolved-update diagnostics are written to the macOS system log through `/usr/bin/logger`. Messages include `ScholarSeedStartup`, state, PID, version, and a bounded redacted error; they do not initialize an unadmitted Home. Search for this marker in macOS Console or run `log show --last 1h --style compact --predicate 'eventMessage CONTAINS "ScholarSeedStartup"'`. `installing` / `restoring` use `user.notice`; `failed` / `unconfirmed` use `user.err`. State copy and log level come from the same exhaustive mapping. Keep a strong reference to the notification until reporting finishes; its completion callback releases it idempotently. The notification's `show` event no longer ends reporting early: the remaining time in the existing two-second total budget is left for system presentation, while failures end reporting sooner. Do not add a fixed delay, extend native-install waiting, or promise notification delivery.
 
-一般存储故障的恢复对话框保持以下交互：
-“复制诊断信息”仅在用户点击后写入系统剪贴板并继续显示恢复窗口；“重试启动”保留
-原始工作目录及启动参数，退出后重新执行完整准入。“退出”及 Escape 只退出当前进程。
-原生异步对话框或重启调度失败时仍显示 OS 错误框；显式 headless 调用只记录诊断并以
-非零码退出。Windows 不进入 macOS 未决更新的通知、系统日志或强制退出分支。
+Notification and log reporting each have a two-second limit. A system-disabled notification, log failure, or incomplete app-ready state cannot keep the target app alive or fall back to a blocking error dialog. Headless mode only attempts system diagnostics and exits. This reporting grants no permission to reinstall, delete records, or install again. Before a manual overwrite, distinguish the old build, exact target, and a target beyond the intended one; verify the native terminal state, signature, channel, and any remaining handoff. A residual native request or changed target-directory identity may still cause rejection, so recovery from overwriting with an arbitrary new package is not guaranteed.
 
-**current（源码）**：存储选择后的最终启动准入结果绑定实际 Home、当前构建及完整交接
-记录。release 与 preview 复用这一安全判定，更新快照只投影通知，不再因交接目标较新
-重复阻断已允许的旧版本启动。启动后端前独立复核证据，不依赖快照是否已缓存；记录、
-构建、存储或启动上下文变化仍拒绝。只有已安装目标的成功对账可以消费对应记录；
-许可前失败及原生证明已恢复的失败保留证据，不恢复安装授权，再次更新仍须重新检查
-并授权。已验证失败只授权既有工作台健康确认入口结束相匹配的启动上下文；就绪前
-继续保留自定义存储恢复信息，健康确认后仍按完整记录比较再消费，不能删除新事务。
-后端启动前的最终证据失效仍走 OS 原生恢复入口，一般后端错误不改为准入错误。
-本进程真实在途的安装交接不由启动结果解除。
+The recovery dialog for a general storage failure retains these interactions: “Copy diagnostics” writes to the system clipboard only after the user clicks it, and leaves the recovery window open. “Retry startup” preserves the original working directory and startup arguments, then performs full admission again after exit. “Quit” and Escape exit only the current process. If the native async dialog or restart scheduling fails, still show an OS error dialog; an explicit headless invocation only records diagnostics and exits nonzero. Windows does not enter the macOS unresolved-update notification, system-log, or forced-exit branch.
 
-**required / gap**：上述失败续接须分别完成 macOS release、preview 签名安装版的
-失败后启动、正常更新及再次更新验收，还须覆盖 Dock 重入、恢复 App 先启动而 helper 后退出、
-持续未决与系统通知被禁用。源版本也须包含重入处理；只更新目标包不能改变旧版在替换前的行为。
-确定性状态回归和系统日志宿主探针不替代原生更新生命周期与最终截图证据。
+**current (source)**: The final startup-admission result after storage selection is bound to the actual Home, current build, and complete handoff record. Release and preview reuse this security decision. The update snapshot only projects notifications and no longer repeatedly blocks an already permitted old-version startup merely because the handoff target is newer. Evidence is independently rechecked before starting the backend, whether or not the snapshot has been cached; changes to the record, build, storage, or startup context still cause rejection. Only successful reconciliation of the installed target may consume the corresponding record. Failures before authorization and failures where native evidence proves recovery retain their evidence and do not restore installation authorization; another update must be checked and authorized again. A verified failure only authorizes the existing Workbench health-confirmation entry point to end the matching startup context. Custom-storage recovery information remains available until readiness; after health confirmation, consumption still requires comparing the complete record and must not delete a new transaction. If final evidence becomes invalid before backend startup, use the native OS recovery entry point; ordinary backend errors do not become admission errors. Startup results do not clear an installation handoff genuinely in flight in this process.
 
-**current（源码）**：新交接记录使用 schema 2。原生 `persistentIdentity(pin)` 从已通过
-逐层 no-follow、权限和本地卷准入的目录句柄读取卷 UUID、inode 和创建时间；不将随
-挂载/重启可能变化的 `st_dev` 作为持久身份。卷 UUID 缺失、目录身份不可读或任一身份
-字段变化仍拒绝交接。运行期 `identity/lineage` 的设备号与 inode 比较不变，不将跨重启
-身份用于运行期锁或祖先关系判断。
+**required / gap**: The failure-resumption flow above still needs acceptance for macOS release and preview signed packaged builds, covering startup after failure, a normal update, and another update. Also cover Dock re-entry, the recovery app starting before the helper exits, a persistently unresolved state, and system notifications being disabled. The source version must also contain re-entry handling; updating only the target package cannot change old-version behavior before replacement. Deterministic state regression and the system-log host probe do not replace native update-lifecycle and final-screenshot evidence.
 
-schema 1 仍按原始设备号与 inode 完整比较，不忽略设备号、不按年龄丢弃、不自动清空
-记录。旧记录没有稳定卷身份，设备号已变化时不能仅凭 inode 相同证明目录未被替换；
-这类既有故障需要保留现场后另行核验恢复。新协议的跨重启保障要求发起更新的源版本
-已包含 schema 2 写入能力；仅升级目标版本不能补回旧记录中缺失的证据。
+**current (source)**: New handoff records use schema 2. Native `persistentIdentity(pin)` reads the volume UUID, inode, and creation time from a directory handle admitted through component-by-component no-follow, permission, and local-volume checks. It does not use `st_dev` as persistent identity because that value may change across mounts/restarts. A missing volume UUID, unreadable directory identity, or change to any identity field still rejects handoff. Runtime `identity/lineage` comparisons of device number and inode are unchanged; cross-restart identity is not used for runtime locks or ancestor checks.
 
-| 平台 | 持久启动交接 | 运行期目录校验 |
+Schema 1 still compares the original device number and inode in full: it does not ignore the device number, discard records based on age, or clear records automatically. Old records have no stable volume identity, so if the device number has changed, a matching inode alone cannot prove that the directory was not replaced; preserve evidence and separately verify recovery for these existing failures. The new protocol's cross-restart guarantee requires the source version that initiates the update to already support writing schema 2; upgrading only the target version cannot restore evidence missing from an old record.
+
+| Platform | Persistent startup handoff | Runtime directory validation |
 | --- | --- | --- |
-| macOS | schema 2 比较卷 UUID、inode、创建时间；schema 1 保持严格旧校验 | 原生 no-follow/权限/本地卷准入及设备号、inode 校验不变 |
-| Windows | Velopack 不调用此协议；不导出 Darwin 持久身份接口 | 现有原生目录和更新校验不变 |
+| macOS | Schema 2 compares volume UUID, inode, and creation time; schema 1 retains strict legacy validation | Native no-follow/permission/local-volume admission and device-number/inode checks are unchanged |
+| Windows | Velopack does not use this protocol; no Darwin persistent-identity interface is exported | Existing native directory and update checks are unchanged |
 
-**current（源码）**：`src/main/relaunch.ts` 在原生目录写租约和记录锁内判定已有
-交接。UID、应用路径、bundle、三个存储根及其原生目录身份必须一致。相同源构建、
-目标构建、候选与调试端口的重试复用原字节；重试取消不删除原事务。当前安装构建
-已达到旧目标，且新目标严格更新时，可以原子发布下一次交接。旧记录的延迟清理
-仍需比较完整字节，不能删除新记录。
+**current (source)**: `src/main/relaunch.ts` evaluates existing handoffs while holding the native directory-write lease and record lock. The UID, app path, bundle, all three storage roots, and their native directory identities must match. Retries with the same source build, target build, candidate, and debug port reuse the original bytes; cancelling a retry does not delete the original transaction. Once the current installed build has reached the old target, a strictly newer target may be published atomically as the next handoff. Delayed cleanup of old records still requires a full byte comparison and must not delete a new record.
 
-取消或终态失败的下一次交接，在同一锁内比较当前记录字节后恢复前次记录原字节，
-不提前消费其健康确认；已被消费的记录不重新创建。复用交接的取消保留原记录，
-原生终态失败通过显式 `failed` 清理原因消费该事务。发生竞争时拒绝清理或恢复。
+For a cancelled or terminally failed subsequent handoff, compare the current record bytes under the same lock and restore the previous record's original bytes without consuming its health confirmation early. Do not recreate a record that has already been consumed. Cancelling a reused handoff preserves its original record; native terminal failure consumes that transaction using the explicit `failed` cleanup reason. If there is a race, reject cleanup or restoration.
 
-**required**：此处只管理启动上下文，不授权候选、原生安装或后台静默；这些检查仍由
-`updater.ts` 和 Squirrel 持有。未知源侧事务、不同存储身份和非法记录继续拒绝，
-不能按记录年龄推断安装结束。Windows Velopack 不调用本协议。
+**required**: This code manages startup context only; it does not authorize candidates, native installation, or background silent behavior. Those checks remain with `updater.ts` and Squirrel. Unknown source-side transactions, mismatched storage identities, and invalid records continue to be rejected; do not infer that installation ended based on record age. Windows Velopack does not use this protocol.
 
-**required/gap**：文件系统契约覆盖重试、目录替换和延迟清理；正式签名应用的更新、
-中断续接、原版本恢复与最终运行截图仍需通过 CI 产物验收，契约测试不证明这些流程。
+**required / gap**: Filesystem contracts cover retries, directory replacement, and delayed cleanup. Updates, resumption after interruption, restoration of the original version, and final runtime screenshots for the officially signed app still require acceptance using CI artifacts; contract tests do not prove these flows.
 
-## macOS 终态恢复只读预检
+<a id="macos-终态恢复只读预检"></a>
+## macOS Terminal-State Recovery Read-Only Preflight
 
-**current（源码）**：较新构建接管旧启动上下文时，`squirrelstartup.ts` 按当前安装及
-绑定候选的规范化助手路径判断 ShipIt 归属，其他应用的同名助手不阻断。保留的原生
-请求必须与 bundle、binding、源/目标路径一致，并具备非零错误码及原目录身份绑定的
-失败 ack；前后再次检查进程、请求字节与文件身份。完成接管前重新准入，再沿原路径
-消费 handoff，日志区分接管与安装成功。不删除原生凭据或用户数据。
-当前应用目录替换后，单独验证签名 Team/bundle，并固定新应用及 Contents 身份；旧 ack
-仍须匹配冻结旧目标、未变的目标父目录和原 source。普通原版本恢复仍要求旧目标身份。
-source 被替换、ack 缺失或旧请求未绑定时继续拒绝；较新构建号不能补足这些证据。
-原生日志的持久终态 publication 证明旧恢复已完成，允许同一目标父目录中的独立新请求推进；
-不重放旧 source，不跳过新候选签名及安装准入。无 publication 的 legacy journal 仍要求
-原目标存活。日志推进后保留的 ack 继续拒绝旧请求，缺失 ack 不构成永久防重放账本。
-Windows 不执行该 macOS 分支。确定性/宿主进程检查不替代真实签名应用恢复验收。
+**current (source)**: When a newer build takes over an old startup context, `squirrelstartup.ts` determines ShipIt ownership using the normalized helper path for the current installation and bound candidate; a same-named helper belonging to another app does not block it. A retained native request must match the bundle, binding, and source/target paths, and include a nonzero error code and failure ack bound to the original directory identity. Recheck the process, request bytes, and file identity both before and after. Repeat admission before completing takeover, then consume the handoff along its original path; logs distinguish takeover from successful installation. Do not delete native credentials or user data.
 
-**current（内部基础层）**：`retirement.h` 将明确操作、源/目标路径与已归档请求/日志摘要
-写入独立、有限容量的 `retired.plist`，先持久保存拒绝记录再清空旧准备日志。后续新事务
-不会覆盖此账本，容量满时拒绝而非淘汰历史。旧 source/ack 缺失不要求伪造失败凭据；
-候选目录与应用保留。写入前复查准备目录及锁的持有身份，当前日志须与已加载事务一致；
-缓存为空也不能掩盖新写入的事务。只读资格、非空 cleanup、变化的日志及不确定写入不能退休。
-原生预检也按源/目标应用树及规范别名识别助手，已解析的第三方 ShipIt 不阻断；
-旧目录删除导致 `proc_pidpath` 返回 ENOENT 时，改用内核文件映射证明归属：公共区域
-迭代器遍历至结束（最多 4096 个区域），须包含原生可执行映射；三次 PID/出生时间/UID
-核对之间两次映射快照必须一致。所有映射 vnode 路径都检查书深源/目标树，维护还检查
-已准备候选；书深自己的映像即使文件已删除仍阻断。依据是内核路径与 device/inode，
-不是进程名、argv、当前替换文件或厂商白名单。Intel 原生 macOS 仅排除普通用户 VM
-上限之外、与观察者自身启动时选定地址及属性一致的 4 KiB RX commpage submap；
-当前/最大权限必须均为 RX、共享继承且无 vnode，submap 的零对象 ID 不作为身份证据。
-arm64 与 Rosetta 不启用此例外。真实内核回归验证已删除第三方映像为 absent、自有
-映像为 active、额外普通匿名执行内存为 unknown；Intel 原生运行还必须观察到实际
-commpage，arm64 或合成契约通过不替代 Intel 验收。部分/缺失 vnode、其他匿名可执行映射、权限
-错误、映射漂移、超界/超时及其他路径错误仍拒绝；该分支不授予精确助手停泊豁免。
-不扫描其他应用数据、不停止其进程，也不要求第三方更新完成。
+If the current app directory has been replaced, independently verify the signature Team/bundle and pin the new app and Contents identities. The old ack must still match the frozen old target, unchanged target parent, and original source. Ordinary restoration of the old version still requires the old target identity. Continue to reject a replaced source, missing ack, or unbound old request; a newer build number cannot supply missing evidence. Durable terminal publication in the native log proves that old recovery completed and permits an independent new request to proceed under the same target parent. Do not replay the old source or skip signature and installation admission for the new candidate. A legacy journal without publication still requires the original target to exist. An ack retained after log advancement continues to reject the old request; a missing ack is not a permanent replay-prevention ledger. Windows does not use this macOS branch. Deterministic and host-process checks do not replace recovery acceptance with a real signed app.
 
-**current（源码）**：独立签名修复 App 的 `--repair-update-mode=retire` 配合
-`--repair-update-target=<canonical App>` 接入显式退休：支持缺 source/ack、无 binding 的旧日志/
-请求，以及目标父目录已替换。目标必须先安装 CI 新签名包；工具校验目标 Developer ID、
-封存 receipt 的 retirement overlay 与实际 helper Mach-O 指纹。工具本身不签名、不替换安装。
-数据域与交接记录互斥先于原生资格和任务停泊；只停止 label、规范 helper 路径、参数、
-PID/出生时间/UID 全部匹配的 user-domain 任务，system-domain 任务或无法核实的服务/进程拒绝。
-停泊前归档原生原字节，消费前持久保存 TS 原字节与原生 proof；先写拒绝账本再推进日志，
-保留应用和候选。中断重跑复用原 intent，拒绝新记录或新 inode。缺启动 context 时必须明确
-提供三个既有存储根，不猜用户配置。无 binding 的 TS handoff 以原字节哈希标识仅拒绝的
-维护操作，不伪造旧安装授权；旧请求原字节已不存在的孤儿接续以归档日志摘要绑定拒绝记录。
-私有 ledger 暂存中断可重建。普通 inspect/apply 仍保留原严格前提；正式签名与故障机验收在合并后。
+**current (internal foundation)**: `retirement.h` writes the explicit operation, source/target paths, and archived request/log summaries to a separate, capacity-bounded `retired.plist`, durably storing the rejection record before clearing the old preparation log. Later transactions do not overwrite this ledger; when full, reject rather than evict history. Missing old source/ack does not require fabricating failure credentials; preserve the candidate directory and app. Before writing, recheck preparation-directory identity and lock ownership; the current log must match the loaded transaction. An empty cache must not hide a newly written transaction. Read-only eligibility, nonempty cleanup, a changed log, or uncertain writes prevent retirement.
 
-**current（源码）**：`src/main/terminal.ts` 与 `scripts/recovery.ts` 提供阶段 1
-只读预检；显式 `build` 仅编译工具，`inspect` 不隐式构建、不写产品记录，也不授予
-恢复、启动或安装权限。参数、签名 Team、全部相关 App/ShipIt 正常退出前提及输出边界见
-[原生 Owner 的操作说明](../../native/shipit/README.md#read-only-terminal-recovery-preflight)。
+Native preflight also identifies helpers by source/target app trees and canonical aliases; a resolved third-party ShipIt does not block. If deletion of the old directory makes `proc_pidpath` return ENOENT, prove ownership from kernel file mappings instead: iterate public regions to completion (at most 4096 regions), requiring a native executable mapping. Two mapping snapshots taken between three checks of PID/birth time/UID must match. Check all mapped vnode paths against the ScholarSeed source/target trees and, during maintenance, the prepared candidate as well. ScholarSeed's own image blocks even if its file was deleted. Evidence is based on kernel paths and device/inode, not process name, argv, a currently substituted file, or a vendor allowlist.
 
-**current（源码）**：`restoration.ts` 的显式 `apply --request-id` 在同一 Node 进程持有
-原生 Cleanup/Preparation 资格、整组数据维护资格与 context-write 锁；通过原字节和
-inode 比对、持久 mutation reservation、不可变 WAL 和 intent 精确消费旧 context/handoff。
-中断只前滚同一事务，handoff 最后消费；新记录、Unknown 或释放不确定均拒绝。
-原 App/Contents、原生凭据和用户数据不改；原存储选择保留在 intent 和恢复输出中。
+On Intel native macOS only, exclude a 4 KiB RX commpage submap outside the ordinary user VM limit when its address and attributes match those selected at observer startup. Both current and maximum permissions must be RX, inheritance must be shared, and there must be no vnode; a zero submap object ID is not identity evidence. This exception is disabled on arm64 and Rosetta. Real kernel regression cases assert that a deleted third-party image is absent, the app's own image is active, and extra ordinary anonymous executable memory is unknown. Intel-native execution must also observe the actual commpage; arm64 or synthetic-contract success cannot replace Intel acceptance. Partial/missing vnode data, other anonymous executable mappings, permission errors, mapping drift, limits/timeouts, and other path errors still cause rejection; this branch grants no exemption for parking an exact helper. Do not scan other applications' data, stop their processes, or require third-party updates to finish.
 
-**current（源码）**：原生退出观察使用完整内核身份与仅存活映像覆盖，在同一截止内
-至多补齐一批新 PID，再独立终检；身份漂移、SIDL、缺证或再次新增仍拒绝，不重试
-失败 PID。此为点时观察而非持续启动围栏，执行期间须保持其他 App 实例退出；
-详细约束由原生 Owner 持有，名称和父 PID 只作诊断，不作放行依据。
+**current (source)**: Explicit retirement is available through `--repair-update-mode=retire` with `--repair-update-target=<canonical App>` in the separately signed repair app. It supports legacy logs/requests missing source/ack, lacking a binding, or targeting a replaced parent directory. First install the new CI-signed target package. The tool validates its Developer ID, the retirement overlay in the sealed receipt, and the actual helper Mach-O fingerprint. The tool itself neither signs nor replaces the installation.
 
-**current（源码）**：旧目录删除导致 `proc_pidpath` 返回 ENOENT 时，改用内核文件映射
-证明归属：公共区域迭代器遍历至结束（最多 4096 个区域），须包含原生可执行映射；
-三次 PID/出生时间/UID 核对之间两次映射快照必须一致。所有映射 vnode 路径都检查
-书深源/目标树；书深自己的映像即使文件已删除仍阻断。依据是内核路径与 device/inode，
-不是进程名、argv、当前替换文件或厂商白名单。Intel 原生 macOS 仅排除普通用户 VM
-上限之外、与观察者自身启动时选定地址及属性一致的 4 KiB RX commpage submap；
-当前/最大权限必须均为 RX、共享继承且无 vnode，submap 的零对象 ID 不作为身份证据。
-arm64 与 Rosetta 不启用此例外。真实内核回归用例断言已删除第三方映像为 absent、自有
-映像为 active、额外普通匿名执行内存为 unknown；Intel 原生运行还必须观察到实际
-commpage，arm64 或合成契约通过不替代 Intel 验收。部分/缺失 vnode、其他匿名可执行映射、权限
-错误、映射漂移、超界/超时及其他路径错误仍拒绝；该分支不授予精确助手停泊豁免。
-不扫描其他应用数据、不停止其进程，也不要求第三方更新完成。
+Acquire exclusive access to the data domain and handoff record before native eligibility checks or task parking. Stop only user-domain tasks whose label, canonical helper path, arguments, PID, birth time, and UID all match; reject system-domain tasks and services/processes that cannot be verified. Archive the original native bytes before parking; durably save the TypeScript original bytes and native proof before consumption. Write the rejection ledger before advancing the log, and preserve the app and candidate. Retries after interruption reuse the original intent and reject new records or inodes. If startup context is missing, require the user to explicitly provide the three existing storage roots; do not guess configuration. For an unbound TypeScript handoff, identify a maintenance-only rejection by the original-byte hash without fabricating old installation authorization. For orphan continuation where the old request bytes no longer exist, bind the rejection record to the archived log summary. Interrupted staging of the private ledger is rebuildable. Ordinary `inspect`/`apply` retain their original strict prerequisites; formal-signature and fault-machine acceptance remains pending integration.
 
-**current（源码）**：新 preparation 协议在私有 journal 原子提交绑定的终态事实后，
-再发送 cache ack；ack 为兼容通知，不是唯一耐久终态权威。旧协议缺 source/ack 不自动迁移，
-损坏或未知版本不降级。此协议不替换已安装旧 helper，也不授权孤儿 Native 记录退役；
-提交顺序、回收语义和限制见[原生终态 Owner](../../native/shipit/README.md#durable-terminal-publication)。
+**current (source)**: `src/main/terminal.ts` and `scripts/recovery.ts` provide a phase-1 read-only preflight. Explicit `build` only compiles the tool; `inspect` does not implicitly build or write product records, and grants no recovery, startup, or installation permission. See [the native Owner's operating guide](../../native/shipit/README.md#read-only-terminal-recovery-preflight) for parameters, signing Team, prerequisites for all related Apps/ShipIt to exit normally, and output boundaries.
 
-**current（源码）**：新 helper 在尚未获得安装许可的新请求中，可对严格匹配的 legacy
-失败孤儿事务执行原生 supersession：原 source 与完整私有 candidate 目录均须经 no-follow
-检查确实缺失，无 ownership/rollback；当前 App 和新 source 独立通过与 helper 同 Team、
-指定 bundle 的离线签名验证。双原生锁内复核身份与记录，先原字节归档及拒绝账本再原子退役旧准备
-记录，随后仍走正常准备、签名及安装授权。不把当前 App 身份当旧目标已恢复的证明，
-不补造 ack、不消费 Desktop 启动记录、不清理历史目录或用户数据。限定形态、拒绝边界及
-旧 helper 的部署缺口见[原生 supersession Owner](../../native/shipit/README.md#automatic-legacy-orphan-supersession)。
-此源码能力尚须原生运行及正式签名产品的“故障状态→恢复→更新→再次更新”完整验收。
+**current (source)**: Explicit `apply --request-id` in `restoration.ts` holds native Cleanup/Preparation eligibility, whole-data-set maintenance eligibility, and the context-write lock within one Node process. It consumes the old context/handoff exactly using original-byte and inode comparisons, a durable mutation reservation, immutable WAL, and intent. On interruption, only the same transaction is rolled forward, with handoff consumed last; new records, Unknown state, or uncertain release are rejected. The original App/Contents, native credentials, and user data are not changed; the original storage selection remains in the intent and recovery output.
 
-**current（源码）**：新签名 App 的 `--repair-update-target=<canonical App>` 在普通启动
-准入前进入独立修复模式，不先覆盖旧安装，不启动后端、不发布默认 profile。
-`repair.ts` 按明确目标读取原启动上下文；`restoration.ts` 复用维护组、context-write、
-不可变 intent、WAL 和 mutation reservation。随包 macOS `repair.node` 在同进程持有
-现有 Cleanup/Preparation 锁，观察真实进程退出、原数据目录身份及无安装许可的 native
-请求。该独立 orphan 协议允许尚未收到 downloaded 事件、因而没有 nativeRequest 的
-requested/failed 交接，不放宽既有 terminal 观察。
+**current (source)**: Native-exit observation uses complete kernel identities and covers only live images. It may account for at most one batch of newly observed PIDs within the same deadline, followed by a separate final check. Identity drift, SIDL, missing evidence, or further new processes still cause rejection; failed PIDs are not retried. This is a point-in-time observation, not a continuous startup fence, so other App instances must remain exited during execution. The native Owner holds the detailed constraints; names and parent PIDs are diagnostic only, not grounds for admission.
 
-持久 intent 与 mutation reservation 后，先原生归档并退役孤儿记录及精确未授权请求，
-再消费旧 context、最后消费 handoff；原生拒绝不会先清掉原 context。
+**current (source)**: If deletion of the old directory makes `proc_pidpath` return ENOENT, prove ownership using kernel file mappings instead. Iterate the public-region iterator to completion (up to 4096 regions), requiring a native executable mapping. The two mapping snapshots taken between three checks of PID/birth time/UID must match. Check all mapped vnode paths against the ScholarSeed source/target trees; during maintenance, check the prepared candidate as well. ScholarSeed's own image blocks even if its file has been deleted. Evidence is based on kernel paths and device/inode, not process name, argv, the currently substituted file, or a vendor allowlist.
 
-Cleanup maintenance 仅观察：不创建缺失锁，所有现有锁都须为私有权限，冻结打开时
-journal 基线，Cleanup 写接口一律 EROFS。`SSCleanupMaintenanceSnapshot` 返回 Cleanup
-而非 Preparation 快照；普通只读与可写会话不能交叉使用快照入口。缺失 journal 是
-可重复比较的成功观察，不遗留 ENOENT NSError。重读的 Preparation 当前与归档 plist
-须先核根和 record 类型，损坏内容拒绝而非原生异常，也不修改证据。
+On Intel native macOS only, exclude a 4 KiB RX commpage submap outside the ordinary user VM limit when its address and attributes match those selected at observer startup. Both current and maximum permissions must be RX, inheritance must be shared, and there must be no vnode; a zero submap object ID is not identity evidence. This exception is disabled on arm64 and Rosetta. Real kernel regression cases assert that a deleted third-party image is absent, the app's own image is active, and extra ordinary anonymous executable memory is unknown. Intel-native execution must also observe the actual commpage; arm64 or synthetic-contract success cannot replace Intel acceptance. Partial/missing vnode data, other anonymous executable mappings, permission errors, mapping drift, limits/timeouts, and other path errors still cause rejection; this branch grants no exemption for parking an exact helper. Do not scan other applications' data, stop their processes, or require third-party updates to finish.
 
-独立 CLI 仅支持 terminal 恢复，orphan 及其 intent 只能由签名 App 入口执行。探针
-限额/schema 由 terminal 协议统一持有，存储身份版本与 intent 版本分离。存储准入前
-修复开始、完成和失败仅写系统日志，记录是否显式选择及成功请求/构建，不写私有路径
-或提前打开 profile 写产品日志。`compilation.cjs` 统一持有修复编译框架、参数和支持
-单元，并进入模块/恢复工具源码指纹。原生拒绝回归直接覆盖 maintenance、损坏记录及
-succession/parking；parking 测试的 SMJobRemove 为测试内计数替身，要求拒绝前零调用。
-这不证明真实签名放行和 launchd 移除成功，两条正向路径仍须合并后的正式签名产品验收。
+**current (source)**: The new preparation protocol sends a cache ack only after atomically committing the bound terminal fact to a private journal; the ack is a compatibility notification, not the sole durable authority for terminal state. Old protocols missing source/ack are not migrated automatically; corrupt or unknown versions do not downgrade. This protocol neither replaces an installed old helper nor authorizes retirement of orphan Native records. See the [native terminal-state Owner](../../native/shipit/README.md#durable-terminal-publication) for commit ordering, reclamation semantics, and constraints.
 
-顺序为消费旧 context、原生归档并退役孤儿记录及精确未授权请求、最后消费 handoff。
-运行时显式注入原生能力；工具发现、编译及独立探针调用留在 `scripts/recovery.ts`，不随产品打包。
-中断只从本安装唯一未完成的有效 intent 前滚；空 journal/缺失请求须有完全匹配的私有
-原字节归档，不按时间挑最新记录，不接受同字节新 inode、外来 scope 或新事务。
-提交后、重启前中断时，仅 context、handoff 和 native 请求均仍缺失才允许已提交 intent
-接续启动；仍须原生归档、签名和真实进程退出资格，无歧义选择不因已提交而放宽。
-修复后经签名源 App 的 executable 和原 Home/userData/workspace/CDP 上下文重开旧版，
-再由旧版正常更新；不回放旧授权、不清 rollback、不迁移配置或凭据。该入口不杀进程，
-需要目标 App 和自有运行时先正常退出；ad-hoc、开发模式及 Windows 拒绝。
-正式签名修复包、原故障机器的更新成功及再次更新仍须独立验收，不能用原生/事务 fixture
-代替。命令及完整约束见[独立修复 Owner](../../native/shipit/README.md#independent-signed-repair-entry)。
+**current (source)**: On a new request that has not yet received installation permission, the new helper can perform native supersession of a strictly matching legacy failed-orphan transaction. The original source and entire private candidate directory must both be confirmed missing by no-follow checks, with no ownership/rollback. The current App and new source must independently pass offline signature verification against the helper's Team and specified bundle. Recheck identities and records under both native locks, archive the original bytes and write the rejection ledger, then atomically retire the old preparation record. Continue through normal preparation, signature, and installation authorization. Do not treat the current App identity as proof that the old target was restored, fabricate an ack, consume Desktop startup records, or clean historical directories or user data. See the [native supersession Owner](../../native/shipit/README.md#automatic-legacy-orphan-supersession) for the constrained cases, rejection boundaries, and old-helper deployment gap. This source capability still needs end-to-end acceptance on a native runtime and formally signed product for “failure state → recovery → update → update again.”
 
-**current（源码）**：旧客户端超时后可能已消费 context、仅保留 failed handoff 和未授权
-native 请求。此时入口必须显式给出既有 Home/userData/workspace，不猜默认值；以新授权
-目录及其当前原生持久身份建立 schema-2 `mac-orphan-selection-recovery` intent，
-`context: null`，持续验证旧 context 仍缺失。不得补造或消费虚构 context；新 context、
-冲突显式路径及未知身份均拒绝。未完成 intent 保存所选目录，后续同目标修复从该 intent
-接续，不按时间挑选。路径须核验为用户原选择，缺失记录本身不证明原选择。
+**current (source)**: A newly signed App with `--repair-update-target=<canonical App>` enters an independent repair mode before ordinary startup admission. It does not first overwrite the old installation, start the backend, or publish a default profile. `repair.ts` reads startup context for the explicit target; `restoration.ts` reuses the maintenance group, context-write lock, immutable intent, WAL, and mutation reservation. The bundled macOS `repair.node` holds the existing Cleanup/Preparation locks in the same process while observing actual process exit, original data-directory identity, and native requests without installation permission. This independent orphan protocol permits a requested/failed handoff that has not received a downloaded event and therefore has no `nativeRequest`; it does not loosen existing terminal-state observation.
 
-**current（源码）**：旧 helper 可在退出 App 后仍每两秒由 launchd 拉起。修复在两把
-原生锁内核对 user-domain 任务的 label、三个参数、安装内 canonical helper、未授权
-绑定请求及无 rollback 所有权，并验证修复宿主/源/候选签名。停任务前仅可豁免该已核验
-任务的精确用户 PID/启动身份和 executable，不能豁免目标进程或外来 helper；移除后
-必须由无豁免的普通观察证明退出。不按进程名杀进程，不操作 system-domain、不删
-launch-agent、不提权兜底。旧 updater 正常重提任务；仅已释放锁的短暂竞争在事务前
-有界重新取证，签名、绑定和 uncertain release 不重试。
+After persisting the intent and mutation reservation, first archive natively and retire the orphan record and exact unauthorized request; then consume the old context and finally the handoff. A native rejection never clears the original context first.
 
-**required / gap**：预检摘要不是执行权限；真实签名产品的恢复、正常重开及再次更新仍须
-独立验收，不能由 fixture 或 Native 契约代替。Windows 不执行恢复入口；不改选已指定目标。
+Cleanup maintenance is observation-only: it does not create missing locks, every existing lock must have private permissions, the journal baseline is frozen when opened, and all Cleanup write APIs return EROFS. `SSCleanupMaintenanceSnapshot` returns a Cleanup rather than Preparation snapshot; ordinary read-only and writable sessions cannot cross-use snapshot entry points. A missing journal is a successful observation that can be compared repeatedly and leaves no ENOENT NSError. Before rereading current and archived Preparation plists, validate their roots and record types. Reject corrupt content rather than raising a native exception, and do not modify evidence.
 
-**current（源码）**：macOS 正常更新采用两阶段：归档/来源信任检查、原生准备和绑定
-downloaded 回执先完成，随后才冻结偏好、请求 Serve 维护并保存启动上下文。准备阶段
-工作台不被遮罩；维护或授权失败且释放结果确定时恢复写者，仅复用同一候选与归档的
-已就绪原生请求。后端干净退出后再次获取在线授权，紧邻 native quit-and-install 同步
-复核授权及绑定。此时瞬态网络失败允许重试原请求，不重跑准备、不回放旧授权。
-下载、只读校验和最终授权的临时网络/文件竞争最多尝试三次，取消中断退避；
-签名、绑定和确定事务冲突不按瞬态重试。
+The standalone CLI supports terminal recovery only; orphan recovery and its intent can be executed only through the signed-App entry point. The terminal protocol centrally owns probe limits/schema, while the storage-identity version is separate from the intent version. Before storage admission, repair start/completion/failure is written only to the system log, recording whether selection was explicit and the successful request/build, without private paths or opening a profile early to write product logs. `compilation.cjs` centrally owns the repair compilation framework, parameters, and support units, and is included in the module/recovery-tool source fingerprint. Native-rejection regressions directly cover maintenance, corrupt records, and succession/parking. In parking tests, `SMJobRemove` is an in-test counting substitute and must have zero calls before rejection. This does not prove real signed admission or successful launchd removal; both positive paths still require post-merge acceptance in a formally signed product.
 
-`rescue.ts` 持有原生文件选择与确认交互。产品修复动作只选择独立官方签名 App，
-要求密封的 `update_repair_protocol: 1`、分发 lane 和原 Team/bundle。旧客户端停工前先验
-签名/能力，再在原生锁下执行无修改权的 `orphan-plan`；允许源进程仍运行，但不同
-proof kind、无 repair 方法，不能作为执行权限。退出后独立 worker 重新取得完整资格。
-较新的独立 App 不能消费其他安装或无 nativeRequest 绑定的 handoff；准入拒绝时提供
-原生修复向导，显式 `--repair-update` 也可进入。向导要求目标与三个原有目录，不先
-发布默认 profile、不启动后端。占用只允许最多三次显式重检，部分修改、释放不确定、
-签名或绑定失败停止；恢复后重开旧版正常更新，不能把“恢复更新能力”说成“更新成功”。
+The order is: consume the old context; natively archive and retire the orphan record and exact unauthorized request; then consume the handoff last. Inject native capabilities explicitly at runtime; tool discovery, compilation, and standalone probe invocation remain in `scripts/recovery.ts` and are not packaged with the product. After interruption, roll forward only the unique valid unfinished intent for this installation. An empty journal or missing request requires a fully matching private archive of the original bytes. Do not select the newest record by timestamp, or accept a new inode with identical bytes, an external scope, or a new transaction. If interrupted after commit but before restart, resume the committed intent only if context, handoff, and native request are all still missing. Native archive, signature, and actual process-exit eligibility are still required; an unambiguous selection is not relaxed because the intent was committed.
 
-界面区分非阻塞准备、保存/退出和交接，交接后不再显示假取消按钮；源应用未退出不报
-“正在重启”。与启动 context 绑定的新构建报告“正在启动新版”，仅真实后端/主工作台
-健康确认后报告“更新已完成并验证”。Windows 仍归 Velopack，拒绝 macOS 修复入口，
-仅将源侧最终显示改为交接而非提前重启。
-**required / gap**：合并后仍须正式签名 macOS 原故障恢复、正常更新、再次更新及真实截图，
-Windows 原生产品验收独立进行；本地编译和契约测试不是这两类产品准出。
+After repair, reopen the old version through the signed source App's executable and the original Home/userData/workspace/CDP context, then update normally from that old version. Do not replay old authorization, clear rollback, or migrate configuration or credentials. This entry point does not kill processes; the target App and its own runtime must exit normally first. Reject ad-hoc and development builds and Windows. Acceptance with the formally signed repair package, successful update on the original fault machine, and a subsequent update still needs independent evidence; native/transaction fixtures are not substitutes. See the [independent repair Owner](../../native/shipit/README.md#independent-signed-repair-entry) for commands and complete constraints.
 
-## 更新候选授权冲突恢复
+**current (source)**: After an old client times out, it may already have consumed the context, leaving only a failed handoff and unauthorized native request. In this case, the entry point must explicitly receive the existing Home/userData/workspace; do not guess defaults. Create a schema-2 `mac-orphan-selection-recovery` intent with `context: null` using the newly authorized directories and their current native persistent identities, and keep verifying that the old context remains absent. Do not fabricate or consume a nonexistent context; reject a new context, conflicting explicit paths, or unknown identity. An unfinished intent preserves the selected directories, and a later repair for the same target resumes from that intent rather than choosing by timestamp. Verify the paths against the user's original selection; a missing record alone does not prove what was selected.
 
-**current（源码）**：安装授权 409 以 `activation_candidate_changed` 传递；updater 在候选状态目录
-先原子保存带代次的 `rejected.json`，再撤销对应 ready、准备检查点和归档。清理失败不取消拒绝记录。
-main 在维护恢复和安装锁释放后重置准备队列、作废旧检查代次，并展示无候选的“检查更新”动作。
-普通网络失败与用户取消仍保留原重试语义；维护恢复不确定时继续阻止安装。
+**current (source)**: An old helper may be relaunched by launchd every two seconds even after the App exits. Under both native locks, repair verifies the user-domain task's label, three arguments, canonical helper inside the installation, unauthorized bound request, and absence of rollback ownership; it also verifies the repair host/source/candidate signatures. Before parking the task, only that verified task's exact user PID/start identity and executable may be exempted; the target process or an external helper cannot be exempted. After removal, an ordinary observation without exemptions must prove exit. Do not kill by process name, operate on the system domain, remove the launch agent, or use privilege escalation as fallback. The old updater may normally resubmit the task; only transient contention after a released lock may be re-evidenced, with a bounded retry before transaction start. Do not retry signature, binding, or uncertain-release failures.
 
-冷启动只把磁盘包当作可复用字节，线上检查及准备完成前不恢复 ready。重新检查若仍返回被拒绝的
-候选，必须取得并验证一次新授权，且拒绝记录代次未变，才能清除此记录。该授权不缓存为安装许可，
-最终交接仍取得新授权。选择这一策略是为了允许服务端恢复同一候选，同时避免仅靠发布查询结果撤销
-安装拒绝；不采用永久拉黑、直接重试旧包或关闭在线授权。
+**required / gap**: A preflight summary is not execution permission. Recovery, normal reopen, and another update in a real signed product still require independent acceptance; fixtures and Native contracts cannot substitute. Windows does not run this recovery entry point; do not change the selected target.
 
-**required/gap**：macOS Squirrel 与 Windows Velopack 共用候选恢复语义；磁盘及状态机契约测试
-不替代两平台正式签名包的授权冲突、退出重开和成功升级验收。签名、公证、原生交接和运行时退出边界不变。
+**current (source)**: Normal macOS updates use two phases. First complete archival/source-trust checks, native preparation, and the bound `downloaded` receipt. Only then freeze preferences, request Serve maintenance, and save startup context. Do not overlay the Workbench during preparation. If maintenance or authorization fails and release is confirmed, restore the writer and reuse only the same candidate and archived ready native request. After a clean backend exit, obtain online authorization again and synchronously recheck authorization and binding immediately before native quit-and-install. A transient network failure at this stage may retry the original request, without rerunning preparation or replaying old authorization. Transient network/file contention in download, read-only validation, and final authorization may be attempted at most three times, with backoff interrupted by cancellation. Do not retry signature failures, binding failures, or definitive transaction conflicts as transient errors.
 
-## 启动控制通道与 TeX 缓存
+`rescue.ts` owns native file selection and confirmation. The product repair action selects only a separate, officially signed App and requires the sealed `update_repair_protocol: 1`, distribution lane, and original Team/bundle. Before stopping the old client, verify its signature/capability, then run a non-mutating `orphan-plan` under the native lock. The source process may still be running, but a different proof kind and lack of a repair method mean this is not execution authorization. After exit, an independent worker reacquires full eligibility. A newer standalone App cannot consume a handoff for another installation or one not bound to a nativeRequest. When admission is rejected, provide a native repair wizard; explicit `--repair-update` may also enter it. The wizard requires the target and the three original directories and must not publish a default profile or start the backend first. Occupancy permits at most three explicit rechecks. Stop on partial mutation, uncertain release, signature failure, or binding failure. After recovery, reopen the old version and update normally; do not describe “restoring update capability” as “update succeeded.”
+
+The UI distinguishes non-blocking preparation, save/exit, and handoff; after handoff it no longer shows a fake cancel button. Do not report “Restarting” before the source app exits. The new build bound to startup context reports “Starting the new version”; report “Update completed and verified” only after actual backend and main Workbench health confirmation. Windows remains owned by Velopack and rejects the macOS repair entry point; only change the source-side final display to handoff rather than prematurely saying restart.
+**required / gap**: After merge, formally signed macOS acceptance is still required for recovery from the original fault, normal update, another update, and real screenshots. Windows native product acceptance is separate; local compilation and contract tests do not qualify either product flow.
+
+<a id="更新候选授权冲突恢复"></a>
+## Recovery from Update-Candidate Authorization Conflicts
+
+**current (source)**: Installation authorization 409 is reported as `activation_candidate_changed`. In the candidate-state directory, updater first atomically saves a generation-tagged `rejected.json`, then revokes the corresponding ready state, preparation checkpoint, and archive. Cleanup failure does not cancel the rejection record. After maintenance recovery and release of the installation lock, main resets the preparation queue, invalidates the old check generation, and shows a “Check for updates” action with no candidate selected. Ordinary network failures and user cancellation retain their retry semantics; uncertain maintenance recovery continues to block installation.
+
+On cold start, a package on disk is treated only as reusable bytes; do not restore ready state before the online check and preparation complete. If a new check still returns the rejected candidate, clear the rejection record only after obtaining and validating new authorization and confirming its generation is unchanged. Do not cache this authorization as installation permission; obtain new authorization again for final handoff. This policy allows the server to restore the same candidate without allowing publication-query results alone to revoke an installation rejection. Do not permanently blacklist the candidate, directly retry the old package, or disable online authorization.
+
+**required / gap**: macOS Squirrel and Windows Velopack share candidate-recovery semantics. Disk and state-machine contract tests do not replace authorization-conflict, exit/reopen, and successful-upgrade acceptance with formally signed packages on both platforms. Signing, notarization, native handoff, and runtime-exit boundaries are unchanged.
+
+<a id="启动控制通道与-tex-缓存"></a>
+## Startup Control Channel and TeX Cache
 
 **current**: Startup exit diagnostics join the child `close` pipe barrier before
 classification, because `exit` can precede the final stderr exception line. This
 barrier does not await preparation cleanup, which may itself await startup ready.
 
-**current（源码）**：启动退出后的诊断分类等待子进程 `close` 管道屏障；`exit` 可能
-早于 stderr 最后的异常行。该屏障不等待准备任务清理，避免与其等待 ready 形成环。
+**current (source)**: After startup exit, diagnostic classification waits for the child process's `close` pipe barrier because `exit` may occur before the final stderr exception line. This barrier does not wait for preparation-task cleanup, avoiding a cycle with that task's wait for ready.
 
 **current**: Failure of private-channel authentication before a preparation probe
 starts is a startup failure, not evidence of an undrained probe. Shutdown still
@@ -619,67 +364,34 @@ joins every started preparation, backend process family, owned pipe/log writer
 and agent transport. Actual probe cleanup uncertainty blocks shutdown; a drained
 nonzero backend exit remains `FailedExit` and cannot authorize update handoff.
 
-**current（源码）**：准备探针尚未启动时，私有通道认证失败属于启动失败，不表示
-探针资源尚未排空。退出仍等待所有已启动的准备任务、后端进程族、自有管道/日志
-writer 和 agent transport。实际探针清理不确定仍阻止退出；已排空的非零后端退出
-保留 `FailedExit`，不能授权更新交接。
+**current (source)**: If private-channel authentication fails before the preparation probe starts, that is a startup failure and does not mean probe resources have not drained. Shutdown still waits for all started preparation tasks, backend process families, owned pipe/log writers, and agent transport. Uncertainty about actual probe cleanup still blocks shutdown; a drained nonzero backend exit remains `FailedExit` and cannot authorize update handoff.
 
-**current（源码）**：启动期的工具链通知等待私有通道认证，由后端 health 启动预算、
-进程退出和停止路径管理等待寿命。不能在子进程仍合法初始化时套用维护请求的连接
-截止时间。health 成功后尚未连接的通道进入普通连接期限；认证后的操作响应仍有
-独立期限，错误凭据和不确定回执继续失败关闭。
+**current (source)**: During startup, the toolchain notification waits for private-channel authentication. Its wait lifetime is governed by the backend health startup budget, process exit, and stop path. Do not apply the maintenance-request connection deadline while the child process may still be initializing legitimately. After health succeeds, a channel that has not connected enters the ordinary connection deadline; operation responses after authentication have a separate deadline. Invalid credentials and uncertain receipts continue to fail closed.
 
-TeX 可写缓存与存储概览共用 `backend.runtimeStoreRoot()`：Windows 安装版位于
-安装根 `runtime/cache/texlive/<version>`，位于签名组件 `<kind>/<version>` 之外；
-macOS 与开发模式保留产品 home 下的 runtime 根。缓存写入仍由目录 writer 准入，
-不修改已有 ACL，不迁移旧 home/runtime，不把缓存纳入组件签名库存。
-版本来自 Windows 安装组件清单或随程序冻结的工具链清单；完整 SHA-256 指纹保存在
-`identity.json`，覆盖版本、归档摘要、实际工具链路径、平台和有效字体配置。
-配置和字体文件匹配时复用版本目录。
-macOS 应用更新或 AppTranslocation 路径变化使配置失效时，在版本根取得现有数据域
-独占维护资格后重建派生缓存；不删除版本根本身，保留其目录身份。运行实例的祖先域、
-子域或持久 family 占用阻止重建。删除前检查全部内容，未知根成员、符号链接、硬链接
-及特殊文件均拒绝；旧路径哈希子目录同属派生缓存，可在独占期间回收。中断后下次启动
-重新检查并重建。配置没有变化时不清空缓存。
-Windows 使用同一数据域独占维护，在固定版本根下以相对句柄预检并保留所有子项句柄，
-拒绝重解析点、硬链接、只读项和占用项，全部通过后才删除派生内容。版本根保持原有
-身份。若旧发布留下两个名称，Windows 只移除能够通过句柄证明与正式文件同一对象、
-且恰好有两个链接的暂存名，再进入清理预检。新发布用同目录原生无覆盖重命名。
-清理或发布中断后，下次启动重新校验，配置不完整时重新进入维护。
-Windows 安装态在重建后由 Desktop 重新取得共享缓存版本域并复核配置，持有至后端
-Job 排空。Serve 启动时独立持有同一缓存域，项目和用户存储重新取得资格时继续保留，
-关闭时在 HTTP 与资源排空之后释放。
-开发态和 macOS 由 Serve 的长期祖先域保护。两端在后端健康就绪后、开放 TeX 执行前
-再次只读核验身份和字体配置，交接期间发生变化则保持不可用并记录。
-Windows 更新成功后的原生 after-update
-钩子统一回收当前安装的 `runtime/cache/texlive`，不判断哈希、版本或内容；下次启动
-由同一初始化入口重建。回收先独占固定根并移入 `texlive.retired`，全树通过句柄预检
-才删除；占用、链接、超预算及失败保留并记录，更新不阻断。中断不留下半份活动缓存，
-残余在下次更新重试。工具链、下载归档及 macOS 行为不变，详见
-[更新回收契约](../../updater/README.md#windows-velopack)。
-安装器预算包含初始化创建的目录、身份文件、字体配置及原子发布临时文件；这不
-构成任意 TeX 文档生成文件名的长度上界，会话工具缓存仍沿下面的独立沙箱边界。
+The writable TeX cache and storage overview share `backend.runtimeStoreRoot()`. On Windows packaged builds it is under the installation root at `runtime/cache/texlive/<version>`, outside signed components `<kind>/<version>`; macOS and development mode retain the runtime root under the product home. Cache writes still require admission by the directory writer. Do not modify existing ACLs, migrate old home/runtime data, or include the cache in the component signing inventory.
 
-TeX 资源解析的开始、成功、取消及异常，环境准备成功/异常，以及最终回执的
-resourcesReady/environmentReady 分项结果写入现有持久生命周期日志 `window.log`，
-同时保留 console/IPC 输出。失败仍关闭执行准入，不自动删除缓存或忽略身份校验。
+The version comes from the Windows installed-component manifest or the toolchain manifest frozen with the program. The complete SHA-256 fingerprint is stored in `identity.json` and covers the version, archive digest, actual toolchain path, platform, and effective font configuration. Reuse the version directory when configuration and font files match.
 
-**required**：覆盖慢启动晚于普通连接期限、启动失败/退出清理、维护连接及响应
-期限、旧缓存保留和安装缓存路径。**gap**：契约测试不能代替 Windows 安装版
-冷启动、更新及 MCP 页面截图验收。
+On macOS, if an app update or AppTranslocation path change invalidates configuration, rebuild the derived cache after obtaining exclusive maintenance eligibility for the existing data domain at the version root. Do not delete the version root itself; preserve its directory identity. An ancestor domain, child domain, or persistent family occupied by a running instance blocks rebuilding. Before deletion, inspect all contents and reject unknown root members, symlinks, hard links, and special files. Old path-hash subdirectories are also derived cache and may be reclaimed while exclusive. After interruption, recheck and rebuild on the next startup. Do not clear the cache when configuration is unchanged.
 
-**current（缓存范围）**：产品 `runtime/cache` 的当前写入方只有 TeX 初始化，
-其 `fontconfig`、`texmf-var`、`texmf-config` 和 `fonts.conf` 全部位于同一个
-`texlive/<version>` 根。Serve 的 `TEXLIVE_CACHE_DIR` 是旧形状
-的路径声明，当前没有读写消费者；不能把该声明视为安装版的缓存解析入口。
-Codex 开发制品缓存由 `runtime/codex.cjs` 管理，安装版不调用开发解析器；
-下载归档缓存由 `scripts/shared/artifacts.cjs` 管理，两者均不依赖旧产品 runtime/cache。
-Serve 工具执行的 TeX 缓存位于获准会话工作目录 `.tool-cache/texlive`，为维持沙箱
-写入边界继续随会话隔离，不提升为共享安装目录写入。
+Windows uses the same exclusive data-domain maintenance. Under the fixed version root, preflight with relative handles and retain handles for all children; reject reparse points, hard links, read-only items, and occupied items. Delete derived contents only after all checks pass, preserving the version root's identity. If an old publication left two names, Windows removes a staging name only when handles prove it is the same object as the final file and it has exactly two links, then proceeds to cleanup preflight. Publish new files with a native no-overwrite rename in the same directory. After interrupted cleanup or publication, revalidate on the next startup and reenter maintenance if configuration is incomplete.
+
+In Windows installed mode, after rebuilding, Desktop reacquires the shared cache-version domain and rechecks configuration, holding it until the backend Job drains. Serve independently holds the same cache domain at startup, retains it while project and user storage eligibility is reacquired, and releases it on shutdown after HTTP and resources drain. In development mode and on macOS, Serve's long-lived ancestor domain provides protection. On both, after backend health is ready and before TeX execution is enabled, perform another read-only identity and font-configuration check. If anything changed during handoff, keep TeX unavailable and log the change.
+
+After a successful Windows update, the native after-update hook uniformly reclaims `runtime/cache/texlive` for the current installation, without checking hashes, versions, or contents; the same initialization entry point rebuilds it next startup. Reclamation first acquires the fixed root exclusively and moves it to `texlive.retired`; delete only after the whole tree passes handle-based preflight. Occupancy, links, budget excess, and failures are retained and logged without blocking the update. Interruption does not leave a partial active cache; residuals are retried at the next update. Toolchain, download archives, and macOS behavior are unchanged. See the [update-reclamation contract](../../updater/README.md#windows-velopack).
+
+The installer budget includes directories, identity files, font configuration, and atomic-publication temporary files created during initialization. This does not impose a filename-length limit on arbitrary TeX-generated documents; session tool caches remain under the separate sandbox boundary below.
+
+Start, success, cancellation, and exceptions during TeX resource resolution; success/failure of environment preparation; and the final receipt's separate `resourcesReady`/`environmentReady` results are written to the existing persistent lifecycle log, `window.log`, while retaining console/IPC output. Failure still closes execution admission; it does not automatically delete the cache or bypass identity checks.
+
+**required**: Cover slow startup extending beyond the ordinary connection deadline, startup failure/exit cleanup, maintenance connection and response deadlines, preservation of old caches, and the installed cache path. **gap**: Contract tests do not replace cold-start, update, and MCP-page screenshot acceptance in a Windows packaged build.
+
+**current (cache scope)**: TeX initialization is currently the only writer to product `runtime/cache`; its `fontconfig`, `texmf-var`, `texmf-config`, and `fonts.conf` all live under the same `texlive/<version>` root. Serve's `TEXLIVE_CACHE_DIR` is a legacy-shaped path declaration with no current read/write consumer; do not treat it as the installed-build cache-resolution entry point. The Codex development-artifact cache is managed by `runtime/codex.cjs`, and packaged builds do not call the development resolver. Download archives are cached by `scripts/shared/artifacts.cjs`. Neither depends on the old product `runtime/cache`. TeX caches used by Serve tools are in the authorized session working directory at `.tool-cache/texlive`; keep them isolated per session to preserve the sandbox write boundary rather than promoting them to writes in a shared installation directory.
 
 
-## 开发运行的源码身份
+<a id="开发运行的源码身份"></a>
+## Source Identity in Development Runs
 
-开发版 main 在启动后端前由 `source.ts` 从实际程序源码目录采集仓库 URL、分支、完整 commit、tracked/untracked 改动状态及启动时间。URL 去除认证信息；采集失败记录 unavailable，不复用上次启动记录。它独立于用户会话的 cwd，保持会话目录和权限语义不变。
+Before starting the backend in a development build, main uses `source.ts` to collect the repository URL, branch, full commit, tracked/untracked change state, and startup time from the actual program source directory. Credentials are removed from the URL. On collection failure, record unavailable; do not reuse the previous startup record. This is independent of the user session's cwd and leaves session-directory and permission semantics unchanged.
 
-`backend.ts` 记录启动日志，并将冻结记录经 `SCHOLARSEED_SOURCE_BASELINE` 注入本次 Serve。诊断导出在 ZIP 预算内优先写入 `feedback/source-baseline.json`，不需要对话记录授权；不选诊断日志则不导出。后端不可用时，main 的本地诊断打包使用同一启动记录。安装版清空该开发记录，继续使用安装包构建身份。记录的是启动时 Git 状态，不能证明未提交文件已归档，也不保证启动后源码未变化。
+`backend.ts` records startup logs and injects the frozen record into this Serve process through `SCHOLARSEED_SOURCE_BASELINE`. Within the ZIP budget, diagnostic export prioritizes `feedback/source-baseline.json` and does not require conversation-record authorization; if diagnostic logs are not selected, this file is not exported. When the backend is unavailable, main's local diagnostic package uses the same startup record. Packaged builds clear this development record and continue to use package build identity. The record captures Git state at startup; it does not prove uncommitted files were archived or guarantee source remained unchanged after startup.

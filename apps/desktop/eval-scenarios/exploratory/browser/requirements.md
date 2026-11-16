@@ -1,61 +1,75 @@
-# 内置浏览器使用候选需求
+<a id="内置浏览器使用候选需求"></a>
+# Candidate Requirements for the Built-in Browser
 
-## 用途与入口
+<a id="用途与入口"></a>
+## Purpose and Entry Point
 
-内置浏览器用于在项目工作台中打开并查看网页。当前源码线索是工作台新标签中的“浏览器”入口，是否显示取决于浏览器能力；目标安装包的入口、需求版本和适用性尚待核实。本页是历史需求及源码线索整理的候选，不作为已采用判据或运行结果。
+The built-in browser opens and displays webpages in the project workbench. Current source points to the “浏览器” (“Browser”) entry in a new workbench tab; visibility depends on browser capability. The target installed build's entry point, requirement version, and applicability remain unverified. This page is a candidate based on historical requirements and source clues, not an adopted criterion or runtime result.
 
-**参考截图缺口：** 当前没有来源和目标身份均可核、可公开复用的目标版本真实网页浏览完整窗口图；设置页或空白页面不能替代网页浏览及其结果。历史截图路径是否可用见[构建依据](./build.md)。
+**Reference screenshot gap:** No complete-window screenshot has been verified as source-traceable and approved for reuse for real webpage browsing in the target version. A settings page or blank page cannot substitute for webpage browsing and its result. See the [Build Basis](./build.md) for whether historical screenshot paths are available.
 
-## 候选主流程
+<a id="候选主流程"></a>
+## Candidate Main Flow
 
-### 网页打开与导航（`BROWSER-CAND-001`；需求版本待确认）
+<a id="网页打开与导航browser-cand-001需求版本待确认"></a>
+### Open and Navigate to a Webpage (`BROWSER-CAND-001`; requirement version pending confirmation)
 
-在获准的隔离浏览器中，从已核入口打开可控测试网页，并通过真实地址输入或页面导航到可区分的目标；以预先准备的页面标识和地址为独立参照，核对实际显示的目标及页面可读状态。返回、前进或刷新如选入，应观察对应页面状态变化；工具栏存在、导航回执或同名标签不代替网页实际加载。页面内容、浏览器标签及历史均会随自然使用变化。
+In an authorized isolated browser, open a controllable test webpage from the verified entry point and reach a distinguishable target through real address input or page navigation. Use a prepared page identifier and address as independent references; verify the target actually displayed and that the page is readable. If back, forward, or refresh is selected, observe the corresponding page-state change. A toolbar, navigation receipt, or tab with a matching name does not substitute for an actually loaded webpage. Page contents, browser tabs, and history change with natural use.
 
-### 页面查找（`BROWSER-CAND-002`；需求版本待确认）
+<a id="页面查找browser-cand-002需求版本待确认"></a>
+### Find Text on a Page (`BROWSER-CAND-002`; requirement version pending confirmation)
 
-在已加载且内容可独立核对的网页中查找已知文本，检查查询、可见命中和切换反馈与目标页面一致。历史真实观察显示查询命中可切换，但其次数和网站内容不是固定预期；不以查找框出现代替命中。不同语言、动态网页与焦点/跨平台行为另列专项。
+Find known text on a loaded webpage whose content can be checked independently. Verify that the query, visible matches, and navigation feedback correspond to the target page. Historical real observation showed that a match could be navigated to, but the number of matches and website content are not fixed expectations; showing the find box is not a substitute for a match. Different languages, dynamic pages, focus behavior, and cross-platform behavior are separate focused scenarios.
 
-## 候选专项与关联
+<a id="候选专项与关联"></a>
+## Candidate Focused Scenarios and Associations
 
-### 网页缩放（`BROWSER-ZOOM-CAND-001`；需求版本待确认）
+<a id="网页缩放browser-zoom-cand-001需求版本待确认"></a>
+### Webpage Zoom (`BROWSER-ZOOM-CAND-001`; requirement version pending confirmation)
 
-历史确认的浏览器菜单包含缩小、增大、百分比和重置 100%；历史计划要求同源标签缩放互不联动。以获准真实网页、同源不同标签和各自独立缩放状态为参照，核实际显示与复位；不以 PDF 或图片缩放代替。目标版本适用及完整窗口图待核。
+Historical confirmation says the browser menu includes zoom out, zoom in, percentage, and reset to 100%; the historical plan requires zoom in same-origin tabs to be independent. Use an authorized real webpage, separate tabs of the same origin, and independently observed zoom states as references; verify actual display and reset. Do not substitute PDF or image zoom. Target-version applicability and complete-window image remain unverified.
 
-### 网页可视区截图（`BROWSER-CAPTURE-CAND-001`；需求版本待确认）
+<a id="网页可视区截图browser-capture-cand-001需求版本待确认"></a>
+### Capture the Visible Webpage (`BROWSER-CAPTURE-CAND-001`; requirement version pending confirmation)
 
-历史确认的菜单包含网页可视区截图及保存。以同一获准网页的实际可视内容与可丢弃输出为参照，区分触发、原生保存、取消及文件终态；不以评测采证截图代替。目标版本和原生保存行为待核，文件写入与平台权限另核。
+Historical confirmation says the menu includes a screenshot of the visible webpage and a save action. Use the actual visible content of the same authorized webpage and disposable output as references. Distinguish triggering, native save, cancellation, and file end state; an evaluation evidence screenshot is not a substitute. Target version and native save behavior remain unverified; separately verify file writes and platform permissions.
 
-### 网页开发者工具与设备工具栏（`BROWSER-DEVTOOLS-CAND-001`、`BROWSER-DEVICE-TOOLBAR-CAND-001`；需求版本待确认）
+<a id="网页开发者工具与设备工具栏browser-devtools-cand-001browser-device-toolbar-cand-001需求版本待确认"></a>
+### Web Developer Tools and Device Toolbar (`BROWSER-DEVTOOLS-CAND-001`, `BROWSER-DEVICE-TOOLBAR-CAND-001`; requirement version pending confirmation)
 
-历史确认的菜单分别包含开发者工具和设备工具栏，应分开核各自入口及真实打开、关闭和宿主布局；设备方案及目标包支持状态尚待确认，不以一个入口代替另一个或据源码假定实现。真实网页、窗口副作用、平台与授权分别核实。
+Historical confirmation says the menu includes Developer Tools and a device toolbar. Verify the entry point, real open/close behavior, and host layout separately for each. The device-mode proposal and target-build support remain unconfirmed; one entry point does not substitute for the other, and source alone does not prove implementation. Verify the real webpage, window side effects, platform, and authorization separately.
 
-### 打印网页（`BROWSER-PRINT-CAND-001`；需求版本待确认）
+<a id="打印网页browser-print-cand-001需求版本待确认"></a>
+### Print a Webpage (`BROWSER-PRINT-CAND-001`; requirement version pending confirmation)
 
-历史用户确认的浏览器完整菜单包括打印，且取消打印不应视为失败。以同一获准真实网页和目标平台的原生打印流程为参照，区分打开、取消及实际打印终态；菜单存在或对话框关闭不证明已打印。目标包入口、需求适用、完整窗口图及跨平台行为待核；系统打印、输出目的地与可能写入分别核授权，不以模拟事件或其他浏览器代替。
+Historical user confirmation says the full browser menu includes Print and canceling print is not a failure. Use the same authorized real webpage and the target platform's native print flow as references. Distinguish opening, cancellation, and actual print end state; a menu item or closed dialog does not prove it was printed. Target-build entry, requirement applicability, complete window image, and cross-platform behavior remain unverified. Separately authorize system printing, output destination, and possible writes; do not substitute a simulated event or another browser.
 
-### 浏览历史（历史 `BROWSER-HISTORY-01@1`；产品需求版本待确认）
+<a id="浏览历史历史-browser-history-011产品需求版本待确认"></a>
+### Browsing History (historical `BROWSER-HISTORY-01@1`; product requirement version pending confirmation)
 
-浏览历史空态辅助参考
+Auxiliary reference: empty browser-history state
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-13；完整窗口展示隔离实例的浏览历史空态、搜索及清理入口，仅为辅助参考，不证明非空历史检索、网页浏览、清理或本候选已采用。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-13. Complete window showing an isolated instance's empty history, search, and clear entry points; auxiliary reference only, not proof of searching non-empty history, webpage browsing, clearing, or candidate adoption.
 
-对获准隔离实例中由本轮公开合成页面自然产生的历史，按时间或站点检索并核对记录与真实导航及过滤范围；清理/删除涉及不可逆状态，须另核可恢复性与明确授权。历史 `@1` 是资产修订，不是产品需求版本；该历史点为 `pending / exploratory`，对应历史用例未批准且未选入冻结范围，不能自动计入本目标已采用分母。
+For history naturally produced by public synthetic pages in this run on an authorized isolated instance, search by time or site and check records against real navigation and the filter scope. Clearing/deleting changes potentially irreversible state; separately verify recoverability and explicit authorization. Historical `@1` is an asset revision, not a product requirement version. This historical item is `pending / exploratory`, and the corresponding historical case is unapproved and outside the frozen scope; it does not automatically count in the target's adopted denominator.
 
-历史“按时间检索”的具体语义待确认，不能把按日期分组展示自动等同日期筛选。构建分析中的当前源码仅提供标题或地址文本匹配与日期分组线索；目标包是否如此、时间筛选是否必需以及跨日边界均待确认。历史专项需记录实际导航目标与时间的独立参照，检索、打开及删除分别观察，搜索结果出现不等于目标页面已重新打开。
+The exact semantics of historical “search by time” remain unconfirmed. Date-grouped display does not automatically equal date filtering. Current source in the build analysis is only a clue for title/address text matching and date grouping; whether the target build behaves this way, requires time filtering, or has specific day-boundary behavior remains unverified. For a historical focused scenario, record actual navigation target and time as independent references; observe search, open, and delete separately. A search result appearing does not mean the target webpage was reopened.
 
-### Agent 网页访问确认（`BROWSER-AUTH-CAND-001`；需求版本待确认）
+<a id="agent-网页访问确认browser-auth-cand-001需求版本待确认"></a>
+### Agent Webpage Access Confirmation (`BROWSER-AUTH-CAND-001`; requirement version pending confirmation)
 
-历史用户确认的待处理访问请求在卡片中展示目标和授权范围，允许、拒绝或过期后状态与真实结果对应；允许一次不等于后续网页操作成功。真实触发依赖独立 Agent 会话、可用模型与授权，不能预置桥事件或用设置页开关代替真实请求。目标包适用性及其他授权状态仍待核。
+Historical user confirmation says a pending access request displays its target and authorization scope in a card, and the state after allow, deny, or expiry matches the real result. Allowing access once does not mean subsequent webpage operations succeeded. Real triggering depends on an independent Agent session, available model, and authorization; do not prepopulate bridge events or use a settings-page toggle instead of a real request. Target-build applicability and other authorization states remain unverified.
 
-### 下载与浏览数据清理
+<a id="下载与浏览数据清理"></a>
+### Downloads and Browser-Data Clearing
 
-下载提示、进度、保存位置和实际落地；历史/网站数据清理的范围、确认和真实结果均为待确认专项。仅有[浏览器设置展示基线](./../browser-settings/requirements.md)不代表真实下载、清理或 Agent 授权通过；不创建重复设置页判据。产品导航可能联网、记录历史，下载及清理还会写入或删除数据，必须分别核实例、目标、费用与授权。
+Download prompt, progress, save location, and actual file creation, as well as the scope, confirmation, and real result of clearing history/site data, remain focused scenarios pending confirmation. The [browser settings display baseline](./../browser-settings/requirements.md) alone does not prove real download, clearing, or Agent authorization; do not create duplicate settings-page criteria. Product navigation may access the network and record history; downloads and clearing also write or delete data. Verify the instance, target, cost, and authorization separately.
 
-## 数据、参照与缺口
+<a id="数据参照与缺口"></a>
+## Data, References, and Gaps
 
-需能力已开放、可核归属的隔离实例，以及获准的可控网页及独立预期文本；记录测试网页的来源和访问副作用。不用真实用户历史、密码或凭据；不通过代码注入、虚构导航、预设权限或伪造结果替代产品路径。[合成网页原始输入](../../../../../examples/projects/browser-navigation/project.json)已准备，但尚未确认为可用浏览器测试站点；缺服务、网络或权限即记录缺口，不以仓库文件存在推断网页可访问。
+Use an isolated instance whose capability is enabled and ownership can be verified, an authorized controllable webpage, and independently known expected text. Record the test page's source and access side effects. Do not use real user history, passwords, or credentials. Do not substitute code injection, fabricated navigation, preselected permissions, or fabricated results for the product path. A [synthetic webpage source manifest](../../../../../examples/projects/browser-navigation/project.json) is prepared but has not been confirmed as a usable browser test site. If the service, network, or permission is missing, record the gap; the presence of repository files does not prove a webpage is reachable.
 
-本地站点也须验证产品既有访问策略与可达性；不能为加载评测页面放宽策略。地址建议可能显示历史与外部网页搜索项；只在有授权时选择，避免将输入或测试内容意外发送到外部搜索服务。
+Local sites must also be checked against the product's existing access policy and reachability; do not relax the policy to load an evaluation page. Address suggestions may show history and external web-search items. Select one only with authorization to avoid accidentally sending input or test content to an external search service.
 
-当前本页入口、目标版本采用、网页成功状态及网页与非空历史的真实完整窗口截图均待核；授权、下载、清理及跨平台单独冻结，不由普通网页打开或设置展示推断完成。需求版本、源码修订、资产修订和被测包身份分别记录于[构建依据](./build.md)。
+This page's entry point, target-version adoption, successful webpage state, and complete real window screenshots of webpages and non-empty history remain unverified. Freeze authorization, downloads, clearing, and cross-platform behavior separately; do not infer completion from ordinary webpage navigation or settings display. Record requirement version, source revision, asset revision, and tested-package identity separately in the [Build Basis](./build.md).

@@ -1,136 +1,139 @@
-# 全局搜索需求构建依据
+<a id="全局搜索需求构建依据"></a>
+# Global Search Requirements Build Basis
 
-## 隔离资料准备边界：search/14
+<a id="隔离资料准备边界search14"></a>
+## Isolated-Resource Preparation Boundary: search/14
 
-下方历史“数据与副作用边界”中的未导入状态属于当时建库记录，不是对后续每轮强制执行 UI 导入的要求。当前资料搜索可使用获准隔离项目中已准备的 examples 副本，以当轮收据、项目路径和文件摘要核身份；准备数据不代表搜索已执行或通过，也不自动授权新的产品写入。文献域仍需真实已入库文献及同范围独立参照，单有 Bib 文件不能代替。本轮按用户要求不评测导入；原判据、历史冻结及结果不变。
+The unimported state in the historical “Data and Side-Effect Boundaries” below belongs to the original baseline-building record; it is not a requirement to import through the UI in every later run. Current resource search may use an authorized copy of `examples` prepared in an isolated project; verify its identity from this run's receipt, project path, and file digest. Preparing data does not mean search was run or passed, and does not automatically authorize new product writes. The literature domain still requires real imported literature and an independent reference from the same scope; a Bib file alone is not a substitute. Import is not evaluated this round at the user's request. Original criteria, historical freeze, and results are unchanged.
 
-## 目标版本搜索结果参考图：search/13
+<a id="目标版本搜索结果参考图search13"></a>
+## Target-Version Search-Results Reference: search/13
 
-`results-20261113-1823.png` 为 2026-11-13 macOS arm64 安装版 `0.3.2 / 202611121823 / preview` 隔离实例真实完整窗口原图副本；目标 ASAR SHA-256 `0111fd20bd58bf72517a1255d2d1bbf7ef2a3d4281898baed50d250f13c9d91a`，图片 SHA-256 `fb121f9cd85a2593bea83f9b1e87334a8326b7c686b7946459e3d08d4cda91c7`。原图为 `tmp/test_snapshot/desktop/baseline-1823-recheck-20261113/driver/evidence/f3-search.png`，忽略的原始运行和独立评审仅本机可回查。图片展示合成资料命中，不单独证明打开动作或其他分类；需求版本、判据和历史结果不变。
+`results-20261113-1823.png` is a copy of the real complete-window image from an isolated macOS arm64 installer instance `0.3.2 / 202611121823 / preview` on 2026-11-13. Target ASAR SHA-256 `0111fd20bd58bf72517a1255d2d1bbf7ef2a3d4281898baed50d250f13c9d91a`; image SHA-256 `fb121f9cd85a2593bea83f9b1e87334a8326b7c686b7946459e3d08d4cda91c7`. The original image is `tmp/test_snapshot/desktop/baseline-1823-recheck-20261113/driver/evidence/f3-search.png`; the ignored original run and independent review are available only locally. It shows a hit for synthetic resources; it does not independently prove the open action or other categories. Requirements version, criteria, and historical results are unchanged.
 
-## 需求与运行进度分离：search/12
+<a id="需求与运行进度分离search12"></a>
+## Separate Requirements from Run Progress: search/12
 
-移除需求正文中笼统的历史“全部未实测”状态，运行进度与各轮结果以场景索引及运行记录为准；不改变稳定 ID、需求版本、采用范围、专项边界或历史冻结。参考图注的采集日期按下述既有来源补全。
+The blanket historical “not tested at all” status was removed from the requirements body. Run progress and per-run results are recorded in the scenario index and run records; stable IDs, requirements version, adopted scope, special-scope boundaries, and historical freeze are unchanged. The reference-image caption's capture date is completed below from its existing source.
 
-## 打开目标参考图补充：search/11
+<a id="打开目标参考图补充search11"></a>
+## Additional Open-Target Reference Image: search/11
 
-`open-result-20261112.png` 为 2026-11-12 macOS arm64 安装版 `0.3.2 / 202611121823 / preview` 隔离实例打开合成 `sample.md` 的真实页面原图副本；目标 ASAR SHA-256 `0111fd20bd58bf72517a1255d2d1bbf7ef2a3d4281898baed50d250f13c9d91a`，图片 SHA-256 `b7fce64d6f133019af5d01ca1eff5335fef7c16de98b3c4f573bb0944b9a52b0`。原图为 `tmp/test_snapshot/desktop/baseline-1823-batch1/driver/evidence/f3-open.png`，忽略的运行证据仅本机可回查。该图显示目标文档，不单独证明搜索到打开的关联或其他分类；需求版本、判据和历史结果不变。
+`open-result-20261112.png` is a copy of the real page image showing `sample.md` opened in an isolated macOS arm64 installer instance `0.3.2 / 202611121823 / preview` on 2026-11-12. Target ASAR SHA-256 `0111fd20bd58bf72517a1255d2d1bbf7ef2a3d4281898baed50d250f13c9d91a`; image SHA-256 `b7fce64d6f133019af5d01ca1eff5335fef7c16de98b3c4f573bb0944b9a52b0`. The original is `tmp/test_snapshot/desktop/baseline-1823-batch1/driver/evidence/f3-open.png`; ignored run evidence is available only locally. The image shows the target document; it does not independently prove the relationship from search to opening or other categories. Requirements version, criteria, and historical results are unchanged.
 
-## 共享输入链接修正：search/10
+<a id="共享输入链接修正search10"></a>
+## Shared-Input Link Correction: search/10
 
-资料和题录链接改为字节一致的共享 `examples`；原副本及来源提交分别见[资料构建依据](../resources/build.md)和[文献构建依据](../literature-list/build.md)。仅修正引用，不改变需求、判据或历史结果。
+Resource and citation links now point to byte-identical shared `examples`; see the [resource build basis](../resources/build.md) and [literature build basis](../literature-list/build.md) for the original copies and source commits, respectively. This corrects references only and does not change requirements, criteria, or historical results.
 
-## F3 普通搜索路径沿用依据：search/9
+<a id="f3-普通搜索路径沿用依据search9"></a>
+## Basis for Reusing the Normal F3 Search Path: search/9
 
-针对 macOS arm64 `0.3.2 / 202611121823 / preview`，沿用 2026-10-30 用户统一采用规则及本页 `search/4` 的已采用正常子点：在已核当前项目范围内查询已知合成文件、核对资源命中并打开该目标。已核本页既有采用与后续修订，未发现该子范围被确认退役或改变的记录；这只是有界记录核查，不宣称完整需求变更史或源码与制品同源。无项目回退、仅文件入口、异常及其他搜索范围仍按原文待确认或另列专项。原编号、v`0.3`、判据及旧运行不变；新运行仍须核项目登记、样本与独立参照，由独立评审判断证据，不因本记录认定产品通过。下方 `search/8` 所述目标适用性待核针对当时未完成此项有界沿用分析的状态。
+For macOS arm64 `0.3.2 / 202611121823 / preview`, reuse the unified adoption rule confirmed by the user on 2026-10-30 and the adopted normal subcriteria in `search/4`: within the verified current-project scope, query for a known synthetic file, verify a resource hit, and open that target. Existing adoption and subsequent revisions on this page were checked; no record was found confirming that this sub-scope was retired or changed. No-project fallback, file-only entry, errors, and other search scopes remain unconfirmed in the original text or separate special-scope work. Original IDs, v`0.3`, criteria, and old runs are unchanged. A new run must still verify project registration, sample, and independent references; an independent review judges the evidence. This record does not determine product acceptance. The target-applicability status described in `search/8` below referred to the earlier point before this bounded reuse analysis was complete.
 
-## 共享示例输入对齐：search/8
+<a id="共享示例输入对齐search8"></a>
+## Align Shared Example Inputs: search/8
 
-本修订仅将现行快评输入明确为共享项目 `evaluation/document`，以本轮准备收据核项目身份、路径及摘要。2026-11-12 核对 `examples/projects/evaluation/files/sample.md` 与原 `research/document` SHA-256 均为 `a77fec4534bce0994a47e17a2bc4f862839a295ccfa82c08555180afb55ec1e0`；内容相同不使两个项目身份相同，不能将旧收据移作新项目登记。原稳定 ID、需求版本、判据及历史结果不变；目标包适用性仍需独立核实，本修订不代表产品通过。
+This revision only specifies the current quick-review input as shared project `evaluation/document`; use this run's preparation receipt to verify project identity, path, and digest. On 2026-11-12, `examples/projects/evaluation/files/sample.md` and the original `research/document` were checked to have the same SHA-256 `a77fec4534bce0994a47e17a2bc4f862839a295ccfa82c08555180afb55ec1e0`. Identical content does not make the two project identities the same, and an old receipt cannot be reused as registration of the new project. Original stable IDs, requirements version, criteria, and historical results are unchanged. Target-package applicability still needs independent verification; this revision does not claim product acceptance.
 
-## 当前参考图修订：search/7
+<a id="当前参考图修订search7"></a>
+## Current Reference-Image Revision: search/7
 
-`reference-20261112.png` 为 2026-11-12 macOS arm64 安装版 0.3.2 / 202611121104 / preview 隔离实例原图 `evidence/search-results.png` 的未改动副本，SHA-256 `e9e5f4923f8fdfe928e83c67af94c4a65663fe5174c426e24145faed5b8a8e2d`；仅展示合成资料查询状态，不证明全部分类或异常。原始运行在 `tmp/test_snapshot/desktop/release-20261112-fresh/`；不改变需求或历史裁决。
+`reference-20261112.png` is an unmodified copy of `evidence/search-results.png`, the original image from an isolated macOS arm64 installer instance `0.3.2 / 202611121104 / preview` on 2026-11-12; SHA-256 `e9e5f4923f8fdfe928e83c67af94c4a65663fe5174c426e24145faed5b8a8e2d`. It shows only the synthetic-resource query state, not all categories or error states. Original run: `tmp/test_snapshot/desktop/release-20261112-fresh/`. Requirements and historical decisions are unchanged.
 
-## 历史修订：共享示例项目输入接线（search/6）
+<a id="历史修订共享示例项目输入接线search6"></a>
+## Historical Revision: Shared Example-Project Input Wiring (search/6)
 
-资产修订：`search/6`。以下保留当时 `research/document` 的接线与状态，现行输入以 `search/8` 为准。本次仅维护输入来源、准备收据和执行接线，需求仍为v`0.3`，
-GSEARCH稳定ID、发布快评子范围及所有旧裁决不变。以下安装包分析仍是各自历史来源，
-不是新代码的同构建绑定；本修订未启动产品或执行Skill宿主验收。
+Asset revision `search/6`. The wiring and state for `research/document` at that time are preserved; current input is specified in `search/8`. This update only maintains input sources, preparation receipts, and execution wiring. Requirements remain v`0.3`; GSEARCH stable IDs, the release quick-review sub-scope, and all old decisions are unchanged. The installer analyses below are each historical sources, not source/build identity for new code. This revision did not start the product or perform Skill-host acceptance.
 
-首条共享数据消费链选择已有正常项目范围的综合搜索→打开已知Markdown，不纳入
-查找Next、编辑保存、会话/模型、跨项目和分页专项。原Markdown字节已迁至
-[共享原件](../../../../../examples/projects/research/files/sample.md)，由
-[项目定义](../../../../../examples/projects/research/project.json)引用；文件身份为
-`research/document`，实际产品路径只从本轮准备收据取得，不能固化模板路径或旧项目ID。
+The first shared-data consumption path is normal project-scoped global search → open a known Markdown file. It does not include Find Next, editing/saving, conversation/model, cross-project, or pagination special-scope work. Original Markdown bytes were moved to the [shared original](../../../../../examples/projects/research/files/sample.md), referenced by the [project definition](../../../../../examples/projects/research/project.json); file identity is `research/document`. Obtain the actual product path from this run's preparation receipt; do not fix a template path or old project ID.
 
-执行时复用公共解析与真实项目准备能力，流程由
-执行规程持有。
-冻结数据选择、contentDigest、源码提交/未提交输入身份、实际目标包/实例、项目key/id/root，
-以及document文件的path/relativePath/sha256/size。先核唯一自有实例、真实API基址及
-隔离workspace归属；只准备原始资料，不预先执行被测搜索、打开或写MRU。
+Reuse the public resolver and real project-preparation capability; the procedure owns the flow. Freeze the selected data, `contentDigest`, source commit/dirty input identity, actual target package/instance, project key/id/root, and document `path`/`relativePath`/`sha256`/`size`. First verify the unique owned instance, real API base URL, and isolated workspace ownership. Prepare source resources only; do not pre-run the evaluated search/open or write MRU.
 
-独立参照包括源文件摘要、公开登记的当前项目身份和已知相对资料位置；公开搜索API
-的同查询/同项目命中可补充比对，不能从待判页面取值自证。隐藏判据和参考不进入产品
-目录或Driver输入，Driver仅获得必要任务定位。准备失败保留原错误和部分receipt，
-不重提创建mutation、不伪装空结果。当前只完成静态接线；真实准备、UI终态、宿主
-transcript和独立Judge结果仍需后续授权资源窗口验证，不沿用历史截图宣称通过。
+Independent references include the source-file digest, publicly registered current-project identity, and known relative resource location. A public search API hit for the same query and project can supplement comparison, but cannot be the sole identity evidence when also reading the page under evaluation. Do not put hidden criteria or references in the product directory or Driver inputs; give Driver only the task location it needs. If preparation fails, preserve the original error and partial receipt; do not resubmit a create mutation or disguise it as an empty result. Only static wiring is complete so far; real preparation, UI terminal state, host transcript, and independent Judge result still require later verification in an authorized resource window. Do not claim a pass based on historical screenshots.
 
-## 历史修订：202610301343包内静态复核
+<a id="历史修订202610301343包内静态复核"></a>
+## Historical Revision: In-Package Static Review of 202610301343
 
-资产修订：`search/5`；本次只补指定新包来源、输入/独立参照与快评边界。原稳定ID、v`0.3`、采用规则、完整正文、参考图原版本/日期及历史结果保留；以下旧来源与修订记录均属历史，不代表本包绑定或本轮执行结论。
+Asset revision `search/5`; this update only adds the specified new package source, input/independent references, and quick-review boundary. Preserve original stable IDs, v`0.3`, adoption rules, full text, reference-image source versions/dates, and historical results. The old sources and revision records below are historical and do not establish package binding or a conclusion for this run.
 
-目标：macOS arm64 `0.3.0 / 202610301343 / preview`；ASAR SHA256 `1de63a11e99c47836053f546963db121ff0298c87b678dfb6d33b0855f2566ee`。来源为本任务已提取的实际安装包与松散renderer payload；源码提交未知，当前checkout/remote HEAD仅可辅助定位，不声明同源。证据清单为忽略目录 `tmp/test_snapshot/desktop/baseline-refresh-20261030-build1343/target.json`，包内定位均相对该根`package/`；不将临时提取目录当正式跨工作树资产。
+Target: macOS arm64 `0.3.0 / 202610301343 / preview`; ASAR SHA256 `1de63a11e99c47836053f546963db121ff0298c87b678dfb6d33b0855f2566ee`. The source is the actual installer and loose renderer payload extracted for this task; source commit is unknown. The current checkout/remote HEAD may help locate code but does not establish source identity. The evidence manifest is in ignored directory `tmp/test_snapshot/desktop/baseline-refresh-20261030-build1343/target.json`; in-package locations are relative to its `package/` root. Do not treat the temporary extraction directory as a permanent cross-worktree asset.
 
-包内`out/main/index.js` SHA256 `921baf36722c44629451c89048a9658727efc5150546535fa5428242250b504c`：1338的applicationRenderer在packaged时取applicationResources下renderer，41203的无开发URL分支交给serveAssets。该链绑定本次分析的实际松散payload，不证明运行时未设置开发覆盖，也不把静态入口当产品观察。
+In-package `out/main/index.js`, SHA256 `921baf36722c44629451c89048a9658727efc5150546535fa5428242250b504c`: at 1338, `applicationRenderer` uses the renderer under `applicationResources` when packaged; the no-development-URL branch at 41203 delegates to `serveAssets`. This chain is tied to the actual loose payload analyzed here; it does not prove that runtime has no development override or turn a static entry point into a product observation.
 
-- `renderer/assets/index-CddcCmKt.js`：SHA256 `1b6e44c4557e06929bb82900f6147a456167e2f95b0173bacf561dd65bc668d3`。
+- `renderer/assets/index-CddcCmKt.js`: SHA256 `1b6e44c4557e06929bb82900f6147a456167e2f95b0173bacf561dd65bc668d3`.
 
-包内index:86826 searchEverything读取/api/search的hits/groups；86901 GlobalSearch在literature用query.project_id，其它范围用homeSelectedProjectId，240ms查询和generation/abort防旧结果覆盖。固定三域、动态高亮与打开链仍在；只选已知项目中的正常综合搜索和一个资源结果，不升级files或无项目回退为要求。执行参照须先登记项目ID、原始样本摘要、实际导入相对路径及查询词；API命中与待判UI不是唯一输入身份答案。错误仍可能转空hits，保留007未确认语义，不批准为正常空态。
+In-package `index:86826`, `searchEverything` reads `/api/search` hits/groups. `GlobalSearch` at `86901` uses `query.project_id` for literature and `homeSelectedProjectId` for other scopes; queries are delayed by 240 ms and generation/abort prevent stale results from overwriting current ones. The three fixed domains, dynamic highlighting, and opening flow remain. Select only normal global search in a known project and one resource result; do not promote `files` or no-project fallback to requirements. Before execution, record the project ID, source-sample digest, actual imported relative path, and query. An API hit and the evaluated UI are not the only answers to input identity. Errors may still be collapsed into empty hits; retain the unconfirmed semantics of 007 and do not approve an error as a normal empty state.
 
-需求正文中的样本指仓库原件的获准隔离副本；执行前登记原件摘要→任务项目ID/导入后实际路径的映射，历史`eval-*-20261030`只是旧运行别名，不假定新安装中存在。项目/资源、列偏好及API最小投影尚需本轮获准独立取证；静态相容不证明正常UI已可达或实测通过。本次未启动、连接或操作产品，未读用户状态/凭据，未调用外部API；不改变运行状态，不缩减未就绪专项。
+Samples in the requirements body refer to authorized isolated copies of repository originals. Before execution, record the mapping from original digest to task project ID and actual path after import; historical `eval-*-20261030` names are old run aliases and must not be assumed to exist in a new installation. Project/resources, column preferences, and minimal API projections still require independent evidence authorized for this run. Static compatibility does not prove that the normal UI is reachable or passed in a real run. This run did not start, connect to, or operate the product, read user state/credentials, or call external APIs; it did not change runtime state or reduce any not-ready special-scope work.
 
-## 历史构建与分层记录
+<a id="历史构建与分层记录"></a>
+## Historical Build and Layering Record
 
+Revision: search/4. Based on the user's unified adoption rule from 2026-10-30, verified normal behavior in the bound v0.3.0 / 202610281438 / preview installer is used as the basis for requirements v`0.3`; reuse existing source, exact artifact binding, and the independent Review from revision 2. Adopted: GSEARCH-001's normal global-search entry/project scope; normal recent files, results, count, highlighting, and opening in 002–006; and normal query updates in 007. Still unconfirmed: 001 file-only entry, no-project scope, and reachability of literature filtering; 007's initial load and distinction between failure and zero hits. Do not approve default-project fallback or failed empty groups. Nothing has been tested; 006 navigation still requires real data and read/MRU authorization. No product, model, or write authorization is expanded.
 
-修订：search/4。依据2026-10-30用户统一采用规则，以已绑定安装版v0.3.0 / 202610281438 / preview的已核实正常行为作为v`0.3`需求依据；复用现有源码、精确产物绑定及修订2的独立Review。GSEARCH-001正常综合搜索入口/已明确项目范围、002–006正常最近文件/结果/数量/高亮/打开，以及007正常查询更新已采用。001仅文件入口、无项目范围与文献筛选入口可达性，007首查加载、失败与零命中区分仍待确认，不批准默认项目回退或失败空组。全部未实测，006跳转仍需真实数据与读取/MRU权限，不扩产品、模型或写入授权。
+This revision changes adoption status only. Seven IDs, criteria, and requirements version are unchanged. It does not change the sole business criteria for navigation, resources, literature, or conversations.
 
-本修订仅变更采用状态，七个ID、判据和需求版本不变，不修改导航、资料、文献及会话的唯一业务判据。
+<a id="精确产物与设计依据"></a>
+## Exact Artifact and Design Basis
 
-## 精确产物与设计依据
+Target: the macOS installer specified for this task, `0.3.0 / 202610281438 / preview`. Rechecked `/Applications/ScholarSeed.app/Contents/Resources/app.asar` read-only, SHA256=`1e4c075a908ba990e54b6ccf173d3af3f811587a4436a9866042e46d8b4656d3`. The packaged branch at ASAR `out/main/index.js:41022` loads static assets from `applicationResources(app)/renderer`; actual `Contents/Resources/renderer/assets/index-C4-PYlXk.js` SHA256=`22fcb548da45b8fd2f549622e11fb6cf2e97d5d2196ec79c56160b6a74d0fa57`. Package line references below refer to this renderer. No repository-wide source identity is assumed.
 
-目标为本任务指定的macOS安装包0.3.0 / 202610281438 / preview，重新核`/Applications/ScholarSeed.app/Contents/Resources/app.asar` SHA256=`1e4c075a908ba990e54b6ccf173d3af3f811587a4436a9866042e46d8b4656d3`。ASAR内out/main/index.js:41022的packaged分支从applicationResources(app)/renderer加载静态资源；真实`Contents/Resources/renderer/assets/index-C4-PYlXk.js` SHA256=`22fcb548da45b8fd2f549622e11fb6cf2e97d5d2196ec79c56160b6a74d0fa57`，下文包行均指该renderer。没有假定整仓同源。
+Local [MasterGo search record](../../../docs/design/mastergo/search.md) is design evidence, not acceptance or new approval. It supports observations about the recent-file layout, three result domains, and highlighting, and explicitly leaves search scope, navigation, loading/errors, and other semantics unknown. Do not infer complete rules from five historical items or three per group in the image. Fixed row count has the bound implementation evidence below and is adopted as a normal display requirement under the unified rule; design unknowns are not approved by that adoption.
 
-本地[MasterGo搜索记录](../../../docs/design/mastergo/search.md)是设计证据而非验收或新增批准：支持最近文件布局、三域结果及高亮的观察，明确搜索范围、导航、加载/错误等未知；不能从图中五条历史或每组三条推断完整规则。当前固定行数另有下述绑定实现依据，按统一规则已采用为正常展示要求；设计中的未知项仍不由此批准。
+<a id="逐项绑定及独立参照"></a>
+## Per-Item Binding and Independent References
 
-## 逐项绑定及独立参照
-
-| 条目 | 固定、动态、条件与当前源码/包定位 |
+| Item | Fixed, dynamic, conditional behavior and current source/package location |
 | --- | --- |
-| 001 | [TopBar](../../../src/renderer/src/shell/TopBar.tsx):54/102及[项目Navigation](../../../src/renderer/src/features/project/Navigation.tsx):332两个真实入口均设置all；全局文献未选项目时顶栏搜索隐藏。包TopBarLeft:86485、ProjectNavigation:56588、GlobalSearch:85184；范围表达式:85195在literature取catalogue.query.project_id，其它取homeSelectedProjectId。files分支:85196仅按state分支，当前源码及整份renderer未找到设置files的正常入口，不通过内部set激活，不按常规入口纳入断言 |
-| 002 | [GlobalSearch](../../../src/renderer/src/features/search/GlobalSearch.tsx):213及包:85274按searchProjectId过滤recentFiles、排除无有效项目引用的记录并slice(0,5)，不校验实际文件可用性。标题取路径末段，路径显示去resources/前缀；openedAt按客户端语言/时区格式化。独立参照获准隔离偏好的recentFiles最小投影及公开项目id/name，不能用画面或启动快照自证最新MRU |
-| 003 | GlobalSearch.tsx:207及包:85269按resource/literature/session固定顺序分组；空组独立EmptyState。api.ts:49对应包searchEverything:85109，trim仅用于query首尾，HTTP公开命中作为本轮标题/副标题/身份独立参照。不同域的命中理由可能来自路径、正文或其他字段，不要求所有命中标题都有查询词 |
-| 004 | GlobalSearch.tsx:306起，包:85369从groups读total/truncated、:85371初始最多3项，:85422更多追加10、:85427已展示完返回窗口且truncated时提示。更多只改变本地expanded，不重取下一页；后端platform/search.py:70的_window每域最多80项，计数与截断来自域结果，不能用当前3条或80条自证总量 |
-| 005 | [highlight](../../../src/renderer/src/features/search/highlight.ts):12对应包:85124；关键词trim后toLowerCase，以非重叠区间切原文，渲染保留原始大小写。对公开hit.title/subtitle独立计算范围再核实际mark，不用页面mark反推预期；普通拉丁文合成词可先核，不外推所有Unicode语言归一化 |
-| 006 | GlobalSearch.tsx:168、包openHit:85237分别走openResourceFile/revealResourceFile、catalogue.focus及openPanelSession(turnId,itemId)，随后close。包openResourceTarget:4967用于最近文件，先选择记录项目再打开。文献视图筛选项目与homeSelectedProjectId可能不同，资料/会话分支未显式统一选择searchProjectId，故尤其要以真实目标终态核范围，不能把注释或调用存在当跳转已正确 |
-| 007 | GlobalSearch.tsx:124起、包:85203起的effect在query/filesOnly/searchProjectId变化时清expanded、取消timer/AbortController，返回检查generation与aborted；结果成功落页后scrollTo top=0。api失败null与加载优先级的缺口见下文，不把当前错误折叠当产品要求 |
+| 001 | [TopBar](../../../src/renderer/src/shell/TopBar.tsx):54/102 and [project Navigation](../../../src/renderer/src/features/project/Navigation.tsx):332 are two real entry points and both set `all`; top-bar search is hidden when global literature has no selected project. In-package `TopBarLeft:86485`, `ProjectNavigation:56588`, `GlobalSearch:85184`; scope expression at `:85195` uses `catalogue.query.project_id` for literature and `homeSelectedProjectId` otherwise. The `files` branch at `:85196` is only a state branch; no normal entry setting `files` was found in current source or the full renderer. Do not activate it through internal `set` or assert it as a normal entry point. |
+| 002 | [GlobalSearch](../../../src/renderer/src/features/search/GlobalSearch.tsx):213 and package `:85274` filter `recentFiles` by `searchProjectId`, exclude entries without a valid project reference, and call `slice(0,5)`; they do not validate actual file availability. Title is the last path segment; displayed path removes the `resources/` prefix; `openedAt` is formatted for client locale/time zone. Independent reference: minimal projection of authorized isolated preferences `recentFiles` and public project id/name. Do not self-verify current MRU from the screen or a startup snapshot. |
+| 003 | `GlobalSearch.tsx:207` and package `:85269` group in fixed `resource`/`literature`/`session` order; empty groups have their own EmptyState. `api.ts:49` corresponds to package `searchEverything:85109`; only leading/trailing whitespace is trimmed from `query`. Public API hits are an independent reference for title/subtitle/identity in this run. A hit reason may come from path, body, or another field depending on domain; do not require every hit title to contain the query. |
+| 004 | From `GlobalSearch.tsx:306`, package `:85369` reads `total`/`truncated` from groups; `:85371` initially shows up to three, `:85422` appends ten more, and `:85427` returns to the window and shows a notice when all are displayed but `truncated` is true. “More” changes only local `expanded`; it does not fetch another page. Backend `platform/search.py:70` limits `_window` to 80 per domain; count and truncation come from domain results. Do not use the current three or 80 items to self-verify total matching count. |
+| 005 | [highlight](../../../src/renderer/src/features/search/highlight.ts):12 corresponds to package `:85124`; it trims/lowercases the query, finds non-overlapping ranges in original text, and renders with original casing. Independently compute ranges for public `hit.title`/`subtitle`, then check actual marks; do not derive expected results from page marks. A normal synthetic Latin word may be checked first; do not generalize this to normalization across every Unicode language. |
+| 006 | `GlobalSearch.tsx:168`, package `openHit:85237`, call `openResourceFile`/`revealResourceFile`, `catalogue.focus`, or `openPanelSession(turnId,itemId)`, then close. Package `openResourceTarget:4967` handles recent files, first selecting the project for that entry and then opening it. The literature view's filtered project and `homeSelectedProjectId` may differ; resource/session branches do not explicitly select `searchProjectId` uniformly. Verify the actual target terminal state in particular; the presence of a comment or call does not prove navigation is correct. |
+| 007 | The effect from `GlobalSearch.tsx:124` and package `:85203` clears `expanded`, cancels timer/AbortController, and checks generation/aborted when `query`/`filesOnly`/`searchProjectId` changes; after results succeed it scrolls to top=0. Gaps around API failure becoming `null` and loading precedence are listed below; do not treat current error collapsing as a product requirement. |
 
-## 后端Owner与公开协议
+<a id="后端owner与公开协议"></a>
+## Backend Owner and Public Protocol
 
-安装包后端根为`Contents/Resources/backend/python/lib/python3.12/site-packages/`，以下目标文件与仓库SHA256一致，已核路由、作用域和提供者链；没有查询实际数据：
+The installed backend root is `Contents/Resources/backend/python/lib/python3.12/site-packages/`. The following target files match repository SHA-256 and their route, scope, and provider chains were checked; no real data was queried:
 
-| Owner源码 | 安装包与仓库共同SHA256 |
+| Owner source | Shared installer/repository SHA-256 |
 | --- | --- |
 | [platform/search.py](../../../../serve/service/platform/search.py) | `78e454322a3be574957f2ddd4e9f592e831f78aa2eb1df6143096c65966e2a47` |
 | [content/service/search.py](../../../../serve/service/content/service/search.py) | `fc5cbfc5214664d6f2310a6d075234958e9ff9b965c813fb526d33ac0a01e54c` |
 | [content/service/port.py](../../../../serve/service/content/service/port.py) | `e04f6b582e536458136328f4f2a09bdeedac18982b2f6c037843d6ec670b20e0` |
 | [chat/service/sessions.py](../../../../serve/service/chat/service/sessions.py) | `d7bba25c600f0b104e36a361f939d95380f153738ca4da323c058a06dda3a71b` |
 
-GET `/api/search?q=…&project=…`使用页面已有认证会话、credentials=include，Serve基址来自window.scholarseed.getApiBase；空项目参数省略，不猜preload方法或提取Token。成功顶层为`{query,hits,groups}`，hits为数组，groups按resource/literature/session包含`{total,truncated}`；每个hit含domain/id/title/subtitle及可空reveal/locator，不是分页items容器。取数只读公开接口不证明没有内容读取权限要求。
+GET `/api/search?q=…&project=…` uses the page's existing authenticated session with `credentials=include`; Serve's base URL comes from `window.scholarseed.getApiBase`. Omit an empty project parameter; do not guess a preload method or extract a token. Successful top-level response is `{query,hits,groups}`; `hits` is an array, while `groups` contains resource/literature/session with `{total,truncated}`. Each hit has `domain/id/title/subtitle` and nullable `reveal/locator`; it is not a paginated `items` container. Read-only use of the public API does not prove that no content-read permission is required.
 
-独立参照保存本次q（保留词中空格）、是否传project及实际获准项目身份；只投影合成资料命中的domain/id/title/subtitle、groups.total/truncated及必要reveal.kind/query/source_revision、locator.turn_id/item_id。正文片段与对话摘要仅在明确获准的合成数据范围保存，不输出真实历史、其他项目路径、完整会话、凭据或整个未审响应。截断时不能凭返回窗口重建全库精确命中数；可用合成清单及公开计数共同核总量语义。
+Independent references record this run's `q` (preserving spaces within the term), whether `project` was sent, and the actual authorized project identity. Project only the synthetic resource hit's `domain/id/title/subtitle`, `groups.total/truncated`, and necessary `reveal.kind/query/source_revision`, `locator.turn_id/item_id`. Preserve body snippets and conversation summaries only for explicitly authorized synthetic data; do not output real history, paths from other projects, full conversations, credentials, or an entire unreviewed response. When results are truncated, do not reconstruct the exact full-catalog hit count from the returned window; use the synthetic manifest and public counts together to verify total-count semantics.
 
-platform/search.py:80由Content search取得资料命中，资料按精确文件名、文件名、路径、正文优先，正文可提取时读稳定快照并返回片段及find定位；:100复用文献load_library/apply_query，副标题为作者/年份；:121经SessionService.search_project调用项目可见会话及portable_history，返回片段和消息locator。搜索不是全网搜索，不调用模型，但会读取资料内容与可见会话片段；files模式也仍发送同一三域查询，只在前端过滤，绝不能当作隐私隔离。
+`platform/search.py:80` obtains resource hits from Content search. Resources are prioritized by exact filename, filename, path, then body; if body extraction is available, it reads a stable snapshot and returns a snippet and `find` locator. `:100` reuses `load_library`/`apply_query` for literature and authors/year as subtitle; `:121` calls visible project conversations and `portable_history` through `SessionService.search_project`, returning snippets and message locators. Search is not web search and does not call a model, but it reads resource contents and visible conversation snippets. `files` mode still sends the same three-domain query and filters only in the frontend; it must never be treated as privacy isolation.
 
-## 尚未批准的语义缺口
+<a id="尚未批准的语义缺口"></a>
+## Unapproved Semantic Gaps
 
-- 无项目范围：前端searchProjectId=null时省project，platform/search.py:163的_scope仍调用content.project(None)，port.py:427的registry.resolve(None)采用default项目，而不是跨全部项目；最近记录在同样null时却跨项目。该差异只作为实现事实，待确认应有产品范围，不批准fallback为正确或据名称要求全域。全局文献顶栏搜索隐藏，其query.project_id分支的正常入口也待观察，不能强制内部激活。
-- 错误与空结果：包searchEverything:85109非2xx或异常返回null，GlobalSearch:85218转为hits=[]/counts={}，catch也同样清空，最后显示三域零命中。源码注释称失败null可区分，并不证明UI已区分；不能把失败伪装无命中批准为正确需求，也不能仅凭源码宣布实际产品失败。
-- 首查加载：包:85303先判断hits===null才到:85362的loading，首次关键词等待时可能仍显示最近文件；已有结果再查询时路径不同。未恢复出统一且已批准的首查反馈标准，保留待确认，不虚构加载截图或故障测试通过。
-- files入口：模式分支已绑定，但无正常可见入口依据；正常all路径已采用，不因files缺口退役，不以内部store、测试fixture或隐藏模式替代用户流程。
+- **No project scope:** when frontend `searchProjectId=null`, it omits `project`; `platform/search.py:163` still calls `content.project(None)`, and `port.py:427` `registry.resolve(None)` selects the default project rather than all projects. Recent files under the same null scope span projects. This difference is only an implementation fact; the intended product scope needs confirmation. Do not approve fallback as correct or infer an all-domain requirement from the name. Top-bar search for global literature is hidden, and the normal entry point to its `query.project_id` branch also awaits observation; do not force it through internal activation.
+- **Errors and empty results:** package `searchEverything:85109` returns null for non-2xx or exceptions; `GlobalSearch:85218` turns it into `hits=[]`/`counts={}`, and catch does the same, ultimately showing zero hits in all three domains. A source comment saying failure can be distinguished does not prove the UI distinguishes it. Do not approve a failure disguised as no hits as correct requirements, or declare the actual product failed from source alone.
+- **Initial search loading:** package `:85303` checks `hits===null` before `:85362` loading; while the first keyword query is pending it may still show recent files, unlike the path when results already exist. A unified, approved initial-search feedback standard has not been recovered; leave it unconfirmed. Do not fabricate a loading screenshot or claim a fault test passed.
+- **Files entry:** the mode branch is bound, but there is no evidence of a normal visible entry. Normal `all` path is adopted; do not retire it because of the `files` gap or substitute internal store, test fixtures, or a hidden mode for a user flow.
 
-## 数据与副作用边界
+<a id="数据与副作用边界"></a>
+## Data and Side-Effect Boundaries
 
-复用资料场景的[overview.md](../../../../../examples/projects/evaluation/files/overview.md)、[detail.txt](../../../../../examples/projects/evaluation/files/notes/detail.txt)、[summary.md](../../../../../examples/projects/evaluation/files/notes/summary.md)、[appendix.md](../../../../../examples/projects/evaluation/files/notes/methods/appendix.md)，共享词SYNTHETIC-CORPUS及ALPHA/BETA/GAMMA/DELTA区分标记；不另建搜索语料。也可复用[文献列表sample.bib](../../../../../examples/projects/evaluation/files/sample.bib)作为合成题录输入，该BibTeX仅纯解析核过。建库时上述资料与题录尚未导入，当时记录的 UI 导入前提不适用于后续所有轮次；现行区分见 [search/14](#隔离资料准备边界search14)。样本自身不是现有命中或产品通过证据。基础场景仍需获准隔离项目；会话命中须已有获准合成对话及消息位置，没有时不发模型请求或私写会话库造数据。跨项目范围至少两个可区分项目，最近记录通过获准正常文件打开产生，不直接写MRU或内部状态。
+Reuse [overview.md](../../../../../examples/projects/evaluation/files/overview.md), [detail.txt](../../../../../examples/projects/evaluation/files/notes/detail.txt), [summary.md](../../../../../examples/projects/evaluation/files/notes/summary.md), [appendix.md](../../../../../examples/projects/evaluation/files/notes/methods/appendix.md), and the shared terms `SYNTHETIC-CORPUS` plus distinguishing markers ALPHA/BETA/GAMMA/DELTA. Do not create a separate search corpus. The [literature-list sample.bib](../../../../../examples/projects/evaluation/files/sample.bib) may also be reused as synthetic citation input; this BibTeX has only been checked for plain parsing. When the baseline was created, the resources and citation had not been imported; that historical UI-import prerequisite does not apply to every later round. The current distinction is in [search/14](#隔离资料准备边界search14). A sample itself is not evidence of an existing hit or product acceptance. Basic cases still require an authorized isolated project. A conversation hit requires an existing authorized synthetic conversation and message location; if absent, do not call a model or privately write a conversation database to manufacture data. Cross-project scope requires at least two distinguishable projects. Generate recent-file entries through authorized normal file opening; do not write MRU or internal state directly.
 
-更多需同域至少4个命中，截断需超过80项或自然截断；没有大样本就保留分支未覆盖，不缩成3条总数或宣称更多取尽所有匹配。空查询不发搜索API，不能用其最近列表证明非空查询范围；零命中也不能代替失败场景。
+“More” requires at least four hits in the same domain; truncation requires more than 80 items or natural truncation. If the larger sample is unavailable, leave the branch uncovered; do not reduce the total to three or claim that “More” exhausted every match. An empty query does not call the search API and cannot prove nonempty-query scope through its recent list. Zero hits cannot substitute for an error case either.
 
-打开结果可能加载Viewer、会话消息或文献详情，并改变工作区/最近访问/持久导航等状态；资料openResourceFile在store.tsx:3140更新recentFiles，文献catalogue.focus同样记录最近访问。最近文件字段为projectId/path/openedAt；最新独立参照需Owner解析隔离profile的renderer-preferences.json后只投影recentFiles，并用公开项目目录核有效身份，不能用preload.preferences启动快照当操作后的最新值。实际执行须集中授权合成内容与会话片段读取、目标打开及其原生伴随状态变化；旧授权不继承。
+Opening a result may load Viewer, conversation messages, or literature details and change workspace/recent-access/persistent navigation state. `openResourceFile` in `store.tsx:3140` updates `recentFiles`; `catalogue.focus` for literature also records recent access. Recent-file fields are `projectId/path/openedAt`. The latest independent reference must be obtained by asking the Owner to parse the isolated profile's `renderer-preferences.json` and project only `recentFiles`, then verify valid identity against the public project directory; a `preload.preferences` startup snapshot is not a post-operation value. Actual execution must explicitly authorize reading synthetic content and conversation snippets, opening the target, and its native accompanying state changes. Old authorization does not carry forward.
 
-本页不扩张文件编辑、文献同步、历史全文、会话任务、模型或网页权限；不从原始数据预先生成完成后的目标状态。当前无获准产品运行、截图或完整已导入搜索数据，参考图待后续许可后采集，不造图或机器框架。公共预算、冻结、驱动和Judge规程由Skill持有，不复制到本页。
+This page does not expand file editing, literature synchronization, full historical text, conversation tasks, model, or web permissions; it does not pre-generate the target state from source data. There is currently no authorized product run, screenshot, or complete imported search dataset. Reference images await later permission to capture; do not fabricate images or a machine fixture. Public budget, freeze, Driver, and Judge procedures remain owned by the Skill and are not copied here.
 
-## 发布快评分层（2026-10-30）
+<a id="发布快评分层2026-10-30"></a>
+## Release Quick-Review Layer (2026-10-30)
 
-本资产修订为search/4；按用户发布前快评目标和统一采用规则，在同一requirements追加快评层与专项层，复用本页已绑定源码、精确产物与既有Review，旧v`0.3`业务版本和完整判据不变。所选来源为GSEARCH-001、003、005、006的正文明确子要点；必要参照为当前任务项目身份与eval-editor-20261030.md的既有路径；范围无法核明则F3及本动作缺证停止，不自批。未选范围为001仅文件入口/无项目回退/文献范围、最近文件、全部分组分页、高亮全矩阵及007失败/首查瞬态仍未选或待确认，缺依据部分仍待确认。
+This asset revision is `search/4`. In line with the user's pre-release quick-review objective and unified adoption rule, the quick-review and special-scope layers were added to the same requirements document, reusing this page's bound source, exact artifact, and existing Review. The old business version v`0.3` and full criteria are unchanged. Selected sources are explicit subcriteria of GSEARCH-001, 003, 005, and 006; required references are the current task-project identity and the existing path in `eval-editor-20261030.md`. If scope cannot be verified, stop and record missing evidence for F3 and this action; do not self-approve. Not selected or still unconfirmed: 001 file-only entry/no-project fallback/literature scope; recent files; pagination across all groups; full highlighting matrix; and 007 errors/initial transient state. Parts without evidence remain unconfirmed.
 
-本次仅完成执行前分层，不产生产品通过结论，不覆盖历史完整运行；后续运行消费经独立Review冻结的子要点，不能将快评结果宣称覆盖原ID全量。当前构建未新增产品操作或数据写入权限。
+This only establishes the pre-execution layers. It does not conclude product acceptance or replace the complete historical run. Later runs consume the subcriteria frozen through an independent Review and must not claim that a quick-review result covers the full original IDs. This build adds no product operation or data-write permission.

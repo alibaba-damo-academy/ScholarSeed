@@ -1,103 +1,117 @@
-# 新手引导 React 工程适配说明
+<a id="新手引导-react-工程适配说明"></a>
 
-基线：`guide_subu`，`6ecf3e928`。仅实现开始使用、项目、全局文献库、文献阅读四组，以及引导中心。未迁移原型的登录、API Key、示例文献库、编辑器或 AI 回复。
+# React Project Adaptation for Onboarding
 
-## 架构适配与入口
+Baseline: `guide_subu`, `6ecf3e928`. Implemented only the Getting Started, Projects, Global Literature Library, and Literature Reading groups, plus the onboarding center. The prototype's login, API Key, sample library, editor, and AI reply flows were not migrated.
 
-本分支是 Electron + React + TypeScript 工程，没有 `docs/CODE_STRUCTURE.md`、`onboard.js`、`shell.js`、`project.js`、`import-menu.js`、`app.js` 或 `scripts/check-demo.mjs`。按已确认的 React 适配方式，读取了现有架构/所有权文档和源码后接入。
+<a id="架构适配与入口"></a>
 
-- 新逻辑集中在 `src/renderer/src/features/onboarding/`。没有新增运行时依赖；复用现有 React、Dialog、Button、Badge、Toast 与设计 token，没有引入普通 script 全局引擎或平行 CSS 系统。
-- 所有自定义类名使用 `ob-` 前缀；定位只使用 `data-ob`，不依赖已有 class、DOM 层级或文案。
-- 账号菜单原先注释掉的新手引导按钮已启用。活动栏头像菜单、旧 Chrome 账号菜单、设置「关于」里的入口统一打开引导中心。原先入口打开项目选择弹层的行为已替换。
-- 本分支没有 `onboard.js` 和 ⌘K「预览首次登录」命令，因此没有删除旧文件，也没有新增这条命令。现有未登录落地页与登录流程保留；进入业务首页后才出现开始使用弹窗。
-- 四组状态接入现有 `RendererPreferences`/`PreferenceWriter`，字段为 `onboarding.seen`，不用另一份 localStorage。`recentProjectId` 只记录最近进入的项目；重置只清空 `seen`。
-- 中文引导文案保留给定内容，集中放在新增的 `localization/locales/zh/onboarding.json`；`OB_COPY` 是统一文案键目录，待定项有注释。新增英文资源，没有重写已有英文文案。
+## Architecture Adaptation and Entry Points
 
-## 复用的现有能力
+This branch is an Electron + React + TypeScript project. It has no `docs/CODE_STRUCTURE.md`, `onboard.js`, `shell.js`, `project.js`, `import-menu.js`, `app.js`, or `scripts/check-demo.mjs`. The feature was integrated according to the confirmed React adaptation after reviewing the existing architecture/ownership documentation and source.
 
-| 能力 | 调用点 |
+- New logic is concentrated in `src/renderer/src/features/onboarding/`. No runtime dependency was added. The implementation reuses the existing React, Dialog, Button, Badge, Toast, and design tokens; it adds no global plain-script engine or parallel CSS system.
+- All custom class names use the `ob-` prefix. Targeting uses only `data-ob`; it does not depend on existing classes, DOM hierarchy, or copy.
+- The previously commented-out onboarding button in the account menu is enabled. The avatar menu in the activity rail, the legacy Chrome account menu, and the entry in Settings > About now all open the onboarding center. The former behavior of opening the project picker from these entries was replaced.
+- This branch has no `onboard.js` or ⌘K “Preview first login” command, so no legacy file was deleted and no such command was added. The existing signed-out landing page and login flow remain; the Getting Started dialog appears only after entering the product home page.
+- The four groups' state uses the existing `RendererPreferences`/`PreferenceWriter`, under `onboarding.seen`, rather than a separate localStorage. `recentProjectId` records only the most recently entered project; reset clears only `seen`.
+- The supplied Chinese onboarding copy is preserved in the new `localization/locales/zh/onboarding.json`. `OB_COPY` is the centralized copy-key catalog, with comments for pending items. English resources were added without rewriting existing English copy.
+
+<a id="复用的现有能力"></a>
+
+## Reused Existing Capabilities
+
+| Capability | Call site |
 | --- | --- |
-| 切换首页/资料库/文献库、展开模块面板 | `act.openWorkbenchView` |
-| 进入已有项目 | `act.selectProject` |
-| 新建项目 | 原 `projectForm: { mode: 'create' }` 与 `ProjectFormHost` |
-| 打开导入菜单 | 点击已加稳定锚点的现有 `DropdownMenuTrigger`，沿用原菜单状态与导入处理 |
-| 展开发现区/分类所在区域 | 点击原折叠控件，沿用原 `onOpenChange` |
-| 关闭/打开 AI | `act.toggleAiPanel` / `act.openPanel('user_request')`；后者已有当前文献上下文处理 |
-| 打开库中 PDF | `act.openLiteratureAttachment` |
-| 打开本地内置 PDF | `documentWorkspaces.forProject(null).open` + 独立的只读 builtin loader |
-| 真实 PDF 划词 | 原 PDF.js 文本层、DOM Range、阅读器现有 `keyup` 选区捕获回调及真实 `SelectionActionHost` |
-| 让引导卡保留选区 | 阅读器现有 `documentSelectionInteractionProps`，没有修改选区清理规则 |
+| Switch home/resource library/literature library views and expand module panels | `act.openWorkbenchView` |
+| Enter an existing project | `act.selectProject` |
+| Create a project | Existing `projectForm: { mode: 'create' }` and `ProjectFormHost` |
+| Open the import menu | Click the existing `DropdownMenuTrigger` with its stable anchor, reusing the original menu state and import handling |
+| Expand the discovery or collections area | Click the original collapse control and reuse its `onOpenChange` |
+| Close/open AI | `act.toggleAiPanel` / `act.openPanel('user_request')`; the latter already handles current-literature context |
+| Open a PDF in the library | `act.openLiteratureAttachment` |
+| Open the local built-in PDF | `documentWorkspaces.forProject(null).open` + the separate read-only builtin loader |
+| Select text in a real PDF | Existing PDF.js text layer, DOM Range, reader's existing `keyup` selection-capture callback, and real `SelectionActionHost` |
+| Keep the selection while showing an onboarding card | Existing reader `documentSelectionInteractionProps`; selection cleanup rules were not changed |
 
-## 引导行为
+<a id="引导行为"></a>
 
-引擎维护一条队列；开始前重新检查当前视图、项目或 PDF 身份，不符合条件直接放弃且不标记已看过。手动查看会清除其它待播请求并只重播所选组。步骤支持 before/setup/after，取消时中止异步步骤并清理本次创建的选区。跳过与 Escape 均标记已看过。
+## Onboarding Behavior
 
-SVG mask 可同时挖多个区域，附加活动栏锚点画绿色描边。卡片按真实目标与自身尺寸定位，最大 600px，监听尺寸与滚动变化。步数在左，跳过/主按钮在右。复用模态框焦点管理。
+The engine maintains a queue. Before starting, it rechecks the current view, project, or PDF identity; if the prerequisites do not match, it abandons the request without marking the group as seen. Manually opening the center clears other queued requests and replays only the selected group. Steps support before/setup/after hooks. Cancel aborts asynchronous steps and clears any selection created by the current run. Skip and Escape both mark the group as seen.
 
-首次新建项目完成后显式触发项目引导；未看过的项目视图进入也会触发，支持已有项目与重置后的自然播放。首页、全局文献库通过视图变化触发；PDF 通过真实阅读器挂载/文档身份变化触发。没有资料文件首次打开或 AI 首次打开引导。
+The SVG mask can cut out multiple areas at once and draw a green outline around an additional activity-rail anchor. Cards are positioned using the real target and their own dimensions, up to 600px wide, and respond to resize and scroll changes. Step count is on the left; Skip and the primary button are on the right. The implementation reuses modal focus management.
 
-## 界面差异与内置示例
+After the first project is created, project onboarding is triggered explicitly. Entering a project view that has not been seen also triggers it, including for existing projects and after a reset. Home and the global literature library trigger on view changes; PDF onboarding triggers when the real reader mounts or its document identity changes. There is no first-open onboarding for resource files or AI.
 
-- 本工程有业务首页、全局文献库项目和分类，均复用。分类一步同时高亮两个实际分类区域。
-- 文献库侧栏的加号就是现有导入入口，没有增加另一套导入按钮。
-- 示例文件：`src/renderer/src/features/onboarding/assets/sample.pdf`。随前端打包，本地可选择文本，使用独立 `builtin:onboarding-v1` 身份，不调用导入 API、不写入用户文献库。
-- **重要差异：原阅读器只有入库文献才提供图表解释、右侧阅读助手及文献 AI 上下文。未入库示例因此仅演示真实选区与复制，显示 1/1，并明确提示能力限制；不伪造文献身份，不新增示例专属功能。实际入库 PDF 保留完整四步。**
-- 扫描 PDF 第一页没有可选文本或某个实际控件不存在时，跳过不可展示步骤；整组没有可展示目标则提示且不消耗首次状态。
-- 新文献发现文案按给定的〔待定〕版本保留。本次没有实现或更改工程既有检索能力。
+<a id="界面差异与内置示例"></a>
 
-## 共享文件逐处变更
+## UI Differences and Built-in Example
 
-以下路径以 `apps/desktop/` 为根。原需求中的四个共享 JS 文件不存在，以下为本工程实际涉及的共享入口及基础设施。
+- This project has a product home page, a global literature library, projects, and collections; all are reused. The collections step highlights both actual collection areas at once.
+- The plus icon in the literature-library sidebar is the existing import entry point; no second import button was added.
+- Example file: `src/renderer/src/features/onboarding/assets/sample.pdf`. It is bundled with the frontend, contains selectable local text, and uses the separate `builtin:onboarding-v1` identity. It does not call the import API or write to the user's library.
+- **Important difference: in the original reader, chart explanations, the right-side reading assistant, and literature AI context are available only for literature already in the library. The unregistered example therefore demonstrates only real text selection and copying, displays 1/1, and clearly states this limitation. It does not fabricate a literature identity or add example-only features. PDFs already in the library retain the complete four-step flow.**
+- If the first page of a scanned PDF has no selectable text, or an actual control is missing, skip the step that cannot be shown. If the group has no visible target, show a notice without consuming the first-run state.
+- Keep the new-literature discovery copy in the supplied〔待定〕(pending) version. This task did not implement or change the project's existing search capability.
 
-| 文件 | 每处改动 |
+<a id="共享文件逐处变更"></a>
+
+## Shared File Changes by Location
+
+The paths below are relative to `apps/desktop/`. The four shared JS files named in the original request do not exist; the table lists the shared entry points and infrastructure actually involved in this project.
+
+| File | Changes |
 | --- | --- |
-| `src/renderer/src/App.tsx` | ①导入 Onboarding 事件接口和宿主；②AppRoot 挂载一次宿主，传入落地页/登录阻塞状态；③原项目创建成功并导航后加一行 `Onboarding.trigger('project', created.id)`。 |
-| `src/renderer/src/shell/ActivityRail.tsx` | ①导入事件接口；②现有活动栏控件加 `data-ob`；③原 onGuide 在关闭菜单后改为 `Onboarding.openCenter()`。 |
-| `src/renderer/src/shell/TopBar.tsx` | ①项目切换器加 `data-ob="project-switcher"`；②AI 入口加 `data-ob="ai-entry"`。 |
-| `src/renderer/src/components/business/AccountMenu.tsx` | ①恢复原先被注释的新手引导按钮，保留现有文案、图标、onGuide 回调。 |
-| `src/renderer/src/components/business/Chrome.tsx` | ①导入事件接口；②原 onGuide 关闭菜单后打开引导中心。 |
-| `src/renderer/src/components/business/AccountPanel.tsx` | ①导入事件接口；②AboutPage.startGuide 关闭设置后打开中心，不再打开项目选择弹层；同步入口说明注释。 |
-| `src/preferences.ts` | ①导入独立偏好模型；②添加可选 onboarding 字段；③偏好比较纳入该字段；④偏好清洗只在字段存在时清洗该字段，不改变旧默认数据形状。 |
-| `src/renderer/src/store.tsx` | ①导入模型；②AppState 增加 onboarding；③INITIAL 从现有偏好恢复；④外部偏好同步比较 onboarding；⑤同步时恢复 onboarding；⑥原 PreferenceWriter.submit 携带字段；⑦原写入 effect 依赖增加该字段。 |
-| `src/renderer/src/features/workbench/api.ts` | ①导入 builtin loader/type；②DocumentSource 追加 builtin 联合成员；③documentIdFor 增加 builtin 身份分支；④loadDocument 首部增加 builtin 分派。原来源分支保持原逻辑。 |
-| `src/renderer/src/design/layout.css` | 在原 root token 块中追加引导专用最大宽/高 token，不修改已有 token 或选择器。 |
-| `tsconfig.web.json` | include 增加共享 `src/onboarding.ts`。 |
-| `src/localization/resources.ts`、`types.d.ts` | 由既有 i18n 生成器登记新的 onboarding 命名空间。 |
+| `src/renderer/src/App.tsx` | (1) Import the Onboarding event interface and host; (2) mount the host once in AppRoot and pass landing-page/login-blocked state; (3) after successful project creation and navigation, add `Onboarding.trigger('project', created.id)`. |
+| `src/renderer/src/shell/ActivityRail.tsx` | (1) Import the event interface; (2) add `data-ob` to the existing activity-rail control; (3) change the existing onGuide action to call `Onboarding.openCenter()` after closing the menu. |
+| `src/renderer/src/shell/TopBar.tsx` | (1) Add `data-ob="project-switcher"` to the project switcher; (2) add `data-ob="ai-entry"` to the AI entry point. |
+| `src/renderer/src/components/business/AccountMenu.tsx` | Restore the previously commented-out onboarding button while preserving its existing copy, icon, and onGuide callback. |
+| `src/renderer/src/components/business/Chrome.tsx` | (1) Import the event interface; (2) open the onboarding center from the existing onGuide action after closing the menu. |
+| `src/renderer/src/components/business/AccountPanel.tsx` | (1) Import the event interface; (2) make `AboutPage.startGuide` close Settings and open the center instead of opening the project picker; update the entry-point comment. |
+| `src/preferences.ts` | (1) Import the separate preference model; (2) add an optional onboarding field; (3) include it in preference comparisons; (4) clean this field only when present, without changing the shape of legacy default data. |
+| `src/renderer/src/store.tsx` | (1) Import the model; (2) add onboarding to AppState; (3) restore it from existing preferences in INITIAL; (4) compare it during external preference sync; (5) restore it during synchronization; (6) include the field in the existing `PreferenceWriter.submit`; (7) add the field to the existing write effect's dependencies. |
+| `src/renderer/src/features/workbench/api.ts` | (1) Import the builtin loader/type; (2) add builtin to the `DocumentSource` union; (3) add a builtin identity branch to `documentIdFor`; (4) dispatch builtin sources at the start of `loadDocument`. Existing source branches retain their behavior. |
+| `src/renderer/src/design/layout.css` | Add onboarding-specific max-width/max-height tokens to the existing root token block without changing existing tokens or selectors. |
+| `tsconfig.web.json` | Add shared `src/onboarding.ts` to include. |
+| `src/localization/resources.ts`, `types.d.ts` | Register the new onboarding namespace through the existing i18n generator. |
 
-业务模块挂载仅增加定位属性：
+Business-module mounts add only targeting attributes:
 
-| 文件 | 定位点 |
+| File | Target |
 | --- | --- |
-| `features/resources/ResourcePanel.tsx` | 资料库侧栏、发现区、发现区折叠按钮。 |
-| `features/literature/LiteraturePanel.tsx` | 文献侧栏、发现区与折叠按钮、我的文献折叠按钮、原导入加号、项目区域、分类区域。 |
-| `features/workbench/PdfDocument.tsx` | 阅读器及文档身份、原 viewport、原右侧功能条。 |
-| `features/workbench/Selection.tsx` | 真实 FloatingToolbar。 |
-| `features/workbench/pdf/Reading.tsx` | 原图表解释按钮。 |
-| `features/workbench/pdf/Page.tsx` | 第一页真实 TextLayerBuilder.div 加 data-ob 属性，不改文本渲染。 |
+| `features/resources/ResourcePanel.tsx` | Resource-library sidebar, discovery area, and discovery-area collapse button. |
+| `features/literature/LiteraturePanel.tsx` | Literature sidebar, discovery area and collapse button, My Literature collapse button, original import plus icon, project area, and collections area. |
+| `features/workbench/PdfDocument.tsx` | Reader and document identity, original viewport, and original right-side toolbar. |
+| `features/workbench/Selection.tsx` | Real FloatingToolbar. |
+| `features/workbench/pdf/Reading.tsx` | Original chart-explanation button. |
+| `features/workbench/pdf/Page.tsx` | Add `data-ob` to the actual first-page `TextLayerBuilder.div` without changing text rendering. |
 
-新增 `features/workbench/builtin.ts` 只接受显式注册的内置文档，不接受任意文件路径。其它新代码均在 onboarding 模块、独立 contracts/onboarding 事件接口、共享 onboarding 偏好模型与新本地化资源中。
+The new `features/workbench/builtin.ts` accepts only explicitly registered built-in documents, not arbitrary file paths. All other new code is in the onboarding module, the separate contracts/onboarding event interface, the shared onboarding preference model, and the new localization resources.
 
-`docs/_generated/{components,debt,tokens}.md` 使用仓库生成器刷新；包含原分支已存在但生成文档未同步的条目。没有修改检查基线或旧断言。
+The repository generator refreshed `docs/_generated/{components,debt,tokens}.md`, including entries already present on the original branch but not yet synchronized in generated docs. No check baseline or existing assertion was changed.
 
-## 验证记录（2026-09-18）
+<a id="验证记录2026-09-18"></a>
 
-使用仓库声明的 Node 24.16.0、npm 11.13.0、uv 0.12.11。真实 Electron + 本地 Serve，测试 HOME、profile、workspace 全部在 `/tmp/shushen-ob-*`，没有使用用户正式文献库。完整阅读器测试时通过原导入菜单手动导入了本仓库的测试 PDF，仅写入隔离验收库；这与产品的空库 builtin 示例路径分开。
+## Verification Record (2026-09-18)
 
-已实际操作：首次首页选择弹窗；从文献开始打开原导入菜单；账号菜单中心；四组状态；无项目时打开原创建流程并建成后播放；首页重播恢复最近项目；项目五步与自动侧栏切换/最后打开 AI；全局五步；空库样例且库计数保持 0；库中首篇 PDF 回退与完整四步；真实选区/工具条、第四步清除选区、最后打开 AI；重播已看过的组；重启持久化；Escape 跳过；重置不立即播放、再次进入页面才自然触发。
+Used the repository-declared Node 24.16.0, npm 11.13.0, and uv 0.12.11. The real Electron app and local Serve were used; test HOME, profile, and workspace were all under `/tmp/shushen-ob-*`, without using the user's production literature library. During full-reader testing, a test PDF from this repository was manually imported through the original import menu and written only to the isolated acceptance library. This was separate from the product's built-in sample path for an empty library.
 
-- 构建 `npm run build`：通过。
-- 新引导独立断言 12 项，以及现有偏好/持久化/workspace 回归，共 122 项：通过。
-- 原 PDF 功能条断言：通过，未改断言，仅保持原标签属性顺序兼容现有源码断言。
-- `git diff --check`：通过。
-- `npm test`：pretest 27 项中 25 通过、2 失败（TeX Live Windows 路径断言、uv 错误版本 fixture），两项均在原分支快照复现。
-- 单独运行完整底层测试：1337 项，1276 通过、60 失败、1 跳过。基线 1325 项、1263 通过、61 失败、1 跳过。59 项失败名称相同；当前额外的 review-bar 失败是旧测试把含中文的 file URL 当路径使用，已在中文目录下的原分支快照复现。基线另外两项失败与 archive 无 Git 元数据/LFS 指针有关。没有改旧测试或断言。
-- `typecheck`：32 个错误，与基线逐条一致，无新增类型错误。
-- `i18n:check -- --base HEAD`：未修改的 `input.ts` 引用缺失的 `components:request.*` 消息键，检查未通过；新增 onboarding 文案无未知键诊断。
-- `docs:check`：原有 ownership/style/architecture 规范债务与基线不一致仍阻塞，新增 onboarding/builtin 文件无新增诊断；生成文档已刷新。
-- **因此当前不能标记为全部检查通过。** 详细日志保留在 `tmp/test_snapshot/desktop/onboarding/checks/`，不提交到 Git。
-- `check-demo.mjs` 不存在，没有创建空检查脚本冒充通过。
-- 没有调用真实 AI 生成或验证模型回复；本任务仅验证原 AI 面板与上下文入口的调用。
+The following were exercised: first-run home selection dialog; opening the original import menu from the Literature start point; the account-menu center; all four groups; opening the original create flow with no projects and playing onboarding after creation; replaying Home and restoring the most recent project; five project steps, automatic sidebar switching, and opening AI at the end; all five global-library steps; empty-library sample with the library count remaining 0; fallback to the first PDF in the library and its complete four-step flow; real text selection and toolbar, clearing the selection in step four, and opening AI at the end; replaying a previously seen group; persistence across restart; skipping with Escape; and reset without immediate playback, followed by the expected automatic trigger on re-entering the page.
 
-截图在仓库忽略目录 `tmp/test_snapshot/desktop/onboarding/`，均来自真实 Electron 窗口且已目视检查：`center-reset.png`（四行与重置）、`pdf-figure.png`（真实图表解释按钮）、`pdf-selection.png`（正文选区与真实工具条）、`sample-selection.png`（未入库示例及能力限制）。`start.png`（最终开始使用双卡排版）与 `project-resources.png`（恢复最近项目、资料库和活动栏双目标）同目录。
+- Build `npm run build`: passed.
+- The 12 onboarding-specific assertions and 122 existing preference/persistence/workspace regression tests passed.
+- Existing PDF toolbar assertions passed. Assertions were not changed; only the original attribute order was preserved for compatibility with a source assertion.
+- `git diff --check`: passed.
+- `npm test`: of 27 pretest checks, 25 passed and 2 failed (the TeX Live Windows-path assertion and the uv wrong-version fixture); both failures were reproduced on a snapshot of the original branch.
+- The complete lower-level test suite was run separately: 1,337 tests, 1,276 passed, 60 failed, and 1 skipped. Baseline: 1,325 tests, 1,263 passed, 61 failed, and 1 skipped. The same 59 failures occurred in both runs. The additional current review-bar failure came from a legacy test treating a file URL containing Chinese characters as a path; it was reproduced on an original-branch snapshot under a Chinese directory. The baseline's other two failures involved missing Git metadata/LFS pointers in the archive. No legacy tests or assertions were changed.
+- `typecheck`: 32 errors, matching the baseline one by one; no new type errors.
+- `i18n:check -- --base HEAD`: failed because unchanged `input.ts` references the missing `components:request.*` message keys. No unknown-key diagnostics were reported for the new onboarding copy.
+- `docs:check`: existing ownership/style/architecture debt and baseline inconsistencies remain blocking; the new onboarding/builtin files produced no new diagnostics. Generated docs were refreshed.
+- **Therefore, the full check suite cannot be reported as passing.** Detailed logs are retained in `tmp/test_snapshot/desktop/onboarding/checks/` and are not committed to Git.
+- `check-demo.mjs` does not exist; no empty check script was created to claim a pass.
+- No real AI generation or model-response validation was performed; this task checked only invocation of the existing AI panel and context entry point.
 
-样式复核：开始使用选项卡采用现有 outline 按钮变体（白底、浅灰边框、深色标题），链接保留绿色；“先随便看看”与“跳过”使用 tertiary 文本色。构建通过，实际 Electron 窗口截图为 `start-neutral.png`。
+Screenshots are in the ignored repository directory `tmp/test_snapshot/desktop/onboarding/`. All are from the real Electron window and were visually inspected: `center-reset.png` (four rows and reset), `pdf-figure.png` (real chart-explanation button), `pdf-selection.png` (text selection and real toolbar), and `sample-selection.png` (unregistered example and its capability limit). `start.png` (final two-card Getting Started layout) and `project-resources.png` (restored recent project, resource library, and dual activity-rail targets) are in the same directory.
+
+Style review: Getting Started option cards use the existing outline button variant (white background, light-gray border, dark title); links remain green. “先随便看看” and “跳过” use the tertiary text color. Build passed; the screenshot from the real Electron window is `start-neutral.png`.

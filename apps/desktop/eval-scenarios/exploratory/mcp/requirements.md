@@ -1,36 +1,47 @@
-# MCP 历史要求与当前入口映射
+<a id="mcp-历史要求与当前入口映射"></a>
+# Historical MCP Requirements and Current Entry Mapping
 
-当前入口：主界面“扩展”→“连接器”，由用户于2026-10-31明确确认。当前快评与[连接器基线](../connectors/requirements.md#发布快评层)合并，不另计独立页面；MCP-OBS-001–003及v`0.3`保留，用于需求追踪，不因旧设置入口消失认定MCP能力缺失。
+Current entry point: Main interface **“扩展” → “连接器”** (“Extensions” → “Connectors”), explicitly confirmed by the user on 2026-10-31. The current quick review is merged into the [Connectors baseline](../connectors/requirements.md#发布快评层) and is not counted as a separate page. MCP-OBS-001–003 and v`0.3` are retained for requirements traceability; disappearance of the old Settings entry does not establish that MCP capabilities are missing.
 
-下列保留旧编号的业务判据，不要求恢复已移除的独立设置页。当前选入的状态/目录/添加表单子要点与未映射旧字段见连接器正文；不宣称迁移后已完成旧编号全部细则。
+The business criteria below retain their old IDs and do not require restoring the removed standalone Settings page. See the Connectors document for the currently selected status, directory, and add-form subcriteria, as well as old fields without a mapping. This does not claim that all details under the old IDs have been completed after migration.
 
-当前版本连接器及未提交表单的真实参考图见[连接器正文](../connectors/requirements.md)。
+See the [Connectors document](../connectors/requirements.md) for current-version reference images of the connector and its unsubmitted form.
 
-当前连接器未提交表单
+Current connector form, not submitted
 
-参考：macOS arm64，0.3.2 / 202611121104，2026-11-12；仅为未填写、未提交表单，不证明连接或授权。
+Reference: macOS arm64, 0.3.2 / 202611121104, 2026-11-12; this shows only an unfilled, unsubmitted form and does not prove connection or authorization.
 
-连接器数量、连接及待生效状态随环境变化，不固定为参考图中的取值。
+Connector counts, connection state, and pending-apply state vary with the environment; the values shown in the reference image are not fixed.
 
-## 查看现状
+<a id="查看现状"></a>
+## Inspect Current State
 
-### 状态摘要（MCP-OBS-001 · v`0.3`）
-固定：标题、用途说明及刷新入口清楚。动态：摘要的服务器总数、就绪、失败、等待、待授权和禁用计数，与本实例当前MCP只读状态一致；待读取、失败或不支持时有对应提示，不冒充成功连接。
+<a id="状态摘要mcp-obs-001--v03"></a>
+### Status Summary (MCP-OBS-001 · v`0.3`)
 
-### 服务器列表（MCP-OBS-002 · v`0.3`）
-条件：当前配置为空时显示未配置提示；有配置时，服务器名称、传输类型、启用及连接/工具状态与同实例的只读状态对应，未返回工具数量时不能推断为就绪。
+Fixed: The title, purpose statement, and refresh entry point are clear. Dynamic: The server totals in the summary and the ready, failed, waiting, pending-authorization, and disabled counts match the current read-only MCP state in this instance. Unread, failed, or unsupported states have corresponding messages and are not presented as successful connections.
 
-## 查看添加入口
+<a id="服务器列表mcp-obs-002--v03"></a>
+### Server List (MCP-OBS-002 · v`0.3`)
 
-### 添加表单（MCP-OBS-003 · v`0.3`）
-固定/条件：有添加服务器分组、传输方式、名称、标识符和添加入口；当前为HTTP时展示URL，为stdio时展示命令/参数。读取/保存中或当前能力不支持时添加不可用；只核自然选中的传输方式，不以空表单按钮是否禁用推断提交校验。
+Conditional: When the current configuration is empty, show an unconfigured-state message. When configuration exists, server names, transport types, enabled states, and connection/tool states correspond to the read-only state from the same instance. If the tool count is not returned, do not infer readiness.
 
-## 发布快评层
+<a id="查看添加入口"></a>
+## Inspect the Add Entry Point
 
-沿MCP-OBS-001–003的v`0.3`功能身份，在[连接器快评层](../connectors/requirements.md#发布快评层)核当前自然状态、我的列表/空态及未提交添加表单。旧页面的六类汇总计数、刷新及全传输分支不默认要求在新布局逐字重现，原细则仍保留为历史完整要求/迁移待核项；本轮只声明选定子范围。
+<a id="添加表单mcp-obs-003--v03"></a>
+### Add Form (MCP-OBS-003 · v`0.3`)
 
-必要参照使用连接器当前公开目录、自然安装/授权状态和包内表单默认/显示条件；不读取配置正文或秘密。不再为找旧入口探测设置旁路、用旧status接口失败阻断当前公开连接器目录，或重复计算同一页面覆盖。
+Fixed/conditional: The form has an Add Server group, transport selector, name, identifier, and add entry point. For HTTP, show a URL; for stdio, show a command and arguments. Disable adding while reading/saving or when the current capability is unsupported. Check only the transport selected naturally; do not infer submit validation from whether the empty-form button is disabled.
 
-## 专项层
+<a id="发布快评层"></a>
+## Release Quick-Review Layer
 
-本层未选：刷新、添加、传输方式切换、连接/授权及工具调用。原完整判据、稳定ID、版本和历史结果保留；未确认分支不因分层获批。
+For the feature identities MCP-OBS-001–003 at v`0.3`, review the naturally observed current state, My List/empty state, and unsubmitted add form in the [Connectors quick-review layer](../connectors/requirements.md#发布快评层). The six summary counts, refresh behavior, and all transport branches from the old page are not automatically required to reappear verbatim in the new layout. The original detailed criteria remain historical full requirements and migration items pending verification; this run claims only the selected sub-scope.
+
+Use the current public connector directory, naturally occurring installation/authorization state, and in-package form defaults/display conditions as necessary references. Do not read configuration contents or secrets. Do not probe a Settings bypass to find the old entry point, use failure from the old status API to block the current public connector directory, or count coverage of the same page twice.
+
+<a id="专项层"></a>
+## Focused Scenarios
+
+Not selected in this layer: refresh, adding, transport switching, connection/authorization, and tool invocation. Preserve the original full criteria, stable IDs, versions, and historical results. An unconfirmed branch is not authorized merely because the layer was approved.

@@ -1,339 +1,228 @@
-# Desktop 测试架构（逻辑单元 / API 接口 / PDFE UI / LLM 真实链路）
+<a id="desktop-测试架构逻辑单元--api-接口--pdfe-ui--llm-真实链路"></a>
+# Desktop Testing Architecture (Logic Units / API Interfaces / PDFE UI / Real LLM Flows)
 
 ## Scope / Non-goals
 
-跨评测、自动化测试与 PDFE 的原始样本及示例项目遵循
-[共享示例设计](../../../../docs/architecture/examples.md)：复用不可变定义，按测试目标
-准备最小独立副本，不预先完成被测动作，不把协议 fixture 当真实集成。
+Raw samples and example projects shared by evaluation, automated tests, and PDFE follow the [shared examples design](../../../../docs/architecture/examples.md): reuse immutable definitions and prepare the smallest independent copy for each test objective. Do not perform the action under test in advance or treat a protocol fixture as real integration.
 
-**目标分工（required）**：逻辑构建单元测试，API 构建接口测试，UI 基于 PDFE 的
-Mock API 驱动真实共享 renderer，真实用户任务链路由 [LLM 评测](evaluation.md)承担。
-前三层用程序驱动和断言提供快速、稳定、可重复的反馈；真实链路由模型驱动与独立
-评审综合判断，文件、状态、安全边界等确定性事实仍由程序核验。
+**Target division (required)**: Logic is covered by unit tests, APIs by interface tests, UI by PDFE-based Mock APIs driving the real shared renderer, and real user-task flows by [LLM evaluation](evaluation.md). The first three layers provide fast, stable, repeatable feedback through programmatic drivers and assertions. Real flows are driven by a model and assessed through independent review; programs still verify deterministic facts such as files, state, and security boundaries.
 
-**负责人 A**维护确定性测试及共享准备/观察能力，**负责人 B**维护真实链路评测、
-基线与运行交付。PDFE 是 UI 状态准备和隔离运行面，不是第四种判分方法。
-现存仍有效的程序驱动真实模型 E2E 仍按 A 报告，不因目标分工变更自动改名为 B 或删除。
+**Owner A** maintains deterministic tests and shared preparation/observation capabilities. **Owner B** maintains real-flow evaluation, baselines, and run deliverables. PDFE provides UI-state preparation and an isolated execution surface; it is not a fourth scoring method. Existing, still-valid program-driven real-model E2E tests continue to be reported under A; do not automatically reassign them to B or delete them because of the target division.
 
-关键选择：保留 Node、Python、Playwright 与现有 Owner；把状态组合放在低成本层，
-不让每个 UI 用例依赖真实后端/模型。IPC、进程、安装更新等原生集成另行保留，
-既有 strict/full、真实数据安全断言和安装包准入不因文档调整降级。
-非目标是新建测试平台、修改产品配合隔离或重定义需求。本文只维护架构设计；
-现有测试盘点、迁移安排与阶段验收归实施计划 (non-public execution/provenance record omitted)。
+Key choices: retain Node, Python, Playwright, and existing Owners; put state combinations in a low-cost layer so each UI case does not depend on a real backend/model. Keep native integration for IPC, processes, installation, and updates separately. Documentation changes do not weaken existing strict/full checks, real-data safety assertions, or package acceptance. Non-goals are building a new test platform, changing the product to support isolation, or redefining requirements. This document maintains the architecture design only; the inventory of existing tests, migration arrangements, and staged acceptance belong in the implementation plan (non-public execution/provenance record omitted).
 
-测试范围以当前支持版本的有效需求、源码消费者和真实可达路径确定，不由历史库存
-定义。已退役且无持续用途的能力清理其测试、场景、Mock、样例及专用适配，无须逐例
-迁移或保留替身；仍有效而入口替换的能力走当前真实入口，不为旧测试增加替代按钮。
-条件显示不等于退役，权限、错误恢复、选中项目后可用及平台专属能力仍需验证。
-产品代码删除另核需求、消费者、安全、数据兼容及平台用途，不因测试红或慢删功能。
+Determine test scope from valid requirements for currently supported versions, source consumers, and real reachable paths, not from historical inventory. For retired capabilities with no continuing use, remove their tests, scenarios, mocks, samples, and dedicated adapters; do not migrate every case or retain stand-ins. For still-valid capabilities whose entry points were replaced, use the current real entry point; do not add substitute buttons for old tests. Conditional visibility does not mean retirement; permissions, error recovery, availability after selecting a project, and platform-specific capabilities still require verification. Separately verify requirements, consumers, security, data compatibility, and platform usage before deleting product code; do not delete a feature merely because tests are failing or slow.
 
 ## Source of truth
 
-- 执行与选择：[Desktop scripts](../../package.json)、[Playwright](../../playwright.config.ts)、
-  [ci:test](../../../../scripts/ci/test.cjs)与[gitlab jobs](../../../../.gitlab-ci.yml)。
-- 准入底线：[测试与验收规范](../quality/testing.md)；
-  profile、quarantine、quality.json 与 L1–L4 以[开发入口](../../../../docs/runbooks/development.md#验证分层与-ci-编排器)为准。
-- 准备与隔离：[runtime](../../e2e/fixtures/runtime.ts)、
-  [Electron fixture](../../e2e/fixtures/electron.ts)、[项目播种](../../e2e/fixtures/workbench.ts)；
-  覆盖率由[c8](../../.c8rc.json)持有。
-- 模型驱动/评审的架构、Skill 与场景契约归[evaluation.md](evaluation.md)。
-- UI 场景与隔离归 [PDFE](PDFE.md)、[预览架构](preview.md)及
-  [catalog](../../preview/catalog.ts)；当前执行入口为 [native config](../../preview/native.config.ts)。
-- API/数据链路的现有库存归 [Serve tests](../../../serve/tests/)、
-  [run_all](../../../serve/tests/run_all.py)；跨包协议归[根 tests](../../../../tests/)。
+- Execution and selection: [Desktop scripts](../../package.json), [Playwright](../../playwright.config.ts), [ci:test](../../../../scripts/ci/test.cjs), and [gitlab jobs](../../../../.gitlab-ci.yml).
+- Acceptance minimum: [testing and acceptance standards](../quality/testing.md); profile, quarantine, quality.json, and L1–L4 follow the [development entry point](../../../../docs/runbooks/development.md#验证分层与-ci-编排器).
+- Preparation and isolation: [runtime](../../e2e/fixtures/runtime.ts), [Electron fixture](../../e2e/fixtures/electron.ts), and [project seeding](../../e2e/fixtures/workbench.ts); [c8](../../.c8rc.json) owns coverage.
+- The architecture, Skill, and scenario contracts for model-driven execution/review belong in [evaluation.md](evaluation.md).
+- UI scenarios and isolation belong to [PDFE](PDFE.md), the [preview architecture](preview.md), and [catalog](../../preview/catalog.ts); the current execution entry point is [native config](../../preview/native.config.ts).
+- The existing API/data-flow inventory belongs to [Serve tests](../../../serve/tests/) and [run_all](../../../serve/tests/run_all.py); cross-package protocols belong to [root tests](../../../../tests/).
 
 ## Current / Required / Gap / Advisory
 
-以下为本分支源码静态核对，不是本次测试通过证明。
+The following reflects a static review of source on this branch; it is not evidence that tests passed in this run.
 
-| 状态 | 已核对的事实或目标 |
+| Status | Verified Facts or Goals |
 | --- | --- |
-| **current** | 已有 Node/Python 逻辑与契约测试、真实路由/存储集成、Chromium render、Electron E2E、UI/样式棘轮；现有 runner 混合多类资源，名称不代表已分层 |
-| **current** | PDFE 已有契约测试与原生 UI 测试运行面；具体库存及执行接线见实施计划，不由测试文件存在推定覆盖 |
-| **current** | Playwright 有 smoke/live/workbench/update 及条件登记的 package；live、部分 workbench/package 仍以程序驱动真实产品/模型，属于保留中的既有 A 覆盖 |
-| **current** | ci:test 默认 offline，strict 关闭临时 quarantine 但仍 offline；with-external 为 full。offline 省略具名外部 case，不是录制回放或全局断网 |
-| **required** | 新增逻辑、接口、UI 与真实任务分别按下文归层；Mock/真实 API 对齐消费者契约；产品、Driver、Judge 调用分别获准和计费 |
-| **gap** | 目标分层、共同接口契约、调用来源/预算报告与真实任务覆盖尚未完整闭环；实际差距与处理顺序由实施计划记录 |
-| **advisory** | 稳定性与速度使用同范围、同环境的首次失败率和耗时衡量，不以减少断言或扩大重试宣称提升 |
+| **current** | Node/Python logic and contract tests, real route/storage integration, Chromium render, Electron E2E, and UI/style ratchets exist. Existing runners mix resource types; their names do not mean they are layered. |
+| **current** | PDFE has contract tests and a native UI test surface. See the implementation plan for the actual inventory and execution wiring; coverage cannot be inferred from the existence of test files. |
+| **current** | Playwright has smoke/live/workbench/update and conditionally registered package projects. Live and some workbench/package cases still programmatically drive the real product/model and remain existing A coverage. |
+| **current** | ci:test defaults to offline; strict disables temporary quarantine but remains offline; with-external is full. Offline omits named external cases; it is not a recorded replay or a global network outage. |
+| **required** | Layer new logic, interface, UI, and real-task tests as described below; align Mock/real APIs with consumer contracts; obtain authorization and account for costs separately for product, Driver, and Judge calls. |
+| **gap** | Target layering, shared interface contracts, call-source/budget reporting, and real-task coverage are not yet fully closed. The implementation plan records actual gaps and their handling order. |
+| **advisory** | Measure stability and speed using first-run failure rates and elapsed time for the same scope and environment; do not claim improvement by reducing assertions or increasing retries. |
 
-实际项目与 case 由 testMatch 和依赖决定，不能按 smoke/live 等名称推定模型成本。
-缺配置 skip 只表示未执行；没有数据时不将产品 token 记为零。
+Actual projects and cases are determined by testMatch and dependencies; do not infer model costs from names such as smoke/live. A skip due to missing configuration means only that the case was not run; do not record product tokens as zero when no data is available.
 
-## 总体结构与关键决策
+<a id="总体结构与关键决策"></a>
+## Overall Structure and Key Decisions
 
 ```text
-需求 / 变更风险
-  ├─ 逻辑 → 固定输入、依赖端口 Fake → 单元断言
-  ├─ API  → 真实路由/服务、隔离存储 → 接口及数据不变量断言
-  ├─ UI   → PDFE Mock API/SSE、真实共享 UI → 控件与状态断言
-  └─ 用户任务 → 真实客户端/后端/必要模型与工具 → LLM 驱动、独立评审
-                    └─ 复用程序核验终态、产物和安全事实
-各层分别报告 → 缺陷归原 Owner → 在最低可复现层补回归
+Requirements / change risk
+  ├─ Logic → fixed inputs, dependency-port fakes → unit assertions
+  ├─ API → real routes/services, isolated storage → interface and data-invariant assertions
+  ├─ UI → PDFE Mock API/SSE, real shared UI → control and state assertions
+  └─ User task → real client/backend/necessary models and tools → LLM-driven operation, independent review
+                     └─ reuse programmatic checks for terminal states, artifacts, and security facts
+Report each layer separately → assign defects to the original Owner → add regression at the lowest reproducible layer
 ```
 
-| 决策 | 选择与理由 | 不采用的方案及代价 |
+| Decision | Choice and Rationale | Rejected Approach and Cost |
 | --- | --- | --- |
-| 执行体系 | 逻辑与 API 复用 Node/Python，页面状态复用 PDFE/Playwright，真实任务交 B；原生集成保留 | 所有检查都跑真实端到端会放大外部依赖、成本与失败定位时间 |
-| 运行选择 | case 声明产品模型与外部前提；保留现有 profile 和具名 skip 语义 | 按目录切分零/非零 token 会误分 workbench/package 等混合场景 |
-| 测试隔离 | 复用公共启动链与 fixture 构造独立初态 | 修改生产配置优先级、持久化或 registry 换取隔离会改变被测对象 |
-| 通过依据 | 断言可观察不变量、状态转换与真实副作用；模型文本用稳定结构/事实约束 | 逐字答案脆弱；设施内加入模型评分后即成为 B 的评测，不冒充程序回归 |
+| Execution system | Reuse Node/Python for logic and APIs, PDFE/Playwright for page states, and assign real tasks to B; retain native integration. | Running every check end-to-end against the real system increases external dependencies, cost, and failure-triage time. |
+| Run selection | Cases declare product-model and external prerequisites; retain existing profile and named-skip semantics. | Splitting cases into zero/nonzero-token groups by directory would misclassify mixed workbench/package scenarios. |
+| Test isolation | Reuse the shared startup path and fixtures to construct independent initial state. | Changing production configuration precedence, persistence, or registry for isolation changes the system under test. |
+| Basis for passing | Assert observable invariants, state transitions, and real side effects; constrain model text with stable structure/facts. | Exact answer matching is brittle. Adding model scoring to a test facility makes it B's evaluation and must not be represented as programmatic regression. |
 
-逻辑/API/UI/任务按观察目标分层，A/B 按驱动与判定方法分类，L1–L4 是执行时机，
-模型调用来源是成本口径。四者不能互相推定；同一文件可以仍混有不同层的检查。
+Logic/API/UI/task are layers based on observation objectives; A/B classify by driver and judgment method; L1–L4 describe execution timing; model-call source defines cost attribution. These four dimensions do not imply one another, and a single file may still contain checks from different layers.
 
-## 测试分层与共享契约
+<a id="测试分层与共享契约"></a>
+## Test Layers and Shared Contracts
 
-### 目标分层与选层规则
+<a id="目标分层与选层规则"></a>
+### Target Layers and Layer-selection Rules
 
-| 层 | 被测对象与依赖 | 主要断言 | 不证明 |
+| Layer | System Under Test and Dependencies | Main Assertions | Does Not Prove |
 | --- | --- | --- | --- |
-| 逻辑单元 / A | 纯函数、reducer、状态机、转换与策略；固定输入、已有端口 Fake | 输出、状态迁移、组合边界 | 路由接线、真实存储或 DOM |
-| API 接口 / A | 真实路由/服务，隔离 SQLite/文件；仅外部非被测依赖可替身 | 参数、认证授权、响应/错误、SSE 顺序及终态、事务、幂等、重开读回与拒绝副作用 | 完整 UI 可达性、真实模型质量 |
-| PDFE UI / A | Mock HTTP/SSE/受控 Bridge，真实产品 renderer、组件和样式 | 加载/空态/失败/重试、表单/分页、焦点/键盘、主题/窄窗和布局 | 真实认证、后端/磁盘副作用、模型/工具执行 |
-| 真实任务 / B | 真实客户端、后端、存储及任务需要的模型/工具；合成原始输入 | 用户目标、真实终态、产物事实、内容语义与体验一致性 | 未选异常矩阵或全平台发布通过 |
-| 原生专项 / 原 Owner | Electron main/preload、IPC、进程、浏览器原生面、安装更新 | 能力边界、安全拒绝、生命周期及平台语义 | 由 Mock Bridge 推定真实宿主或签名安装通过 |
+| Logic unit / A | Pure functions, reducers, state machines, transformations, and policies; fixed inputs and existing port fakes | Outputs, state transitions, combination boundaries | Route wiring, real storage, or DOM |
+| API interface / A | Real routes/services and isolated SQLite/files; substitute only external dependencies outside the system under test | Parameters, authentication/authorization, responses/errors, SSE order and terminal states, transactions, idempotency, reopen/readback, and rejected side effects | Full UI reachability or real model quality |
+| PDFE UI / A | Mock HTTP/SSE/controlled Bridge with the real product renderer, components, and styles | Loading/empty/error/retry states, forms/pagination, focus/keyboard, themes/narrow windows, and layout | Real authentication, backend/disk side effects, or model/tool execution |
+| Real task / B | Real client, backend, storage, and any models/tools required by the task; synthetic raw inputs | User goals, real terminal states, artifact facts, content semantics, and experience consistency | Unselected exception matrices or full-platform release acceptance |
+| Native special evaluation / original Owner | Electron main/preload, IPC, processes, browser-native surfaces, install/update | Capability boundaries, security refusals, lifecycle, and platform semantics | A real host or signed-install pass inferred from a Mock Bridge |
 
-选层先问“哪个不变量需要哪种最小真实依赖”，不以文件名、目录或 runner 名称归类。
-`api.test.ts` 替换 fetch 只证明客户端请求/解析契约，不等于后端接口测试；
-只校验 JSON schema 不等于路由到真实存储。组件 render 可继续验证局部 DOM，
-但跨页面状态组合优先消费 PDFE，不复制第二套页面或各自维护全量 Mock 服务。
+Choose a layer by asking "which invariant needs what minimum real dependency?" Do not classify by filename, directory, or runner name. Replacing fetch in `api.test.ts` proves only the client request/parsing contract, not backend interface behavior. Checking only a JSON schema does not prove a route reaches real storage. Component render tests may continue to verify local DOM, but cross-page state combinations should use PDFE rather than duplicating pages or maintaining a full Mock service per suite.
 
-### 按变更风险选择验证层
+<a id="按变更风险选择验证层"></a>
+### Select Verification Layers by Change Risk
 
-开发任务的交付负责人（可以是 Codex）沿本次差异和实际消费者提出最小必要范围，
-按已确认需求与原 Owner 契约核不变量，B 维护其中真实任务的判据和结果；仅预期或
-归属有歧义时交相应 Owner 确认，不为每项例行检查新增人工等待。该判断随既有任务
-说明交付，不增设审批角色或必填矩阵。最小必要范围是以下风险范围与现有必需门禁
-的并集，不是用低层通过替换既有验收。
+The development task's delivery owner (which may be Codex) proposes the minimum necessary scope based on this diff and actual consumers, then checks invariants against confirmed requirements and original Owner contracts. B maintains criteria and results for real tasks within that scope. Ask the relevant Owner to confirm only when expectations or ownership are ambiguous; do not add human waits to routine checks. Deliver this judgment with the existing task description; do not create an approval role or mandatory matrix. The minimum necessary scope is the union of the risk areas below and existing required gates, not a replacement of existing acceptance with lower-layer passes.
 
-| 变化影响 | 主责验证 | 需要追加的真实观察 |
+| Change Impact | Primary Verification | Additional Real Observation Required |
 | --- | --- | --- |
-| 纯逻辑、转换或策略 | A 的单元测试 | 沿消费者判断；对外行为与接线均不变时不默认调用模型 |
-| 页面状态、控件与布局 | A 的 PDFE UI；局部 DOM 可用 render | 影响正常产品结果须保留真实页面证据；涉及跨层接线时交 B 核对应真实流程 |
-| API、错误语义或存储 | API Owner 的真实接口/数据集成，A 核 UI 消费 | 影响用户操作结果、持久化往返或跨层协议时，B 核相应真实链路 |
-| 模型、Prompt、工具、授权、编排或交付产物 | B 的受影响真实任务，A 补规则/接口/UI 回归 | 必须列出代表任务、终态及产物/副作用事实，不能仅以页面快评承接 |
-| IPC、原生生命周期或安装更新 | 原 Owner 的平台专项及既有硬断言 | 按受影响平台和制品验收；LLM 不替代原生安全与签名检查 |
+| Pure logic, transformation, or policy | A unit tests | Follow consumer impact; do not call a model by default when external behavior and wiring are unchanged. |
+| Page state, controls, and layout | A's PDFE UI; render may cover local DOM | Retain real page evidence when normal product results are affected; B checks the corresponding real flow when cross-layer wiring is involved. |
+| API, error semantics, or storage | API Owner's real interface/data integration; A checks UI consumption | B checks the corresponding real flow when user-action results, persistence round trips, or cross-layer protocols are affected. |
+| Model, Prompt, tool, authorization, orchestration, or delivery artifact | B's affected real tasks; A adds rule/interface/UI regression | List representative tasks, terminal states, and artifact/side-effect facts; page quick evaluation alone is insufficient. |
+| IPC, native lifecycle, or install/update | Original Owner's platform-specific checks and existing hard assertions | Accept against affected platforms and artifacts; LLM does not replace native security or signing checks. |
 
-应测真实任务缺少基线、环境、权限或预算时，保留为该功能未验收，说明精确缺口；
-不因页面快评可执行而取消必需任务，也不自行发起模型请求或扩大副作用权限。
-纯工具/文档变更核其真实消费者，不为凑层数启动产品或运行模型。
+If a required real task lacks a baseline, environment, permission, or budget, retain it as not accepted for that feature and explain the exact gap. Do not cancel a required task because page quick evaluation can run, and do not initiate model requests or expand side-effect permissions on your own. For tool/document-only changes, check their real consumers; do not start the product or run a model just to fill a layer.
 
-### 共同真源与最小交接
+<a id="共同真源与最小交接"></a>
+### Shared Sources of Truth and Minimal Handoffs
 
-| 信息 | 唯一主责与消费者 |
+| Information | Sole Owner and Consumers |
 | --- | --- |
-| 业务预期 | 需求 Owner 确认；A、PDFE、B 引用同一已确认要求，不各自批准一份标准 |
-| HTTP/SSE/Bridge 语义 | 该接口原 Owner 持有；PDFE 适配、A 的真实接口与消费测试共同核对，不把 Mock 当协议真源 |
-| UI 场景与实例状态 | PDFE Owner 持有政策、种子和账本；A 消费控件与状态，不复制页面或全量 Mock 服务 |
-| 真实任务与独立判断 | B 持有任务判据、冻结输入和结果；原 Owner 提供事实观察，隐藏参照不进入 Driver 或产品 |
+| Business expectations | Confirmed by the requirements Owner; A, PDFE, and B cite the same confirmed requirement and do not approve separate standards. |
+| HTTP/SSE/Bridge semantics | Owned by the original interface Owner; PDFE adapters and A's real-interface and consumer tests check it together. Mocks are not the protocol source of truth. |
+| UI scenarios and instance state | PDFE Owner owns policies, seeds, and ledger; A consumes controls and states without copying pages or a full Mock service. |
+| Real tasks and independent judgment | B owns task criteria, frozen inputs, and results; the original Owner provides factual observations. Hidden references must not enter the Driver or product. |
 
-只在受影响功能已有的任务说明、测试描述或场景 build 中，保留足以回查的
-“已确认要求链接/已有需求 ID及适用修订 → 相关测试/场景/真实任务链接 → 各层所证
-目标与缺口”。没有稳定 ID 时引用已确认要求，不为简单修改新建编号体系；不要求
-每条单元测试登记元数据，不新建总表、注册表或四份相同清单。
-关联保存一次，其他资产引用；只有受影响链接、条件或预期变化才更新。
+In the existing task description, test description, or scenario build for an affected feature, retain enough traceability to link "confirmed requirement/existing requirement ID and applicable revision → related test/scenario/real-task link → each layer's objective and gap." When no stable ID exists, cite the confirmed requirement; do not create an ID scheme for a simple change. Do not require metadata registration for every unit test or create a master table, registry, or four duplicate lists. Store an association once and have other assets reference it; update it only when an affected link, condition, or expectation changes.
 
-`catalog` 与 `previewConsumption` 继续持有页面/场景/状态到 UI 测试的关系，不改作
-业务需求库，也不宣称其已有需求 ID 映射。B 的 requirements/build 继续持有评测基线；
-与 A/PDFE 的关系可用普通链接表达，不要求新增字段、适配器或机器协议。
-预期冲突先交需求 Owner 确认，接口差异先交接口 Owner 核契约；保持原要求与失败，
-不从实现、Mock 或模型判断自动选一个新标准。相关检查暂记受阻，独立项可继续。
+`catalog` and `previewConsumption` continue to own links from pages/scenarios/states to UI tests; do not turn them into a business requirements library or claim they already map requirement IDs. B's requirements/build continues to own the evaluation baseline. Express its relationships to A/PDFE with ordinary links; do not require new fields, adapters, or machine protocols. Send expectation conflicts to the requirements Owner and interface differences to the interface Owner for contract review. Preserve the original requirement and failure; do not automatically choose a new standard based on implementation, mocks, or model judgment. Mark affected checks as blocked for now; independent items may continue.
 
-### Codex 增量维护边界
+<a id="codex-增量维护边界"></a>
+### Codex Incremental-maintenance Boundaries
 
-Codex 在现有开发任务中消费上述选层与交接：需求/差异 → Owner 与消费者 →
-受影响检查 → 分层结果与证据 → 缺陷回流。它不是新增调度器、Skill 或后台自动化。
-一次任务只维护发生影响的逻辑测试、接口检查、PDFE 场景或评测基线，不以每次
-变更重扫全库、重建所有基线或执行全部模型任务作为前提。
+Codex uses the layer-selection and handoff rules above in existing development tasks: requirements/diff → Owner and consumers → affected checks → layered results and evidence → defect feedback. This does not introduce a new scheduler, Skill, or background automation. A task maintains only the affected logic tests, interface checks, PDFE scenarios, or evaluation baseline; rescanning the entire library, rebuilding all baselines, or running every model task is not a prerequisite for each change.
 
-需求未变的重构/修复保留评测预期；输入动态值变化只更新本轮参照。已确认需求发生
-变化时，在本次写权内增量维护原资产；依据不明则保留待确认，不改标准追绿。
-交付沿既有任务结果说明“无需更新 / 已增量更新 / 受阻未验收”及理由、证据位置，
-无需新增文件或重复报告。具体操作规程仍归现有开发/评测 Skill。
+For refactors/fixes that do not change requirements, retain evaluation expectations; when dynamic input values change, update only this run's reference. When confirmed requirements change, incrementally maintain the original assets within this task's write authority; if the rationale is unclear, keep the item pending confirmation and do not change standards to turn the result green. In the existing task result, state "no update needed / incrementally updated / blocked and not accepted," with rationale and evidence locations; no new file or duplicate report is needed. Detailed procedures remain with the existing development/evaluation Skill.
 
-### 逻辑与真实数据链路分离
+<a id="逻辑与真实数据链路分离"></a>
+### Separating Logic from Real-data Flows
 
-**required**：业务逻辑单测使用固定输入与已有依赖端口的mock/fake，不连接SQLite
-（含内存SQLite）、真实后端或模型，不启动浏览器、原生进程或编译器。数据转换、
-reducer、决策规则在本层覆盖组合边界；不能mock正在验证的核心逻辑。
-DOM、焦点和键盘交互另归真实浏览器render；其API/bridge可以模拟，但结果不是产品验收。
+**required**: Business-logic unit tests use fixed inputs and mocks/fakes at existing dependency ports. They do not connect to SQLite (including in-memory SQLite), a real backend, or a model, and do not start a browser, native process, or compiler. Cover combination boundaries for data transformations, reducers, and decision rules at this layer; do not mock the core logic under test. DOM, focus, and keyboard interactions belong to real-browser render tests. Their API/bridge may be mocked, but the result is not product acceptance.
 
-真实SQLite、文件系统、路由到存储、重开恢复、幂等、事务及安全拒绝另归数据链路集成；
-IPC/进程、真实网络时钟和编译归原生集成；关键跨层用户任务由 B 在真实 Electron 与
-后端上评测，现有程序化真实链路在等价覆盖和准入调整获确认前继续保留。
-mock层只验证消费者，不替代真实数据不变量；不能将大量参数单测全部变成昂贵端到端，
-也不能将已有存储/安全断言改成fake后删除原覆盖。层级与offline/full、strict及L1–L4独立。
+Real SQLite, filesystems, routes to storage, reopen/recovery, idempotency, transactions, and security refusals belong to data-flow integration tests. IPC/processes, real network timing, and compilation belong to native integration tests. B evaluates critical cross-layer user tasks with real Electron and the backend; retain existing programmatic real-flow tests until equivalent coverage and gate changes are confirmed. Mock layers verify consumers only and do not replace real-data invariants. Do not turn all parameterized tests into expensive end-to-end tests, or replace existing storage/security assertions with fakes and remove their original coverage. Test layers are independent of offline/full, strict, and L1–L4.
 
-**required**：复用文件/worker级browser与server时每例隔离context和状态，保留失败路径
-清理；不跨用例共享可变数据库。普通逻辑不反复构建或出版，但真实构建/原生门禁保留。
-拆分覆盖率仍保留分母与阈值，不能假定c8覆盖独立Chromium/Electron执行。
+**required**: When reusing file/worker-level browsers and servers, isolate context and state per case and retain failure-path cleanup; do not share a mutable database across cases. Do not repeatedly build or publish for ordinary logic tests, but retain real build/native gates. When partitioning coverage, retain the denominator and threshold; do not assume c8 covers independent Chromium/Electron execution.
 
-源码正则只锁语义接线，遵守验收规范的 feature 内占比限制；事件名与协议值归原
-constants/contracts，不为测试造生产旁路。覆盖率目标按真实报告逐步收紧，不降低现有阈值。
+Source regex checks lock down semantic wiring only and follow the feature-level proportion limits in the acceptance standards. Event names and protocol values belong in the original constants/contracts; do not create a production bypass for tests. Tighten coverage targets gradually using real reports; do not lower existing thresholds.
 
-### PDFE 稳定性与 Mock/真实契约
+<a id="pdfe-稳定性与-mock真实契约"></a>
+### PDFE Stability and Mock/Real Contracts
 
-**required**：每例独立实例账本/场景状态，通过产品控件和原 API 消费路径操作；
-不能直接填 Store 或派发内部事件。等待可观察状态/请求结果，不用固定 sleep 或重试
-掩盖竞争条件；有限动画结束、焦点和滚动均在真实渲染中观察，失败路径也必须清理。
-只为所选目标准备加载、失败、延迟和事件序列，不增加生产环境测试分支。
+**required**: Give each case an independent instance ledger/scenario state. Operate through product controls and the original API consumer path; do not directly fill the Store or dispatch internal events. Wait for observable state/request results; do not use fixed sleeps or retries to hide race conditions. Observe bounded animation completion, focus, and scrolling in the real render, and clean up failure paths too. Prepare loading, failure, delay, and event sequences only for the selected objective; do not add production test branches.
 
-**required**：由接口 Owner 按 UI 的实际消费范围对齐 Mock 与真实接口，核字段、
-空值、分页、错误、授权及 SSE 顺序/终态；不要求 PDFE 复刻整个后端。
-已知故障场景的偏离应显式说明，未知请求不能兜底成功。只有共同断言确有稳定复用
-价值时才在原 Owner 抽取，否则保留小型独立测试与契约引用，不为统一增加适配层。
-复用定义不等于以同一实现生成 expected；真实路由、存储和安全副作用仍独立断言。
-**gap**：当前共同契约尚未完整接线，不由 `preview-contract` 名称推定完成。
+**required**: The interface Owner aligns mocks with real interfaces for the UI's actual consumption scope, checking fields, nulls, pagination, errors, authorization, and SSE ordering/terminal states. PDFE does not need to reproduce the entire backend. Explicitly describe deviations for known failure scenarios; unknown requests must not fall back to success. Extract shared assertions into the original Owner only when there is stable reuse value. Otherwise retain small independent tests and contract references; do not add an adapter layer merely for uniformity. Reusing definitions does not mean generating expected values from the same implementation; assert real routes, storage, and security side effects independently.
+**gap**: The current shared contract is not fully wired; do not infer completion from the name `preview-contract`.
 
-需求到各层的关系遵守上文最小交接，Mock 定义不能自行批准产品要求。
-[preview report](../../preview/report.ts) 仅说明声明的测试关联，不是运行通过或验收报告。
+Map requirements to layers using the minimal handoff above; Mock definitions cannot approve product requirements on their own.
+[preview report](../../preview/report.ts) describes declared test associations only; it is not a run-pass or acceptance report.
 
-### 稳定性与反馈时间
+<a id="稳定性与反馈时间"></a>
+### Stability and Feedback Time
 
-当前有效需求的正确性、安全与必要覆盖不可降低；在此前提下，首次执行稳定性、完整反馈耗时和维护
-成本共同决定测试质量。低层状态组合不应依赖真实模型/网络，场景间状态与异步资源
-必须隔离。被测场景的有意延迟是输入条件，不是可随意删掉的等待；不能缩短它掩盖竞态。
+Do not reduce correctness, security, or necessary coverage for valid current requirements. Subject to that constraint, test quality depends on first-run stability, total feedback time, and maintenance cost. Lower-layer state combinations should not depend on real models/network. Isolate state and asynchronous resources between scenarios. An intentional delay in a tested scenario is an input condition, not an arbitrary wait to remove; do not shorten it to hide a race.
 
-统计同版本、同平台、同范围、同资源条件下的首次失败/跳过/重试与完整墙钟，包含
-准备、执行、等待、报告和资源释放；已有计时无法分解的阶段明确未知，不按相减
-结果猜测构建/清理耗时。保留首次失败，不用重试后的绿色宣称稳定。
-日常变更优先受影响的低成本检查，减少重复构建、准备及无效等待，不以删断言提速。
-无服务端可变状态的同文件 render 夹具可复用既有 Vite/Chromium 宿主，但每例必须
-创建独立 BrowserContext，隔离路由、存储、DOM及store；例后关闭Context，文件后
-释放宿主及缓存。不能将此复用直接推广到有可变请求队列的服务或真实Electron。
-时间目标引用[既有分层目标](../../../../docs/runbooks/development.md#验证分层与-ci-编排器)，
-不为本体系另设阈值；较慢的完整/原生检查不能冒充编辑循环的极速反馈。
+Measure first-run failures/skips/retries and full wall-clock time under the same version, platform, scope, and resource conditions, including preparation, execution, waiting, reporting, and resource release. Explicitly mark phases as unknown when existing timing cannot be decomposed; do not infer build/cleanup time by subtraction. Retain first failures; do not claim stability based on a green retry. For routine changes, prioritize affected low-cost checks and reduce duplicate builds, preparation, and wasted waits; do not speed up by deleting assertions. Render fixtures in one file with no mutable server state may reuse the existing Vite/Chromium host, but each case must create an independent BrowserContext to isolate routes, storage, DOM, and store. Close the context after each case and release the host and cache after the file. Do not generalize this reuse to services with mutable request queues or to real Electron. Refer to the [existing tiered targets](../../../../docs/runbooks/development.md#验证分层与-ci-编排器); do not set separate thresholds for this system. Slower full/native checks cannot be presented as rapid editor-loop feedback.
 
-稳定性结论注明样本量，性能比较注明缓存、负载与执行范围；少量全绿仅是本轮
-初步证据，不证明长期无 flaky。无可比基线不宣称提速；源码、测试文件或 Mock
-可重复均不直接证明运行稳定。具体样本与瓶颈、后续批次只记录在实施计划。
+State sample size in stability conclusions and cache, load, and execution scope in performance comparisons. A small number of all-green runs is preliminary evidence for this run only; it does not prove a long-term absence of flaky behavior. Do not claim a speedup without a comparable baseline. Repeatable source, test files, or mocks do not directly prove stable execution. Record specific samples, bottlenecks, and follow-up batches only in the implementation plan.
 
-验证按影响触发，不按提交次数触发：小改做最小RED/GREEN、受影响用例及必要静态
-检查；同职责改造完成做模块完整检查；跨模块接口稳定后先review再冻结集成/PDFE，
-交付收口核要求范围。共享Mock、Electron生命周期、安全、收集器和报告链路变更提前
-核不变量。失败先定位再定向复验；未变化且可证明不受影响的版本证据复用。仅改文档
-不启动Electron或模型，不为每个小提交重复完整PDFE、整库和smoke。
+Trigger verification by impact, not commit count: for a small change, run the minimum RED/GREEN checks, affected cases, and necessary static checks; after completing a same-responsibility refactor, run the full module checks; after cross-module interfaces stabilize, review before freezing integration/PDFE, then close out against the required delivery scope. Check invariants early for changes to shared mocks, Electron lifecycle, security, collectors, and reporting flows. Locate failures before targeted retesting; reuse version evidence proven unaffected by unchanged code. Documentation-only changes do not start Electron or models. Do not repeat full PDFE, the whole library, or smoke checks for every small commit.
 
-完整Desktop单测及串行原生承接阶段不设聚合总截止，等待用例与资源收尾自然结束；单例时限、
-显式取消、失败非零及报告完整性约束保留，不将其无总截止策略用于固定打包门。
+Do not set an aggregate deadline for full Desktop unit tests or the serial native follow-up stage; let cases and resource cleanup finish naturally. Retain per-case timeouts, explicit cancellation, nonzero failure exits, and report-integrity constraints. Do not apply this no-aggregate-deadline policy to the fixed packaging gate.
 
-混合浏览器/编译资源补集沿 Desktop Owner 串行文件策略；根 CI 不以通用 CPU 配额提高
-宿主并发。逻辑/API 的独立 CPU 阶段可按其 Owner 配额并行，不新建通用分池来补救争用。
-逻辑覆盖率与真实Electron探针使用同一收集清单的互斥分区；原生探针复用既有串行
-阶段，不接受c8插桩与逻辑文件并发，不新增runner或重复清单，不减少原生安全断言。
-规范门与场景临时隔离分开；场景quarantine不应扩展为已可运行规范门的整阶段跳过。
-根CI与领域入口复用Owner配方，聚合测试及其子模块只保留一个持续执行入口。
-需要真实编译库的持久化生命周期断言归原生子集，由所属测试文件沿既有编译Owner
-准备一次实际能力；缺输入或编译失败即失败，不以手工环境变量缺失跳过逻辑测试。
+For mixed browser/compilation resource supplements, follow the Desktop Owner's serial-file policy; root CI does not increase host concurrency using a generic CPU quota. Independent CPU phases for logic/API may run in parallel under their Owner's quota; do not create a generic worker pool to resolve contention. Partition logic coverage and real-Electron probes into mutually exclusive parts of the same collection manifest. Native probes reuse the existing serial phase; do not run them concurrently with c8-instrumented logic files. Do not add runners or duplicate manifests, and do not reduce native security assertions. Keep policy gates separate from temporary scenario isolation; scenario quarantine must not expand into skipping an entire runnable policy gate. Root CI and domain entry points reuse Owner recipes; an aggregate test and its submodules retain only one continuously executed entry point. Persistence-lifecycle assertions requiring a real compiled library belong to the native subset. The owning test file prepares that real capability once through the existing compile Owner; missing input or compilation failure is a failure, not a reason to skip logic tests due to a missing manually set environment variable.
 
-固定打包门是完整`pnpm ops ci test smoke`，不是Playwright的smoke项目或PDFE全集。
-每次实际打包均执行；开发期在相关基础设施变更或交付冻结时提前验证。预算与必需
-选例真源归[smoke清单](../../../../scripts/ci/smoke.json)，完整子进程墙钟不得超过900秒，
-含准备、收集、执行、报告、锁清理和退出；超时、漏选、异常跳过/重试、损坏报告或
-清理失败须非零并阻止打包，不用提限、quarantine或强杀达标。
+The fixed packaging gate is the complete `pnpm ops ci test smoke`, not the Playwright smoke project or the full PDFE suite. Run it for every actual package build; during development, verify it in advance when relevant infrastructure changes or delivery is frozen. The [smoke manifest](../../../../scripts/ci/smoke.json) is the source of truth for budget and required cases. Full subprocess wall-clock time must not exceed 900 seconds, including preparation, collection, execution, reporting, lock cleanup, and exit. Timeouts, omitted cases, unexpected skips/retries, corrupt reports, or cleanup failures must exit nonzero and block packaging; do not meet the limit by raising it, using quarantine, or force-killing processes.
 
-### 真实链路交接与缺陷回流
+<a id="真实链路交接与缺陷回流"></a>
+### Real-flow Handoff and Defect Feedback
 
-B 负责从原始输入经真实页面完成用户任务，独立 Judge 按冻结判据综合评审；
-程序核验文件内容/摘要、业务终态、授权范围、取消收敛及真实副作用，不让模型目测
-替代安全与持久化断言。页面点击 ack、HTTP 200 或模型自述均不等于成功。
-PDFE 截图与模拟事件只能作为 UI 回归证据，不作为 B 的真实链路结果。
+B owns completing user tasks from raw inputs through real pages, with an independent Judge synthesizing the review against frozen criteria. Programs verify file contents/summaries, business terminal states, authorization scope, cancellation convergence, and real side effects; model visual inspection does not replace security or persistence assertions. A page-click ack, HTTP 200, or model self-report does not mean success. PDFE screenshots and simulated events are UI regression evidence only, not B's real-flow results.
 
-同一需求分别记录逻辑、API、UI 和真实任务已检查的目标及缺口，不把比例相加。
-LLM 发现并确认的缺陷回流最低可稳定复现层补程序回归；需要真实宿主/模型的
-检查继续保留。仍有效检查的迁移需列原检查、承接层、消费者和验证证据，未承接不
-删除必要覆盖；已确认退役且无持续用途者按前述范围清理，不延续旧产品形态。
+For the same requirement, separately record the objectives and gaps checked by logic, API, UI, and real-task layers; do not add their percentages together. Route defects found and confirmed by LLM back to the lowest layer that can reproduce them stably and add programmatic regression there. Retain checks requiring a real host/model. When migrating a still-valid check, list the original check, receiving layer, consumer, and verification evidence; do not remove necessary coverage before it is covered elsewhere. Clean up items confirmed retired with no continuing use according to the scope above; do not perpetuate old product forms.
 
-### 准备、操作、观察与报告
+<a id="准备操作观察与报告"></a>
+### Preparation, Operation, Observation, and Reporting
 
-下表是概要级逻辑接口，具体字段扩展在原 Owner 内完成，不新建通用中间协议。
+The table below describes high-level logical interfaces. Extend specific fields within the original Owner; do not create a generic intermediate protocol.
 
-| 接口 | A 提供/维护 | B 或 runner 的使用边界 |
+| Interface | Provided/Maintained by A | Usage Boundaries for B or the Runner |
 | --- | --- | --- |
-| 准备 | 无凭据资料身份、Home/profile/workspace 与清理归属；复用 e2e/fixtures | B 可只读引用资料与准备契约，不复制 fixture 或把隐藏答案播种进产品 |
-| 操作/观察 | main harness 等现有产品入口；操作回执、会话/回合身份、DOM/产物事实 | A 的程序与 B 的 Driver 均可消费；ack 成功不等于任务成功；新增能力归原代码 Owner |
-| 运行记录 | case/版本/平台、输入身份、模型前提、attempt、状态、产品用量与证据引用 | 复用现有 runner 报告，只补缺失事实；B 引用证据，不把 Test 作为语义通过的唯一依据 |
-| 缺陷交接 | case、实际观察、预期依据、失败来源与证据位置 | 运行负责人保留调查/报告责任，代码修复归产品或工具原 Owner |
+| Preparation | Non-secret material identity, Home/profile/workspace, and cleanup ownership; reuse e2e/fixtures | B may read-reference materials and preparation contracts; do not copy fixtures or seed hidden answers into the product. |
+| Operation/observation | Existing product entry points such as the main harness; operation acknowledgments, session/turn identity, DOM/artifact facts | A's programs and B's Driver may both consume these. A successful ack does not mean the task succeeded; new capabilities belong to the original code Owner. |
+| Run record | Case/version/platform, input identity, model prerequisites, attempt, status, product usage, and evidence references | Reuse existing runner reports and add only missing facts; B cites evidence and does not treat a Test as the sole basis for semantic conformance. |
+| Defect handoff | Case, actual observations, expectation rationale, failure source, and evidence location | The run owner retains investigation/reporting responsibility; code fixes belong to the original product or tool Owner. |
 
-对话终态、后台任务终态、产物可见性分别观察。取消验证实际停止及最终副作用，
-恢复沿原会话/运行身份，不以重新播种结果替代恢复；原生关闭不使用保持窗口的 drive 证明。
+Observe conversation terminal state, background-task terminal state, and artifact visibility separately. For cancellation, verify actual stopping and final side effects. Recover using the original session/run identity; do not substitute reseeded results for recovery. Do not use a window-preserving drive to prove native close behavior.
 
-默认混合 Python 套件保留原模块入口和 unittest 生命周期；模块中已定义的 unittest
-必须经 runner 执行、计划非空且成功时未漏执行，并验证同次子进程回执。
-手写 quiet 脚本按
-套件结果报告，不伪造逐例覆盖，也不以 stdout 非空作为执行证明。默认入口的正常
-条件跳过与 expected failure 保留并单列，不因此视为相关平台验收通过。
-显式逐例报告与打包 smoke 仍要求精确身份、完整清理及全部必要用例通过；不得用
-默认入口验证替代严格逐例判定。两种模式复用[同一观察器](../../../serve/tests/observations.py)，
-不维护第二份用例清单；默认入口不改调用方 runner/result，两者均不另起一层进程。
+The default mixed Python suite retains its original module entry point and unittest lifecycle. Any unittest defined in a module must be executed by the runner; verify that the plan is nonempty, successful runs omit no planned cases, and the same subprocess returns the expected acknowledgment. Handwritten quiet scripts report suite-level results, not fabricated per-case coverage; nonempty stdout is not proof of execution. Retain and list normal conditional skips and expected failures at the default entry point; they do not count as acceptance for the corresponding platform.
+Explicit per-case reporting and packaging smoke still require exact identity, complete cleanup, and passage of every required case. Do not use default-entry verification as a substitute for strict per-case judgment. Both modes reuse the [same observer](../../../serve/tests/observations.py) and do not maintain a second case manifest. The default entry point does not alter the caller's runner/result, and neither mode starts an extra process layer.
 
-## 运行、成本与失败处理
+<a id="运行成本与失败处理"></a>
+## Runs, Costs, and Failure Handling
 
-**每次运行的交付负责人对该运行全部授权、预算和报告负责。**
-A 管理 A 场景中的产品模型费用；B 管理 B 场景中的产品、Driver、Judge 费用。
-按来源分列，不把 B 场景的产品费用转给 A。复用已有证据时引用原运行及费用，
-不重复计费；开发时用 Codex 编写测试的费用另计。
+**The delivery owner for each run is responsible for all authorization, budget, and reporting for that run.** A manages product-model costs in A scenarios; B manages product, Driver, and Judge costs in B scenarios. List costs by source; do not attribute product costs from B scenarios to A. When reusing existing evidence, cite its original run and cost instead of counting it again. Account separately for costs incurred by Codex while writing tests during development.
 
-运行计划冻结 case、环境、执行前提、产品模型/工具权限、时长/重试限制和费用额度。
-不需模型的 case 不携带真实连接；需要的 case 使用获准隔离连接，不自动回落用户配置
-或改用其他模型。达到预算/超时边界后不新增操作，并通过产品支持路径取消在途任务；
-取消未收敛须报告，不能假称已停止。已发请求费用不能由驱动侧保证精确截断。
+The run plan freezes cases, environment, execution prerequisites, product-model/tool permissions, time/retry limits, and cost ceiling. Cases that do not need a model do not carry a real connection. Cases that do need one use an approved isolated connection; do not automatically fall back to user configuration or switch to another model. Once the budget/timeout boundary is reached, perform no new operations and cancel in-flight tasks through product-supported paths. Report cancellation that does not converge; do not claim it stopped. The driver cannot guarantee exact truncation of costs for requests already sent.
 
-执行过程与断言结论分开记录：前提缺失、runner 错误、超时/取消、程序断言失败
-不能混为同一产品缺陷；归因不足保持未知。重试为新 attempt，保留首次失败。
-报告同一版本/平台的计划、执行、跳过、失败与重试；未知用量/费用不填零。
-A 的断言通过仅证明其观察目标，不证明 B 的开放式语义质量。
+Record execution process separately from assertion conclusions. Missing prerequisites, runner errors, timeout/cancellation, and failed programmatic assertions are not the same product defect; leave attribution unknown when evidence is insufficient. A retry is a new attempt; retain the first failure. Report planned, executed, skipped, failed, and retried cases for the same version/platform; do not write zero for unknown usage/cost. Passing A assertions proves only A's observation objective, not B's open-ended semantic quality.
 
-## 与现有准入的关系
+<a id="与现有准入的关系"></a>
+## Relationship to Existing Gates
 
-| 时机 | A 的交付 | 不变的约束 |
+| Timing | A's Deliverable | Constraints That Remain |
 | --- | --- | --- |
-| L1 编辑 | affected 定向测试反馈 | 只加速不做准入；未知映射按原规则升级 |
-| L2 提交/MR | 确定性逻辑/API/UI 回归与执行范围报告；trunk/release 合入遵守 strict | 实际执行由既有 runner 决定；具名外部省略、quarantine 与未执行项显式披露 |
-| L3 发布 | 保留 full、ci:package、installed E2E 及获准产品 turn；B 交页面快评与按变更风险确定的必需真实任务 | 必需任务缺前提仍是未验收；不以页面快评代替，不降低现有门或改写 quality.json 成功语义 |
-| L4 主链路 | 目标由 B 驱动真实任务并复用程序事实核验；仍有效的脚本化覆盖迁移前保留 | 成本/副作用前提仍需授权；开发版不代表安装版 |
+| L1 editing | Targeted feedback from affected tests | Accelerates feedback only; does not gate acceptance. Escalate unknown mappings according to existing rules. |
+| L2 commit/MR | Deterministic logic/API/UI regression and execution-scope report; trunk/release merges follow strict | Actual execution is determined by existing runners; explicitly disclose named external omissions, quarantine, and unrun items. |
+| L3 release | Retain full, ci:package, installed E2E, and authorized product turns; B delivers page quick evaluation and required real tasks determined by change risk. | A required task missing prerequisites remains unaccepted; page quick evaluation is not a substitute. Do not lower existing gates or rewrite quality.json success semantics. |
+| L4 main flow | B drives real tasks and reuses programmatic fact checks; retain valid scripted coverage until migration. | Costs/side effects still require authorization; a development build is not an installed build. |
 
-## 验证边界
+<a id="验证边界"></a>
+## Verification Boundaries
 
-各层依据实际依赖和观察目标独立成立；真实链路不以所有低层覆盖率工作完成为前提，
-但缺少必要操作/观察能力时不能宣称已验收。成本归因工具的契约检查不替代实际请求
-及来源证据，不由分类器通过推定真实来源成立。
+Each layer stands on its actual dependencies and observation objective. A real flow does not require all lower-layer coverage work to be complete, but it cannot be claimed accepted without the necessary operation/observation capabilities. Contract checks for cost-attribution tools do not replace actual requests and source evidence; a classifier passing does not prove the real source by inference.
 
-隔离不能覆盖真实用户状态、复制全部会话或修改生产优先级。
-最终版本须检查截图、DOM/文件/进程与真实副作用；涉及平台语义时按
-[跨平台要求](../../../../docs/runbooks/development.md#跨平台开发与验收)分别提供
-macOS/Windows 证据，原生网页需合成画面，不用单平台、mock 或 healthz 顶替产品验收。
-缺前提明确未验收，不调整生产行为让测试“隔离成功”。
+Isolation must not overwrite real user state, copy all sessions, or modify production precedence. For the final version, inspect screenshots, DOM/files/processes, and real side effects. For platform semantics, provide separate macOS/Windows evidence according to the [cross-platform requirements](../../../../docs/runbooks/development.md#跨平台开发与验收); native web views require composed screenshots. Do not substitute a single platform, mock, or healthz for product acceptance. Explicitly mark missing prerequisites as unaccepted; do not adjust production behavior to make tests "isolate successfully."
 
 ## Ownership / Dependency
 
-A 维护本概要、逻辑/API/UI 确定性测试与保留的原生/E2E 门禁；B 维护真实任务评测、
-评测概要、开发 Skill 和资产。PDFE Owner 维护场景政策、隔离账本及 UI 测试运行面。
-Desktop/Serve/Runtime/Adapter/Trace 的代码归属与依赖方向不变。
-技术失败来源不改变运行交付责任；共享工具改动按原 Owner 审查，双方同步接口影响。
+A maintains this overview, deterministic logic/API/UI tests, and retained native/E2E gates. B maintains real-task evaluation, evaluation overview, development Skill, and assets. The PDFE Owner maintains scenario policies, isolation ledger, and UI test surface. Code ownership and dependency directions across Desktop/Serve/Runtime/Adapter/Trace remain unchanged. The technical source of a failure does not change run-delivery responsibility. Review shared-tool changes under their original Owner and have both sides coordinate interface impact.
 
-## 正反例
+<a id="正反例"></a>
+## Examples and anti-patterns
 
-- 正例：PDFE 验证授权 UI 三态，接口测试断言决议及副作用，B 驱动真实任务验证授权与产物；各层结论分别保留。
-- 反例：用 Mock 授权成功证明真实工具执行，或让 Judge 只看截图判断数据库事务/取消是否完成。
-- 正例：现有脚本化真实模型检查保留 A 分类，新真实任务由 B 承担；等价覆盖和准入调整确认后再迁移。
-- 反例：只因产品调用 LLM 就改归 B，删除现有 E2E，或把设施不调用模型写成整条链路零 token。
-- 正例：模拟响应验证消费端，真实模型链路按授权单独验收。
-- 反例：改 mock 或跳过真实 turn 后宣称产品 AI 功能已通过。
+- Example: PDFE verifies three authorization UI states, interface tests assert the decision and side effects, and B drives a real task to verify authorization and artifacts; retain each layer's conclusion separately.
+- Anti-pattern: Use successful mock authorization to prove real tool execution, or ask the Judge to infer database transactions/cancellation from screenshots alone.
+- Example: Keep existing scripted real-model checks classified under A and assign new real tasks to B; migrate only after equivalent coverage and gate changes are confirmed.
+- Anti-pattern: Reassign to B only because the product calls an LLM, delete existing E2E tests, or claim zero tokens for the entire flow because a facility does not call a model.
+- Example: Use simulated responses to verify the consumer, and separately accept the real-model flow under its authorization.
+- Anti-pattern: Change a mock or skip a real turn and then claim the product AI feature passed.
 
 ## Enforced by
 
-现有 package、Playwright、相邻测试、gitlab 与 ci:test 持有执行。
-具体实现差距与执行安排见实施计划，本文不创建新门禁，
-文档检查不证明设施零调用、产品零成本或真实验收通过。
+Existing packages, Playwright, adjacent tests, gitlab, and ci:test own execution. See the implementation plan for specific implementation gaps and arrangements; this document creates no new gate. Document checks do not prove that a facility makes zero calls, that a product has zero cost, or that real acceptance passed.
 
 ## Update triggers
 
-新增/修改 case、fixture、调用来源、profile/skip/quarantine、覆盖率、共享接口或费用口径时，
-A 更新对应部分并通知受影响 Owner。新功能按风险补行为，不按 feature 写新的核心分支；
-并行/覆盖率仅凭同范围证据优化，必要时重评上述执行选择。
+When adding/changing cases, fixtures, call sources, profile/skip/quarantine, coverage, shared interfaces, or cost attribution, A updates the corresponding section and informs affected Owners. Add tests for new features according to risk; do not create a new core branch per feature. Optimize parallelism/coverage only with evidence from the same scope; reassess the execution choices above when necessary.
 
 ## Stop condition
 
-架构结论止于已声明的层级、依赖和证据边界，不外推未验证层或平台。
-设计成立不表示实现、测试迁移或产品验收完成；执行进度与阶段结论只在实施计划记录。
+Architecture conclusions stop at the declared layers, dependencies, and evidence boundaries; do not extrapolate to unverified layers or platforms. A sound design does not mean implementation, test migration, or product acceptance is complete. Record execution progress and stage conclusions only in the implementation plan.

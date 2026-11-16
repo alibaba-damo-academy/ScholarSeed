@@ -1,47 +1,52 @@
-# 通知基线构建依据
+<a id="通知基线构建依据"></a>
+# Notification Baseline: Build Evidence
 
-当前资产修订：`notifications/7`。澄清需求正文中的读取契约时效：下方“当前制品复核”是 `0.3.0 / 202610301343` 的历史记录，仅为线索，不能直接当作目标包读取契约或默认值；保留原标题与锚点供历史引用，目标包应分别核读取能力、偏好时点及默认值。此修订不改变原编号、需求版本、判据或历史结果。
+Current asset revision: `notifications/7`. Clarification on the freshness of the read contract in the requirements: “Current Artifact Review” below is a historical record for `0.3.0 / 202610301343`, only a clue, not the target package's read contract or default. Verify the target package's read capability, preference timing, and default separately. The original title and anchor are retained for historical references. This revision does not change original IDs, requirements version, criteria, or historical results.
 
-## 202611121823 目标版本参考图
+<a id="202611121823-目标版本参考图"></a>
+## 202611121823 target-version reference image
 
-`window-20261112-1823.png` 是目标版本真实完整窗口原图的字节一致副本，来源 `tmp/test_snapshot/desktop/baseline-1823-batch4/dynamic-followup/evidence/notification-settings.png`，2026-11-12 20:31:19 +0800，SHA-256 `482f06a1183ffe54bd76bef0e89b09c43c6ac42d172fc332980c4cd333b6c072`。目标为 macOS arm64 `0.3.2 / 202611121823 / preview`，`app.asar` SHA-256 `0111fd20bd58bf72517a1255d2d1bbf7ef2a3d4281898baed50d250f13c9d91a`；原始运行记录位于本机忽略目录。展示通知设置及当时声音偏好，不证明通知投递或实际发声。参考图不替代本轮执行或判定；本次仅补图，不改变需求版本、判据和历史结果。
+`window-20261112-1823.png` is a byte-identical copy of the actual complete-window capture from the target version. Source: `tmp/test_snapshot/desktop/baseline-1823-batch4/dynamic-followup/evidence/notification-settings.png`, 2026-11-12 20:31:19 +0800, SHA-256 `482f06a1183ffe54bd76bef0e89b09c43c6ac42d172fc332980c4cd333b6c072`. Target: macOS arm64 `0.3.2 / 202611121823 / preview`; `app.asar` SHA-256 `0111fd20bd58bf72517a1255d2d1bbf7ef2a3d4281898baed50d250f13c9d91a`. The original run record is in a local ignored directory. The image shows notification settings and the sound preference at that time; it does not prove notification delivery or actual sound playback. It does not replace execution or evaluation in this run; this revision only adds the image and does not change the requirements version, criteria, or historical results.
 
-## 202611121823 通知展示沿用依据：notifications/5
+<a id="202611121823-通知展示沿用依据notifications5"></a>
+## 202611121823 basis for carrying forward notification display: notifications/5
 
-针对 macOS arm64 `0.3.2 / 202611121823 / preview`，沿用2026-10-30 用户统一采用规则及本页 notifications/3 的 NOTIFY-OBS-001、002 已采用快评子点：通知、未读及声音分区与主要入口展示，声音开关与当前偏好一致。已核本页既有采用与后续修订，未发现该子范围被确认退役或更改的记录；此为有界核查，不证明完整需求变更史、源码与制品同源或实测通过。需核本实例启动偏好 `soundAlerts` 的最小白名单；下文旧包读取契约须按目标包确认，读取失败或时点不匹配保留缺口，不能以页面自身或未经确认的默认值自证。系统通知跳转、全部已读、开关更改及真实发声仍属专项。原编号、v`0.3`、判据及历史裁决不变。
+For macOS arm64 `0.3.2 / 202611121823 / preview`, carry forward the adopted quick-review subpoints NOTIFY-OBS-001 and 002 from notifications/3 under the user's unified adoption rule of 2026-10-30: display of the notification, unread, and sound sections and their main entries; the sound switch matches the current preference. Review of the existing adoption and subsequent revisions on this page found no record confirming that this sub-scope was retired or changed. This is a bounded review; it does not establish the complete requirements change history, source-to-artifact identity, or successful execution. Verify the minimal allowlist for this instance's startup preference `soundAlerts`. The old-package read contract below must be confirmed for the target package; record a gap if reading fails or the timing does not match. Do not use the page itself or an unconfirmed default as its own proof. System-notification navigation, mark all as read, switch changes, and actual sound playback remain specialized scenarios. Original IDs, v`0.3`, criteria, and historical decisions remain unchanged.
 
-历史资产修订：`notifications/4`；当时增量见[当前制品复核](#当前制品复核)，业务判据及需求版本不变。
+Historical asset revision: `notifications/4`; the increment at that time is in [Current Artifact Review](#当前制品复核). Business criteria and requirements version are unchanged.
 
-历史建库说明：修订：notifications/3（修订1的两项判据不变，仅补参考图及来源）。用户本轮采用指定安装包现有功能；两项自动快评，按v`0.3`首次纳入。完整行为不在这两项展示判据内。
+Historical baseline note: revision `notifications/3` left the two criteria from revision 1 unchanged and only added the reference image and source. The user adopted the existing functionality of the specified installed package for that run; the two items were first included in automatic quick review under v`0.3`. Complete behavior is outside these two display criteria.
 
-来源：macOS arm64 0.3.0 / 202610281438 / preview，安装包`app.asar` SHA256 `1e4c075a908ba990e54b6ccf173d3af3f811587a4436a9866042e46d8b4656d3`；renderer实际入口`assets/index-C4-PYlXk.js`的`NotificationsPage`第81089行。仅有界核对相关实现，不声称整仓与产物等同。
+Source: macOS arm64 0.3.0 / 202610281438 / preview; installed package `app.asar` SHA-256 `1e4c075a908ba990e54b6ccf173d3af3f811587a4436a9866042e46d8b4656d3`; actual renderer entry `NotificationsPage` at line 81089 of `assets/index-C4-PYlXk.js`. This is a bounded check of the relevant implementation and does not claim the whole repository matches the artifact.
 
-源码：[AccountPanel.tsx](../../../src/renderer/src/components/business/AccountPanel.tsx)的NotificationsPage；偏好Owner：[preferences.ts](../../../src/preferences.ts)。
+Source: [AccountPanel.tsx](../../../src/renderer/src/components/business/AccountPanel.tsx), `NotificationsPage`; preference owner: [preferences.ts](../../../src/preferences.ts).
 
-| 要点 | 固定 / 动态 / 条件与来源 |
+| Item | Fixed / dynamic / conditional behavior and source |
 | --- | --- |
-| 001 | 固定三行及两个动作入口；没有桌面通知开关，不要求系统授权实时状态 |
-| 002 | soundAlerts来自本实例profile偏好，缺失时由目标包默认true回退；独立取偏好白名单，不操作开关 |
+| 001 | Three fixed rows and two action entries. There is no desktop notification switch; live system-permission state is not required. |
+| 002 | `soundAlerts` comes from this instance's profile preference; if absent, the target-package default `true` is used. Read only the independent preference allowlist; do not operate the switch. |
 
-原始字段、工具调用、实际实例与评测结果仅留运行记录。系统设置、全部已读及声音行为需要另行专项，不属于本轮自动展示项。
+Original fields, tool calls, actual instance, and evaluation results remain only in run records. System settings, mark all as read, and sound behavior require separate specialty scenarios and are not automatic display items in this run.
 
-`reference.png` 是 macOS arm64 `0.3.0 / 202610281438`、2026-10-29 通知页原始 `notifications.png` 的字节不变副本，SHA256 `9d353835b625aa4e4823244eef70c10a9116be0db9902199b32053e52e341d5a`；历史原采证目录当前本机不可用，不声称原件已重新核对。修订1及其正文保留在原运行冻结输入，补图不追改原裁决或将参考图当作新运行证据。
+`reference.png` is an unchanged copy of the notification page's original `notifications.png` from macOS arm64 `0.3.0 / 202610281438`, 2026-10-29. SHA-256 `9d353835b625aa4e4823244eef70c10a9116be0db9902199b32053e52e341d5a`. The original historical evidence directory is currently unavailable locally; we do not claim to have rechecked the original. Revision 1 and its text remain in the original run's frozen input. Adding the image does not revise the original decision or treat it as evidence from a new run.
 
-## 发布快评分层（2026-10-30）
+<a id="发布快评分层2026-10-30"></a>
+## Release Quick-Review Layer (2026-10-30)
 
-本资产修订为notifications/3；按用户发布前快评目标和统一采用规则，在同一requirements追加快评层与专项层，复用本页已绑定源码、精确产物与既有Review，旧v`0.3`业务版本和完整判据不变。所选来源为NOTIFY-OBS-001、002的正文明确子要点；必要参照为任务实例当前声音偏好或原build声明默认值。未选范围为系统设置跳转、全部已读、开关修改及实际声音/通知投递，缺依据部分仍待确认。
+This asset is revision `notifications/3`. Under the user's pre-release quick-review objective and unified adoption rule, this revision added quick-review and specialty layers to the same requirements file, reusing the source, exact artifact binding, and existing review on this page; the old v`0.3` business version and full criteria are unchanged. Selected sources are the explicit subpoints in NOTIFY-OBS-001 and 002. Required reference: this task instance's current sound preference or the default declared in the original build. Not selected: system-settings navigation, mark all as read, switch changes, and actual sound/notification delivery. Parts without supporting evidence remain unconfirmed.
 
-本次仅完成执行前分层，不产生产品通过结论，不覆盖历史完整运行；后续运行消费经独立Review冻结的子要点，不能将快评结果宣称覆盖原ID全量。当前构建未新增产品操作或数据写入权限。
+This revision only layers the criteria before execution; it does not establish product acceptance or replace historical full runs. Later runs consume subpoints frozen after independent review; a quick-review result must not be presented as coverage of every criterion under the original IDs. This build adds no product-operation or data-write permission.
 
 
-## 当前制品复核
+<a id="当前制品复核"></a>
+## Current Artifact Review
 
-历史资产修订：`notifications/4`（2026-10-30）。本次仅增量更新制品定位与独立参照，不改变稳定ID、v`0.3`、完整判据或快评/专项边界；前文包号、旧源码行号、分层修订与结果均是历史记录，不作为本轮包绑定或通过结论。参考图仍保留原来源日期/构建。
+Historical asset revision: `notifications/4` (2026-10-30). This revision only incrementally updates artifact location and independent reference; it does not change stable IDs, v`0.3`, full criteria, or the quick-review/specialty boundary. Earlier package IDs, source line numbers, layering revisions, and results are historical and do not establish this run's package binding or outcome. The reference image retains its original source date/build.
 
-本轮来源为已核安装包 `0.3.0 / 202610301343 / preview / macOS arm64`；app.asar SHA-256 `1de63a11e99c47836053f546963db121ff0298c87b678dfb6d33b0855f2566ee`。直接证据为实际松散发布目录 `renderer/assets/index-CddcCmKt.js`，SHA-256 `1b6e44c4557e06929bb82900f6147a456167e2f95b0173bacf561dd65bc668d3`；下述编译函数/行号均指此文件，另名文件明确标出。引用的 `out/preload/index.js` SHA-256 `754a7f2fc34f7f1c6ac7f21c256c156f9c3b9dcf88c2c64a20b3d82bcb992219`，`out/main/index.js` SHA-256 `921baf36722c44629451c89048a9658727efc5150546535fa5428242250b504c`；偏好常量所在 `renderer/assets/AccountMenuPanel-CHQ1thBC.js` SHA-256 `d8770acf89b086f5876c04d741dbf539d5b1b463d1c4a30ed82a2e311fa74e54`。源码提交未绑定；前文仓库Owner链接仅为辅助线索，不将checkout/远端HEAD等同本包。
+This run's source is the verified installed package `0.3.0 / 202610301343 / preview / macOS arm64`; `app.asar` SHA-256 `1de63a11e99c47836053f546963db121ff0298c87b678dfb6d33b0855f2566ee`. Direct evidence is the actual loose release directory `renderer/assets/index-CddcCmKt.js`, SHA-256 `1b6e44c4557e06929bb82900f6147a456167e2f95b0173bacf561dd65bc668d3`; compiled function names/line numbers below refer to this file unless another file is named. Referenced files: `out/preload/index.js`, SHA-256 `754a7f2fc34f7f1c6ac7f21c256c156f9c3b9dcf88c2c64a20b3d82bcb992219`; `out/main/index.js`, SHA-256 `921baf36722c44629451c89048a9658727efc5150546535fa5428242250b504c`; and `renderer/assets/AccountMenuPanel-CHQ1thBC.js`, containing the preference constant, SHA-256 `d8770acf89b086f5876c04d741dbf539d5b1b463d1c4a30ed82a2e311fa74e54`. The source commit is not bound. Repository owner links above are supporting clues only; the current checkout/remote HEAD is not treated as this package.
 
-- 固定/动态/条件：`NotificationsPage:82807` 仍为桌面通知、未读消息、声音提醒三行；系统设置与全部已读为动作入口，不要求桌面通知开关或实时系统权限展示。声音开关绑定 state.soundAlerts，非实际发声判据。
-- 独立偏好仅从 preload `preferences:316` 读取 soundAlerts；这是启动快照，`INITIAL_PREFERENCES:9198` 是同一消费者而非第二份独立参照。默认 true 见 `AccountMenuPanel-CHQ1thBC.js:355`，仅在已知隔离偏好缺失时采用，不把未知读取失败解释成默认。
-- 若启动后曾修改偏好或快照与实例身份不能绑定，002 保留缺证；不得输出整个 preferences（可含最近项目/文件/会话），不调用 savePreferences、reconcilePreferences、openSystemPermission 或全部已读来补展示参照。真实投递/声音、系统跳转与已读写入仍归专项。
+- Fixed/dynamic/conditional: `NotificationsPage:82807` still has three rows for desktop notifications, unread messages, and sound alerts. System settings and mark all as read are action entries; a desktop notification switch or live system-permission display is not required. The sound switch is bound to `state.soundAlerts`; actual playback is not a criterion.
+- The independent preference reads only `soundAlerts` from preload `preferences:316`. This is a startup snapshot; `INITIAL_PREFERENCES:9198` is the same consumer, not a second independent reference. The default `true` is at `AccountMenuPanel-CHQ1thBC.js:355` and applies only when the isolated preference is known to be absent; do not interpret an unknown read failure as the default.
+- If the preference changed after startup or the snapshot cannot be bound to the instance, 002 remains unsupported by evidence. Do not output all of `preferences` (which may contain recent projects/files/sessions), and do not call `savePreferences`, `reconcilePreferences`, `openSystemPermission`, or mark all as read to supply a display reference. Actual delivery/sound, system navigation, and read-state writes remain specialized scenarios.
 
-本次只核提取制品与资产，未启动/连接产品、读取用户状态或发起请求；未产生新运行截图或产品验收结论。后续run仍须在获准实例取得同一时段独立参照；缺少、陈旧或失败参照不能从待判页面自证。
+This revision only inspected the extracted artifact and assets; it did not start/connect to the product, read user state, or make a request. No new run screenshot or product-acceptance conclusion was produced. Later runs still need an independent reference from the same time in an authorized instance; a missing, stale, or failed reference cannot be self-verified from the page under evaluation.

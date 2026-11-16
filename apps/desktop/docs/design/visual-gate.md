@@ -1,3 +1,4 @@
+<a id="新增视觉值门禁"></a>
 # Gate for New Visual Values
 
 ## Scope / Non-goals
@@ -22,7 +23,9 @@ This gate constrains new fixed spacing, fonts, corner radii, shadows, dimensions
 
 The gate belongs to Desktop standards. Design defines tokens, UI components consume them, and pages do not define themes.
 
-## Examples and Counterexamples
+<a id="正反例"></a>
+<a id="examples-and-counterexamples"></a>
+## Examples and anti-patterns
 
 `gap-[var(--vds-layout-section-gap)]`, `rounded-[var(--vds-radius-4)]`, and `z-[var(--vds-z-dialog)]` are positive examples. `gap-4`, `z-[97]`, and `style={{ zIndex: 450 }}` are counterexamples for new code.
 

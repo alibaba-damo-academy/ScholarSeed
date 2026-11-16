@@ -1,59 +1,64 @@
-# 页面骨架迁移报告
+<a id="页面骨架迁移报告"></a>
+# Page Shell Migration Report
 
 ## Scope / Non-goals
 
-覆盖已迁移设置页面和替换式工作区表面的页面骨架、窄窗可用性和截图证据。它不取代逐稿 MasterGo 还原，也不将未迁移页面或未采集平台标记为完成。
+This report covers page shells, narrow-window usability, and screenshot evidence for migrated settings pages and replacement workspace surfaces. It does not replace design-by-design MasterGo reconstruction or mark unmigrated pages or untested platforms as complete.
 
 ## Source of truth
 
-页面实现以 `components/business/AccountPanel.tsx`、`components/business/WorkspaceFiles.tsx`、`components/ui/Page.tsx` 和 `design/layout.css` / `design/zindex.css` 为准；设计证据、状态差异和缺口以 [公开设计契约](foundations.md) 与 MasterGo 台账 (non-public execution/provenance record omitted) 为准。
+Page implementation is defined by `components/business/AccountPanel.tsx`, `components/business/WorkspaceFiles.tsx`, `components/ui/Page.tsx`, and `design/layout.css` / `design/zindex.css`; design evidence, state differences, and gaps are recorded in the [public design contract](foundations.md) and the MasterGo ledger (non-public execution/provenance record omitted).
 
-## 范围与证据
+<a id="范围与证据"></a>
+## Scope and Evidence
 
-本报告记录设置页面从历史 `SettingsPageHeader` 布局迁移到通用 `Page` 组合的可见差异。
-截图保存在开发工作区的 `tmp/test_snapshot/desktop/`；该目录按项目约定不进入发布包，报告中的文件名用于本地复核。
+This report records visible differences from migrating settings pages from the historical `SettingsPageHeader` layout to the shared `Page` composition.
+Screenshots are stored in the development workspace at `tmp/test_snapshot/desktop/`; project convention excludes this directory from release packages, and the filenames in this report support local review.
 
 ## Current / Required / Gap / Advisory
 
-- **current**：通知、AI 提示词、关于、文件版本、模型配置、开发者和技能页面已接入 Page 组合族；工作区文件在实际可重试的失败态复用统一状态和动作组件；关于页完成 macOS 宽窗/窄窗渲染、链接行键盘焦点顺序及 Escape 返回账户入口验证。
-- **required**：迁移页面必须复用 `components/ui` 与 `--vds-*` token，并验证宿主滚动边界。
-- **gap**：账户页不在当前设置导航，需在产品重新暴露入口后才可迁移和验收。工作区文件后端在当前环境读取失败，目录列表、文件操作、右键菜单、预览、窄窗和键盘回归尚未完成。Windows 证据和最新 MasterGo 节点尚未完成；文件版本、模型配置、开发者和技能的写入型流程、复杂策略、详情弹窗和窄窗回归仍未在真实产品中执行。
-- **advisory**：截图用于比较渲染结果；没有对应 MasterGo 节点时，视觉取舍必须标注为推导。
+- **current**: Notifications, AI prompts, About, File Versions, Model Configuration, Developer, and Skills pages use the Page composition family. Workspace Files reuses shared state and action components in a real, retryable failure state. The About page completed macOS wide/narrow-window rendering, keyboard focus order across link rows, and Escape return to the account entry.
+- **required**: Migrated pages must reuse `components/ui` and `--vds-*` tokens and verify the host scroll boundary.
+- **gap**: The account page is absent from current settings navigation; it can only be migrated and accepted after the product exposes its entry again. The Workspace Files backend failed to read in the current environment, so directory listing, file operations, context menu, preview, narrow-window, and keyboard regressions remain incomplete. Windows evidence and the latest MasterGo nodes are also missing. Write flows, complex policies, detail dialogs, and narrow-window regressions for File Versions, Model Configuration, Developer, and Skills have not been exercised in the real product.
+- **advisory**: Screenshots compare rendered results; when no corresponding MasterGo node exists, mark visual decisions as inferred.
 
-## 前后对比
+<a id="前后对比"></a>
+## Before-and-After Comparison
 
-| 页面 | 迁移前 | 迁移后 | 截图证据 |
+| Page | Before Migration | After Migration | Screenshot Evidence |
 | --- | --- | --- | --- |
-| 通知 | 历史设置页标题栏与固定内距 | `Page` + `PageHeader`，宿主保留滚动 | `settings-notifications.png` → `notifications-page-light.png` / `notifications-page-dark.png` |
-| AI 提示词 | 历史标题栏、页面私有分组间距 | `Page` + `PageHeader` + `PageSection`，窄窗自然换行 | `prompts-page-narrow.png`、`prompts-saved.png` |
-| 关于 | 历史 `SettingsPageHeader`；480px 时长邮箱、官网文本与标题区域挤压 | `Page` + `PageHeader` + `PageBody`，嵌入式设置壳在既有窄窗阈值下使用可命名图标导航，链接值纵向换行 | `about-page-before.png`（迁移前，480px）→ `about-page-after.png`（迁移后，宽窗）/ `about-page-narrow-responsive.png`（迁移后，480px） |
-| 文件版本 | 历史 `SettingsPageHeader`、页面私有 24/16/8px 间距与固定 140px 控件宽度 | `Page` + `PageHeader` + `PageBody`，共享 `Card` 表面，布局 token 提供区块间距、控件间距和紧凑控件宽度；设置 Dialog/导航 shell 保持原有滚动与窄窗策略 | `file-version-before.png`（迁移前）→ `file-version-after.png`（迁移后）；macOS 真实 Desktop `settings-files` 场景 |
-| 模型配置 | 历史 `SettingsPageHeader`，Tabs 与双栏内容由业务页自行撑高 | `Page` + `PageHeader` + `PageBody` + `Tabs`，保留服务/配置 Tab 与内部 pane 滚动 owner | `model-configuration-before.png`（迁移前）→ `model-configuration-after.png`（迁移后）；macOS 真实 Desktop `settings-models` 场景 |
-| 开发者 | 历史 `SettingsPageHeader`、页面私有章节标题和卡片外距 | `Page` + `PageHeader` + `PageBody` + `PageSection`，共享 `Card` 表面保留 API key 行与生成操作 | `developer-before.png`（迁移前）→ `developer-after.png`（迁移后）；macOS 真实 Desktop `settings-developer` 场景 |
-| 技能 | 历史 `SettingsPageHeader` 与页面外距；技能卡片列表已有独立滚动 | `Page` + `PageHeader` + 普通 `PageBody`，保留 `Skills` 的列表滚动 owner，避免嵌套滚动 | macOS 真实 Desktop `settings-skills.png` 场景 |
-| 工作区文件 | 全屏业务 surface 使用页面私有关闭/操作控件和裸 `z-[35]`；读取失败只显示孤立文案 | 保留工具栏和面包屑，加载用 `Spinner`，空/失败用 `EmptyState`，失败提供重新请求；关闭/操作使用 `IconButton` / `Button`，层级使用语义 token | `workspace-files-before.png`（迁移前，读取失败）→ `workspace-files-after.png`（迁移后，读取失败）；macOS 真实 Desktop `workspace-files` 场景 |
+| Notifications | Historical settings-page title bar and fixed padding | `Page` + `PageHeader`; host retains scrolling | `settings-notifications.png` → `notifications-page-light.png` / `notifications-page-dark.png` |
+| AI prompts | Historical title bar and page-private group spacing | `Page` + `PageHeader` + `PageSection`, with natural wrapping in narrow windows | `prompts-page-narrow.png`, `prompts-saved.png` |
+| About | Historical `SettingsPageHeader`; at 480px, long email, website text, and title area were cramped | `Page` + `PageHeader` + `PageBody`; embedded settings shell uses labeled icon navigation at the existing narrow-window threshold, and link values wrap vertically | `about-page-before.png` (before migration, 480px) → `about-page-after.png` (after migration, wide window) / `about-page-narrow-responsive.png` (after migration, 480px) |
+| File Versions | Historical `SettingsPageHeader`, page-private 24/16/8px spacing, and fixed 140px control width | `Page` + `PageHeader` + `PageBody`, shared `Card` surface, and layout tokens for section spacing, control spacing, and compact control width; settings Dialog/navigation shell retains its existing scroll and narrow-window behavior | `file-version-before.png` (before migration) → `file-version-after.png` (after migration); real macOS Desktop `settings-files` scenario |
+| Model Configuration | Historical `SettingsPageHeader`; the business page sized Tabs and two-column content itself | `Page` + `PageHeader` + `PageBody` + `Tabs`, preserving the service/configuration tabs and internal pane scroll owner | `model-configuration-before.png` (before migration) → `model-configuration-after.png` (after migration); real macOS Desktop `settings-models` scenario |
+| Developer | Historical `SettingsPageHeader`, page-private section headings, and card margins | `Page` + `PageHeader` + `PageBody` + `PageSection`; shared `Card` surface preserves the API key row and generation action | `developer-before.png` (before migration) → `developer-after.png` (after migration); real macOS Desktop `settings-developer` scenario |
+| Skills | Historical `SettingsPageHeader` and page margins; the skill-card list already had its own scrolling | `Page` + `PageHeader` + regular `PageBody`, preserving `Skills` as the list scroll owner and avoiding nested scrolling | Real macOS Desktop `settings-skills.png` scenario |
+| Workspace Files | Full-screen business surface used page-private close/action controls and bare `z-[35]`; read failure showed only isolated text | Retain toolbar and breadcrumbs; use `Spinner` for loading, `EmptyState` for empty/error, and provide retry on failure; use `IconButton` / `Button` for close/actions and semantic tokens for layering | `workspace-files-before.png` (before migration, read failure) → `workspace-files-after.png` (after migration, read failure); real macOS Desktop `workspace-files` scenario |
 
-迁移前截图仅用于布局对照，不代表其样式是目标规范；迁移后截图也只证明实际渲染和交互状态，不替代 MasterGo 精确还原。
+Before-migration screenshots are for layout comparison only; their styles are not the target specification. After-migration screenshots prove only the actual rendered and interaction states, not precise MasterGo reconstruction.
 
-### 本轮层级治理观察（不纳入前后截图对比）
+<a id="本轮层级治理观察不纳入前后截图对比"></a>
+### Layering Governance Observations This Round (Not Included in Before/After Screenshot Comparison)
 
-| 表面 | 本轮调整 | 已读取的真实状态 | 迁移报告状态 |
+| Surface | Changes This Round | Real State Inspected | Migration Report Status |
 | --- | --- | --- | --- |
-| 项目切换菜单 | `ProjectMenu` 的 portal 内容从裸 `z-[80]` 改为 `--vds-z-inline-flyout` | 真实 Desktop 菜单打开时项目全览、文献全览、项目和新建入口可见；Escape 关闭后焦点回到触发器 | 没有迁移前后本地截图，不能作为完成页面纳入上表；长项目名、滚动、窄窗和 Windows 仍为 gap |
-| 对话运行前检查 | ConversationSurface 的拖动命中区、sticky header、runtime gate 改用语义层级 token | 当前真实会话未触发 readiness 阻断 | 没有阻断态前后截图，不能作为视觉验收；阻断、设置入口、窄窗、键盘和 Windows 仍为 gap |
-| 项目表单确认 | 项目移除改用 `AlertDialog`，嵌套遮罩/内容使用 dialog family token | 真实 Desktop 新建表单打开时输入框聚焦，取消后焦点回到新建按钮 | 没有编辑/移除确认前后截图，不能作为完成页面纳入上表；完整确认流程仍为 gap |
-| 会话任务与附件层 | TaskMonitor、滚动到底部、HIL dock、回退确认和附件操作移除裸层级，改用 `zindex.css` 语义 token | 代码与现有会话 DOM 顺序一致；未触发回退确认或窄窗场景 | 没有对应 MasterGo 节点及本地前后截图；完成/失败、确认焦点恢复、窄窗和 Windows 仍为 gap |
-| PDF 阅读批注层 | 文本层、结束层、批注标注层和批注 Popover 移除局部裸层级，分别消费 `--vds-z-base` / `--vds-z-content` / `--vds-z-local-control` / `--vds-z-inline-flyout` | 仅验证源码中的 PDF.js 层级顺序与现有 Popover 组合；没有批注打开的真实 Desktop 截图 | MasterGo 仅提供 PDF 文件图标，不能证明阅读器交互；批注编辑、长文本、窄窗、键盘和 Windows 仍为 gap |
-| 账户菜单问题反馈 | Feedback 的 Dialog 遮罩/内容从业务专属 `96/97` 迁移到共享 `--vds-z-dialog-overlay` / `--vds-z-dialog` | 真实 macOS Desktop 打开反馈表单，描述输入区自动聚焦，空会话下诊断选项与关闭动作可见 | 没有对应 MasterGo 表单节点或本地前后截图；上传、提交、错误、窄窗、键盘和 Windows 仍为 gap |
-| 会话后台任务菜单 | StatusStrip 后台任务菜单从裸 `z-[30]` 改为 `--vds-z-inline-flyout` | 仅验证源码中的锚点关系与真实 store 数据来源；当前会话未产生可归档后台任务菜单截图 | 没有对应 MasterGo 节点；长任务名、键盘、窄窗和完成/失败状态仍为 gap |
+| Project switcher menu | `ProjectMenu` portal content changed from bare `z-[80]` to `--vds-z-inline-flyout` | With the real Desktop menu open, project overview, literature overview, project entries, and the create entry are visible; Escape closes it and returns focus to the trigger | No local before/after screenshots, so it cannot be listed as a completed page above; long project names, scrolling, narrow windows, and Windows remain gaps |
+| Pre-conversation runtime check | ConversationSurface drag hit area, sticky header, and runtime gate now use semantic layering tokens | The current real conversation did not trigger a readiness block | No before/after screenshots of the blocked state, so this is not visual acceptance; blocked state, settings entry, narrow windows, keyboard, and Windows remain gaps |
+| Project form confirmation | Project removal now uses `AlertDialog`; nested overlay/content use dialog-family tokens | In the real Desktop, opening the create form focuses the input; cancel returns focus to the create button | No before/after screenshots for edit/removal confirmation, so it cannot be listed as a completed page above; the full confirmation flow remains a gap |
+| Session tasks and attachment layers | TaskMonitor, scroll-to-bottom, HIL dock, back confirmation, and attachment actions no longer use bare layers; they use `zindex.css` semantic tokens | Source order matches the existing session DOM; back confirmation and narrow-window scenarios were not triggered | No corresponding MasterGo nodes or local before/after screenshots; completion/failure, confirmation focus restoration, narrow windows, and Windows remain gaps |
+| PDF reading annotation layers | Text, end, annotation-mark, and annotation Popover layers no longer use local bare values; they use `--vds-z-base` / `--vds-z-content` / `--vds-z-local-control` / `--vds-z-inline-flyout`, respectively | Only the PDF.js source layer order and existing Popover composition were checked; no real Desktop screenshot with an annotation open | MasterGo provides only a PDF file icon, not evidence of reader interaction; annotation editing, long text, narrow windows, keyboard, and Windows remain gaps |
+| Account-menu feedback | Feedback Dialog overlay/content moved from business-specific `96/97` to shared `--vds-z-dialog-overlay` / `--vds-z-dialog` | In real macOS Desktop, the feedback form opened, the description field received focus automatically, and diagnostic options and close action were visible in an empty session | No matching MasterGo form node or local before/after screenshots; upload, submission, errors, narrow windows, keyboard, and Windows remain gaps |
+| Session background-task menu | StatusStrip background-task menu changed from bare `z-[30]` to `--vds-z-inline-flyout` | Only source anchor relationships and real store data sources were checked; the current session did not produce an archivable screenshot of the background-task menu | No corresponding MasterGo node; long task names, keyboard, narrow windows, and completion/failure states remain gaps |
 
-本节仅记录已发生的层级治理和真实观察，不替代“同时保存迁移前后截图”的准入条件。后续取得同一场景的基线与最终截图、读取迁移后画面并完成交互回归后，再将相应页面移入正式前后对比表。
+This section records only completed layering governance and real observations; it does not replace the entry requirement to save before/after screenshots together. Add a page to the formal comparison table only after obtaining baseline and final screenshots of the same scenario, inspecting the migrated rendering, and completing interaction regression.
 
-### 截图校验指纹
+<a id="截图校验指纹"></a>
+### Screenshot Verification Fingerprints
 
-以下 SHA-256 用于确认本地对比图未被静默替换：
+The following SHA-256 values help confirm that local comparison images have not been silently replaced:
 
-| 文件 | SHA-256 |
+| File | SHA-256 |
 | --- | --- |
 | `settings-notifications.png` | `f8b3b6d444e9092ab0b3676fb64f3d009722f80f8f4d4d8c6b3cf9cf5d4be56a` |
 | `notifications-page-light.png` | `ff1b600f6a805d11137ec0b796b0a89eb3938891644ba48e765b2cafa8d4f4c5` |
@@ -73,42 +78,45 @@
 | `workspace-files-before.png` | `51fdf579bf3308dad10e566bb6fa7b3472659b6619995718d666d450a5e536c6` |
 | `workspace-files-after.png` | `bd5e65afb9fd0e0af26a23f33015a6deca01dd62a3c902ffdab7ae502f371608` |
 
-`file-version-before.png` 与 `file-version-after.png`、`model-configuration-before.png` 与 `model-configuration-after.png`、`developer-before.png` 与 `developer-after.png` 均为当前分支 macOS 真实 Desktop/dev backend 截图（2560×1680）。文件版本前态截图记录了场景启动时的 loading 状态；随后通过 CUA 进入同一文件版本页读取到真实 Serve 数据。模型配置前后态覆盖设置入口、服务 Tab、连接列表、搜索框、空态和添加连接入口；开发者前后态覆盖已有托管 key、生成输入与操作入口。迁移仅调整页面骨架与视觉 token；未执行会写入用户配置的保存、添加连接、模型选择、密钥生成或轮换操作。
+`file-version-before.png` and `file-version-after.png`, `model-configuration-before.png` and `model-configuration-after.png`, and `developer-before.png` and `developer-after.png` are screenshots from real macOS Desktop/dev backend on the current branch (2560×1680). The File Versions before-state screenshot records the loading state when the scenario started; CUA then opened the same File Versions page and read real Serve data. Model Configuration before/after states cover the settings entry, service tab, connection list, search field, empty state, and add-connection entry; Developer before/after states cover an existing managed key, generation input, and action entry. Migration changed only the page shell and visual tokens; no operation that writes user configuration was performed, including saving, adding a connection, selecting a model, generating a key, or rotating one.
 
-截图尺寸：`settings-notifications` 1280×840、通知浅色 1280×720、通知暗色与关于宽窗均为 1800×1125、提示词窄窗与保存状态、关于迁移前与迁移后窄窗均为 480×900、文件版本、模型配置和开发者前后态、`settings-skills` 以及工作区文件前后态均为 2560×1680。
-采集命令和运行环境应在新增页面迁移时一并记录；关于迁移前截图来自基线提交 `c8c42309098099645a246742c1d4a004ffe99b2f` 的 macOS 真实 Desktop 流程，其余当前截图来自本分支的 macOS 真实 Desktop/dev:web 流程。
+Screenshot dimensions: `settings-notifications` is 1280×840; light Notifications is 1280×720; dark Notifications and wide About are both 1800×1125; narrow Prompts and saved state, and About before-migration and after-migration narrow-window states are all 480×900; File Versions, Model Configuration, and Developer before/after states, `settings-skills`, and Workspace Files before/after states are all 2560×1680.
+Record capture commands and runtime environment together with each new page migration. The About before-migration screenshot comes from the real macOS Desktop flow at baseline commit `c8c42309098099645a246742c1d4a004ffe99b2f`; all other current screenshots come from the current branch's real macOS Desktop/dev:web flow.
 
-## 统一规则
+<a id="统一规则"></a>
+## Shared Rules
 
-- 页面外距和区块间距由 `--vds-layout-*` token 提供，页面不新增固定视觉值。
-- `PageBody` 默认继承宿主滚动；只有受约束高度的 flex 容器才允许 `scroll="content"`。
-- 已有业务组件持有受约束列表滚动时，`PageBody` 保持普通容器；不得再创建第二个内容滚动区。
-- 替换式全屏工作区保留业务工具栏、面包屑和列表 scroll owner；状态面使用 `Spinner` / `EmptyState`，动作使用 `Button` / `IconButton`，遮盖关系使用 `zindex.css` token。
-- 标题、说明和操作区使用 `PageHeader`，长文本允许自然换行，操作组允许换行。
-- 业务组件继续从 `components/ui` barrel 复用，Page 不读取 store、API 或持久化状态。
-- 设置弹窗在既有 `760px` 窄窗阈值下将侧栏缩为图标轨，保留每项 `aria-label` 与键盘焦点；信息链接行改为纵向可换行内容，避免长网址或邮箱挤压标题。这是产品可用性推导，不是 MasterGo 精确尺寸证据。
+- Page margins and section spacing come from `--vds-layout-*` tokens; pages must not add fixed visual values.
+- `PageBody` inherits host scrolling by default; `scroll="content"` is allowed only in flex containers with constrained height.
+- When an existing business component owns constrained list scrolling, keep `PageBody` as a regular container; do not create a second content scroll area.
+- Replacement full-screen workspaces retain the business toolbar, breadcrumbs, and list scroll owner; use `Spinner` / `EmptyState` for states, `Button` / `IconButton` for actions, and `zindex.css` tokens for layering.
+- Use `PageHeader` for titles, descriptions, and actions; long text may wrap naturally, and action groups may wrap.
+- Business components continue to reuse the `components/ui` barrel; Page does not read stores, APIs, or persisted state.
+- At the existing `760px` narrow-window threshold, the settings dialog collapses its sidebar to an icon rail while retaining each item's `aria-label` and keyboard focus. Information-link rows become vertically wrapping content so long URLs or email addresses do not crowd the title. This is an inference for product usability, not precise MasterGo dimension evidence.
 
 ## Ownership / Dependency
 
-消费方向保持 `components/business → components/ui → design`：设置页拥有业务状态和真实操作，`Page` 只提供布局组合，design 只提供语义 token。报告不引入运行时代码或独立样式。
+The dependency direction remains `components/business → components/ui → design`: settings pages own business state and real operations, `Page` provides only layout composition, and design provides only semantic tokens. This report adds no runtime code or standalone styles.
 
-## 正反例
+<a id="正反例"></a>
+## Examples and anti-patterns
 
-正例：设置窄窗保留可聚焦、可命名的导航入口，并让长邮箱在链接行内换行。反例：用裁切文本、隐藏导航或页面私有 z-index 让 480px 截图表面看起来可用。
+Good example: In a narrow settings window, keep navigation entries focusable and named, and let long email addresses wrap within their link rows. Bad example: Make a 480px screenshot look usable by clipping text, hiding navigation, or using page-private z-index values.
 
 ## Enforced by
 
-`pnpm ops ci check docs desktop` 检查报告结构与链接；`scripts/ci/visual.mjs` 拒绝新增固定视觉值；迁移页面必须另有真实 Desktop/dev:web 截图和交互记录。
+`pnpm ops ci check docs desktop` checks report structure and links; `scripts/ci/visual.mjs` rejects new fixed visual values; migrated pages must also have real Desktop/dev:web screenshots and interaction records.
 
 ## Update triggers
 
-Page API、设置壳响应式策略、迁移页面、截图或 MasterGo 证据发生变化时，更新本报告、design-map、台账和截图指纹。
+Update this report, design-map, ledger, and screenshot fingerprints when the Page API, settings-shell responsive behavior, migrated pages, screenshots, or MasterGo evidence change.
 
 ## Stop condition
 
-只有同时保存迁移前后截图、阅读迁移后真实截图、记录交互结果和未解决 gap 后，才能把一个页面从迁移队列移入本报告。
+Move a page from the migration queue into this report only after saving before/after screenshots together, inspecting the real post-migration screenshot, and recording interaction results and unresolved gaps.
 
-## 未解决项
+<a id="未解决项"></a>
+## Unresolved Items
 
-- 账户页仍使用历史标题组件但不在 `NAV_ITEMS`，`visiblePage` 会回退，不能作为当前用户路径验收。工作区文件当前读取失败，不能以失败态替代列表、文件操作、右键菜单、预览、窄窗及键盘验收。文件版本、模型配置、开发者和技能的写入型流程、复杂策略、详情弹窗、窄窗及键盘回归尚未验收。
-- 最新 MasterGo 节点、Windows 截图及复杂浮层组合仍属于 gap。
+- The account page still uses the historical title component but is absent from `NAV_ITEMS`; `visiblePage` falls back, so it cannot be accepted as a current user path. Workspace Files currently fails to read; that failure state cannot substitute for acceptance of listing, file operations, context menu, preview, narrow windows, and keyboard use. Write flows, complex policies, detail dialogs, narrow-window behavior, and keyboard regressions for File Versions, Model Configuration, Developer, and Skills remain unaccepted.
+- Latest MasterGo nodes, Windows screenshots, and complex overlay compositions remain gaps.

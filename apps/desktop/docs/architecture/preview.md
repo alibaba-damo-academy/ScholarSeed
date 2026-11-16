@@ -1,777 +1,407 @@
-# Desktop PDFE 工作台架构
+<a id="desktop-pdfe-工作台架构"></a>
+# Desktop PDFE Workbench Architecture
 
-综述全文读取授权的 PDFE 场景单独采用简约展示：待确认卡隐藏重复文献清单，
-上方检索结果和原始授权范围保留；同意及拒绝回执复用通用交互回执的图标、标题和说明，
-不提供范围展开或重新授权按钮。上述样式已迁入真实桌面端共享策略及 Stream，
-PDFE 不再使用临时 Provider 或隐藏选择器；授权数据不变，精确检索的逐篇勾选和历史对照场景不受影响。
+The PDFE scenario for authorizing full-text reading in literature reviews uses a simplified presentation: the pending card hides the duplicate literature list while retaining the search results above it and the original authorization scope. The approval and rejection receipts reuse the icons, titles, and descriptions of the generic interaction receipts; they provide no scope-expansion or reauthorization button. This styling has been moved into the real desktop app's shared policy and Stream. PDFE no longer uses a temporary Provider or hidden selector. Authorization data is unchanged, and per-paper selection in precise search and historical comparison scenarios are unaffected.
 
 ## Scope / Non-goals
 
-**required（用户已选择 Electron，尚未完成迁移）**：产品经理、设计师与前端开发通过
-Electron 内同一个 PDFE Mock 工作台浏览全部登记的 renderer 页面及状态，操作模拟
-对话、工具调用和审批；复用真实产品的页面、组件、样式、宿主视觉能力、数据契约和
-状态投影，不另做一套产品 UI。浏览器 Preview 不再作为产品展示或效果验收入口；
-已有 Web 实现只作迁移过渡，HTTP Mock 服务可作为 Electron 的隔离数据层继续复用。
-这里的“复用数据”指复用数据模型与消费路径，
-不把设计样本写入真实用户项目，也不要求两种环境具有相同的数据内容。
+**required (the user chose Electron; migration is not yet complete)**: Product managers, designers, and frontend developers use the same PDFE Mock workbench inside Electron to browse all registered renderer pages and states and operate simulated conversations, tool calls, and approvals. Reuse the real product's pages, components, styles, host visual capabilities, data contracts, and state projections; do not build a separate product UI. Browser Preview is no longer a product presentation or acceptance entry point. The existing Web implementation is only a migration bridge, and the HTTP Mock service may continue to serve as Electron's isolated data layer.
+Here, “reuse data” means reusing data models and consumption paths. It does not write design samples into real user projects or require both environments to contain identical data.
 
-**current / gap**：`pnpm ops dev pdfe` 启动开发专用 Electron main/preload 与隔离场景服务。
-`preview/entry.tsx` 只接受原生 PDFE Bridge，产品在顶层窗口装配共享 renderer；浏览器
-访问不再展示 Mock 产品。平台、版本、全屏和系统字体来自真实 Electron/原生字体模块，
-业务请求仍是隔离 Mock，并不等于真实服务或全部原生能力已经验收。
-保持 sandbox、contextIsolation、CSP、实例隔离及用户数据边界；产品和 PDFE 须在同版本、
-平台、内容视口、主题、语言、缩放和字体条件下对照。具体阶段与用户授权见本次
-PDFE 计划 (non-public execution/provenance record omitted)。
+**current / gap**: `pnpm ops dev pdfe` starts a development-only Electron main/preload pair and an isolated scenario service. `preview/entry.tsx` accepts only the native PDFE Bridge; the product assembles the shared renderer in the top-level window, and visiting it in a browser no longer displays the Mock product. Platform, version, fullscreen state, and system fonts come from real Electron/native font modules, while business requests remain isolated Mocks; this does not mean the real service or all native capabilities have been accepted.
+Preserve the sandbox, contextIsolation, CSP, instance isolation, and user-data boundaries. Compare the product and PDFE using the same version, platform, content viewport, theme, language, zoom, and font conditions. The specific phases and user authorization are recorded in this PDFE plan (non-public execution/provenance record omitted).
 
-**current（迁移准备）**：`src/main/window.ts` 的 `createWorkspaceWindowOptions` 已由
-真实产品主窗口消费，统一工作区大小、平台装饰、背景及强制 renderer 隔离配置。
-PDFE 原生宿主复用该入口而非复制选项；该工厂及选项测试本身不证明全部原生效果一致。
+**current (migration preparation)**: `createWorkspaceWindowOptions` in `src/main/window.ts` is now consumed by the real product main window, unifying workspace size, platform decorations, background, and enforced renderer isolation settings. The native PDFE host reuses this entry point instead of copying the options; the factory and its option tests do not by themselves prove that all native effects are identical.
 
-当前用户指定先完成 macOS 验收；Windows 保留未验证，不以 macOS 结果替代。浏览器设置、
-页面及 viewer 的共享 renderer 控件仍属于覆盖目标，不能因其包含原生区域而整项排除。
+The user currently requires macOS acceptance first; Windows remains unverified, and macOS results cannot substitute for it. Shared renderer controls in browser settings, pages, and viewers remain in scope; they cannot be excluded wholesale just because they contain native areas.
 
-设计原则与后续功能接入的概要约束见 [PDFE 概要设计](PDFE.md)；本页持有运行时装配、
-传输及接口机制的详细正文，不另维护第二套概要原则。阶段、分工与交付顺序见
-[历史开发记录](../work/plan/preview.md)，当前测试改造执行与结果归
-测试改造计划 (non-public execution/provenance record omitted)。
-模拟会话的延迟、工具错误和审批续答由 `preview/conversation.ts` 政策驱动，
-`preview/service.ts` 的同一 Session 统一维护预约、历史、事件与定时器；页面不分叉。
-共享 Runtime 重配置只读查询返回本实例身份和空闲状态，会话当前操作查询返回 204；
-这仅适配真实 renderer 的只读协议，不启动模型或模拟成功切换。重配置 mutation
-仍拒绝，未知会话仍返回未找到，不能把预览空闲状态当作真实 Host 就绪证据。
-全文操作确认另有 `conversation-fulltext-pending`、`conversation-fulltext-authorized`、
-`conversation-fulltext-rejected` 三个直接可查看的会话场景，复用同一组 4 篇显式模拟文献。
-`preview/authorization.ts` 持有范围、问句、决议与重新授权的隔离账本；原生 PDFE 消费真实
-文献卡及 HIL 控件，可确认/拒绝、折叠范围、查看全部及拒绝后重新授权。接口与场景均不调用
-真实模型、不下载或读取全文、不执行文献入库；模拟展示通过不代表真实权限验收。
-文献综述另有 `conversation-review-fulltext-pending`、`conversation-review-fulltext-authorized`、
-`conversation-review-fulltext-rejected` 三个场景，沿用同一模拟账本和文献集合，以数据策略选择
-真实 `literature-review-fulltext:` 问句及 `literature-review` 来源。范围只读、不提供逐篇勾选，
-拒绝后重新授权仍保持综述身份和完整范围；这不是独立的“禁止下载”权限，也不生成真实综述。
-**current（已迁入共享 renderer）**：当前文献授权卡通过领域策略的 `composerAttached`
-展示贡献，在 Stream/Composer 原 Owner 中排于执行计划之后、输入框之前。依据 2026-11-03
-用户最新要求，卡片上下分别保持 8px，不再与输入框重叠；待确认期间取消执行计划的
-旧输入框间距补偿负边距，避免上方实际可见间距缩小。宽容器
-说明在左、按钮在右，窄容器保留纵向排布。授权逻辑、内容、配色和按钮变体不变，其他
-确认卡不启用该布局。共享的 `ComposerConfirmationContext` 将确认区组合在执行计划之后、
-输入框之前，不删除或隐藏执行计划。Stream 原跟随观察器同时观察内容列和会话视口，适配收起/展开；
-手动暂停跟随时不强拉到底。连接布局与滚动适配不再维护 PDFE 局部包装或源码替换插件，直接消费真实
-共享实现，不加载Git历史模块或替换旧Stream/领域策略。模拟验证仍不代替真实桌面验证。
-**current（回执间距已迁入共享 renderer）**：文献授权回执组件使用 `--vds-space-2`（8px）
-上间距，已授权/已拒绝卡与上方结果分开；PDFE 临时覆盖已移除。待确认连接布局、
-回执内容与授权逻辑不变；PDFE 与真实桌面共用该实现。
-取消及实例销毁撤销未接纳提交，回合回调绑定原身份；具体消费契约和验证边界见
-[接口适配清单](../work/preview-contracts.md#会话执行与传输政策)。
-当前 Goal 已授权相关代码、场景、测试、文档及隔离运行验证；依赖安装、部署、真实模型调用、
-个人配置修改和 Git 交付仍须按本次授权与仓库规则单独核对，不继承历史操作授权。
+See [PDFE overview design](PDFE.md) for design principles and summary constraints on future feature integration. This page contains the detailed body for runtime assembly, transport, and interface mechanisms; do not maintain a second set of overview principles. Phases, responsibilities, and delivery order are in the [historical development record](../work/plan/preview.md); current test-rework execution and results are in the test rework plan (non-public execution/provenance record omitted).
+Delays, tool errors, and approval continuations in simulated conversations are driven by `preview/conversation.ts` policy. The same Session in `preview/service.ts` centrally maintains reservations, history, events, and timers; pages do not fork this behavior. A read-only query for shared Runtime reconfiguration returns this instance's identity and idle state; a query for the session's current operation returns 204. This only adapts the real renderer's read-only protocol; it neither starts a model nor simulates a successful switch. Reconfiguration mutations are still rejected, unknown sessions still return not found, and preview idleness must not be treated as evidence that the real Host is ready.
+Full-text operation confirmation also has three directly viewable conversation scenarios: `conversation-fulltext-pending`, `conversation-fulltext-authorized`, and `conversation-fulltext-rejected`. They reuse the same four explicitly simulated papers. `preview/authorization.ts` owns an isolated ledger for scope, prompts, decisions, and reauthorization. Native PDFE consumes the real literature card and HIL controls, allowing approval/rejection, scope collapse, “view all,” and reauthorization after rejection. Neither the interface nor these scenarios calls a real model, downloads or reads full text, or performs literature ingestion; passing the simulated presentation does not constitute real permission acceptance.
+Literature reviews have three additional scenarios—`conversation-review-fulltext-pending`, `conversation-review-fulltext-authorized`, and `conversation-review-fulltext-rejected`—that reuse the same simulated ledger and literature collection, with data policy selecting the real `literature-review-fulltext:` prompt and `literature-review` source. The scope is read-only, with no per-paper selection; reauthorization after rejection retains the review identity and full scope. This is not a separate “prevent download” permission and does not generate a real review.
+**current (migrated to the shared renderer)**: The current literature authorization card contributes through the domain policy's `composerAttached`, positioned in the original Stream/Composer Owner after the execution plan and before the input. In accordance with the user's latest request on 2026-11-03, it keeps 8px above and below and no longer overlaps the input. While confirmation is pending, the old negative margin that compensated for execution-plan/input spacing is removed so the actually visible gap above does not shrink. Wide containers place the description on the left and buttons on the right; narrow containers retain a vertical layout. Authorization logic, content, colors, and button variants remain unchanged, and other confirmation cards do not use this layout. The shared `ComposerConfirmationContext` places the confirmation area after the execution plan and before the input without removing or hiding the plan. The Stream follow observer watches both the content column and session viewport to support collapse/expand; manually pausing follow does not force scrolling to the bottom. Layout integration and scroll adaptation now consume the real shared implementation directly instead of maintaining a PDFE-local wrapper or source-replacement plugin; they do not load a Git history module or replace the old Stream/domain policy. Simulated validation still does not replace real desktop validation.
+**current (receipt spacing migrated to the shared renderer)**: The literature authorization receipt component uses `--vds-space-2` (8px) above it, separating authorized/rejected cards from the result above; the temporary PDFE override has been removed. The pending-card layout, receipt content, and authorization logic are unchanged; PDFE and the real desktop app share this implementation.
+Cancellation and instance disposal revoke unaccepted submissions, and turn callbacks remain bound to the original identity; see the [interface adaptation checklist](../work/preview-contracts.md#会话执行与传输政策) for the specific consumption contract and validation boundary.
+The current Goal authorizes the related code, scenarios, tests, documentation, and isolated runtime validation. Dependency installation, deployment, real model calls, personal configuration changes, and Git delivery must still be checked separately against this task's authorization and repository rules; historical operation authorization does not carry over.
 
-“全部页面”包含正常导航、设置子页、工作区 viewer，以及登录、弹层和错误等辅助表面。
-受产品策略隐藏的 renderer 页面仍须登记展示方式；不能只统计当前可点击的导航项。
-原生窗口装饰、系统选择器和 WebContentsView 的内容不是 renderer 页面：预览展示可复用
-外壳及明确标记的替代区域，原生效果另行验收，不能将其从覆盖清单静默删除。
+“All pages” includes normal navigation, settings subpages, workspace viewers, and auxiliary surfaces such as login, popovers, and errors. Renderer pages hidden by product policy must still document how they are presented; counting only currently clickable navigation items is insufficient. Native window decorations, system pickers, and WebContentsView content are not renderer pages: the preview may show a reusable shell and explicitly marked substitute areas, while native effects are accepted separately. They must not be silently removed from the coverage list.
 
-非目标：重写 Serve、复刻真实模型或工具执行、绕过产品安全策略、全量拆分 Store、
-另建角色专用页面或设计系统。首期为本机开发预览，不承诺静态托管、离线分发或公网共享。
+Non-goals: rewriting Serve, reproducing real model or tool execution, bypassing product security policy, fully splitting the Store, or creating role-specific pages or a separate design system. The first release is a local development preview; it does not promise static hosting, offline distribution, or public sharing.
 
-### 使用者与协作闭环
+<a id="使用者与协作闭环"></a>
+### Users and Collaboration Loop
 
-工作台是产品评审、视觉设计和前端开发的共享工作环境，不是设计师专属工具，也不是另一套产品。
-PDFE 升级的[角色知识与修改范围](../work/pdfe.md)维护三类 Agent 任务的知识导航、
-范围和交接契约；角色不同不意味着产品代码或数据事实源不同。
-三类使用者共享同一页面/场景 ID、数据契约和可观察结果，区别是使用任务，不按角色分叉代码、
-mock 数据或入口；此处的角色分工不引入账号权限系统。
+The workbench is a shared environment for product review, visual design, and frontend development—not a designer-only tool or a separate product. The [role knowledge and change scope](../work/pdfe.md) for the PDFE upgrade maintains knowledge navigation, scope, and handoff contracts for the three Agent task types; different roles do not imply different product code or data sources of truth.
+All three user types share the same page/scenario IDs, data contracts, and observable results. Their tasks differ, but code, mock data, and entry points do not branch by role; this division of responsibilities does not introduce an account permission system.
 
-| 使用者 | 使用闭环 | 共享交付依据 |
+| User | Usage loop | Shared delivery basis |
 | --- | --- | --- |
-| 产品经理 | 选择业务场景 → 操作正常/异常及审批分支 → 核对交互、文案和需求覆盖 → 记录差异 | 场景关联需求与预期结果；评审引用场景 ID/链接，而非另做静态原型 |
-| 设计师 | 选择同一场景 → 对照布局、主题、语言与状态 → 调整真实设计资产 → 复核效果 | 同一组件/token/样式及截图；设计差异保留对应场景和状态 |
-| 前端开发 | 启动无后端环境 → 开发真实页面 → 注入延迟/失败等状态 → 调试请求/事件 → 回归 | 同一 API/bridge 消费路径、场景诊断和消费 spec；再到真实服务/Electron 验证 |
+| Product manager | Select a business scenario → exercise normal/error and approval branches → review interactions, copy, and requirement coverage → record differences | Scenarios link to requirements and expected results; reviews cite scenario IDs/links instead of creating static prototypes |
+| Designer | Select the same scenario → compare layout, theme, language, and state → adjust real design assets → review the result | The same components/tokens/styles and screenshots; design differences retain their scenario and state |
+| Frontend developer | Start without a backend → develop the real page → inject states such as delay/failure → debug requests/events → run regression | The same API/bridge consumption path, scenario diagnostics, and consumer spec; then verify against the real service/Electron |
 
-产品经理与设计师使用已登记场景不应要求编辑源码或自行拼装接口响应；前端按领域契约补场景，
-三方在同一场景上复核。使用说明需覆盖非开发使用者的启动前提和常见错误，不能假设其已安装
-完整 Electron/Python/模型环境。首期场景链接只保证具备同版本代码与场景的本机实例可恢复，
-不等于提供远程在线工作台；共享部署需求仍按独立分发决策处理。
+Product managers and designers should not need to edit source or assemble API responses to use registered scenarios; frontend developers add scenarios according to domain contracts, and all three review the same scenario. Usage instructions must cover startup prerequisites and common errors for non-developers; they must not assume a complete Electron/Python/model environment is installed. In the first release, a scenario link only guarantees restoration in a local instance with matching code and scenarios; it does not provide a remote online workbench. Shared deployment needs remain subject to a separate distribution decision.
 
 ## Source of truth
 
-以下是 2026-10-20 核对的当前入口，不代表目标架构已落地：
+The following are the current entry points checked on 2026-10-20; they do not mean the target architecture has been implemented:
 
-| 当前源码 | 已有能力 / 限制 |
+| Current source | Existing capabilities / limitations |
 | --- | --- |
-| [Web 配置](../../vite.web.config.ts) | `dev:web` 运行真实 renderer，但 `/api` 代理真实 Serve |
-| [应用入口](../../src/renderer/src/main.tsx) | 统一 Provider 树；启动会装载 browser bridge、Store 与 feature registry |
-| [组合根](../../src/renderer/src/app/composition.tsx)、[可用性策略](../../src/renderer/src/app/policy.ts) | 通过贡献注册功能；模块求值时读取产品能力 |
-| [浏览器桥](../../src/renderer/src/browser.ts)、[Store](../../src/renderer/src/store.tsx) | bridge 持有偏好与宿主能力；初始偏好在模块级读取 |
-| [共享浏览器工厂](../../src/renderer/src/app/browser.ts)、[预览桥](../../preview/bridge.ts)、[启动入口](../../preview/entry.tsx) | 工厂不读取全局存储；先完成隔离偏好读取，再显式异步装载真实 renderer，默认 Web 初始化器仅在缺桥时构造 |
-| [场景服务](../../preview/service.ts)、[页面目录](../../preview/catalog.ts)、[文件树](../../preview/files.ts) | 已有单实例隔离的 HTTP/SSE、场景导航与受审示例字节；目录登记不代表全页面接入 |
-| [HTTP 客户端](../../src/renderer/src/app/api/client.ts)、[API/SSE](../../src/renderer/src/api.ts)、[账号客户端](../../src/renderer/src/account.ts) | HTTP、原生 EventSource、bridge 请求及账号直连均需覆盖边界 |
-| [组件示例](../../src/renderer/src/components/examples/ComponentsPage.tsx) | 已有主题、语言和业务样本；局部 fetch 未命中仍走原网络，不是隔离环境 |
+| [Web config](../../vite.web.config.ts) | `dev:web` runs the real renderer, but `/api` proxies to the real Serve |
+| [Application entry](../../src/renderer/src/main.tsx) | Unified Provider tree; startup loads the browser bridge, Store, and feature registry |
+| [Composition root](../../src/renderer/src/app/composition.tsx), [availability policy](../../src/renderer/src/app/policy.ts) | Registers features through contributions; reads product capabilities during module evaluation |
+| [Browser bridge](../../src/renderer/src/browser.ts), [Store](../../src/renderer/src/store.tsx) | The bridge holds preferences and host capabilities; initial preferences are read at module scope |
+| [Shared browser factory](../../src/renderer/src/app/browser.ts), [preview bridge](../../preview/bridge.ts), [startup entry](../../preview/entry.tsx) | The factory does not read global storage; it first reads isolated preferences, then explicitly loads the real renderer asynchronously; the default Web initializer is constructed only if no bridge exists |
+| [Scenario service](../../preview/service.ts), [page catalog](../../preview/catalog.ts), [file tree](../../preview/files.ts) | Provides single-instance-isolated HTTP/SSE, scenario navigation, and reviewed sample bytes; catalog registration does not mean all pages are integrated |
+| [HTTP client](../../src/renderer/src/app/api/client.ts), [API/SSE](../../src/renderer/src/api.ts), [account client](../../src/renderer/src/account.ts) | Boundaries for HTTP, native EventSource, bridge requests, and direct account calls all need coverage |
+| [Component examples](../../src/renderer/src/components/examples/ComponentsPage.tsx) | Includes theme, language, and business samples; a local fetch miss still uses the original network and is not isolated |
 
-UI 与数据 Owner 继续遵守 [renderer](renderer.md)、[ownership](ownership.md)、
-[组件规范](../design/components.md)和[测试规范](../quality/testing.md)，
-不在预览目录重新定义生产协议。Serve 业务与持久化仍归其原 Owner。
+UI and data Owners continue to follow [renderer](renderer.md), [ownership](ownership.md), [component standards](../design/components.md), and [testing standards](../quality/testing.md). Do not redefine production protocols in the preview directory. Serve business logic and persistence remain with their original Owners.
 
 ## Current / Required / Gap / Advisory
 
-- **required（目标分支整合）**：真实产品布局与交互变更继续进入共享 renderer；合入上游项目工具栏、归档可调布局与文献目录同步时，保留原异步围栏、错误重试和真实导览锚点，并同步对应 mock 消费验收。Office 恢复诊断不能破坏预览 URL frame 的真实握手、消息来源校验及清理。合并前的 Web、构建及原生样本证据不能替代合并后的同版本验证。
-- **required（远端功能优先）**：本次用户指定目标远端的产品功能与布局为准；mock、示例数据、入口清单及消费测试适配更新后的真实 UI，不为旧测试恢复旧行为，也不使用强制点击或替代控件掩盖目标已有问题。发现真实产品可达性阻断应保留运行证据、明确未通过，不能以静态检查或 mock 修改代替产品修复。
+- **required (target-branch integration)**: Real product layout and interaction changes continue to go into the shared renderer. When integrating the upstream project toolbar, adjustable archive layout, and literature catalog synchronization, preserve the original async guards, error retries, and real navigation anchors, and update the corresponding mock consumer acceptance. Office recovery diagnostics must not break the preview URL frame's real handshake, message-source validation, or cleanup. Web, build, and native-sample evidence from before the merge cannot replace same-version verification after the merge.
+- **required (remote features take precedence)**: Use the product features and layout on the target remote branch specified by the user for this task. Adapt mocks, sample data, entry lists, and consumer tests to the updated real UI; do not restore old behavior for old tests or use forced clicks or substitute controls to hide existing target issues. If real product accessibility is blocked, retain runtime evidence and clearly report failure; static checks or mock changes cannot substitute for a product fix.
 
-- **required（R1 在途一致性）**：提交延迟位于真实 turn 接纳前，同一 Session 互斥；未接纳时断连、中断、删除或实例重置不得留下用户消息、回合或后续定时器。工具运行、分片、失败和中断必须来自同一历史/事件账本，工具失败不自动意味着回合失败；审批允许回执后，同 request/turn 从 waiting 返回 running 再续答，不重复提交 turns。当前接线与独立消费进行中，目录声明不代表已验证。
+- **required (R1 in-flight consistency)**: Submission delay occurs before the real turn is accepted, and a Session is mutually exclusive. If it has not been accepted, disconnect, interruption, deletion, or instance reset must leave no user message, turn, or later timer behind. Tool execution, chunks, failures, and interruptions must come from the same history/event ledger; a tool failure does not automatically mean the turn failed. After an approval receipt is accepted, the same request/turn returns from waiting to running and continues without submitting turns again. Current wiring and independent consumption are in progress; catalog declarations do not mean this has been verified.
 
-- **current（文档传输阶段验证）**：Code、Image、DOCX 复用既有受审样本、同一 VFS 及通用内容 HTTP 政策，公开等待、持续失败、原重试和同实例显式恢复已消费；await 后重核实例及项目登记。故障按文件身份绑定，但真实项目 GET 沿当前 path 读取，不额外引入 identity CAS；同路径编辑/替换仍取当前字节，路径消失为 404。最终十六项 Web 消费及真实 macOS 三样本打开/关闭重入已验证，样本保留于用户授权的隔离项目，复用入口见计划。图片解码、Monaco 握手、Office 解析/WASM 故障仍是独立缺口，不能由 HTTP 错误或原生正常路径代替。
-- **current（目录浏览阶段验证）**：`preview/browsing.ts` 持有既有项目 VFS 引用，资料列表递归返回文件及目录，项目树按真实合同每页 100 项投影；辅助 `resource/tree` 不消耗读取故障政策。空种子真正清空当前实例目标项目的文件，不把搜索无匹配当空库。独立的列表读取、树首读和后续页政策通过声明连接原页面；原 Explorer 保留已读节点并展示分页错误与原 offset 重试，刷新、路径切换和卸载有请求代次围栏。最终确定性回归、十三项公开消费（含暗色英文窄窗与原入口）及新构建 macOS 正常只读打开/重入均通过，证据范围见计划；真实百项分页/故障、Windows 及其余关键分支仍未完成，不能外推整体 Goal 已完成。
-- **required（列表项目作用域）**：`GET /api/resource/list` 与真实路由保持一致：只接受本实例已登记的项目 ID，不把缺参、空值、`current`、根路径或未知项目回落到首项目；重复查询取最后值。缺参/空值返回422，`current`返回400，未知项目返回404；等待后重核实例与项目登记。不同资源路由分别遵循所属契约，不将列表的必填规则扩大到树接口；Mock 不证明真实路由与持久化已验收。
-- **current**：已有真实 Web 入口、共享样式与组件示例，适合增量接入，不需要复制 UI。
-- **required**：同一 renderer 消费两种数据来源；预览仅替换外部服务和宿主能力边界。
-- **required**：预览必须隔离网络、账号、存储和生命周期，所有页面均有可追踪的覆盖条目。
-- **current**：独立预览启动、共享浏览器工厂、场景控制台、单回合 HTTP/SSE 模拟及示例文件树已有实现与聚焦测试；运行证据按开发计划分层记录。
-- **gap**：目录表面均已有 renderer 消费入口，但全部关键适用状态及最终双环境回归仍未完成；入口登记和模拟执行不代表真实模型/工具成功。
-- **current**：预览消费测试可用 `preview/coverage.ts` 的原生 Playwright annotation 关联页面、场景与断言状态；纯关联函数只输出 `has-tests / partial / unmapped / excluded`，不把执行成功写成静态覆盖结论。
-- **current**：`preview/report.ts` 可读取标准 Playwright JSON（文件或 stdin），输出带 Owner、源码位置、预期与限制的场景/消费关联报告；收集失败或非法注解明确失败，不输出伪造成绩。
-- **gap**：控制台尚无覆盖汇总；其他消费者映射及未断言的状态仍待补齐，不能据声明计为运行通过。
-- **current（产物纵向切片）**：显式产物场景从同一受审 VFS 捕获不可变 publication，沿原会话目录、历史、快照和 artifact raw/content 合同展示；也支持仅成功模拟回合终态后发布。原产物页已消费非空、筛选、等待、持续失败与显式恢复，取消及重入沿原对话操作验证。公开消费另暴露共享查看器生命周期和来源边界问题，分别在 Markdown 保存 delegate 与 PDF 区域读取的所属抽象修复，不增加 mock 特例或伪造能力。模拟 `message_delta` 遵循真实累计快照合同，与历史正文一致；修复后的独立全量消费回归已通过，但不代表全部关键状态、真实模型交付或原生文件操作已验收，具体证据与剩余读取分支见计划。
-- **current（任务文件读取）**：现行任务产物 UI 通过 `GET /api/serve/task-files` 读取项目会话及文件 DTO；Mock 复用既有项目会话分页与 publication 账本，`GET /api/serve/sessions/:id/files` 只投影已发布样本的根目录，不扫描真实任务文件系统或另建文件账本。无发布时目录为空，未知会话、非根目录及写入不扩成成功；读取故障沿既有场景政策。该切片不证明真实工作目录、未发布文件、子目录、文件拖放或磁盘交付。
-  会话 `files/raw` 只读取上述根文件或已声明引用样本的实例 VFS 当前字节，不转发本机路径；等待后重核实例、会话和项目登记。它与 `artifacts/:id/raw` 的不可变发布快照分开，不因当前文件编辑而改写发布证据；内容故障沿既有产物政策，不增文件账本。
-  项目作用域只接受本实例已登记的规范化虚拟根：已登记空项目是成功空页，未知或已摘登记的
-  根返回404，不把不可用伪装为空集合；异步读取结束后复核登记。虚拟路径不探测本机文件系统。
-- **current（会话准备与预测）**：模型目录与健康接口使用相同实例号；模拟 runtime prepare 仅受理目录已声明的模型，用实例内幂等回执支持状态查询，reset/dispose清除，不运行热身、凭据配置或真实模型。会话预测只对当前已完成回合返回 `text:null`，不伪造模型建议或调用供应商。回执只证明Mock消费，不代表真实Runtime准备成功。
-- **current（开发者设置）**：独立预览账本复用原 `DeveloperPage` 与账号客户端；实例级同源 capability 仅授权本实例模拟 API Key 列表/变更，不是账号 JWT。创建回执只展示不可认证的 `preview-only:` 值，列表不保存明文；托管准备及刷新只维护模拟摘要，明确返回 `ready:false`、`issued:false`、`aligned:0`，不构造技能凭据环境、不调用真实账号服务或对齐会话。真实页挂载本来就有凭据准备副作用，不能当作无副作用读取验收。
-- **current（浏览器设置）**：通过独立隐藏设置宿主复用原 `BrowserSettings`，预览边界沿现有 `BrowserBridge` 请求/回执及校验连接实例级网站规则和浏览历史。生产导航与 `browserEnabled` 不变；原生网页、CDP、下载和 Vault 仍明确不可用。
-- **current（浏览器表面）**：主页面与 viewer 通过明确标识的预览宿主复用原 `Browser` 组件，只投影同实例的 `about:blank` 标签账本。不注册生产禁用的 feature 或改开关；网页导航与 frame、原生菜单等能力不提供，所有非空白输入均拒绝且不联网。双入口的公开 UI 消费已覆盖空白标签、键盘选择、重新进入、失败与等待；原通用状态要求仍保留未覆盖项，不将入口登记扩大为原生浏览器验收。当前只验收 macOS，Windows 未验证。
-- **current（会话政策）**：执行模式、长流片段和一次断线由目录的 `simulation.conversation` 显式声明，服务不再按 `conversation-*` 标识猜测流程。Session 仍持有唯一事件/历史账本及领域定时器；独立预览传输 Owner 只控制一次 HTTP 流关闭与有界重连握手，领域终态不取消握手计时，reset/dispose 才取消旧传输。生产 EventSource 继续沿原 `from_seq`、退避与投影逻辑恢复，不修改真实客户端时序或直接填充 Store。
-- **required**：预览控制台和隐藏模块入口属于预览宿主，不得覆盖共享页面的按钮、正文或 Office 画布。使用独立布局区域预留空间；预览工具栏占用的窗口空间属于明确宿主差异，不改变生产页面布局或窗口最小尺寸。
-- **advisory**：先跑通完整会话纵向切片，再按领域补齐页面，不把基础设施存在当成全覆盖。
+- **current (document transfer phase validation)**: Code, Image, and DOCX reuse existing reviewed samples, the same VFS, and the general content HTTP policy. Public wait, persistent failure, original retry, and explicit same-instance recovery have been consumed; after `await`, the instance and project registration are rechecked. Failures are bound to file identity, but real project GET reads by the current path and does not add identity CAS; edits/replacements at the same path still return current bytes, and a missing path returns 404. The final 16 Web consumer cases and real macOS opening/closing reentry for three samples were verified. Samples remain in the user-authorized isolated project; see the plan for the reuse entry point. Image decoding, Monaco handshake, and Office parsing/WASM failures remain independent gaps and cannot be substituted by HTTP errors or a successful native path.
+- **current (directory browsing phase validation)**: `preview/browsing.ts` holds the existing project VFS reference. The resource list recursively returns files and directories, and the project tree projects 100 items per page under the real contract; helper `resource/tree` does not consume the read-failure policy. An empty seed truly clears the target project's files in the current instance; a search with no matches is not treated as an empty library. Separate policies for list reads, the tree's first read, and subsequent pages connect to the original page through declarations. The original Explorer retains already-read nodes and displays pagination errors with retry at the original offset; refresh, path changes, and unmounts use request-generation guards. The final deterministic regression, 13 public consumer cases (including a dark, English, narrow window and the original entry), and normal read-only opening/reentry in a newly built macOS app all passed; see the plan for evidence scope. Real 100-item pagination/failure, Windows, and the remaining critical branches are still incomplete; these results cannot establish that the overall Goal is complete.
+- **required (list project scope)**: `GET /api/resource/list` must match the real route: accept only project IDs registered in this instance; do not fall back to the first project when the parameter is missing, empty, `current`, a root path, or an unknown project. For duplicate query parameters, use the last value. Missing/empty returns 422, `current` returns 400, and an unknown project returns 404; after waiting, recheck the instance and project registration. Each resource route follows its own contract; do not extend the list endpoint's required parameter rule to the tree endpoint. A Mock does not prove acceptance of the real route or persistence.
+- **current**: A real Web entry point, shared styles, and component examples already exist and are suitable for incremental integration; there is no need to copy the UI.
+- **required**: The same renderer consumes two data sources; preview replaces only the external-service and host-capability boundaries.
+- **required**: Preview must isolate network, accounts, storage, and lifecycle, and every page must have a traceable coverage entry.
+- **current**: Independent preview startup, the shared browser factory, scenario console, single-turn HTTP/SSE simulation, and sample file tree have implementations and focused tests; runtime evidence is recorded by layer in the development plan.
+- **gap**: All catalog surfaces have renderer-consumption entry points, but critical applicable states and final cross-environment regression are incomplete; entry registration and simulated execution do not mean real models/tools succeeded.
+- **current**: Preview consumer tests can use native Playwright annotations from `preview/coverage.ts` to associate pages, scenarios, and assertion states. The pure association function outputs only `has-tests / partial / unmapped / excluded`; it does not turn execution success into a static coverage conclusion.
+- **current**: `preview/report.ts` can read standard Playwright JSON (from a file or stdin) and output a scenario/consumer association report with Owner, source location, expectations, and limitations; collection failures or invalid annotations fail explicitly rather than producing fabricated results.
+- **gap**: The console has no coverage summary yet; other consumer mappings and unasserted states remain to be completed. Declarations alone cannot count as runtime passes.
+- **current (artifact vertical slice)**: Explicit artifact scenarios capture an immutable publication from the same reviewed VFS and present it through the original session catalog, history, snapshot, and artifact raw/content contracts; publication is also supported only after a simulated turn reaches a successful terminal state. The original artifact page has consumed non-empty, filtered, waiting, persistent-failure, and explicit-recovery states; cancellation and reentry are verified through the original conversation operation. Public consumption also exposed shared viewer lifecycle and source-boundary issues, fixed respectively in the Markdown save delegate and the owning abstraction for PDF region reads, without adding mock exceptions or fabricated capabilities. Simulated `message_delta` follows the real cumulative-snapshot contract and matches history text. The repaired independent full-consumption regression passed, but this does not mean all critical states, real model delivery, or native file operations are accepted; see the plan for detailed evidence and remaining read branches.
+- **current (task file reading)**: The current task-artifact UI reads project sessions and file DTOs through `GET /api/serve/task-files`. The Mock reuses existing project-session pagination and the publication ledger; `GET /api/serve/sessions/:id/files` projects only the root of published samples and does not scan the real task filesystem or create another file ledger. Without a publication, the directory is empty; unknown sessions, non-root directories, and writes are not turned into success; read failures follow the existing scenario policy. This slice does not prove real working directories, unpublished files, subdirectories, file drag-and-drop, or disk delivery.
+  Session `files/raw` reads only the current bytes in this instance's VFS for the root files above or declared referenced samples; it does not forward local paths. After waiting, it rechecks the instance, session, and project registration. It is separate from the immutable publication snapshot in `artifacts/:id/raw`; current file edits do not rewrite publication evidence. Content failures follow the existing artifact policy and do not add a file ledger.
+  Project scope accepts only normalized virtual roots registered in this instance: a registered empty project is a successful empty page, while an unknown or deregistered root returns 404 rather than disguising unavailability as an empty set. Registration is checked again after asynchronous reads. Virtual paths do not probe the local filesystem.
+- **current (session preparation and prediction)**: The model catalog and health endpoint use the same instance ID. Simulated runtime prepare accepts only models declared in the catalog and uses an idempotent per-instance receipt for status queries; reset/dispose clears it. It does not run warmup, configure credentials, or invoke a real model. Session prediction returns `text:null` only for the currently completed turn; it does not fabricate model suggestions or call a provider. The receipt proves only Mock consumption, not successful preparation by the real Runtime.
+- **current (developer settings)**: The isolated preview ledger reuses the original `DeveloperPage` and account client. An instance-scoped same-origin capability authorizes only this instance's simulated API Key list/mutations; it is not an account JWT. Creation receipts show only non-authenticating `preview-only:` values, and the list stores no plaintext. Hosted preparation and refresh maintain only a simulated summary and explicitly return `ready:false`, `issued:false`, and `aligned:0`; they do not build a skill-credential environment, call the real account service, or align sessions. Mounting the real page already has credential-preparation side effects, so it cannot serve as a side-effect-free read acceptance.
+- **current (browser settings)**: The original `BrowserSettings` is reused through a separate hidden settings host. The preview boundary follows existing `BrowserBridge` requests/receipts and validated instance-scoped website rules and browsing history. Production navigation and `browserEnabled` are unchanged; native web pages, CDP, downloads, and Vault remain explicitly unavailable.
+- **current (browser surface)**: The main page and viewer reuse the original `Browser` component through an explicitly identified preview host, projecting only this instance's `about:blank` tab ledger. No production-disabled feature is registered or switch changed; web navigation and frames, native menus, and other such capabilities are unavailable, and all nonblank input is rejected without network access. Public UI consumption through both entry points covers blank tabs, keyboard selection, reentry, failure, and waiting; the general state requirements still have uncovered items, and entry registration does not imply native-browser acceptance. Only macOS has been accepted; Windows remains unverified.
+- **current (session policy)**: Execution mode, long-stream chunks, and one disconnect are declared explicitly in the catalog's `simulation.conversation`; the service no longer guesses behavior from `conversation-*` IDs. The Session still owns the sole event/history ledger and domain timers. The separate preview transport Owner controls only one HTTP stream closure and a bounded reconnect handshake; a domain terminal state does not cancel the handshake timer, while reset/dispose cancels the old transport. Production EventSource continues to resume with the original `from_seq`, backoff, and projection logic; real client timing is not changed and the Store is not populated directly.
+- **required**: The preview console and hidden-module entry belong to the preview host and must not cover shared-page buttons, content, or the Office canvas. Reserve space in a separate layout area; the space occupied by the preview toolbar is an explicit host difference and must not change production page layout or the window minimum size.
+- **advisory**: First complete the full conversation vertical slice, then fill in pages by domain; do not treat the existence of infrastructure as complete coverage.
 
-**current（原生停靠与独立弹出）**：工作台支持右侧窗口内停靠与独立窗口，两者通过
-工作台按钮切换，底部没有 F8 入口。原生 `WebContentsView` 从启动时持有产品和控制台
-各自的 renderer，切换只将同一个控制台 View 迁移到另一容器，不重载任何页面或复制 Store。
-停靠时为产品与控制台划分真实原生视口，左边界支持拖动和方向键调宽；不覆盖产品按钮。
-拖动热区与可见分割线分离：热区透明且清除 Divider 的默认水平留白，细线在 hover、
-键盘焦点或拖动时强调，不将整条热区染成宽灰带。指针捕获结束、取消、丢失或窗口失焦
-均清理拖动态；宽度更新按动画帧合并，松开时提交最终位置，卸载时取消尚未发送的帧。
-独立弹出或收起后产品恢复完整视口。停靠会改变可用宽度和正常响应式布局，不能以外窗
-尺寸声称其仍等同完整产品视口；无缩放画布或尺寸选择表单。
-收起或关闭控制窗口仅隐藏它，F8 按当前停靠模式恢复；草稿、筛选及组件 DOM 保持。
-**required**：关闭后返回原页面和焦点，不关闭重建页面冒充重试。显式模拟故障恢复仅
-作用于当前实例、当前政策；不改变项目、用户偏好或生产数据源，不依赖请求次数推断
-恢复时点。快捷键和控制端点均限预览装配。运行验证与截图需按当前版本独立记录。
+**current (native docking and independent pop-out)**: The workbench supports docking inside the window on the right and a separate window, switched using a workbench button; there is no F8 entry at the bottom. Native `WebContentsView` instances host separate renderers for the product and console from startup. Switching moves the same console View to the other container; it does not reload any page or copy the Store. When docked, the product and console occupy real native viewports; the left edge can be dragged or resized with arrow keys, without covering product buttons. The drag hit area is separate from the visible divider: the hit area is transparent and removes Divider's default horizontal padding, while the thin line is emphasized on hover, keyboard focus, or dragging; the entire hit area is not colored as a wide gray band. Pointer capture end, cancellation, loss, or window blur all clear the dragging state. Width updates are coalesced per animation frame, the final position is committed on release, and any unsent frame is canceled on unmount. After pop-out or collapse, the product regains its full viewport. Docking changes the available width and normal responsive layout; the separate window's dimensions cannot be used to claim that the product still has its full viewport. There is no scaled canvas or size-selection form.
+Collapsing or closing the control window only hides it; F8 restores it according to the current docking mode, preserving drafts, filters, and component DOM.
+**required**: Closing returns to the original page and focus; do not close and rebuild the page to pretend to retry. Explicit simulated-failure recovery applies only to the current instance and policy. It does not change projects, user preferences, or production data sources, and does not infer recovery timing from request counts. Shortcuts and control endpoints exist only in the preview assembly. Runtime validation and screenshots must be recorded separately for the current version.
 
-### 翻译配置 Mock 切片
+<a id="翻译配置-mock-切片"></a>
+### Translation Settings Mock Slice
 
-**current（Mock，非真实翻译服务）**：翻译配置与 PDF 入口消费共享 renderer，
-`features/translation` 持有展示、语言方向、服务选择和文献级记忆规则；
-`preview/translation.ts` 只在 PDFE host 中注入模拟能力。正常产品没有该适配器，
-不得将模拟验证、安装或译文当作真实能力。AI 翻译继续使用原模型请求路径。
+**current (Mock, not a real translation service)**: Translation settings and the PDF entry point consume the shared renderer. `features/translation` owns presentation, language direction, service selection, and per-literature memory rules; `preview/translation.ts` injects simulated capabilities only into the PDFE host. The normal product has no such adapter; simulated verification, installation, or translated text must not be presented as real capability. AI translation continues to use the original model request path.
 
-AI 翻译提示词沿既有 `selectionPrompts.translate` 与 preference writer 自动保存，
-从 AI 提示词页移入翻译配置；解读、润色、图表解释的保存不覆盖它。
-PDF 的服务与语言选择按文档身份及全文/划词分别保存；待选参数改变保留旧译文，
-刷新成功才应用新参数。PDF 划词工具条关闭仅暂停自动翻译，不清除用户选择。
+AI translation prompts are automatically saved through the existing `selectionPrompts.translate` and preference writer, and have moved from the AI prompts page into translation settings; saving interpretation, polishing, or chart explanation does not overwrite them.
+PDF service and language selections are saved separately by document identity and by full-text/selection mode. Changing pending parameters preserves the old translation; new parameters apply only after refresh succeeds. Closing the PDF text-selection toolbar only pauses automatic translation; it does not clear the user's selection.
 
-模拟配置保存在本窗口 sessionStorage，键包含实例、场景及服务端现有 epoch 的
-只读 `generation` 投影。普通重载复用同代；重置产生新代，不复活旧配置或在途状态。
-在线输入只在表单内存中保留，不把输入密钥写入该记录；成功状态仅表示演示验证。
-中英语言包为模拟预装，其余语言安装显式展示等待与失败，失败不进入可用语言。
-持续失败场景由工作台明确选择，不按重试次数自动转成功。
+Simulated settings are stored in this window's sessionStorage. Keys include the instance, scenario, and a read-only `generation` projection of the server's existing epoch. A normal reload reuses the same generation; reset creates a new one and does not revive old settings or in-flight state. Online input remains only in the form's memory; entered keys are not written to this record. A success state means only that the demo validation passed. Chinese and English language packs are preinstalled for simulation; installation of other languages explicitly displays waiting and failure, and failed languages are not made available. The workbench explicitly selects persistent-failure scenarios; success is not inferred automatically from retry count.
 
-**gap**：本轮不下载真实语言包、不保存真实服务凭据、不连接外部翻译服务。
-Markdown 保留原 AI 翻译路径，其提示词入口指向新配置页；服务引擎消费尚未扩展到
-Markdown。模拟目录不是供应商实际语言能力清单，也不证明 Windows 或真实翻译质量。
+**gap**: This work does not download real language packs, save real service credentials, or connect to an external translation service. Markdown retains the original AI translation path, with its prompt entry pointing to the new settings page; service-engine consumption has not yet been extended to Markdown. The simulated catalog is not a provider's actual language capability list and does not prove Windows support or real translation quality.
 
-### PDFE 独立视口与通信边界
+<a id="pdfe-独立视口与通信边界"></a>
+### PDFE Isolated Viewport and Communication Boundaries
 
-**current**：`src/pdfe.ts` 校验冻结目录投影、loopback origin、实例与页面/场景身份。
-`src/main/pdfe.ts` 创建产品及控制窗口，使用私有临时 userData/sessionData、不持久化的
-隔离 Session 和受限请求出口；`src/preload/pdfe.ts` 仅暴露固定原生方法。IPC 同时校验
-已登记 webContents、顶层 frame、origin、实例、角色及目录目标，不接受任意 URL 或命令。
-控制窗口选择场景先重置本实例，再加载两个窗口；外观重载不重置场景账本。
+**current**: `src/pdfe.ts` validates the frozen catalog projection, loopback origin, instance, and page/scenario identity. `src/main/pdfe.ts` creates the product and control windows with private temporary userData/sessionData, a non-persistent isolated Session, and a restricted request egress; `src/preload/pdfe.ts` exposes only fixed native methods. IPC also validates registered webContents, the top-level frame, origin, instance, role, and catalog target, and accepts no arbitrary URL or command. Selecting a scenario in the control window first resets this instance and then loads both windows; a visual reload does not reset the scenario ledger.
 
-`scripts/dev/pdfe.mjs` 校验原生安全生成物及缓存制品摘要，复用现有 native 编译与冻结 Owner，
-过滤凭据、用户配置覆盖和 Node 注入环境变量，不启动真实 Serve 或模型。Vite 仅是
-Electron 内部开发资源与 Mock HTTP/SSE 传输，不再作为浏览器产品入口。
+`scripts/dev/pdfe.mjs` validates native security artifacts and cached artifact digests, reuses the existing native build and frozen Owner, filters credentials, user configuration overrides, and injected Node environment variables, and does not start the real Serve or a model. Vite is only an internal Electron development resource and Mock HTTP/SSE transport; it is no longer a browser product entry point.
 
-工作台不提供布局尺寸选择、固定画布或比例缩放；产品保留正常原生窗口及最小尺寸。
-启动默认在产品窗口右侧停靠，控制文档直接挂入产品窗口；独立窗口初始隐藏，不先弹出
-再回收。用户仍可通过顶部图标独立弹出或重新停靠，两种模式不另建产品页面。
-停靠与独立模式均保持两个原生文档及其 Portal、fixed 浮层与媒体查询边界，不逐个改写生产浮层。
-隐藏模块宿主为入口工具栏预留独立布局行，仅该宿主将共享 shell 高度绑定剩余容器，
-避免工具栏落在视口外或挤出产品底部；按钮靠右避开 macOS 原生窗口控件。
-这是隐藏模块演示宿主的明确差异，不改变普通产品页面的窗口/视口契约，不能将它的
-截图当作正式产品整窗像素一致证据。Office 自身的独立引擎文档边界继续保留。
+The workbench provides no layout-size selection, fixed canvas, or proportional scaling; the product retains its normal native window and minimum size. At startup, the control document is docked on the right of the product window; the separate window starts hidden rather than popping up and then being reclaimed. Users can still pop it out or dock it again using the top icon; neither mode creates a separate product page. Both docked and separate modes retain two native documents and their Portal, fixed-overlay, and media-query boundaries; production overlays are not individually rewritten. The hidden-module host reserves a separate layout row for the entry toolbar. Only this host binds the shared shell height to the remaining container to keep the toolbar inside the viewport and prevent it from pushing the product bottom out; buttons are aligned right to avoid the native macOS window controls.
+This is an explicit difference of the hidden-module demo host. It does not change the window/viewport contract of ordinary product pages, and its screenshots cannot be used as evidence of pixel parity for the full formal product window. The Office engine's own separate-document boundary remains in place.
 
-**current**：场景消费测试只驱动原生 Electron PDFE，不维护 iframe viewport 协议、
-独立 Web 消费 fixture 或旧截图等待器。隔离与收尾由原生测试 Owner 持有，
-组件开发样例与必要诊断宿主继续按各自明确边界使用，不冒充产品入口。
-**gap**：全部页面状态的持续执行收口、真实产品同条件视觉对照和 Windows 验收仍未完成。
+**current**: Scenario-consumption tests drive only native Electron PDFE; they do not maintain an iframe viewport protocol, a separate Web consumer fixture, or an old screenshot waiter. The native test Owner handles isolation and cleanup. Component development examples and necessary diagnostic hosts continue to be used within their explicit boundaries and are not presented as product entry points.
+**gap**: Ongoing execution closure for all page states, same-condition visual comparison with the real product, and Windows acceptance remain incomplete.
 
-### PDFE 功能导航与说明
+<a id="pdfe-功能导航与说明"></a>
+### PDFE Feature Navigation and Guidance
 
-**current（弹窗应用）**：功能导航增加「弹窗应用 → 业务分组 → 弹窗场景」。
-登记真源为 `preview/dialogs.ts`，通过原页面/场景身份复用目标、样本政策和模拟账本，
-保留原分类与原入口；每项提供中英入口步骤，进入后由原菜单打开弹窗，不自动弹出、
-复制业务组件或注入产品 Store。业务分组与搜索消费同一目录；展开分类不会启动场景。
-首个 `dialog-projects / dialog-project-create` 身份保持不变。
+**current (dialog applications)**: Feature navigation adds “Dialog Applications → Business Groups → Dialog Scenarios.” The registration source of truth is `preview/dialogs.ts`; it reuses the target, sample policy, and simulated ledger through the original page/scenario identity, preserving the original category and entry point. Each item provides entry steps in Chinese and English; after entry, the original menu opens the dialog. It does not pop dialogs up automatically, copy business components, or inject the product Store. Business grouping and search consume the same catalog; expanding a category does not start a scenario. The initial `dialog-projects / dialog-project-create` identity remains unchanged.
 
-仅收录模态对话框及确认框，不包含下拉菜单、Tooltip、非模态 Popover、侧边抽屉、
-Toast 或原生文件选择器。初始表单展示不等于对应提交、模型、安装或真实文件系统验收。
-收录依据、隐藏入口及尚无可操作预览种子的边界见[弹窗接入范围](../work/dialogs.md)。
+Only modal dialogs and confirmation dialogs are included; dropdown menus, Tooltips, non-modal Popovers, side drawers, Toasts, and native file pickers are excluded. Showing an initial form does not mean its submission, model, installation, or real-filesystem behavior has been accepted. See [dialog integration scope](../work/dialogs.md) for inclusion criteria, hidden entry points, and boundaries where no actionable preview seed exists.
 
-**current**：工作台名称为 PDFE 工作台。主面板按产品页面组织，项目中心内按日常使用、
-数据边界组织场景按钮；首次使用与空状态纳入日常使用。异常与恢复只在有实际接入场景时
-显示，不建立空分组。其他入口沿真实页面目标分组，不以 viewer/surface 等
-实现类型作为主要分类。分组真源为 `preview/hierarchy.ts`，`preview/Navigation.tsx`
-复用 Collapsible 和 Button。页面分组与功能区域展开不修改产品状态，
-场景按钮沿原 reset/导航路径打开对应共享页面；当前运行场景以 `aria-current` 标记。
-无接入目标的占位入口保持禁用，不把点击无反应当作功能实现。
+**current**: The workbench is named PDFE Workbench. The main panel is organized by product page; within the project center, scenario buttons are grouped by everyday use and data boundaries, with first use and empty states under everyday use. Errors and recovery appear only when an actual integrated scenario exists; no empty group is created. Other entries are grouped by their real page target, not primarily by implementation type such as viewer/surface. `preview/hierarchy.ts` is the grouping source of truth, and `preview/Navigation.tsx` reuses Collapsible and Button. Expanding page groups and feature areas does not modify product state. Scenario buttons open the corresponding shared page through the original reset/navigation path; the currently running scenario is marked with `aria-current`. Placeholder entries without an integrated target remain disabled; an unresponsive click is not treated as an implemented feature.
 
-项目中心不再平行展示旧“项目列表”和其同目标的“项目卡片”入口：当前 ActivityRail
-通过项目中心与项目内导航承载使用路径，旧 Sidebar 中的 projects 入口不作为当前
-项目中心的独立功能入口。目录使用 navigation: hidden 退出工作台检索和导航，不删除
-真实旧布局、已登记场景或稳定深链。“项目新建与编辑”以 navigation.parentPage/section
-归入项目中心的日常使用，保留原页面/场景身份与真实表单目标，不复制表单或另造数据。
-检索子功能时同时保留所属页面，分组展开不启动场景；创建、编辑由正常产品按钮触发。
+The project center no longer presents the old “Project List” and “Project Card” entries in parallel when they target the same destination. The current ActivityRail carries the user flow through the project center and in-project navigation; the old `projects` entry in the Sidebar is not a standalone feature entry for the current project center. The catalog uses `navigation: hidden` to remove entries from workbench search and navigation; this does not delete the real legacy layout, registered scenarios, or stable deep links. “Project creation and editing” are grouped under everyday use in the project center through `navigation.parentPage/section`, preserving the original page/scenario identity and real form target rather than copying the form or creating separate data. Searching for a subfeature also retains its parent page; expanding a group does not start a scenario, and the normal product buttons trigger creation and editing.
 
-主面板的动作、搜索与当前场景固定在导航滚动区之外；页面分组允许同时展开，场景行提供
-体验动作与当前标记。项目中心直接呈现使用情境，不再以项目列表和任务列表分割同一次
-体验；日常使用含常规数据、空项目与空任务及新建/编辑入口。少量数据条件直接展示按钮，
-不为常规数据再加一层功能文件夹；项目/任务分页等较多条件才保留折叠选择。
-层级策略由 hierarchy.ts 的 PDFE_MIN_GROUP_SCENARIOS 持有，按不同的规范场景身份计数，
-等价别名不增加条件数；检索只剩少量条件时同样直接展示，不删除场景或改写数据。
-区域及多条件组可同时展开，默认打开当前场景所在分组，支持 Enter/Space。
-分组、页面和功能区域各自保留展开集合；临时搜索不覆盖用户的展开选择。每个子级使用
-统一的 token 缩进与引导线，场景操作比所属区域再缩进一级。
-浏览区域只改变导航展开状态和说明上下文，不打开场景或修改产品数据。场景显示简短的
-“可体验”操作，项目中心从目录的 capabilityKeys 读取双语行为提示，不用工程状态词
-代替用户操作。重复的等价数据入口以 aliasOf 指向相同政策的场景，默认合并展示；当前
-运行的稳定别名替代对应的规范入口展示，避免同一数据条件并列重复；只匹配别名的
-检索仍可显示与重入，原场景 ID 和说明不被删除。
-详细步骤、尚未接入的状态及验证边界集中在问号弹窗；不在主导航重复展示“场景声明、
-待验证”，也不因此把静态目录当作已验收。
-浏览展开项与当前运行场景分别持有身份，前者不重置产品或草稿。
+Actions, search, and the current scenario in the main panel remain fixed outside the navigation scroll area. Page groups can be expanded simultaneously, and scenario rows provide an experience action and current-state marker. The project center presents user contexts directly rather than splitting one experience between project and task lists. Everyday use includes normal data, empty projects and tasks, and create/edit entries. A small number of data conditions are shown directly as buttons, without adding another folder for ordinary data; folding choices are retained only for larger sets such as project/task pagination.
+The hierarchy policy is owned by `PDFE_MIN_GROUP_SCENARIOS` in `hierarchy.ts`, counting distinct canonical scenario identities; equivalent aliases do not add conditions. When search leaves only a few conditions, those are also shown directly without deleting scenarios or rewriting data. Areas and multi-condition groups can be expanded simultaneously; the group containing the current scenario opens by default, with Enter/Space support.
+Groups, pages, and feature areas each retain their own expanded set; temporary search does not overwrite the user's expansion choices. Each child level uses consistent token indentation and guide lines, and scenario actions are indented one level further than their parent area.
+Browsing areas changes only navigation expansion and guidance context; it does not open a scenario or modify product data. Scenarios show a short “Try it” action, and the project center reads bilingual behavior hints from catalog `capabilityKeys` rather than using engineering status terms in place of user actions. Equivalent duplicate data entries use `aliasOf` to point to scenarios with the same policy and are merged by default. When running, a stable alias replaces its canonical entry to avoid showing duplicate conditions side by side. Search matching only an alias can still display and reenter it; the original scenario ID and description are not deleted.
+Detailed steps, states not yet integrated, and validation boundaries are collected in the question-mark dialog; the main navigation does not repeat “scenario declaration / pending validation,” and this does not make the static catalog count as accepted.
+Expanded navigation items and the currently running scenario have separate identities; browsing does not reset the product or drafts.
 
-目录不复制全部持久化导航键：无独立实现的writing占位、解析至models的model-settings
-兼容键和已由技能中心承担的隐藏技能设置不单列PDFE页面或宿主。生产导航兼容与条件
-组件由产品Owner保持；清理目录不授权删除这些产品路径，也不影响有效技能/模型场景。
+The catalog does not copy every persisted navigation key. It does not create separate PDFE pages or hosts for the `writing` placeholder with no independent implementation, the `model-settings` compatibility key that resolves to `models`, or hidden skill settings already handled by the skill center. Product Owners retain production navigation compatibility and conditional components. Cleaning up the catalog does not authorize deleting these product paths or affect valid skill/model scenarios.
 
-搜索页面名或稳定页面身份时显示该页去重后的场景；搜索场景名、场景身份或中英文能力
-词时只显示匹配场景和所属区域。状态词复用同一语言资源，不另维护检索词数据表；
-未知能力词保持原值。搜索期间自动展开匹配项，清除后恢复导航展开状态，不重载产品
-或调用原生场景切换。非分区页面沿用原页面行，原有入口继续保留。
-区域及场景内容使用显式可收缩单列网格；多行操作复用 Button 的 content 尺寸并明确
-换行，避免基础 nowrap 使长能力词和标题横向溢出。几何回归检查提示和按钮的实际
-边界及 scrollWidth，不以裁剪、缩短文案或放宽断言隐藏溢出。
+Searching for a page name or stable page identity shows that page's deduplicated scenarios; searching for a scenario name, scenario identity, or Chinese/English capability term shows only matching scenarios and their areas. Status terms reuse the same language resources, with no separate search-term table; unknown capability terms retain their original value. Matching items expand during search, and clearing the query restores the navigation expansion state without reloading the product or invoking native scenario switching. Unsectioned pages keep their original page rows and entries.
+Area and scenario content uses explicitly shrinkable single-column grids. Multi-line actions reuse Button's content size with explicit wrapping so the default nowrap behavior cannot cause long capability terms or titles to overflow horizontally. Geometry regression checks inspect the actual bounds and `scrollWidth` of hints and buttons; overflow is not hidden by clipping, shortening copy, or loosening assertions.
 
-**current（页面操作）**：项目中心另有页面操作区域，入口仍装配共享页面与对应数据，
-通过页面原控件继续体验，不直接派发 Store 动作或伪造内部事件。
+**current (page operations)**: The project center also has a page-operations area. Entries still assemble the shared page with corresponding data and continue the experience through the page's original controls; they do not dispatch Store actions directly or fabricate internal events.
 
-| 场景身份 | 体验路径与边界 |
+| Scenario identity | Experience path and boundaries |
 | --- | --- |
-| `home-create` | 空项目引导 → 原表单提交 → 模拟创建；重载保留，重置恢复 |
-| `home-open-project` | 项目卡 → 对应工作区 → 原“返回项目中心”；保留项目身份 |
-| `home-open-task` | 已有任务 → 对应项目的任务 → 原返回入口；不执行模型 |
-| `home-project-actions` | 原项目菜单编辑、置顶和归档；核对排序及末页收缩，不操作系统文件管理器 |
+| `home-create` | Empty-project guidance → submit the original form → simulated creation; persists across reload and resets on reset |
+| `home-open-project` | Project card → corresponding workspace → original “Back to project center”; preserves project identity |
+| `home-open-task` | Existing task → task in the corresponding project → original back entry; does not run a model |
+| `home-project-actions` | Edit, pin, and archive through the original project menu; verify ordering and last-page contraction without operating the system file manager |
 
-项目中心场景的显示标题由 `titleKey` 与 `home` 政策交给现有 i18next 插值，按钮、
-当前场景、说明标题和检索共用同一显示函数。数量来自实际政策，不另维护中英文数据
-清单；未迁移页面保留原显示名。详细预期和限制尚有历史中文正文，不声称全目录双语完成。
-共享页面/Mock HTTP 的无头消费测试按目录逐场景观察首屏数量及分页可用性，并将实际
-观察写入 ignored 的 `test-results/pdfe-center-headless/scenario-observations.json`；矩阵
-明确标记 nativeVerified=false。编辑、置顶、归档、返回与重新进入属于另行断言的交互
-流程，不能由矩阵中的数量一致推出；原生与正常产品验收继续单列。
+The display title for project-center scenarios is interpolated by the existing i18next using `titleKey` and the `home` policy; buttons, current scenario, guidance title, and search share the same display function. Counts come from the actual policy; no separate Chinese/English data list is maintained. Pages not yet migrated retain their original display names. Detailed expectations and limitations still contain historical Chinese text, so the entire catalog is not claimed to be bilingual.
+Headless consumer tests for the shared page/Mock HTTP observe first-page counts and pagination availability for each catalog scenario and write the observations to the ignored `test-results/pdfe-center-headless/scenario-observations.json`; the matrix explicitly marks `nativeVerified=false`. Editing, pinning, archiving, returning, and reentry are separately asserted interaction flows and cannot be inferred from matching counts in the matrix; native and normal-product acceptance remain separate.
 
-**current（项目中心数据）**：`preview/home.ts` 持有数量与内容政策、数据生成器和会话
-分页投影，分页容量直接引用共享产品常量。目录只声明政策，服务将生成的项目和任务
-装入原 ProjectSimulation 与 Session 账本，不另外维护展示列表。种子身份、项目归属
-和创建时间可复现；长内容政策保留身份，项目名称使用真实表单长度上限。重置生成
-新实例，重新加载只读取现有账本；会话 cursor 绑定实例代次和查询范围，500 是单批
-容量而非总量上限。未知请求仍由原诊断与拒绝路径处理，不转发真实服务。
+**current (project-center data)**: `preview/home.ts` owns count/content policies, the data generator, and session pagination projections; page capacity directly references a shared product constant. The catalog declares policies only; the service loads generated projects and tasks into the original ProjectSimulation and Session ledgers rather than maintaining a separate display list. Seed identity, project ownership, and creation time are reproducible; long-content policies preserve identity, and project names use the real form's length limit. Reset creates a new instance, while reload reads only the existing ledger. Session cursors are bound to the instance generation and query scope; 500 is a per-batch capacity, not a total limit. Unknown requests still follow the original diagnostic and rejection paths and are not forwarded to the real service.
 
-**current（任务读取与恢复）**：`home-task-loading`与`home-task-retry`位于“异常与恢复”，
-通过`home.read`声明延迟或首批失败，不从场景ID猜行为。只影响带
-`scope=all&include_last_agent_reply=true`的任务目录请求；项目数据及其他目录读取不变。
-延迟结束后显示真实任务；首批并发读取在同一延迟政策下均返回503，之后原产品
-“重试”重新读取成功。避免StrictMode首读失效后第二次读取静默覆盖错误，不关闭
-StrictMode或改产品读取流程。重置重新武装故障，重载不等于重置；实例销毁与请求
-取消清理等待，旧实例响应受代次围栏约束。
+**current (task reads and recovery)**: `home-task-loading` and `home-task-retry` appear under “Errors and Recovery” and declare delay or first-batch failure through `home.read`; behavior is not guessed from scenario IDs. They affect only task-catalog requests with `scope=all&include_last_agent_reply=true`; project data and other catalog reads are unchanged. Real tasks appear after the delay. Concurrent first-batch reads under the same delay policy all return 503, after which the original product “Retry” rereads successfully. This avoids a second read silently overwriting an error after the first StrictMode read fails; StrictMode and the product read flow are not disabled or changed. Reset rearms the failure; reload is not reset. Instance disposal and request cancellation clear pending waits, and old-instance responses are constrained by generation guards.
 
-**current（项目读取与显式恢复）**：`home-project-read-loading`与
-`home-project-read-failed`通过独立的`home.projectRead`控制项目目录读取。持续失败
-不被辅助GET、重试或重载消耗；工作台“解除项目读取故障”调用隔离恢复端点后，
-再由产品自己的“重新加载”读取目录。恢复幂等、不改项目/任务/偏好，重置后重新故障。
-恢复控件复用既有声明式registry与Button，仅该政策出现，不增加全局无效开关。
-共享App仅在`projectsLoaded`为真时允许返回项目中心，读取未确认时保留正常加载/错误页，
-不能由返回动作将读取失败伪装成空项目。错误消息同时涵盖项目和任务目录，不再误称
-只有任务失败。上述是初始目录读取与恢复的已接入场景，不证明真实后端503或所有后台刷新故障。
+**current (project reads and explicit recovery)**: `home-project-read-loading` and `home-project-read-failed` control project-catalog reads through a separate `home.projectRead`. Persistent failures are not consumed by auxiliary GETs, retries, or reloads. After the workbench's “Clear project-read failure” calls the isolated recovery endpoint, the product's own “Reload” reads the catalog. Recovery is idempotent and does not change projects/tasks/preferences; reset rearms the failure. The recovery control reuses the existing declarative registry and Button and appears only for this policy; it does not add a globally ineffective toggle. The shared App permits returning to the project center only when `projectsLoaded` is true. While reads are unconfirmed, the normal loading/error page remains; a back action cannot disguise a read failure as an empty project. The error message covers both project and task catalogs and no longer incorrectly attributes the failure only to tasks. These are integrated scenarios for initial catalog reads and recovery; they do not prove real backend 503 behavior or all background-refresh failures.
 
-**current（样本加载边界）**：`preview/files.ts` 仅在首次创建 VFS 时读取并校验受审样本，
-模块导入和没有项目的项目中心不读取文档字节。成功结果在进程内复用，各 VFS 持有独立
-文件映射，读写仍复制字节；加载失败不写缓存，恢复资源后可以重新加载。请求实际需要
-样本时保留 manifest 与 SHA-256 的严格校验，不捕获错误后返回空文件或伪造成功。
-当前非空 VFS 仍加载完整受审库存，这不是已经实现按格式或场景选择样本的声明。
+**current (sample-loading boundary)**: `preview/files.ts` reads and validates reviewed samples only when a VFS is first created; importing the module or opening the project center with no project does not read document bytes. Successful results are reused within the process, while each VFS holds an independent file map and reads/writes still copy bytes. Failures are not cached, so loading can be retried after resources are restored. When a request actually needs a sample, strict manifest and SHA-256 validation remains; errors are not caught to return an empty file or fabricated success. A non-empty VFS currently still loads the full reviewed inventory; this does not claim that sample selection by format or scenario has been implemented.
 
-**current（项目中心生命周期）**：`preview/home.test.ts` 通过真实分块 HTTP 上传验证
-请求接纳后发生 reset、实例 DELETE 或 service dispose 时，旧请求返回冲突，不把
-旧创建写入新场景；重置与删除会取消进行中的创建，另一实例仍能独立创建成功。
-`preview/center.test.ts` 经共享 UI 打开大量数据的末页项目、末页任务和跨批末条任务，
-等待上下文加载结束，验证输入可编辑、返回后项目和任务归属不变。草稿只在 headless
-输入框中输入和清除，不提交真实模型；这些证据不证明 Electron 停靠或原生重载。
+**current (project-center lifecycle)**: `preview/home.test.ts` uses real chunked HTTP uploads to verify that if reset, instance DELETE, or service dispose occurs after request acceptance, the old request returns a conflict rather than writing its creation into the new scenario; reset and deletion cancel in-progress creations, while another instance can still create successfully on its own.
+`preview/center.test.ts` uses the shared UI to open last-page projects and tasks from large datasets and a task at a batch boundary, waits for context loading to finish, and verifies that inputs are editable and project/task ownership remains unchanged after returning. Draft text is only entered and cleared in a headless input; no real model is submitted. This evidence does not prove Electron docking or native reload behavior.
 
-**current（共享页面）**：项目中心即共享 `HomeOverview`。就绪且没有任务时保留任务
-区域并使用原 EmptyState，项目为空时仍保留创建引导。该改动同时影响正常产品，
-不是 PDFE 专用页面分支。任务内容网格显式采用单列可收缩轨道，避免长任务标题和
-关联项目名称以内容最小宽度撑破卡片；截断与完整文本提示仍复用 EllipsisText。
-加载与错误保留独立语义，不以空列表代替。
-**gap**：完整操作回归、最终原生 Electron 与正常产品验收及
-正式构建依赖闭包证明仍需补齐。后台共享 UI/Mock HTTP 测试不代表这些要求已完成。
-新增目录政策依赖原生启动时冻结的清单和服务，不能仅凭 renderer HMR 声称既有试用
-实例已经加载新场景；不得为验收擅自重启用户窗口。
+**current (shared page)**: The project center is the shared `HomeOverview`. When ready with no tasks, it retains the task area and uses the original EmptyState; when the project is empty, it still retains creation guidance. This change also affects the normal product and is not a PDFE-only page branch. The task-content grid explicitly uses a shrinkable single-column track so long task titles and associated project names cannot stretch cards beyond their content minimum width; truncation and full-text hints continue to reuse EllipsisText. Loading and errors retain distinct semantics; an empty list is not used as a substitute.
+**gap**: Full-operation regression, final native Electron and normal-product acceptance, and proof of the formal build dependency closure remain outstanding. Background shared UI/Mock HTTP tests do not mean these requirements have been completed. New catalog policies depend on the manifest and service frozen at native startup; renderer HMR alone cannot establish that an existing trial instance has loaded new scenarios. Do not restart a user's window without authorization for acceptance.
 
-使用说明、进入步骤、预期、限制、恢复操作的边界和诊断隐私说明集中在独立模态
-Dialog；关闭说明后保留原产品状态与草稿。请求诊断放在折叠工具区，恢复故障保留
-就地按钮。三角色使用完全相同的功能，无角色切换和角色专属展示。
-知识职责与代码修改边界只在 [Agent 角色契约](../work/pdfe.md)维护；上下文辅助函数
-仍是需人工补版本和审阅范围的草案，不是主面板功能或写权限沙箱。
+Usage instructions, entry steps, expectations, limitations, recovery boundaries, and diagnostic-privacy notes are collected in a separate modal Dialog; closing the guidance preserves the original product state and drafts. Request diagnostics are in a collapsible tool area, and fault recovery remains available through an in-place button. All three roles use exactly the same features, with no role switch or role-specific presentation.
+Knowledge responsibilities and code-change boundaries are maintained only in the [Agent role contract](../work/pdfe.md). Context helper functions remain a draft requiring manual version and review-scope completion; they are neither a main-panel feature nor a write-permission sandbox.
 
-`pdfePageMatches` 按页面、场景、状态身份及显示名检索共享目录，搜索自动展开匹配
-导航，不切换产品。顶部一级导航为“功能场景 / UI 素材”；UI 素材面向产品原型、设计与
-前端开发，打开原 `dev=components` 共享素材页面，不再混作普通操作按钮或重复放入
-功能树。返回功能场景时，仅从当前实例 sessionStorage 恢复经过目录校验的页面/场景身份；
-无效身份回退到可用功能入口，不接受任意地址。切换模块走已有场景重载，并不承诺保留
-跨场景草稿；停靠/弹出的位置切换仍保持文档和草稿不变。
-问号说明、停靠/弹出、重置、仅重载及收起改为顶部 IconButton，保留中英可访问名称和 title 提示；
-说明仍在独立 Dialog 内，不在主面板铺开正文。目录匹配不代表状态已实现或已通过测试。
+`pdfePageMatches` searches the shared catalog by page, scenario, state identity, and display name. Search automatically expands matching navigation without switching the product. The top-level navigation is “Feature Scenarios / UI Assets.” UI Assets serves product prototyping, design, and frontend development, opening the original shared `dev=components` asset page; it is no longer mixed with ordinary action buttons or duplicated in the feature tree. Returning to Feature Scenarios restores only page/scenario identities validated against the catalog from the current instance's sessionStorage; invalid identities fall back to an available feature entry, and arbitrary addresses are not accepted. Switching modules follows the existing scenario reload path and does not promise to preserve drafts across scenarios; switching between docked/pop-out positions still preserves documents and drafts.
+The question-mark guidance, dock/pop-out, reset, reload-only, and collapse actions are now top-level IconButtons, retaining Chinese and English accessible names and title hints. Guidance remains in a separate Dialog rather than expanding its body across the main panel. A catalog match does not mean a state is implemented or tested.
 
-**current（官方会话素材）**：会话组件保留总览及 01–10，随后按官方目录六类追加入口。
-`packages/ui/preview/inventory.js` 以真实官方导出自动发现并合并同一渲染器的别名；
-图表类型保持独立。`examples/Official.tsx` 直接消费该库存与共享 `Preview`，不依赖
-独立预览服务，不复制数据契约、生成或交互适配。嵌入模式由素材页管理选择与主题，
-JSON 草稿与独立预览分开存储，不读写宿主 hash；业务动作仍仅模拟，不授予产品权限。
-素材页样式扫描显式包含共享预览源码。两处 JSON 编辑弹窗共用 design 持有的自适应
-宽高，编辑区填充剩余空间；小窗口保留外边距，过长的编辑辅助内容在弹窗内滚动。
-开发工作台只额外允许读取 `packages/ui` 源码目录，原有敏感文件 deny 规则不变；
-各 renderer 构建复用宿主 React/i18n 依赖，避免跨目录重复实例。
+**current (official conversation assets)**: The conversation component retains Overview and 01–10, then adds entries for the six official catalog categories. `packages/ui/preview/inventory.js` automatically discovers real official exports and merges aliases for the same renderer; chart types remain separate. `examples/Official.tsx` consumes this inventory and the shared `Preview` directly, without depending on the independent preview service or duplicating data contracts, generation, or interaction adapters. In embedded mode, the asset page manages selection and theme; JSON drafts are stored separately from the independent preview and do not read/write the host hash. Business actions remain simulated and do not grant product permissions. The asset page's style scan explicitly includes shared preview source. The two JSON editor dialogs share adaptive dimensions owned by design, and the editor fills the remaining space; small windows retain margins, and lengthy editing guidance scrolls inside the dialog.
+The development workbench is additionally allowed to read only the `packages/ui` source directory; the existing sensitive-file deny rules remain unchanged. Each renderer build reuses the host React/i18n dependencies to avoid duplicate instances across directories.
 
-**current（项目中心说明）**：项目中心场景通过 `expectedKeys`、`limitationKeys` 和
-页面 `entryInstructionKeys` 引用 PDFE 独立中英文资源；中文记录字段由同一资源派生，
-不再在目录与帮助弹窗分别维护说明。`pdfeGuidance` 在展示边界翻译，不改变场景政策、
-项目/任务账本或其他页面的既有说明。帮助先展示当前场景的操作、预期与限制，通用
-操作和 Mock 边界默认折叠；关闭后返回问号按钮。中英文 headless 消费不等同原生验收，
-其他业务页面的历史说明仍不在本阶段双语覆盖范围。
+**current (project-center guidance)**: Project-center scenarios reference PDFE-specific Chinese and English resources through `expectedKeys`, `limitationKeys`, and page `entryInstructionKeys`; Chinese record fields are derived from the same resources, so the catalog and help dialog no longer maintain separate guidance. `pdfeGuidance` translates at the presentation boundary without changing scenario policies, project/task ledgers, or existing guidance on other pages. Help first shows the current scenario's actions, expectations, and limitations; general actions and Mock boundaries are collapsed by default. Closing it returns to the question-mark button. Headless Chinese/English consumption is not equivalent to native acceptance, and historical guidance for other business pages is outside the bilingual scope of this phase.
 
-**current（公共控制）**：顶部 `preview/Controls.tsx` 复用 Select，主题与语言选项来自
-产品偏好常量，修改当前实例偏好后请求原生页面重载，不写正常产品的个人配置。
-新 Mock 实例从固定中文快照启动，不采集宿主语言；控制台显式选择中英文时清除
-跟随模式，复用正常界面的语言选择规则。
-所有页面展示相同的模拟登录选择。全局选择与场景显式身份政策分开保存；固定身份场景
-优先使用自身政策，控制台提示覆盖关系，全局选择留待普通场景生效。
-`preview/accounts.ts` 持有唯一模拟账户；身份和资料 DTO 来自同一账户投影，
-避免头像与账户菜单的登录状态不一致。`/__preview/account` 只接受 ready/anonymous，
-切换时撤销旧 capability 并处置旧账户，不更换实例、清空项目/任务或修改偏好；
-未知模式与额外凭据字段明确拒绝。此接口不提供真实认证、积分或充值，
-不放宽生产账户协议。仅重载保留实例数据，但可能丢失页面未保存输入；重置恢复场景
-初始数据，但跨场景保留主题、语言与全局登录选择；页面位置等偏好仍来自目标场景。
-两种操作的区别在独立说明弹窗内明确。
-模拟身份保存成功后，控制台先校验并显示服务返回的模式，再请求原生重载；重载失败
-仍展示已保存身份和失败反馈，不将旧选择值误报为当前账本身份。重试仅重载后清除错误，
-不重置项目、任务或偏好。后台回归通过故障替身验证该控制边界及显式重入，不能据此
-声称原生 reload 的失败恢复已经验收。
-原生开发入口在 main 的既有本地化实例中登记 PDFE 独立资源；控制窗口标题跟随其
-renderer 的本地化 document.title，不把 PDFE 专用文案加入正常产品资源库存。
-**gap**：后台控制台集成以测试替身记录固定 native reload 调用，再显式重新进入共享
-产品页面验证 HTTP 账本、身份和偏好；这不证明原生多窗口同步、原生菜单或真实认证。
+**current (shared controls)**: Top-level `preview/Controls.tsx` reuses Select; theme and language options come from product preference constants. Changing the current instance's preferences requests a native page reload and does not write normal-product personal settings. New Mock instances start from a fixed Chinese snapshot and do not collect the host language; explicitly choosing Chinese or English in the console clears follow mode and reuses the normal interface's language-selection rules.
+All pages show the same simulated-login selector. The global choice is stored separately from a scenario's explicit identity policy; scenarios with fixed identity take precedence, the console explains this precedence, and the global choice applies to ordinary scenarios.
+`preview/accounts.ts` owns the sole simulated account; identity and profile DTOs come from the same account projection to prevent inconsistent login state between the avatar and account menu. `/__preview/account` accepts only ready/anonymous. Switching revokes the old capability and disposes of the old account without replacing the instance, clearing projects/tasks, or changing preferences; unknown modes and extra credential fields are explicitly rejected. This endpoint does not provide real authentication, points, or top-ups, and does not relax the production account protocol. Reload-only preserves instance data but may lose unsaved page input; reset restores scenario-initial data while preserving theme, language, and the global login choice across scenarios. Page-position and other preferences still come from the target scenario. The distinction between the two operations is explained in a separate guidance dialog.
+After a simulated identity is saved successfully, the console first validates and displays the mode returned by the service, then requests a native reload. If reload fails, it still shows the saved identity and failure feedback rather than misreporting the old selection as the ledger's current identity. Retrying clears the error only after reload; it does not reset projects, tasks, or preferences. Backend regression uses a fault substitute to verify this control boundary and explicit reentry; it cannot establish acceptance of native reload failure recovery.
+The native development entry registers PDFE-specific resources in the main process's existing localized instance; the control-window title follows its renderer's localized `document.title`. PDFE-specific copy is not added to the normal product resource inventory.
+**gap**: The backend console integration records the fixed native-reload call with a test substitute, then explicitly reenters the shared product page to verify the HTTP ledger, identity, and preferences. This does not prove native multi-window synchronization, native menus, or real authentication.
 
-**current（构建分层观察）**：正常 main/preload/renderer 可使用 electron-vite 的
-resolveConfig production 预设分别编译并观察实际模块闭包和输出，保留原插件，不启用
-PDFE 配置或运行宿主；此分层观察不替代完整 app 构建。必须区分运行模块与构建 watch 输入：
-Tailwind 扫描的文件不是自动进入 JS 包的模块，但开发目录参与扫描仍形成构建耦合。
-**current**：共享 `scripts/shared/styles.cjs` 将正常 renderer 的 Tailwind 扫描限制在
-`src/renderer`；PDFE 开发入口显式选择包含开发目录的扫描范围，仍复用产品样式入口。
-实际 PostCSS 交替编译和 electron-vite production renderer 构建均未再登记 PDFE
-私有扫描输入；headless 宿主消费公开 PDFE 样式配置，不新增测试环境条件分支。
-本轮三层实际闭包和扫描输入均无 PDFE 私有模块，输出未命中已登记 Mock fixture 字节
-或私有服务标记；公开 `check preview-bundle` 另检查正常输出和静态相对导入闭包。
-**gap**：不能只凭这些构建观察宣称完整产品验收。按用户更新的目录契约按需政策，
-默认 app 编译已通过，目录测试未请求而非通过；最终发行制品、正常应用真实启动与
-行为、原生 PDFE 生命周期及 Windows 仍须分别验收，不调整系统执行策略。
+**current (layered build observation)**: The normal main/preload/renderer can each be compiled using electron-vite's `resolveConfig` production preset to observe actual module closures and outputs, retaining the original plugins without enabling PDFE configuration or running its host. This layered observation does not replace a full app build. Runtime modules must be distinguished from build watch inputs: files scanned by Tailwind do not automatically become JS bundle modules, but including the development directory in the scan still couples it to the build.
+**current**: Shared `scripts/shared/styles.cjs` limits normal-renderer Tailwind scanning to `src/renderer`; the PDFE development entry explicitly selects a scan scope that includes the development directory while reusing the product stylesheet entry. Actual alternating PostCSS compilation and the electron-vite production renderer build no longer register PDFE-private scan inputs; the headless host consumes the public PDFE stylesheet configuration without adding a test-environment conditional branch. The actual module closures and scan inputs in all three layers contain no PDFE-private modules, and the output does not match registered Mock fixture bytes or private-service markers. Public `check preview-bundle` separately checks normal output and the static relative-import closure.
+**gap**: These build observations alone cannot establish full product acceptance. Under the user's updated catalog contract and on-demand policy, default app compilation has passed, while catalog tests were not requested (not passed); final distribution artifacts, real startup and behavior of the normal app, native PDFE lifecycle, and Windows still require separate acceptance. Do not change system execution policy.
 
-**required（文献库存）**：目录、计数、分类、标签、详情、元数据与笔记消费同一实例的文献
-事实源；独立检索结果不充当已入库记录。附件展示与打开必须绑定受审文件身份、实际字节
-和 `literature_attachment` 记录归属，不以任意 URL 或另造 PDF 替代。旧空库存场景保留；
-非空、加载、错误和变更等待/失败按声明式政策接入原页面，不能仅增加永远成功的样本。
-当前新增切片的实现与验证状态见开发计划，不能将本段要求视为已具备能力。
+**required (literature inventory)**: The catalog, counts, categories, tags, details, metadata, and notes consume the same instance's literature source of truth; independent search results do not count as ingested records. Attachment display and opening must be bound to reviewed file identity, actual bytes, and ownership by a `literature_attachment` record—not an arbitrary URL or a fabricated PDF. Retain the old empty-inventory scenario. Integrate non-empty, loading, error, and mutation waiting/failure states into the original page through declarative policies; do not merely add samples that always succeed. See the development plan for implementation and validation status of the current added slice; the requirements in this paragraph do not imply that the capabilities already exist.
 
-**required（全页面收口）**：正常页面导航目标必须实际挂载其 Owner 表面，不能因 URL
-包含页面名便视为接入。仅注册为模块面板的隐藏资料入口，应沿已注册贡献和明确的预览
-容器展示，保留与生产导航布局的区别。消费关联需实际验证内容及操作；新增正常浏览
-切片不能删除尚未实现的关键空态、加载、失败要求以制造全绿覆盖。
+**required (complete page coverage)**: Normal page navigation targets must actually mount their Owner surface; a URL containing a page name does not count as integration. Hidden resource entries registered only as module panels must be shown through registered contributions and an explicit preview container, preserving their difference from production navigation layout. Consumer associations must verify actual content and operations. Adding a normal-browsing slice must not remove unimplemented critical empty, loading, or error requirements to manufacture all-green coverage.
 
 ## Ownership / Dependency
 
-**required（存储宿主）**：数据存储页继续消费共享 `StorageConfig` 与 workspace-root
-协议。Web 的目录选择必须显式展示受审虚拟候选和取消操作，不调用本机文件选择器或
-访问磁盘；保存仅更新当前实例的 configured，运行中的 effective root、项目和 VFS
-保持不变。模拟重启提示不等于实际重启、迁移或原生目录权限验收。
-读取政策分别属于 Home 与容器根，bootstrap 不受其延迟或失败影响；页面自身展示
-独立等待、失败及重试。预览宿主每次通过隔离 HTTP 读取 Home DTO，失败不得回落
-bootstrap。显式恢复仅解除实例读取政策，不写真实配置；原页重试才更新所显示状态。
-真实宿主仍走原 bridge/HTTP 合同，不新增生产 mock 分支。容器根未就绪时禁止变更，
-选择器与保存全过程互斥，cleanup/代次围栏拒绝旧读写回执；真实故障验收另记 gap。
-全量消费回归使用全新、任务独占的预览服务；重复复用开发服务可能触及有界实例上限。
-收到 `preview_instance_limit` 应核服务身份和实例累积，不提高上限、清除用户实例或
-放宽隔离政策来取得测试通过。
+**required (storage host)**: The data-storage page continues to consume shared `StorageConfig` and the workspace-root protocol. Web directory selection must explicitly show reviewed virtual candidates and a cancel action; it must not call the local file picker or access disk. Saving updates only `configured` for the current instance; the effective root, projects, and VFS in the running process remain unchanged. A simulated restart notice is not evidence of an actual restart, migration, or native directory-permission acceptance.
+Read policies belong separately to Home and the container root; bootstrap is unaffected by their delays or failures. The page itself shows separate waiting, error, and retry states. The preview host reads the Home DTO through isolated HTTP each time and must not fall back to bootstrap on failure. Explicit recovery only clears the instance's read policy and does not write real configuration; the original page's retry is what updates its displayed state.
+The real host continues to use the original bridge/HTTP contracts; do not add a production Mock branch. Changes are forbidden until the container root is ready. The selector and save operation are mutually exclusive throughout, and cleanup/generation guards reject stale read/write receipts; acceptance of real failures remains a separate gap.
+Full consumer regression uses a fresh, task-dedicated preview service; repeatedly reusing the development service may hit its bounded instance limit. On `preview_instance_limit`, inspect service identity and accumulated instances. Do not raise the limit, clear user instances, or relax isolation policy to make tests pass.
 
-**required（归档与生命周期）**：任务和项目归档复用各自账本、历史、确认与恢复流程，
-目标远端已将任务入口移至项目侧栏，设置只保留项目；预览场景和消费随原入口迁移，
-不通过恢复旧标签、伪造全局列表或修改项目作用域来兼容旧测试。
-任务删除的同步回执不能替代项目摘登记的202操作生命周期；摘登记不删除示例工程字节。
-归档项目读取须区分请求失败、读取中与成功空列表，提供原页面可操作的重试；不能以
-`null` 兜底为空掩盖错误。单项恢复与批量操作共用防重复边界，在变更及后续目录刷新
-结束前保持忙碌；旧读取完成不能覆盖新一代状态。模拟政策独立控制项目读取，不能为
-测试错误而连带破坏正常活动项目目录或任务归档读取。
-Web根同步仅验证实例账本中的虚拟根并记录模拟集合，不等于授予OS权限。消费测试负责
-释放自己创建的实例，不清除用户实例或提高服务容量来换取可重复的全量运行。
-后台目录失效只能合并归档读取，不能周期性丢弃在途响应导致永久加载；本地突变和
-卸载仍隔离旧结果。历史用户身份沿共享投影判据解释，危险确认由业务等待异步终态
-后关闭，不在模拟数据中规避生产交互问题。
-动态会话与项目目录在所属HTTP客户端显式选择不缓存；不依赖响应到达后才生效的
-`Cache-Control:no-store` 来避免浏览器同URL缓存锁。该策略仅用于目录消费，其他请求
-默认、凭据、超时与认证错误传播保持不变，不在页面加入预览分支。
+**required (archive and lifecycle)**: Task and project archiving reuse their respective ledgers, histories, confirmations, and recovery flows. The target remote has moved task entry points to the project sidebar and retains only projects in Settings; preview scenarios and consumption must move with the original entry points, not restore old tabs, fabricate a global list, or modify project scope to accommodate old tests.
+The synchronous receipt for task deletion cannot substitute for the 202 operation lifecycle of project deregistration; deregistration does not delete sample-project bytes. Archive-project reads must distinguish request failure, loading, and a successful empty list and provide a retry usable in the original page; do not hide errors by using `null` as an empty fallback. Single-item recovery and bulk operations share a duplicate-prevention boundary and remain busy until the mutation and subsequent catalog refresh finish; a stale read cannot overwrite newer-generation state. Simulated policy controls project reads independently and must not also break the normal active-project catalog or task-archive reads when testing an error.
+Web root synchronization only validates a virtual root in the instance ledger and records a simulated set; it does not grant OS permissions. Consumer tests release the instances they create and do not clear user instances or increase service capacity to make full runs repeatable.
+Background catalog invalidation may coalesce archive reads, but must not periodically discard in-flight responses and leave the UI loading forever. Local mutations and unmounts still isolate stale results. Historical user identity is interpreted using the shared projection criteria. Dangerous confirmations close only after the business operation reaches an asynchronous terminal state; simulated data must not be used to dodge a production interaction issue.
+Dynamic session and project catalogs explicitly opt out of caching in their owning HTTP clients; they do not rely on a `Cache-Control:no-store` header that takes effect only after a response arrives to avoid the browser's same-URL cache lock. This policy applies only to catalog consumption; defaults, credentials, timeouts, and authentication-error propagation for other requests remain unchanged, and no preview branch is added to the page.
 
-### 共享代码与环境装配
+<a id="共享代码与环境装配"></a>
+### Shared Code and Environment Assembly
 
 ```text
-Electron 入口 → 真实 preload + 真实 HTTP/SSE ─┐
-Web 联调入口 → browser bridge + 真实 Serve ──┼→ 同一 renderer 装配与状态投影
-Web 预览入口 → preview bridge + 场景服务 ────┘     → 同一 feature / 页面 / UI / design
+Electron entry → real preload + real HTTP/SSE ─┐
+Web integration entry → browser bridge + real Serve ──┼→ same renderer assembly and state projection
+Web preview entry → preview bridge + scenario service ────┘     → same feature / page / UI / design
 ```
 
-| 层 | 职责与允许依赖 | 禁止事项 |
+| Layer | Responsibilities and allowed dependencies | Prohibited |
 | --- | --- | --- |
-| 启动装配 | 在应用模块求值前准备 bridge、能力配置、场景身份与存储；复用 Provider 树 | React 挂载后才补 mock；业务文件判断预览模式 |
-| 真实 renderer | 原有动作、API 客户端、事件解析、Store 与 feature contributions | 复制第二套页面、模拟专用 reducer 或业务状态投影 |
-| 场景服务 | 开发专用同源 HTTP/SSE、已列场景的最小内存状态、样本文件字节 | 导入真实 Serve 启动逻辑、执行工具、读用户目录或代理未实现请求 |
-| 预览 bridge | 按既有 typed contract 提供隔离偏好和模拟宿主反馈 | 扩大 preload 权限、伪称获得真实系统权限 |
-| 预览控制台 | 面向三类使用者选择页面/场景、查看预期结果、切换主题/语言、延迟/失败、重置和诊断 | 角色专用页面副本；以直接修改产品 Store 代替用户交互或服务响应 |
-| 领域场景 | 各 feature Owner 维护样本、接口映射和分支预期；复用公共契约 | 建立与生产 DTO、事件协议平行的 UI 专用协议 |
+| Startup assembly | Prepare bridge, capability configuration, scenario identity, and storage before application-module evaluation; reuse the Provider tree | Adding mocks only after React mounts; business files checking preview mode |
+| Real renderer | Original actions, API clients, event parsing, Store, and feature contributions | Copying a second set of pages, adding mock-only reducers, or creating business-state projections |
+| Scenario service | Development-only same-origin HTTP/SSE, minimal in-memory state for listed scenarios, and sample file bytes | Importing real Serve startup logic, executing tools, reading user directories, or proxying unimplemented requests |
+| Preview bridge | Provide isolated preferences and simulated host feedback under existing typed contracts | Expanding preload permissions or claiming real system permissions |
+| Preview console | Let the three user types choose pages/scenarios, view expected results, change theme/language, simulate delay/failure, reset, and diagnose | Role-specific page copies; directly modifying product Store instead of using user interactions or service responses |
+| Domain scenarios | Each feature Owner maintains samples, interface mappings, and branch expectations; reuse public contracts | Creating UI-only protocols parallel to production DTOs and event protocols |
 
-开发模块建议集中归 Desktop 的 `preview/` Owner，renderer 控制台仅保留显示与操作入口；
-具体文件在实施时按职责命名，不预建空壳。场景声明与测试共用，不能维护测试专用副本。
-生产依赖图不得导入场景服务、样本或控制台；开发预览的 Node 能力只在 Vite 进程中存在。
+Development modules should be concentrated under Desktop's `preview/` Owner, with the renderer console retaining only presentation and operation entry points. Name concrete files by responsibility during implementation; do not precreate empty shells. Scenario declarations and tests share one source rather than maintaining test-only copies.
+The production dependency graph must not import the scenario service, samples, or console; Node capabilities for development preview exist only in the Vite process.
 
-### D1：先隔离启动，不先重写状态层
+<a id="d1先隔离启动不先重写状态层"></a>
+### D1: Isolate Startup First; Do Not Rewrite the State Layer First
 
-新增显式开发预览入口，保留 `dev:web` 的真实联调语义。预览桥必须早于 policy、Store
-和 registry 求值；不得仅依靠挂载后的 effect 替换 `window.scholarseed`。通过入口/构建装配
-保证顺序，并用实际启动断言验证，不以脚本标签位置单独证明顺序正确。
+Add an explicit development-preview entry while preserving the real integration semantics of `dev:web`. The preview bridge must be installed before policy, Store, and registry evaluation; do not rely only on a post-mount effect to replace `window.scholarseed`. Ensure ordering through entry/build assembly and verify it with an actual startup assertion; script-tag order alone does not prove correctness.
 
-复用原 feature 装配、公共导航和 Provider；确有需求时只提取共享挂载函数或可参数化的
-组合工厂，保留当前默认值与依赖方向，不引入覆盖所有业务的通用 DI 容器。
-大 Store/API 文件的全面拆分不是前置条件；只有可复现的边界阻塞才按 Owner 局部调整。
+Reuse the original feature assembly, shared navigation, and Provider. Only extract a shared mount function or parameterizable composition factory when needed, preserving current defaults and dependency direction; do not introduce a general-purpose DI container covering all business areas.
+Fully splitting large Store/API files is not a prerequisite; make local changes at the owning boundary only for reproducible blockers.
 
-生产产品策略保持不变。预览专用展示配置区分“可展示 renderer”与“真实能力可用”，
-不得仅将 `browserEnabled` 改成 true 来冒充原生浏览器。隐藏页通过 Owner 的公开展示入口
-或受限装配接入，不能由控制台深导入私有实现或绕过生产授权。无法共用的入口显式列 gap。
+Production product policy remains unchanged. Preview-only presentation configuration distinguishes “renderer can be displayed” from “real capability is available”; do not set `browserEnabled` to true alone to impersonate a native browser. Integrate hidden pages through their Owner's public presentation entry or restricted assembly; the console must not deep-import private implementations or bypass production authorization. Explicitly list entry points that cannot be shared as gaps.
 
-### D2：同源场景服务，而非页面内拦截
+<a id="d2同源场景服务而非页面内拦截"></a>
+### D2: Same-Origin Scenario Service, Not In-Page Interception
 
-首期选开发专用 Vite 场景服务，承接 HTTP、文件响应和真实 EventSource 所需 SSE；
-不改变生产 API 客户端、鉴权失败分支或恢复策略。Skills/MCP 的 bridge fetch 与账号直连
-也纳入场景映射，账号源必须指向隔离本地端点，不提供真实 token。
+For the first release, use a development-only Vite scenario service to handle HTTP, file responses, and SSE required by real EventSource; do not change production API clients, authentication-failure branches, or recovery policies. Include Skills/MCP bridge fetches and direct account requests in scenario mapping; account origins must point to an isolated local endpoint and provide no real token.
 
-| 方案 | 取舍与重评条件 |
+| Option | Tradeoffs and conditions for reconsideration |
 | --- | --- |
-| Vite 同源场景服务（本方案） | 兼容现有 HTTP/SSE 消费路径，无 Service Worker 清理；需要本机 Node 服务 |
-| MSW / Service Worker | 更适合静态分享，但需新增 worker 生命周期、未命中阻断及 SSE 兼容验证；静态托管成为明确要求时重评 |
-| 页面塞 Store / 替换单个 apiFetch | 仅适合孤立组件样本；会遗漏 EventSource、账号及 bridge 请求，不用于完整演示 |
+| Vite same-origin scenario service (this proposal) | Compatible with existing HTTP/SSE consumption paths and requires no Service Worker cleanup; requires a local Node service |
+| MSW / Service Worker | Better for static sharing, but requires new worker-lifecycle, miss-blocking, and SSE-compatibility validation; reconsider if static hosting becomes an explicit requirement |
+| Injecting Store into a page / replacing a single apiFetch | Suitable only for isolated component samples; misses EventSource, account, and bridge requests, so it is not for a complete demo |
 
-预览模式不挂真实 Serve 代理。未实现请求返回可识别的失败并记录场景、路径和方法；
-控制台显示缺口，禁止兜底成功或回真实网络。非接口资源同样受本地资源白名单约束：
-默认无外网连接，远程文档、图片、外链和模型地址不得随模拟操作自动访问。
-实施须验证浏览器网络策略与服务端出口，不能用“未知 API 返回错误”代替完整出口隔离。
-HMR 所需回环连接只允许本实例；不调整真实 Electron CSP。
-预览 HTML 入口替换仅作用于主 renderer `index.html`，Monaco 等独立 HTML 保留原入口；
-Office 等嵌套文档继续只允许已审来源，不能为展示 viewer 放开外部来源。开发服务器可预转换
-共享入口与已观测的重模块以减少冷转换瀑布，不执行模块或把热启动结果冒充冷启动验收。
+Preview mode does not attach a real Serve proxy. Unimplemented requests return identifiable failures and record scenario, path, and method; the console shows the gap, and there is no successful fallback or real-network fallback. Non-API resources are also constrained by a local-resource allowlist: there is no external-network access by default, and simulated actions must not automatically access remote documents, images, links, or model addresses.
+Implementation must verify browser network policy and server egress; “unknown API returns an error” is not a substitute for complete egress isolation. HMR loopback connections are limited to this instance; do not change the real Electron CSP.
+Preview HTML entry replacement applies only to the main renderer `index.html`; standalone HTML such as Monaco retains its original entry. Nested documents such as Office continue to allow only reviewed origins; do not allow external origins to display a viewer. The dev server may pretransform shared entries and observed heavy modules to reduce cold-transform waterfalls, but it must not execute modules or present warm-start results as cold-start acceptance.
 
-预览使用独立 origin 与独立存储命名空间，不能依赖不同端口隔离 Cookie（Cookie 不按端口隔离）。
-原生 PDFE 使用不共享用户 Cookie 的临时 Electron Session；不能只凭 URL 不同宣称隔离。
-不读取真实 Cookie、token、个人配置或用户 Home；预览无真实认证，浏览器 Cookie 行为由
-空身份的模拟契约满足，不向产品 Cookie 名写值。启动和重置须有污染回归测试。
+Preview uses a separate origin and storage namespace; do not rely on different ports to isolate Cookies (Cookies are not isolated by port). Native PDFE uses a temporary Electron Session that does not share user Cookies; different URLs alone do not establish isolation.
+Do not read real Cookies, tokens, personal settings, or the user's Home directory. Preview has no real authentication; browser Cookie behavior is satisfied by a simulated anonymous-identity contract, and no values are written under product Cookie names. Startup and reset require pollution regression tests.
 
-首期入口仅用于开发，不默认改变 `build:web` / `preview:web`，不承诺静态构建可运行。
-后续共享部署须独立设计显式预览制品、服务端、访问边界和数据生命周期；禁止混入 Electron
-或真实 Web 制品，制品检查须证明场景样本、控制端点和预览能力开关未进入生产输出。
+The first-release entry point is development-only; it does not change `build:web` / `preview:web` by default and does not promise that static builds can run. Future shared deployment needs a separate design for explicit preview artifacts, server, access boundaries, and data lifecycle. It must not be mixed into Electron or real Web artifacts; artifact checks must prove that scenario samples, control endpoints, and preview capability switches are absent from production output.
 
-### D3：数据与事件来自同一场景状态
+<a id="d3数据与事件来自同一场景状态"></a>
+### D3: Data and Events Come from One Scenario State
 
-场景声明至少包含稳定 ID、页面目标、需求/验收关联、领域种子、协议映射、支持动作/分支、时序控制、
-预期 UI 和消费测试。尚无正式需求编号时记录明确的来源与待补项，不编造编号。
-主题、语言、场景通过不含凭据与真实路径的 URL 标识恢复；
-mock 数据固定随机种子和时间来源，重置撤销事件定时器、连接、在途响应及旧状态引用。
-多标签实例分别持有场景身份，不能通过全局 reset 相互干扰；HMR 后状态保留或重置须明确。
-首期切换场景/重置采用重建 renderer 的完整初始化路径，同时释放工作区模型与订阅；
-只重置服务端内存不足以清理模块级 registry、偏好和 viewer 缓存。普通场景内交互不重建页面。
+Scenario declarations must include at least a stable ID, page target, requirement/acceptance association, domain seed, protocol mapping, supported actions/branches, timing controls, expected UI, and consumer tests. If no formal requirement ID exists yet, record the specific source and follow-up item; do not invent an ID.
+Restore theme, language, and scenario through URL identifiers that contain no credentials or real paths. Fix random seeds and time sources in mock data; reset cancels event timers, connections, in-flight responses, and references to old state.
+Multiple tab instances hold scenario identities separately and cannot interfere through a global reset. State retention or reset after HMR must be explicit. In the first release, scenario switching/reset uses the full renderer reinitialization path and releases workspace models and subscriptions; resetting server memory alone is insufficient to clear module-level registries, preferences, and viewer caches. Ordinary interaction within a scenario does not rebuild the page.
 
-所有用户动作仍经真实 UI → action → API/bridge → 响应/事件 → 原投影到达 UI。
-场景控制面只负责选择、准备和重置，不通过手工 dispatch 演示产品交互成功。
+All user actions still travel through the real UI → action → API/bridge → response/event → original projection back to the UI. The scenario control plane only selects, prepares, and resets; it does not demonstrate successful product interactions through manual dispatch.
 
-会话场景必须有小型、有界状态转换：创建/发送 → 流式内容 → 工具进度 → 待审批 →
-批准或拒绝 → 对应完成/失败；另含取消、重试与重新进入会话。工具在模拟端不执行。
-审批关联真实协议中的会话/回合/请求身份，等待时不得提前完成，重复提交不能重复推进。
+Conversation scenarios must have a small, bounded state transition: create/send → streamed content → tool progress → pending approval → approve or reject → corresponding completion/failure; also include cancellation, retry, and reentry. Tools are not executed by the simulator.
+Approvals are associated with session/turn/request identities in the real protocol; they must not complete early while waiting, and duplicate submissions must not advance the flow twice.
 
-HTTP 历史、当前回合、队列与 SSE 使用同一内存事实源，不能分别返回互相矛盾的固定 JSON。
-SSE 按现有协议处理序号、具名心跳、续流游标和终态；重连不能重执审批或生成新回合。
-错误、延迟及断流使用场景参数，不改生产超时/阈值；模拟恢复成功只证明 UI 消费路径。
-DTO 类型检查之外，补协议边界和状态一致性行为测试，不以 TypeScript 断言代替解析校验。
+HTTP history, current turns, queues, and SSE use the same in-memory source of truth; they must not return separate, contradictory fixed JSON. SSE follows the existing protocol for sequence numbers, named heartbeats, continuation cursors, and terminal states; reconnecting must not re-execute approvals or create a new turn.
+Errors, delays, and stream disconnections use scenario parameters; production timeouts/thresholds are unchanged. Successful simulated recovery proves only the UI consumption path. In addition to DTO type checks, add protocol-boundary and state-consistency behavior tests; TypeScript assertions do not replace parsing validation.
 
-**current（源码）**：Markdown/PDF 的内容 GET 政策由目录显式声明
-`simulation.contentRead.mode: delayed / failed / fail-once`，初始化绑定当前项目的 VFS
-file identity，而非特殊文件名；响应仍读取同一 VFS bytes/revision，不改变生产客户端、
-open projection、保存或版本状态。重置与断开清理等待，未知请求仍失败，不回真实网络。
-失败使用原 Dock 错误面和重试动作；fail-once 的消费测试必须先看到错误，人工点击前没有
-成功响应，不能用框架自动重试冒充用户恢复。
+**current (source)**: The catalog explicitly declares Markdown/PDF content GET policy through `simulation.contentRead.mode: delayed / failed / fail-once`. Initialization binds to the current project's VFS file identity rather than a special filename; responses still read bytes/revision from that same VFS without changing the production client, open projection, save, or version state. Reset and disconnect clear pending waits; unknown requests still fail and are not sent to the real network. Failures use the original Dock error surface and retry action. A fail-once consumer test must first observe the error and have no successful response before a human click; framework auto-retry must not impersonate user recovery.
 
-初次深链启动在 `navigationRestored` 前只有 App 恢复 Progress，文档打开后才挂载工作区。
-因此延迟场景的加载面是 App 的 `progress-screen`：消费测试要求目标内容 GET 已发起、
-响应尚未到达时恢复 Progress 可见，原 viewer 尚未出现；内容返回后恢复面退出并显示原 viewer。
-这不是 Dock 或格式内部 loading。真实资源动作也在打开 Promise 完成后才激活文档，
-关闭后从资料列表重开的尝试未证明 Dock loading；不放宽阈值或改生产装配伪造该状态。
+On initial deep-link startup, only the App recovery Progress is present before `navigationRestored`; the workspace mounts only after the document opens. Therefore the loading surface in a delayed scenario is the App's `progress-screen`: consumer tests require the recovery Progress to be visible after the target content GET starts but before its response arrives, while the original viewer is still absent; once content returns, the recovery surface exits and the original viewer appears. This is not Dock or format-internal loading. Real resource actions also activate the document only after the open Promise resolves. Attempts to prove Dock loading by closing and reopening from the resource list have not done so; do not loosen thresholds or alter production assembly to fabricate this state.
 
-PDF 正常显示后的区域清单也沿原 HTTP 合同消费。预览仅读同一 PDF 的真实页数，逐页明确
-`unavailable:true` 和空 regions，并标记 `detector_version:preview-unavailable`；不宣称
-区域检测成功，不制造公式/图片或裁剪结果。source revision、实例、文件身份和页范围保持围栏。
-字段与错误边界见[后端契约说明](../work/preview-contracts.md#文档内容读取与-pdf-区域清单)。
-**gap**：这不覆盖格式内部解析/加密异常，也不证明真实 Serve、磁盘故障或 Electron 通过。
+After a PDF is displayed normally, its region list also follows the original HTTP contract. Preview reads only the real page count of the same PDF and explicitly returns `unavailable:true` with empty regions for each page, marked `detector_version:preview-unavailable`. It does not claim successful region detection or fabricate formula/image/crop results. Source revision, instance, file identity, and page range remain fenced. See the [backend contract notes](../work/preview-contracts.md#文档内容读取与-pdf-区域清单) for fields and error boundaries.
+**gap**: This does not cover format-internal parse/encryption errors or prove that the real Serve, disk failures, or Electron have passed.
 
-真实 Markdown/PDF/Office 样本使用受审测试资产或最小合成字节，不打包个人材料。
-原生字体、剪贴板、磁盘保存和系统对话框按实际能力标记模拟/不支持；不得用示意图代替
-真实 viewer 成功态后宣称等价。Viewer 无法在 Web 运行时登记具体限制与 Electron 验收。
+Real Markdown/PDF/Office samples use reviewed test assets or minimal synthetic bytes; personal materials are not packaged. Native fonts, clipboard, disk saves, and system dialogs are labeled simulated/unsupported according to actual capability. Do not claim equivalence by substituting a diagram for a successful real viewer state. When a viewer cannot run on the Web, record its specific limitations and Electron acceptance separately.
 
-### D4：完整覆盖是清单契约，不是主观承诺
+<a id="d4完整覆盖是清单契约不是主观承诺"></a>
+### D4: Complete Coverage Is a Catalog Contract, Not a Subjective Promise
 
-页面清单核对 feature registry、导航/设置目录、viewer 贡献、独立登录及开发入口和重要弹层；
-不能只从单一 registry 推导完整性。每项记录 Owner、生产入口、共享组件、场景、支持动作、
-消费 spec 和覆盖类别：`交互预览`、`外壳/替代区域`、`未接入`。初次盘点建立具体总数，
-后续新增页面必须同步场景或显式失败，不能以固定历史数量判覆盖率。
+The page inventory checks the feature registry, navigation/settings catalogs, viewer contributions, standalone login and development entries, and important overlays; completeness cannot be inferred from a single registry. Record each item's Owner, production entry point, shared components, scenarios, supported actions, consumer spec, and coverage category: `交互预览` (interactive preview), `外壳/替代区域` (shell/substitute area), or `未接入` (not integrated). Establish a concrete count in the initial inventory; later pages must add scenarios or fail explicitly. Do not measure coverage against a fixed historical count.
 
-阶段性交付可以披露未接入项，但最终“全部页面可展示”要求所有 renderer 表面可访问，
-非原生 renderer 的未接入数为零。只有已说明真实原生依赖的区域可以归为外壳/替代区域，
-不能因接入困难把普通页面降级为该类别；任何剩余未接入项都阻止全页面完成声明。
+Interim deliveries may disclose items not yet integrated, but the final claim “all pages are displayable” requires every renderer surface to be accessible and zero unintegrated non-native renderer pages. Only areas with documented real native dependencies may be categorized as shell/substitute areas; ordinary pages cannot be downgraded to this category because integration is difficult. Any remaining unintegrated item blocks a claim of full-page completion.
 
-范围包括项目、资料、文献、会话、工作区各 viewer、设置子页、登录/引导及开发工具表面；
-以实施盘点后的实际清单为准，不由本文发明已存在页面。原生能力限制保留在分母及报告中。
-每个适用页面至少有正常、空、加载和错误态；不适用状态写理由。会话另覆盖工具/审批分支，
-表单另覆盖校验、提交中和失败反馈。不得把只进入过页面记为所有状态通过。
+Scope includes project, resource, literature, and conversation pages; each workspace viewer; settings subpages; login/onboarding; and developer-tool surfaces. Use the actual inventory made during implementation; this document does not invent pages. Native capability limitations remain in the denominator and report. Each applicable page has at least normal, empty, loading, and error states; record a reason for inapplicable states. Conversations additionally cover tool/approval branches, and forms cover validation, submitting, and failure feedback. Merely entering a page does not count as passing all states.
 
-明暗主题、中英文、默认/最小支持窗口、长内容、焦点与键盘按当前设计规范验证；尺寸引用
-[窗口布局边界](../design/vibe-coding.md#desktop-窗口布局边界)，不维护第二套值。
-Web 场景截图与真实 Electron 最终截图分别留存；共用源码不保证两种宿主渲染完全等价。
+Verify light/dark themes, Chinese/English, default/minimum supported window sizes, long content, focus, and keyboard behavior against the current design standards. Refer to [window layout boundaries](../design/vibe-coding.md#desktop-窗口布局边界) for dimensions; do not maintain a second set of values. Retain Web scenario screenshots and final real Electron screenshots separately; shared source does not guarantee identical rendering in both hosts.
 
-### D5：页面、场景与后端契约同步交付
+<a id="d5页面场景与后端契约同步交付"></a>
+### D5: Deliver Pages, Scenarios, and Backend Contracts Together
 
-每次页面或交互调整须在同一交付中更新对应 mock 数据、场景与消费测试，覆盖新增字段及适用
-正常、空、加载、失败和提交中状态。接口、字段、事件、状态转换和示例须注明真实后端已支持
-或待适配；必要转换集中在所属 API 边界，不能分散到页面或维护真实数据专用页面。
+For every page or interaction change, update the corresponding mock data, scenarios, and consumer tests in the same delivery. Cover new fields and applicable normal, empty, loading, failure, and submitting states. Mark whether the real backend supports each interface, field, event, state transition, and example or whether it still needs adaptation. Keep necessary conversions at the owning API boundary; do not scatter them across pages or maintain a page dedicated to real data.
 
-每个里程碑保证真实 Electron 可启动、受影响页面可访问、既有真实功能不回退；新契约未适配时
-明确显示不可用或失败，禁止回落 mock、吞异常或伪造成功。后端适配后，用相同场景核对两种
-环境的布局、样式、文案、交互和状态；除了明确的宿主差异，无需重写 UI 即可复用。
-适配前只可报告 UI/mock 阶段完成，适配后的真实链路仍是整体完成条件。
+At every milestone, ensure real Electron can start, affected pages are accessible, and existing real features do not regress. When a new contract is not adapted, show it explicitly as unavailable or failed; do not fall back to a mock, swallow errors, or fabricate success. After backend adaptation, use the same scenarios to compare layout, styling, copy, interactions, and states in both environments; UI should be reusable without rewriting except for explicit host differences.
+Before adaptation, report only completion of the UI/Mock phase; the adapted real path remains a condition for overall completion.
 
-### 隐藏设置的共享展示入口
+<a id="隐藏设置的共享展示入口"></a>
+### Shared Presentation Entry for Hidden Settings
 
-**current（源码）**：真实 renderer 的 Provider 组合与挂载由
-[`app/root.tsx`](../../src/renderer/src/app/root.tsx)单一持有；生产 `main.tsx` 仍挂载真实 App。
-设置内容通过 `AccountPanel` 的 `SettingsContent` 公共入口复用，生产面板先执行原可见性策略，
-不因预览打开账号、偏好、技能、权限或快捷键的产品导航。
-预览目录的显式 `host` 元数据选择同一内容；没有导航目标或可用宿主的条目明确失败，
-不能自动降级成首页。隐藏入口可显示不代表真实账号、系统权限或全部状态已经验收。
-浏览器设置只在该页内沿公共 `onPage` / `browserSettingsSection` 切换总览、历史和清理入口；
-其他页面跳转、关闭与登录仍明确不可用，不扩大产品导航或真实浏览器权限。
+**current (source)**: The real renderer's Provider composition and mounting are owned solely by [`app/root.tsx`](../../src/renderer/src/app/root.tsx); production `main.tsx` still mounts the real App. Settings content reuses the public `SettingsContent` entry in `AccountPanel`; the production panel first applies its original visibility policy and does not open product navigation for accounts, preferences, skills, permissions, or shortcuts just because preview is active.
+Explicit `host` metadata in the preview catalog selects the same content; an entry without a navigation target or available host fails explicitly and cannot silently fall back to the home page. A hidden entry being visible does not mean real account, system-permission, or all-state acceptance has passed. Browser settings switch among overview, history, and cleanup entries only within that page through the public `onPage` / `browserSettingsSection`; navigation to other pages, closing, and login remain explicitly unavailable, without expanding product navigation or real browser permissions.
 
-**current（源码与消费回归）**：权限标题及状态使用 account namespace 的中英文资源，
-缺失翻译不再被误显示成初始化失败；账号内容仅在 profile 已确认时显示已登录及身份操作。
-加载、失败与匿名分别沿真实客户端状态机显示，不为预览伪造账号配置。
-独立 HTTP 消费样本不能替代工作台的真实选择与操作，也不能冒充真实账号验收。
+**current (source and consumer regression)**: Permission titles and states use Chinese and English resources in the account namespace, so missing translations are no longer misrepresented as initialization failures. Account content shows logged-in state and identity actions only after the profile is confirmed. Loading, failure, and anonymous states each follow the real client state machine; preview does not fabricate account configuration.
+Standalone HTTP consumer samples cannot replace actual selection and operation in the workbench or stand in for real account acceptance.
 
-**current（权限可选择场景）**：权限页现可通过控制台选择不可用快照、有界延迟与持续查询失败。
-这些策略只位于预览 bridge，真实内容与刷新按钮仍消费原 typed `systemPermissions`；
-刷新失败会再次调用并留诊断，不按次数伪造成功。三个控制台消费用例已通过；默认原生能力
-仍为不可用/查询失败，没有模拟成已授权。
+**current (selectable permission scenarios)**: The permissions page can now select an unavailable snapshot, bounded delay, or persistent query failure from the console. These policies exist only in the preview bridge; the real content and refresh button continue to consume the original typed `systemPermissions`. Refresh failure invokes the request again and leaves diagnostics; success is not fabricated based on retry count. Three console consumer cases passed; native capabilities remain unavailable/query-failed by default and are not simulated as authorized.
 
-**current（账号可选择场景）**：账号页提供未配置地址、模拟资料、有界等待、持续失败与匿名五种场景。
-服务与 bridge 通过已校验的隔离控制面传递每实例随机、仅内存存在的 opaque capability，
-不是 JWT 或真实 token；使用公开 `setAccountBase` 指向当前同源 loopback，再由原账号客户端
-读取 `GET /api/account/me`。匿名不给能力，未配置场景保持空地址，错误和刷新沿原状态机。
-不接受传入的真实凭据，不开放资料修改、登录或远程授权；未知 mutation 明确失败。
-普通场景不会得到模拟账号，真实 Electron 的凭据与客户端不改变。浏览器 cookie 的默认
-发送语义不被改写；模拟服务不使用 cookie 鉴权，也不读取或代理真实账号凭据。
+**current (selectable account scenarios)**: The account page offers five scenarios: unconfigured address, simulated profile, bounded wait, persistent failure, and anonymous. The service and bridge pass a per-instance random, memory-only opaque capability over a validated isolated control plane; it is not a JWT or real token. The public `setAccountBase` points to the current same-origin loopback, then the original account client reads `GET /api/account/me`. Anonymous mode receives no capability; the unconfigured scenario keeps an empty address, and errors and refresh follow the original state machine.
+Real credentials are not accepted, and profile editing, login, and remote authorization are not exposed; unknown mutations fail explicitly. Ordinary scenarios do not receive a simulated account, and real Electron credentials and clients are unchanged. Default browser Cookie sending semantics are not rewritten; the simulated service does not authenticate with Cookies or read/proxy real account credentials.
 
-### 当前入口与兼容代码边界
+<a id="当前入口与兼容代码边界"></a>
+### Current Entry Points and Compatibility-Code Boundaries
 
-**current**：资料浏览沿项目的“项目文件→目录”打开同项目文件，`page-resource`直接
-使用共享App与项目target，不外挂面板或增加替代按钮。
+**current**: Resource browsing opens a file in the same project through “Project Files → Directory.” `page-resource` directly uses the shared App and project target; it does not add an external panel or substitute button.
 
-**current**：审查场景复用已有Mock批次，在同实例历史中投影相同项目、会话、轮次及
-文件身份的`review_ready`；原会话ReviewCard按钮打开共享ReviewBatch，不挂载隐藏树。
-该模拟历史不是实际Agent运行、磁盘变更或完整审查验收，交互覆盖按实际消费证据判断。
+**current**: Review scenarios reuse existing Mock batches and project `review_ready` in the same instance's history with matching project, session, turn, and file identities. The original conversation's ReviewCard button opens the shared ReviewBatch; no hidden tree is mounted. This simulated history is not a real Agent run, disk change, or full review acceptance; interaction coverage is determined from actual consumer evidence.
 
-**current**：PDFE不外挂历史`resource-tree`模块，不提供“打开隐藏模块面板”按钮。
-原网页发现表单无当前项目公开入口或结果持久恢复入口，其专用场景、Mock候选、请求
-处理与人工Sheet宿主不再维护；未声明请求继续明确拒绝，不回退到真实检索或外部网页。
-生产模块/搜索逻辑、兼容状态与领域验证仍归原Owner；移除PDFE专用链路不等于删除
-整个搜索产品，也不能据此宣称真实搜索已验收。仍有效的条件设置、浏览器及原生能力
-另行核用途，不因默认隐藏一并清除。目录只登记有效入口，不镜像全部注册/兼容库存。
+**current**: PDFE does not attach the legacy `resource-tree` module or provide an “open hidden module panel” button. The old web-discovery form has no public entry for the current project or persistent result-restoration entry, so its dedicated scenarios, Mock candidates, request handling, and manual Sheet host are no longer maintained. Undeclared requests continue to fail explicitly; they do not fall back to real search or external websites.
+Production modules/search logic, compatibility state, and domain validation remain with their original Owner. Removing the PDFE-specific path does not remove the entire search product and cannot be used to claim real search acceptance. Reassess still-valid conditional settings, browser, and native capabilities separately; do not clear them merely because they are hidden by default. The catalog registers only valid entry points and does not mirror every registered/compatibility item.
 
-### 辅助表面与共享焦点
+<a id="辅助表面与共享焦点"></a>
+### Auxiliary Surfaces and Shared Focus
 
-**current**：登录从真实账号菜单触发未配置入口提示，不伪造账号授权；关闭演示复用
-`WindowCloseContent` typed 内容，真实 `WindowCloseDialog` 保持 Windows gate 与 bridge
-状态机。预览关闭动作只记录本地回执，不关闭系统窗口。延迟回执与首次失败策略由目录声明，
-只在预览宿主持有 pending/failed、请求身份与记忆选择；提交中拒绝重复响应与 Esc 取消，
-失败保留请求供原按钮重试。该模拟不证明原生退出、托盘或偏好持久化已验收。
-错误演示用预览故障子组件触发真实 ErrorBoundary，外层受控重新挂载提供恢复入口，
-不复制错误页面或修改产品 Store。以上表面的存在不证明真实登录或原生窗口生命周期。
+**current**: Login is triggered from the real account menu and shows the unconfigured-entry hint; no account authorization is fabricated. The close demo reuses the typed content of `WindowCloseContent`, while the real `WindowCloseDialog` retains its Windows gate and bridge state machine. Preview close actions record only a local receipt and do not close the system window. The catalog declares delayed-receipt and first-failure policies; only the preview host owns pending/failed state, request identity, and remembered choice. Duplicate responses and Esc cancellation are rejected while submitting, and failures preserve the request for retry through the original button. This simulation does not prove acceptance of native exit, tray, or preference persistence.
+The error demo uses a preview fault child component to trigger the real ErrorBoundary, with a controlled remount outside it as the recovery entry; it does not copy the error page or modify the product Store. The presence of these surfaces does not prove real login or native window lifecycle behavior.
 
-反馈失败回归发现共享 modal 的动态禁用控件丢失焦点；修复位于 UI focus scope，
-通过顶层可见 modal 的 DOM 变更观察恢复有效焦点，不为预览特判、不在测试补 focus。
-真实反馈错误与限流的重试、输入保留及 Esc 关闭均已消费验证；真实外部反馈上报未授权，
-不能将模拟成功回执当作产品上报验收。
+Feedback-failure regression found that dynamically disabling a control in the shared modal lost focus. The fix is in the UI focus scope, which observes DOM changes in the topmost visible modal and restores valid focus; it adds no preview-specific exception and does not patch focus in tests.
+Retry after real feedback errors and rate limits, input preservation, and Esc closing have all been consumer-verified. Real external feedback submission is not authorized, so a simulated success receipt cannot count as product-submission acceptance.
 
-### 示例工程与文件存储
+<a id="示例工程与文件存储"></a>
+### Example Project and File Storage
 
-项目中心当前采用[共享基础项目](../../../../examples/README.md)，通过公共清单读取
-同一原始输入；空创建使用 empty VFS，不再先加载完整样本再删除。以下受审注册表
-继续服务格式及历史等专项场景，不能把共享基础项目与全格式库存混为同一默认种子。
+The project center currently uses the [shared base project](../../../../examples/README.md) and reads the same original inputs through the public manifest; empty creation uses an empty VFS rather than loading the full sample and deleting it. The reviewed registry below continues to serve specialized scenarios for formats, history, and other areas; do not conflate the shared base project with the full-format inventory as one default seed.
 
-当前采用[受审样本注册表](../../preview/documents.ts)只读装载真实文件字节，
-由[样本装载器](../../preview/samples.ts)校验 SHA256、minimal-project 描述及 Office corpus manifest。
-注册表包含 Markdown、Python、PDF、PNG、DOCX、XLS、CSV、TSV 和不支持格式样本；
-其中 XLS 使用 Office viewer，CSV 使用原生 spreadsheet，TSV 使用 table，不按扩展名伪造其他格式。
-为每个预览实例及项目创建独立 copy-on-write 内存文件树。资料树、Workbench、保存/重开、
-重命名与内容事件消费同一份文件事实源；不将文件列表与静态下载维护成两份可变数据。
-路径使用受控虚拟项目路径，不映射用户目录；重置恢复受审样本，不落盘持久化用户编辑。
+The current [reviewed sample registry](../../preview/documents.ts) loads real file bytes read-only; the [sample loader](../../preview/samples.ts) validates SHA256, the minimal-project description, and the Office corpus manifest.
+The registry includes Markdown, Python, PDF, PNG, DOCX, XLS, CSV, TSV, and unsupported-format samples. XLS uses the Office viewer, CSV uses the native spreadsheet, and TSV uses a table; formats are not fabricated based on file extension. Each preview instance and project gets an independent copy-on-write in-memory file tree. The resource tree, Workbench, save/reopen, rename, and content events consume the same file source of truth; a file list and static downloads are not maintained as two mutable datasets. Paths use controlled virtual project paths and do not map to user directories. Reset restores reviewed samples, and user edits are not persisted to disk.
 
-浏览器通过既有 HTTP 契约访问该文件树，不是浏览器 OPFS。OPFS 仅在明确需要浏览器侧
-离线使用或跨预览服务重启持久化时重评；当前内存树可在同一服务实例内跨浏览器刷新保留修改。
-引入 OPFS 须解决 HTTP/SSE 桥接与单一写入权威，不能与场景服务各维护一份
-可写副本。WASM 仅服务确需其文件接口的引擎，不是示例工程展示的前置条件。
-真实 Electron 使用真实服务文件边界；相同样本可在隔离验收项目物化，不替换其存储 Owner。
+The browser accesses this file tree through the existing HTTP contract; it is not browser OPFS. Reconsider OPFS only if browser-side offline use or persistence across preview-service restarts becomes an explicit need. The current in-memory tree retains changes across browser refreshes within the same service instance.
+Introducing OPFS requires resolving HTTP/SSE bridging and a single write authority; the scenario service and OPFS must not each maintain a writable copy. WASM serves only engines that require its file interface and is not a prerequisite for presenting the example project.
+Real Electron uses the real service file boundary. The same samples may be materialized in an isolated acceptance project without replacing its storage Owner.
 
-**gap**：样本注册不代表全部 viewer 成功或全部状态覆盖。DOCX 资源解析已按同一 VFS 契约补齐；
-XLS 曾分别遇到字体与字符串执行策略阻断，现有修复与验证范围如下，不能合并推断为同一故障。
-Web Office 字体在预览宿主供给，不假授用户系统字体权限。
-**current（字体供给边界）**：预览桥已校验既有 Noto 字体与 OFL 的 SHA 后提供固定 catalog、
-opaque ID 字节读取及有界内存缓存，不枚举系统字体，不改变生产桥、权限或 CSP。
-此为预览排版近似；引擎默认字体与 catalog 仍有重复安装开销，XLS 已有真实 Web 可见内容证据。
-**required（共享 viewport）**：项目工作区与主工作台都声明既有 `vds-workbench-pane` 裁剪边界；
-Office portal 的可见范围由真实 anchor 与所属 viewport 相交决定，不因预览将全窗口当成可见。
-**current**：已补项目工作区缺失标识，真实 Electron XLS 实际显示表格；不能以 ready 标志
-代替该可见性验收。Web 引擎字符串执行由独立子文档策略承担，不改主窗口生产策略或冻结制品。
+**gap**: Registering samples does not mean every viewer or state has passed. DOCX resource parsing has been completed under the same VFS contract. XLS previously encountered separate font and string-execution policy blocks; the fixes and validation scope below must not be conflated as one issue. Web Office fonts are supplied by the preview host; no user system-font permission is presumed.
+**current (font-supply boundary)**: After validating the SHA of the existing Noto fonts and OFL, the preview bridge provides a fixed catalog, opaque-ID byte reads, and a bounded in-memory cache. It does not enumerate system fonts or change the production bridge, permissions, or CSP.
+This approximates preview typography; the engine's default fonts and catalog still incur duplicate installation overhead. Real Web evidence of visible XLS content exists.
+**required (shared viewport)**: Both the project workspace and main workbench declare the existing `vds-workbench-pane` clipping boundary. Office portal visibility is determined by the intersection of the real anchor and its owning viewport; preview must not treat the whole window as visible.
+**current**: The missing project-workspace marker has been added, and real Electron displays the XLS table. A ready flag cannot substitute for this visibility acceptance. Web engine string execution is handled by a separate subdocument policy; the main window's production policy and frozen artifacts are not changed.
 
-**current（引擎宿主与 Web 消费）**：冻结 Office 引擎包含动态 `Function`，仅允许
-`wasm-unsafe-eval` 不能满足其 JavaScript 执行要求。优先在 Office Owner 增加 typed frame
-transport，以固定 bootstrap 与经过校验的启动配置生成独立 HTTP iframe，仅该文档采用
-引擎专用策略；复用现有 frame factory、token 和消息协议，不建立任意 HTML/script 回显接口。
-主预览 CSP 保持不变，不能靠 srcdoc、blob 或附加 meta 放宽继承策略。同源 iframe 仅划分
-策略适用文档，不是权限沙箱；真正跨来源隔离需另核 COEP/CORS、资源和消息边界。
-typed transport、固定 HTTP 子文档和子文档策略已实现；2026-10-20 最终提交 `7cb529326`
-的真实 Web 消费用例已验证 XLS 可见画布及就绪。主页面 `Function` 产生真实 CSP 违例，
-子文档允许执行；截图已检查。此结论不证明 Electron 字体排版等价或真实模型/工具功能，
-不得手改冻结 vendor 或将 iframe 资源下载成功计为引擎可用。
-批注、非空文献库和任务产物尚未组成完整业务示例工程。版本/待审与检索结果已有独立切片，
-不把模拟搜索候选当作已入库文献。后续应在同一项目事实源中
-关联文件、文献、会话、任务产物及版本，不以静态列表或另一套可写文件副本补齐界面。
-资料库、资料列表、文献、任务产物与 Explorer 的预览先打开真实项目入口，再依控制台
-“进入步骤”点击真实导航；这不是生产 tab 恢复能力，也不证明非空业务数据已覆盖。
+**current (engine host and Web consumption)**: The frozen Office engine includes dynamic `Function`; allowing only `wasm-unsafe-eval` does not satisfy its JavaScript execution requirements. Prefer adding typed frame transport in the Office Owner, generating a separate HTTP iframe from a fixed bootstrap and validated startup configuration, and applying the engine-specific policy only to that document. Reuse the existing frame factory, token, and message protocol; do not create an arbitrary HTML/script echo interface.
+Keep the main preview CSP unchanged; do not relax inherited policy through srcdoc, blob, or an additional meta tag. A same-origin iframe separates which document a policy applies to; it is not a permission sandbox. Genuine cross-origin isolation requires separate review of COEP/CORS, resources, and message boundaries.
+Typed transport, the fixed HTTP subdocument, and its policy have been implemented. The real Web consumer case at final commit `7cb529326` on 2026-10-20 verified that the XLS canvas was visible and ready. `Function` caused a real CSP violation in the main page and was allowed in the subdocument; screenshots were inspected. This conclusion does not prove equivalent Electron font rendering or real model/tool functionality. Do not edit frozen vendor code by hand or count a successful iframe resource download as engine availability.
+Annotations, a non-empty literature library, and task artifacts do not yet form a complete business example project. Versions/reviews and search results have separate slices; simulated search candidates are not treated as ingested literature. Future work should link files, literature, conversations, task artifacts, and versions in the same project source of truth rather than filling in the UI with static lists or a second writable file copy.
+Preview of the resource library, resource list, literature, task artifacts, and Explorer first opens the real project entry, then follows the console's “Entry steps” by clicking through real navigation. This is not production tab restoration and does not prove coverage of non-empty business data.
 
-## 正反例
+<a id="正反例"></a>
+## Examples and anti-patterns
 
-正例：产品经理在真实 Composer 操作审批分支核对需求，设计师在同一场景核对卡片视觉，
-前端通过同一请求/事件路径调试；Electron 继续使用相同 Composer、卡片和样式，接收真实服务的数据。
+Positive example: A product manager exercises an approval branch in the real Composer to review requirements, a designer reviews the card visuals in the same scenario, and a frontend developer debugs through the same request/event path. Electron continues to use the same Composer, card, and styles while receiving data from the real service.
 
-反例：复制对话页面，按钮只切换静态图片；为方便展示打开真实 browser 权限；遗漏请求
-代理生产账号；修改 Store 初始值后声称取消、审批、磁盘保存或模型执行已验收。
+Negative example: Copying the conversation page so buttons only switch static images; enabling real browser permissions for convenience; leaving requests proxied to production accounts; or changing initial Store values and then claiming cancellation, approval, disk save, or model execution has been accepted.
 
 ## Enforced by
 
-设置中的独立 MCP 页面及其预览场景已移除，管理入口统一为扩展中的连接器。
-底层 MCP 配置接口保持不变；预览配置模型的单元测试不代表连接器真实执行验收。
+The standalone MCP page in Settings and its preview scenario have been removed; management is unified under Connectors in Extensions. The underlying MCP configuration interface is unchanged; unit tests for the preview configuration model do not constitute acceptance of real connector execution.
 
-开发者可在 `apps/desktop` 生成声明关联清单，无需启动后端或模型：
+Developers can generate a declaration-association inventory in `apps/desktop` without starting a backend or model:
 
 ```bash
 node --experimental-transform-types node_modules/@playwright/test/cli.js test --config preview/native.config.ts --project pdfe --list --reporter=json | node --experimental-transform-types preview/report.ts -
 ```
 
-也可将现有 Playwright JSON 文件路径作为 `preview/report.ts` 的唯一参数。报告的
-`has-tests / partial / unmapped / excluded` 只表示声明关联，保留逐状态缺口和排除原因；
-不读取执行结果冒充 passed，也不证明测试充分、真实 Electron 或产品验收。实际执行
-结果、版本和截图必须独立保存。命令不写场景目录、不改状态、不启动浏览器或自动修复缺口。
+An existing Playwright JSON file path may also be passed as the sole argument to `preview/report.ts`. Report values `has-tests / partial / unmapped / excluded` indicate declaration association only and retain per-state gaps and exclusion reasons. The report does not read execution results and misrepresent them as passed, nor does it prove test sufficiency, real Electron behavior, or product acceptance. Actual execution results, versions, and screenshots must be saved separately. The command does not write to the scenario catalog, change state, launch a browser, or automatically fix gaps.
 
-原生用例也可只收集而不运行；从 `apps/desktop` 使用当前 Node 的 TS 装载入口：
+Native tests can also be collected without running; from `apps/desktop`, use the current Node TS loader entry point:
 
 ```bash
 node --experimental-transform-types node_modules/@playwright/test/cli.js test --config preview/native.config.ts --list --reporter=json
 ```
 
-`--list` 不执行 Electron 启动与测试 hook，结果只能作为用例发现及声明关联证据。
-正常可见场景通过真实工作台检索和按钮导航；退出导航的旧深链用例，通过测试自有冻结
-manifest 的既有 initial 输入启动，并沿生产解析器验证，不恢复旧入口或添加生产测试分支。
-实际原生用例包含窗口/快捷键操作，只能在已授权且不会抢用户焦点的环境运行；收集成功
-不取消该前提，也不替代双窗口、草稿保持和正常产品运行验收。
-测试服务沿预览配置的端口起点寻找空闲端口，避免与正在试用的应用冲突；此为测试编排，
-不修改公开启动配置的 strictPort，也不停止其他应用腾让端口。项目中心原生数据矩阵
-经实际工作台搜索和场景按钮进入每个声明场景，消费同一 home 政策和分页常量；逐页
-收集真实项目/任务行身份，断言数量、唯一性、分页禁用状态、真实空态及横向溢出，
-并验证跨批末条任务可打开和返回。该矩阵不调用窗口 focus 或系统输入，但 Electron
-启动仍可能获取焦点，须有相应启动授权；不能据此宣称 F8、停靠或正常后端已验收。
-原生公共控制回归经真实登录、主题和语言选项触发宿主重载，并在工作台切换场景及
-显式重置后核对两份文档、真实账户菜单和只读实例诊断；不手动修改偏好或账户 Store。
-固定主题的原生双文档结果不证明操作系统主题变化通知，系统跟随仍须分别验证。
-宿主主题通知回归先关闭Playwright默认颜色模拟，再经真实控件选择“跟随系统”，
-使用测试自有Electron实例的`nativeTheme.themeSource`切换明暗。核对两份文档的
-`matchMedia`和有效主题同步变化、DOM身份与工作台筛选保持；不改产品Store或
-系统个人设置。此证据证明Electron宿主通知消费，不等同于实际操作系统设置切换，
-也不能从macOS外推Windows验收。
-同条件外观采样由`e2e/fixtures/appearance.ts`共用，正常产品用真实Serve与隔离测试偏好，
-PDFE通过实际控件选择语言/主题并独立弹出，使用相同内容窗口。等待真实有限动画结束，
-保留焦点、原始UA与数据来源；比较窗口/DPR/引擎版本，以及选定项目中心和创建表单的
-几何、字体、颜色与边框。应用名称不同的UA与业务数据路径不作为样式差异删除，
-而是作为证据来源保留。采样用例通过不等于对照通过；读取双方`appearance.json`后
-调用`assertProjectCenterAppearance`分别核对center和form。该比较不证明全部状态逐像素一致。
-原生导航/帮助回归核对日常使用、数据边界与两个分页子组同时展开，临时搜索后恢复
-原展开选择；整个浏览过程及说明弹窗开关前后，产品表单输入值和 DOM 身份保持不变。
-UI 素材通过真实页签进入，返回功能场景时恢复此前页面/场景；素材中英、明暗与 DOM
-键盘操作另有原生消费，不等于已完成全组件覆盖或系统级键盘验收。
-原生项目操作回归从真实双空态的创建入口提交，核对重载保留数据与重置恢复空态；
-另从分页末页编辑、置顶并重新打开项目，再归档末页条目，核对回退有效页码。
-归档后的项目保留登记及 archived_at，只从活跃列表移除，不按删除或忘记项目验收。
-正常产品另由 [项目中心原生回归](../../e2e/center.navigation.spec.ts) 消费正式入口和真实
-Serve：复用既有独立 Home/workspace/profile fixture，创建、编辑、置顶和归档均通过 UI，
-只读 HTTP 用于核对结果，不拦截请求或注入 Mock。同时断言正常窗口没有 PDFE Bridge、
-新项目位于隔离 workspace；不复制个人模型配置或发送模型请求。该单项回归不覆盖
-全部数据边界、模型和宿主生命周期，仍须结合生产输出排除与对应场景验收。
+`--list` does not launch Electron or run test hooks; its result is evidence only for test discovery and declaration association. Normally visible scenarios are reached through real workbench search and button navigation. Legacy deep-link cases that exit navigation start through the existing `initial` input in a test-owned frozen manifest and validate through the production parser; they do not restore old entries or add production test branches. Actual native tests include window/shortcut operations and may run only in an authorized environment that will not steal the user's focus. Successful collection does not remove this prerequisite or replace acceptance of the two windows, draft preservation, or normal product operation.
+The test service searches for a free port starting at the port configured for preview, avoiding conflict with an application in use. This is test orchestration; it does not change the public startup configuration's `strictPort` or stop other applications to free a port. The project-center native data matrix enters each declared scenario through actual workbench search and scenario buttons and consumes the same home policy and pagination constants. For each page it collects real project/task row identities and asserts counts, uniqueness, disabled pagination state, true empty states, and horizontal overflow; it also verifies that the last task across batches can be opened and returned from. The matrix does not call window focus or system input, but Electron startup may still take focus and requires the corresponding startup authorization; it cannot establish that F8, docking, or the normal backend has passed.
+Native shared-control regression triggers a host reload through real login, theme, and language options, then checks both documents, the real account menu, and read-only instance diagnostics after switching scenarios in the workbench and explicitly resetting. It does not manually modify preferences or the account Store. Native two-document results under a fixed theme do not prove operating-system theme-change notifications; system-follow behavior still requires separate verification.
+For host theme-notification regression, first turn off Playwright's default color emulation, then choose “Follow system” through the real control and toggle light/dark with `nativeTheme.themeSource` on the test-owned Electron instance. Verify synchronized changes to `matchMedia` and effective theme in both documents, with DOM identity and workbench filters preserved; do not change the product Store or personal system settings. This evidence proves consumption of Electron host notifications, not an operating-system setting change, and macOS results cannot establish Windows acceptance.
+Same-condition appearance sampling is shared through `e2e/fixtures/appearance.ts`. The normal product uses the real Serve and isolated test preferences; PDFE selects language/theme through actual controls and opens independently, using the same content window. Wait for real finite animations to finish and preserve focus, original UA, and data source. Compare window/DPR/engine versions and geometry, fonts, colors, and borders for selected project-center and creation-form views. Differences in UA caused by application names and differences in business-data paths are retained as evidence sources rather than removed as styling differences. A sampling test passing does not mean the comparison passed; read both `appearance.json` files and call `assertProjectCenterAppearance` to check center and form separately. This comparison does not prove pixel parity in every state.
+Native navigation/help regression checks that Everyday Use, Data Boundaries, and both pagination subgroups can be expanded simultaneously, then that temporary search restores the prior expansion choices. Product form values and DOM identity remain unchanged throughout browsing and before/after opening and closing the guidance dialog. UI assets are entered through a real tab, and returning to feature scenarios restores the previous page/scenario; native consumption also covers asset Chinese/English, light/dark, and DOM keyboard operations, but this does not mean all components or system-level keyboard behavior have been accepted.
+Native project-operation regression submits through the create entry in a true double-empty state and checks that reload preserves data while reset restores the empty state. It also edits and pins a project from the last pagination page, reopens it, then archives the last-page item and checks the valid page index after fallback. Archived projects retain their registration and `archived_at` and are removed only from the active list; this is not acceptance of deletion or forgetting a project.
+The normal product is separately covered by [project-center native regression](../../e2e/center.navigation.spec.ts) through the formal entry and real Serve. It reuses existing isolated Home/workspace/profile fixtures; creation, editing, pinning, and archiving all use the UI, while read-only HTTP verifies results without intercepting requests or injecting Mocks. It also asserts that the normal window has no PDFE Bridge and that new projects are in the isolated workspace; no personal model configuration is copied and no model request is sent. This individual regression does not cover every data boundary, model, or host lifecycle and must still be combined with production-output exclusion and scenario acceptance.
 
-**current**：已有 `test:preview`、`test:preview:ui`、`check:preview:bundle` 入口；聚焦行为测试、
-真实 Web 场景测试与 exact 构建输出排除分别提供不同层次证据，不证明整体或签名包验收。
-**required**：入口顺序与双环境装配测试、未命中/外网阻断/存储污染测试、
-HTTP/SSE 一致性及审批分支测试、页面清单消费 spec、生产制品排除检查须随场景持续补齐。
-每份新增场景必须在同一交付中有消费测试，复用声明但独立断言预期结果。
+**current**: The `test:preview`, `test:preview:ui`, and `check:preview:bundle` entry points exist. Focused behavior tests, real Web scenario tests, and exact build-output exclusion checks provide separate layers of evidence; they do not establish overall or signed-package acceptance.
+**required**: Continue adding entry-order and dual-environment assembly tests, miss/external-network-blocking/storage-pollution tests, HTTP/SSE consistency and approval-branch tests, page-inventory consumer specs, and production-artifact exclusion checks alongside scenarios.
+Every new scenario must have consumer tests in the same delivery; reuse the declaration but independently assert expected results.
 
-Web mock 证明模拟数据下的显示与交互；真实 Web 联调证明服务接线；真实 Electron
-证明宿主中的最终页面与实际行为。三类结果分别报告，不以预览计为产品全功能验收。
-产品变更仍需适用确定性门禁及最终版本真实截图，macOS/Windows 原生结果不能互相代替。
-历史阶段退出记录见[早期计划](../work/plan/preview.md)，当前测试改造按
-测试改造计划 (non-public execution/provenance record omitted)推进；测试总边界见[验收规范](../quality/testing.md)。
+Web mocks demonstrate presentation and interactions under simulated data; real Web integration demonstrates service wiring; real Electron demonstrates the final page and actual behavior in its host. Report these three results separately; preview does not count as full product acceptance.
+Product changes still require applicable deterministic gates and real screenshots from the final version. Native macOS and Windows results cannot substitute for each other. See the [early plan](../work/plan/preview.md) for historical phase-exit records. Current test rework follows the test rework plan (non-public execution/provenance record omitted); overall test boundaries are in the [acceptance standards](../quality/testing.md).
 
 ## Update triggers
 
-共享入口、数据消费边界、场景协议、页面目录、原生展示策略或分发方式变化时更新本页；
-实现落地后用源码和证据更新 current/gap，不直接将 required 改写为已实现。
+Update this page when shared entry points, data-consumption boundaries, scenario protocols, page catalogs, native presentation policy, or distribution methods change. Once implementation lands, update current/gap using source and evidence; do not simply rewrite required as implemented.
 
 ## Stop condition
 
-设计与实施按当前 Goal 授权推进，文档或目录登记不作为产品完成条件。
-实施阶段只有页面清单逐项有证据、完整会话分支可交互、隔离与生产排除门禁通过，且真实
-Electron 共享页面回归完成，才能报告相应范围完成；原生限制与未接入项始终单列。
+Design and implementation proceed under the current Goal authorization; documentation or catalog registration is not a product completion criterion. During implementation, report a scope as complete only after each page-inventory item has evidence, full conversation branches are interactive, isolation and production-exclusion gates pass, and real Electron shared-page regression is complete. Native limitations and unintegrated items must always be listed separately.

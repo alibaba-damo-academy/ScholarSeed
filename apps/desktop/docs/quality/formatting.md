@@ -1,3 +1,4 @@
+<a id="仓库格式规范"></a>
 # Repository Formatting Standards
 
 ## Source of truth

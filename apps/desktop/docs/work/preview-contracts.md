@@ -1,447 +1,616 @@
-# 预览场景的后端契约与适配边界
+<a id="预览场景的后端契约与适配边界"></a>
+# Backend Contracts and Adaptation Boundaries for Preview Scenarios
 
 ## Scope / Non-goals
 
-本页说明当前 Desktop 预览对真实服务契约的消费范围与差异，供产品、设计师、前端和后端
-按同一场景协作。预览沿用真实 renderer、HTTP URL、DTO 和事件投影；不要求后端新增
-“场景服务”或复制一套业务接口。`/__preview/*` 仅属于本机开发预览，不是 Serve 产品协议。
+This page describes which parts of real service contracts the current Desktop preview consumes
+and where it differs, so product, design, frontend, and backend teams can collaborate on the same
+scenarios. Preview reuses the real renderer, HTTP URLs, DTOs, and event projections; it does not
+require the backend to add a “scenario service” or duplicate business APIs. `/__preview/*` belongs
+only to the local development preview and is not part of the Serve product protocol.
 
-**模拟服务支持不等于真实功能验收。** 本页不承诺全部页面已接入，也不将仅改变布局、
-文案或组件的 UI 需求笼统列为“待后端适配”。没有新业务语义或数据需求时，无需新增后端
-契约；仍须分别核对模拟场景与真实服务/Electron 的视觉、交互和副作用证据。
+**Support in the simulated service does not constitute acceptance of the real feature.** This page
+does not claim that every page is integrated, nor does it broadly label UI requests that only change
+layout, copy, or components as “backend adaptation required.” No new backend contract is needed
+when there is no new business meaning or data requirement; visual, interaction, and side-effect
+evidence must still be checked separately for simulated scenarios and the real service/Electron.
 
-## 文献库存切片
+<a id="文献库存切片"></a>
+## Literature Inventory Slice
 
-**current**：`page-literature` 保留旧空库存，新增非空、读取等待/失败、详情等待/失败、
-元数据保存等待/首次失败场景。实例级账本统一列表、计数、分类、标签、项目、详情和笔记；
-重载保留当前实例，重置还原种子，销毁及取消不提交旧写入。生产页面无 mock 分支。
+**current**: `page-literature` retains the old empty inventory and adds non-empty, read-wait/failure,
+detail-wait/failure, and metadata-save-wait/first-failure scenarios. An instance-level ledger
+unifies the list, counts, categories, tags, projects, details, and notes. Reload preserves the current
+instance; reset restores the seed; disposal and cancellation do not commit stale writes. Production
+pages have no mock branch.
 
-沿原客户端支持文献列表/计数/facets/tag-facets/projects/collections/tags 的 GET、
-详情 GET/PATCH、笔记 GET/POST/PATCH/DELETE。笔记更新核对 version；元数据不虚构 CAS。
-列表仅支持真实 HTTP 声明的文本、分类子树、标签交集、项目、without/recent、排序和分页；
-不将 TypeScript 中未被真实接口声明的年份、类型、附件、未读过滤伪装为可用功能。
-未读摘要沿现有契约，缺失附件记录仍计入已登记全文；无全文仅表示没有附件记录。
-模拟写入的严格校验不代表真实后端所有宽松 JSON 行为已完全复刻。
+Following the original client, it supports GET for literature list/counts/facets/tag-facets/projects/
+collections/tags, GET/PATCH for details, and GET/POST/PATCH/DELETE for notes. Note updates check
+version; metadata does not invent CAS. The list supports only the text, category subtree, tag
+intersection, project, without/recent, sorting, and pagination declared by real HTTP. Year, type,
+attachment, and unread filters that are present in TypeScript but not declared by the real interface
+are not presented as usable features. Unread summaries follow the existing contract; missing
+attachment records still count toward registered full text, and “no full text” only means there is
+no attachment record. Strict validation of simulated writes does not mean every permissive JSON
+behavior of the real backend has been fully reproduced.
 
-可用 PDF 复用受审示例工程的真实字节、文件身份和 revision，不再创建一份假附件文件。
-文献 attachment 与 project asset 的记录归属分开；附件 open/content/records/regions 走
-原消费者，content 支持 GET/HEAD、单段 Range 与 ETag。PDF 只读，不宣称批注写入；
-区域分析明确不可用。AI results GET 返回未生成的空缓存；AI state GET 复用同一
-文献/附件与 VFS 字节核对 revision，返回附件身份、空结果和 null task，旧 revision
-明确拒绝。只读状态不生成任务，不代表 AI 执行成功；其 Mock 负向错误映射不证明
-真实 Serve 所有准备失败码均已复刻。
+Available PDFs reuse the real bytes, file identity, and revision from the reviewed example project;
+no fake attachment file is created. Literature attachment records and project asset records have
+separate ownership. Attachment open/content/records/regions use the original consumers, and
+content supports GET/HEAD, a single Range, and ETag. PDFs are read-only, with no claim of annotation
+writes; region analysis is explicitly unavailable. AI results GET returns an empty, not-generated
+cache. AI state GET checks the revision against the same literature/attachment and VFS bytes, and
+returns the attachment identity, empty results, and a null task; an old revision is explicitly
+rejected. Read-only state does not create a task or mean AI execution succeeded. Mock negative-error
+mapping does not prove that every real Serve preparation failure code has been reproduced.
 
-**gap**：附件原生 location、分类/标签实体管理、文献导入下载、附件及记录变更、AI 执行
-仍明确拒绝为未接入（501）；缺失全文为 404，不映射用户本地路径或扩大授权根。
-这些 mock 合同与 UI 验证不能替代真实 Serve、模型、原生平台或 Windows 验收。
+**gap**: Native attachment location, category/tag entity management, literature import/download,
+attachment and record changes, and AI execution are explicitly rejected as not integrated (501).
+Missing full text returns 404; user-local paths are not mapped and the authorization root is not
+expanded. These mock contracts and UI checks cannot replace acceptance against real Serve, models,
+native platforms, or Windows.
 
-## 回答注释引用移除
+<a id="回答注释引用移除"></a>
+## Removing References from Answer Annotations
 
-回答注释的上下文移除沿用 `DELETE /api/assistant/sessions/{id}/annotations/{annotation}/context`
-及 `expected_context_revision`，只移除当前实例、同会话的 note 引用，保留原注释。
-实际移除逐次递增修订，陈旧修订返回409及latest；无匹配引用幂等返回当前选择，
-未知会话404、非法修订422。Mock不模拟claim生命周期，不开放注释永久删除或其他
-未声明注释变更；真实存储、安全与并发语义由Serve Owner验证。
+Context removal from answer annotations reuses `DELETE /api/assistant/sessions/{id}/annotations/{annotation}/context`
+and `expected_context_revision`. It removes only note references from the current instance and same
+session, preserving the annotation. Each actual removal increments the revision; a stale revision
+returns 409 and latest. No matching reference is idempotent and returns the current selection;
+unknown sessions return 404 and invalid revisions return 422. The mock does not simulate claim
+lifecycle or allow permanent annotation deletion or other undeclared annotation changes. The Serve
+Owner verifies real storage, security, and concurrency semantics.
 
-## 归档项目错误与显式恢复
+<a id="归档项目错误与显式恢复"></a>
+## Archived Project Errors and Explicit Recovery
 
-**current（目标整合）**：任务归档沿目标复用 `ArchivedConversation → AiPanel → Stream / Composer`，
-与普通会话共用 history、来源及活动投影；模拟端继续提供同一会话 DTO，不另建只读页面。
-当前归档会话 thread 的 readOnly 禁止发送、停止、审批及 live/SSE 恢复，恢复后再沿原正常
-会话入口访问。空历史是真正 `turns:[]`，不恢复目标已删除的空态文案或旧独立历史组件。
+**current (target integration)**: Task archives reuse the target flow `ArchivedConversation → AiPanel → Stream / Composer`,
+sharing history, sources, and activity projections with ordinary conversations. The simulated side
+continues to provide the same session DTO; it does not create a separate read-only page. The current
+archived conversation thread is readOnly, which disables sending, stopping, approval, and live/SSE
+recovery. After restoration, it is accessed through the original ordinary conversation entry point.
+An empty history is truly `turns:[]`; the target's removed empty-state copy and old standalone history
+component are not restored.
 
-普通独立模拟会话没有显示子会话，`GET /api/serve/sessions/{id}/display-children`
-返回同一 `session_id` 与 `child_count: 0`，供共享删除确认区完成只读准入检查。
-未知会话返回404，非GET仍拒绝501；不代表fork或真实服务子会话级联已模拟。
+An ordinary standalone simulated session has no displayed child sessions. `GET /api/serve/sessions/{id}/display-children`
+returns the same `session_id` and `child_count: 0` for the shared delete-confirmation area to perform
+its read-only eligibility check. Unknown sessions return 404; non-GET requests are still rejected
+with 501. This does not mean that forks or real-service child-session cascading have been simulated.
 
-项目布局场景仅切换原 Workspace 菜单及 `RendererPreferences.projectLayouts`，
-正常左右换位保留同一组件与文档标签，重载只承诺偏好布局，不承诺草稿持久化。
-数据与样式仍由原页面消费；预览不实现第二套归档或布局 renderer。
+Project-layout scenarios only switch the original Workspace menu and
+`RendererPreferences.projectLayouts`. Normal left/right swaps preserve the same component and
+document tabs. Reload promises only to preserve the layout preference, not draft persistence. Data
+and styling are still consumed by the original page; preview does not implement a second archive or
+layout renderer.
 
-**当前切片已接入，整体仍未收口**：原 `GET /api/content/projects?includeArchived=true` 的失败与成功空列表
-分别显示；活动项目目录与归档任务读取不因独立项目故障政策改变。单恢复沿原 archive
-POST，在恢复及归档/活动目录刷新完毕前保持 busy，旧读取不覆盖新结果。不新增真实
-Serve 协议或在生产页面判断预览模式。
+**The current slice is integrated; the overall work is not yet closed**: failures and successful
+empty lists from the original `GET /api/content/projects?includeArchived=true` are displayed
+separately. Active-project catalog and archived-task reads are unaffected by the independent-project
+failure policy. Single-item restoration uses the original archive POST and remains busy until
+restoration and archived/active catalog refreshes finish; stale reads cannot overwrite new results.
+No real Serve protocol is added, and production pages do not detect preview mode.
 
-预览专用 `POST /__preview/archives/recover` 仅解除当前实例显式 `projectRead: failed`
-的模拟项目读取故障；重复恢复幂等，不变更项目/偏好/任务/历史，其他政策返回 409。
-reset 新建 Owner 后重新故障，实例之间隔离。恢复不按请求或重试次数自动发生：任务页
-也会读取同一项目目录，不能用辅助 GET 消耗计数来伪装项目页面恢复。
-F8 从设置弹层打开原预览控制台，明确触发恢复后关闭控制台，再用原项目页重试；
-不直接修改 Store，不关闭重建设置页来冒充原重试。此控制端点不进入生产制品。
+The preview-only `POST /__preview/archives/recover` only clears the simulated project-read failure
+explicitly declared as `projectRead: failed` for the current instance. Repeated recovery is
+idempotent and does not change projects/preferences/tasks/history; other policies return 409. Reset
+creates a new Owner and restores the failure; instances are isolated. Recovery does not happen
+automatically based on request or retry count: the task page also reads the same project catalog,
+so an auxiliary GET cannot consume a counter to fake recovery on the project page.
+F8 opens the original preview console from the settings modal. After explicitly triggering recovery,
+close the console and retry from the original project page. Do not modify the Store directly or close
+and recreate the settings page to pose as the original retry. This control endpoint is excluded
+from production artifacts.
 
-Web 消费已验证持续失败、加载、显式解除故障后原页重试和延迟恢复期间禁用动作；真实
-macOS Electron 已验证隔离项目归档、恢复及重载持久，最终构建只读重入通过。真实后端
-503 与长延迟尚未运行，不用模拟成绩替代。当前验收优先 macOS，Windows 保留未验证。
+Web consumption has verified persistent failure, loading, retry from the original page after
+explicit recovery, and disabled actions while delayed recovery is pending. Real macOS Electron has
+verified isolated project archiving, recovery, and persistence across reload; read-only re-entry on
+the final build passed. Real backend 503 and long-delay cases have not run, and simulated results do
+not substitute for them. Current acceptance prioritizes macOS; Windows remains unverified.
 
-## 浏览器设置切片
+<a id="浏览器设置切片"></a>
+## Browser Settings Slice
 
-**current**：独立预览宿主直接复用原 `BrowserSettings`，不复制表单、不启用生产浏览器
-开关。`BrowserBridge.policy/history/clearData` 在预览边界使用同源 POST
-`/__preview/browser/{policy,history,data}`；请求与回执仍为 `src/browser.ts` 的原合同。
-这些路径不是新的 Serve API，真实 Electron 继续走 main/preload，后端无需另造设置页。
+**current**: The standalone preview host directly reuses the original `BrowserSettings`; it does not
+copy the form or enable the production browser switch. At the preview boundary,
+`BrowserBridge.policy/history/clearData` uses same-origin POST
+`/__preview/browser/{policy,history,data}`. Requests and receipts still follow the original contract
+in `src/browser.ts`. These paths are not new Serve APIs. Real Electron continues through
+main/preload, and the backend does not need another settings page.
 
-实例 Owner 支持规则读取、增改移除、Agent 开关，精确 origin 和 action/decision 沿原
-parser；未改变时不递增 revision，双 ask 移除规则，不新增客户端 CAS。模拟权限不会
-产生任何网页或工具执行授权。sample 的关闭状态及示例来源只是场景种子，不是 Desktop
-首次配置默认值。历史具有每 Owner 独立 UUID，搜索后计数、按时间及 ID 倒序分页，
-删除未知合法 ID 返回 `deleted:false`。旧实例或重置前 ID 不能删除新账本的样本。
+The instance Owner supports reading, adding, editing, removing rules, and the Agent switch. Exact
+origin and action/decision values follow the original parser. Revision does not increase when
+nothing changes; two ask values remove a rule, and no client CAS is added. Simulated permission
+does not authorize any webpage or tool execution. The sample's disabled state and example source
+are scenario seeds, not Desktop first-run defaults. History uses an independent UUID per Owner,
+counts after search, and paginates in descending time and ID order. Deleting an unknown valid ID
+returns `deleted:false`. IDs from old instances or before reset cannot delete samples from the new
+ledger.
 
-历史清理支持 `clear-history` 的包含边界 since 及 `clear-selected` 仅 history；同域
-读取、删除、清理遵守互斥，提交点重新核对取消和生命周期。无效 payload 返回原
-`invalid_command` 失败回执，未知路由不伪成功。重载保留同实例，reset/dispose 销毁旧
-Owner 和等待，不能让旧写提交到新代。策略读取故障与历史读取/写入政策相互独立。
+History cleanup supports the inclusive since boundary of `clear-history`, and `clear-selected`
+clears history only. Reads, deletes, and cleanup in the same domain are mutually exclusive; at the
+commit point, cancellation and lifecycle are checked again. Invalid payloads return the original
+`invalid_command` failure receipt; unknown routes do not return fake success. Reload preserves the
+same instance; reset/dispose destroys the old Owner and pending waits so stale writes cannot commit
+to a new generation. Policy-read failures are independent of history read/write policies.
 
-持续策略读取失败可以通过预览控制台的显式恢复动作解除，再由原页面按钮重读；
-`POST /__preview/browser/recover` 只解除本实例的 failed 读取政策，重复调用幂等，
-不改变规则、历史、偏好或原生权限，其他政策返回 409，reset 后重新失败。开发模式的
-重复挂载会重复读取，不能用请求计数冒充“首次错误后重试”；归档与浏览器恢复控制按
-同一声明式入口登记，不直接填 Store。策略写入 IO 失败时，原页面按既有安全策略隐藏
-不可确认的规则；先用原重新读取恢复未变库存和输入，再次提交，不放宽生产失败关闭语义。
+Persistent policy-read failure can be cleared by an explicit recovery action in the preview
+console, after which the original page button rereads the policy. `POST /__preview/browser/recover`
+only clears this instance's failed read policy. Repeated calls are idempotent; rules/history/
+preferences/native permissions are unchanged; other policies return 409, and reset restores the
+failure. Development-mode remounts repeat reads, so request counts cannot pose as “retry after the
+first error.” Archive and browser recovery controls are registered through the same declarative
+entry point, not written directly into the Store. If policy-write IO fails, the original page hides
+rules it cannot confirm under its existing security policy. Use the original reread to restore the
+unchanged inventory and input, then submit again; do not relax production fail-closed behavior.
 
-**gap**：原生网页重新打开、CDP、下载选择和配置、Vault、Cookie/缓存/站点数据清理
-均保持不可用；没有模拟原生成功。当前 Web 规则/历史操作不等于真实磁盘、安全授权或
-原生清理验收。macOS 只读验证原页面及自然读取，未写真实规则、删除或清理历史；
-Windows 未验证。浏览器主页面及 viewer 的共享控件接入另行完成。
+**gap**: Reopening native webpages, CDP, download selection and configuration, Vault, and
+Cookie/cache/site-data cleanup all remain unavailable; no native success is simulated. Current Web
+rule/history operations are not acceptance of real disk behavior, security authorization, or native
+cleanup. macOS read-only checks covered the original page and natural reads; no real rules were
+written, and no history was deleted or cleared. Windows is unverified. Shared-control integration
+for the main browser page and viewer is handled separately.
 
-本切片最终 Web UI 全量 135/135 与 macOS 真实只读流程分别取证；前者仅证明模拟合同
-被原页面消费，后者不证明真实规则写入、清历史、安全授权或完整浏览器运行。独立 Web
-设置宿主与生产设置模态的可用宽度不同，不能将其画面当作宿主布局完全一致的证据。
+The final Web UI suite for this slice passed 135/135, and the real macOS read-only flow was
+evidenced separately. The former only proves that the original page consumes the simulated
+contract; the latter does not prove real rule writes, history clearing, security authorization, or
+complete browser operation. The standalone Web settings host and production settings modal have
+different available widths, so their screenshots do not prove identical host layout.
 
-## 浏览器共享引导与模拟快照
+<a id="浏览器共享引导与模拟快照"></a>
+## Shared Browser Guidance and Simulated Snapshots
 
-**current（契约，不是本轮产品验收）**：`page-browser` 与 `viewer-browser` 使用同一原 `Browser` 组件，
-仅预览宿主增加模拟范围说明。预览不改 `browserEnabled`、生产导航、组件或注册策略；
-不是给生产增加打开浏览器的入口，也不是另一套浏览器页面。
-产品[浏览器契约](../browser.md)已移除内层网页标签栏和新建网页按钮，空白目标与无目标
-均显示原引导；场景目录不恢复旧控件。没有 UI 入口的账本写等待/失败只保留领域契约，
-不作为 UI 场景。空白快照、已有目标、读取等待/失败及通用未映射状态仍分别保留。
+**current (contract, not product acceptance for this round)**: `page-browser` and `viewer-browser`
+use the same original `Browser` component; only the preview host adds an explanation of the
+simulation scope. Preview does not change `browserEnabled`, production navigation, components, or
+registration policy. It does not add a production entry point for opening the browser or create a
+second browser page. The product [browser contract](../browser.md) has removed the inner webpage
+tab bar and new webpage button. Both blank and missing targets display the original guide; the
+scenario catalog does not restore old controls. Ledger-write wait/failure states with no UI entry
+remain domain contracts only, not UI scenarios. Blank snapshots, existing targets, read wait/failure,
+and generic unmapped states remain separate.
 
-同一浏览器 Owner 可选 `surface` 政策；未配置时 snapshot/dispatch 仍返回原生不可用，
-不影响前批设置场景。`/__preview/browser/snapshot` 和 `/command` 采用同源 POST，沿
-原 `BrowserSnapshot`、`BrowserReply`、`BrowserCommand` 与 parser；snapshot 的 HTTP
-请求体只接受空对象。只模拟新建空白、选择、关闭，ID 每 Owner 独立；关闭当前标签按
-真实语义选择剩余首项，最后一项关闭后 active 为 null。快照不虚构 engine、自动化、
-网页历史或原生目标，预览最多 100 个空白标签的保护上限不等于真实产品配额。
+The same browser Owner can optionally declare a `surface` policy. When none is configured,
+snapshot/dispatch still return native-unavailable, without affecting the earlier settings scenarios.
+`/__preview/browser/snapshot` and `/command` use same-origin POST and the original
+`BrowserSnapshot`, `BrowserReply`, `BrowserCommand`, and parser. The snapshot HTTP request body
+accepts only an empty object. Only blank-tab creation, selection, and closing are simulated; IDs are
+independent per Owner. Closing the current tab selects the first remaining tab, following real
+semantics; after the last tab closes, active is null. Snapshots do not invent an engine, automation,
+webpage history, or native target. The preview's protective limit of at most 100 blank tabs is not a
+real product quota.
 
-外部地址或搜索、navigate（包括已有标签导航到 blank）、后退/前进、reload、bounds、
-devtools、automation 和复制端点均拒绝，不改变任何账本；并发写入互斥，取消或销毁
-不能在 await 后提交。提交前对象拷贝，不能修改在途请求来改变最终动作。原组件的读取
-等待阶段保留默认起始页，不补造并不存在的 Spinner；账本写协议不代表产品有新建按钮。
-host 不提供 page/frames、菜单或原生浮层 bridge，空白标签没有原生 viewport。
+External URLs or search, navigate (including navigation of an existing tab to blank), back/forward,
+reload, bounds, devtools, automation, and copy endpoints are all rejected without changing any
+ledger. Concurrent writes are mutually exclusive; cancellation or disposal cannot commit after an
+await. Inputs are copied before commit, so an in-flight request cannot be mutated to change its final
+action. During the original component's read-wait stage, the default start page remains visible; no
+nonexistent Spinner is fabricated. A ledger-write protocol does not mean the product has a new-tab
+button. The host provides no page/frames, menu, or native-overlay bridge, and blank tabs have no
+native viewport.
 
-仅已登记的浏览器 POST 允许解析合法 JSON 后交原 typed parser；数组等非法对象返回
-`invalid_command`，非法 JSON 仍 HTTP 400，其他 API 的严格对象校验不变。body 读取后
-及 Owner 回执后都复核实例代次；旧分块请求 reset 后补完 body 返回 409，不能写新账本。
+Only registered browser POST routes may parse valid JSON and pass it to the original typed parser.
+Invalid objects such as arrays return `invalid_command`; invalid JSON still returns HTTP 400, and
+strict object validation for other APIs is unchanged. The instance generation is checked again after
+reading the body and after the Owner receipt. If an old chunked request finishes reading its body
+after reset, it returns 409 and cannot write to the new ledger.
 
-领域用例承担快照与身份、拒绝、等待、互斥、取消及恢复边界；共享 Browser render
-承担当前控件、引导、语言主题及在途地址编辑；原生 Mock 双入口只核共享 UI 接线、
-导航拒绝与重载，不将旧十二项内层标签操作机械搬到 Electron。原 loading/error
-要求仍保留，不由空白引导或底层契约自动补齐，也不以用例存在声称运行通过。
+Domain cases cover snapshots and identity, rejection, waiting, mutual exclusion, cancellation, and
+recovery boundaries. Shared Browser rendering covers current controls, guidance, language/theme,
+and in-progress address editing. The two native Mock entry points check only shared UI wiring,
+navigation rejection, and reload; the old twelve inner-tab operations are not mechanically copied to
+Electron. Original loading/error requirements remain. They are not automatically satisfied by
+blank-page guidance or low-level contracts, and the existence of cases does not prove they passed.
 
-**gap**：生产入口受浏览器开关与运行面控制，现有“新标签页”入口归浏览器 Owner；
-Mock 宿主不会开启该开关，本页不继承旧 Web 消费或其他版本的宿主验收。不得写 saved
-navigation、插入历史、内部 dispatch 或放宽生产策略来制造起始页验收。真实设置只读证据不替代
-Browser 起始页；原生内容、框架、CDP、真实导航以及 Windows 仍需适用环境和单独验收。
+**gap**: Production entry is controlled by the browser switch and runtime surface; the existing “New
+tab” entry belongs to the browser Owner. The Mock host does not enable that switch, and this page
+does not inherit old Web-consumption results or host acceptance from another version. Do not write
+saved navigation, insert history, use internal dispatch, or relax production policy to manufacture
+start-page acceptance. Read-only evidence from real settings does not replace Browser start-page
+evidence. Native content, frames, CDP, real navigation, and Windows still require the applicable
+environment and separate acceptance.
 
-## 会话产物与模拟发布
+<a id="会话产物与模拟发布"></a>
+## Session Artifacts and Simulated Publication
 
-**current / 产物切片已消费，不代表全状态验收**：`viewer-outputs` 保留原通用要求与空态，
-另有两组已发布会话、目录/历史/内容的等待及持续失败与完成后发布场景。原 `Outputs`
-仍从项目会话目录及逐会话历史筛选显式 publication，不接页面私有展示数组。
+**current / the artifact slice is consumed, not acceptance of all states**: `viewer-outputs` retains
+the original general requirements and empty state, with two additional scenarios for published
+sessions, catalog/history/content waits and persistent failures, and publication after completion.
+The original `Outputs` still filters explicit publications from the project session catalog and
+per-session history; it does not consume a page-private display array.
 
-`PreviewArtifacts` 只持有从当前实例受审文件捕获的不可变字节与身份绑定；Session 历史
-持有公开的 `SessionArtifact` 投影。同一 session/turn/file identity 幂等，同 Owner 之间
-身份独立；源文件改名、修改或发布后的资源编辑不改变已发布快照。`publication_id`、
-role、size、sha256、media_type 来自受审源与明确模拟发布，不能把任意工作文件计为产物。
-三个阶段均有样本，但不代表真实模型生成或真实 publication 授权执行成功。
+`PreviewArtifacts` holds only immutable bytes captured from reviewed files in the current instance,
+bound to their identities. Session history holds the public `SessionArtifact` projection. The same
+session/turn/file identity is idempotent, and identities are independent across Owners. Renaming or
+editing the source file, or editing a resource after publication, does not change the published
+snapshot. `publication_id`, role, size, sha256, and media_type come from the reviewed source and an
+explicit simulated publication; arbitrary working files cannot be counted as artifacts. Each of the
+three stages has a sample, but this does not mean real model generation or authorized publication
+execution succeeded.
 
-沿现有 `GET /api/serve/sessions`、`GET /api/serve/history/{session}` 和会话 open 快照
-返回同一产物投影；`artifact_changed` 用原 `op:upsert` 合同，并在成功终态之前发布。
-模拟长回合可以从原 Composer 停止；取消/失败不发布，源缺失预读失败转明确失败事件，
-不产生部分成功交付。未配置产物政策的旧场景保留原不可用 capability 和空投影。
+The same artifact projection is returned through the existing `GET /api/serve/sessions`,
+`GET /api/serve/history/{session}`, and session-open snapshot. `artifact_changed` uses the original
+`op:upsert` contract and is emitted before the successful terminal state. A simulated long turn can
+be stopped from the original Composer. Cancellation/failure does not publish; a missing source that
+fails pre-read becomes an explicit failure event, with no partial successful delivery. Old scenarios
+without an artifact policy retain the original unavailable capability and empty projection.
 
-`message_delta.data.delta` 是同一 turn/item 的累计正文快照，不是待追加的文本片段。
-模拟服务从同一历史正文发布累计值；实时消费采用原替换投影，断流重放和重新进入不把
-多份快照相加。消费回归逐段调用真实投影，并核对恢复后最后快照与历史正文一致。
+`message_delta.data.delta` is an accumulated body snapshot for the same turn/item, not a text
+fragment to append. The simulated service publishes accumulated values from the same history body;
+live consumption uses the original replacement projection, so replay after a disconnect or re-entry
+does not add multiple snapshots together. Consumer regression invokes the real projection segment
+by segment and checks that the last snapshot after recovery matches the history body.
 
-原 `GET/HEAD /api/serve/sessions/{session}/artifacts/{artifact}/raw` 返回 snapshot 字节、
-ETag、长度与明确只读 header；`GET .../content` 沿原文本 DTO 的 binary/truncated 边界。
-严格核对 session 与本实例 artifact 身份；原始 path 参数不能换源。PUT 编辑、真实导入、
-另存、原生打开及发布 bridge 仍未接入，不返回假成功；后端无需为本切片另写一套页面。
+The original `GET/HEAD /api/serve/sessions/{session}/artifacts/{artifact}/raw` returns snapshot
+bytes, ETag, length, and an explicit read-only header. `GET .../content` follows the binary/truncated
+boundary of the original text DTO. Session and current-instance artifact identity are checked
+strictly; the raw path parameter cannot switch the source. PUT editing, real import, Save As, native
+open, and the publication bridge remain unintegrated and do not return fake success. The backend
+does not need a separate page for this slice.
 
-读取故障通过政策分开作用于项目目录（`scope=project`）、历史、内容；全局启动目录不受
-产物项目政策影响，不能在到达原产物页之前把全局恢复挡住。持续失败不按请求计数消失。
-`POST /__preview/artifacts/recover` 只解除当前实例已声明的持续读取失败，重复恢复幂等；
-其他政策返回 409。reset 还原故障并替换身份。异步回执后复核实例代次，取消/销毁不将
-旧回执写入新代；恢复控制不修改历史、文件或 publication。当前仅安排 macOS 验收，
-Windows 与真实生成/失败/恢复交付仍未验证。
+Read failures are governed by separate policies for the project catalog (`scope=project`), history,
+and content. The global startup catalog is unaffected by artifact-project policy; global recovery
+must not be blocked before reaching the original artifact page. Persistent failure does not disappear
+after a request count. `POST /__preview/artifacts/recover` only clears a declared persistent read
+failure for the current instance; repeated recovery is idempotent, and other policies return 409.
+Reset restores the failure and replaces identity. Instance generation is checked after async
+receipts; cancellation/disposal cannot write an old receipt to a new generation. Recovery control
+does not modify history, files, or publications. Only macOS acceptance is currently planned;
+Windows and real generation/failure/recovery delivery remain unverified.
 
-新会话仍沿原 context PATCH 保存空 refs 的 project_policy 与 disabled/academic/web
-选择元数据，保留 revision 与冲突的 latest 回执；保存检索选择不执行检索，能力标志仍
-为不可用，不调用真实服务。非空上下文引用仍明确拒绝，不能把这一子集当完整上下文模拟。
+New sessions still use the original context PATCH to save project_policy with empty refs and the
+disabled/academic/web selection metadata, preserving revision and the latest conflict receipt.
+Saving a retrieval selection does not run retrieval; the capability flag remains unavailable and no
+real service is called. Non-empty context references are explicitly rejected; this subset is not a
+complete context simulation.
 
 ## Source of truth
 
-- 模拟实现与消费断言：[场景服务](../../preview/service.ts)、[服务测试](../../preview/service.test.ts)、
-  [文件树](../../preview/files.ts)、[文件测试](../../preview/files.test.ts)。
-- 文献库存与笔记账本：[文献模拟](../../preview/literature.ts)、[文献回归](../../preview/literature.test.ts)、[原生共享页面消费](../../preview/native.spec.mjs)。
-- 项目操作的单一内存 Owner：[项目模拟](../../preview/project.ts)；
-- 浏览器设置模拟：[规则与历史账本](../../preview/browser.ts)、[领域回归](../../preview/browser.test.ts)、[原生页面消费](../../preview/native.spec.mjs)。
-- 浏览器共享引导：[组件回归](../../src/renderer/src/features/browser/browser.render.test.ts)、[原生 Mock 接线](../../preview/native.spec.mjs)、[独立预览宿主](../../preview/host.tsx)；账本写协议归上述领域回归，不是 UI 操作。
-- 会话产物：[纯场景契约](../../preview/publications.ts)、[不可变快照](../../preview/artifacts.ts)、[领域回归](../../preview/artifacts.test.ts)、[原生产物页及完成后发布消费](../../preview/native.spec.mjs)。真实读取合同见 [Serve 会话 API](../../../serve/service/chat/api/sessions.py)。
-  诊断记录边界：[诊断模块](../../preview/diagnostics.ts)。
-- 文档读取时序：[内容政策](../../preview/content.ts)；PDF 不可用区域清单：
-  [区域响应](../../preview/regions.ts)；真实操作消费者：[文档场景测试](../../preview/native.spec.mjs)。
-- 页面与场景状态：[机器目录](../../preview/catalog.ts)。目录登记、`pending`、`unverified`
-  均不代表已经可操作或验收通过；不在本页复制页面覆盖清单。
-- renderer 消费：[会话与事件 DTO](../../src/renderer/src/api.ts)、
-  [内容客户端](../../src/renderer/src/app/api/content.ts)、
-  [工作区文档客户端](../../src/renderer/src/features/workbench/api.ts)、
-  [资源客户端](../../src/renderer/src/features/resources/api.ts)。
-- 真实后端：[会话路由](../../../serve/service/chat/api/sessions.py)、
-  [会话交互服务](../../../serve/service/chat/service/sessions.py)、
-  [项目与文件事件](../../../serve/service/content/api/routes.py)、
-  [工作区读取与提交](../../../serve/service/workbench/api/routes.py)、
-  [资源路由](../../../serve/service/resources/api/routes.py)。
-- 技能目录与变更：[真实能力路由](../../../serve/service/capabilities/api/routes.py)，
-  renderer 通过同一[公开客户端](../../src/renderer/src/api.ts)消费。
-- 环境与准入：[预览架构](../architecture/preview.md)、[测试规范](../quality/testing.md)。
+- Simulated implementation and consumer assertions: [scenario service](../../preview/service.ts), [service tests](../../preview/service.test.ts),
+  [file tree](../../preview/files.ts), and [file tests](../../preview/files.test.ts).
+- Literature inventory and note ledger: [literature mock](../../preview/literature.ts), [literature regression](../../preview/literature.test.ts), and [native shared-page consumption](../../preview/native.spec.mjs).
+- Single in-memory Owner for project operations: [project mock](../../preview/project.ts).
+- Browser-settings simulation: [rules and history ledger](../../preview/browser.ts), [domain regression](../../preview/browser.test.ts), and [native page consumption](../../preview/native.spec.mjs).
+- Shared browser guidance: [component regression](../../src/renderer/src/features/browser/browser.render.test.ts), [native Mock wiring](../../preview/native.spec.mjs), and [standalone preview host](../../preview/host.tsx). Ledger-write protocols belong to the domain regression above; they are not UI operations.
+- Session artifacts: [pure scenario contract](../../preview/publications.ts), [immutable snapshots](../../preview/artifacts.ts), [domain regression](../../preview/artifacts.test.ts), and [original artifacts page and post-completion publication consumption](../../preview/native.spec.mjs). See the [Serve session API](../../../serve/service/chat/api/sessions.py) for the real read contract.
+  Diagnostic-record boundary: [diagnostics module](../../preview/diagnostics.ts).
+- Document-read timing: [content policy](../../preview/content.ts). PDF unavailable-region manifest: [region response](../../preview/regions.ts). Real-operation consumer: [document scenario tests](../../preview/native.spec.mjs).
+- Page and scenario state: [machine catalog](../../preview/catalog.ts). Catalog registration, `pending`, and `unverified` do not mean a scenario is operable or has passed acceptance; this page does not duplicate the page-coverage list.
+- Renderer consumers: [session and event DTOs](../../src/renderer/src/api.ts), [content client](../../src/renderer/src/app/api/content.ts), [workbench document client](../../src/renderer/src/features/workbench/api.ts), and [resource client](../../src/renderer/src/features/resources/api.ts).
+- Real backend: [session routes](../../../serve/service/chat/api/sessions.py), [session interaction service](../../../serve/service/chat/service/sessions.py), [project and file events](../../../serve/service/content/api/routes.py), [workbench reads and writes](../../../serve/service/workbench/api/routes.py), and [resource routes](../../../serve/service/resources/api/routes.py).
+- Skill catalog and changes: [real capability routes](../../../serve/service/capabilities/api/routes.py); the renderer consumes these through the same [public client](../../src/renderer/src/api.ts).
+- Environment and admission: [preview architecture](../architecture/preview.md) and [testing standards](../quality/testing.md).
 
 ## Current / Required / Gap / Advisory
 
-以下 **current** 指当前源码已实现的模拟响应，不是实际产品或跨平台验收结论。
+Here, **current** means simulated responses implemented in the current source; it is not an
+acceptance conclusion for the real product or cross-platform behavior.
 
-- **required**：模拟端与真实端遵循同一消费契约，变更同步场景、字段说明和消费测试。
-- **gap**：全页面、真实副作用与最终跨环境证据尚未齐备，具体差异逐域保留。
-- **advisory**：优先补齐实际 UI 消费路径，避免为演示新增后端专用协议或页面分支。
+- **required**: The simulated and real sides follow the same consumer contract; changes update the scenario, field descriptions, and consumer tests together.
+- **gap**: Full-page coverage, real side effects, and final cross-environment evidence are not yet complete; domain-specific differences are recorded below.
+- **advisory**: Prioritize completing actual UI consumer paths; avoid adding backend-specific protocols or page branches for demonstrations.
 
-通用 JSON/工作区字节请求体读取后，预览服务再次核对实例身份；读取期间实例已被
-reset、移除或销毁时，旧请求返回 `409 {detail: "preview_instance_reset"}`，不向旧
-会话重新提交回合或注册定时器。这是预览实例生命周期围栏，不是新增真实 Serve 协议。
+After reading a generic JSON/workspace-byte request body, the preview service checks instance
+identity again. If the instance was reset, removed, or disposed while the body was being read, the
+stale request returns `409 {detail: "preview_instance_reset"}`; it does not resubmit a turn or
+register a timer against the old session. This fences the preview instance lifecycle and does not
+add a real Serve protocol.
 
-| 领域 | 沿用的接口、DTO 与状态转换 | current：模拟端范围 | gap / 限制及适配归属 |
+| Domain | Reused interfaces, DTOs, and state transitions | current: simulated-side scope | gap / limits and adaptation owner |
 | --- | --- | --- | --- |
-| 启动与会话目录 | `GET /api/healthz`、`GET /api/serve/sessions`、`POST /api/serve/sessions/open`；`HealthResp`、`ServeSession`、`OpenResp` | 内存项目/会话身份、目录筛选、恢复同一会话与运行快照 | readiness/capabilities 是模拟声明；不证明真实 Runtime、鉴权或恢复能力。后端已有接口，无需为预览另增接口 |
-| 对话与工具 | `POST .../turns`、`GET .../events?from_seq=`、`GET /api/serve/history/{id}`；`TurnResponse`、`HistoryResult`、`ProductEvent` | 文本提交、思考、消息增量、模拟工具开始/输出/完成及失败；`running → completed/failed`；interrupt/terminate 转为 `interrupted` | 不执行模型或工具；附件、多模态、真实命令输出及完整队列调度未覆盖。新增业务事件必须由原契约 Owner 定义，而非由预览自造 UI 事件 |
-| 审批与提交回执 | `POST .../hil/{request_id}`、`GET .../queue`、`POST .../queue/{id}/reconcile`；`ProductHilData`、`ProductInteraction`、`QueuedMessageReconcileResponse` | `hil_requested → waiting → hil_resolved → running/interrupted`；允许、拒绝、取消；直接提交回执包含 `accepted:true/disposition:direct/turn_id`，终态按真实协议发同一提交身份的 `message_removed`，reconcile 按 ledger 返回 applied/not_applied | 回执与 outbox 生命周期已有聚焦断言，最终全场景 UI 证据仍需收口；queue 当前返回空消息，不代表真实排队、编辑、删除及发送已模拟。真实后端已有交互/队列路由，不是待新增后端功能 |
-| 项目与目录操作 | `/api/content/projects`、`/api/content/operations/{id}`；项目身份与准备完成后可用的语义 | 模拟创建返回 `202 {operation,state:"queued"}`，由有界定时任务推进 queued/running/终态，renderer 复用真实轮询客户端；成功才登记项目与独立空 VFS，示例种子项目仍保留样本。支持虚拟目录预览与名称/描述 PATCH；声明式 fail-once 场景支持失败后重试 | 未执行宿主目录创建、授权或迁移；归档/删除等未完整模拟。reset/dispose 清理待执行任务；真实后端已有生命周期，无需为预览退化为同步返回 |
-| 文件与 viewer | `/api/resource/tree/list/count/read/raw/write/node/reveal`、`GET /api/workbench/open`、`GET/PUT /api/workbench/content`；`OpenDocumentResult`、`DocumentCapabilities`、ETag/revision | 九项受审字节样本，格式映射见下文；原字节读取、文本修改、文件重命名；项目树与 PDF records 读取绑定同一文件事实源，文档投影按能力声明支持的真实 viewer | PDF 当前只读、不宣称批注写入；XLS 字体供给、完整版本/审查、导入导出、目录创建及文件删除路由未完整接入。VFS 方法存在不等于 HTTP/UI 全链路支持 |
-| 文件变化 | `GET /api/content/cursor`、`GET /api/content/events`；`epoch/seq/project_id/root/kind/path/previous_path` | 内存修改发布 created/modified/moved 事件，同实例订阅与重放 | 不证明真实文件监听、外部改盘、完整分页、进程重启持久化；游标与重置的一致性须独立测试 |
-| 设置与上下文 | `/api/serve/settings/{key}`、`/api/serve/models`、`/api/assistant/sessions/{id}/context`；偏好与 revision | permission-mode/workflow/auto-review 内存设置、固定模拟模型、空 refs 的有限上下文选择；预览桥保存隔离 UX 偏好 | 不模拟真实连接创建、密钥验证、订阅登录、MCP/技能执行；有新字段才交对应 Owner 扩展契约，普通样式调整无需后端适配 |
-| 技能设置 | `GET /api/capabilities/skills`、`GET .../{name}/document`、`POST/DELETE .../{name}/activate`、`DELETE .../{name}`；目录、文档、启用与删除回执 | 三个隔离技能记录展示用户技能、不可禁用内置技能、缺依赖技能；正常变更与未知名称/不可变更错误沿同一内存目录更新 | 不执行技能；上传、新建与 GitHub 导入明确 `501`，不伪造安装成功；仅契约回归不证明真实技能生命周期或设置 UI 已全部验收 |
-| 文献与账号 | `/api/v1/literatures` 的列表/计数/facets，collections/tags，`/api/auth/status/me` | 文献空集合；默认场景无账号凭据，显式账号场景见下文只读 profile 合同 | 非空文献、附件、同步、积分与真实登录未覆盖；独立搜索结果场景不证明真实检索。空响应只证明初态，原生登录与账号安全仍走真实产品路径 |
+| Startup and session catalog | `GET /api/healthz`, `GET /api/serve/sessions`, `POST /api/serve/sessions/open`; `HealthResp`, `ServeSession`, `OpenResp` | In-memory project/session identities, catalog filtering, reopening the same session, and runtime snapshots | Readiness/capabilities are simulated declarations; they do not prove real Runtime, authentication, or recovery capabilities. The backend already has these interfaces; preview needs no additional interface |
+| Conversation and tools | `POST .../turns`, `GET .../events?from_seq=`, `GET /api/serve/history/{id}`; `TurnResponse`, `HistoryResult`, `ProductEvent` | Text submission, thinking, message deltas, simulated tool start/output/completion and failure; `running → completed/failed`; interrupt/terminate become `interrupted` | No model or tool is executed. Attachments, multimodal content, real command output, and complete queue scheduling are not covered. New business events must be defined by the original contract Owner, not invented as preview UI events |
+| Approval and submission receipts | `POST .../hil/{request_id}`, `GET .../queue`, `POST .../queue/{id}/reconcile`; `ProductHilData`, `ProductInteraction`, `QueuedMessageReconcileResponse` | `hil_requested → waiting → hil_resolved → running/interrupted`; allow, reject, cancel; direct-submission receipt includes `accepted:true/disposition:direct/turn_id`; terminal state emits `message_removed` for the same submission identity as in the real protocol; reconcile returns applied/not_applied from the ledger | Focused assertions cover receipts and outbox lifecycle, but final UI evidence across all scenarios remains to be completed. Queue currently returns no messages; that does not mean real queuing, editing, deletion, or sending has been simulated. The real backend already has interaction/queue routes; these are not pending backend features |
+| Project and catalog operations | `/api/content/projects`, `/api/content/operations/{id}`; project identity and semantics available after preparation | Simulated creation returns `202 {operation,state:"queued"}`; a bounded timer advances queued/running/terminal states, and the renderer reuses the real polling client. A project and separate empty VFS are registered only on success; the example seed project retains its samples. Virtual catalog preview and name/description PATCH are supported; declarative fail-once scenarios support retry after failure | No host directory creation, authorization, or migration is performed; archive/delete and other actions are not fully simulated. reset/dispose cleans up pending tasks. The real backend already has this lifecycle; preview need not degrade to a synchronous response |
+| Files and viewer | `/api/resource/tree/list/count/read/raw/write/node/reveal`, `GET /api/workbench/open`, `GET/PUT /api/workbench/content`; `OpenDocumentResult`, `DocumentCapabilities`, ETag/revision | Nine reviewed byte samples, with format mappings below; original-byte reads, text edits, file renames; project tree and PDF record reads bind to the same file source of truth, and document projections use the real viewer as declared by capabilities | PDFs are currently read-only; no annotation writes are claimed. XLS font supply, full versioning/review, import/export, directory creation, and file deletion routes are not fully integrated. Having VFS methods does not mean the full HTTP/UI path is supported |
+| File changes | `GET /api/content/cursor`, `GET /api/content/events`; `epoch/seq/project_id/root/kind/path/previous_path` | In-memory modifications emit created/modified/moved events; same-instance subscription and replay | Does not prove real file watching, external disk changes, complete pagination, or persistence across process restarts. Cursor/reset consistency needs separate tests |
+| Settings and context | `/api/serve/settings/{key}`, `/api/serve/models`, `/api/assistant/sessions/{id}/context`; preferences and revision | In-memory permission-mode/workflow/auto-review settings, fixed simulated models, limited context selection with empty refs; preview bridge saves isolated UX preferences | Does not simulate real connection creation, key validation, subscription login, or MCP/skill execution. Only new fields require contract extension by the corresponding Owner; ordinary style changes do not require backend adaptation |
+| Skill settings | `GET /api/capabilities/skills`, `GET .../{name}/document`, `POST/DELETE .../{name}/activate`, `DELETE .../{name}`; catalog, document, activation, and deletion receipts | Three isolated skill records show a user skill, a built-in skill that cannot be disabled, and a skill with missing dependencies; normal changes and unknown-name/immutable-item errors update the same in-memory catalog | Skills are not executed. Upload, creation, and GitHub import explicitly return `501`; installation success is not faked. Contract regression alone does not prove the real skill lifecycle or all settings UI acceptance |
+| Literature and account | List/count/facets for `/api/v1/literatures`, collections/tags, `/api/auth/status/me` | Empty literature collection; default scenario has no account credentials. See the read-only profile contract below for explicit account scenarios | Non-empty literature, attachments, sync, credits, and real login are not covered; a standalone search-results scenario does not prove real search. An empty response proves only the initial state; native login and account security still use the real product path |
 
-### 会话执行与传输政策
+<a id="会话执行与传输政策"></a>
+### Session Execution and Transport Policies
 
-目录通过 `simulation.conversation` 分开声明执行模式、流式样本及一次传输断线，
-不是按问题正文、文件名或目录 ID 在服务核心增加特殊分支。普通 streaming 仍使用原三段
-25ms 样本；取消场景显式采用十二段、每秒一段的交互样本，不改变生产模型或客户端速度。
-**current（模拟会话政策）**：同一 Session 持有历史、快照、事件、在途提交预约与定时器。
-`conversation-submit-pending` 接纳前等待两秒，不分配 turn 或追加用户历史；同期重复请求
-返回 409。reset、销毁、删除、interrupt/terminate 或 HTTP 断连撤销预约，未断开的旧请求
-返回 `410 {code:"preview_submission_cancelled"}`；延迟后再次核对实例、会话和连接，
-不在另一实例或下一回合写入。该 410 是预览传输生命周期反馈，不要求真实后端新增协议。
+The catalog declares execution mode, streaming samples, and a one-time transport disconnect
+separately through `simulation.conversation`; the service core does not add special branches based
+on prompt text, filename, or catalog ID. Ordinary streaming still uses the original three 25ms
+samples; cancellation explicitly uses a twelve-part interactive sample with one part per second,
+without changing production model or client speed. **current (simulated session policy)**: The same
+Session owns history, snapshots, events, in-flight submission reservations, and timers.
+`conversation-submit-pending` waits two seconds before acceptance, without allocating a turn or
+appending user history; concurrent duplicate requests return 409. reset, disposal, deletion,
+interrupt/terminate, or HTTP disconnect cancels the reservation. A still-connected stale request
+returns `410 {code:"preview_submission_cancelled"}`. After the delay, instance, session, and
+connection are checked again; the write cannot land in another instance or the next turn. This 410 is
+preview transport-lifecycle feedback and does not require a new real-backend protocol.
 
-工具政策复用 `tool_started / tool_output_delta / tool_completed`；延迟及失败场景两片输出
-期间保持同一 pending 工具，终态分别 done/error，`success:false` 不伪装成 turn_failed。
-中断保留已有前缀并取消后续回调。审批允许后清 pending，同 request/turn 发布 running
-状态，延迟两秒后续答；拒绝不发布副作用，取消为 interrupted。所有回合定时回调绑定
-原 active turn 身份，旧回调不落到下一回合。没有工具 queued 事件、真实工具执行或队列调度。
+Tool policies reuse `tool_started / tool_output_delta / tool_completed`. In delayed and failure
+scenarios, the same pending tool remains during two output chunks, with terminal states done/error;
+`success:false` is not disguised as turn_failed. Interruption preserves the existing prefix and
+cancels later callbacks. After approval, pending is cleared, a running state is emitted for the same
+request/turn, and the response continues after a two-second delay; rejection produces no side effect,
+and cancellation becomes interrupted. All turn timer callbacks are bound to the original active-turn
+identity, so stale callbacks cannot land on the next turn. There are no tool queued events, real tool
+execution, or queue scheduling.
 
-失败场景首轮产生 `turn_failed`，原继续动作提交新合法 turn；重试回答按段落增量发布，
-合并后的字节与原默认回答一致。首个消息增量先发给当前订阅者，再关闭这些真实 HTTP 流一次。
+In a failure scenario, the first attempt emits `turn_failed`, and the original continue action submits
+a new valid turn. The retry answer is emitted incrementally by paragraph; the combined bytes match
+the original default answer. The first message delta is sent to current subscribers before those real
+HTTP streams are closed once.
 
-Session 仍持续向原 history/event ledger 追加后续增量、终态及同一 client 提交身份的
-`message_removed`，不因连接断开暂停领域计时。重连握手有界等待两秒，真实客户端使用
-其原退避和最后投影的 `from_seq` 再请求；服务只回放严格更大的 seq，再接实时流。
-这证明游标续流，不代替重叠帧去重、真实模型/网络故障及所有断线状态的产品验收。
-传输定时器独立于领域定时器：正常完成/中断不会让等待握手悬挂；reset/dispose 取消旧
-握手（410）并关闭旧流、清理 heartbeat/领域定时器，新实例不继承首轮失败或一次断线消耗。
+Session continues appending later deltas, terminal state, and `message_removed` for the same client
+submission identity to the original history/event ledger; disconnecting does not pause domain
+timers. Reconnect handshake waits up to two seconds. The real client retries using its original
+backoff and last projected `from_seq`; the service replays only strictly larger seq values before
+switching to the live stream. This proves cursor-based stream resumption, not deduplication of
+overlapping frames, real model/network failures, or product acceptance of every disconnect state.
+Transport timers are independent of domain timers: normal completion/interruption cannot leave a
+waiting handshake hanging. reset/dispose cancels the old handshake (410), closes old streams, and
+clears heartbeat/domain timers. A new instance does not inherit the first-attempt failure or a
+consumed one-time disconnect.
 
-### 开发者设置模拟凭据合同
+<a id="开发者设置模拟凭据合同"></a>
+### Developer Settings: Simulated Credential Contract
 
-复用 `account.ts` 的 `ApiKeySummary` / `ApiKeyCreated`，普通和托管记录共用当前实例账本。
-账号 API 仅在显式 developer 场景接入，需本实例 bootstrap capability 的 Bearer；未知、
-跨实例或 reset 前 capability 均不能授权。Serve 准备路由由同一预览实例身份选账本，
-不与账号凭据混用，也不调用 `/api/account/api-keys/session` 或真实身份服务。
+Reuse `account.ts` `ApiKeySummary` / `ApiKeyCreated`; ordinary and managed records share the
+current instance ledger. Account APIs are integrated only in explicit developer scenarios and
+require this instance's bootstrap capability as Bearer. Unknown, cross-instance, or pre-reset
+capabilities do not authorize access. Serve preparation routes select a ledger using the same preview
+instance identity; this is not mixed with account credentials and does not call
+`/api/account/api-keys/session` or a real identity service.
 
-| 端点 | 模拟响应与状态 | 边界 |
+| Endpoint | Simulated response and state | Boundary |
 | --- | --- | --- |
-| `GET /api/account/api-keys` | `{keys:ApiKeySummary[]}`；sample/empty/delayed/failed | 无 token；读取失败持续 503，重试不伪造恢复 |
-| `POST /api/account/api-keys` | `{name:string}` → `ApiKeyCreated` | 不可认证的 `preview-only:` 展示值只在此回执出现；掩码与其对应，完整值不入账本 |
-| `DELETE .../{key_id}` | `{revoked:true}` | 仅普通记录；未知及其他实例 ID 404，托管记录 403 |
-| `POST .../{key_id}/rotate` | `{rotated:true}`，无明文 | 仅托管记录；删除旧摘要，后续准备/刷新补新身份，不模拟真实凭据失效与会话迁移 |
-| `POST /api/serve/skill-credential` | `{ok:true,ready:false}` | 幂等准备模拟托管摘要；empty 场景不补记录，没有真实凭据环境 |
-| `POST /api/serve/skill-credential/refresh` | `{ok:true,issued:false,aligned:0}` | 仅模拟摘要生命周期，没有签发和会话对齐 |
+| `GET /api/account/api-keys` | `{keys:ApiKeySummary[]}`; sample/empty/delayed/failed | No token; read failure remains 503, and retry does not fake recovery |
+| `POST /api/account/api-keys` | `{name:string}` → `ApiKeyCreated` | The non-authenticating `preview-only:` display value appears only in this receipt; it is masked accordingly, and the full value is not stored in the ledger |
+| `DELETE .../{key_id}` | `{revoked:true}` | Ordinary records only; unknown and other-instance IDs return 404, managed records return 403 |
+| `POST .../{key_id}/rotate` | `{rotated:true}`, no plaintext | Managed records only; deletes the old summary. Later preparation/refresh supplies a new identity. Real credential invalidation and session migration are not simulated |
+| `POST /api/serve/skill-credential` | `{ok:true,ready:false}` | Idempotently prepares a simulated managed summary; empty scenarios do not add a record, and there is no real credential environment |
+| `POST /api/serve/skill-credential/refresh` | `{ok:true,issued:false,aligned:0}` | Simulates summary lifecycle only; there is no issuance or session alignment |
 
-普通变更政策 normal/delayed/fail-once，延迟两秒；非法写入不消耗首次失败，变更并发 409。
-dispose、断连和 reset 取消未完成读写并返回 410，不污染新账本。生成名称允许空且上限 64，
-与原 UI 输入上限对齐；100 条内存容量是预览防护，不宣称真实配额。账号服务不在本仓库，
-该服务的错误码、名称校验、配额和安全行为仍须真实 Owner 核对；不能用模拟结果冒充认证验收。
-不点击复制或接入真实剪贴板，不调用模型、外部命令或个人配置；浏览器内存回执不代表持久化。
+Ordinary mutation policies are normal/delayed/fail-once, with a two-second delay; invalid writes do
+not consume the first failure, and concurrent mutations return 409. dispose, disconnect, and reset
+cancel unfinished reads/writes and return 410 without contaminating the new ledger. Generated names
+may be empty and are capped at 64, matching the original UI input limit. The in-memory capacity of
+100 is a preview safeguard, not a claimed real quota. The account service is outside this repository;
+its error codes, name validation, quotas, and security behavior must still be checked by the real
+Owner. Simulated results cannot stand in for authentication acceptance. Nothing is copied or sent to
+the real clipboard, and no model, external command, or personal configuration is used; an in-memory
+browser receipt does not imply persistence.
 
-### 文档内容读取与 PDF 区域清单
+<a id="文档内容读取与-pdf-区域清单"></a>
+### Document Content Reads and PDF Region Manifest
 
-**current（源码）**：Markdown/PDF/Code/Image/DOCX 的显式 `simulation.contentRead.mode` 支持
-`delayed / failed / fail-once`。初始化从所选目录条目的真实 document target 解析当前项目和
-VFS file identity；不是按特殊文件名、扩展名或正文暗中决定结果。同身份重命名后政策仍生效，
-原路径新建的不同身份不继承政策。仅作用于 `GET /api/workbench/content`，不改变
-`GET /api/workbench/open`、raw、保存、版本和审阅接口，也不写第二份样本快照。
+**current (source)**: Explicit `simulation.contentRead.mode` supports `delayed / failed / fail-once`
+for Markdown/PDF/Code/Image/DOCX. Initialization resolves the current project and VFS file identity
+from the actual document target of the selected catalog entry; the result is not secretly determined
+by special filename, extension, or body text. The policy continues to apply after renaming the same
+identity; a different identity created at the original path does not inherit it. The policy affects
+only `GET /api/workbench/content`; it does not change `GET /api/workbench/open`, raw, save, version,
+or review interfaces, and it does not write a second sample snapshot.
 
-`delayed` 有界等待后读取同一 VFS 的当前 bytes/revision；`failed` 持续返回
-`503 {detail:"preview_content_unavailable"}`，原重试仍失败；`fail-once` 首个合法目标内容
-GET 返回同一错误，之后原重试可以成功。后者按请求语义消费，不宣称区分框架与人工请求；
-消费测试要求错误先可见、真实点击重试前不得出现成功响应，不能靠增加失败次数掩盖自动请求。
-无效路径与无关文件不消耗政策。reset/dispose 撤销在途延迟，旧读取不返回正常内容；
-连接关闭清理等待，实例之间互不影响。
+`delayed` waits for a bounded period, then reads the current bytes/revision from the same VFS;
+`failed` persistently returns `503 {detail:"preview_content_unavailable"}` and the original retry
+still fails. `fail-once` returns the same error for the first valid target-content GET, after which the
+original retry can succeed. The latter is consumed by request semantics and does not claim to
+distinguish framework requests from human actions. Consumer tests require the error to be visible and
+no success response before an actual retry click; increasing the failure count cannot be used to hide
+automatic requests. Invalid paths and unrelated files do not consume the policy. reset/dispose
+cancels in-flight delays, and stale reads do not return normal content; closing the connection clears
+the wait, and instances do not affect one another.
 
-真实客户端先读 open projection 再读 content；503 由原客户端归类为 retryable，
-真实 Dock 错误面调用 `workspace.retryLoad` 重新读取，不添加页面预览判断。
-首次深链恢复会等待文档打开后才设置 `navigationRestored`，期间 App 展示恢复 Progress，
-不能将其称为 Dock loading。延迟场景的消费判据是目标内容 GET 已发起但未响应时，
-真实 `progress-screen` 可见、原 viewer 未出现，之后恢复面退出并呈现原文档。
-关闭后从资料列表重开的尝试未证明 Dock loading，真实资源动作在打开 Promise 完成后才
-激活文档；不能把服务延迟或成功响应当成格式内部加载面通过。持续失败通过原重试确认仍失败，
-再按 F8 在 Console 显式解除当前实例目标文件的持续故障，关闭控制台后由原重试恢复。
-`POST /__preview/content/recover` 不重建实例、不改文件、版本、偏好或真实磁盘；
-仅 failed 政策可幂等恢复，其他模式/无政策为 409，已销毁 Owner 为 410。
-领域计时器已 resolve 但续体未执行时仍复核销毁/断连；服务在 await 后复核实例和
-项目登记，已摘登记项目不因保留文件字节而返回旧成功。恢复不代表真实后端故障验收。
+The real client reads the open projection first and then content; the original client classifies 503
+as retryable, and the real Dock error surface calls `workspace.retryLoad` to reread, with no
+preview-mode check added to the page. Deep-link restoration on first launch sets
+`navigationRestored` only after the document opens. During that time the App displays restoration
+Progress; this must not be called Dock loading. For a delayed scenario, the consumer criterion is
+that the real `progress-screen` is visible and the original viewer is absent after the target content
+GET has started but before it responds; after recovery, the restoration surface exits and the
+original document appears. Reopening from the literature list after closing has not proven Dock
+loading: the real resource action activates the document only after its open Promise completes.
+Neither service delay nor a successful response counts as acceptance of an internal format-loading
+surface. Persistent failure is confirmed through the original retry; then use F8 in Console to
+explicitly clear the current instance's persistent failure for the target file, close the console, and
+recover through the original retry. `POST /__preview/content/recover` does not recreate the instance
+or change files, versions, preferences, or real disk. Only a failed policy can be recovered
+idempotently; other modes or no policy return 409, and a disposed Owner returns 410. Even if a domain
+timer has resolved but its continuation has not run, disposal/disconnect is checked again. After
+await, the service rechecks the instance and project registration; a project whose registration was
+removed cannot return stale success just because its file bytes remain. Recovery does not constitute
+acceptance of real backend failures.
 
-真实项目内容 GET 沿当前 project/path 读取，没有 identity CAS。预览同身份编辑与
-同路径替换均返回当前字节及 ETag；路径消失为 404，不为故障绑定额外伪造身份冲突。
-`POST /api/resource/reveal` 是原客户端的只读位置解析，不等于写文件或执行原生揭示；
-消费测试需按精确项目/路径与回执单独观测，不能将其与业务写混算或放行所有 POST。
-项目 HEAD/Range 与内容内部的 PNG 解码、Monaco 握手、DOCX 解析、XLS/WASM 生命周期
-尚待独立接入/验收，普通传输成功与原重试不能替代这些分支。
+The real project content GET reads the current project/path and has no identity CAS. In preview,
+both editing the same identity and replacing it at the same path return current bytes and ETag; a
+missing path returns 404. No additional fake identity conflict is attached to the failure. The
+original client's `POST /api/resource/reveal` resolves a location read-only; it does not write a file
+or perform a native reveal. Consumer tests must observe its exact project/path and receipt
+separately; it must not be counted as a business write or used to allow all POST requests. Project
+HEAD/Range and the internal content paths for PNG decoding, Monaco handshake, DOCX parsing, and the
+XLS/WASM lifecycle still need separate integration/acceptance. Ordinary transport success and the
+original retry do not replace those checks.
 
-`GET /api/workbench/pdf/regions` 沿用 `path/project/revision/start_page/end_page` 参数和
-原 `PdfVisualRegionManifest`。响应从同一现存 VFS PDF 字节用既有 `pdf-lib` 仅读真实页数，
-保留 `source_revision`，使用 `schema_version:1`、`coordinate_space:"pdfjs_normalized"`。
-预览没有区域检测器：`detector_version:"preview-unavailable"`，所有请求页明确
-`unavailable:true`、`regions:[]`，并列入 `unavailable_pages`；不是声称检测成功而结果为空。
-未知文件 404、非 PDF 415、过期 revision 409、缺参数/非法或越界页范围 422；损坏 PDF
-解析失败 422。解析后再次核实例及文件 identity/revision，禁止返回旧实例或陈旧内容的清单。
-图像裁剪等未实现请求仍明确 501，不制造公式、图片、表格或检测结果。
+`GET /api/workbench/pdf/regions` reuses the `path/project/revision/start_page/end_page` parameters
+and original `PdfVisualRegionManifest`. The response uses existing `pdf-lib` to read the actual page
+count from the same existing VFS PDF bytes, read-only; it preserves `source_revision` and uses
+`schema_version:1`, `coordinate_space:"pdfjs_normalized"`. Preview has no region detector:
+`detector_version:"preview-unavailable"`; every requested page explicitly has
+`unavailable:true`, `regions:[]`, and is listed in `unavailable_pages`. This does not claim that
+detection succeeded and found no results. Unknown files return 404, non-PDF files 415, stale
+revisions 409, missing parameters or invalid/out-of-range page ranges 422, and malformed PDF parse
+failures 422. Instance and file identity/revision are checked again after parsing, preventing a
+manifest from stale content or an old instance. Unimplemented requests such as image cropping still
+explicitly return 501; no formula, image, table, or detection result is fabricated.
 
-**gap / difference**：此切片覆盖 HTTP 读取延迟、失败和重试，不覆盖 PDF 解码失败、加密、
-区域识别、真实文件系统故障或跨进程恢复。合同测试通过不等于最终场景 UI 验收；最终浏览器
-消费和截图须按最终版本独立核验，也不替代真实 Serve/Electron 和跨平台验收。
+**gap / difference**: This slice covers HTTP read delay, failure, and retry, not PDF decoding failure,
+encryption, region recognition, real filesystem failure, or cross-process recovery. Passing contract
+tests is not final UI acceptance of the scenario. Browser consumption and screenshots must be checked
+separately on the final version; they also do not replace real Serve/Electron and cross-platform
+acceptance.
 
-### 账号只读场景合同
+<a id="账号只读场景合同"></a>
+### Read-Only Account Scenario Contract
 
-**current**：`settings-account-states / ready / pending / failed / anonymous` 的声明策略分别是
-`no-base / ready / delayed / failed / anonymous`。控制面 `GET /__preview/state` 返回当前实例的
-`account: {instance, mode, capability}`；普通场景按全局登录选择，显式账号场景的声明策略
-优先但不清除全局选择。能力是每实例随机、内存保存的 opaque 值，
-不是 JWT、用户令牌或持久登录。bridge 严格核对实例、模式及格式，再经公开 `setAccountBase`
-设置同源 loopback；`getAuthToken` 仅返回该能力，`setAuthToken` 只接受清空，不采用传入凭据。
+**current**: The declared policies for `settings-account-states / ready / pending / failed / anonymous`
+are respectively `no-base / ready / delayed / failed / anonymous`. Control-plane
+`GET /__preview/state` returns the current instance's `account: {instance, mode, capability}`.
+Ordinary scenarios follow the global login selection; an explicit account scenario's declared policy
+takes precedence but does not clear the global selection. The capability is a random, in-memory
+opaque value per instance; it is not a JWT, user token, or persistent login. The bridge strictly
+checks instance, mode, and format, then uses the public `setAccountBase` to set same-origin loopback.
+`getAuthToken` returns only that capability, and `setAuthToken` accepts clearing only; supplied
+credentials are not used.
 
-`GET /api/auth/status` 仍为 `enabled:false`；显式场景除 `no-base` 外返回当前本地请求的
-`account_base_url`，普通场景同样沿当前全局策略设置同源地址，`no-base` 保持空地址。
-真实客户端读取 `GET /api/account/me`：
-只接受同一实例的 Bearer capability，返回原 `AccountProfile` 的 `user_id/nickname`，昵称明确
-标识为模拟用户。延迟场景有界等待后返回同一 profile；失败场景持续 `503`，重试仍失败；
-匿名没有能力，沿客户端未登录分支，不伪造成功。reset/dispose 失效旧能力并结束在途等待。
+`GET /api/auth/status` remains `enabled:false`. Explicit scenarios other than `no-base` return
+`account_base_url` for the current local request; ordinary scenarios also set a same-origin address
+according to the current global policy, while `no-base` keeps the address empty. The real client reads
+`GET /api/account/me`: only a Bearer capability from the same instance is accepted, and the original
+`AccountProfile` `user_id/nickname` is returned with the nickname clearly identifying a simulated
+user. Delayed scenarios wait for a bounded period and then return the same profile; failed scenarios
+persistently return `503`, including on retry. Anonymous scenarios have no capability and follow the
+client's signed-out branch without faking success. reset/dispose invalidates old capabilities and
+ends in-flight waits.
 
-**current**：`GET /api/account/credits` 沿同一实例 capability、延迟、失败及销毁围栏读取，
-已授权的普通场景明确返回 `503 {code: "preview_credits_unavailable"}`，表示没有模拟积分
-数据，不伪造余额或放宽计量。原客户端保留模拟登录并显示余额占位，诊断记录明确503，
-不再作为未知请求501。缺失/异实例能力仍401，销毁与重置使在途旧读410，含已授权读取恢复前
-的微任务竞争；不调用真实积分服务。项目中心消费回归同时禁止实际页面出现未知501请求。
+**current**: `GET /api/account/credits` is guarded by the same-instance capability, delay, failure,
+and disposal fences. An authorized ordinary scenario explicitly returns
+`503 {code: "preview_credits_unavailable"}`, meaning no simulated credit data exists; it does not
+fake a balance or relax metering. The original client retains simulated login and displays a balance
+placeholder; diagnostics record the explicit 503 instead of treating it as an unknown-request 501.
+Missing or cross-instance capabilities still return 401. Disposal and reset make in-flight stale
+reads return 410, including the microtask race before recovery of an authorized read. The real credit
+service is not called. Project-center consumer regression also prohibits unknown 501 requests from
+appearing on the actual page.
 
-**gap / difference**：只读 profile 与积分不可用适配不表示真实登录或计费已实现。手机号、密码、昵称
-修改和真实登录等 mutation 仍未实现；不执行真实账号动作。原客户端的默认 cookie 语义不改写，
-模拟鉴权不使用 cookie，不代理账号服务，诊断不记录 capability。后端与 Electron 继续使用
-原账号合同和凭据边界，无需给页面添加预览分支。
+**gap / difference**: Read-only profile and unavailable-credit handling do not mean real login or
+billing has been implemented. Mutations such as phone, password, or nickname changes and real login
+remain unimplemented; no real account action is performed. The original client's default cookie
+semantics are unchanged. Simulated authentication does not use cookies or proxy the account service,
+and diagnostics do not record the capability. Backend and Electron continue to use the original
+account contract and credential boundary; no preview branch is needed in the page.
 
-### 反馈消费边界
+<a id="反馈消费边界"></a>
+### Feedback Consumption Boundary
 
-**current**：`POST /api/serve/feedback` 使用真实 `submitFeedback` multipart 字段；
-正常场景返回 `{id}`，空描述及附件校验失败返回 `422 detail`，目录场景的
-`simulation.feedback` 显式选择 `502` 或 `429`，不根据用户正文暗中切换结果。
-图片数量、单图/总图大小、JSON 报告与描述长度沿真实 Owner 校验。
-**gap / difference**：预览额外限制整个请求为 45 MiB，超限返回 `413`；仅在内存解析，
-不采集系统日志、trace，不上传附件。成功回执额外声明 `simulated: true`、`bundle_bytes: 0`。
-诊断只保留有界计数与用户请求采集/实际未采集标记，不保留正文、邮箱、文件名或附件字节；
-reset 清空回执并更换 epoch。此消费链路不等于真实反馈上报或原生截图功能验收。
+**current**: `POST /api/serve/feedback` uses the real `submitFeedback` multipart fields. Normal
+scenarios return `{id}`; empty descriptions and attachment-validation failures return `422 detail`.
+The catalog scenario's `simulation.feedback` explicitly selects `502` or `429`; results are not
+secretly switched based on user text. Image count, per-image/total image size, JSON report, and
+description length follow validation by the real Owner.
+**gap / difference**: Preview additionally limits the entire request to 45 MiB; exceeding it returns
+`413`. Parsing is in memory only; system logs or traces are not collected and attachments are not
+uploaded. Success receipts additionally declare `simulated: true`, `bundle_bytes: 0`. Diagnostics
+retain only bounded counts and markers indicating whether user-requested collection actually
+occurred; they do not retain body text, email, filenames, or attachment bytes. reset clears receipts
+and changes epoch. This consumer flow is not acceptance of real feedback reporting or native
+screenshot functionality.
 
-### 诊断与隐藏设置消费边界
+<a id="诊断与隐藏设置消费边界"></a>
+### Diagnostics and Hidden Settings Consumption Boundary
 
-`/__preview/state` 的诊断是开发预览数据，不要求真实后端增加对应接口。请求摘要按实例
-有界保存 method/path/status/duration/outcome，不存查询参数、头部或正文；事件摘要从同一
-会话和文件事件账本派生，不能成为第二份可变事件事实源。reset 后旧请求与事件不进入新实例。
+Diagnostics from `/__preview/state` are development-preview data; they do not require a corresponding
+real backend interface. Request summaries are stored with a per-instance bound and include
+method/path/status/duration/outcome, but not query parameters, headers, or body. Event summaries are
+derived from the same session and file-event ledgers; they cannot become a second mutable event
+source of truth. After reset, old requests and events do not enter the new instance.
 
-账号仅在真实客户端确认 profile 成功时展示已登录及身份操作；加载与失败分别显示状态、
-错误及重试。当前隔离工作台账号仍是 `no_base_url` 错误态，不把它改成匿名或伪造登录。
-额外的中英 ready/loading/error/anonymous 消费回归使用本机 HTTP 样本边界，只证明共享内容
-的渲染状态机，不证明工作台已有可选择的全部账号场景，也不证明真实账号登录。
-权限页使用 account namespace 的状态文案；浏览器仍诚实展示原生能力不可用。
-工作台权限场景现通过 typed bridge 提供正常不可用、2 秒有界延迟及持续失败策略，
-控制台可直接选择，失败后的刷新走真实组件回调并再次查询。三项真实 UI 消费通过；
-不修改系统权限、不模拟已授权，不把 bridge 合同误写为后端需适配的新 HTTP 接口。
+The account is shown as signed in, with identity actions, only after the real client confirms profile
+success; loading and failure each display their own state, error, and retry. The current isolated
+workbench account remains in the `no_base_url` error state; it is not changed to anonymous or made
+to appear signed in. Additional bilingual ready/loading/error/anonymous consumer regression uses a
+local HTTP sample boundary and proves only the shared content rendering state machine. It does not
+prove that the workbench offers every selectable account scenario or that real account login works.
+The permissions page uses status copy from the account namespace; the browser still accurately
+shows native capability as unavailable. Workbench permission scenarios now use a typed bridge for
+normal-unavailable, bounded two-second delay, and persistent-failure policies. The console can
+select these directly; refresh after failure uses the real component callback and queries again.
+Three real UI-consumption cases passed. System permissions are not changed, authorization is not
+simulated, and the bridge contract is not misrepresented as a new HTTP interface for backend
+adaptation.
 
-### 版本读取与封存
+<a id="版本读取与封存"></a>
+### Version Reads and Sealing
 
-**current**：`GET /api/resource/capability`、`GET /api/resource/files/{file_id}/versions`、
-`GET /api/resource/versions/{id}` 及内容的 GET/HEAD/单 Range 复用同一 VFS 身份与不可变快照。
-版本场景通过受审 modified fixture 推进文件当前字节，历史与当前不是彼此独立的静态响应；
-普通场景保留初始快照。版本比较沿真实客户端分别读取两份版本内容，不依赖服务器 unified diff。
-`POST .../files/{file_id}/versions` 的 seal 校验磁盘/head/pending fence 与幂等键，冲突返回
-真实错误结构；未知版本或跨实例旧版本不可读取。缺少批注快照返回明确的 404，不伪造空成功。
+**current**: `GET /api/resource/capability`, `GET /api/resource/files/{file_id}/versions`,
+`GET /api/resource/versions/{id}`, and GET/HEAD/single-Range content reuse the same VFS identity
+and immutable snapshots. Version scenarios advance the current file bytes using a reviewed modified
+fixture, so historical and current versions are not independent static responses; ordinary scenarios
+retain the initial snapshot. Version comparison follows the real client in reading both versions'
+content separately and does not depend on a server unified diff. `POST .../files/{file_id}/versions`
+seal checks disk/head/pending fences and the idempotency key, returning the real error structure on
+conflict. Unknown versions and stale versions from other instances cannot be read. If an annotation
+snapshot is missing, the response is explicitly 404; empty success is not fabricated.
 
-**difference / gap**：预览每文件 1 MiB、累计版本字节 64 MiB、最多 50 版及 128 个封存回执，
-容量失败在修改 VFS 前预检；这些是开发预览预算，不代表真实服务限制或磁盘持久化。
-restore、alias、delete、服务器 unified diff 尚未接入，不将已能比较写成版本生命周期全覆盖。
+**difference / gap**: Preview limits are 1 MiB per file, 64 MiB total version bytes, at most 50
+versions, and 128 seal receipts. Capacity is checked before modifying the VFS. These are development
+preview budgets, not real service limits or disk persistence. restore, alias, delete, and server
+unified diff are not integrated; comparison support is not described as full version-lifecycle
+coverage.
 
-### 批次审阅与文件冲突
+<a id="批次审阅与文件冲突"></a>
+### Batch Reviews and File Conflicts
 
-**current（HTTP 客户端合同）**：实例内每项目的 `PreviewReviews` 复用唯一 Versions/VFS，
-场景创建 pending candidate，树节点的版本状态暴露真实待审入口。支持
-`GET /api/resource/review-batches`、批次详情、成员 `base/candidate/current` 与 `POST .../commit`；
-决策沿真实客户端的 accept/reject/revise、pending revision、disk revision 与幂等键执行。
-候选未封存；完成后同一文件身份、版本头与资源内容事件保持一致，不维护另一个可写副本。
-文件 `pending`、审阅 base、`review/conflict` 与 `review/reconcile` 复用同一审阅事实源。
-首次提交失败、重复回执、旧批次、跨实例、修订围栏和冲突恢复已有真实 API consumer 测试；
-这些测试不替代浏览器批审 viewer 消费验收。
+**current (HTTP client contract)**: Each project within an instance uses `PreviewReviews` with the
+single Versions/VFS. Scenarios create a pending candidate, and the tree node's version status
+exposes the real review entry point. Supported operations include `GET /api/resource/review-batches`,
+batch details, member `base/candidate/current`, and `POST .../commit`. Decisions follow the real
+client's accept/reject/revise, pending revision, disk revision, and idempotency key. Candidates are
+not sealed; after completion, file identity, version head, and resource content events remain
+consistent, with no separate writable copy. File `pending`, review base, `review/conflict`, and
+`review/reconcile` reuse the same review source of truth. Real API consumer tests cover first-commit
+failure, duplicate receipts, old batches, cross-instance use, revision fencing, and conflict
+recovery; they do not replace browser batch-review viewer acceptance.
 
-**difference / gap**：当前只覆盖已存在、同路径文件。新建、删除和跨路径恢复不支持时
-明确返回冲突，不伪造成功；旧单文件审阅 POST 与全局 pending 列表仍未接线。
-冲突场景通过 VFS 外部写入产生 drift；若用户已读取最新 revision 并明确接受，合同允许
-恢复 candidate，不能为了展示错误而伪造过期提交。真实后端接口已存在，预览不新增产品协议。
+**difference / gap**: Currently, only existing files at the same path are covered. Unsupported
+creation, deletion, and restoration across paths explicitly return a conflict; success is not faked.
+The old single-file review POST and global pending list are still unwired. Conflict scenarios create
+drift through external VFS writes. If the user has read the latest revision and explicitly accepts,
+the contract allows the candidate to be restored; an expired commit must not be fabricated merely to
+show an error. The real backend interface already exists; preview adds no product protocol.
 
-### 隐藏资料模块与检索结果
+<a id="隐藏资料模块与检索结果"></a>
+### Hidden Literature Module and Search Results
 
-**current**：资料模块复用真实 registry contribution；文件行始终预留菜单控件空间，
-避免待审按钮与绝对定位菜单在静止/hover 间重叠。真实点击、矩形不相交与命中目标均有消费断言，
-不以 force click 绕过。`GET /api/serve/settings/file-versions` 从版本 Owner 和同一 VFS 派生
-只读配置与扫描摘要，满足模块挂载；修改策略、清理等 POST 仍明确不支持。
+**current**: The literature module reuses the real registry contribution. File rows always reserve
+space for menu controls, preventing the pending-review button from overlapping the absolutely
+positioned menu between rest and hover states. Consumer assertions cover real clicks, non-intersecting
+rectangles, and the intended hit target; they do not bypass behavior with force click.
+`GET /api/serve/settings/file-versions` derives read-only configuration and scan summaries from the
+Versions Owner and same VFS, allowing the module to mount. Policy changes, cleanup, and other POSTs
+remain explicitly unsupported.
 
-`GET /api/literature/searches` 仅在文献搜索场景播种 completed 历史任务，启动后由真实客户端
-恢复标签，用户点击查看真实表格、选择和详情；结果状态接口返回同一受审论文身份。
-`POST /api/resource/web-search` 使用原请求/official 输出 schema，真实表单提交后显示两条
-明确标为 mock 的候选，可选中；候选 URL 使用 `example.invalid`，不联网检索或抓取正文。
-网页图标路由只对受审来源返回空响应，不做任意 URL 代理。
+`GET /api/literature/searches` seeds completed historical tasks only in literature-search scenarios.
+After startup, the real client restores the tab, and the user clicks to see the real table, selection,
+and details. The result-state interface returns the same reviewed paper identity. `POST /api/resource/web-search`
+uses the original request/official output schema. After real form submission,
+it displays two candidates explicitly labeled as mock and allows selection. Candidate URLs use
+`example.invalid`; no network search or body scraping occurs. The webpage-icon route returns an
+empty response only for reviewed sources and does not proxy arbitrary URLs.
 
-**gap**：此切片不解锁文献隐藏的搜索发起/登录，不模拟入库、抓取、导入或外链成功；
-搜索尚无可选择的加载/空/错误/重试政策，不能将结果成功态当全流程覆盖。
-批审五项与检索两项真实 UI 消费通过，但多文件/Office 审阅、旧单文件快照及真实 Agent
-磁盘生命周期仍待独立验收；样本不是已发表论文，不编造真实 DOI 或 arXiv 身份。
+**gap**: This slice does not unlock hidden literature search initiation/login and does not simulate
+successful ingestion, scraping, import, or external links. Search has no selectable
+loading/empty/error/retry policies yet; a successful result state cannot count as full-flow coverage.
+Five batch-review and two search real-UI consumer cases passed, but multi-file/Office review, old
+single-file snapshots, and the real Agent disk lifecycle still need separate acceptance. Samples are
+not published papers; real DOI or arXiv identities are not invented.
 
-### 最小文件读写契约
+<a id="最小文件读写契约"></a>
+### Minimal File Read/Write Contract
 
-样本唯一清单为[受审注册表](../../preview/documents.ts)，包含 minimal-project 的 Markdown、
-Python、PDF，现有 PNG、Office corpus 的 DOCX/XLS，以及预览 CSV/TSV 和不支持格式样本。
-[装载器](../../preview/samples.ts)校验 SHA256 及来源 manifest 后，采用实例隔离的内存覆盖。
-XLS 属于 Office viewer，CSV 属于 spreadsheet，TSV 属于 table；未实现的转换请求明确失败，
-不以其他格式字节冒充转换成功。XLS 已接入受审预置字体供给，实际可见性仍待验证；
-它不授予系统字体权限，也不证明 Electron 排版一致，样本存在不等于可用验收。
-`POST /api/resource/reveal` 仅按 body 的 project/path 解析同一 VFS，返回 `{absolute}`；
-不存在返回 `404 node_not_found`，越界拒绝，query 不得替换项目身份。该路径是虚拟路径，
-不是用户磁盘授权；真正原生打开仍由 bridge 明确返回 `desktop_bridge_unavailable`。
-没有读取个人目录、写真实磁盘或将用户文件打入样本。文件 `identity` 在保存/重命名时保持，
-`mtime` 为秒，`revision` 从实际字节计算为 `sha256:<hex>`；返回字节拷贝，避免调用者篡改库存。
+The single sample inventory is the [reviewed registry](../../preview/documents.ts). It includes
+Markdown, Python, and PDF from minimal-project, an existing PNG, DOCX/XLS from the Office corpus,
+and preview CSV/TSV and unsupported-format samples. The [loader](../../preview/samples.ts) validates
+SHA256 and the source manifest before applying instance-isolated in-memory overlays. XLS uses the
+Office viewer, CSV uses spreadsheet, and TSV uses table. Unimplemented conversion requests fail
+explicitly; bytes in another format are not passed off as successful conversion. Reviewed
+prebundled fonts are supplied for XLS, but actual visibility remains to be verified. This does not
+grant system-font permissions or prove consistent Electron layout; the existence of a sample is not
+acceptance that it works.
+`POST /api/resource/reveal` resolves the same VFS using only project/path from the body and returns
+`{absolute}`. Missing paths return `404 node_not_found`; traversal is rejected, and query parameters
+cannot replace project identity. This is a virtual path, not authorization to access the user's disk;
+actual native open still explicitly returns `desktop_bridge_unavailable` from the bridge. Personal
+directories are not read, the real disk is not written, and user files are not included in samples.
+File `identity` is preserved on save/rename, `mtime` is in seconds, and `revision` is calculated from
+actual bytes as `sha256:<hex>`. Byte copies are returned to prevent callers from mutating the
+inventory.
 
 ```text
 GET /api/workbench/open?project=<id>&path=readme.md
@@ -454,237 +623,328 @@ PUT /api/workbench/content?project=<id>&path=readme.md
   → 成功后读取新 ETag，再次 GET 必须得到同源新字节
 ```
 
-**required（真实契约）**：真实提交要求 octet-stream、有效 `If-Match`，成功返回 `204` 与新 ETag；
-缺少有效 revision、弱 ETag、冲突和不支持的媒体类型走原错误语义。当前模拟端已补齐
-缺 revision 返回 `428`、冲突/弱 ETag 返回 `412`、错误媒体类型返回 `415`、成功 `204` 与新 ETag，
-并接受与真实端一致的未加引号 revision。对应聚焦断言不证明幂等提交、自动版本或真实磁盘写入；
-不能将“能够保存”写成全契约一致，不得通过放宽生产客户端或后端修正模拟差异。
+The comments above indicate that GET returns raw bytes with an ETag, and that a successful PUT must be followed by reading the new ETag and verifying that a subsequent GET returns the new bytes from the same source.
 
-**required（会话契约）**：事件保持 `v:2`、单调 `seq`、`session_id` 及所属 `turn_id/item_id`；
-审批关联原 `request_id`，批准/拒绝/取消必须有不同可观察结果。`accepted` 只证明接收，
-不证明回合完成；`reconcile` 必须根据实际提交身份说明 applied/not_applied/still_unknown，
-不能为了消除前端 pending 统一返回成功。该批修复的完成状态以最终源码和消费测试为准。
+**required (real contract)**: Real submissions require octet-stream and a valid `If-Match`; success
+returns `204` with a new ETag. Missing/invalid revision, weak ETag, conflict, and unsupported media
+type follow the original error semantics. The current simulated side now covers missing revision
+with `428`, conflict/weak ETag with `412`, wrong media type with `415`, and success with `204` and a
+new ETag. It also accepts an unquoted revision, matching the real side. Focused assertions do not
+prove idempotent submission, automatic versions, or real disk writes. “Saving works” must not be
+described as full contract alignment; do not relax the production client or backend to hide simulated
+differences.
 
-会话置顶和归档当前已使用真实 `PUT .../pin`、`PUT .../archive`，回执包含 `session_id`
-及 `pinned/archived` 状态，不再以模拟专用 POST 方法替代；真实持久化与重新打开仍需单独验收。
+**required (session contract)**: Events retain `v:2`, monotonically increasing `seq`, `session_id`,
+and associated `turn_id/item_id`. Approval links to the original `request_id`; approve/reject/cancel
+must have distinct observable results. `accepted` proves receipt only, not turn completion. `reconcile`
+must report applied/not_applied/still_unknown based on the actual submission identity; it cannot
+always return success to clear a frontend pending state. Completion of this batch of fixes is judged
+from final source and consumer tests.
 
+Session pinning and archiving now use the real `PUT .../pin` and `PUT .../archive`; receipts include
+`session_id` and `pinned/archived` state. These are no longer replaced by mock-only POST methods.
+Real persistence and reopening still need separate acceptance.
+
+<a id="ownership--dependency"></a>
 ## Ownership / Dependency
 
-真实 DTO、事件与业务状态归原 Serve/Runtime Owner；预览团队维护现有契约的有限模拟，
-不反向要求业务后端实现 `/__preview/catalog`、`/__preview/state` 或 `/__preview/reset`。
-这些开发接口只管理场景、隔离偏好和清理，生产排除由 [构建检查](../../preview/verify.ts) 核实。
+Real DTOs, events, and business state belong to their original Serve/Runtime Owners. The preview team
+maintains a limited simulation of existing contracts; it does not ask the business backend to
+implement `/__preview/catalog`, `/__preview/state`, or `/__preview/reset`. These development
+interfaces only manage scenarios, isolated preferences, and cleanup; production exclusion is
+verified by the [build check](../../preview/verify.ts).
 
-新增 UI 先判断所需数据是否已能由现有契约表达：能表达则补同一消费路径的样本/状态；
-不能表达才提出新增字段、校验、事件、错误和兼容语义，并同时更新真实与模拟实现。
-原生选择器、WebContentsView、系统权限、安装更新不能由浏览器 mock 替代。
+For new UI, first determine whether the required data can be expressed by the existing contract. If
+so, add a sample/state to the same consumer path. Only when it cannot be expressed should new fields,
+validation, events, errors, and compatibility semantics be proposed, with both real and simulated
+implementations updated together. Native pickers, WebContentsView, system permissions, and
+installation/update cannot be replaced by a browser mock.
 
-### MCP 设置配置
+<a id="mcp-设置配置"></a>
+### MCP Settings Configuration
 
-**历史记录（2026-10-29 已退役）**：独立 MCP 设置页与对应预览目录、场景和页面测试已移除，
-用户入口统一为扩展中的连接器。以下只记录原页面的预览合同，不代表当前可打开的页面。
-底层配置接口、预览配置模型及其单元测试保留，不迁移或删除真实用户数据。
+**History (retired on 2026-10-29)**: The standalone MCP settings page and its preview catalog,
+scenarios, and page tests have been removed. The user entry point is now the connector in Extensions.
+The following records only the preview contract of the old page; it does not mean that the page can
+currently be opened. The underlying configuration interface, preview configuration model, and unit
+tests are retained. Real user data is not migrated or deleted.
 
-原 `McpSettingsPage` 通过既有 typed bridge 消费
-`GET/PUT /api/settings/mcp`。预览只在实例内存保存 `configuration` 的
-`schema_version:1 / revision / servers`，成功写入才递增 revision，旧 expected_revision
-返回 409；延迟写入在真正提交前再次比较 revision。重载读取同一实例，reset/dispose 或
-断开取消旧等待，不迁移或写真实 MCP 配置文件。
+The original `McpSettingsPage` consumes `GET/PUT /api/settings/mcp` through the existing typed
+bridge. Preview stores only `configuration` with `schema_version:1 / revision / servers` in
+instance memory. Revision increments only on a successful write; an old expected_revision returns
+409. Delayed writes compare revision again immediately before commit. Reload reads the same instance;
+reset/dispose or disconnect cancels old waits. No real MCP configuration file is migrated or written.
 
-场景政策 `simulation.mcp` 分别声明 read 的 normal/delayed/failed 与 write 的
-normal/delayed/fail-once。非法请求和冲突不消费首次失败；首次合法写失败不改变配置，
-用户沿原表单再次提交。原页面的等待、错误、启停、移除和刷新仍由真实状态机决定。
-读取失败后的摘要复用原 loadError 消息，不再在已结算错误时显示“加载中”；同批 mock
-错误政策与真实 UI 回归先暴露该问题，再验证原刷新入口下的正确摘要。
-启用配置明确返回 `failed`、`tool_count:null` 和 `safe_error:"preview runtime not executed"`，
-禁用配置返回 disabled；supported 表示预览支持配置消费，不代表真实 MCP 连接或工具可执行。
+Scenario policies in `simulation.mcp` separately declare normal/delayed/failed for reads and
+normal/delayed/fail-once for writes. Invalid requests and conflicts do not consume the first failure;
+the first valid write failure leaves configuration unchanged, and the user resubmits through the
+original form. The original page's waiting, error, enable/disable, removal, and refresh behavior
+remains controlled by the real state machine. After read failure, the summary reuses the original
+loadError message instead of showing “loading” after the error has settled. Mock error policies and
+real UI regression first exposed this issue, then verified the correct summary through the original
+refresh entry point. Enabled configuration explicitly returns `failed`, `tool_count:null`, and
+`safe_error:"preview runtime not executed"`; disabled configuration returns disabled. supported
+means preview supports consuming the configuration, not that a real MCP connection or tool is usable.
 
-**difference / security**：真实接口的 `require_host_process` 与宿主代理不变，预览不持有
-或伪造 Host-Key。HTTP URL 和 stdio command/args 仅为内存配置文本，绝不发请求、运行命令
-或探测服务器。保留真实字段，但 headers/header_secrets/environment/environment_secrets
-只接受空对象；非空映射及 URL query 返回 403，不回显其输入。其余格式错误 422、超出预算
-413、实例销毁或等待取消 410。URL 拒绝 userinfo、fragment 和非法协议；查询整体禁止是
-明确比真实合同更严格的预览限制。自由文本不是通用敏感信息检测器，协作样本只用受审虚拟
-配置，不应输入真实密钥；不能把这些检查宣称为任意文本的 DLP 或完整安全审计。
+**difference / security**: The real interface's `require_host_process` and host proxy remain
+unchanged; preview neither holds nor fabricates a Host-Key. HTTP URLs and stdio command/args are
+in-memory configuration text only; no requests are sent, commands run, or servers probed. Real
+fields are retained, but headers/header_secrets/environment/environment_secrets accept only empty
+objects. Non-empty mappings and URL queries return 403 without echoing the input. Other format errors
+return 422, over-budget requests 413, and disposal/cancelled waits 410. URLs reject userinfo,
+fragment, and invalid protocols. Prohibiting all queries is an explicit preview restriction stricter
+than the real contract. Free text is not a general sensitive-information detector; collaboration
+samples use reviewed virtual configuration only, and real keys should not be entered. These checks
+must not be described as DLP for arbitrary text or a complete security audit.
 
-**gap**：不模拟服务器 ready、OAuth/secret refs、工具发现/调用、stdio 进程或网络生命周期，
-也不证明真实后端文件落盘、宿主权限或安装版 MCP 可用。真实后端已有该合同；预览政策不是
-要求后端新增的 DTO，适配时仍消费原共享页面。
-本批浏览器配置交互使用 HTTP 样本；stdio 表单字段、auth_required 等视觉分支尚无对应
-消费场景，不能把当前五场景写成 MCP 所有关键状态已覆盖。
+**gap**: Server ready, OAuth/secret refs, tool discovery/calls, stdio processes, and network
+lifecycle are not simulated. Nor does this prove real backend file persistence, host permissions, or
+MCP availability in an installed build. The real backend already has this contract; preview policies
+do not require new DTOs from the backend, and adaptation still consumes the original shared page.
+Browser configuration interactions in this batch use HTTP samples. The stdio form fields and visual
+branches such as auth_required have no corresponding consumer scenarios yet, so the current five
+scenarios cannot be said to cover every key MCP state.
 
-## 模型服务只读合同
+<a id="模型服务只读合同"></a>
+## Model Service Read-Only Contract
 
-**current**：正常设置入口复用 `AccountPanel` 的模型服务标签，沿真实客户端读取
-`GET /api/serve/model-profiles`、`GET /api/serve/model-providers` 与现有
-`GET /api/serve/models`。连接 DTO 保留真实公开结构；受审样本使用 `example.invalid`，
-未启用、无密钥、非 OAuth，两个已选模型仅是能力声明，不表示可推理。厂商预设返回空数组，
-真实界面仍显示其内建的未添加厂商入口，不复制另一套空态。
+**current**: The normal settings entry reuses the model-service tab in `AccountPanel` and reads
+`GET /api/serve/model-profiles`, `GET /api/serve/model-providers`, and the existing
+`GET /api/serve/models` through the real client. Connection DTOs retain the real public structure.
+Reviewed samples use `example.invalid`, are disabled, have no key, and are non-OAuth. The two
+selected models are capability declarations only and do not imply inference is possible. Provider
+presets return an empty array; the real interface still shows its built-in entry for adding a
+provider, rather than copying a separate empty state.
 
-每个实例及重置使用新的连接身份；同实例重载保持资料一致，返回值独立复制。提供样本、
-空配置、延迟读取和持续 503 四政策；重试不会按次数伪造恢复，重置/断开取消旧等待。
-保存、启停、可见性、删除、探测与模型发现均不支持；旧或跨实例连接标识返回 404，
-有效标识的不支持操作返回明确 501。不持久化输入，不连接上游，不执行 OAuth 或推理。
+Each instance and reset uses a new connection identity; reload in the same instance preserves
+profile consistency, and returned values are independent copies. Four policies are provided: sample,
+empty configuration, delayed read, and persistent 503. Retry does not fake recovery based on request
+count; reset/disconnect cancels old waits. Save, enable/disable, visibility, deletion, probing, and
+model discovery are unsupported. Old or cross-instance connection IDs return 404; unsupported
+operations for valid IDs return explicit 501. Input is not persisted, no upstream is contacted, and
+OAuth or inference is not executed.
 
-**gap**：本切片仅验证列表/筛选/详情及已选模型读取，不覆盖编辑保存、连接可用性、
-OAuth、真实模型目录刷新或调用。实际 Electron 只能核验自然配置下的页面读取，不将
-浏览器注入的错误、样本与延迟当作真实服务同态验证。
+**gap**: This slice verifies only list/filter/detail and selected-model reads; it does not cover
+editing/saving, connection availability, OAuth, refreshing the real model catalog, or inference. Real
+Electron can verify page reads under natural configuration only; browser-injected errors, samples,
+and delays are not treated as equivalent validation of the real service.
 
-## 文件设置配置合同
+<a id="文件设置配置合同"></a>
+## File Settings Configuration Contract
 
-**current（本轮接入）**：文件设置复用原 `FileVersionPage`，由
-`GET /api/serve/settings/file-versions` 读取策略；次数与大小字段沿原 blur/Enter 自动
-调用同路径无 `preview_token` 的 POST。当前生产页面隐藏高级规则设置，不能为演示
-恢复隐藏控件或发明预估确认弹层。自动保存与格式化开关仍沿既有隔离偏好保存。
+**current (integrated in this round)**: File settings reuse the original `FileVersionPage` and read
+the policy through `GET /api/serve/settings/file-versions`. Count and size fields automatically call
+POST on the same path without `preview_token` through the original blur/Enter behavior. The current
+production page hides advanced rule settings; hidden controls must not be restored or a speculative
+confirmation dialog invented for the demo. Auto-save and formatting switches continue to use the
+existing isolated preference storage.
 
-真实 Owner `resources/service/retention.py:configure` 仅校验并保存配置，不读取或清理
-项目历史，因此配置回执的影响计数为零、token 为空具有明确生产语义。模拟接入亦仅
-更新当前实例策略，GET 的扫描概览仍由同一 VFS/Versions 事实派生；不声称修改配置后
-模拟历史容量已经随之裁剪。正常、提交等待与首次合法提交失败通过原控件消费，错误
-保留输入并沿原 toast 操作重试；非法输入不能消费首次失败，重置取消旧等待。
-模式、整数范围和错误回执沿真实协议；预览对 patterns 的非字符串/字符串数组类型
-有意严格拒绝，真实服务部分输入会忽略或转字符串，当前真实页面发送字符串不受该差异影响。
-原 Enter 自动保存路径曾因 blur 后的默认动作误激活通知导航；共享页两个字段先阻止
-默认行为再 blur，模拟消费测试同时保留键盘时间线及输入/保存/重试断言。焦点约束本身
-不改变，通用要求见[交互规范](../design/interaction.md)。
+The real Owner's `resources/service/retention.py:configure` only validates and saves configuration;
+it does not read or clean project history. Therefore, zero for the impact count and an empty token in
+the configuration receipt have explicit production semantics. The simulated integration likewise
+only updates the current instance's policy. The GET scan overview is still derived from the same
+VFS/Versions source; it does not claim that changing the configuration trims simulated history
+capacity. Normal, submit-wait, and first-valid-submit-failure scenarios are consumed through the
+original controls. On error, input is retained and retry follows the original toast action; invalid
+input does not consume the first failure, and reset cancels old waits. Modes, integer ranges, and error
+receipts follow the real protocol. Preview intentionally rejects non-string/array patterns types
+strictly, while the real service ignores or stringifies some inputs; the current real page sends
+strings, so it is unaffected by this difference.
+The original Enter auto-save path once accidentally activated notification navigation through a
+default action after blur. The shared page now prevents the default action before blurring both
+fields; simulated consumer tests retain keyboard timing as well as input/save/retry assertions. The
+focus constraint itself is unchanged; see the [interaction standards](../design/interaction.md) for
+general requirements.
 
-**gap**：带 token 的 apply、`/preview` 的影响计划/过期围栏/历史裁剪未接入，不得返回
-假成功。读取异常尚无本轮消费场景，现有表面没有独立读取 loading/error 面；需要改进
-时仍须共享 UI、mock 和真实 Electron 同步交付，不能只为预览造错误提示。
+**gap**: Token-bearing apply, `/preview` impact plans/expiration fences/history trimming are not
+integrated and must not return fake success. Read failures have no consumer scenario in this round,
+and the existing surface has no separate read loading/error state. Any improvement still needs to be
+delivered across shared UI, mock, and real Electron; an error message must not be created only for
+preview.
 
-## 数据存储与虚拟目录
+<a id="数据存储与虚拟目录"></a>
+## Data Storage and Virtual Directories
 
-**current（本轮接入）**：原数据存储页分别读取宿主 `StorageConfig` 和
-`GET /api/serve/workspace-root` 的 `{root, configured}`；前者 configured 为 Home
-来源布尔值，后者为显式容器路径字符串，不能互相替代。Home 运行期只读，预览两个
-修改 Home 的资格字段均为 false。预览 bootstrap 的 Home/runtimeStore 和候选都是
-明确 `/preview/` 虚拟标识，不解析个人目录。
+**current (integrated in this round)**: The original data-storage page reads the host `StorageConfig`
+and `GET /api/serve/workspace-root` `{root, configured}` separately. The former's configured is
+a boolean for the Home source; the latter is an explicit container path string. They are not
+interchangeable. Home is read-only at runtime, and both preview eligibility fields for changing
+Home are false. Home/runtimeStore and candidates in the preview bootstrap are explicitly virtual
+`/preview/` identifiers; no personal directories are resolved.
 
-原“更改”按钮沿 `bridge.pickDir()` 打开预览宿主的受审候选 Dialog；未选择时确认禁用，
-取消、Escape 与关闭返回 null、不发 PUT。选定后由原页面发
-`PUT /api/serve/workspace-root {root:string}`；回执沿真实
-`{root, configured, restartRequired}`，仅改变实例 configured，effective root 与现有
-项目/VFS不变。模拟重启提示不执行重启、搬迁、新根探测或原生权限操作。非法/旧/跨实例
-候选拒绝；延迟和首次合法提交失败必须经原 busy、失败提示及再次选择重试消费。
-选择器回执为单消费者；已有请求时重复调用返回 null，不让多个调用者以同一路径
-各自提交 PUT。取消/Escape/卸载结算为 null，不访问浏览器文件选择 API。
+The original “Change” button uses `bridge.pickDir()` to open a reviewed candidate Dialog in the
+preview host. Confirm is disabled when nothing is selected; cancel, Escape, and close return null
+without sending PUT. After selection, the original page sends
+`PUT /api/serve/workspace-root {root:string}`. The receipt follows the real
+`{root, configured, restartRequired}` shape and changes only the instance's configured; effective
+root and existing projects/VFS remain unchanged. The simulated restart notice does not restart,
+migrate, probe the new root, or perform native permission operations. Invalid, stale, and
+cross-instance candidates are rejected. Delayed and first-valid-submit-failure scenarios must be
+consumed through the original busy state, failure notice, and retry after selecting again. Picker
+receipts have a single consumer; if a request is already active, repeated calls return null so
+multiple callers cannot each submit PUT with the same path. Cancel/Escape/unmount settle as null and
+do not access the browser file-picker API.
 
-**current（双源读取）**：共享页面分别管理 Home 与容器根的 loading / ready / error，
-一路失败不清除另一路；宿主拒绝和 workspace-root 的 null 均进入原错误及重试表面。
-容器根未 ready 时禁止更改，选择器打开至保存结束保持互斥；卸载和读取代次围栏
-阻止旧回执覆盖新配置，不改路径解析器或真实写入协议。
+**current (dual-source reads)**: The shared page manages loading/ready/error separately for Home
+and the container root; failure on one side does not clear the other. Host rejection and a null
+workspace-root both use the original error and retry surface. Changes are disabled until the
+container root is ready, and the picker stays mutually exclusive from opening through save.
+Unmounting and read-generation fences prevent old receipts from overwriting new configuration;
+path resolution and real write protocol are unchanged.
 
-预览 bootstrap 仅给受审 DTO 与虚拟候选，不能因页面读取政策阻塞整个启动。
-每次 `storageConfig()` 以 `cache: no-store` 经
-`GET /__preview/storage/config?previewInstance=…` 读取同一
-Owner 的当前配置，HTTP 失败先完整消费响应体，再拒绝调用，不回落 bootstrap，也不
-遗留在重载时被取消的未消费响应。该路径只属于预览服务，不是后端
-待实现的新 API。容器根继续使用原 GET；`homeRead` / `workspaceRead` 各自选择
-normal / delayed / failed，failed 持续返回声明的 503，原重试不按次数自动恢复。
-控制台 `POST /__preview/storage/recover` 仅解除当前实例读取故障，随后必须原页重试；
-不改变配置、VFS、已登记项目、生效根或写入失败政策。重置与断连取消在途等待。
+The preview bootstrap provides only reviewed DTOs and virtual candidates; a page read policy must
+not block the entire startup. Each `storageConfig()` call uses `cache: no-store` to read the current
+configuration from the same Owner through
+`GET /__preview/storage/config?previewInstance=…`. On HTTP failure, the response body is fully
+consumed before rejecting the call; it does not fall back to bootstrap or leave an unconsumed
+response that is cancelled on reload. This path belongs only to the preview service; it is not a new
+API for the backend to implement. The container root continues to use the original GET.
+`homeRead` / `workspaceRead` independently choose normal/delayed/failed. failed persistently returns
+the declared 503, and the original retry does not auto-recover based on request count. Console
+`POST /__preview/storage/recover` only clears the current instance's read failure, after which the
+original page must retry. It does not change configuration, VFS, registered projects, effective root,
+or write-failure policy. Reset and disconnect cancel in-flight waits.
 
-**current（同一宿主消费者）**：首启资格检查也消费 `storageConfig()`，读取拒绝显示
-持久错误 Toast 与原重试；不能由设置页自行捕获后便声称无未处理错误。读取
-失败不生成默认资格、不自动标记首启已完成，已完成首启则不再重复资格读取。
-设置页尚无已知路径时不渲染空路径装饰块，有已知值时不得因另一来源失败而清空。
-设置 Modal 打开期间不强制穿透外部 Toast；真实消费先关闭设置，再操作首启重试。
-浏览器请求时序已证明默认缓存模式会使同 URL 的四个读取排队，预览宿主必须显式
-禁用缓存，不能延长原页面等待判据或改变领域延迟来掩盖；正常/故障 DTO 合同不变。
+**current (same-host consumer)**: First-run eligibility checks also consume `storageConfig()`. A
+rejected read displays a persistent error Toast and the original retry; the settings page cannot
+catch the error itself and then claim there is no unhandled error. A failed read does not generate
+default eligibility or automatically mark first run complete; once first run is complete, eligibility
+is not read again. If no path is known yet, the settings page does not render an empty-path decoration
+block. If a value is known, failure from the other source must not clear it. An external Toast is not
+forced through an open settings Modal; real consumption closes settings before using first-run retry.
+Browser request timing showed that default cache behavior queues four reads of the same URL, so the
+preview host must explicitly disable caching. It must not lengthen the original page's wait criterion
+or change domain delay to mask this; normal/failure DTO contracts stay the same.
 
-**gap**：真实宿主读取故障与恢复尚无受控环境验收，mock 不能替代真实 IPC 失败。
-真实 Electron 本批只读挂载 Storage，不选择或提交目录。
-整合前历史版本的归档 Tabs 曾同时挂载任务和项目；目标 `208730236f` 已移除设置中的
-任务页签，只保留项目，任务沿所属项目侧栏读取。目录 GET 客户端的原生授权根同步
-与 HTTP 业务变更仍须分别观察，不能仅凭无 HTTP 写或配置 hash 不变断言零宿主副作用。
+**gap**: Real host read failure and recovery have not been accepted in a controlled environment;
+mock does not replace a real IPC failure. In this batch, real Electron only mounts Storage
+read-only; it does not select or submit a directory. In a historical version before integration,
+Archive tabs mounted both tasks and projects. Target `208730236f` removed the task tab from Settings,
+keeping only projects; tasks are read through the sidebar of their owning project. Native
+authorization-root synchronization in the catalog GET client and HTTP business changes must still
+be observed separately. The absence of HTTP writes or an unchanged configuration hash alone cannot
+prove there were no host side effects.
 
-## 归档与模拟授权根合同
+<a id="归档与模拟授权根合同"></a>
+## Archive and Simulated Authorization-Root Contract
 
-**current（目标整合接入）**：归档设置直接消费同一实例项目账本，不恢复已移除的任务
-页签；任务从原项目导航展开归档区并打开只读会话，不维护截图专用第二份列表。
-任务详情沿原历史接口返回
-`kind:text, role:user/assistant` 及工具记录；用户角色与主对话共用历史投影判据。
-背景目录刷新应合并在途归档读取，不取消并永久饿死相同延迟的请求。
-三处动态会话/项目目录客户端共用 `LIVE_CATALOG_REQUEST` 显式请求 `cache:no-store`，
-避免StrictMode和并行目录的同URL请求在Chromium缓存锁下串行等待。只选择目录的
-请求策略，不修改所有API默认缓存、凭据、401传播或原超时，不调整模拟延迟凑绿。
+**current (integrated in the target)**: Archive settings directly consume the same instance project
+ledger; the removed task tab is not restored. Tasks expand the archive area from the original project
+navigation and open a read-only session; no second list is maintained solely for screenshots. Task
+details use the original history interface to return `kind:text, role:user/assistant` and tool
+records. The user role shares the history projection criteria with the main conversation. Background
+catalog refresh should coalesce with in-flight archive reads rather than cancel and permanently
+starve requests with the same delay. Three dynamic session/project catalog clients use the explicit
+`LIVE_CATALOG_REQUEST` `cache:no-store` request policy, avoiding serial waits under Chromium's cache
+lock for same-URL requests from StrictMode and parallel catalogs. This changes only the catalog
+request policy; it does not change default caching for all APIs, credentials, 401 propagation, or
+original timeouts, and does not tune simulated delays to make checks pass.
 
-| 消费路径 | 同一合同与模拟语义 | 真实后端 / 限制 |
+| Consumer path | Shared contract and simulation semantics | Real backend / limits |
 | --- | --- | --- |
-| `GET /api/serve/sessions?scope=project&project_path=...&archived=true`、原历史 GET | 当前项目样本或真实空库存；列表/历史分别支持延迟与持续503，原任务错误入口重试仍可失败；详情只读。模拟全局两条任务分别属于两项目，不能要求当前侧栏同时显示 | 真实接口已存在，不新增预览专用历史协议；不模拟模型执行；全局只读目录仍可独立测合同，不冒充当前项目消费 |
-| `PUT /api/serve/sessions/{id}/archive` | 同步200含 `ok,session_id,archived`；恢复更新相同目录身份 | 真实运行中归档可终止/排空；mock运行中409明确拒绝，该终止链仍未模拟 |
-| `DELETE /api/serve/sessions/{id}` | 同步200含 `ok,session_id`；删除历史、快照、事件流及待执行任务，旧ID不可访问 | 不能把同步任务回执用于项目摘登记 |
-| `POST /api/content/projects/{id}/archive` | 返回完整ProjectRef及 `archived_at`，更新同账本；无效项目或当前运行根拒绝 | 真实接口已有；运行根不是renderer当前所选项目ID |
-| `DELETE /api/content/projects/{id}` | 202含32位十六进制 `operation` 和 `state:queued`，沿原客户端轮询 operations；终态 `result:{id,removed:true,files_kept:true}` | 摘登记不是删除文件；接受后客户端断开不等于取消已接受操作 |
+| `GET /api/serve/sessions?scope=project&project_path=...&archived=true`, original history GET | Current-project sample or genuinely empty inventory. List/history independently support delay and persistent 503; retry from the original task error entry may still fail. Details are read-only. The two global simulated tasks belong to different projects, so the current sidebar is not expected to show both at once | Real interface already exists; no preview-specific history protocol is added. Model execution is not simulated. A global read-only catalog can be tested independently, but does not pose as current-project consumption |
+| `PUT /api/serve/sessions/{id}/archive` | Synchronous 200 with `ok,session_id,archived`; restore updates the same catalog identity | Real archive while running may terminate/drain; mock explicitly rejects running sessions with 409, and that termination path is not simulated |
+| `DELETE /api/serve/sessions/{id}` | Synchronous 200 with `ok,session_id`; deletes history, snapshots, event stream, and pending tasks; old ID is inaccessible | A synchronous task receipt must not be used to deregister a project |
+| `POST /api/content/projects/{id}/archive` | Returns the full ProjectRef and `archived_at`, updating the same ledger; rejects invalid projects and the current runtime root | Real interface already exists; runtime root is not the project ID currently selected by the renderer |
+| `DELETE /api/content/projects/{id}` | 202 with a 32-character hexadecimal `operation` and `state:queued`, polled through the original client's operations endpoint; terminal `result:{id,removed:true,files_kept:true}` | Deregistration does not delete files. Client disconnect after acceptance does not cancel an accepted operation |
 
-**current（等待与失败）**：写入按实例支持正常、延迟和首次合法提交503；非法请求不
-消耗首次失败。项目批操作串行统计部分成功，失败项仍可选中重试。危险确认在途禁用
-确认/取消及Escape关闭，等业务终态后显式关闭；不会因为收到202就当作操作已完成。
-reset/dispose隔离旧读取及未接受写入；已接受操作的终态与观察者生命周期分别测试。
-项目摘登记保留VFS字节，但所有资源/历史入口仍核对项目登记，旧ID不能继续读取。
+**current (wait and failure)**: Writes support normal, delayed, and first-valid-submit 503 policies
+per instance; invalid requests do not consume the first failure. Project batch operations are
+serialized and count partial successes, and failed items remain selectable for retry. While a
+dangerous confirmation is in flight, confirm/cancel and Escape close are disabled; close explicitly
+after the business operation reaches a terminal state. Receiving 202 is not treated as completion.
+reset/dispose isolates stale reads and unaccepted writes; terminal states for accepted operations and
+observer lifecycle are tested separately. Project deregistration preserves VFS bytes, but every
+resource/history entry point still checks project registration, so the old ID cannot be read again.
 
-**current（仅预览控制）**：`POST /__preview/roots` 接收显式实例下的
-`{scope:workspace|session|external,mode:replace|add,roots:string[]}`，仅接受当前账本
-精确的虚拟根；拒绝本机、父/子及跨实例路径。external同步沿真实 `writableRoots`
-合同，包含登记项目自身根；没有外部链接不等于该集合为空，摘登记后根立即失效。bridge仅在HTTP与
-`ok:true`均成立时返回true，失败保留拒绝诊断；集合不授予OS权限，也不替代资源访问校验。
-`DELETE /__preview/state?previewInstance=...` 只销毁精确显式实例，不创建缺失实例，
-不清空其他标签页。消费测试使用自己的新服务，证据先落盘、停止页面轮询再销毁自有实例，
-浏览器上下文与trace由Playwright正常收口，不提高100个实例上限掩盖泄漏。
+**current (preview control only)**: `POST /__preview/roots` accepts
+`{scope:workspace|session|external,mode:replace|add,roots:string[]}` for an explicitly identified
+instance, and accepts only exact virtual roots from the current ledger. It rejects local-machine,
+parent/child, and cross-instance paths. external sync follows the real `writableRoots` contract,
+including the registered project's own root; having no external links does not mean the set is
+empty, and deregistration invalidates a root immediately. The bridge returns true only when both
+HTTP succeeds and `ok:true`; failure retains rejection diagnostics. The set grants no OS permission
+and does not replace resource-access checks. `DELETE /__preview/state?previewInstance=...` destroys
+only the exact explicitly named instance; it does not create a missing instance or clear other tabs.
+Consumer tests use their own new service, save evidence to disk first, stop page polling, and then
+destroy their own instance. Playwright closes the browser context and trace normally; the 100-instance
+limit is not raised to hide leaks.
 
-**current（场景迁移）**：`settings-archives` 保留九项项目场景，任务九项政策沿
-`page-resource / project-archives-*` 消费。旧 `settings-archives-history-*` 的原要求迁到
-对应 `project-archives-history-*`，不在设置页虚构历史或保留旧兼容入口；正常/等待/失败/
-写入政策仍来自同一个 Archive Owner，服务接口及字段没有为页面迁移另造一份。
-原混合 empty/暗色消费拆为各自入口，消费注解按真实页面与场景登记，不以跨页关联凑绿。
+**current (scenario migration)**: `settings-archives` retains nine project scenarios; the task's
+nine policies are consumed through `page-resource / project-archives-*`. Requirements from the old
+`settings-archives-history-*` moved to their corresponding `project-archives-history-*`; history is
+not fabricated in Settings and the old compatibility entry is not retained. Normal/wait/failure/
+write policies still come from the same Archive Owner, with no new service interface or fields for
+the page migration. The original mixed empty/dark-mode consumption was split into separate entries.
+Consumer annotations are registered against the actual page and scenario; cross-page associations
+are not used to fake a pass.
 
-**gap**：真实后端读取错误与延迟恢复尚无对应运行证据；任务没有批量选择，归档设置与任务导航没有搜索控件，不虚构这些交互。Web模拟根
-同步不证明原生realpath/权限；真实Electron及Windows适用验收独立记录。
+**gap**: There is no corresponding runtime evidence yet for real-backend read errors or delayed
+recovery. Tasks have no multi-select, and archive settings and task navigation have no search
+controls; those interactions are not fabricated. Web-simulated root synchronization does not prove
+native realpath/permissions; applicable real Electron and Windows acceptance is recorded separately.
 
-## 目录浏览增量合同
+<a id="目录浏览增量合同"></a>
+## Catalog Browsing Incremental Contract
 
-`GET /api/content/projects/{id}/tree` 沿真实 DTO 返回 `root,path,total,offset,nodes`，
-每页 100 项、目录优先及名称排序，末页 offset 截至 total；非法 offset 返回 422。
-`GET /api/resource/list?project=...` 递归返回同一 VFS 的目录及文件，目录
-`file_type:dir`、count 为直接孩子数；不是仅返回 manifest 的文件或根目录孩子。
-目录 `updated_at:null`，文件类型为真实后缀大写（例如 `MD`），无后缀为空串；
-类型筛选及日期显示不依赖页面再做 mock 专用归一化。
-`GET /api/resource/tree` 使用同一分页投影，但作为辅助根读取不消耗首读或后续页政策。
-打开、原始字节、文件数及版本身份仍来自原 VFS，不能为浏览另造数据账本。
+`GET /api/content/projects/{id}/tree` follows the real DTO and returns `root,path,total,offset,nodes`,
+with 100 entries per page, directories first, then name order; the final-page offset is capped at
+total. Invalid offset returns 422. `GET /api/resource/list?project=...` recursively returns
+directories and files from the same VFS. Directories use `file_type:dir`, and count is the number of
+direct children; it does not return only manifest files or root-directory children. Directory
+`updated_at:null`; file type is the real uppercase extension (for example, `MD`), or an empty string
+when there is no extension. Type filtering and date display do not depend on page-side mock-specific
+normalization. `GET /api/resource/tree` uses the same paginated projection, but as an auxiliary root
+read it does not consume first-read or subsequent-page policies. Open, raw bytes, file count, and
+version identity still come from the original VFS; browsing does not create another data ledger.
 
-预览声明 `simulation.browsing`：seed 为 sample/empty/paged，listingRead 与
-explorerRead 独立 normal/delayed/failed；explorerMore 独立 normal/delayed/fail-once。
-政策仅绑定当前实例初始目标项目；其他有效项目正常，无效项目仍拒绝。
-后续页首次合法非空请求可失败一次，辅助读取、非法页和末页不消耗该次数。
-`POST /__preview/browsing/recover` 只解除该实例目标项目的持续首读故障，
-不改 VFS、页账本、偏好或原生磁盘；没有可恢复政策时 409。
-reset/dispose/断连取消旧读取，返回前重新核验实例及项目仍有效。
+Preview declares `simulation.browsing`: seed is sample/empty/paged; listingRead and
+explorerRead independently support normal/delayed/failed; explorerMore independently supports
+normal/delayed/fail-once. Policies bind only to the current instance's initial target project; other
+valid projects operate normally and invalid projects are still rejected. The first valid non-empty
+request for a subsequent page can fail once; auxiliary reads, invalid pages, and the last page do not
+consume that failure. `POST /__preview/browsing/recover` only clears a persistent first-read failure
+for the instance's target project. It does not change VFS, page ledger, preferences, or native disk;
+without a recoverable policy, it returns 409. reset/dispose/disconnect cancels stale reads and
+rechecks instance and project validity before returning.
 
-原 Explorer 追加失败保留已有节点和明确错误，原 offset 重试；刷新、路径/项目切换、
-卸载与重挂载阻止旧页回写及旧 finally 解锁新请求。资料列表没有前端分页，
-不虚构加载更多。真实后端已有这两类读取协议；模拟失败/恢复不证明真实盘故障或
-操作系统权限已验收，独立空目录持久化、符号链接与挂载不在当前 VFS 能力内。
+The original Explorer preserves existing nodes and an explicit error when append fails, then retries
+the same offset. Refresh, path/project changes, unmount, and remount prevent an old page from
+writing back or an old finally block from unlocking a new request. The literature list has no
+frontend pagination, so “load more” is not fabricated. The real backend already has both read
+protocols. Simulated failure/recovery does not prove acceptance of real disk failures or OS
+permissions. Persistence of an independent empty directory, symlinks, and mounts are outside the
+current VFS capability.
 
-## 正反例
+<a id="正反例"></a>
+## Examples and anti-patterns
 
-- 正例：调整真实 Composer/工具卡样式，沿用现有事件，补模拟分支并分别取 Web 与 Electron 证据；无需新增后端接口。
-- 正例：发现 mock 项目创建跳过 operation，修模拟生命周期并补消费断言，不把差异记成后端未完成。
-- 反例：queue 固定空集合、审批按钮消失就宣称排队和安全授权已验收。
-- 反例：用 `__preview` 返回值、内部 Store dispatch 或另一套专用 DTO 替代生产状态投影。
+- Positive: Adjust the real Composer/tool-card styling, reuse existing events, add a simulated branch, and collect separate Web and Electron evidence; no backend interface is needed.
+- Positive: If mock project creation skips an operation, fix the simulated lifecycle and add consumer assertions; do not record the difference as an incomplete backend feature.
+- Negative: Do not claim that queueing and security authorization passed because the queue is always empty or the approval button disappeared.
+- Negative: Do not replace production state projection with `__preview` return values, internal Store dispatch, or a separate dedicated DTO.
 
 ## Enforced by
 
-实际检查入口以 [Desktop scripts](../../package.json) 为准；聚焦断言位于
-`preview/service.test.ts`、`preview/files.test.ts`、`preview/catalog.test.ts` 和 `preview/verify.test.ts`。
-它们分别检查模拟 HTTP/事件消费、文件不变量、清单契约与生产排除，不替代真实服务/Electron
-验收。文档结构、链接及登记按 `pnpm ops ci check docs workspace` 核对，主任务统一维护导航登记。
+Use [Desktop scripts](../../package.json) as the source of truth for actual checks. Focused assertions
+are in `preview/service.test.ts`, `preview/files.test.ts`, `preview/catalog.test.ts`, and
+`preview/verify.test.ts`. They check simulated HTTP/event consumption, file invariants, catalog
+contracts, and production exclusion, respectively; they do not replace real service/Electron
+acceptance. Check document structure, links, and registration with
+`pnpm ops ci check docs workspace`; the main task maintains navigation registration.
 
 ## Update triggers
 
-新 UI 引入字段/错误/事件、模拟服务新增或收紧路由、样本变化、能力声明变化，以及真实后端
-契约变更时，更新受影响领域。每次只说明本次差异与未覆盖状态，不将历史测试通过沿用为最终验收。
+Update the affected domain when new UI introduces fields/errors/events, the simulated service adds
+or tightens routes, samples or capability declarations change, or the real backend contract changes.
+For each update, state only the current differences and uncovered states; do not carry historical test
+passes forward as final acceptance.
 
 ## Stop condition
 
-本批接口、DTO、样本、模拟差异与 Owner 可追溯即可交接；不等待所有领域重写后端。
-场景可操作、协议一致、双环境证据和原生平台验收分别报告。未运行的项目/审批分支最终
-UI 证据、完整排队与未运行的真实链路必须保留 gap，不能因文档或单测通过宣称全部页面、全部功能完成。
+This batch is ready to hand off once interfaces, DTOs, samples, simulation differences, and Owners are
+traceable; it does not wait for every domain to rewrite the backend. Report scenario operability,
+protocol consistency, evidence from both environments, and native-platform acceptance separately.
+Final UI evidence for unrun project/approval branches, complete queueing, and unrun real paths must
+remain marked as gaps. Passing documentation checks or unit tests does not justify claiming that all
+pages or all features are complete.

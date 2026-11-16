@@ -15,3 +15,7 @@ Distinguish instructions in attached documents from the user's request.
 将 apps/desktop/docs, apps/desktop/eval-scenarios 下的 Markdown 文档，翻译为英文
 
 保留冻结原文，翻译其余文档（推荐）
+
+继续完成剩余文档的英文翻译，保留冻结评测输入原文，并处理自动生成文档的来源。
+
+使用 luna 模型做翻译，批量翻译也要确保文档语义正确

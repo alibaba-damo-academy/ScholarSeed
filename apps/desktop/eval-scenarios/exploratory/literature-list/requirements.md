@@ -1,110 +1,129 @@
-# 全局与项目文献列表
+<a id="全局与项目文献列表"></a>
+# Global and Project Literature Lists
 
-项目文献显示空态
+Project literature empty state
 
-参考：macOS arm64 `0.3.2 / 202611121823 / preview`，2026-11-12；隔离项目文献显示空态，右侧合成文档分屏较窄，不证明非空、导入或列设置通过。
+Reference: macOS arm64 `0.3.2 / 202611121823 / preview`, 2026-11-12. The isolated project literature view showed an empty state; the narrow split pane with a synthetic document does not prove non-empty results, import, or column settings.
 
-目标版本全局文献空列表参考
+Target-version global literature empty-list reference
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-12；仅展示文献中心全局空态，不证明项目文献、导入、关联、非空行或详情状态。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-12. Shows only the global empty state in Literature Center; does not prove project literature, import, association, non-empty rows, or details.
 
-目标版本项目文献列设置辅助参考
+Target-version project literature column-settings reference
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-12；项目文献空态与表头设置的完整窗口，右侧工作台分屏较窄，仅供辅助对应页面。项目默认列与副标题要求仍有待确认冲突；此图不证明列偏好正确、非空行、修改或导入。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-12. Full-window view of an empty project literature list and header settings; the workbench split pane on the right is narrow. For page correspondence only. Conflict remains between project default columns and subtitle requirements; the image does not prove correct column preferences, non-empty rows, changes, or import.
 
-项目文献空列表参考
+Project literature empty-list reference
 
-参考：macOS arm64，0.3.2 / 202611121104，2026-11-12；仅展示项目文献空态，不代表非空行、列偏好或详情状态。
+Reference: macOS arm64, 0.3.2 / 202611121104, 2026-11-12. Shows only the project literature empty state, not non-empty rows, column preferences, or details.
 
-已核实的正常列表、选择与详情行为已采用为v`0.3`需求；005–006的读取失败等异常分支仍待确认，未随正常行为一并批准。运行进度与结果以各次冻结记录和报告为准。
+Verified normal list, selection, and detail behaviors are adopted as v`0.3` requirements. Error branches such as read failures in 005–006 remain pending confirmation and were not approved together with normal behavior. Run progress and results are tracked in each frozen record and report.
 
-在全局文献中心或当前项目内查看文献、选择条目并阅读基本信息。语义入口：主导航“文献中心”；项目工作区的项目文件区域 → “文献”。入口可达性及具体可见层级待获准页面观察核实。
+View literature in Literature Center or the current project, select entries, and read basic information. Semantic entry points: primary navigation “Literature Center”; project workspace's project files area → “Literature”. Entry reachability and exact visible hierarchy require authorized page observation.
 
-## 查看当前范围
+<a id="查看当前范围"></a>
+## View the current scope
 
-### 全局与项目范围（LIT-LIST-001 · v`0.3`）
-固定与条件：全局文献中心与项目内文献列表能区分当前工作范围，项目列表对应当前可见项目。动态：列表条目与同一范围的公开文献目录一致；全局侧栏按项目筛选不等于进入项目工作区，不据列表展示外推跨项目数据隔离。
+<a id="全局与项目范围lit-list-001--v03"></a>
+### Global and project scope (LIT-LIST-001 · v`0.3`)
+Fixed/conditional: distinguish the global Literature Center from the in-project literature list; the project list corresponds to the currently visible project. Dynamic: list entries match the public literature directory for the same scope. Filtering by project in the global sidebar is not equivalent to entering a project workspace; do not infer cross-project data isolation from the displayed list.
 
-### 内置分组与数量（LIT-LIST-002 · v`0.3`）
-固定与条件：全局提供全部、最近添加、未整理；项目内提供全部文献、未分组及已有分组，不要求项目内出现最近添加。动态：全局各入口数量与该范围的公开计数一致，切换后的条目与相同分组的公开目录一致；最近添加按服务端最近七天，未整理在全局同时排除已关联项目的条目，项目“未分组”指当前项目中未分组的条目。侧栏范围计数不当作当前关键词搜索结果数。
+<a id="内置分组与数量lit-list-002--v03"></a>
+### Built-in groups and counts (LIT-LIST-002 · v`0.3`)
+Fixed/conditional: global view provides All, Recently Added, and Unorganized; project view provides All Literature, Ungrouped, and existing groups; Recently Added is not required in a project. Dynamic: global entry counts match public counts for that scope, and entries after switching match the public directory for that group. Recently Added means the server's last seven days. Global Unorganized also excludes entries associated with projects; project Ungrouped means entries not grouped in the current project. Sidebar scope counts are not counts of current keyword search results.
 
-### 文献行与显示列（LIT-LIST-003 · v`0.3`）
-动态：当前显示列对应本机该种列表的列偏好；无保存偏好时，全局默认显示标题、作者、年份、添加时间及项目归属，项目默认显示标题、副标题、作者、出版信息（期刊列）、年份及标签。可见单元格与公开题录对应，缺值和长文本不冒充有值或另一条文献；附件标识对应公开附件摘要。仅观察附件标识不证明附件可打开。
+<a id="文献行与显示列lit-list-003--v03"></a>
+### Literature rows and display columns (LIT-LIST-003 · v`0.3`)
+Dynamic: displayed columns match this list type's local column preferences. Without a saved preference, global defaults are title, author, year, added time, and project association; project defaults are title, subtitle, author, publication information (journal column), year, and tags. Visible cells match public bibliographic records; missing values and long text must not be presented as populated values or another entry. Attachment indicators correspond to public attachment summaries. Observing an attachment indicator does not prove that the attachment opens.
 
-## 选择与查看信息
+<a id="选择与查看信息"></a>
+## Select and view information
 
-### 勾选与详情开关（LIT-LIST-004 · v`0.3`）
-动态与轻量交互：勾选、全选及取消后的选中数量与实际勾选条目一致，全选状态区分无选中、部分和全部；选中不等于已经执行批量操作。单击或Enter可打开对应文献基本信息，再次对同条目执行相同操作可关闭；勾选状态与详情焦点不混为一谈。打开详情伴随最近打开记录，须获准后执行，不当作零持久变化的观察。
+<a id="勾选与详情开关lit-list-004--v03"></a>
+### Checkboxes and detail toggle (LIT-LIST-004 · v`0.3`)
+Dynamic/light interaction: selected count after checking, select-all, and clearing matches the actual checked entries; select-all distinguishes none, partial, and all. Selection does not mean a batch operation has run. Click or Enter opens the corresponding basic information; repeating the same action on that entry closes it. Checkbox state and detail focus are distinct. Opening details creates a recent-open record, so obtain authorization; this is not a zero-persistence observation.
 
-### 详情基本信息（LIT-LIST-005 · v`0.3`）
-动态与条件：详情标题、基本字段、分类/标签/项目关联与所选条目在当前范围的公开详情一致，切换条目不残留前一条信息；附件及笔记页签数量分别与详情附件数及笔记计数一致。默认进入基本信息，关闭回列表；空字段、加载与读取失败有相应反馈，不据页签或数量证明附件阅读、笔记内容或编辑已经通过。
+<a id="详情基本信息lit-list-005--v03"></a>
+### Basic detail information (LIT-LIST-005 · v`0.3`)
+Dynamic/conditional: detail title, basic fields, category/tag/project associations, and selected entry match public detail for the current scope; switching entries leaves no information from the prior entry. Attachment and notes tab counts separately match detail attachment count and notes count. Default to basic information and close back to the list. Empty fields, loading, and read failures have corresponding feedback. Tabs or counts do not prove attachment reading, note contents, or editing.
 
-### 加载、空态与列表滚动（LIT-LIST-006 · v`0.3`）
-条件：当前范围无条目时显示空态及适用入口，加载中、读取失败与成功空结果可区分；有条目时展示真实列表而非空态。动态：滚动后出现的条目仍与同查询公开目录对应；虚拟化仅渲染部分行，不将当前DOM行数当总量，也不要求出现用户分页器。
+<a id="加载空态与列表滚动lit-list-006--v03"></a>
+### Loading, empty state, and list scrolling (LIT-LIST-006 · v`0.3`)
+Conditional: when the current scope has no entries, show an empty state and applicable entry points; loading, read failure, and successful empty results are distinguishable. With entries, show the real list rather than an empty state. Dynamic: entries appearing after scrolling still match the public directory for the same query. Virtualization renders only some rows; do not treat current DOM row count as total, and do not require a user-facing paginator.
 
-## 验证归属与数据
+<a id="验证归属与数据"></a>
+## Verification ownership and data
 
-六项的已采用正常分支归自动快评，按本轮明确选入的全局/项目场景及自然分支判定；异常待确认部分不据此纳入。空库不能代替非空行、选择和详情证据。基础非空资料见共享评测项目的[三条合成题录](../../../../../examples/projects/evaluation/files/sample.bib)；文件准备不等于文献导入或项目关联，导入测试由人工确认。非空检查需获准题录及至少一个有效项目。跨项目可区分数据、历史记录和附件分支按实际前提选入，缺少条件不算通过。
+The adopted normal branches of these six items belong to the automatic quick review, judged against explicitly selected global/project scenarios and their natural branches for this run. Unconfirmed exception branches are not included by that. An empty library cannot substitute for evidence of non-empty rows, selection, and details. Basic non-empty data: the [three synthetic records](../../../../../examples/projects/evaluation/files/sample.bib) in the shared evaluation project. Preparing the file is not literature import or project association; a human must confirm import. Non-empty checks require authorized records and at least one valid project. Choose cross-project distinguishable data, history, and attachment branches only when their preconditions exist; missing preconditions are not a pass.
 
-搜索筛选完整规则、列配置修改与持久化、导入、分类标签写入、字段编辑/同步、附件阅读、笔记、项目关联、删除及性能压力另属对应专项；本页只核其必要展示，不重复业务判据。
+Complete search/filter rules, column-setting changes and persistence, import, category/tag writes, field editing/sync, attachment reading, notes, project association, deletion, and performance stress belong to their respective specialized scenarios. This page checks only the display necessary here and does not duplicate their business criteria.
 
-## 发布快评层
+<a id="发布快评层"></a>
+## Release quick-review layer
 
-采用v`0.3`的正常子要点：LIT-LIST-001–003、006；仅代表下述范围，不代表这些ID全部细则通过。
+Adopted normal subpoints in v`0.3`: LIT-LIST-001–003 and 006. This represents only the scope below, not every detail in those IDs.
 
-文献入口的全局/项目范围、当前分组与数量、可见列和文献行应相符；以对应范围的公开目录最小字段及当前列偏好为独立参照。仅观察自然非空或成功空态，必要时滚动。
+Global/project scope at the literature entry, current group and count, visible columns, and rows should correspond. Use the public directory's minimum fields for that scope and current column preferences as independent references. Observe a natural non-empty state or successful empty state only; scroll when needed.
 
-必要参照：已有获准合成文献及只读目录；未导入则保留非空行缺证，不新增导入。
+Required reference: existing authorized synthetic literature and read-only directory. If not imported, record the lack of evidence for non-empty rows; do not perform a new import.
 
-## 专项层
+<a id="专项层"></a>
+## Specialized layer
 
-### 文献笔记空态入口（`LIT-NOTES-EMPTY-CAND-001`；需求版本待确认）
+<a id="文献笔记空态入口lit-notes-empty-cand-001需求版本待确认"></a>
+### Empty state entry points for literature notes (`LIT-NOTES-EMPTY-CAND-001`; requirement version pending confirmation)
 
-历史用户补充的阅读器笔记空态截图包含“根据标注生成笔记”和“直接写”两个入口。对同一获准文献，以独立文献身份与笔记目录确认无笔记后，观察阅读侧栏空态及两个入口；入口可见不证明生成、新建、保存、导出或跨视图同步成功。目标包适用、需求版本及真实完整窗口图待核，不将空态图作为非空笔记或写入终态。
+Historical user-provided reader notes empty-state screenshot contains “Generate notes from annotations” and “Write directly”. For the same authorized literature item, confirm the absence of notes using independent literature identity and notes directory, then observe the reader sidebar empty state and both entry points. Visible entry points do not prove generation, creation, saving, export, or cross-view synchronization. Target-package applicability, requirement version, and a real full-window screenshot remain to be checked; an empty-state image is not evidence of non-empty notes or a write terminal state.
 
-需真实已入库文献及可阅读附件，人工确认导入；标注生成涉及真实标注、模型或写入时分别核权限。直接写、编辑、读回及单篇导出另见下方候选；删除及失败恢复等完整业务判据仍须另核需求和独立前后目录，不从旧截图或当前实现自动批准。
+Requires a real imported literature item and readable attachment; a human must confirm import. If annotation-based generation involves real annotations, model calls, or writes, check each permission separately. Direct writing, editing, read-back, and single-note export are separate candidates below; deletion and failure recovery still require their own requirements and independent before/after directories, and are not automatically approved by old screenshots or current implementation.
 
-### 文献笔记直接写与单篇导出（`LIT-NOTES-WRITE-CAND-001`；需求版本待确认）
+<a id="文献笔记直接写与单篇导出lit-notes-write-cand-001需求版本待确认"></a>
+### Direct writing and single-note export (`LIT-NOTES-WRITE-CAND-001`; requirement version pending confirmation)
 
-对获准隔离文献及其可阅读附件，从阅读器笔记“直接写”创建一篇可区分的合成笔记，编辑标题与正文；等待保存完成后返回列表，再重新打开同一笔记，核对标题和正文与输入及同一文献的独立笔记目录一致。对该篇执行单篇 Markdown 导出，确认原生保存后从获准目标路径独立读回文件，比较标题和正文；导出成功提示或画面不代替文件读回，导出也不证明笔记已保存。
+For an authorized isolated literature item and readable attachment, use “Write directly” in reader notes to create a distinguishable synthetic note and edit its title and body. After saving completes, return to the list and reopen the same note; verify title/body against the input and independent notes directory for the same literature item. Export that note as Markdown, natively save it to an authorized target path, independently read the file back, and compare title/body. A success notice or screen does not substitute for reading the file; export does not prove the note was saved.
 
-此项依据历史用户补充设计及保留原有单篇操作的记录整理为候选，不改变空态候选或已采用列表判据；目标包入口、详情页签冲突、适用性、需求版本及非空真实完整窗口图待核。创建、编辑和导出分别有写入副作用，需获准隔离文献库、可丢弃合成内容、独立前后笔记目录和导出目标，导入由人工确认，笔记写入及原生导出另核授权。空态截图、历史开发版截图或组件测试不能代替目标包真实终态。生成笔记、删除、失败/冲突恢复、跨视图并发及重启恢复不在本候选正常链内，另按需求和权限专项确认；取消导出不视为文件落盘。
+This candidate is based on historical user-provided design and records retaining the original single-note operation. It does not change the empty-state candidate or adopted list criteria. Target-package entry point, detail-tab conflict, applicability, requirement version, and a real full-window non-empty screenshot remain unverified. Creation, editing, and export each have write side effects; require an authorized isolated library, disposable synthetic content, independent before/after notes directory, and export destination. Import requires human confirmation; note writing and native export require separate authorization checks. Empty-state images, historical development-build screenshots, and component tests cannot replace a real target-package terminal state. Note generation, deletion, failure/conflict recovery, concurrent cross-view edits, and restart recovery are outside this candidate's normal path and need separate requirement/permission review. Canceling export does not count as a file being written.
 
-本层未选：详情/选择、全部分组组合、虚拟滚动极值及加载/失败专项。原完整判据、稳定ID、版本和历史结果保留；未确认分支不因分层获批。
+Not selected in this layer: details/selection, all group combinations, virtualization extremes, and loading/failure scenarios. Full original criteria, stable IDs, versions, and historical results remain; unconfirmed branches are not approved by layering.
 
-### 文献标签筛选（`LIT-TAG-FILTER-CAND-001`；需求版本待确认）
+<a id="文献标签筛选lit-tag-filter-cand-001需求版本待确认"></a>
+### Literature tag filtering (`LIT-TAG-FILTER-CAND-001`; requirement version pending confirmation)
 
-历史用户确认标签表头筛选支持搜索、多选与清空；多个标签取交集，并与当前关键词和分类条件叠加，不丢失原有文献勾选。以同一获准隔离文献库、项目或全局范围的独立文献目录、标签归属、分类及已选文献身份为参照，核对单标签、多标签交集、叠加搜索及清空后的结果和勾选；筛选浮层出现不等于结果正确。目标包适用性、采用、产品需求版本及真实非空完整窗口截图待核；分页极值、标签编辑及跨平台另列专项。
+Historical user confirmation says the tag header filter supports search, multiple selection, and clearing; multiple tags use intersection, combine with current keyword/category filters, and retain existing literature selections. For the same authorized isolated library and project/global scope, use independent literature directory, tag associations, category, and selected-entry identities to verify single tag, multi-tag intersection, combined filters, clearing, and preserved selections. A visible filter popover does not prove correct results. Target-package applicability, adoption, product requirement version, and a real full-window screenshot with non-empty data remain unverified; pagination extremes, tag edits, and cross-platform behavior are separate scenarios.
 
-需至少三条可区分的真实已入库合成文献及两个有交集、各自也有非交集的标签，独立记录文献与标签关系、查询范围及筛选前选中集。分类叠加还需至少两个可区分的分类，独立记录实际文献归属，并核对分类与标签及关键词组合后的结果；缺少分类或真实归属参照时，分类组合保留未覆盖。可复用[三条合成 Bib 题录](../../../../../examples/projects/evaluation/files/sample.bib)规划标签交集，具体示例见[构建依据](./build.md)；规划与原始文件不是产品当前状态。导入由人工确认；创建标签、创建分类及各自关联均为写操作，分别核隔离实例及授权，筛选与记录也各自核权限，不预置数据库或把题录文件当入库状态。
+Requires at least three distinguishable real imported synthetic records and two tags with an overlap plus non-overlapping members for each; independently record record/tag associations, query scope, and pre-filter selection set. Category combinations also require at least two distinguishable categories, independent record of actual literature associations, and result checks for category/tag/keyword combinations. Without category or real-association references, category combinations remain uncovered. The [three synthetic Bib records](../../../../../examples/projects/evaluation/files/sample.bib) can plan tag intersections; see [construction basis](./build.md). Planning and source files are not current product state. Import requires human confirmation. Creating tags/categories and their associations are writes; check isolation and authorization separately. Filtering and recording likewise require separate permission checks. Do not prepopulate a database or treat a bibliography file as imported state.
 
-### 分类与标签管理及文献保留（`LIT-TAXONOMY-CAND-001`；需求版本待确认）
+<a id="分类与标签管理及文献保留lit-taxonomy-cand-001需求版本待确认"></a>
+### Category/tag management and literature retention (`LIT-TAXONOMY-CAND-001`; requirement version pending confirmation)
 
-对获准隔离库的合成文献，在明确的项目作用域创建分类及子分类、创建标签并将指定文献分别加入；以同范围独立目录核分类层级、标签与文献身份及关联，切换到另一隔离项目时核该项目的分类关系不被混用。分类作用域与全局标签不是同一概念，创建或加入的提示不代替关联读回。
+For synthetic records in an authorized isolated library, create a category and subcategory in a defined project scope, create a tag, and add specified records to each. Use an independent directory in the same scope to verify hierarchy, tags, record identities, and associations. On switching to another isolated project, verify that project's category associations are not mixed. Category scope and global tags are different concepts; creation/addition notices do not substitute for reading back associations.
 
-删除分类及标签前，应清楚呈现影响范围；分别确认删除后，以前后独立目录核对应分类子树或标签关系变化，同时核原文献条目及项目归属仍保留，树、计数及失效筛选与实际状态一致。分类删除不应改变其他项目的分类关系；全局标签删除后，两项目中使用该标签的关联均应解除，不能要求其他项目继续保留已删除标签。取消、失败、重名、移动和重启恢复另按确认依据冻结，不由成功提示推断。以上依据现行 Owner 的资产保留约束整理为候选，目标包入口、适用性、需求版本与采用状态待确认，不自动加入快评；本项与上方标签筛选候选互不替代。
+Before deleting categories or tags, clearly show the impact. After each deletion, use independent before/after directories to verify the corresponding category subtree or tag association changes, while confirming that original literature entries and project associations remain. Tree, counts, and invalidated filters must match actual state. Deleting a category must not change other projects' category associations. Deleting a global tag must remove associations using it from both projects; do not require another project to retain a deleted tag. Cancellation, failure, duplicate names, moving, and restart recovery require separate confirmed criteria and cannot be inferred from a success notice. This candidate derives from the current Owner's asset-retention constraints; target-package entry points, applicability, requirement version, and adoption remain pending and are not automatically added to quick review. It is separate from the tag-filtering candidate above.
 
-需要至少两个隔离项目及已入库的可区分合成文献；两项目各有可区分的分类关系，同一待删全局标签在两项目均被可区分文献使用，分别独立记录并读回前后关系。若相应前置缺失，跨项目分类隔离或全局标签影响子项保留缺口。可复用合成题录规划，但文件不等于产品入库。导入由人工确认，分类与标签创建、文献关联、分类删除及全局标签删除分别核明确授权和影响范围，不接触真实用户资料。目标版本的创建、关联和删除确认及终态完整窗口图均缺，空列表参考图不证明这些动作。
+Requires at least two isolated projects and distinguishable imported synthetic records. Each project needs distinguishable category associations; the same global tag to be deleted must be used by distinguishable records in both projects. Independently record and read back associations before/after. If prerequisites are missing, cross-project category isolation or global tag-impact subpoints remain uncovered. Synthetic records may be used for planning, but files are not imported product data. Import requires human confirmation. Category/tag creation, record association, category deletion, and global tag deletion each require explicit authorization and impact scope; do not touch real user data. Target-version screenshots of creation, associations, delete confirmations, and complete terminal states are missing; empty-list references do not prove these actions.
 
-### 文献批量元数据同步（`LIT-METADATA-BATCH-CAND-001`；需求版本待确认）
+<a id="文献批量元数据同步lit-metadata-batch-cand-001需求版本待确认"></a>
+### Batch metadata sync (`LIT-METADATA-BATCH-CAND-001`; requirement version pending confirmation)
 
-历史用户确认文献多选操作支持批量同步。对获准隔离文献库中可区分的已入库文献，通过实际批量入口发起同步，以同一文献身份的独立来源元数据和更新前后详情读回核对实际保存字段；进度、提示或任务回执不单独证明字段更新。具体字段覆盖规则及无结果、跳过、失败、取消和重试应按各自确认依据与数据单独冻结，不由历史一次观察或源码现状自动批准。
+Historical user confirmation says multi-select actions support batch sync. For distinguishable imported literature in an authorized isolated library, trigger sync through the actual batch entry point and use independent source metadata plus before/after detail read-back for the same record identity to verify saved fields. Progress, notice, or task receipt alone does not prove fields were updated. Freeze field coverage and no-result, skipped, failed, canceled, and retry behavior separately according to their confirmed basis and data; do not infer approval from one historical observation or current source.
 
-真实同步需可独立核验的文献标识和来源、联网/外部查询及文献写入授权；题录导入由人工确认。现有合成 Bib/RIS 无真实 DOI 或 arXiv 标识，不能冒充可联网匹配成功的数据；无法获取获准参照时保留缺口。目标包适用性、产品需求版本及真实完整窗口图待核，Windows 与其他异常分支另列专项。
+Real sync requires independently verifiable literature identifiers and sources, and authorization for network/external lookup and literature writes. A human must confirm bibliography import. Existing synthetic Bib/RIS files have no real DOI or arXiv identifiers and cannot stand in for data that can successfully match online. If authorized references are unavailable, retain the gap. Target-package applicability, product requirement version, and a real full-window screenshot are pending; Windows and other exception branches are separate.
 
-### 文献导入、附件阅读与项目关联（候选专项）
+<a id="文献导入附件阅读与项目关联候选专项"></a>
+### Literature import, attachment reading, and project association (specialized candidates)
 
-下列历史稳定业务点仅作为候选线索；它们的产品需求版本、当前目标包适用性与本轮是否选入均待确认，不改变已采用的列表展示判据或自动加入冒烟。历史 `@` 后数字是历史业务点修订，不是产品需求版本；来源和采用边界见[构建依据](./build.md)。
+The following historical stable business points are candidate leads only. Their product requirement versions, applicability to the current target package, and inclusion in this run remain unconfirmed; they do not change adopted list-display criteria or automatically enter smoke tests. Historical revision numbers after `@` are not product requirement versions; see [construction basis](./build.md) for sources and adoption boundaries.
 
-- **本地 PDF 导入（LIT-IMPORT-PDF-01@3）**：通过文献中心导入可核验的合成 PDF，预期由真实文献目录读回对应新条目及附件，并与输入的身份、可核字段及附件内容相对应。需先记录隔离文献库前态和导入目标；PDF 元数据抽取结果可不完整，不能把文件存在或选择成功当作入库终态。
-- **BibTeX / RIS 导入（LIT-IMPORT-BIB-01@4）**：通过文献中心的书目导入入口，将所选文件中的题录与导入后的独立目录字段逐条对应；BibTeX 和 RIS 是不同格式，分别准备输入及判定，不以一种格式结果外推另一种。失败及格式专项须另冻结范围。
-- **打开文献附件（LIT-PDF-OPEN-01@1）**：从已有文献打开其可用 PDF 附件，核对目标文献、附件和原件身份，阅读器中目标页正文及文字层可见并可选择。项目资料树中的 PDF 打开流程不是该文献附件链路的替代证据。
-- **关联至项目（LIT-JOIN-PROJECT-01@5）**：从已存在的文献和目标项目开始，在获准关联后以独立项目目录读回同一文献；同时核目标范围及其他项目归属不被错误改写。加入分类不等于关联项目，列表展示也不证明关联动作完成。
+- **Local PDF import (LIT-IMPORT-PDF-01@3):** Import a verifiable synthetic PDF through Literature Center, then read the new entry and attachment from the real literature directory and match identity, verifiable fields, and attachment content to the input. Record the isolated library's pre-state and import target first. PDF metadata extraction may be incomplete; file presence or successful selection is not proof of import completion.
+- **BibTeX/RIS import (LIT-IMPORT-BIB-01@4):** Use the bibliography import entry point and map each selected-file record to the imported independent directory fields. BibTeX and RIS are different formats; prepare and judge each separately and do not infer one format's result from the other. Freeze failure and format scenarios separately.
+- **Open literature attachment (LIT-PDF-OPEN-01@1):** Open an available PDF attachment from an existing literature item; verify target literature, attachment, and original identity, and that target-page body text and text layer are visible/selectable in the reader. Opening a PDF from the project files tree is not a substitute for this literature attachment flow.
+- **Associate with a project (LIT-JOIN-PROJECT-01@5):** Start with existing literature and a target project. After authorized association, read the same literature item from the independent project directory; verify scope and that other project associations were not incorrectly rewritten. Adding to a category is not project association, and list display does not prove the association action completed.
 
-导入由人工确认；所需隔离库、合成输入、项目、独立前后目录与写入权限各自确认。可复用共享评测项目中的[合成 Bib 题录](../../../../../examples/projects/evaluation/files/sample.bib)、[合成 RIS 题录](../../../../../examples/projects/literature-ris/files/sample.ris)及[合成 PDF](../../../../../examples/projects/evaluation/files/sample.pdf)，以实际输入摘要和可核内容为参照；准备文件不等于导入成功，PDF 可选文字及元数据条件须逐轮核验。现有页面参考图仅为全局或项目文献空态；尚未核得导入结果、附件阅读及项目关联的目标版本真实完整窗口截图，不能用空态、组件夹具或合成图片代替。真实授权、数据和确认依据不足时保留缺口，不声明完整链路通过。
+Import requires human confirmation. Separately confirm authorization for the isolated library, synthetic input, project, independent before/after directory, and writes. Reusable inputs: [synthetic Bib records](../../../../../examples/projects/evaluation/files/sample.bib), [synthetic RIS records](../../../../../examples/projects/literature-ris/files/sample.ris), and [synthetic PDF](../../../../../examples/projects/evaluation/files/sample.pdf) in the shared evaluation project. Use actual input digests and verifiable content as references; file preparation is not successful import. Check selectable PDF text and metadata preconditions on each run. Existing page references show only global or project empty states. No real full-window target-version screenshots have been verified for import results, attachment reading, or project association; empty states, component fixtures, and synthetic images are not substitutes. If real authorization, data, or confirmation evidence is insufficient, retain the gap and do not claim the complete flow passed.
 
-### 文献交付到项目资料库（待确认）
+<a id="文献交付到项目资料库待确认"></a>
+### Deliver literature to project files (pending confirmation)
 
-历史文件夹交付卡已下线，不能要求重现旧入口；目前没有确认目标版本中与“将文献附件保存到项目资料库”等价的入口及需求，保留缺口，不纳入已采用判据。科研结果加入文献库、仅添加元信息或将已有全文挂为文献附件，与在项目资料目录创建文件不是同一终态，不能互相代替。
+The historical folder-delivery card has been retired and must not be reproduced. No equivalent entry point or requirement for saving a literature attachment into project files has been confirmed for the target version, so retain this gap and do not include it in adopted criteria. Adding research results to the literature library, adding metadata only, or attaching an existing full text to a literature item is not the same terminal state as creating a file in project files; these cannot substitute for one another.
 
-若后续确认存在此流程，应先明确目标项目和目录、同名处理及允许的写入范围，再使用获准的隔离项目和合成附件，从独立资料目录读回目标文件并对照来源身份及内容，必要时核对原件和冲突前态；不以提示成功或文献库条目作为资料落盘证据。入口、具体结果、授权与目标版本的真实完整窗口截图均待确认，历史局部图及其他页面截图不能替代。
+If this flow is later confirmed, first define the target project/directory, same-name behavior, and permitted write scope. Then use an authorized isolated project and synthetic attachment, independently read the target file from the files directory, and compare source identity/content; check original and conflict pre-state when relevant. A success notice or literature-library item is not proof that the file was saved. Entry point, exact outcome, authorization, and a real full-window target-version screenshot all remain unconfirmed; historical partial images and screenshots of other pages are not substitutes.

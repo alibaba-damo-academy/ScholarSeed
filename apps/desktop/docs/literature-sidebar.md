@@ -1,30 +1,35 @@
-# 文献侧栏名称、顺序与筛选
+<a id="文献侧栏名称顺序与筛选"></a>
 
-状态：current，2026-09-18，分支 `guide_subu`。
+# Literature Sidebar Names, Order, and Filtering
 
-## 最终范围
+Status: current, 2026-09-18, branch `guide_subu`.
 
-按用户最后确认的范围恢复修改前的侧栏布局，只保留名称、顺序及相关筛选调整。
+<a id="最终范围"></a>
+## Final Scope
 
-- 全览：我的文献 → 全部 / 最近添加 / 未整理 → 分类 → 已关联至项目 → 标签。无项目时不渲染项目分组。
-- 项目：本项目文献 → 三个视图 → 分类 → 标签，不显示项目分组。
-- 三个视图没有前置图标或悬停说明；分类和项目标题没有横线；项目节点没有前置方框图标。
-- 沿用原有分组缩进、节点缩进、子级间距、折叠按钮、文件夹图标、字号和行高。`literature.css` 与 `design/theme.css` 未改动，没有新增 15px 缩进 token。
-- 标签区恢复原有完整布局、搜索按钮及内部创建入口，没有新增标题加号。
-- `sidebarState.ts` 保存分组与节点各自的折叠状态。
-- 相关界面同步使用“未整理”“分类”等术语；入库菜单中分类位于项目之前。侧栏新建分类使用原有单名称弹窗，位置由点击的入口确定；入库菜单保持父级选择弹窗。见 `join-library.md`。
+Restore the sidebar layout from before the changes, within the scope last confirmed by the user. Keep only the name, order, and related filtering changes.
 
-## 未整理口径
+- All-library view: My Literature → All / Recently Added / Unorganized → Collections → Linked to Projects → Tags. Do not render the project group when there are no projects.
+- Project view: Literature in This Project → the three views → Collections → Tags. Do not show a project group.
+- The three views have no leading icons or hover descriptions. Collection and project headings have no horizontal rules, and project nodes have no leading square icons.
+- Keep the existing group and node indentation, child spacing, collapse buttons, folder icons, font sizes, and line heights. `literature.css` and `design/theme.css` were not changed; no 15px indentation token was added.
+- Restore the tag area to its original complete layout, including the search button and its internal create entry. Do not add a plus icon to the heading.
+- `sidebarState.ts` stores the collapsed state of groups and nodes separately.
+- Use consistent terminology such as “未整理” and “分类” across the related UI. In the add-to-library menu, collections appear before projects. Sidebar collection creation uses the existing single-name dialog, with the destination determined by the clicked entry; the add-to-library menu keeps its parent-selection dialog. See `join-library.md`.
 
-全览未整理同时排除任何分类关联和任何项目关联。列表 API 传递 `without_project`，仓储及计数使用相同条件；保留其它调用方单独使用 `without_collection` 时的原有语义。
+<a id="未整理口径"></a>
+## Definition of Unorganized
 
-项目内按用户提供的项目截图采用“没有放进本项目分类”的口径，文献仍属于本项目。删除分类只移除分类关联，toast 说明文献仍保留在库中。
+In the all-library view, Unorganized excludes items linked to any collection or any project. The list API passes `without_project`, and the repository and counts use the same condition. Preserve the existing semantics when other callers use `without_collection` alone.
 
-## 验证与边界
+Within a project, follow the definition shown in the project screenshot provided by the user: “not placed in a collection in this project.” The literature item remains part of the project. Deleting a collection removes only the collection link; the toast explains that the item remains in the library.
 
-- 恢复原版布局后，构建及 Electron 侧栏验收通过（24.1 秒），已查看全览和项目窗口截图；包括无项目状态、分组折叠、未整理筛选及计数。截图位于 `tmp/test_snapshot/desktop/literature-sidebar/`，为本地忽略产物。
-- 后端 `contract_literature_store.py`：43 项及 7 个子测试通过，覆盖全局分类、仅项目、项目内分类、同时分类与项目等组合。
-- `literature.css`、`design/theme.css` 与修改前 HEAD 一致；标签渲染与修改前逐段比对一致。
-- 本工程没有 `scripts/check-demo.mjs`。类型检查等既有失败及验证限制见 `join-library.md`；未放宽断言或调整基线。
+<a id="验证与边界"></a>
+## Verification and Boundaries
 
-2026-09-19 命名统一：全览和项目侧栏的分组、详情标题、列表列名、加入/管理菜单和引导标题统一为“我的分类”。仅调整这一分组的名称，通用操作“新建分类 / 新建子分类”和 Zotero 分类术语保持原意。
+- After restoring the original layout, the build and Electron sidebar acceptance passed (24.1 seconds). Reviewed screenshots of both the all-library and project windows; coverage included the no-project state, collapsed groups, and the Unorganized filter and count. Screenshots are in `tmp/test_snapshot/desktop/literature-sidebar/` as ignored local artifacts.
+- Backend `contract_literature_store.py`: all 43 tests and 7 subtests passed, covering global collections, project-only collections, collections within a project, and combinations of collection and project links.
+- `literature.css` and `design/theme.css` match the pre-change HEAD; tag rendering also matches the pre-change version in a section-by-section comparison.
+- This project has no `scripts/check-demo.mjs`. See `join-library.md` for existing type-check failures and other verification limits. No assertions were weakened and no baseline was adjusted.
+
+2026-09-19 Terminology unification: the group name in the all-library and project sidebars, detail heading, list column, add/manage menus, and onboarding heading was standardized to “我的分类”. Only this group name changed; the generic actions “新建分类 / 新建子分类” and Zotero collection terminology retain their original meanings.

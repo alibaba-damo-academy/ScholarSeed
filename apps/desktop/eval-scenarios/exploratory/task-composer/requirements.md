@@ -1,49 +1,53 @@
-# 任务输入器候选需求
+<a id="任务输入器候选需求"></a>
+# Candidate Requirements for the Task Composer
 
-## 用途与入口
+<a id="用途与入口"></a>
+## Purpose and Entry
 
-任务输入器用于准备新任务或已有任务的未发送内容。项目导航中的“新建任务”为候选入口；目标安装包 `0.3.2 / 202611121823 / preview` 的需求版本和入口动作尚待核实。本页仅为建设候选，不是冻结判据或运行结论。
+The task composer prepares unsent content for a new or existing task. “新建任务” in project navigation is a candidate entry; the requirements version and entry action in the target installed package `0.3.2 / 202611121823 / preview` remain to be verified. This page contains candidates for implementation, not frozen criteria or run results.
 
-项目空态中的新任务输入器
+Natural empty state of the project workspace's new-task composer
 
-参考图来自 macOS 安装版 `0.3.2 / 202611121823 / preview` 的隔离项目自然空态；仅展示空白输入器，不能证明草稿隔离、模式或发送行为。来源与限制见[构建依据](./build.md)。
+Reference image from the isolated natural empty state of macOS installed version `0.3.2 / 202611121823 / preview`; it shows only the blank composer. It does not prove draft isolation, mode semantics, or sending behavior. Sources and limitations: [build evidence](./build.md).
 
-资料引用选择器未选状态
+Reference: resource-reference picker with nothing selected
 
-参考：同版本隔离项目，2026-11-13；真实会话打开资料选择器且未选择任何项目，不证明勾选、提交引用或模型消费。
+Reference: same-version isolated project, 2026-11-13; a real conversation opened the resource picker, with no item selected. This does not prove selection, committing a reference, or model consumption.
 
-文献引用选择器显示空态
+Reference: literature-reference picker showing an empty state
 
-参考：同版本隔离项目，2026-11-13；真实会话中的文献选择器显示空态，独立库内容未核，不证明文献库确实为空或引用行为通过。
+Reference: same-version isolated project, 2026-11-13; the literature picker in a real conversation shows an empty state, but the independent library contents were not checked. This does not prove that the literature library is actually empty or that reference behavior passed.
 
-## 候选需求
+<a id="候选需求"></a>
+## Candidate Requirements
 
-**新任务空白草稿（COMPOSER-CAND-001；需求版本待确认）**：从已有任务进入新任务时，新任务不应带入原任务的未发送文字和附件引用。历史确认及其适用边界见[构建依据](./build.md)；目标版本尚需核实。
+**Blank draft for a new task (COMPOSER-CAND-001; requirements version to be confirmed):** When starting a new task from an existing task, the new task must not inherit the old task's unsent text or attachment references. See [build evidence](./build.md) for the historical confirmation and applicability boundary; the target version still needs verification.
 
-**任务草稿隔离（COMPOSER-CAND-002；需求版本待确认）**：任务之间切换后，各任务的未发送文字和附件引用应与各自草稿对应，不能串入其他任务。此项需要可区分的隔离任务及独立记录，不能以界面自身作为唯一参照；进程重启后的恢复不由历史依据保证。
+**Task-draft isolation (COMPOSER-CAND-002; requirements version to be confirmed):** After switching between tasks, each task's unsent text and attachment references correspond to its own draft and must not leak into another task. This requires distinguishable isolated tasks and independent records; the interface itself cannot be the only reference. Historical evidence does not guarantee recovery after process restart.
 
-**输入模式与发送状态（COMPOSER-CAND-003；需求版本待确认）**：输入器提供哪些模式、各模式的可用条件和发送门禁尚需产品需求依据与目标版本观察；仅记录候选，不以源码现状直接裁定正确或纳入冒烟。
+**Input modes and send state (COMPOSER-CAND-003; requirements version to be confirmed):** Product requirements and target-version observation are still needed to establish which modes the composer provides, their availability conditions, and send gating. Keep this as a candidate; do not judge correctness or include it in smoke tests directly from current source behavior.
 
-**待发送队列展示（COMPOSER-CAND-004；需求版本待确认）**：历史用户确认的要求是待发送消息单行显示、悬停可读完整内容；仅附件消息在队列中显示附件摘要，会话记录保留附件卡片而不产生空白气泡。目标包适用性、真实队列样本及完整窗口参考图尚待核实；仅附件消息的会话终态涉及发送，不由空白输入器或静态界面证明。
+**Queued-message display (COMPOSER-CAND-004; requirements version to be confirmed):** Historically confirmed user requirements: queued messages display on one line, with full content available on hover; an attachment-only message shows an attachment summary in the queue, while the conversation retains the attachment card and does not create an empty bubble. Applicability to the target package, real queue sample, and complete-window reference image remain to be verified. The conversation terminal state of an attachment-only message involves sending, which is not proved by a blank composer or static screen.
 
-**普通文件附件展示与移除（COMPOSER-CAND-005；需求版本待确认）**：历史用户确认输入框混合引用中的普通文件使用名称、格式双行卡片，提供预览和右上角关闭；文件附件超出单行可见范围时，可用方向控制横向浏览，到达边缘隐藏对应方向控制，无溢出时不显示控制。以获准合成文件的名称、格式及添加前后引用为独立参照；移除目标后核对该卡片不再属于当前草稿。目标版本适用性及完整窗口参考图待核，单张空输入器图不证明附件展示或移除；本项不涵盖其他引用来源、发送、模型回答或跨平台完整行为。
+**Display and removal of ordinary file attachments (COMPOSER-CAND-005; requirements version to be confirmed):** Historically confirmed user requirements: an ordinary file in mixed composer references uses a two-line card for name and format, with Preview and a close control at the upper right. When file attachments exceed the visible single-line area, directional controls allow horizontal browsing; the control for a direction disappears at that edge, and no controls appear when there is no overflow. Use authorized synthetic file name/format and before/after reference state as independent evidence. After removing the target, verify from an independent record that the card is no longer in the current draft. Target-version applicability and a complete-window reference image remain to be verified. A single blank-composer image does not prove attachment display or removal. This item does not cover other reference sources, sending, model responses, or complete cross-platform behavior.
 
-**资料目录引用选择（COMPOSER-CAND-006；需求版本待确认）**：从输入器的资料库入口打开资料选择弹窗，目录展开与勾选相互独立；选择目录覆盖其后代，取消其中一个子项后父目录呈半选，确认后本次提交的资料选择范围与预期对应且不重叠。先记录草稿中已有引用；无关既有引用的处理语义另待确认，不据此要求清空。以隔离项目已准备的合成目录树和确认前后草稿引用作独立参照；空态或单张卡片不证明选择范围正确。该历史确认的目标版本适用性及真实完整窗口图待核，不涵盖文献、任务引用、消息发送或模型消费。
+**Select resource-directory references (COMPOSER-CAND-006; requirements version to be confirmed):** Open the resource picker from the composer's resource-library entry. Expanding a directory is independent from selecting it. Selecting a directory covers its descendants; unselecting one child leaves its parent partially selected. After confirmation, the submitted selection scope matches the expected non-overlapping scope. First record any references already in the draft; handling of unrelated existing references is unconfirmed and does not imply they should be cleared. Use a prepared synthetic directory tree in an isolated project and independent before/after draft references as evidence; an empty state or one card does not prove correct selection scope. Target-version applicability of this historical confirmation and a real complete-window image remain to be checked. This does not cover literature, task references, sending, or model consumption.
 
-**文献库引用选择入口（COMPOSER-CAND-010；需求版本待确认）**：历史用户截图与增量要求区分资料库和文献库的选择入口及各自弹窗，不将两者合并为分类 Tab。目标包需求适用性待核；文献多选、过滤、勾选和确认后的引用语义尚无充分依据，不由资料选择或项目文献拖入推断。已观察的显示空态不能证明库真实为空、非空选择、草稿提交或模型消费；非空验证需获准的同库真实文献及独立身份参照。
+**Literature-library reference picker entry (COMPOSER-CAND-010; requirements version to be confirmed):** Historical user screenshots and follow-up requirements distinguish the resource-library and literature-library picker entries and their respective dialogs; they are not combined into category tabs. Applicability to the target package remains to be checked. There is insufficient evidence for literature multi-select, filtering, selection, or confirmation semantics; do not infer them from resource selection or dragging project literature. The observed empty state does not prove that the library is empty, or that non-empty selection, draft submission, or model consumption works. Non-empty validation requires authorized real literature from the same library and an independent identity reference.
 
-**项目资料拖入引用（COMPOSER-CAND-007；需求版本待确认）**：历史需求及人工反馈要求同项目资料文件或目录以复制式拖入任务输入区：目录保留独立引用与按需读取提示，文件逐项显示并可分别移除。以隔离项目的合成文件、目录身份及拖入前后的草稿引用为独立参照，并核对源文件路径及内容摘要不变；草稿引用出现不证明文件已被模型读取。目标版本适用性及真实完整窗口图待核，不涵盖文献拖入、跨项目行为或消息发送。
+**Drag project resources into references (COMPOSER-CAND-007; requirements version to be confirmed):** Historical requirements and user feedback require copying a same-project resource file or directory into the task input area by dragging. A directory remains a distinct reference with an on-demand-read hint; files display individually and can be removed separately. Use synthetic files/directories in an isolated project and independent draft references before/after dragging. Check that source paths and content digests remain unchanged; appearance of a draft reference does not prove the model read the file. Target-version applicability and a real complete-window image remain to be checked. This does not cover dragging literature, cross-project behavior, or sending.
 
-**项目文献拖入引用（COMPOSER-CAND-008；需求版本待确认）**：历史原型提出同项目文献行以复制式拖入任务输入区；后续人工反馈确认多条文献逐项显示标题、可分别移除，不再合并为数量。以获准隔离项目中已入库的真实文献身份、拖入前后草稿引用及独立文献目录为参照，核对引用对象与数量，并检查原文献未被移动；引用展示不代表全文已读取或消息已发送。原型关于拖动已选行或未选行的选择范围是待核线索，不因源码存在自动采用；目标包适用性及完整窗口图待核，跨项目和发送行为另核。
+**Drag project literature into references (COMPOSER-CAND-008; requirements version to be confirmed):** A historical prototype proposed dragging a same-project literature row into task input by copying it. Later user feedback confirmed that multiple literature items display individually by title and can each be removed, rather than being collapsed into a count. Use the identities of real, already-imported literature in an authorized isolated project, independent draft references before/after, and an independent literature listing. Check the referenced objects and count, and confirm the original literature has not been moved. Showing a reference does not mean the full text was read or a message sent. Whether dragging a selected or unselected row controls the selection scope is a historical question to verify; source code does not make it automatically adopted. Target-version applicability and a complete-window image remain to be checked; cross-project and sending behavior are separate.
 
-**草稿图片逐项移除（COMPOSER-CAND-009；需求版本待确认）**：历史用户确认图片缩略图的移除入口默认隐藏且不接受鼠标命中，只在对应图片悬停或键盘焦点进入时显示，不同时显示整组入口。对获准隔离草稿中的多张可区分图片，移除其中一张后，以独立记录核对该引用消失、其他图片仍在且源文件未删除；图片添加或移除不代表已发送或模型已读取。目标包适用性及真实完整窗口图待核；发送后预览、导入和跨平台另属专项。
+**Remove individual draft images (COMPOSER-CAND-009; requirements version to be confirmed):** Historically confirmed user requirement: each image thumbnail's removal entry is hidden by default and is not a mouse hit target. It appears only while the corresponding image is hovered or keyboard-focused; the whole group of entries is not shown at once. For multiple distinguishable images in an authorized isolated draft, after removing one, use an independent record to verify that its reference disappeared, the other images remain, and source files were not deleted. Adding/removing an image does not mean it was sent or read by a model. Target-package applicability and a real complete-window image remain to be checked; post-send preview, import, and cross-platform behavior are separate specialties.
 
-可使用 [评测项目图片](../../../../../examples/projects/evaluation/files/icon.png)和[第二张合成图片](../../../../../examples/projects/image-secondary/files/secondary.png)作为可区分原始输入；选择文件由人工确认，先核源身份和摘要，再核获准隔离草稿的引用前后态。准备文件不预置草稿或移除结果，也不授权发送。
+Use [the evaluation project's image](../../../../../examples/projects/evaluation/files/icon.png) and [a second synthetic image](../../../../../examples/projects/image-secondary/files/secondary.png) as distinguishable source inputs. A human confirms file selection. First verify source identity/digest, then before/after reference state in the authorized isolated draft. Preparing files does not prefill a draft or removal outcome and does not authorize sending.
 
-前两项候选只覆盖发送前草稿；待发送队列项另涉及仅附件消息的会话展示。这些范围均不等同历史 `CHAT-NEW-01` 首次发送后建立独立会话、`CHAT-HISTORY-01` 读回历史消息或 `CHAT-LOCAL-FILE-01` 附件参与真实回答；具体历史映射见[构建依据](./build.md)。建立和发送真实会话、回答与附件的专项不能由草稿截图代替。
+The first two candidates cover only pre-send drafts. The queued-message item also involves conversation display of an attachment-only message. These scopes are not equivalent to historical `CHAT-NEW-01` (establish a separate conversation identity after first send), `CHAT-HISTORY-01` (read back messages, reply, and terminal state from a completed conversation), or `CHAT-LOCAL-FILE-01` (add a local file and receive an answer about verifiable facts in it). See [build evidence](./build.md) for the historical mapping. A real conversation-creation/send/answer/attachment specialty cannot be replaced by a draft screenshot.
 
-## 数据与执行边界
+<a id="数据与执行边界"></a>
+## Data and Execution Boundaries
 
-正常展示观察与创建任务、编辑草稿、切换任务、添加附件、发送消息及模型调用分开记录。草稿候选终态分别为：新任务不带入原任务未发送内容；切回原任务时文字和附件引用与离开前的独立记录对应。待发送队列需可区分的真实待发送文字及附件，队列摘要与原始输入独立比对；已发送附件卡片终态还需获准的真实回合。普通文件附件、资料目录选择与资料拖入可复用[共享合成文件](../../../../../examples/projects/evaluation/project.json)：本地文件由人工确认选择，多文件溢出需足够可区分文件；资料引用使用获准隔离项目的多层 `notes` 目录并独立记录树、源内容及草稿选择范围。图片逐项移除至少需要两张可区分合成图片及各自摘要；原始输入分别来自 `evaluation` 和 [image-secondary](../../../../../examples/projects/image-secondary/project.json)，本地选择由人工确认，文件存在不代表草稿已准备。文献拖入需同项目至少两条可区分的真实已入库文献，合成题录只是原始输入，导入由人工确认；独立记录选择、引用和文献目录前后身份。任务切换和草稿操作可能保存状态；文件引用、项目目录及授权根同步可能涉及文件或授权范围变化。准备隔离项目、任务和 `examples` 文件并确认操作范围后，才可验证对应交互；不读取或修改真实用户会话，不以伪造结果代替真实状态。
+Record normal display separately from creating tasks, editing drafts, switching tasks, adding attachments, sending messages, and model calls. Candidate terminal states for drafts: a new task does not inherit unsent content from the old task; when returning to the old task, its text and attachment references match the independent record from before leaving. A queued-message test needs distinguishable real queued text and attachments; compare the queue summary independently with the original input. The terminal state of an attachment card in a sent conversation also requires an authorized real turn. Ordinary-file attachment, resource-directory selection, and resource dragging can reuse the [shared synthetic file](../../../../../examples/projects/evaluation/project.json): a human confirms local file selection; multi-file overflow needs enough distinguishable files; resource references use the multi-level `notes` directory in an authorized isolated project, with independent records of its tree, source content, and draft selection scope. Individual image removal needs at least two distinguishable synthetic images and each image's digest; source inputs are from `evaluation` and [image-secondary](../../../../../examples/projects/image-secondary/project.json). A human confirms local selection; file existence does not mean the draft is prepared. Literature dragging requires at least two distinguishable real imported items from the same project. Synthetic bibliographic records are input only; a human confirms import. Independently record selection, references, and literature-directory identities before/after. Task switching and draft operations may save state; file references, project directories, and authorization-root synchronization may change files or authorization scope. Verify an interaction only after preparing an isolated project, task, and `examples` files and confirming the operation scope. Do not read or modify real user conversations, and do not substitute fabricated results for real state.
 
-发送、模型调用、队列、保存及授权相关行为须分别确认需求、数据和副作用；缺少版本依据、数据、真实截图或独立参照时保留缺口，不能宣称通过，也不纳入冒烟分母。
+Sending, model calls, queues, saving, and authorization-related behavior require separate confirmation of criteria, data, and side effects. If version basis, data, real screenshots, or independent references are missing, retain the gap and do not claim a pass or include the item in the smoke denominator.

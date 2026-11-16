@@ -1,234 +1,255 @@
-# PDF基础阅读
+<a id="pdf基础阅读"></a>
+# Basic PDF Reading
 
-PDF 查找无匹配显示状态
+PDF search showing no matches
 
-参考：macOS arm64 `0.3.2 / 202611121823 / preview`，2026-11-13；合成 PDF 的一次无匹配查询，完整视口中正文因并排面板较窄仅部分可见，不代表其他查询或正式评测通过。
+Reference: macOS arm64 `0.3.2 / 202611121823 / preview`, 2026-11-13; one no-match search in a synthetic PDF. The document body is only partly visible in the full viewport because the side-by-side pane is narrow. This does not establish other searches or passage of a formal evaluation.
 
-PDF 阅读页面参考
+PDF reading page reference
 
-参考：macOS arm64，0.3.2 / 202611121104，2026-11-12；合成 PDF 的第一页，不代表批注、选区或异常状态。
+Reference: macOS arm64, 0.3.2 / 202611121104, 2026-11-12; the first page of a synthetic PDF. This does not represent annotations, selections, or error states.
 
-两页合成 PDF 的第一页
+Page 1 of a two-page synthetic PDF
 
-两页合成 PDF 的第二页
+Page 2 of a two-page synthetic PDF
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-12；两图分别展示 PDF-OBS-001、002 的第一页和第二页状态。截图不单独证明翻页动作，也不代表目录、缩放、批注或异常已验证；来源见[构建依据](./build.md)。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-12; the two images show page 1 and page 2 states for PDF-OBS-001 and 002, respectively. The screenshots alone do not prove that page navigation occurred, nor do they establish that outlines, zoom, annotations, or error states were verified. See the [build basis](./build.md).
 
-目录选中第二页
+Outline with page 2 selected
 
-目录选中第一页
+Outline with page 1 selected
 
-查找第三处状态
+Search result: third match
 
-查找第二处状态
+Search result: second match
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-13；前两图分别展示两页合成 PDF 的目录选中状态，后两图展示查找第三处及第二处状态。静图不单独证明跳转、命中定位或切换动作，不代表十页样本及其他 PDF 要求通过；来源与本轮独立评审边界见[构建依据](./build.md)。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-13; the first two images show outline selection states for the two-page synthetic PDF, and the last two show the third and second search-result states. Still images alone do not prove navigation, match positioning, or switching actions, and do not establish passage of the ten-page sample or other PDF requirements. See the [build basis](./build.md) for the source and this round's independent-review boundary.
 
-选中第一页缩略图
+Thumbnail for page 1 selected
 
-选中第二页缩略图
+Thumbnail for page 2 selected
 
-参考：同一目标版本，2026-11-13；分别展示两页合成 PDF 的缩略图选中及对应正文状态。静图不单独证明点击或跳转，不代表长缩略列表、十页样本、异常或完整 PDF 功能通过。
+Reference: the same target version, 2026-11-13; the images show thumbnail selection and the corresponding document-body state for each page of the two-page synthetic PDF. Still images alone do not prove a click or navigation, or establish passage of long thumbnail lists, the ten-page sample, error cases, or complete PDF functionality.
 
-PDF 普通放大状态
+PDF at ordinary zoom-in
 
-PDF 普通缩小状态
+PDF at ordinary zoom-out
 
-PDF 适应状态
+PDF in fit mode
 
-参考：同一目标版本，2026-11-13；两页合成 PDF 在当次分屏布局下的普通放大、缩小和适应状态。放大图的正文部分被视口裁切；适应页面与适应宽度的原图在该布局下字节相同，仅复用一份。静图不能单独证明模式、缩放动作或几何关系，不代表极限、其他布局及完整 PDF 功能通过。
+Reference: the same target version, 2026-11-13; ordinary zoom-in, zoom-out, and fit states for a two-page synthetic PDF in that session's split-pane layout. Part of the document body is clipped in the zoom-in image. The original fit-page and fit-width images are byte-identical in this layout and are represented by one copy. Still images alone do not prove the mode, zoom action, or geometric relationship, or establish passage at limits, in other layouts, or for complete PDF functionality.
 
-## 标注退出与笔记布局补充约束
+<a id="标注退出与笔记布局补充约束"></a>
+## Supplemental Constraints for Exiting Annotation and Notes Layout
 
-持续标注按钮保持鼠标悬停或键盘焦点、提示已显示时，按一次 Esc 仍须退出模式；不要求先点击正文或移开鼠标。随后划选只产生临时选区，不新增已保存标注。颜色子菜单与批注输入仍保留自身的 Esc 优先级。
+Pressing Esc once must still exit continuous annotation while its button remains hovered or keyboard-focused and its tooltip is visible; clicking the document body or moving the pointer first is not required. A subsequent selection creates only a temporary selection and must not add a saved annotation. Color submenus and comment inputs retain their own Escape priority.
 
 One Escape must exit continuous annotation even while its button remains hovered or keyboard-focused with a visible tooltip; moving the pointer or focusing the document first is not required. Subsequent selection stays temporary without creating a saved mark. Color menus and comment inputs retain their Escape priority.
 
-按2026-11-12用户确认修复的 Bug 88837628，当前 PDF 的临时文本选区及选中标注工具栏可通过 Esc 退出；持续高亮或下划线模式退出后，再划选不得继续自动标注。退出保留已保存标注。输入法组合、输入框、内层弹窗及已消费 Esc 的交互保留优先级，不清理其他分屏文档。
+For the fix to Bug 88837628 confirmed by the user on 2026-11-12, Esc dismisses the current PDF text selection or selected-annotation toolbar. After exiting continuous highlighting or underlining, a subsequent selection must not continue to create annotations automatically. Exiting preserves saved annotations. IME composition, input fields, nested overlays, and interactions that have already consumed Esc retain priority; other split-pane documents are not cleared.
 
-按同日用户确认的 Bug 88838604，PDF 笔记面板支持拖动左边框和键盘调整宽度，提供铺满 PDF 阅读区域与恢复入口；展开/恢复保留调整后的宽度、正在编辑的内容与同一编辑器实例。AI 解读既有分栏和展开行为不变，信息面板不因此改变布局。
+For Bug 88838604, also confirmed by the user that day, the PDF notes panel supports resizing by dragging its left edge or using the keyboard, with controls to fill the PDF reading area and restore the prior layout. Expanding and restoring preserve the adjusted width, content being edited, and the same editor instance. Existing AI interpretation split-pane and expansion behavior remains unchanged; the information panel's layout does not change as a result.
 
-两项为已确认专项补充，不新增基础阅读快评分母，不推定操作系统级全屏；独立需求版本未指定，沿用原稳定 ID 与版本标记。回归关联 PDF-OBS-003、008、009 及文献笔记专项，真实数据写入与产品启动权限仍单独核验。
+These are confirmed supplemental checks. They do not expand the basic-reading quick-check denominator or imply operating-system-level fullscreen. No separate requirement version was specified; retain the existing stable IDs and version markers. Regress PDF-OBS-003, 008, and 009 and the literature-notes supplement. Authorization for real-data writes and product startup must still be checked separately.
 
 For user-confirmed Bugs 88837628 and 88838604 (2026-11-12), Escape dismisses the current PDF selection or selected-annotation toolbar and exits continuous highlighting or underlining without deleting saved annotations. Editable fields, IME composition, nested overlays, consumed events, and other document panes retain their interaction boundaries. The notes panel supports left-edge and keyboard resizing, filling the PDF area, and restoring its width and the same editor with its draft intact. Existing interpretation and information-panel behavior remains unchanged. These are supplemental checks, not OS fullscreen or additions to the basic-reading quick-check scope; existing requirement IDs and version markers remain unchanged.
 
-已核实的正常PDF阅读与定位行为已采用为v`0.3`需求；004–005的目录/文本读取失败及007异常反馈、加密与局部失败分支仍待确认，不随正常阅读一并批准。
+Verified normal PDF reading and navigation behavior has been adopted as the v`0.3` requirement. The outline/text extraction failures in 004–005 and the error feedback, encryption, and partial-failure branches in 007 remain pending confirmation; adopting normal reading does not approve them.
 
-在工作台阅读PDF，通过页码、缩放、目录、查找和页缩略定位内容。语义入口为资料正常打开后的PDF阅读器；引导内置示例也可展示阅读器，但不代表真实文献或AI能力，具体入口待授权观察。
+Read PDFs in the workbench and locate content using page numbers, zoom, the outline, search, and page thumbnails. The semantic entry point is the PDF reader after a resource opens normally. The onboarding sample can also display the reader, but does not represent real literature or AI capabilities; the specific entry point remains subject to authorized observation.
 
-## 阅读与定位页面
+<a id="阅读与定位页面"></a>
+## Reading and Navigation
 
-### 加载与文档身份（PDF-OBS-001 · v`0.3`）
-动态与条件：具备预览能力的有效PDF应从加载状态进入可辨认正文，工具栏总页数与同一份已核验样本的实际页数一致；未加载的页占位不算正文已呈现。对照本轮文档身份、公开来源及样本摘要，不把文件后缀或阅读器外壳出现当成加载成功。
+<a id="加载与文档身份pdf-obs-001--v03"></a>
+### Loading and Document Identity (PDF-OBS-001 · v`0.3`)
+Dynamic and conditional: A valid PDF with preview capability must transition from loading to a recognizable document body. The toolbar's total page count must match the page count of the same independently verified sample; placeholders for unloaded pages do not count as rendered content. Compare the document identity, public source, and sample summary for this run. A file extension or visible reader shell does not establish successful loading.
 
-### 页码与翻页（PDF-OBS-002 · v`0.3`）
-动态：上一页、下一页、页码输入及适用的翻页/首末页/跳页快捷操作，应到达样本已知的目标页，当前页码随实际主要可见页面变化且不越界。用页码、目标页独有正文或图案及操作前后实际位置共同判断，不用输入框变化或按钮确认自证跳页成功；物理页序不等于正文印刷页码。
+<a id="页码与翻页pdf-obs-002--v03"></a>
+### Page Numbers and Navigation (PDF-OBS-002 · v`0.3`)
+Dynamic: Previous/next controls, page-number input, and applicable navigation/first/last/jump shortcuts must reach the sample's known target page. The current page number must track the actually predominant visible page and stay in range. Judge using the page number, content or imagery unique to the target page, and actual positions before and after the action. An input-field change or button acknowledgment alone does not prove navigation; physical page order is not the same as printed page numbering.
 
-按2026-11-11用户两张截图确认的引用定位专项：会话文献引用含多处依据时，“上一处依据 / 共N处或当前位置 / 下一处依据”使用带上下箭头的浮动条，位于PDF阅读区右上方、顶栏下方，不挤占或遮挡顶栏翻译设置与导出操作，也不覆盖右侧工具栏。浮动条不随正文滚动；窄分栏仍可访问按钮。依据顺序、计数、首尾禁用、真实定位和高亮保持原语义；单处或无依据不展示切换条。本专项不扩入基础阅读快评分母。
+Citation-navigation supplement confirmed by the user's two screenshots on 2026-11-11: When a conversation citation contains multiple evidence regions, the actions “上一处依据 / 共N处或当前位置 / 下一处依据” (previous evidence / total N or current position / next evidence) use a floating toolbar with up/down arrows. It sits at the upper right of the PDF reading area, below the header, without taking space from or obscuring the header's translation settings or export action, and without covering the right toolbar. It remains fixed while the document scrolls; its buttons remain accessible in narrow panes. Evidence order, counts, disabled boundary states, actual navigation, and highlights retain their original semantics. Show no switching toolbar for zero or one evidence region. This supplement does not expand the basic-reading quick-check denominator.
 
 Citation-location supplement confirmed by the user's two screenshots on 2026-11-11: when a conversation citation contains multiple evidence regions, previous/count-or-position/next actions appear in a floating toolbar with up/down arrows at the upper right of the PDF reading area, below the header. It must not overlap translation settings, export, or the side rail. It stays fixed while pages scroll and remains usable in narrow panes. Evidence ordering, counts, boundary disabling, actual navigation, and highlights retain their semantics; zero or one region shows no navigation strip. This supplement does not expand the basic-reading quick-check scope.
 
-导航侧栏展开后仍不得裁切浮动条按钮及箭头；空间不足时文本可省略，但保留完整提示与可访问名称。正文高亮不得覆盖浮动条。
+An open navigation sidebar must not clip the floating toolbar's buttons or arrows. Labels may be truncated when space is limited, but full tooltips and accessible names must remain available. Document highlights must not cover the floating toolbar.
 
 An open navigation sidebar must not clip the floating toolbar's buttons or arrows. Labels may truncate when space is limited, while full tooltips and accessible names remain available. Document highlights must not paint over the toolbar.
 
-引用定位先即时跳到目标页，再在该页内平滑滚到高亮；开启系统「减少动态效果」时页内也即时定位。只有页码时直接跳页。跨远页验收应观察滚动过程，确认没有逐页扫过，再核对目标页码和原文高亮。
+Citation navigation jumps immediately to the target page, then scrolls smoothly within that page to the highlight. When the system's “Reduce Motion” setting is enabled, the within-page move is also immediate. A page-only citation jumps directly to the page. For distant pages, observe the transition to confirm that intermediate pages are skipped, then verify the target page number and source-text highlight.
 
 Citation navigation jumps immediately to the target page, then scrolls smoothly within that page to the highlight. With reduced motion enabled, the within-page move is also instant. A page-only citation just jumps to the page. For distant citations, observe the transition to confirm it skips intervening pages, then verify the page number and source highlight.
 
-### 缩放与适应模式（PDF-OBS-003 · v`0.3`）
-动态：放大、缩小、百分比编辑、适应页面/宽度切换及适用快捷操作应改变真实正文尺寸，百分比与实际模式对应，缩放不误换文档或丢失当前阅读页。自定义缩放范围为10%–500%；以已知页面纵横比、当前可用阅读区及操作前后关系判断，不固定截图像素，也不把百分比显示变化单独当成缩放成功。
+<a id="缩放与适应模式pdf-obs-003--v03"></a>
+### Zoom and Fit Modes (PDF-OBS-003 · v`0.3`)
+Dynamic: Zoom in/out, percentage editing, fit-page/fit-width switching, and applicable shortcuts must change the actual document-body scale. The displayed percentage must correspond to the active mode, and zooming must not switch documents accidentally or lose the current reading page. The custom zoom range is 10%–500%. Judge using known page aspect ratios, the currently available reading area, and before/after relationships; do not rely on fixed screenshot pixels or treat a displayed percentage change alone as proof of successful zooming.
 
-## 从内容找到页面
+<a id="从内容找到页面"></a>
+## Find Pages from Content
 
-### 目录结构与目标页（PDF-OBS-004 · v`0.3`）
-条件：有原生目录的样本应显示对应标题与层级，展开/折叠及可解析条目的跳页与事前已知目录目标一致；无可解析目标的条目不能误跳。没有原生目录的PDF可以显示无目录状态，不要求从正文标题自动生成目录；已知有目录却读取失败不能当无目录正确通过。
+<a id="目录结构与目标页pdf-obs-004--v03"></a>
+### Outline Structure and Target Pages (PDF-OBS-004 · v`0.3`)
+Conditional: A sample with a native outline must show the corresponding titles and hierarchy. Expanding/collapsing it and navigating from parseable entries must reach the outline targets known in advance; entries without parseable destinations must not navigate incorrectly. A PDF with no native outline may show an empty-outline state; generating an outline automatically from document headings is not required. A known outline that fails to load must not pass as a correct no-outline state.
 
-按2026-11-11用户截图及明确尺寸要求，目录展开/折叠按钮为28×28px，内部箭头为14×14px；标题行及选中、按压、hover背景高度统一为28px，一级、二级、三级及更深层级保持一致，不改变缩进、展开和跳页行为。
+Per the user's screenshots and explicit sizing request on 2026-11-11, outline expand/collapse buttons measure 28×28px with 14×14px arrows. Title rows and selected, pressed, and hover backgrounds are uniformly 28px high at every depth, without changing indentation, expansion, or page-navigation behavior.
 
 Per the user screenshots and explicit sizing request on 2026-11-11, outline expand/collapse buttons measure 28×28px with 14×14px arrows. Title rows and selected, pressed, and hover backgrounds remain 28px high at every depth, preserving indentation, expansion, and page navigation.
 
-### 文本查找与命中定位（PDF-OBS-005 · v`0.3`）
-动态与条件：在查找区输入样本已知文本，结果条目、命中数量及前后命中切换应与事前核验的文本和所在页对应，选择结果后正文定位到实际命中。区分查找中、无匹配、无文本层和查找失败；纯扫描PDF不承诺可搜索或自动OCR，不能把无文本层当作找不到已知可搜索文本。
+<a id="文本查找与命中定位pdf-obs-005--v03"></a>
+### Text Search and Match Navigation (PDF-OBS-005 · v`0.3`)
+Dynamic and conditional: Enter known sample text in the search area. Result entries, match counts, and previous/next match switching must correspond to the text and pages verified in advance. Selecting a result must position the document at the actual match. Distinguish searching, no matches, no text layer, and search failure. Searchability or automatic OCR is not promised for image-only scanned PDFs; absence of a text layer must not be treated as failure to find known searchable text.
 
-### 页缩略与正文对应（PDF-OBS-006 · v`0.3`）
-动态：页缩略区显示对应物理页序和可辨认的缩略内容，滚动到后续缩略后可继续查看；选择目标缩略应使正文到达该页，当前页指示与正文一致。以已知目标页特征及真实前后位置核对，不要求所有远端缩略在首次打开瞬间都完成渲染。
+<a id="页缩略与正文对应pdf-obs-006--v03"></a>
+### Page Thumbnails and Document Correspondence (PDF-OBS-006 · v`0.3`)
+Dynamic: The thumbnail area shows the corresponding physical page order and recognizable thumbnail content, and scrolling reveals later thumbnails. Selecting a target thumbnail must navigate the document to that page, with the current-page indicator matching the body. Verify using known target-page features and actual positions before and after; all distant thumbnails need not finish rendering immediately on first open.
 
-## 理解不可阅读状态
+<a id="理解不可阅读状态"></a>
+## Understand Unreadable States
 
-### 错误、受保护文件与加载边界（PDF-OBS-007 · v`0.3`）
-条件专项：损坏或无法渲染的PDF应给出与失败层级相符的可理解反馈，不冒充正文已就绪；已知加密文件应与普通损坏文件区分，不能要求在内置阅读器完成未提供的解密流程。加载与错误须依据已知样本性质或独立失败前提判断，不因一个瞬时加载画面宣布失败；系统外部打开属于另行授权动作。
+<a id="错误受保护文件与加载边界pdf-obs-007--v03"></a>
+### Errors, Protected Files, and Loading Boundaries (PDF-OBS-007 · v`0.3`)
+Conditional supplement: A damaged or unrenderable PDF must provide understandable feedback appropriate to the failure layer, without pretending that the document is ready. Known encrypted files must be distinguished from ordinary corruption; do not require an undeclared decryption flow in the built-in reader. Judge loading and errors against known sample properties or an independently established failure precondition; a transient loading screen alone does not establish failure. Opening the file externally is a separately authorized action.
 
-## 验证归属与数据
+<a id="验证归属与数据"></a>
+## Verification Scope and Data
 
-001–006已采用的正常分支归普通阅读快评，前提为已有获准可读样本及独立页数、目标页特征、目录/文本层资料；单页或无目录资料不能代表多页、目录、命中切换分支完成。007及特殊故障分支仍为待确认的条件专项，缺数据保留待覆盖，不事后移项追绿。
+The adopted normal branches of 001–006 belong to the ordinary-reading quick check, provided that an authorized readable sample and independent page-count, target-page, outline, and text-layer references are available. A single-page or no-outline sample cannot establish coverage of multipage, outline, or match-switching branches. 007 and special failure branches remain conditional supplements pending confirmation; missing data stays marked for coverage and must not be moved retroactively to make the result green.
 
-[共享示例项目的两页合成PDF](../../../../../examples/projects/evaluation/files/sample.pdf)有文本层及两级原生目录；“Needle”仅在第1页，“padding”仅在第2页，“PDF”跨页共3处，供跳页、查找和缩略对照。准备状态以本轮收据为准；损坏、加密及局部失败数据仍待准备，长缩略列表和大文档行为不由此覆盖。
+The [shared example project's two-page synthetic PDF](../../../../../examples/projects/evaluation/files/sample.pdf) has a text layer and a two-level native outline. “Needle” appears only on page 1, “padding” only on page 2, and “PDF” appears three times across both pages; use them to compare page navigation, search, and thumbnails. Use this round's receipt as the authority for preparation status. Damaged, encrypted, and partial-failure samples remain to be prepared; long thumbnail lists and large-document behavior are not covered by this sample.
 
-[单页图片型合成 PDF](../../../../../examples/projects/pdf-image-only/files/image-only.pdf)的可见文字位于图像中，没有文本层，可供无文本层条件专项准备；它不承诺 OCR 或具体查找结果，也不代表真实扫描文件的全部情况。输入身份及独立核验见[构建依据](./build.md)；文件是原始输入，不代表已导入或产品通过，导入由人工确认并核隔离目标及权限。
+The [single-page image-only synthetic PDF](../../../../../examples/projects/pdf-image-only/files/image-only.pdf) has visible text embedded in an image and no text layer, and can be used to prepare the no-text-layer conditional supplement. It promises neither OCR nor a particular search result, and does not represent all characteristics of real scanned files. See the [build basis](./build.md) for input identity and independent verification. The file is raw input; it does not mean that it has been imported or that the product has passed. A person must confirm any import and verify the isolation target and permissions.
 
-[独立十页合成 PDF](../../../../../examples/projects/pdf-multipage/files/multipage.pdf)每页有独立页号标记，`CROSS-BATCH-NEEDLE` 只在第 8、9 页出现，可供多页查找与后续缩略定位专项使用；输入身份及独立解析见[构建依据](./build.md)。它不替代默认两页快评，不证明加载、查找或导入成功；导入由人工确认，执行须核隔离目标及权限。
+The [independent ten-page synthetic PDF](../../../../../examples/projects/pdf-multipage/files/multipage.pdf) has a unique page-number marker on every page; `CROSS-BATCH-NEEDLE` appears only on pages 8 and 9. It is available for multipage search and subsequent thumbnail-navigation supplements. See the [build basis](./build.md) for input identity and independent parsing. It does not replace the default two-page quick check or prove successful loading, searching, or importing. A person must confirm any import and verify the isolation target and permissions before performing it.
 
-阅读可伴随最近打开记录、导航偏好及索引/辅助记录初始化，不承诺零写入；进入真实流程前明确允许这些副作用。选区、批注、导出/生成/保存及AI阅读仍是独立业务范围，不在本页通过分母中，也不因本页基础阅读通过而视作已验证。
+Reading may initialize recent-file records, navigation preferences, and index/auxiliary records; zero writes are not promised. Explicitly authorize these side effects before entering a real flow. Selection, annotation, export/generation/saving, and AI reading remain separate business scopes. They are outside this page's pass denominator and are not verified by passing its basic-reading checks.
 
-## 发布快评层
+<a id="发布快评层"></a>
+## Release Quick-Check Layer
 
-采用v`0.3`的正常子要点：PDF-OBS-001、002；仅代表下述范围，不代表这些ID全部细则通过。
+Adopted normal subpoints from v`0.3`: PDF-OBS-001 and 002. This covers only the scope below and does not mean every detail under these IDs has passed.
 
-正常打开已知两页PDF后，正文身份与页数应对应独立原件；作一次有效方向的普通翻页，页码与目标页独有正文同时变化。不以页码变化代替正文变化。
+After normally opening the known two-page PDF, document identity and page count must match the independent original. Navigate one page in a valid direction; both the page number and content unique to the target page must change. A page-number change does not substitute for a content change.
 
-必要参照：[共享 sample.pdf](../../../../../examples/projects/evaluation/files/sample.pdf)的获准隔离副本；原件两页文本/页数及build摘要。数据准备不等于导入功能测试，导入测试由人工确认。
+Required reference: an authorized isolated copy of the [shared sample.pdf](../../../../../examples/projects/evaluation/files/sample.pdf), together with the original's two-page text/page count and build summary. Preparing data is not an import-function test; a person must confirm any import test.
 
-## 专项层
+<a id="专项层"></a>
+## Supplemental Layer
 
-本层未选：缩放/限幅（保留003历史不符合）、目录、查找、缩略图及异常。原完整判据、稳定ID、版本和历史结果保留；未确认分支不因分层获批。
+Not selected for this layer: zoom/limits (retain the historical nonconformance for 003), outline, search, thumbnails, and errors. Preserve the original full criteria, stable IDs, versions, and historical results. An unconfirmed branch is not approved merely by being assigned to a layer.
 
-## 2026-11-05 已确认界面专项
+<a id="2026-11-05-已确认界面专项"></a>
+## 2026-11-05 Confirmed Interface Supplements
 
-以下为用户在本次开发中明确确认的增量要求，不追改001–007的版本、历史结论或既有冻结运行。
+The following incremental requirements were explicitly confirmed by the user during this development. They do not retroactively change the versions or historical conclusions of 001–007, or any existing frozen run.
 
-### 导航与标注记录（PDF-OBS-008 · v`0.2`）
-按2026-11-11用户截图确认，左侧纯评论卡片点击评论正文时，必须返回对应页的评论气泡位置并显示定位态；支持键盘触发。复制、展开收起及编辑不触发定位，评论文字仍可选择。自动缩放或布局变化不得将明确的评论定位抢回打开文献时的原引用。
+<a id="导航与标注记录pdf-obs-008--v02"></a>
+### Navigation and Annotation Records (PDF-OBS-008 · v`0.2`)
+As confirmed by the user's screenshot on 2026-11-11, clicking the comment text in a comment-only card on the left must navigate to that page's comment bubble and show its focused state; keyboard activation is supported. Copying, expanding/collapsing, or editing must not navigate, and comment text remains selectable. Automatic zoom or layout changes must not override explicit comment navigation by restoring the original citation that opened the document.
 
 Per the user screenshot confirmed on 2026-11-11, clicking the body of a comment-only sidebar card reveals its page's comment bubble and focused state, including keyboard activation. Copy, expand/collapse, and editing must not navigate; comment text remains selectable. Automatic fitting or layout changes must not replace explicit comment focus with the citation that originally opened the document.
 
-存在引用浮动条时，阅读区根据浮动条实际高度留出页首空间，换行后的浮动条也不得遮挡页首评论气泡。
+When a citation toolbar is present, the reading area reserves space at the top of the page based on the toolbar's actual height. A wrapped toolbar must not obscure comment bubbles at the top of the page.
 
 When a citation toolbar is present, the reader reserves initial space using its measured height so even a wrapped toolbar cannot cover comment bubbles at the top of the first page.
 
-按2026-11-10用户确认，文献导航栏默认宽度为260px，保留用户调整后的宽度；评论复制按钮默认使用icon-outline-default。
+As confirmed by the user on 2026-11-10, the literature navigation sidebar defaults to 260px wide and preserves the width adjusted by the user. The comment-copy button uses icon-outline-default by default.
 
-按2026-11-10用户确认，正文点评论和草稿入口与右侧评论浮标统一使用中性色背景与outline图标色，评论输入复用工具条输入样式，占位文案为“添加评论”（英文“Add a comment”），保留保存和取消操作。
+As confirmed by the user on 2026-11-10, in-document comment pins and draft entry points use the same neutral background and outline icon color as the right-side comment marker. Comment input reuses the toolbar input style and placeholder “添加评论” (“Add a comment”), with Save and Cancel actions retained.
 
-按2026-11-10用户最新截图确认，新建点评论及正文已有评论入口直接展开划词/标注工具条中的评论区，不再单独展示紧凑输入弹窗；工具条评论按钮为激活态并聚焦输入框，侧栏内联编辑保持原流程。点评论无选中文本时，格式、解释、翻译和原文复制操作不可用，不伪造原文来源；新草稿保存失败时保留输入，取消或Escape不创建记录。
+As confirmed by the user's latest screenshot on 2026-11-10, creating a pinned comment or opening an existing in-document comment expands the comment area in the selection/annotation toolbar directly, without a separate compact input pop-up. The toolbar's comment button is active and the input receives focus; sidebar inline editing retains its existing flow. When a pinned comment has no selected text, formatting, explanation, translation, and source-text copying are unavailable; do not fabricate a text source. If saving a new draft fails, preserve the input. Cancel or Escape creates no record.
 
-按2026-11-10用户确认，PDF选区及标注浮层工具栏默认保持单排，评论图标不换行；可用宽度不足时在工具栏内横向滚动，不压缩或隐藏操作。
+As confirmed by the user on 2026-11-10, PDF selection and annotation overlay toolbars default to one row, and the comment icon does not wrap. If available width is insufficient, scroll horizontally within the toolbar without compressing or hiding actions.
 
-按2026-11-10用户确认，标注筛选的高亮图标与顶栏统一使用Lucide Highlighter，各类别页签提供对应名称的Tooltip，保留原键盘导航与选中逻辑。
+As confirmed by the user on 2026-11-10, annotation filters use the same Lucide Highlighter icon as the top bar. Each category tab has a tooltip with its corresponding name, while existing keyboard navigation and selection logic are retained.
 
-按2026-11-10用户确认，全文档无标注时使用“暂无标注”（英文“No annotations”），类别筛选无结果文案保持不变。
+As confirmed by the user on 2026-11-10, when the whole document has no annotations, show “暂无标注” (“No annotations”); keep the existing message when a category filter has no results.
 
-按2026-11-10用户确认的增量要求，PDF侧栏大纲、标注记录（含类别筛选）及搜索无结果空态在各自内容区域水平、垂直居中，使用12px常规字重；无大纲文案为“暂无大纲”（英文“No outline”）。页面预览保留真实缩略图，不伪造空态。
+Per the incremental requirement confirmed by the user on 2026-11-10, empty states for the PDF sidebar outline, annotation records (including category filters), and search results are centered horizontally and vertically within their respective content areas, using 12px regular weight. The no-outline message is “暂无大纲” (“No outline”). Page previews retain real thumbnails; do not fabricate an empty state.
 
-按2026-11-10用户确认的增量要求，“更多操作 → 修改标注方式”的二级工具栏在父菜单右侧展开；标注颜色按钮的交互背景左右各留4px内边距，展开箭头使用icon-outline-default语义色。
+Per the incremental requirement confirmed by the user on 2026-11-10, the submenu for “更多操作 → 修改标注方式” (“More actions → Change mark type”) opens to the right of its parent menu. The annotation-color button's interaction background has 4px of horizontal padding on each side, and the expand arrow uses the semantic icon-outline-default color.
 
-按2026-11-10用户确认的增量要求，标注类别筛选选中时仅文字加粗，图标保留未选中时的描边粗细。
+Per the incremental requirement confirmed by the user on 2026-11-10, selecting an annotation category filter bolds only its text; the icon keeps the same stroke width as when unselected.
 
-正文中的文字评论、点评论及草稿气泡，统一采用顶部工具栏同款带横线的评论图标，不改变评论定位或编辑行为。
+In-document text comments, pinned comments, and draft bubbles all use the same line-marked comment icon as the top toolbar. Comment navigation and editing behavior remain unchanged.
 
-页码输入框为28×28逻辑像素。工具栏图标使用outline语义色；文献导航保留左侧位置，与下方导航首个按钮左边距均为12px。导航按钮tooltip依次为“文献导航”“目录”“页面预览”“标注记录”；下方三个按钮为28×28、8px圆角、4px间距。
+The page-number input measures 28×28 logical pixels. Toolbar icons use the semantic outline color. Literature navigation remains on the left, with a 12px left margin shared with the first button in the navigation below. Navigation-button tooltips, in order, are “文献导航” (Literature navigation), “目录” (Outline), “页面预览” (Page preview), and “标注记录” (Annotation records). The three buttons below measure 28×28, with 8px corner radii and 4px spacing.
 
-标注卡片不在页码前显示方式图标，原文及评论正文为常规体12px/18px。左侧“编辑”浮层仅提供方式和颜色修改，评论编辑框默认保留三行可见空间。评论和AI解释的复制操作复用工具条同款复制图标；生成笔记弹窗的标注列表不显示上下滚动阴影。
+Annotation cards do not show a mark-type icon before the page number. Source text and comment text use regular 12px/18px typography. The left-side “编辑” (Edit) popover only offers mark-type and color changes; the comment editor shows three lines by default. Copy actions for comments and AI explanations reuse the toolbar's copy icon. The annotation list in the note-generation dialog does not show top or bottom scroll shadows.
 
-### 划词面板与翻译滚动（PDF-OBS-009 · v`0.1`）
-按2026-11-13用户确认的 Bug 88916076，划词翻译完成后，结果底部提供“添加到会话框”，将该结果对应的完整原文和译文一起加入草稿，不自动发送；解释结果保留相同入口。顶部工具条入口仍添加原文上下文，不替换成译文。生成中、无结果或空结果不提供结果加入操作；保留复制及添加为评论。按钮在常规与最小支持窗口下可见并支持键盘操作。本项为专项补充，保留原稳定 ID、版本及基础阅读快评分母。
+<a id="划词面板与翻译滚动pdf-obs-009--v01"></a>
+### Selection Panel and Translation Scrolling (PDF-OBS-009 · v`0.1`)
+Per the user's confirmation of Bug 88916076 on 2026-11-13, after a selection translation completes, provide an “添加到会话框” (“Add to conversation”) action at the bottom of the result, adding the complete corresponding source text and translation to the draft without sending. Explanation results retain the same entry point. The top-toolbar action continues to add the source-text context; it is not replaced with the translation. Do not offer the result action while generation is in progress or when results are missing or empty. Retain Copy and Add as comment. Keep the button visible and keyboard-operable at both normal and minimum supported window sizes. This is a supplemental check; preserve the existing stable ID, version, and basic-reading quick-check denominator.
 
 Per user-confirmed Bug 88916076 on 2026-11-13, completed selection translations expose a footer action that adds the complete original text and its translation to the conversation draft without sending. Explanations retain the same action. The top toolbar still adds original-text context, not the translation. Generating, missing and empty results do not expose the result action. Preserve copying and adding comments. The action remains visible and keyboard-accessible at normal and minimum supported window sizes. This focused supplement preserves the existing ID, version and basic-reading quick-check scope.
 
-按2026-11-12用户批准的 Bug 88834262 重开修复方案，划词翻译结果绑定本次选区、文档修订、目标语言及请求身份。改选区首次翻译沿用明确选择的目标语言；仅修改配置而未刷新时保留旧译文，并标明其实际语言。明显违反中英文目标语言或遗漏正文的结果不得作为完成译文展示、复制或缓存；语言校验失败最多按同一原文和目标语言纠正一次，仍失败显示错误，不无限重试。本约束不宣称通用语言识别或翻译质量保证；保留作者、术语、年份和标识符。沿用本项需求版本，竞态和拒绝分支属于专项回归，不扩大基础阅读快评分母。
+Under the user-approved reopened repair plan for Bug 88834262 on 2026-11-12, bind selection-translation results to the current selection, document revision, target language, and request identity. For the first translation of a changed selection, retain the explicitly chosen target language. If configuration changes without a refresh, preserve the old translation and identify its actual language. Do not present, copy, or cache as a completed translation any result that clearly contradicts the Chinese/English target language or omits source prose. If language validation fails, allow at most one correction using the same source text and target language; if it still fails, show an error and do not retry indefinitely. This constraint does not promise general language identification or translation quality. Preserve authors, terminology, years, and identifiers. Keep this requirement's existing version; race and rejection branches are focused regressions outside the basic-reading quick-check denominator.
 
 Under the user-approved reopened Bug 88834262 plan on 2026-11-12, selection translations bind to the current selection, document revision, target language, and attempt. A new selection retains the explicitly selected target. Changing configuration without refreshing preserves the old translation and identifies its actual language. Clear Chinese/English target contradictions or omitted prose must not become completed, copyable, cached translations. Language validation permits at most one correction using the same source and target; a second failure remains an error, not an unlimited retry. This is not general language identification or translation-quality certification. Preserve names, terms, years, and identifiers. Keep the existing requirement version; race and rejection branches remain focused checks outside the basic-reading quick-check denominator.
 
-按2026-11-12用户确认，会话产物PDF也支持划词工具条：开关开启后选择真实文本，应显示解释、翻译、添加到会话和复制；关闭开关隐藏普通工具条，重新开启后可再次使用。复制应与选中文字一致，添加到会话保留完整选区且不自动发送；解释和翻译使用原产物身份与修订，不要求先导入资料库或文献库，不因此授予编辑、标注或版本管理权限。本增量需求版本未指定，保留既有标记，不扩大基础阅读快评分母。
+As confirmed by the user on 2026-11-12, conversation-artifact PDFs also support the selection toolbar. With the toggle on, selecting real text must show Explain, Translate, Add to conversation, and Copy. Turning the toggle off hides the ordinary toolbar; turning it back on makes the toolbar usable again. Copy must match the selected text. Adding to the conversation preserves the complete selection and does not send it automatically. Explanation and translation use the original artifact identity and revision. Import into a project or literature library is not required, and this does not grant edit, annotation, or version-management permissions. No version was specified for this incremental requirement; preserve existing markers and do not expand the basic-reading quick-check denominator.
 
-按2026-11-12用户补充截图要求，PDF划词悬浮工具条及展开的解释、翻译、评论气泡限制在当前文献阅读视口内，与上、下、左、右边界至少保持20px。滚动后选区离开可见区域、拖动、调整浮泡大小、收放侧栏或改变阅读区尺寸时均保持该约束；空间不足时限制浮泡尺寸，内容在内部滚动，不覆盖文献顶栏、导航或其他面板。
+Per the user's supplementary screenshot on 2026-11-12, keep the PDF selection toolbar and expanded explanation, translation, and comment bubbles inside the current literature-reading viewport, at least 20px from its top, bottom, left, and right edges. Preserve this constraint when scrolling moves the selection offscreen, when dragging or resizing a bubble, when toggling the sidebar, and when changing the reading-area size. If space is insufficient, constrain bubble size and scroll its content internally; do not cover the literature header, navigation, or other panels.
 
 Per the user's supplementary screenshot on 2026-11-12, PDF selection toolbars and expanded explanation, translation, and comment bubbles remain within the current document-reading viewport, at least 20px from each edge. Preserve this boundary when the selection scrolls out of view, the bubble moves or resizes, the sidebar toggles, or the reader changes size. Constrain oversized bubbles and scroll their content internally instead of covering the document header, navigation, or other panels.
 
-按2026-11-11用户截图及明确文案要求，放大结果面板的缩小按钮tooltip显示“缩小”（英文“Shrink”），不再显示“还原 PDF 面板”；仍将结果恢复为紧凑浮层，保留正文及原有操作。
+Per the user's screenshot and explicit wording request on 2026-11-11, the shrink button tooltip on the expanded result panel reads “缩小” (“Shrink”), not “还原 PDF 面板” (“Restore PDF panel”). The action still restores the result to a compact overlay and preserves its content and existing actions.
 
 Per the user screenshot and explicit wording request on 2026-11-11, the expanded result panel's shrink tooltip reads “缩小” / “Shrink”, not “Restore PDF panel”. The action still restores the compact overlay and preserves content and existing controls.
 
-按2026-11-11用户截图及明确文案要求，划词和标注工具栏的解释入口显示“AI解释”（英文“AI explanation”）；下方提交按钮仍为“解释一下”（英文“Explain this”），激活态及动作保持不变。
+Per the user's screenshot and explicit wording request on 2026-11-11, the explanation entry in the selection and annotation toolbars reads “AI解释” (“AI explanation”). The submit button below remains “解释一下” (“Explain this”); its active state and action remain unchanged.
 
 Per the user screenshot and explicit wording request on 2026-11-11, selection and annotation toolbars label the explanation action “AI解释” in Chinese and “AI explanation” in English. The submit button remains “解释一下” / “Explain this”; active states and actions are unchanged.
 
-按2026-11-11用户截图确认，“解释一下”提交按钮仅展示文字，不显示前置装饰图标；划词及标注解释共用该规则，提示词设置图标、禁用和提交行为保持不变。
+Per the user's screenshot confirmed on 2026-11-11, the “解释一下” (“Explain this”) submit button displays text only, without a leading decorative icon. The same rule applies to selection and annotation explanations; the prompt-settings icon, disabled state, and submission behavior remain unchanged.
 
 Per the user screenshot confirmed on 2026-11-11, the “Explain this” submit button is text-only in both selection and annotation explanations. The prompt-settings icon, disabled state, and submission behavior remain unchanged.
 
-按2026-11-11用户截图确认，“配置已变更”提示使用常规字重400和text-placeholder颜色，不继承工具栏加粗；保留旧译文和显式刷新行为。此为补充视觉约束，不改变已有需求版本或基础阅读快评分母。
+Per the user's screenshot confirmed on 2026-11-11, the “配置已变更” (“Configuration changed”) notice uses regular 400 font weight and text-placeholder color, without inheriting toolbar bolding. Preserve the previous translation and explicit refresh behavior. This supplemental visual constraint does not change existing requirement versions or the basic-reading quick-check denominator.
 
 Per the user screenshot confirmed on 2026-11-11, the configuration-change notice uses regular 400 weight and text-placeholder color, without inheriting toolbar emphasis. Existing translations and explicit refresh behavior remain unchanged. This supplemental visual constraint preserves existing requirement versions and the basic-reading quick-check scope.
 
-按2026-11-10用户确认，顶部复制与评论按钮组成右侧操作组，浮层加宽时保持靠右展示，不随前部文字按钮停留在左侧。
+As confirmed by the user on 2026-11-10, the top Copy and Comment buttons form a right-aligned action group. They remain right-aligned when the overlay widens rather than staying on the left after the preceding text buttons.
 
-按2026-11-10用户确认，PDF选区不因窗口失焦、尺寸变化或点击其他任务而清除；点击当前文献空白处仍清除选区并关闭浮层。按2026-11-12 Bug 88838778 的修复要求，阅读来源隐藏或停用时必须隐藏普通划词工具条，不得继续遮挡会话；这不等于丢弃选区、未完成批注或用户明确固定的结果。阅读区仍可见而仅选区锚点滚出视野时，保留浮层并遵循阅读区限位要求。恢复阅读后可重新划词，已有批注草稿保留；文献关闭或版本身份失效仍不得复用旧结果。
+As confirmed by the user on 2026-11-10, PDF selections are not cleared by window blur, resizing, or clicking another task; clicking blank space in the current document still clears the selection and closes the overlay. Under the Bug 88838778 repair requirement from 2026-11-12, hide the ordinary selection toolbar when its reading source is hidden or inactive so it no longer obscures the conversation. This does not mean discarding the selection, unfinished comment, or a result explicitly pinned by the user. If the reading area remains visible and only the selection anchor scrolls offscreen, retain the overlay within the reading-area bounds. Once reading is restored, selection is available again and existing comment drafts remain. Do not reuse stale results after the literature document closes or its revision identity becomes invalid.
 
 PDF selections survive window blur, layout resizing, and task switching. Clicking blank space in the current document still clears the selection. Bug 88838778 requires ordinary selection tools to hide when the reader is hidden or inactive, without discarding selections, unfinished comments, or explicitly pinned results. When only the selection anchor scrolls offscreen, retain the surface within the visible reader's bounds. Restoring the reader permits selection again and retains comment drafts. Closed documents and invalid source revisions must not reuse stale results.
 
-按2026-11-10用户确认，选区翻译的放大按钮位于操作组最右侧，与上方评论按钮右侧对齐，悬停提示为“放大”（英文“Enlarge”）；滚动区外壳不使用圆角，避免裁剪滚动条，不改变浮层整体圆角。
+As confirmed by the user on 2026-11-10, the selection-translation enlarge button is at the far right of the action group and aligns with the right edge of the Comment button above it. Its hover tooltip reads “放大” (“Enlarge”). The scroll-area shell has no rounded corners, preventing the scrollbar from being clipped; the overall overlay retains its rounded corners.
 
-解释、翻译、评论展开时对应按钮保持激活；一次性标注、复制或添加到会话框不保持激活。浅色激活背景为rgba(103,73,15,0.08)。按2026-11-10用户确认的增量要求，选区及批注浮层工具栏的文本按钮文字使用text-primary、图标使用icon-outline-default；单图标按钮默认使用icon-outline-default，保持激活时改用text-primary。翻译控制按钮应在一行完整展示。
+The corresponding button remains active while Explanation, Translation, or Comment is expanded; one-shot annotation, Copy, and Add to conversation actions do not remain active. The light-theme active background is rgba(103,73,15,0.08). Per the incremental requirement confirmed by the user on 2026-11-10, text buttons in selection and annotation overlay toolbars use text-primary for text and icon-outline-default for icons. Icon-only buttons use icon-outline-default by default and switch to text-primary while active. Translation controls must fit on one complete line.
 
-划词翻译正文14px，默认内容区最多展开十行；浮层默认空间应容纳十行，用户调整浮层高度后内容使用实际可用高度。超过可用高度时支持滚轮滚动，首尾渐变随滚动位置变化，不得只裁剪正文。翻译及选区解释不显示顶部进行中入口，也不显示内容区生成中、等待中或取消操作；保留真实错误提示。
+Selection-translation body text is 14px, and the default content area expands to at most ten lines. The overlay's default space must fit ten lines; after the user adjusts overlay height, content uses the actually available height. When content exceeds that height, support wheel scrolling and make the top/bottom gradients respond to the scroll position; do not merely clip the body text. Translation and selection explanation show no top-level in-progress entry or in-content generating, waiting, or cancel controls; retain genuine error messages.
 
-本专项涉及实际标注及模型调用，需单独具备相应数据和操作授权；不自动加入原基础阅读快评分母。
+This supplement involves actual annotations and model calls, so the corresponding data and operational authorization are required separately. It is not automatically added to the original basic-reading quick-check denominator.
 
-### AI 解读转对话补充约束
+<a id="ai-解读转对话补充约束"></a>
+### Supplemental Constraints for AI Reading-to-Conversation Handoff
 
-按2026-11-12用户截图与确认，原顶部图标入口改为面板底部右侧的“继续与书深讨论”主按钮，带对话气泡图标，正文滚动时保持可达。入口在未生成、加载、生成中及仅有部分预览或降级结果时保持可见且禁用；完整解读可用后激活。重新生成期间再次禁用；取消后恢复上次完整解读时可继续讨论。沿用既有交接等待、防重复和失败恢复语义，不自动发送消息。
+Per the user's screenshots and confirmation on 2026-11-12, replace the original top icon entry point with a bottom-right primary button labelled “继续与书深讨论” (“Continue discussing with ScholarSeed”) and a chat-bubble icon; keep it reachable while the body scrolls. Keep the entry visible but disabled before generation, during loading or generation, and when only a partial preview or fallback result exists. Enable it when a complete reading is available. Disable it again during regeneration; if cancellation restores the last complete reading, discussion can continue. Preserve existing handoff-pending, duplicate-prevention, and failure-recovery semantics; do not send messages automatically.
 
 Per the user's screenshots and confirmation on 2026-11-12, replace the top icon action with a bottom-right primary “Continue discussing with ScholarSeed” button and a chat-bubble icon. It remains accessible outside the scrolling reading content, visible but disabled before generation, during loading/generation, and for partial previews or fallback results. Enable it only for an available complete reading; disable it again during regeneration and re-enable it when cancellation restores a complete saved reading. Preserve pending, duplicate-prevention, failure recovery, and no-auto-send behavior.
 
-按2026-11-10用户确认，PDF及文献详情中的“与书深对话”应显示交接等待态并防止重复触发；文献上下文接纳成功且目标会话、项目和草稿身份仍一致后，展示可用的对话输入框、保留已有草稿并附加解读摘要。隐藏或最小化的项目对话恢复为可见分栏，不自动发送消息。成功后再关闭PDF解读面板，并显示待发送提示；失败时保留解读内容、解除等待态并显示可重试的错误。首次打开空输入框但已有文献上下文时，不重新初始化草稿身份。
+As confirmed by the user on 2026-11-10, “与书深对话” (“Discuss with ScholarSeed”) in PDF and literature details shows a handoff-pending state and prevents duplicate triggers. After literature context is accepted and the target conversation, project, and draft identities still match, show an available conversation input, preserve the existing draft, and append the reading summary. Restore hidden or minimized project conversations as a visible split pane; do not send a message automatically. Only after success, close the PDF reading panel and show a pending-send notice. On failure, preserve the reading, clear the pending state, and show a retryable error. When an empty input is first opened with literature context already present, do not reinitialize the draft identity.
 
-此为本轮补充交互约束，独立需求版本未指定；不修改已有稳定ID、版本标记或基础阅读快评分母。回归覆盖已有解读交接、已有草稿、空草稿首开、任务切换、上下文拒绝与请求异常，不要求重新调用模型生成解读。
+This is an interaction supplement for this round; no separate requirement version is specified. Do not change existing stable IDs, version markers, or the basic-reading quick-check denominator. Regress handoff of an existing reading, existing drafts, first opening with an empty draft, task switching, context rejection, and request errors. Re-generating a reading with a model is not required.
 
-### AI 解读诊断入口补充约束
+<a id="ai-解读诊断入口补充约束"></a>
+### Supplemental Constraints for AI Reading Diagnostics Entry Points
 
-按2026-11-11用户确认恢复的要求（Bug 88834603），PDF及文献详情的AI解读整体隐藏“生成详情”入口和内部“技术明细”，不能仅默认折叠内容而保留入口。已保存结果有无诊断元数据均遵循同一规则；正文、引用及重新生成、与书深对话等既有操作不受影响。后台用量记录、首字时间上报与已保存元数据保留。
+Per the restoration confirmed by the user on 2026-11-11 (Bug 88834603), PDF and literature-detail readings hide the entire “生成详情” (“Generation details”) entry and its internal “技术明细” (“Technical details”). Merely collapsing the content by default while keeping the entry is insufficient. Apply the same rule to saved results with or without diagnostic metadata. Reading content, citations, and existing actions such as regeneration and discussion with ScholarSeed remain unaffected. Preserve backend usage records, first-token timing reports, and saved metadata.
 
-独立需求版本未指定；此为已确认的回归补充约束，不变更已有稳定ID、需求版本标记或基础阅读快评分母。验证已有解读即可，不要求重新调用模型。
+No separate requirement version is specified. This is a confirmed regression supplement and does not change existing stable IDs, requirement-version markers, or the basic-reading quick-check denominator. Existing readings are sufficient for verification; no new model call is required.
 
 Per the user-confirmed restoration on 2026-11-11 (Bug 88834603), PDF and literature readings hide the entire generation-details entry and its technical diagnostics, both with and without saved metadata. Merely collapsing the content is insufficient. Reading content, citations, regeneration, chat handoff, usage recording, first-token reporting, and saved metadata remain unchanged. No separate requirement version is assigned; existing IDs, version markers, and the basic-reading quick-check scope remain unchanged. Verification can use saved readings without a new model request.
 
-2026-11-12 重开确认：上述要求也适用于新生成完成的结果，且不因生成详情与技术明细改成并列区块而改变。两入口均不得进入键盘焦点顺序；重新打开已保存的结果后仍应隐藏。新生成生命周期属于定向回归，不扩大基础快评分母或隐式授权模型调用。
+2026-11-12 reopening confirmation: The requirements above also apply to newly completed results, regardless of whether generation details and technical details are changed into sibling sections. Neither entry may appear in the keyboard focus order; both remain hidden when reopening a saved result. The new-generation lifecycle is a targeted regression, not an expansion of the basic-reading quick-check denominator or implicit authorization for model calls.
 
 Reopening confirmation on 2026-11-12: The same requirement applies to newly completed readings and is independent of nested or sibling diagnostic sections. Neither entry may enter keyboard navigation, and reopening saved results must keep both hidden. The generation lifecycle is a focused regression check, not an expansion of the basic-reading quick-check scope or implicit authorization for model calls.
 
-### AI 解读失败呈现补充约束
+<a id="ai-解读失败呈现补充约束"></a>
+### Supplemental Constraints for AI Reading Failure Presentation
 
-按2026-11-13用户确认，PDF及文献详情共用以下行为：流式预览保留论文类型并使用对应章节标题；失败时保留已有完整解读，无完整解读时将部分生成正文默认折叠并提供查看入口；内部L1拼接资产不作为正式解读显示，不展示“基础解读 · L1”或逐条L1来源标签。显示可操作的失败原因和重试入口，后台资产、诊断与首字上报保持不变。此为专项回归，独立需求版本未指定，不改变原有稳定ID、版本和基础快评分母。
+As confirmed by the user on 2026-11-13, PDF and literature details share these behaviors: streaming previews retain the paper type and use the corresponding section heading. On failure, preserve any existing complete reading; if none exists, collapse partially generated prose by default and provide an entry to view it. Internal L1-composed assets are not shown as a formal reading; do not display “基础解读 · L1” (“Basic reading · L1”) or per-item L1 source labels. Show actionable failure reasons and a retry entry; keep backend assets, diagnostics, and first-token reporting unchanged. This is a targeted regression supplement. No separate requirement version is specified; existing stable IDs, versions, and the basic-reading quick-check denominator remain unchanged.
 
 As confirmed by the user on 2026-11-13, PDF and library readings retain the paper type in streaming previews. Failed generation preserves an existing complete reading; otherwise partial prose is collapsed behind a view action. Internal L1 projections are not presented as completed readings or labelled as basic L1 readings. Keep actionable failure messages, retry, stored assets, diagnostics and first-text reporting. This is targeted regression coverage, with no new requirement version or change to existing IDs and quick-check scope.

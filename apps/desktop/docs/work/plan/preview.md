@@ -14,118 +14,167 @@ Historical execution logs are not current acceptance evidence.
 
 ## Scope / Non-goals
 
-2026-10-20 制定。用户目标：产品经理、设计师与前端开发共用 Web + mock 场景工作台，
-显示全部页面，包含模拟对话、工具调用和审批；真实 Electron 复用完整 UI、样式与数据消费逻辑，
-使用真实业务数据。三类使用闭环见[架构定位](../../architecture/preview.md#使用者与协作闭环)。
-架构与决策只维护在[预览架构](../../architecture/preview.md)，本计划不另立方案。
+Established on 2026-10-20. User goal: provide product managers, designers, and frontend developers
+with a shared Web + mock scenario workbench that displays every page and includes simulated
+conversations, tool calls, and approvals; real Electron reuses the complete UI, styles, and data
+consumption logic with real business data. The three user workflows are described in
+[Architecture positioning](../../architecture/preview.md#使用者与协作闭环). Architecture and decisions
+are maintained only in [Preview architecture](../../architecture/preview.md); this plan does not
+establish a separate proposal.
 
-**当前 Goal 已授权相关代码、mock 场景、测试和文档实施**，可以团队协作和进行隔离运行验证。
-真实模型调用、个人配置修改、依赖安装、部署及 Git 提交/推送/合并/发布仍须分别核对授权。
-首期不交付公网/静态托管，不复制页面。
+**The current Goal authorizes implementation of related code, mock scenarios, tests, and documentation**,
+including team collaboration and isolated runtime verification. Authorization must still be checked
+separately for real model calls, changes to personal configuration, dependency installation,
+deployment, and Git commit/push/merge/release.
+The first release does not include public-network/static hosting and does not duplicate pages.
 
 ## Source of truth
 
-职责、协议、隔离与覆盖分类以[预览架构](../../architecture/preview.md)为准；
-实际命令以 [Desktop package](../../../package.json)与[测试规范](../../quality/testing.md)为准。
-实施前读取当时源码、适用 AGENTS 与 Owner，不能直接使用历史路径或测试结果判断现状。
-接口与样本的支持/差异清单见[后端契约与适配边界](../preview-contracts.md)，不另立平行协议。
+Responsibilities, protocols, isolation, and coverage classifications follow
+[Preview architecture](../../architecture/preview.md); actual commands follow the
+[Desktop package](../../../package.json) and [testing conventions](../../quality/testing.md).
+Before implementation, read the then-current source, applicable AGENTS, and Owner; historical paths
+or test results cannot be used to determine the current state. The support/difference inventory for
+interfaces and samples is in [Backend contracts and adaptation boundaries](../preview-contracts.md);
+do not establish a parallel protocol.
 
 ## Current / Required / Gap / Advisory
 
-- **current**：已核对现有 Web 入口、组件画廊、feature 装配与 HTTP/SSE/bridge 边界。
-- **required**：先落实隔离与共享，再交付可交互纵向切片，最后逐项补齐所有页面。
-- **current**：预览入口已显示真实首页与控制台；已取得真实 Electron 隔离启动和项目创建截图，未发送真实模型请求。
-- **gap**：P0/P1/P2 在推进；部分模拟协议、全目录接入及最终双环境验收仍未收口，不能称整体完成。
-- **advisory**：P0 后再估算总工期；不能用文件数推算所有页面和复杂状态的工作量。
+- **current**: Existing Web entry point, component gallery, feature assembly, and HTTP/SSE/bridge boundaries have been checked.
+- **required**: Establish isolation and sharing first, deliver an interactive vertical slice next, then complete every page item by item.
+- **current**: The preview entry point displays the real home page and console; screenshots have been captured of isolated startup and project creation in real Electron, with no real model request sent.
+- **gap**: P0/P1/P2 are in progress; some simulated protocols, full-directory integration, and final acceptance in both environments remain open, so the work cannot be called complete overall.
+- **advisory**: Estimate total effort after P0; file count cannot be used to estimate work across all pages and complex states.
 
 ## Ownership / Dependency
 
-| 工作流 / 角色 | 写入边界与产物 | 协作约束 |
+| Workflow / role | Write boundary and deliverables | Collaboration constraints |
 | --- | --- | --- |
-| 架构/启动负责人 | 预览配置、共享启动装配、typed preview bridge、生产排除门禁 | 共享入口和契约唯一写入者；不扩大真实 preload 权限 |
-| 场景服务负责人 | 同源 HTTP/SSE、场景身份、内存状态、重置、网络隔离 | 与领域 Owner 对齐契约，不实现第二套真实业务服务 |
-| 产品经理/需求负责人 | 业务场景、需求关联、正常/异常分支和可观察预期 | 在共享工作台评审流程与文案；不把模拟结果当真实业务验收 |
-| 领域 UI 负责人 | 对应 feature 的场景与公开展示接点、必要的局部解耦 | 复用 UI 与样式；页面只修与接入直接相关的边界 |
-| 设计师/设计系统负责人 | 场景选择体验、主题/语言、设计对照与反馈 | 改真实 token/组件；不维护专用页面副本 |
-| 验证负责人 | 覆盖清单、独立断言、Web 场景与真实 Electron 回归 | 不修改生产行为换隔离；测试不能复制模拟端算法自证 |
+| Architecture/startup owner | Preview configuration, shared startup assembly, typed preview bridge, production-exclusion gate | Sole writer for shared entry points and contracts; do not widen real preload permissions |
+| Scenario-service owner | Same-origin HTTP/SSE, scenario identity, in-memory state, reset, network isolation | Align contracts with domain Owners; do not implement a second real business service |
+| Product manager/requirements owner | Business scenarios, requirement links, normal/error branches, and observable expectations | Review workflows and copy in the shared workbench; do not treat simulated results as real business acceptance |
+| Domain UI owner | Scenarios and public display hooks for the relevant feature, plus necessary local decoupling | Reuse UI and styles; change a page only at boundaries directly related to integration |
+| Designer/design-system owner | Scenario selection experience, theme/language, design comparison, and feedback | Change real tokens/components; do not maintain dedicated page copies |
+| Verification owner | Coverage inventory, independent assertions, Web scenarios, and real Electron regression | Do not change production behavior to achieve isolation; tests must not copy the simulator algorithm to validate itself |
 
-这些是责任角色，不预设实际人员或启动持久工作流。P1 的 bridge/服务可在 P0 契约冻结后
-并行；P3 各领域可在 P2 公共协议验证后并行；共享入口与文档保持单写入者。
+These are responsibility roles; they do not presume specific people or start persistent workflows.
+P1 bridge/service work may proceed in parallel after the P0 contract is frozen; P3 domains may
+proceed in parallel after P2 validates the shared protocol. Shared entry points and documentation
+retain a single writer.
 
-## 开发里程碑
+<a id="开发里程碑"></a>
+## Development milestones
 
-本轮继续 P2 会话真实缺口：通过原 Composer 取消正在追加的长流，原失败继续入口触发
-一次真实预览 SSE 断开，并沿生产 `from_seq` 续流补齐未收到的增量和终态。目录显式配置
-执行与传输政策，服务保留唯一 Session 账本；传输握手等待不暂停领域进度。
-先用 HTTP 回归证明旧流确实关闭、断线期间完成、游标连续及 reset 取消旧握手，再跑
-公开 UI 的停止/重试/重入与最终截图，不用审批取消代替流式取消，不用重发 turn 假冒重连。
-本轮不调用真实模型、不改变个人凭据或生产源码，不继承 Git 交付授权。
+This round continues to address the P2 real-session gap: cancel an actively appended long stream
+through the original Composer; the original failure-continuation entry point triggers a real preview
+SSE disconnect, then resumes streaming from the production `from_seq` to recover missing deltas and
+the terminal state. The directory explicitly configures execution and transport policies, while the
+service retains the sole Session ledger; waiting for the transport handshake does not pause domain
+progress.
+First use HTTP regression coverage to prove that the old stream really closes, work completes during
+the disconnect, the cursor remains continuous, and reset cancels the old handshake. Then exercise
+stop/retry/re-entry through the public UI and capture final screenshots. Do not substitute approval
+cancellation for stream cancellation or fake reconnection by resending a turn.
+This round makes no real model calls, changes no personal credentials or production source, and does
+not inherit Git delivery authorization.
 
-本轮继续 P3 开发者设置：原页面与账号客户端共用实例内模拟摘要账本，补齐普通/托管列表、
-空态、读取等待/持续失败、生成一次性展示值、关闭/重载、吊销、轮换及变更等待/失败重试。
-生产页面不加 mock 分支。模拟 capability 不是真实登录，`preview-only:` 不可认证；
-托管路由返回真实 DTO 的明确未准备/未签发状态，不调用真实账号服务或对齐会话。
-真实 Electron 先证明隔离凭据前提，若不满足则只验无凭据变更的可运行页面并披露缺口，
-不能打开会自动准备真实托管凭据的设置页来凑验收。当前实施不追加 Git 交付。
+This round continues P3 developer settings: the original page and account client share an
+instance-local simulated summary ledger. Complete ordinary/managed lists, empty states, read
+pending/persistent-failure states, one-time display-value generation, close/reload, revocation,
+rotation, and retry after pending/failed changes. Do not add mock branches to production pages.
+Simulated capability is not real authentication, and `preview-only:` cannot authenticate. Managed
+routes return the explicit not-ready/not-issued state in the real DTO; they do not call the real
+account service or align sessions.
+First prove the isolated-credentials prerequisite in real Electron. If it is not met, verify only the
+runnable page without credential changes and disclose the gap; do not open a settings page that
+automatically prepares real managed credentials just to satisfy acceptance. This implementation
+does not add Git delivery.
 
-本轮继续P3归档管理：默认任务/项目双Tabs、同账本历史与原归档树、恢复、取消及删除、
-等待和失败重试，按实际UI区分任务单项与项目单/批操作。项目读取错误表面不足保留缺口。
-同时明确虚拟根同步和测试自有实例回收；共享bridge/契约/测试装配由入口负责人单写，
-领域负责人维护归档与HTTP，消费负责人维护目录/spec。真实Electron明示初始页签会
-同步授权根；另在任务独占隔离目录通过公开UI新建唯一空项目，仅对该精确ID归档、
-取消和确认摘登记并核目录字节仍在。不操作既有项目/任务，不调用模型或删除磁盘文件，
-不继承阶段Git交付权。
+This round continues P3 archive management: default task/project tabs, history from the same ledger
+and the original archive tree, restore, cancel and delete, pending states, and retry after failure;
+distinguish single-task operations from single/batch project operations according to the actual UI.
+The insufficient project-read error surface remains an open gap.
+Also clarify virtual-root synchronization and cleanup of test-owned instances. The entry-point owner
+is the sole writer for shared bridge/contracts/test assembly; the domain owner maintains archive and
+HTTP behavior, and the consumer owner maintains directory/spec. In real Electron, explicitly note
+that the initial tab synchronizes authorized roots. Separately, use the public UI in a task-exclusive
+isolated directory to create one unique empty project, and archive, cancel, and confirm its
+unregistration only for that exact ID; verify that directory bytes remain. Do not operate on existing
+projects/tasks, call a model, or delete disk files. This does not inherit phase-level Git delivery
+authorization.
 
-本轮继续 P3 数据存储纵向切片：共享原页面 → 明示虚拟目录选择/取消 → 原 PUT →
-重启提示、重载保持、延迟和失败重试。typed bridge/预览宿主由入口负责人单写，
-场景服务与目录/消费 spec 分工；禁止改真实 home 或迁移项目。读取错误当前没有独立
-重试界面，保留缺口；真实 Electron 仅只读挂载，原生选择与目录写入不以 Web 结果替代。
+This round continues the P3 data-storage vertical slice: shared original page → explicit virtual
+directory selection/cancellation → original PUT → restart prompt, persistence across reload, and
+retry after delay/failure. The entry-point owner is the sole writer for the typed bridge/preview host;
+scenario service and directory/consumer spec have separate owners. Do not change the real home or
+migrate projects. There is currently no separate retry UI for read errors; retain this gap. Real
+Electron uses a read-only mount; Web results do not substitute for native selection and directory
+writes.
 
-| 阶段 | 状态 / 依赖 | 可交付增量 | 退出条件 |
+| Phase | Status / dependency | Deliverable increment | Exit criteria |
 | --- | --- | --- | --- |
-| P0 盘点与契约 | 进行中 | 页面/表面清单、三类使用任务、能力分类、请求出口及场景协议 | 每页有 Owner、入口、展示分类和需求来源；明确产品评审、视觉核对、前端调试闭环；识别所有直连和模块级初始化 |
-| P1 隔离预览底座 | 进行中；P0 | 独立启动命令、场景服务与预览桥、最小真实首页、控制台 | 无 Serve/账号/模型凭据也能显示真实首页；未知请求/外网阻断、存储隔离、初始化顺序及生产排除验证通过 |
-| P2 完整会话切片 | 进行中；P1 | 真实对话页面、流式内容、工具卡、审批和交付演示 | 批准/拒绝分别产生对应结果；取消/重试/重新进入可交互；历史、快照与 SSE 一致，无真实工具调用 |
-| P3 全页面接入 | 进行中；P2 缺口并行收口 | 项目、资料、文献、设置、各 viewer 与辅助表面的领域场景 | P0 清单每项均有可访问场景和消费 spec，非原生 renderer 未接入数为零；仅原生依赖区域允许标外壳/替代区域 |
-| P4 跨角色协作闭环 | 增量进行中；P3 未收口 | 可恢复场景链接、需求/预期结果、一键重置、延迟/失败控制、诊断和截图对照 | 产品经理可无代码完成分支评审；设计师可核对真实视觉；前端可调试请求/事件并热更新；主题/语言/窗口/键盘及状态隔离矩阵通过 |
-| P5 Electron 回归与交接 | 增量验收中；P4 未收口 | 真实服务回归、平台证据、使用说明及覆盖报告 | Electron 未加载 mock，真实数据沿共享 UI 显示；适用 macOS/Windows 流与最终截图齐备；缺口逐项披露 |
+| P0 Inventory and contracts | In progress | Page/surface inventory, three user workflows, capability classification, request egress, and scenario protocol | Every page has an Owner, entry point, display classification, and requirement source; product review, visual review, and frontend debugging loops are defined; all direct connections and module-level initialization are identified |
+| P1 Isolated preview foundation | In progress; P0 | Standalone startup command, scenario service and preview bridge, minimal real home page, console | Real home page displays without Serve/account/model credentials; unknown requests/external network are blocked, and storage isolation, initialization order, and production exclusion are verified |
+| P2 Complete session slice | In progress; P1 | Real conversation page, streaming content, tool cards, approvals, and delivery demo | Approval/rejection produce their respective outcomes; cancel/retry/re-entry are interactive; history, snapshots, and SSE agree, with no real tool calls |
+| P3 All-page integration | In progress; close P2 gaps in parallel | Domain scenarios for projects, materials, literature, settings, each viewer, and auxiliary surfaces | Every P0 inventory item has an accessible scenario and consumer spec; zero non-native renderer integrations remain missing; only native-dependent areas may be marked as shell/substitute areas |
+| P4 Cross-role collaboration loop | Incrementally in progress; P3 not complete | Resumable scenario links, requirements/expected results, one-click reset, latency/failure controls, diagnostics, and screenshot comparison | Product managers can review branches without code; designers can compare real visuals; frontend developers can debug requests/events and hot-reload; theme/language/window/keyboard and state-isolation matrix passes |
+| P5 Electron regression and handoff | Incremental acceptance in progress; P4 not complete | Real-service regression, platform evidence, usage instructions, and coverage report | Electron does not load mock, and real data displays through the shared UI; applicable macOS/Windows flows and final screenshots are complete; gaps are disclosed individually |
 
-P1 与 P2 各自是可演示里程碑，但不代表“全部页面”完成。P4 的基本主题/语言/重置能力应
-从 P1 起逐步具备；P4 负责完整操作体验与矩阵收口，不延后底座所需隔离能力。
-P5 的代表性 Electron 回归从 P1/P2 起增量执行，不能等最后才发现共享链路分叉。
-每批 UI 调整同步交付 mock 数据/场景/测试和后端适配说明；每阶段验证真实 Electron 可运行。
-后端契约标记已支持/待适配；适配后按同一场景核对视觉与交互，不另写真实数据页面。
+P1 and P2 are independently demonstrable milestones, but do not mean that “all pages” are complete.
+Basic theme/language/reset capabilities for P4 should be added incrementally starting in P1; P4
+completes the full operating experience and matrix without deferring isolation capabilities required
+by the foundation.
+Representative Electron regression for P5 proceeds incrementally from P1/P2; do not wait until the end
+to discover that shared paths have diverged.
+Each batch of UI changes delivers mock data/scenarios/tests and backend adaptation notes together;
+verify that real Electron runs at every phase. Mark backend contracts as supported or awaiting
+adaptation; after adaptation, compare visuals and interactions using the same scenario instead of
+creating a separate real-data page.
 
-### P0：首次实施交付清单
+<a id="p0首次实施交付清单"></a>
+### P0: First implementation delivery checklist
 
-- 从 registry、导航、设置、viewer、独立入口及重要弹层交叉盘点，不以当前可见菜单为全集。
-- 对每组核心场景标注需求来源、预期结果及三类使用任务；共用一份场景，不按角色复制。
-- 将页面列为交互预览、外壳/替代区域或未接入；逐项说明不可用原因及补齐方式。
-- 记录 API、账号、SSE、bridge 与资源请求；确认预览默认无凭据、无外网、无真实用户读写。
-- 确定场景声明、实例身份与 reset 生命周期；补齐所需 DTO/事件契约的实际 Owner。
-- 提交按领域拆分的任务列表和工作量估算，再冻结 P1 写入范围；不承诺未经盘点的页面数量。
+- Cross-check the inventory across registry, navigation, settings, viewers, standalone entry points,
+  and important overlays; the currently visible menu is not the complete set.
+- For each core scenario group, record the requirement source, expected result, and three user
+  workflows; share one scenario rather than duplicating it by role.
+- Classify pages as interactive preview, shell/substitute area, or not integrated; explain the reason
+  for unavailability and how each will be completed.
+- Record API, account, SSE, bridge, and resource requests; confirm that preview defaults to no
+  credentials, no external network, and no real-user reads/writes.
+- Define scenario declarations, instance identity, and reset lifecycle; identify the actual Owner
+  for required DTO/event contracts.
+- Submit domain-based task lists and effort estimates, then freeze the P1 write scope; do not promise
+  an uninspected page count.
 
-### P2：首条演示场景及分支
+<a id="p2首条演示场景及分支"></a>
+### P2: First demo scenario and branches
 
-| 动作 | 可观察结果 | 必须断言的反例 |
+| Action | Observable result | Counterexample that must be asserted |
 | --- | --- | --- |
-| 打开项目并发送消息 | 真实 Composer 提交，文本逐步显示 | 不能直接填充 Store 伪造一次发送 |
-| 工具请求审批 | 工具卡展示进度，审批待答，回合保持等待 | 未作答不能提前交付 |
-| 批准 / 拒绝 | 分别继续模拟操作或展示拒绝结果 | 重复点击不重复推进；拒绝不能沿批准结果结束 |
-| 取消 / 失败 / 重试 | 展示对应状态，重试按既有产品动作发起 | 不能靠刷新整个预览隐藏错误或重放已答审批 |
-| 切换后重新进入 | 历史、待答请求及终态一致，续流不重复 | 旧连接、重置前响应不能污染当前场景 |
-| 查看模拟交付文件 | 同一工作区 viewer 读取样本字节 | UI 可预览不等于磁盘写入/模型交付已成功 |
+| Open a project and send a message | The real Composer submits it and text appears incrementally | Do not fill the Store directly to fake a send |
+| Approve a tool request | Tool card shows progress, approval awaits a response, and the turn remains pending | Do not deliver before a response |
+| Approve / reject | Continue the simulated operation or show the rejection result, respectively | Repeated clicks must not advance more than once; rejection must not end with the approval result |
+| Cancel / fail / retry | Show the corresponding state; retry starts through the existing product action | Do not hide errors by refreshing the entire preview or replay an already answered approval |
+| Re-enter after switching away | History, pending requests, and terminal state agree; resumed stream has no duplicates | Old connections and responses from before reset must not contaminate the current scenario |
+| View simulated delivery file | Viewer in the same workspace reads the sample bytes | A preview in the UI does not mean disk write/model delivery succeeded |
 
-### 交付拆分与依赖
+<a id="交付拆分与依赖"></a>
+### Delivery breakdown and dependencies
 
-**required（归档收口）**：当前消费回归已暴露共享归档页的后台刷新读取饥饿、原始历史
-用户角色误标，以及项目异步摘登记确认提前关闭。先修复各自生产 Owner，再以同一
-mock 场景及真实 Electron 验证；不得调整延迟、关闭轮询或改写历史协议来隐藏失败。
-测试实例清理同时保留失败截图与完整 trace，由测试宿主正常关闭浏览器上下文。
-本轮继续实施不继承已完成的 Git 交付授权，不追加提交、推送或 MR 修改。
+**required (archive closure)**: Current consumer regression exposed background-refresh read starvation
+on the shared archive page, an incorrect user-role label in original history, and premature closure
+of project asynchronous unregistration confirmation. First fix each issue in its production Owner,
+then verify using the same mock scenario and real Electron. Do not adjust delays, disable polling, or
+rewrite the history protocol to hide failures.
+When cleaning up test instances, retain failure screenshots and the complete trace; let the test host
+close the browser context normally.
+Continued implementation this round does not inherit completed Git delivery authorization; do not
+add commits, pushes, or MR changes.
 
-建议按 P0 文档/清单、P1 启动隔离、P2 会话、P3 领域页面分批交付，每批有可运行结果与
-消费测试，禁止只提交无人使用的 fixture/builder。当前根目录入口如下，不会启动真实模型：
+Recommended delivery batches: P0 documentation/inventory, P1 startup isolation, P2 sessions, and P3
+domain pages. Each batch must have runnable results and consumer tests; do not submit unused
+fixtures/builders alone. The current root entry points below do not start a real model:
 
 ```bash
 pnpm ops dev browser --mock
@@ -134,33 +183,46 @@ pnpm ops ci test integration --scope desktop --suite preview-ui
 pnpm ops ci check preview-bundle
 ```
 
-`dev:preview` 默认仅监听回环地址，在隔离浏览器上下文中打开其输出 URL；普通浏览器须使用
-独立无用户 Cookie 的上下文。UI 测试创建独立浏览器上下文；本机默认使用已安装 Chrome，
-可通过 `SCHOLARSEED_PREVIEW_BROWSER_CHANNEL` 指定受支持渠道，不自动下载安装浏览器。
-`pnpm ops ci check preview-bundle` 要求先通过 `pnpm ops cd build local --stage app` 生成真实输出，缺失时明确失败。
-这些入口不等于全部场景已通过；阶段结果以当次命令、截图和覆盖记录为准。
-P3 的每个领域包不等待其他领域接完，但不得降低最终全页面要求。
+`dev:preview` listens only on the loopback address by default and opens its output URL in an isolated
+browser context; a regular browser must use a separate context without user cookies. UI tests create
+an isolated browser context. Locally, the default is the installed Chrome; set
+`SCHOLARSEED_PREVIEW_BROWSER_CHANNEL` to choose a supported channel. Browsers are not automatically
+downloaded or installed.
+`pnpm ops ci check preview-bundle` requires real output to be generated first with
+`pnpm ops cd build local --stage app`; it fails explicitly if output is missing.
+These entry points do not mean that all scenarios have passed; phase results are determined by the
+commands, screenshots, and coverage records from that run.
+Each P3 domain package can proceed without waiting for other domains to finish, but the final
+all-pages requirement must not be reduced.
 
-## 正反例
+<a id="正反例"></a>
+## Examples and anti-patterns
 
-正例：P1 先验证首页真实组件和安全隔离，P2 再验证审批完整分支，P3 按清单逐页扩展。
-反例：先拆完所有 Store 才能预览；只做组件截图便标记全页面完成；未接入接口一律返回成功。
+Example: P1 first verifies the real home-page components and security isolation, P2 then verifies all
+approval branches, and P3 expands page by page against the inventory.
+Anti-patterns: requiring every Store to be decomposed before preview is possible; marking all pages
+complete based only on component screenshots; returning success for every unintegrated interface.
 
 ## Enforced by
 
-文档交付运行根与 Desktop 的 `docs:check`、适用规范检查及 `git diff --check`，不声称产品验收。
-产品实施时先相邻单测/协议行为测试，再 `typecheck`、文档/复用/国际化门禁和聚合测试；
-新增预览 E2E 项目须在 P1 注册且在同批有实际消费者，不与真实 live 项目混报结果。
+Documentation delivery is enforced by the runtime root and Desktop `docs:check`, applicable
+convention checks, and `git diff --check`; these do not constitute product acceptance.
+For product implementation, run adjacent unit/protocol behavior tests first, followed by `typecheck`,
+documentation/reuse/internationalization gates, and aggregate tests. A new preview E2E project must
+be registered in P1 and have an actual consumer in the same batch; do not report its results together
+with real live projects.
 
-| 验证面 | 必须交付的证据 |
+| Verification area | Required evidence |
 | --- | --- |
-| 启动/安全 | 未启动 Serve/无凭据时启动结果；未命中、外网、账号、存储污染和旧响应拒绝测试 |
-| 协议/交互 | 真实 UI 驱动会话与审批分支；HTTP/SSE 快照一致性与重复/取消测试 |
-| 页面覆盖 | 从清单到场景到消费 spec 的映射；分类分母与未接入项；全部适用状态的结果 |
-| 跨角色使用 | 同一场景分别完成产品流程/文案评审、视觉核对、前端请求/事件调试；非开发使用者无需改源码或拼接口响应 |
-| 视觉体验 | 实际 Web 工作流、最终截图及逐图检查；主题/语言/长内容/键盘/窗口结果 |
-| Electron 共享 | 真实后端与真实用户路径，最终版本截图；确认无 mock 依赖与样本进入制品 |
-| 平台与原生 | 按受影响范围分别取得 macOS/Windows 真实证据，阻塞保留具体前提与错误 |
+| Startup/security | Startup without Serve/credentials; tests rejecting unmatched requests, external network, account access, storage contamination, and stale responses |
+| Protocol/interaction | Session and approval branches driven through the real UI; HTTP/SSE snapshot consistency and duplicate/cancellation tests |
+| Page coverage | Mapping from inventory to scenarios to consumer specs; classification denominator and unintegrated items; results for every applicable state |
+| Cross-role use | Complete product workflow/copy review, visual review, and frontend request/event debugging using the same scenario; non-developers need not edit source or assemble interface responses |
+| Visual experience | Actual Web workflow, final screenshots with each inspected; theme/language/long-content/keyboard/window results |
+| Electron sharing | Real backend and real user path, final-version screenshots; confirm no mock dependency and no samples in artifacts |
+| Platform/native | Real macOS/Windows evidence for each affected scope; preserve exact prerequisites and errors for blockers |
 
-截图和运行产物保留本地忽略目录，交付时给绝对路径并解释证明范围。
-协议测试不证明模型表现；预览中模拟的审批、工具、系统动作不计真实产品成功。
+Keep screenshots and runtime artifacts in a locally ignored directory; provide absolute paths at
+delivery and explain what each proves.
+Protocol tests do not prove model behavior; simulated approvals, tools, and system actions in preview
+do not count as real product success.

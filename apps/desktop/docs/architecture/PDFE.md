@@ -1,12 +1,12 @@
 ---
 id: arch-pdfe-overview
-title: PDFE 工作台架构与概要设计
+title: PDFE Workbench Architecture and Overview Design
 doc_type: architecture
 category: architecture
 status: active
 date: 2026-10-27
 keywords: [desktop-app, webui, bridge]
-summary: 产品、设计与前端共用的 Electron Mock 工作台设计原则，统一场景组织、数据边界、扩展方式与验收口径。
+summary: Design principles for an Electron mock workbench shared by product, design, and frontend teams, aligning scenario organization, data boundaries, extensibility, and acceptance criteria.
 code_refs:
   - apps/desktop/preview/catalog.ts
   - apps/desktop/preview/Navigation.tsx
@@ -15,283 +15,388 @@ code_refs:
   - apps/desktop/src/main/pdfe.ts
 ---
 
-# PDFE 工作台架构与概要设计
+<a id="pdfe-工作台架构与概要设计"></a>
+# PDFE Workbench Architecture and Overview Design
 
 ## Scope / Non-goals
 
-PDFE 是产品经理（P）、设计师（D）与前端工程师（FE）共用的产品展示、交互评审和
-开发协作工作台。通过可重复的 Mock 场景操作真实产品 UI，观察功能、状态与数据边界，
-而不是维护另一套静态原型、设计师专用页面或前端演示壳。
-需求基线是产品可体验的完整 Mock 功能、交互与状态，不以“目录里已有按钮”代替覆盖；
-缺失能力明确记录，各阶段仍按授权范围推进。
+PDFE is a shared workbench for product managers (P), designers (D), and frontend engineers
+(FE) to present the product, review interactions, and collaborate on development. It uses
+repeatable mock scenarios to exercise the real product UI and observe its functionality,
+states, and data boundaries, rather than maintaining a separate static prototype, designer-only
+pages, or frontend demo shell.
+The requirements baseline is a complete, usable mock of product functionality, interactions,
+and states; the mere presence of buttons in a directory does not count as coverage. Missing
+capabilities must be explicitly recorded, and each phase must remain within its authorized scope.
 
-本文持有后续功能接入应延续的设计理念与概要约束；运行时装配、接口和生命周期细节由
-[预览架构](preview.md)持有；Agent 的知识导航与修改授权由[角色与范围](../work/pdfe.md)
-持有。本文不复制这些正文，不作为阶段完成报告，也不授予代码修改、启动、部署或发布权限。
+This document owns the design principles and high-level constraints that future feature
+integrations must follow. Runtime assembly, interfaces, and lifecycle details are owned by the
+[Preview Architecture](preview.md); Agent knowledge navigation and change authorization are
+owned by [Roles and Scope](../work/pdfe.md). This document does not duplicate those sources,
+serve as a phase-completion report, or grant permission to modify code, start, deploy, or release.
 
-非目标：在 Mock 中实现真实认证、模型、工具或磁盘业务；重写生产 Store、协议或设计
-系统；以工作台可展示代替真实功能验收。历史阶段的范围与授权只由对应计划记录，
-不成为后续页面接入或测试的平台豁免。
+Non-goals: implementing real authentication, models, tools, or disk operations in the mock;
+rewriting the production Store, protocols, or design system; or treating workbench display as
+acceptance of real functionality. The scope and authorization of historical phases are recorded
+only in their corresponding plans and do not exempt later page integrations or tests from
+platform requirements.
 
-**required**：PDFE只维护当前支持版本的有效需求，不以旧场景或测试数量定义产品
-范围。退役且无持续用途的场景、Mock、样例、专用宿主和兼容适配随用途清理，不要求
-为每条旧例找替身。有效功能入口替换时使用当前真实入口，不为旧版补“显示隐藏模块”
-或“打开隐藏弹窗”等按钮；条件显示能力则核清权限、项目上下文及平台条件后保留。
-组件开发样例或确有用途的诊断面须明确独立身份，不伪装产品入口，也不自动成为长期
-E2E义务。清测试专用代码不等于可删产品代码，后者另核安全、消费者和数据兼容。
+**required**: PDFE maintains only valid requirements for currently supported versions; product
+scope is not defined by legacy scenarios or test counts. Retired scenarios, mocks, samples,
+dedicated hosts, and compatibility adapters with no continuing purpose should be removed when
+their purpose ends; each legacy case does not need a replacement. When replacing a valid feature
+entry point, use the current real entry point. Do not add buttons such as “Show hidden module” or
+“Open hidden dialog” to support an old version. Retain conditionally displayed capabilities only
+after verifying their permission, project-context, and platform conditions. Component-development
+examples and useful diagnostic surfaces must have an explicitly separate identity; they must not
+masquerade as product entry points or automatically become permanent E2E obligations. Removing
+test-only code does not imply product code may be removed; product-code removal requires separate
+checks of security, consumers, and data compatibility.
 
 ## Source of truth
 
-| 职责 | 真源 |
+| Responsibility | Source of truth |
 | --- | --- |
-| 正常产品的页面、操作与可达性 | [组合根](../../src/renderer/src/app/composition.tsx)、所属 feature 与 [renderer 契约](renderer.md) |
-| 页面身份、场景政策、行为提示与归属 | [catalog.ts](../../preview/catalog.ts)及[中英资源](../../preview/locales/) |
-| 导航分组与少量条件直出规则 | [hierarchy.ts](../../preview/hierarchy.ts)、[Navigation.tsx](../../preview/Navigation.tsx)、[collaboration.ts](../../preview/collaboration.ts) |
-| 公共控制、说明弹窗和工作台布局 | [Console.tsx](../../preview/Console.tsx)、[Header.tsx](../../preview/Header.tsx)、[Controls.tsx](../../preview/Controls.tsx)、[Divider.tsx](../../preview/Divider.tsx) |
-| 场景数据与运行账本 | [home.ts](../../preview/home.ts)、[project.ts](../../preview/project.ts)、[service.ts](../../preview/service.ts)及所属领域模块 |
-| 文档样本与虚拟文件 | [documents.ts](../../preview/documents.ts)、[samples.ts](../../preview/samples.ts)、[files.ts](../../preview/files.ts) |
-| Electron 宿主、桥与启动 | [main](../../src/main/pdfe.ts)、[preload](../../src/preload/pdfe.ts)、[契约](../../src/pdfe.ts)、[启动器](../../scripts/dev/pdfe.mjs) |
-| UI 素材、组件、样式与交互 | [DESIGN](../../DESIGN.md)、[组件规范](../design/components.md)、[素材入口](../../src/renderer/src/components/examples/ComponentsPage.tsx) |
-| 验收口径与生产隔离 | [测试规范](../quality/testing.md)、[接口清单](../work/preview-contracts.md)、[输出隔离检查](../../preview/verify.ts) |
+| Normal product pages, operations, and reachability | [Composition root](../../src/renderer/src/app/composition.tsx), owning feature, and [renderer contract](renderer.md) |
+| Page identity, scenario policies, behavior hints, and ownership | [catalog.ts](../../preview/catalog.ts) and [Chinese/English resources](../../preview/locales/) |
+| Navigation groups and a few conditional direct-display rules | [hierarchy.ts](../../preview/hierarchy.ts), [Navigation.tsx](../../preview/Navigation.tsx), [collaboration.ts](../../preview/collaboration.ts) |
+| Shared controls, information dialog, and workbench layout | [Console.tsx](../../preview/Console.tsx), [Header.tsx](../../preview/Header.tsx), [Controls.tsx](../../preview/Controls.tsx), [Divider.tsx](../../preview/Divider.tsx) |
+| Scenario data and runtime ledger | [home.ts](../../preview/home.ts), [project.ts](../../preview/project.ts), [service.ts](../../preview/service.ts), and owning domain modules |
+| Document samples and virtual files | [documents.ts](../../preview/documents.ts), [samples.ts](../../preview/samples.ts), [files.ts](../../preview/files.ts) |
+| Electron host, bridge, and startup | [main](../../src/main/pdfe.ts), [preload](../../src/preload/pdfe.ts), [contract](../../src/pdfe.ts), [launcher](../../scripts/dev/pdfe.mjs) |
+| UI assets, components, styles, and interactions | [DESIGN](../../DESIGN.md), [component guidelines](../design/components.md), [asset entry point](../../src/renderer/src/components/examples/ComponentsPage.tsx) |
+| Acceptance criteria and production isolation | [testing guidelines](../quality/testing.md), [interface inventory](../work/preview-contracts.md), [output isolation check](../../preview/verify.ts) |
 
-源码说明当前机制，文档说明设计意图与约束。登记、链接、类型通过或历史截图都不能单独
-证明一个功能已实现、可达或已验收；发生漂移时回到实际 Owner 核对。
+Source code describes current mechanisms; documentation describes design intent and constraints.
+Registration, links, type-check success, or historical screenshots alone do not prove that a
+feature is implemented, reachable, or accepted. When they diverge, verify against the actual owner.
 
 ## Current / Required / Gap / Advisory
 
-- **current**：已有开发专用 Electron PDFE 宿主、隔离 HTTP/SSE Mock、共享 renderer、
-  公共登录/主题/语言控制、日常与边界导航及 UI 素材入口。项目中心已有真实空列表、
-  常规数据、分页、大量数据与表单等场景消费；这不是全部页面和全部状态完成的声明。
-- **required**：同一产品、同一 UI、同一数据事实源；导航按使用方式组织并随场景规模
-  简化；Mock 与生产数据、安全、入口及制品保持隔离；每项能力有明确生效范围与验收证据。
-- **gap**：其他业务页面、全组件状态和真实认证/模型/工具行为不继承项目中心的覆盖
-  结论。每项结果须绑定实际版本、平台与场景；平台相关行为按根规范分别验证，
-  不将历史单平台范围外推为其他平台已通过或长期免验。
-  项目中心已有任务/项目初始读取等待、失败与恢复场景；原生生命周期、正常产品回归
-  和同条件效果按实际版本分层验证，选定元素对照不等于所有状态逐像素比较。
-  质量门禁和历史结果不能单独替代相应的真实交互验收。
-- **advisory**：先完成一个页面可重复的纵向体验，再按同一原则扩展其他功能；优先
-  复用现有 Owner 与数据政策，不为目录对称建立空壳模块或无效开关。
+- **current**: A development-only Electron PDFE host, isolated HTTP/SSE mock, shared renderer,
+  shared login/theme/language controls, everyday and boundary navigation, and a UI asset entry
+  point are in place. The project center already consumes scenarios for a genuinely empty list,
+  ordinary data, pagination, large data sets, and forms. This does not mean all pages or states
+  are complete.
+- **required**: Use the same product, UI, and data source of truth; organize navigation around
+  usage and simplify it as scenario counts grow; isolate the mock from production data, security,
+  entry points, and artifacts; and define the effective scope and acceptance evidence for every
+  capability.
+- **gap**: Coverage conclusions for the project center do not extend to other business pages, all
+  component states, or real authentication/model/tool behavior. Bind each result to the actual
+  version, platform, and scenario. Verify platform-dependent behavior separately under the root
+  requirements; do not extrapolate historical single-platform scope into proof of success on
+  another platform or a permanent exemption from testing.
+  The project center already has scenarios for initial task/project reads that wait, fail, and
+  recover. Verify native lifecycle, normal-product regressions, and same-condition results in
+  layers against the actual version; comparison of selected elements is not pixel-by-pixel
+  comparison of every state. Quality gates and historical results alone do not replace the
+  corresponding real-interaction acceptance.
+- **advisory**: First complete one page as a repeatable vertical experience, then extend other
+  features using the same principles. Prefer existing owners and data policies; do not create
+  empty modules or ineffective toggles merely for directory symmetry.
 
 ## Ownership / Dependency
 
-### 1. 一个产品，两个职责层
+<a id="1-一个产品两个职责层"></a>
+### 1. One Product, Two Responsibility Layers
 
 ```text
-PDFE 工作台控制面
-  ├─ 选择场景、公共控制、帮助、诊断
-  └─ Electron 宿主与受限 preload
-          │ 场景选择与实例级操作
+PDFE workbench control plane
+  ├─ Select scenarios, shared controls, help, diagnostics
+  └─ Electron host and restricted preload
+          │ Scenario selection and instance-level operations
           ▼
-隔离场景政策 → 数据生成器 → 实例账本 → 契约适配边界
-                                           │ 原 HTTP / SSE / typed bridge
+Isolated scenario policy → data generator → instance ledger → contract adapter boundary
+                                           │ Original HTTP / SSE / typed bridge
                                            ▼
-                            正常产品 renderer、组件、样式和状态投影
+                            Normal product renderer, components, styles, and state projection
 ```
 
-控制面负责准备可体验的初始条件，不复制产品界面。打开场景之后，创建、编辑、打开、
-置顶、归档、重试等操作继续使用产品自身的按钮和表单。不能直接填 Store、手写内部
-事件或造一套简化控件来声称功能已经接入。
+The control plane prepares usable initial conditions; it does not duplicate the product UI. Once
+a scenario is open, operations such as create, edit, open, pin, archive, and retry continue to use
+the product's own buttons and forms. Do not directly populate the Store, handwrite internal events,
+or create simplified controls and claim the feature is integrated.
 
-PDFE 的产品展示宿主是 Electron。浏览器/headless 环境用于确定性测试和共享 renderer
-验证，不恢复为第二个产品展示入口。UI 一致性要求复用真实字体、组件、样式和宿主
-能力，并在相同平台、内容视口、缩放、主题、语言下对照；复用源码本身不证明像素一致。
+Electron is the PDFE product presentation host. Browser/headless environments are used for
+deterministic tests and shared-renderer verification; they are not restored as a second product
+presentation entry point. UI consistency requires reuse of the real fonts, components, styles,
+and host capabilities, with comparison under the same platform, content viewport, zoom, theme,
+and language. Reusing source code alone does not prove pixel-level consistency.
 
-三类使用者看到相同功能，不增加角色选择或角色专用 Mock 副本。三者都可以使用 Agent
-修改代码，知识关注点不同不代表权限不同；可改哪些 Owner 由本次任务授权决定。
+All three user groups see the same features; do not add role selectors or role-specific mock
+copies. All three may use Agents to modify code; differing knowledge areas do not imply different
+permissions. Which owners may be changed is determined by the authorization for the current task.
 
-### 2. 页面优先，层级随规模生长
+<a id="2-页面优先层级随规模生长"></a>
+### 2. Page-First Navigation That Grows with Scale
 
-导航以真实产品页面为入口。功能较多时，可以按用户任务组织功能，再分日常使用、
-数据边界和异常与恢复；这不是每个页面必须套用的固定多层模板。
+Use real product pages as navigation entry points. When a feature has many scenarios, they may be
+organized around user tasks and then grouped into everyday use, data boundaries, and errors and
+recovery. This is not a fixed multilayer template required for every page.
 
-项目中心保持简化结构：
+Keep the project center's structure simple:
 
 ```text
-项目中心
-├─ 日常使用：常规数据、空项目与空任务、已有项目无任务、新建与编辑
-└─ 数据边界：分页、大量数据、长名称/标题、跨批任务读取
+Project Center
+├─ Everyday use: ordinary data, empty projects and tasks, existing project with no tasks, create and edit
+└─ Data boundaries: pagination, large data sets, long names/titles, cross-batch task reads
 ```
 
-- 首次使用与空状态属于日常使用；空数据不等于未登录，搜索无匹配不等于真实空列表。
-- 少量条件直接展示场景按钮，不增加“整页体验／项目管理／任务浏览”等空泛中间层。
-  多条件分页等才折叠；具体阈值只由 `PDFE_MIN_GROUP_SCENARIOS` 持有，不在各页面复制。
-- 多个分组可同时展开，缩进一致；搜索临时展开匹配内容，清除后保留用户原展开选择。
-  浏览导航和阅读说明不重置产品数据或草稿，只有明确打开/重置场景才应用场景政策。
-- 异常与恢复只展示实际接入的政策，不添加空分组或点击无效的按钮。缺口放入说明与
-  验收记录，不能删除需求，也不能将“没有接入”呈现为成功空态。
-- 正常产品入口必须核对实际导航与消费者，不能只看组件注册。旧布局或重复映射可
-  使用 `navigation: hidden` 退出当前导航；子功能通过父页面/分组元数据归属，不复制页面。
-- 等价入口可用 `aliasOf` 收敛默认展示并保留稳定 ID。只有数据条件和请求政策等价时
-  才能合并；不同故障或业务状态不能为了减少按钮被悄悄合并。
+- First use and empty states belong to everyday use. Empty data is not the same as being logged
+  out; a search with no matches is not the same as a genuinely empty list.
+- Show a small number of conditional scenarios directly as buttons; do not add vague intermediate
+  layers such as “Full-page experience / Project management / Task browsing.” Collapse only larger
+  combinations such as multi-condition pagination. The threshold is owned solely by
+  `PDFE_MIN_GROUP_SCENARIOS` and must not be duplicated across pages.
+- Multiple groups may remain expanded at once, with consistent indentation. Search temporarily
+  expands matching content; clearing the search preserves the user's previous expansion choices.
+  Browsing navigation and reading help must not reset product data or drafts; scenario policies
+  apply only when a scenario is explicitly opened or reset.
+- Show only error and recovery policies that are actually integrated. Do not add empty groups or
+  buttons that do nothing. Put gaps in the notes and acceptance record; do not remove requirements
+  or present “not integrated” as a successful empty state.
+- Verify the actual navigation and consumers for normal product entry points; component
+  registration alone is insufficient. Old layouts or duplicate mappings may leave current
+  navigation with `navigation: hidden`; child features belong through parent-page/group metadata,
+  not duplicate pages.
+- Equivalent entry points may converge on a default presentation with `aliasOf` while preserving
+  stable IDs. Merge them only when their data conditions and request policies are equivalent;
+  do not silently merge distinct failures or business states just to reduce the number of buttons.
 
-导航组织不是数据目录结构。调整页面、功能或分组不应复制项目、任务、样本或响应清单。
+Navigation organization is not a data-directory structure. Changing pages, features, or groups
+must not duplicate project, task, sample, or response inventories.
 
-### 3. 面板用于操作，说明用于理解边界
+<a id="3-面板用于操作说明用于理解边界"></a>
+### 3. Panels for Operations, Help for Understanding Boundaries
 
-场景按钮优先表达“什么条件、能体验什么”，数量从实际政策派生，提示使用简短的
-“可体验：创建项目／打开任务／编辑、置顶、归档”等用户行为。
-不在主导航堆叠“Mock 能力点／场景声明／待验证”、测试步骤或技术实现分类。
+Scenario buttons should primarily express “what conditions apply and what can be tried.” Derive
+their count from actual policies, and use concise behavior hints such as “Try: create project / open
+task / edit, pin, archive.” Do not crowd primary navigation with “mock capability points / scenario
+declarations / pending verification,” test steps, or technical implementation categories.
 
-详细使用步骤、模拟限制、尚未支持项和验证边界集中在顶部问号图标打开的独立弹窗；
-请求诊断折叠展示。操作应有当前场景、进行中和失败反馈，不通过默认成功兜底隐藏适配问题。
-文案、提示、可访问名称和错误反馈按正常产品国际化规范维护中英文资源。
+Put detailed steps, simulation limitations, unsupported items, and verification boundaries in a
+separate dialog opened by the question-mark icon at the top; show request diagnostics in a
+collapsible section. Operations should provide feedback for the current scenario, in-progress
+work, and failures. Do not hide adapter problems with a default-success fallback. Maintain copy,
+hints, accessible names, and error feedback in Chinese and English resources under the normal
+product internationalization rules.
 
-UI 素材是产品原型、设计与开发共用的基础资产，保留统一入口并复用真实组件示例，
-不是另一个设计系统，也不代表当前阶段已经覆盖全部组件与所有状态。
+UI assets are shared foundational assets for product prototyping, design, and development. Keep a
+single entry point and reuse real component examples. They are not a separate design system and do
+not mean every component and state is covered in the current phase.
 
-### 4. 公共能力与场景状态分开保存
+<a id="4-公共能力与场景状态分开保存"></a>
+### 4. Store Shared Capabilities Separately from Scenario State
 
-| 能力 | 生效语义与不变量 |
+| Capability | Effective semantics and invariants |
 | --- | --- |
-| 模拟登录 | 已登录/未登录只改变隔离身份与对应响应，不访问真实认证或凭据，不隐式清空项目与任务 |
-| 主题、语言 | 复用正常产品选项，在当前隔离实例中跨场景、重置和重载保留，不写个人配置 |
-| 固定身份场景 | 显式场景政策优先；工作台说明覆盖关系，全局登录选择仍保留，不伪称已在该场景生效 |
-| 打开/重置场景 | 恢复目标场景数据与页面位置，清理旧异步工作，保留全局登录、主题与语言选择 |
-| 仅重新加载 | 保留当前实例账本，不重置数据；页面未保存输入可能丢失，不能等同“无损停靠” |
-| 停靠、弹出、调宽、收起与恢复 | 默认在窗口右侧停靠，可独立弹出；调整宿主不重建产品文档，不清空产品草稿和工作台筛选 |
-| PDFE启动宽度 | 在正常产品默认宽度之外预留工作台默认宽度；按主屏可用宽度收敛，保留产品最小窗口约束，不改变正式客户端默认尺寸 |
+| Simulated login | Logged-in/logged-out selection changes only the isolated identity and corresponding responses; it does not access real authentication or credentials, or implicitly clear projects and tasks |
+| Theme and language | Reuse normal product options; retain them across scenarios, resets, and reloads in the current isolated instance; do not write personal configuration |
+| Fixed-identity scenario | Explicit scenario policy takes precedence; workbench help explains the precedence, while the global login selection remains selected and is not falsely presented as effective in that scenario |
+| Open/reset scenario | Restore the target scenario's data and page position, cancel old asynchronous work, and retain global login, theme, and language selections |
+| Reload only | Preserve the current instance ledger without resetting data; unsaved page input may be lost, so this is not equivalent to “lossless docking” |
+| Dock, pop out, resize, collapse, and restore | Dock on the right side of the window by default, with independent pop-out; host adjustment must not recreate product documents or clear product drafts and workbench filters |
+| PDFE startup width | Reserve the workbench's default width in addition to the normal product default width; constrain it to the main display's available width, preserve the product minimum-window constraint, and do not change the official client's default size |
 
-不增加角色开关、产品布局尺寸表单、缩放画布或未经请求政策接入的全局失败/延迟开关。
-公共偏好的保留范围是实例生命周期，不承诺开发服务重启后的持久化。
+Do not add role switches, product-layout size forms, zoomable canvases, or global failure/delay
+switches that are not covered by a requested policy. Shared preferences are retained for the
+instance lifecycle; persistence across development-service restarts is not promised.
 
-### 5. 数据清楚、可复用、易适配
+<a id="5-数据清楚可复用易适配"></a>
+### 5. Keep Data Clear, Reusable, and Easy to Adapt
 
-跨评测、自动化测试和 PDFE 的样本身份、示例项目及外部依赖遵循
-[共享示例设计](../../../../docs/architecture/examples.md)。该页区分当前分散库存与待实施的
-共享定义；本文继续持有场景政策和实例账本，接线状态与验收缺口由共享示例设计和实际记录区分。
+Sample identity, example projects, and external dependencies shared by evaluation, automated
+tests, and PDFE follow [Shared Example Design](../../../../docs/architecture/examples.md). That
+document distinguishes the currently scattered inventory from the proposed shared definitions.
+This document continues to own scenario policies and the instance ledger; the shared example
+design and actual records distinguish wiring status and acceptance gaps.
 
-沿现有 Owner 区分以下职责，不为分层制造额外空壳：
+Separate the following responsibilities along existing owners; do not create empty shells merely
+to add layers:
 
-| 层次 | 职责与约束 |
+| Layer | Responsibilities and constraints |
 | --- | --- |
-| 受审基础样本 | 稳定身份、原始字节、manifest 与摘要校验；不混入用户文件或随意替换为占位内容 |
-| 数据生成器 | 按数量、内容特征生成项目与任务，使用同一份关联关系、稳定身份和时间依据 |
-| 场景配置 | 显式声明数据条件、功能提示和请求政策；不根据场景名称猜行为，不重复维护数量清单 |
-| 实例账本 | 保存可变项目、会话、虚拟文件、账户与异步资源；同实例读写一致，不同实例隔离 |
-| 契约适配 | 在边界转换为真实产品 DTO、HTTP/SSE 与桥响应，不在每个页面复制生产业务规则 |
+| Reviewed base samples | Stable identity, original bytes, manifest, and digest verification; do not mix in user files or casually replace content with placeholders |
+| Data generator | Generate projects and tasks by count and content characteristics, using one set of relationships, stable identities, and time references |
+| Scenario configuration | Explicitly declare data conditions, feature hints, and request policies; do not infer behavior from scenario names or maintain duplicate count inventories |
+| Instance ledger | Store mutable projects, sessions, virtual files, accounts, and asynchronous resources; reads and writes must be consistent within an instance and isolated across instances |
+| Contract adapter | Convert at the boundary to real product DTOs, HTTP/SSE, and bridge responses; do not duplicate production business rules on each page |
 
-分页容量、名称限制和批量读取规则引用真实产品真源。单批读取量不是总量上限；大量数据
-必须验证末条可达、跨批不重不漏、任务归属正确以及数据变更后页码有效。
-创建、修改和回复时间有明确语义，读取不刷新时间，不以插入顺序冒充真实排序。
+Pagination capacity, name limits, and batch-read rules refer to real product sources of truth.
+The per-batch read size is not a total-count limit. Large data sets must verify reachability of
+the last item, no gaps or duplicates across batches, correct task ownership, and valid page
+indices after data changes. Creation, modification, and reply times have explicit semantics;
+reads do not refresh timestamps, and insertion order must not masquerade as real sorting.
 
-必填字段与当前消费字段按实际协议核对；不为“字段齐全”虚构未消费统计或恢复元数据。
-字段存在不代表状态组合已经覆盖，空态、加载、错误、无匹配和非空数据必须分开验证。
+Check required fields and currently consumed fields against the actual protocol. Do not invent
+unused statistics or recovery metadata merely to make fields look complete. The existence of
+fields does not mean state combinations are covered; empty, loading, error, no-match, and non-empty
+data states must be verified separately.
 
-文件种子显式区分 empty、example 和 reviewed：空 VFS/新建项目不读无关样本，项目
-中心读取顶层共享基础项目，格式及历史专项保留受审库存。读取共享字节时重新核验，
-所需文件缺失仍严格报错；reviewed 成功后复用受审缓存，失败不写成功缓存。专项仍
-加载其完整库存，不将该机制误写成已经具备所有按格式选择样本的能力。
+File seeds explicitly distinguish `empty`, `example`, and `reviewed`: an empty VFS/new project
+does not read unrelated samples; the project center reads the top-level shared base project; and
+format-specific or historical special cases retain their reviewed inventory. Re-verify shared
+bytes when reading them, and fail strictly when a required file is missing. After a successful
+review, reuse the reviewed cache; a failed review must not be cached as successful. Special cases
+still load their full inventory; do not misstate this mechanism as support for selecting samples
+by every format.
 
-重置、删除和销毁应取消旧定时器、流和在途工作；异步完成前重新核对实例/代次/身份，
-防止旧响应污染新场景。未知请求明确失败并进入诊断，禁止转发真实网络或返回成功占位响应。
+Reset, deletion, and destruction must cancel old timers, streams, and in-flight work. Before
+asynchronous work completes, recheck the instance, generation, and identity to prevent old
+responses from contaminating a new scenario. Unknown requests must fail explicitly and enter
+diagnostics; never forward to the real network or return a successful placeholder response.
 
-### UI 自动化测试的承载边界
+<a id="ui-自动化测试的承载边界"></a>
+### UI Automation Test Ownership Boundary
 
-PDFE Owner 提供可重复的隔离状态与场景生命周期，A 负责通过真实产品控件进行
-程序断言；PDFE 不拥有 API 业务语义或真实任务判据。公共分工、风险选层、契约归属、
-最小关联及稳定性约束只在[测试架构](testing-strategy.md#测试分层与共享契约)维护，
-本文不另建一份检查清单或需求标准。
+The PDFE owner provides repeatable isolated state and scenario lifecycle. A performs programmatic
+assertions through real product controls; PDFE does not own API business semantics or real-task
+criteria. Shared responsibilities, risk-based test layering, contract ownership, minimum
+relationships, and stability constraints are maintained only in [Testing Architecture](testing-strategy.md#测试分层与共享契约); this document does not create a second checklist or set of requirements.
 
-场景适配沿原接口 DTO 和实例账本推进；只支持 UI 消费所需的响应与受控故障，
-不复制后端业务状态机。接口变化由原接口 Owner 明确语义，PDFE 仅增量调整受影响
-政策和数据；受影响场景已有测试则复用，不为需求 ID 增设场景副本。
-有意加载/故障延迟保留其场景语义；宿主构建、窗口生命周期和 UI 断言的成本按
-测试架构分别观察，不为提速另造浏览器展示壳或删去原生断言。
-原生截图只证明该模拟运行面的 UI 消费；真实路由/存储由接口集成证明，真实任务
-交 [LLM 评测](evaluation.md)，不以模拟事件或截图冒充真实模型/工具/磁盘结果。
+Scenario adapters evolve along the original interface DTOs and instance ledger. They support only
+responses and controlled failures consumed by the UI; they do not duplicate the backend business
+state machine. The original interface owner defines the semantics of interface changes, while
+PDFE adjusts only affected policies and data incrementally. Reuse existing tests for affected
+scenarios; do not add scenario copies for requirement IDs.
+Intentional loading/failure delays retain their scenario semantics. Observe host build, window
+lifecycle, and UI assertion costs separately under the testing architecture; do not create a
+browser presentation shell or remove native assertions to speed things up.
+Native screenshots prove UI consumption on that simulated runtime surface only. Real routing and
+storage are proven by interface integration; real tasks belong to [LLM Evaluation](evaluation.md).
+Do not present simulated events or screenshots as results from real models, tools, or disk.
 
-**current / gap**：`preview-contract` 已接契约测试，`preview-ui` 已接原生 Electron
-PDFE 测试；既有 CI 编排器按显式标题选择已迁移的必要原生回归，并独立核选例完整性；
-实际清单归编排器，不在架构另存数量或副本，也不将原生 UI 全集加入打包 smoke。
-共同接口契约与旧浏览器 spec 迁移仍仅部分覆盖，其他场景不继承本次接线结论，具体库存、入口及
-迁移安排归实施计划 (non-public execution/provenance record omitted)。
-存在测试文件或复用同一 renderer 不代表执行通过或稳定性已提升。
+**current / gap**: `preview-contract` is wired to contract tests, and `preview-ui` is wired to
+native Electron PDFE tests. The existing CI orchestrator selects required migrated native
+regressions by explicit title and independently checks example completeness. The orchestrator
+owns the actual inventory; do not store counts or copies in this architecture or add the full
+native UI suite to packaging smoke tests. Shared interface-contract and legacy browser-spec
+migrations remain partial. Other scenarios do not inherit this wiring conclusion; specific
+inventory, entry points, and migration schedule belong to the implementation plan
+(non-public execution/provenance record omitted).
+The presence of test files or reuse of the same renderer does not mean tests passed or stability
+improved.
 
-### 6. 不污染正常产品
+<a id="6-不污染正常产品"></a>
+### 6. Do Not Contaminate the Normal Product
 
-PDFE 的 main/preload、启动入口、Mock 服务、样本、测试桥和开发资源与正常产品入口及
-生产依赖/制品闭包隔离。正常产品不得默认进入 Mock、改变请求目的地或加载模拟数据。
-不读取、迁移、覆盖真实用户的账户、配置、项目、会话与持久化数据。
+The PDFE main/preload, startup entry point, mock service, samples, test bridge, and development
+resources are isolated from the normal product entry point and production dependency/artifact
+closure. The normal product must not enter Mock by default, change request destinations, or load
+simulated data. Do not read, migrate, or overwrite real users' accounts, configuration, projects,
+sessions, or persisted data.
 
-真实页面的共享修改确实影响正常产品：只改明确授权的行为，追加对应正常产品回归；
-不得在共享页面中增加 PDFE 专用业务分支。构建隔离不等于正常启动、功能或原生效果已通过。
+Changes shared with real pages do affect the normal product: change only explicitly authorized
+behavior and add the corresponding normal-product regressions. Do not add PDFE-specific business
+branches to shared pages. Build isolation does not prove normal startup, functionality, or native
+behavior has passed.
 
-保留 CSP、sandbox、contextIsolation、IPC 来源校验和网络隔离。renderer 不获得 Node
-或 Electron 能力；宿主变化沿 typed contract 和各自 Owner 推进，不为展示方便放宽安全边界。
+Preserve CSP, sandbox, contextIsolation, IPC-origin validation, and network isolation. The renderer
+must not receive Node or Electron capabilities. Host changes must follow the typed contract and
+their respective owners; do not weaken the security boundary for presentation convenience.
 
-### 7. 后续功能接入的设计核对项
+<a id="7-后续功能接入的设计核对项"></a>
+### 7. Design Review Questions for Future Feature Integrations
 
-这是设计约束而非第二套执行 Skill；实施流程仍使用现有 Owner 与开发规范。
+These are design constraints, not a second execution Skill. Implementation follows existing
+owners and development guidelines.
 
-| 需要回答的问题 | 合格的设计依据 |
+| Question | Acceptable design basis |
 | --- | --- |
-| 功能在哪里被用户打开？ | 真实产品页面与公开控件；仅有注册或旧路由不足以证明当前入口 |
-| 用户需要几个准备场景？ | 日常路径、真实空态与必要数据/异常分支；数量少时直接列出，不强套全部层级 |
-| 哪些数据可复用？ | 同一生成器、种子与领域账本，显式请求政策；不另复制一份页面数据 |
-| 如何继续交互？ | 原产品组件、公开请求与状态投影；不是展示一次后只能回工作台操作 |
-| 公共选择会不会丢？ | 跨场景保留登录/主题/语言，显式说明固定政策与重置边界 |
-| 会不会影响真实产品？ | Owner、修改范围、用户数据保护及入口/依赖/制品隔离证据 |
-| 如何证明完成？ | 最终版本的分层验证与真实运行证据，明确未实现项和平台缺口 |
+| Where does the user open the feature? | Real product page and public controls; registration or an old route alone does not prove a current entry point |
+| How many setup scenarios does the user need? | Everyday path, genuine empty state, and necessary data/error branches; list a small number directly rather than forcing every hierarchy level |
+| Which data can be reused? | One generator, seed, and domain ledger, with explicit request policies; do not duplicate page data |
+| How does interaction continue? | Original product components, public requests, and state projection; not a one-time display followed by workbench-only operations |
+| Will shared selections be lost? | Retain login/theme/language across scenarios and explicitly describe fixed-policy and reset boundaries |
+| Could real product behavior be affected? | Evidence for ownership, change scope, user-data protection, and entry/dependency/artifact isolation |
+| How is completion proven? | Layered verification and real-runtime evidence for the final version, with unimplemented items and platform gaps explicit |
 
-### 8. 功能迭代版本试点
+<a id="8-功能迭代版本试点"></a>
+### 8. Feature Iteration Version Pilot
 
-- **current**：项目中心的“项目浏览”作为单功能试点，常规、有项目无任务和全空场景
-  共用 `preview/iterations.ts` 中的一份功能定义；场景仅引用功能身份，兼容别名继承
-  原场景的功能，不在场景、文案或页面重复维护版本。
-- **current**：`introducedIn` 表示功能首次加入的产品迭代，`changes` 保留有依据的功能
-  更新版本和摘要。历史归属无可靠依据时使用 `null`，UI 显示“加入版本待确认”，
-  不读取包版本、Git日期或当前分支猜填。试点尚无已确认数字版本，因此筛选只有
-  “全部迭代”和“版本待确认”；新增/更新范围仅选择已确认迭代时可用。
-- **current**：版本标记和筛选仅作用于 PDFE 导航，不改变产品页面、Mock数据、登录、
-  语言或主题。筛选在本实例的 sessionStorage 保留，切换场景不丢失；未纳入试点的
-  功能在“全部迭代”保留，不自动归入“待确认”。筛选时保留必要父节点并展开匹配项。
-- **required**：首次加入版本经实际迭代安排确认后填写并保持稳定；实质产品行为变化
-  才追加更新记录，不能把补Mock、修复实现、排版或重新测试算成新增产品能力。
-  需求编号、需求版本、场景实现修订及本轮验证结果均不代替功能加入版本。
-- **required**：后续扩展先在同一功能定义维护一次，再由所属场景引用；版本选项从
-  功能定义生成，按数字段排序，支持四段迭代号，不新增第二套版本清单。
-- **gap**：当前试点历史版本尚待确认，不宣称任何数字版本的新增/更新已验证；本轮
-  仅先实现一个功能，其他页面不批量补标，不据Mock注册或测试存在声明交付完成。
+- **current**: “Project Browsing” in the project center is the single-feature pilot. The ordinary,
+  project-without-tasks, and fully empty scenarios share one feature definition in
+  `preview/iterations.ts`; scenarios reference only the feature identity, and compatibility
+  aliases inherit the original scenario's feature. Do not maintain version data again in scenarios,
+  copy, or pages.
+- **current**: `introducedIn` records the product iteration in which a feature was first added;
+  `changes` retains evidence-based feature update versions and summaries. Use `null` when there is
+  no reliable evidence for historical attribution, and display “Version added: pending
+  confirmation”; do not guess from package versions, Git dates, or the current branch. The pilot
+  has no confirmed numeric version yet, so filters offer only “All iterations” and “Version
+  pending confirmation”; add/update scope selection is available only for confirmed iterations.
+- **current**: Version badges and filters apply only to PDFE navigation; they do not change product
+  pages, mock data, login, language, or theme. The filter persists in this instance's
+  `sessionStorage` and survives scenario switches. Features outside the pilot remain under “All
+  iterations” and are not automatically assigned to “Pending confirmation.” When filtering,
+  retain necessary parent nodes and expand matching items.
+- **required**: Confirm the initial-added version against actual iteration plans before entering
+  it, then keep it stable. Add an update record only for a substantive change in product behavior;
+  adding a mock, fixing an implementation, changing layout, or retesting does not count as a new
+  product capability. Requirement IDs, requirement versions, scenario implementation revisions,
+  and this round's verification results do not substitute for the feature's added version.
+- **required**: Extend later features by maintaining each feature definition once and having its
+  owning scenarios reference it. Generate version options from feature definitions, sort by
+  numeric segments, support four-part iteration numbers, and do not introduce a second version
+  inventory.
+- **gap**: The pilot's historical version is still unconfirmed; do not claim that additions or
+  updates for any numeric version have been verified. This round implements only one feature;
+  do not bulk-label other pages or claim delivery based on the existence of mock registration or
+  tests.
 
-## 正反例
+<a id="正反例"></a>
+## Examples and anti-patterns
 
-| 正例 | 反例 |
+| Good example | Counterexample |
 | --- | --- |
-| 项目中心只有日常与边界，少量条件直接点击 | 每页机械建立页面/功能/日常/状态四层文件夹 |
-| 通过原新建按钮打开真实表单并写同一模拟账本 | 工作台自己造表单或直接修改 Store 展示“成功” |
-| 空项目与空任务均真实为空，登录状态独立选择 | 把未登录、搜索无结果或读取失败都伪装成空列表 |
-| 多个场景引用同一数据生成器及正式分页常量 | 每个导航分组各复制一份 JSON、数量和分页容量 |
-| 未适配接口失败并诊断，已知故障通过明确政策恢复 | 所有未知请求兜底成功，重试几次就偷偷换成功数据 |
-| 分别记录 HTTP、headless、Electron 与正常产品结论 | 把一个组件截图或复用源码当作全部原生效果验收 |
+| The project center has only everyday and boundary groups; a small number of conditions are clicked directly | Mechanically create page/feature/everyday/state folders on every page |
+| Open the real form through the original create button and write to the same mock ledger | The workbench creates its own form or edits the Store directly to show “success” |
+| Empty projects and tasks are genuinely empty, with login state selected independently | Misrepresent logged-out, no search matches, or read failures as an empty list |
+| Multiple scenarios reference one data generator and the official pagination constants | Copy a JSON file, counts, and page capacity into every navigation group |
+| Unsupported interfaces fail and are diagnosed; known failures recover under explicit policies | Unknown requests all succeed by fallback, or retry secretly swaps in successful data after a few attempts |
+| Record HTTP, headless, Electron, and normal-product conclusions separately | Treat one component screenshot or shared source as acceptance of all native behavior |
 
 ## Enforced by
 
-文档结构和链接通过 `pnpm ops ci check docs workspace`、
-`pnpm ops ci check docs desktop` 核验；这些检查不证明功能已接入。
+Document structure and links are checked with `pnpm ops ci check docs workspace` and
+`pnpm ops ci check docs desktop`; these checks do not prove that a feature is integrated.
 
-产品变更按[测试规范](../quality/testing.md)选择确定性、Mock HTTP、共享 renderer/headless、
-真实 Electron 与正常产品验收；结合[生产隔离检查](../../preview/verify.ts)核对适用范围。
-默认不运行会抢鼠标或窗口焦点的测试，不自动启动前台 Electron，不注入内部状态冒充操作。
-没有已授权的独立原生环境时保留验收缺口，不用 headless 替代原生效果证明。
+For product changes, select deterministic, mock HTTP, shared-renderer/headless, real Electron, and
+normal-product acceptance as appropriate under the [testing guidelines](../quality/testing.md),
+and verify applicable scope with the [production isolation check](../../preview/verify.ts).
+By default, do not run tests that take over the mouse or window focus, automatically launch a
+foreground Electron app, or inject internal state to impersonate user actions. If no authorized
+independent native environment is available, retain the acceptance gap; do not use headless as
+proof of native behavior.
 
-验收至少关注数据条件、真实空态、正常交互、分页末条与跨批读取、搜索、公共选择保持、
-重置/重入、实例隔离及异步清理。真实认证、服务、模型、文件系统和跨平台行为各需其
-适用真实证据，不能混入 Mock 成功统计。保存最终版本、命令、结果和已查看的截图范围，
-原始运行证据保持 ignored，不把阶段记录写成永久能力保证。
+Acceptance must cover at least data conditions, genuine empty states, normal interactions, the
+last paginated item and cross-batch reads, search, retention of shared selections, reset/re-entry,
+instance isolation, and asynchronous cleanup. Real authentication, services, models, file systems,
+and cross-platform behavior each require applicable real evidence; do not mix them into mock
+success counts. Record the final version, commands, results, and screenshot areas inspected. Keep
+raw runtime evidence ignored; do not turn phase records into permanent capability guarantees.
 
 ## Update triggers
 
-- 页面可达性、场景组织、公共能力或数据生命周期发生变化时，更新对应机制真源和本文
-  受影响的设计约束；普通新增场景不在本文再维护一份数量或状态清单。
-- 设计原则改变时修改本文，装配/传输/接口细节改变时修改 `preview.md`，角色知识与
-  授权边界改变时修改 `work/pdfe.md`；同时维护导航和 registry，不制造第二份正文。
-- 新功能推进前核当前源码与实际缺口，完成后回写对应 Owner 和验证结论；项目中心的
-  阶段完成不自动授权其他页面、环境配置、远端同步或发布。
+- When page reachability, scenario organization, shared capabilities, or data lifecycle changes,
+  update the corresponding mechanism's source of truth and the affected design constraints here.
+  Do not maintain a second count or state inventory here for ordinary new scenarios.
+- Change this document when design principles change; change `preview.md` when assembly,
+  transport, or interface details change; and change `work/pdfe.md` when role knowledge or
+  authorization boundaries change. Maintain navigation and registry as well, without creating a
+  second copy of the main content.
+- Before advancing a new feature, verify current source and actual gaps. After completion, update
+  the corresponding owner and verification conclusion. Completing a project-center phase does
+  not automatically authorize other pages, environment configuration, remote synchronization, or
+  release.
 
 ## Stop condition
 
-若方案需要复制产品 UI、另建业务状态机、兜底成功、绕过真实交互、读取用户数据、
-放宽安全边界或取消必要验收，应停止该方案并回到真实 Owner 修正设计。
-有未实现状态、运行阻断、未知平台行为或必需证据缺失时，不宣称完整交付；继续独立
-授权事项并明确缺口。文档发布不代表 PDFE 整体 Goal 已完成。
+If a proposal requires copying the product UI, creating another business state machine, falling
+back to success, bypassing real interactions, reading user data, weakening security boundaries,
+or canceling required acceptance, stop that proposal and return to the actual owner to correct the
+design.
+When states remain unimplemented, runtime is blocked, platform behavior is unknown, or required
+evidence is missing, do not claim complete delivery. Continue independently authorized work and
+state the gaps clearly. Publishing this document does not mean the overall PDFE Goal is complete.

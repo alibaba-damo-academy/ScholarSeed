@@ -1,52 +1,54 @@
-# PDFE 弹窗应用接入范围
+<a id="pdfe-弹窗应用接入范围"></a>
+
+# PDFE Dialog Integration Scope
 
 ## Scope
 
-将当前菜单可达、具有可操作隔离预览种子的模态对话框与确认框汇总到 PDFE，按业务分组。
-既有页面和弹窗入口全部保留。不得为汇总恢复隐藏功能、扩张真实权限或复制业务 UI。
-运行与隔离边界归[预览架构](../architecture/preview.md)。
+Bring together in PDFE the modal dialogs and confirmation dialogs that are reachable from current menus and have actionable, isolated preview seeds, grouped by business area.
+Keep all existing pages and dialog entry points. Do not restore hidden features, expand real permissions, or duplicate business UI just to include an item in this catalog.
+Runtime and isolation boundaries are defined by the [preview architecture](../architecture/preview.md).
 
 ## Source of truth
 
-- [场景登记](../../preview/dialogs.ts)：弹窗、业务组、组件来源、原页面/场景身份。
-- [目录](../../preview/catalog.ts)：组合原产品目录与弹窗投影；原目录不被迁移或改写。
-- [导航](../../preview/Navigation.tsx)：复用 Collapsible / Button / Badge 展示业务分组。
-- [确定性回归](../../preview/dialogs.test.ts)与[原生消费](../../preview/native.spec.mjs)：分别核目录不变量和公开菜单打开、关闭，不以清单代替运行。
+- [Scenario registry](../../preview/dialogs.ts): dialogs, business groups, component sources, and original page/scenario identities.
+- [Catalog](../../preview/catalog.ts): combines the original product catalog with the dialog projection; the original catalog is not migrated or rewritten.
+- [Navigation](../../preview/Navigation.tsx): reuses Collapsible / Button / Badge to display business groups.
+- [Deterministic regression](../../preview/dialogs.test.ts) and [native consumption](../../preview/native.spec.mjs): verify catalog invariants and opening/closing from public menus, respectively. The catalog does not replace runtime verification.
 
 ## Required
 
-每个接入项必须指定真实组件来源、可用原场景、业务组及中英文入口说明。
-复用原导航目标与种子，不把弹窗状态写入持久化导航，不通过临时 Store 或事件强开。
-初始表单可展示而提交未接入时，说明必须区分两者；不接入只会报未实现错误的入口。
-验证时从 PDFE 场景按钮进入，再通过产品原控件触发，核实际弹窗标题、取消关闭并保留截图。
-原生文件选择、真实模型、登录、系统录屏、上传和安装需要各自授权与验收，不随本任务发生。
+Each included item must identify its real component source, available original scenario, business group, and entry-point descriptions in both Chinese and English.
+Reuse the original navigation target and seed. Do not persist dialog state in navigation or force a dialog open through a temporary Store or event.
+When an initial form is visible but submission is not wired up, explain the difference; do not include an entry point that only reports an unimplemented error.
+For verification, enter through a PDFE scenario button and then use the product's original control to trigger the dialog. Check the actual dialog title, dismiss it with Cancel, and retain a screenshot.
+Native file selection, real models, login, system recording, uploads, and installation each require their own authorization and acceptance; they are outside this task.
 
 ## Current / Gap
 
-业务组覆盖项目、任务、会话、项目文件、文档、版本、文献、文献组织、技能、连接器、设置归档及反馈。
-具体库存以登记真源为准，不在文档手工维护另一份场景数量。
+Business groups cover projects, tasks, sessions, project files, documents, versions, literature, literature organization, Skills, connectors, settings and archiving, and feedback.
+The registry is the source of truth for the exact inventory; do not maintain a separate scenario count by hand in this document.
 
-项目文献的分组及移出确认复用原项目文件入口与已受审的文献样本政策；
-未保存文档关闭/语言切换须先在原资料库文件设置中关闭自动保存，再产生实际未保存编辑。
-这些前置操作写进入口说明，不直接设置 dirty 或临时挂载弹窗。
+Project literature grouping and removal confirmation reuse the original project-file entry point and the reviewed literature sample policy.
+To close an unsaved document or switch its language, first disable autosave in the original resource-library file settings, then make an actual unsaved edit.
+Describe these prerequisites at the entry point. Do not set dirty state directly or temporarily mount a dialog.
 
-下表区分原产品隐藏/条件入口与 PDFE 缺少种子的情况；后者不证明原产品不可用。
-恢复时须重新核源码菜单、可操作种子及真实消费，不仅添加目录名称。
+The table distinguishes entry points hidden or conditional in the original product from cases where PDFE lacks a seed. The latter does not prove that the original product is unavailable.
+Before restoring an item, recheck the source menus, actionable seed, and real consumer; adding a catalog name alone is insufficient.
 
-| 分类 | 本轮不接入项 | 依据与恢复条件 |
+| Category | Excluded from this integration | Rationale and conditions for reconsideration |
 | --- | --- | --- |
-| 当前能力不可用 | 消息回退确认 | Stream 的入口依赖 rewindAnchor；Serve 当前 rewind 路由明确返回 capability unavailable，不为预览伪造锚点恢复已停用能力。 |
-| 预览导入尚未接入 | 文献附件存入资料库 | 原 Import 弹窗打开后即请求 import-to-project 预检，当前模拟服务未实现该接口，会显示失败提示；在完整预检及隔离复制可操作前不纳入。 |
-| 隐藏或无触发入口 | 账号修改手机/重置密码、偏好、快捷键、欢迎引导、旧项目重命名、文献详情旧标签管理 Dialog 分支 | 设置 NAV_ITEMS 未公开；ProjectActions 的 projectRename 没有菜单写入；详情仅有项目和分类的 setRelation 入口。行内重命名、标签编辑不冒充模态。 |
-| 非模态与系统控件 | 菜单、Tooltip、Popover、Sheet、Toast、PDF 划词翻译浮层、原生文件/目录选择 | 按组件模态性和实际宿主区分；Sheet 中的独立 Dialog 可单独接入。 |
-| 隐藏模块路径 | 旧资料树导入/冲突/移动/链接、模块审阅批次确认 | 当前原页面不能通过已公开菜单进入该模块；现有预览隐藏模块宿主不构成公开产品入口。项目文件 Explorer 的公开弹窗独立收录。 |
-| 需要额外数据准备 | 文件选择后的 PDF/Bib 导入、Zotero 库选择、元数据匹配/同步、全文获取、带引用/资源保存的消息 | 当前模拟源没有完整上传、上游解析、匹配或对应消息数据；不得仅用未实现错误或手写状态冒充可操作场景。标识符输入表单独立收录，不执行检索。 |
-| 预览服务尚未接入 | 内置连接器详情/使用/授权/撤销及已有连接器编辑、模型连接探测及订阅认证/删除 | 当前连接器记录及模型写入/认证没有相应可操作模拟种子；原模型样本为只读。自定义连接器的新增表单可从原菜单打开，独立收录但不保存或启动服务。 |
-| 原生或首次状态 | 登录交接、首次存储设置、更新说明/预览通道/重启安装、录屏审阅/截图标注及回执 | 需要原生身份、首次启动、真实更新候选或受审捕获能力；不使用 renderer 演示宿主声称产品菜单可达。不截图用户桌面或触发发布。问题反馈普通表单仍沿原入口接入。 |
+| Current capability unavailable | Message rewind confirmation | The Stream entry point depends on `rewindAnchor`; Serve's current rewind route explicitly returns capability unavailable. Do not fabricate an anchor in the preview to restore a disabled capability. |
+| Preview import not integrated | Save literature attachments to the resource library | Opening the original Import dialog immediately requests an import-to-project preflight. The current mock service does not implement that interface and displays a failure. Exclude it until both preflight and isolated copying are actionable. |
+| Hidden or no trigger entry | Change account phone/reset password, preferences, shortcuts, welcome guide, legacy project rename, legacy tag-management Dialog branch on literature details | Settings `NAV_ITEMS` is not public; `ProjectActions` has no menu write for `projectRename`; details expose only project and collection `setRelation` entries. Do not misrepresent inline rename or tag editing as modal dialogs. |
+| Non-modal and system controls | Menus, Tooltip, Popover, Sheet, Toast, PDF selection translation surface, native file/directory selection | Classify by component modality and actual host. A standalone Dialog inside a Sheet may be included separately. |
+| Hidden module path | Legacy resource-tree import/conflict/move/link, batch confirmation for module review | The current original page cannot reach this module through a public menu; a hidden-module preview host is not a public product entry. Public dialogs in the project-file Explorer are cataloged separately. |
+| Requires additional data preparation | PDF/Bib import after file selection, Zotero library selection, metadata matching/sync, full-text retrieval, messages that save citations/resources | The current mock source lacks complete upload, upstream parsing, matching, or corresponding message data. Do not present a non-implemented error or hand-written state as an actionable scenario. The identifier-entry form is cataloged separately and does not run a search. |
+| Preview service not integrated | Built-in connector details/use/authorization/revocation and editing existing connectors; model connection probe and subscription authentication/deletion | The current connector records and model writes/authentication lack actionable mock seeds; the original model sample is read-only. The custom connector creation form can be opened from the original menu and is cataloged separately, but does not save or start a service. |
+| Native or first-run state | Login handoff, first-run storage setup, update notice/preview channel/restart installation, recording review/screenshot annotation and receipt | These require native identity, first launch, a real update candidate, or reviewed capture capability. Do not claim the product menu is reachable using a renderer demo host. Do not capture the user's desktop or trigger a release. The ordinary feedback form remains integrated through its original entry point. |
 
 ## Verification boundary
 
-确定性测试覆盖原目录保留、业务分组、来源目标一致、双语步骤、搜索与 JSON 往返。
-原生消费使用真正 PDFE 主进程、Bridge、同一 renderer 和隔离场景服务；每项沿原菜单打开。
-这证明 PDFE 的入口与弹窗消费，不证明真实后端写入、模型、磁盘或 Windows 产品兼容性。
-原生截图保留在 ignored 的 `apps/desktop/test-results/`，不随代码提交。
+Deterministic tests cover preservation of the original catalog, business grouping, source-target consistency, bilingual steps, search, and JSON round trips.
+Native consumption uses the actual PDFE main process, Bridge, same renderer, and isolated scenario service. Each dialog is opened through its original menu.
+This verifies PDFE entry points and dialog consumption; it does not prove real backend writes, model behavior, disk behavior, or Windows product compatibility.
+Native screenshots are retained in the ignored `apps/desktop/test-results/` directory and are not committed.

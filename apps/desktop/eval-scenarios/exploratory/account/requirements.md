@@ -1,31 +1,39 @@
-# 账号与开发者候选需求
+<a id="账号与开发者候选需求"></a>
+# Candidate Requirements for Account and Developer Features
 
-## 用途与入口
+<a id="用途与入口"></a>
+## Purpose and Entry Points
 
-用户通过主界面头像菜单查看账户状态、进入登录或个人资料及额度相关入口；通过设置中的开发者入口管理 API 密钥。目标安装版的实际入口、适用范围及需求版本尚待核实；本页为候选，不是已采用判据或运行结论。
+Users inspect account status and access sign-in, profile, and quota-related entry points from the avatar menu in the main interface. They manage API keys through the Developer entry in Settings. The actual entry points, applicability, and requirement version for the target installed build remain unverified; this page is a candidate, not an adopted criterion or runtime finding.
 
-**参考截图缺口：** 当前未核实可复用的目标版本账号菜单、登录交接及开发者设置完整窗口图。不能以静态组件图、模型服务图或真实用户账号内容代替。
+**Reference screenshot gap:** No complete window screenshots have been verified for the target build's reusable account menu, sign-in handoff, or Developer settings. Static component images, model-service images, and real user account content are not substitutes.
 
-## 候选功能
+<a id="候选功能"></a>
+## Candidate Features
 
-### 当前账户状态（历史 `ACCOUNT-STATE-01@1`；产品需求版本待确认）
+<a id="当前账户状态历史-account-state-011产品需求版本待确认"></a>
+### Current Account Status (historical `ACCOUNT-STATE-01@1`; product requirement version pending confirmation)
 
-头像菜单反映本轮实际已登录或未登录分支；如显示敏感身份信息，应按产品界面要求遮挡。以获准测试账户的独立状态参照对应当前显示，不为制造分支登录、退出或切换用户；已有登录状态不能证明本轮认证或恢复成功。
+The avatar menu reflects the branch actually observed in this run: signed in or signed out. If sensitive identity information is displayed, mask it as required by the product interface. Compare the display with an independent reference for the corresponding current state of an authorized test account. Do not sign in, sign out, or switch users to manufacture a branch. An existing signed-in state does not prove that authentication or recovery succeeded in this run.
 
-### 登录与恢复（历史 `ACCOUNT-LOGIN-01@3`；产品需求版本待确认）
+<a id="登录与恢复历史-account-login-013产品需求版本待确认"></a>
+### Sign-in and Recovery (historical `ACCOUNT-LOGIN-01@3`; product requirement version pending confirmation)
 
-在明确获准的未登录隔离实例及专用测试身份下，经真实入口完成登录交接，客户端显示对应身份；在本轮指定且获准的重新打开范围内核对状态。重新打开菜单、重新打开客户端和跨重启恢复分别记录，不能互相替代；取消、失败和退出的真实状态另列专项。
+In an explicitly authorized, signed-out isolated instance and with a dedicated test identity, complete the sign-in handoff through the real entry point and verify that the client displays the corresponding identity. Check the state after reopening only within the scope explicitly designated and authorized for this run. Record reopening the menu, reopening the client, and recovery across a restart separately; they are not interchangeable. Record cancellation, failure, and sign-out as separate focused scenarios.
 
-### 个人资料与额度入口（`ACCOUNT-PROFILE-CAND-001`；需求版本待确认）
+<a id="个人资料与额度入口account-profile-cand-001需求版本待确认"></a>
+### Profile and Quota Entry Points (`ACCOUNT-PROFILE-CAND-001`; requirement version pending confirmation)
 
-头像菜单中的个人资料、积分或额度入口及可见状态随身份与功能可用性变化；当前源码将对应入口交给云端页面。目标包是否开放、展示字段及其业务语义仍待确认；不得将代码或设计样例中的积分数当成固定预期。个人资料修改、购买和套餐变更需独立授权及真实终态。
+Profile, points, or quota entry points and their visible states in the avatar menu vary with identity and feature availability. Current source routes the corresponding entry points to cloud pages. Whether the target build exposes them, which fields it displays, and their business semantics remain to be confirmed. Do not treat point totals in code or design examples as fixed expectations. Profile edits, purchases, and plan changes each require separate authorization and verification of their real end state.
 
-### 开发者 API 密钥（`ACCOUNT-KEY-CAND-001`；需求版本待确认）
+<a id="开发者-api-密钥account-key-cand-001需求版本待确认"></a>
+### Developer API Keys (`ACCOUNT-KEY-CAND-001`; requirement version pending confirmation)
 
-开发者设置是正常产品功能；自然列表展示及空态、加载或错误状态与获准的非秘密参照对应。实际账户、托管密钥生命周期及目标包适用性待核；进入页面本身可能触发托管凭据准备，须核权限和副作用。创建、复制、吊销及托管密钥轮换是独立写操作和专项，不由查看页面授权。
+Developer settings are a normal product feature. The naturally displayed list and its empty, loading, or error state should match an authorized, non-secret reference. The actual account, hosted-key lifecycle, and target-build applicability remain unverified. Opening the page may prepare hosted credentials, so its permissions and side effects must be checked. Creating, copying, revoking, and rotating hosted keys are separate write operations and focused scenarios; viewing the page does not authorize them.
 
-现有源码表明新建密钥后可能一次性展示完整凭据；普通列表的遮挡展示不等于所有状态都不会显示明文。不得读取、记录、传播真实完整密钥、验证码、令牌或认证 Cookie；若真实完整凭据意外出现在证据中，停止传播并按实际风险隔离，不因页面标题而停止正常、获准的展示观察。
+Current source indicates that a newly created key may be shown in full once. Masking in the ordinary list does not mean plaintext is never displayed in any state. Do not read, record, or disclose a real full key, verification code, token, or authentication cookie. If a real full credential unexpectedly appears in evidence, stop its propagation and isolate it according to the actual risk; do not stop ordinary, authorized observation merely because of the page title.
 
-## 数据、参照与边界
+<a id="数据参照与边界"></a>
+## Data, References, and Boundaries
 
-账号状态和身份需要本轮明确授权的隔离实例、专用测试身份及可安全投影的独立参照；不读取真实用户配置、会话或凭据。登录/退出、账号资料变更、联网、真实密钥创建或轮换、云端访问及跨平台分别明确权限与预期终态。无测试账号、实际入口或可信参照时保留缺口，不把当前自然状态或源码注册当作功能通过。相关来源与目标版本边界见[构建依据](./build.md)。
+Account state and identity require an isolated instance, a dedicated test identity, and an independently observed reference that can be safely projected, all explicitly authorized for this run. Do not read real user configuration, sessions, or credentials. Explicitly scope permissions and expected end states for sign-in/sign-out, account profile changes, network access, real key creation or rotation, cloud access, and each platform. If there is no test account, actual entry point, or trusted reference, retain the gap; do not treat the naturally occurring current state or source registration as a passing feature. See [Build Basis](./build.md) for related sources and target-build boundaries.

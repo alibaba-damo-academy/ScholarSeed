@@ -1,60 +1,73 @@
-# 全局搜索
+<a id="全局搜索"></a>
+# Global Search
 
-搜索结果参考
+Search-results reference
 
-参考：macOS arm64，0.3.2 / 202611121104，2026-11-12；仅展示合成资料查询结果，不代表全部分类、空态或异常状态。
+Reference: macOS arm64, 0.3.2 / 202611121104, 2026-11-12; shows results from a synthetic resource query only, not all categories, the empty state, or an error state.
 
-目标版本合成资料搜索结果
+Synthetic-resource search results in the target version
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-13；展示当前项目合成文件的搜索命中，背景窗口较窄；单图不证明打开动作或其他分类。来源见[构建依据](./build.md)。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-13; shows search hits for synthetic files in the current project; the background window is narrow. The image alone does not prove the open action or other categories. See [build evidence](./build.md).
 
-合成资料搜索结果打开后的文档
+Document opened from synthetic-resource search results
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-12；展示 GSEARCH-006 的合成目标打开状态，单图不证明搜索与打开动作之间的关联，也不代表文献或对话命中。来源见[构建依据](./build.md)。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-12; shows the opened synthetic target for GSEARCH-006. The image alone does not prove the relationship between the search and open actions or a hit in literature or conversation. See [build evidence](./build.md).
 
-已核实的正常综合搜索、结果展示及打开行为已采用为v`0.3`需求；001的未核实入口/无项目范围及007的首查加载、失败反馈仍待确认，不批准范围回退或失败呈空组。
+Verified normal unified search, result display, and open behavior has been adopted as v`0.3` requirements. The unverified entry/scope-without-a-project in 001, and first-search loading and failure feedback in 007, remain unconfirmed; this does not approve scope fallback or failure shown as an empty group.
 
-从工作界面查找资料、文献或对话，并打开对应目标。语义入口为工作区搜索按钮及项目导航中的搜索入口；具体可达性待获准观察，不以内部状态打开搜索代替真实入口。
+Find resources, literature, or conversations from the work area and open the corresponding target. Semantic entries are the workspace search button and search entry in project navigation. Actual reachability must be observed with authorization; opening search through internal state is not a substitute for the real entry.
 
-## 输入与查看结果
+<a id="输入与查看结果"></a>
+## Enter a Query and View Results
 
-### 入口、模式与范围（GSEARCH-001 · v`0.3`）
-固定与条件：当前正常入口打开资料、文献、对话的综合搜索，输入框可输入查询；输入框中Escape或点击遮罩可关闭。仅文件模式尚未核实正常界面入口，不作为既定可进入要求。动态：项目范围来自当前工作项目，文献视图采用其文献项目筛选；无项目时搜索回退默认项目与最近文件跨项目展示的差异仍待确认，不将“全局”名称直接解释为检索全部项目。
+<a id="入口模式与范围gsearch-001--v03"></a>
+### Entry, mode, and scope (GSEARCH-001 · v`0.3`)
+Fixed and conditional: The current normal entry opens unified search for resources, literature, and conversations, with a query field. Escape in the field or clicking the overlay closes it. The normal UI entry for file-only mode is not verified, so entering that mode is not an established requirement. Dynamic: project scope comes from the current project. The literature view uses its literature-project filter. Without a project, search fallback to the default project and cross-project display of recent files remain unresolved; do not interpret the word “global” as automatically searching every project.
 
-### 空查询与最近文件（GSEARCH-002 · v`0.3`）
-动态：空白查询显示最近打开文件，按当前范围及有效项目引用取最近最多五项；文件名、项目/路径及打开时间与获准最近记录一致，时间按客户端语言和时区显示。无记录有空态，不要求出现五条；有最近记录也不等于文件当前仍可打开。
+<a id="空查询与最近文件gsearch-002--v03"></a>
+### Empty query and recent files (GSEARCH-002 · v`0.3`)
+Dynamic: An empty query shows recently opened files, up to five according to the current scope and valid project reference. File name, project/path, and opened time match the authorized recent-record reference; time is displayed according to the client's language and time zone. If there are no records, show an empty state; five items are not required. A recent record does not mean the file is still openable.
 
-### 分组结果与空组（GSEARCH-003 · v`0.3`）
-固定：综合结果按资料、文献、对话分组，各组独立显示结果或空态。动态：标题及适用副标题与同查询、同项目范围的公开命中对应；查询仅去除首尾空白，不能写成移除词中所有空格。不要求每次查询三组都有命中。
+<a id="分组结果与空组gsearch-003--v03"></a>
+### Grouped results and empty groups (GSEARCH-003 · v`0.3`)
+Fixed: Unified results are grouped into resources, literature, and conversations; each group shows results or its own empty state. Dynamic: Titles and applicable subtitles match public hits for the same query and project scope. The query is trimmed only at the beginning and end; it must not be described as removing all spaces within the query. Every group need not have a hit for every query.
 
-### 数量、更多与截断（GSEARCH-004 · v`0.3`）
-动态与轻量交互：各组数量对应公开计数，标为截断时显示加号，不把返回窗口长度冒充全部匹配数。每组初始最多三项，更多每次追加最多十项，直至已返回窗口展示完；窗口仍被截断时有相应说明，更多不表示已取尽全部库中结果。
+<a id="数量更多与截断gsearch-004--v03"></a>
+### Counts, More, and truncation (GSEARCH-004 · v`0.3`)
+Dynamic with lightweight interaction: Each group count matches the public count. If results are marked truncated, show a plus sign; do not present the returned window length as the total number of matches. Initially show at most three items per group; each More action adds at most ten, until the returned window has been displayed. If the window remains truncated, show a corresponding notice. More does not mean all results in the library have been fetched.
 
-### 命中高亮与可读性（GSEARCH-005 · v`0.3`）
-动态：结果标题及副标题中实际出现的查询片段按不区分大小写、非重叠区间高亮，保留原文大小写；不存在对应片段时不强造高亮。标题及摘要/路径能区分目标，长内容截断不冒充完整原文。
+<a id="命中高亮与可读性gsearch-005--v03"></a>
+### Hit highlighting and readability (GSEARCH-005 · v`0.3`)
+Dynamic: Query fragments that actually occur in result titles and subtitles are highlighted in non-overlapping, case-insensitive ranges while preserving original letter case. Do not fabricate highlights when no corresponding fragment exists. Titles and summaries/paths must distinguish the target. Truncated long content must not be presented as the complete original text.
 
-## 打开与更新
+<a id="打开与更新"></a>
+## Open and Refresh
 
-### 打开目标与关闭搜索（GSEARCH-006 · v`0.3`）
-动态与条件：点击资料命中打开对应资料，有正文定位信息时带入定位；文献命中打开对应详情；对话命中打开对应面板及适用消息位置，随后搜索关闭。结果须与本轮命中身份及项目范围一致，不以点击成功代替实际目标终态；仅在获准读取目标内容及最近访问变化时执行，不据跳转证明编辑、模型或任务行为通过。
+<a id="打开目标与关闭搜索gsearch-006--v03"></a>
+### Open a target and close search (GSEARCH-006 · v`0.3`)
+Dynamic and conditional: Clicking a resource hit opens the corresponding resource and carries over location information when body positioning is available; a literature hit opens the corresponding detail; a conversation hit opens the corresponding panel and, when applicable, message location. Search then closes. Results must match the hit identity and project scope in this run; successful clicking is not proof of the actual target state. Execute only when reading target content and recent-access changes are authorized; navigation does not prove editing, model, or task behavior.
 
-### 查询更新与异常边界（GSEARCH-007 · v`0.3`）
-动态与条件：换词或换范围后使用新查询结果，不由旧响应覆盖；新查询恢复分组初始展示数量，新结果落页后回结果区顶部。首查加载反馈及读取失败与真实零命中的区分仍为待确认语义/实现缺口，不能把失败呈空组批准为正确，也不据当前源码直接判产品不符合。
+<a id="查询更新与异常边界gsearch-007--v03"></a>
+### Query updates and error boundaries (GSEARCH-007 · v`0.3`)
+Dynamic and conditional: After changing the query or scope, use results for the new query; an old response must not overwrite them. A new query restores each group's initial display count, and after new results arrive, the result area returns to the top. First-search loading feedback and the distinction between a read failure and a genuine zero-hit result remain unresolved semantic/implementation gaps. Do not approve failure displayed as empty groups, and do not declare product nonconformance directly from current source.
 
-## 验证归属与数据
+<a id="验证归属与数据"></a>
+## Verification Ownership and Data
 
-七项的已采用正常分支归自动快评；未明确的入口、无项目范围及异常提示仍待确认，须在冻结前说明采用依据。基础数据需获准合成资料、题录及可区分的项目；最近文件、更多、截断和会话定位按真实数据前提选入，缺条件保留未覆盖，不缩要求追绿。
+Adopted normal branches of the seven items belong in automatic quick review. Unclear entry points, scope without a project, and error notices remain unconfirmed; state adoption evidence before freezing. Basic data requires authorized synthetic resources, records, and distinguishable projects. Select recent files, More, truncation, and conversation positioning only when their real-data prerequisites are met. If conditions are missing, record them as uncovered; do not lower requirements to force a pass.
 
-搜索可能读取资料正文及会话片段，不因为未点击结果就当作仅查文件名。文件Viewer、文献编辑、会话执行、模型调用及跨项目完整权限验证另属专项；本页不重复其业务判据。
+Search may read resource content and conversation snippets; do not assume that it searches only file names because no result was clicked. File viewers, literature editing, conversation execution, model calls, and full cross-project permission checks are separate specialties; this page does not duplicate their business criteria.
 
-## 发布快评层
+<a id="发布快评层"></a>
+## Release Quick-Review Layer
 
-采用v`0.3`的正常子要点：GSEARCH-001、003、005、006；仅代表下述范围，不代表这些ID全部细则通过。
+The adopted normal subpoints from v`0.3` are GSEARCH-001, 003, 005, and 006. This covers only the scope below and does not mean every detail of these IDs passes.
 
-仅在独立核明当前任务项目范围后，从正常综合搜索入口搜索已知合成文件名，核资源分组、可见命中及打开目标身份；此代表动作仅核一次已知资源的正常打开。已知文件名/相对路径是参照，不能把任意命中当作正确目标。
+Only after independently verifying the current task project scope, search a known synthetic file name through the normal unified-search entry. Check its resource group, visible hit, and the identity of the opened target. This representative action checks only normal opening of one known resource. The known file name/relative path is the reference; an arbitrary hit is not necessarily the correct target.
 
-必要参照：当前任务项目登记身份与[评测项目的 Markdown 原始样本](../../../../../examples/projects/evaluation/files/sample.md)隔离副本的实际路径和摘要；范围无法核明则本动作缺证停止，不自批。
+Required references: current task project registration and the actual path/digest of an isolated copy of the [Markdown source sample in the evaluation project](../../../../../examples/projects/evaluation/files/sample.md). If scope cannot be verified, stop this action with an evidence gap; do not self-approve it.
 
-## 专项层
+<a id="专项层"></a>
+## Specialized Layer
 
-本层未选：001仅文件入口/无项目回退/文献范围、最近文件、全部分组分页、高亮全矩阵及007失败/首查瞬态仍未选或待确认。原完整判据、稳定ID、版本和历史结果保留；未确认分支不因分层获批。
+Not selected in this layer: file-only entry/global fallback/literature scope in 001, recent files, all result-group pagination, the full highlighting matrix, and failure/first-search transient states in 007. The original full criteria, stable IDs, versions, and historical results remain; unconfirmed branches are not approved merely by this layering.

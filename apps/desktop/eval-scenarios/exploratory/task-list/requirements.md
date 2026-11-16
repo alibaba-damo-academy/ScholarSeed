@@ -1,49 +1,54 @@
-# 项目任务列表候选需求
+<a id="项目任务列表候选需求"></a>
+# Candidate Requirements for the Project Task List
 
-## 用途与入口
+<a id="用途与入口"></a>
+## Purpose and Entry Point
 
-项目工作区的任务列表用于查看当前项目任务并区分置顶任务。入口以设计映射为历史依据；目标版本的需求适用性尚待核实。本页是建设候选，不是本轮运行结果或已冻结评测标准。
+The task list in a project workspace is used to inspect tasks in the current project and distinguish pinned tasks. The design map is the historical source for the entry point; applicability of the requirements to the target version remains unverified. This page is a candidate specification, not a result from this run or a frozen evaluation standard.
 
-项目任务空态及新任务输入器
+Project task empty state and new-task input
 
-参考图来自 macOS 安装版 `0.3.2 / 202611121823 / preview` 的隔离项目自然空态，右侧为合成文档；不代表非空任务、置顶分组或任务动作已验证。来源与限制见[构建依据](./build.md)。
+Reference image from the natural empty state of an isolated project in the macOS installed build `0.3.2 / 202611121823 / preview`; the right pane shows a synthetic document. It does not verify a non-empty task list, pinned group, or task actions. See the [Build Basis](./build.md) for source and limitations.
 
-隔离项目非空任务及会话读回状态
+Isolated project with non-empty tasks and session readback state
 
-参考：同版本隔离项目，2026-11-13；展示一次真实任务的列表和重开后状态，不证明置顶、排序或其他任务动作。
+Reference: isolated project in the same build, 2026-11-13. Shows one real task in the list and its state after reopening; does not prove pinning, ordering, or other task actions.
 
-隔离项目多任务列表状态
+Isolated project with multiple tasks
 
-参考：macOS 安装版 `0.3.2` 隔离实例，2026-11-13；展示多个真实合成任务及一条回复，截图不证明完整目录或排序规则，构建和身份关联边界见[构建依据](./build.md)。
+Reference: isolated instance of macOS installed build `0.3.2`, 2026-11-13. Shows multiple real synthetic tasks and one reply. The screenshot does not prove the complete catalog or ordering rules. See the [Build Basis](./build.md) for build and identity-association boundaries.
 
-## 正常展示候选
+<a id="正常展示候选"></a>
+## Candidate Normal Display
 
-**任务范围与列表（TASK-LIST-CAND-001；需求版本待确认）**：在已核当前项目内，任务区域展示该项目的可见任务或与真实目录一致的空态；任务名称和选中状态与本轮可读的隔离任务目录对应。候选需核实目标版本入口及状态语义，不能用其他项目或预置结果代替。
+**Task scope and list (`TASK-LIST-CAND-001`; requirement version pending confirmation):** In the verified current project, the task area shows visible tasks for that project or an empty state consistent with the real catalog. Task names and selection match the isolated task catalog readable in this run. Verify the target-version entry point and state semantics; do not substitute another project or prepopulated results.
 
-**置顶分组（TASK-LIST-CAND-002；需求版本待确认）**：已确认的历史需求要求项目列表区分置顶与未置顶任务；有置顶任务时可见独立置顶分组，具体行身份和置顶状态与独立目录对应。历史需求依据及当前目标版本边界见[构建依据](./build.md)。
+**Pinned group (`TASK-LIST-CAND-002`; requirement version pending confirmation):** Confirmed historical requirements call for the project list to distinguish pinned from unpinned tasks. When pinned tasks exist, show a separate pinned group; row identities and pinned state match the independent catalog. See the [Build Basis](./build.md) for historical requirements and target-version boundaries.
 
-**项目归档任务及恢复（TASK-LIST-CAND-003；需求版本待确认）**：历史用户确认当前项目侧栏的归档区域默认收起，数量与真实归档目录对应；展开后可查看所属项目的归档任务，打开历史时只读、输入和提交不可用。对获准恢复的隔离任务，恢复后按同一任务身份核对归档及普通目录变化和只读状态解除；不以列表消失或提示成功单独代替独立目录读回。目标包适用性及真实完整窗口图待核，不涵盖删除、活动任务停止或恢复后的模型发送。
+**Archived project tasks and restore (`TASK-LIST-CAND-003`; requirement version pending confirmation):** Historical user confirmation says the Archived section in the current project's sidebar is collapsed by default and its count matches the real archived catalog. When expanded, it shows archived tasks belonging to that project. Opening history is read-only; input and submission are unavailable. For an authorized isolated task restored from the archive, use the same task identity to verify before/after changes in archived and ordinary catalogs and the end of read-only state. A missing list row or success notice alone is not an independent catalog readback. Target-build applicability and a complete real window screenshot remain unverified. This does not cover deletion, stopping an active task, or model sending after restore.
 
-**删除归档任务（TASK-LIST-CAND-007；需求版本待确认）**：历史用户确认项目侧栏的归档任务可沿用原确认流程直接删除。对获准的可丢弃隔离归档任务分别观察取消和确认，以同项目、同任务的独立归档及普通任务目录前后状态核对；取消不应删除，确认后应核实际删除终态，不以列表行消失或提示单独代替。删除的原始资料影响范围、失败语义、目标版本适用性及真实完整窗口图待核；不可逆删除和关联写入分别核授权，不以运行中任务删除或恢复结果代替。
+**Delete an archived task (`TASK-LIST-CAND-007`; requirement version pending confirmation):** Historical user confirmation says an archived task in the project sidebar can be deleted directly using the existing confirmation flow. For an authorized disposable isolated archived task, observe cancellation and confirmation separately and compare before/after archived and ordinary task catalogs for the same project and task. Cancellation must not delete; after confirmation verify the actual deletion end state. A missing row or notice alone is insufficient. The original-data impact scope, failure semantics, target-version applicability, and complete real window screenshot remain unverified. Separately authorize irreversible deletion and associated writes; do not substitute deleting or restoring a running task.
 
-**重命名任务（TASK-LIST-CAND-008；需求版本待确认）**：历史用户截图确认任务操作中有重命名入口；旧探索资产提出保存新标题并重新打开同一会话后保持，但完整保存语义尚未批准。候选验证需获准的真实隔离任务，先记录项目、会话 ID、旧标题及非空合成新标题，再经真实入口操作，以同 ID 的独立目录读回和重新打开结果核对身份及标题；仅菜单关闭或列表文字变化不证明持久结果。取消、空值、超长、重启及并发另列待确认专项；写入授权、目标包适用与完整窗口图待核。
+**Rename a task (`TASK-LIST-CAND-008`; requirement version pending confirmation):** Historical user screenshots confirm a rename entry point in task actions. An older exploration asset proposed saving a new title and retaining it when reopening the same conversation, but complete persistence semantics have not been approved. Candidate validation requires an authorized real isolated task. First record the project, session ID, old title, and a non-empty synthetic new title; perform the operation through the real entry point, then verify identity and title using an independent catalog readback for the same ID and reopening result. Closing the menu or changing list text alone does not prove persistence. Cancellation, empty value, excessive length, restart, and concurrency are separate scenarios pending confirmation. Write authorization, target-build applicability, and a complete window screenshot remain unverified.
 
-**置顶与取消（TASK-LIST-CAND-004；需求版本待确认）**：对获准隔离项目中的真实任务执行置顶及取消，分别以同项目、同任务身份的独立目录前后状态核对置顶标志，并确认该任务进入置顶分组、取消后回到普通分组；不以菜单反馈或分组外观单独证明写入。普通组内顺序应与同范围实际活动顺序参照一致。目标包适用性及非空、置顶状态的完整窗口图待核；重启保持、状态组合、异常及跨平台行为另列专项。
+**Pin and unpin (`TASK-LIST-CAND-004`; requirement version pending confirmation):** Pin and unpin a real task in an authorized isolated project. Use before/after independent catalog state for the same project/task identity to check the pinned flag, confirm the task enters the pinned group, and confirm it returns to the ordinary group after unpinning. Menu feedback or group appearance alone does not prove a write. Ordering within the ordinary group should match an actual activity-order reference for the same scope. Target-build applicability and complete non-empty/pinned-state window screenshots remain unverified; persistence across restart, state combinations, failures, and cross-platform behavior are separate scenarios.
 
-**运行中任务确认归档（TASK-LIST-CAND-005；需求版本待确认）**：历史用户需求要求确认归档运行中任务后自动停止，不再要求先单独中断。对获准隔离项目的真实运行任务，确认归档后以同一任务身份的独立运行状态和归档目录核对任务已停止且归档；确认框关闭、普通列表消失或提示成功不能单独证明停止。目标包适用性及真实完整窗口图待核；删除、失败恢复、队列细则及跨平台另列专项，不由本候选外推。
+**Confirm archive of a running task (`TASK-LIST-CAND-005`; requirement version pending confirmation):** Historical user requirements say confirming archive of a running task automatically stops it; a separate interrupt should not be required first. For a real running task in an authorized isolated project, after confirming archive, verify with independent running state and archived catalog for the same task identity that it has stopped and been archived. Closing the confirmation dialog, disappearance from the ordinary list, or a success notice alone does not prove it stopped. Target-build applicability and a complete real window screenshot remain unverified. Deletion, failure recovery, queue details, and cross-platform behavior are separate scenarios and are not implied by this candidate.
 
-**运行中任务确认删除（TASK-LIST-CAND-006；需求版本待确认）**：历史用户需求要求删除运行中任务前保留不可逆确认及原始资料保留说明，确认后自动停止，不再要求单独中断。对明确获准的可丢弃隔离任务，分别核取消后的任务状态，以及确认后同一任务的独立停止状态和目录删除结果；列表消失、确认框关闭或回执不能单独证明停止及删除。原始资料说明的具体覆盖范围尚待确认；可对预先指定的隔离合成资料另行记录前后身份和摘要，不据此外推所有对象的保留规则。目标包适用及真实完整窗口图待核，失败保护、队列和跨平台另列专项。
+**Confirm deletion of a running task (`TASK-LIST-CAND-006`; requirement version pending confirmation):** Historical user requirements say the irreversible confirmation before deleting a running task must explain retention of original materials, and confirmation automatically stops the task; a separate interrupt should not be required. For an explicitly authorized disposable isolated task, check task state after cancellation separately from the independent stopped state and catalog deletion result for the same task after confirmation. A missing list row, closed confirmation dialog, or receipt alone does not prove stop or deletion. The specific scope covered by the original-materials explanation remains to be confirmed. For predesignated isolated synthetic materials, before/after identities and digests may be recorded separately; do not generalize this to retention rules for all objects. Target-build applicability and complete real window screenshot remain unverified; failure protection, queue details, and cross-platform behavior are separate scenarios.
 
-上述候选仍须确认目标需求版本与目标包适用条件后才能冻结；源码或一次观察不自行批准异常和歧义。正常展示不要求预先执行置顶、创建或搜索动作，置顶、归档和恢复须另核写入授权。
+These candidates can be frozen only after confirming the target requirement version and target-build applicability. Source code or a single observation does not itself approve failure cases or ambiguity. Normal display does not require pre-executing pin, creation, or search actions; pinning, archive, and restore require separate authorization for writes.
 
-历史 `CHAT-HISTORY-01` 涉及重新打开已完成会话并读回消息和终态，任务列表可作为候选入口，但列表展示不等于历史读回；`CHAT-NEW-01` 的新会话身份建立也不等于列表空态或置顶分组。历史稳定 ID 与范围映射见[构建依据](./build.md)，不以候选 ID 替换历史 ID。
+Historical `CHAT-HISTORY-01` covers reopening a completed conversation and reading its messages and terminal state; the task list may be a candidate entry point, but list display does not equal history readback. The new conversation identity established by `CHAT-NEW-01` is also not equivalent to an empty list or pinned group. See the [Build Basis](./build.md) for historical stable-ID and scope mapping; candidate IDs do not replace historical IDs.
 
-## 数据与参照
+<a id="数据与参照"></a>
+## Data and References
 
-使用获准隔离项目及真实任务目录；检查非空和置顶分组时需准备可区分的真实任务及置顶状态，并获得相应准备和只读访问权限。准备事实须与待测动作分开，不能通过预置数据库或伪造会话结果代替真实任务。无任务时只能观察当前空态，不能宣称非空或置顶分组通过。
+Use an authorized isolated project and real task catalog. Checking non-empty and pinned groups requires distinguishable real tasks and pinned state, plus authorization to prepare and read them. Keep preparation evidence separate from the tested action; do not substitute a prepopulated database or fabricated conversation result for a real task. If there are no tasks, observe only the current empty state; do not claim that the non-empty list or pinned group passed.
 
-目录身份、项目范围、已选任务及置顶状态应有同实例、适当时点的独立参照；候选展示终态是当前项目列表与对应目录一致，空态仅对应目录确无可见任务。缺参照或版本依据保留缺口。目录读取可能伴随授权根同步，须先核隔离范围及副作用。
+Catalog identity, project scope, selected task, and pinned state need an independent reference from the same instance at an appropriate time. The candidate display end state is the current project list matching its catalog; empty state applies only when the catalog has no visible tasks. Retain a gap if the independent reference or version basis is missing. Reading the catalog may synchronize authorized roots; first check the isolated scope and side effects.
 
-## 专项与待确认
+<a id="专项与待确认"></a>
+## Focused Scenarios and Pending Confirmation
 
-置顶/取消、排序拖拽、重命名、归档与恢复写入、删除、分页游标、跨项目切换、异常恢复及重启保持分别核需求、数据和操作授权，不由展示符合推定通过。置顶候选需要至少两个可区分的真实隔离任务及同项目目录前后参照；`examples` 可提供项目原始资料，不预置任务。归档候选需要可区分的真实隔离任务及获准归档前后状态；运行中归档还需可独立核对的真实运行前态与停止终态，模型/工具、停止及归档写入权限分别确认。删除不可逆，须先核可丢弃隔离任务、精确影响范围及删除授权；仅涉及运行中任务时另核真实运行和停止授权，取消不等于确认删除授权。同项目、同任务身份的独立目录和历史原消息为参照，不能直接写数据库或伪造会话。任务搜索入口及结果、子任务折叠、当前包入口和不同状态任务语义尚需确认；本页不预设完整功能矩阵。
+Pin/unpin, drag reordering, rename, archive/restore writes, deletion, pagination cursors, switching projects, failure recovery, and persistence after restart each require separate requirement, data, and operation authorization; a display match does not imply they passed. Pinning requires at least two distinguishable real isolated tasks and before/after references to the same project catalog. `examples` may provide original project materials but does not prepopulate tasks. Archive candidates require distinguishable real isolated tasks and authorized before/after archive state. Archiving a running task also needs independently verifiable real running and stopped states; separately authorize model/tools, stopping, and archive writes. Deletion is irreversible: first verify a disposable isolated task, exact impact scope, and deletion authorization. If a running task is involved, separately authorize real execution and stopping; cancellation does not authorize confirmed deletion. Use independent catalog state for the same project/task identity and historical original messages as references. Do not write directly to a database or fabricate a conversation. The task-search entry point/results, collapsed subtasks, current-package entry point, and semantics for different task states still require confirmation; this page does not assume a complete feature matrix.

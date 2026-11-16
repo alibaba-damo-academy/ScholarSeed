@@ -1,56 +1,70 @@
-# 模型服务
+<a id="模型服务"></a>
+# Model Services
 
-目标版本模型服务参考
+## Target-Version Model-Services Reference
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-12；仅展示未配置厂商的自然状态，不证明连接、配置或调用。来源与摘要见[构建依据](./build.md#202611121823-目标版本参考图)。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-12. Shows the natural state with no provider configured; does not prove connection, configuration, or invocation. See the [Build Basis](./build.md#202611121823-目标版本参考图) for source and digest.
 
-目标版本模型配置参考
+Target-version model-configuration reference
 
-参考：同一目标版本，2026-11-12；展示内置模型的自然配置，不证明参数保存、生效或调用。
+Reference: same target build, 2026-11-12. Shows the natural configuration for built-in models; does not prove parameter saving, effect, or invocation.
 
-查看模型连接及模型配置。入口：主界面头像菜单 → 设置 → 模型服务；页面内有“服务”“配置”标签。
+Inspect model connections and model configuration. Entry point: main interface avatar menu → Settings → Model Services (`模型服务`); the page has “服务” (“Services”) and “配置” (“Configuration”) tabs.
 
-![模型服务参考](./reference.png)
+![Model services reference](./reference.png)
 
-![模型配置参考](./configuration.png)
+![Model configuration reference](./configuration.png)
 
-补充参考：[厂商列表底部](./providers.png)、[横向滚动后的参数区域](./parameters.png)。来源：macOS arm64，0.3.0 / 202610281438，2026-10-28；连接、模型、档位和数量为当时数据，不固定后续取值。
+Additional references: [bottom of provider list](./providers.png), [parameter area after horizontal scrolling](./parameters.png). Source: macOS arm64, 0.3.0 / 202610281438, 2026-10-28. Connections, models, tiers, and counts are data from that time, not fixed later values.
 
-## 查看连接
+<a id="查看连接"></a>
+## Inspect Connections
 
-### 服务目录（MODEL-OBS-001 · v`0.3`）
-固定：页面标题、说明、服务/配置标签、连接搜索和添加入口清楚。动态：服务列表的厂商/连接名称、启用连接数和列表总数与当前公开厂商目录及已有连接一致，不固化数量；未配置厂商可显示未添加状态。
+<a id="服务目录model-obs-001--v03"></a>
+### Provider Directory (MODEL-OBS-001 · v`0.3`)
 
-### 当前详情（MODEL-OBS-002 · v`0.3`）
-条件：没有选择连接时，右侧显示选择或添加连接的引导；自然状态已选连接时，API详情展示对应名称、地址、密钥遮蔽及模型区域，OAuth详情展示对应订阅连接信息。读取中与加载失败须有对应提示，不能把它们当作稳定空态。
+Fixed: Page title, description, Services/Configuration tabs, connection search, and Add entry point are clear. Dynamic: Provider/connection names, number of enabled connections, and total list count match the current public provider directory and existing connections; do not hardcode counts. An unconfigured provider may show a not-added state.
 
-## 查看配置
+<a id="当前详情model-obs-002--v03"></a>
+### Current Details (MODEL-OBS-002 · v`0.3`)
 
-### 模型与参数布局（MODEL-OBS-003 · v`0.3`）
-固定：“配置”标签内展示保存入口及模型名称、思考深度、可见性、上下文窗口列。动态：模型行对应当前可用及隐藏模型目录，名称、来源不与历史参考图逐字绑定；无模型时不要求虚构行。
+Conditional: With no connection selected, the right pane shows guidance to select or add one. When a connection is naturally selected, API details show the corresponding name, address, masked key, and model area; OAuth details show the corresponding subscription connection information. Loading and load failure have corresponding messages and must not be treated as a stable empty state.
 
-### 能力与当前偏好（MODEL-OBS-004 · v`0.3`）
-动态/条件：支持可选思考档位的模型，当前显示值采用有效的已保存档位，未保存或无效时采用模型目录默认档位；无可选档位时展示固定或尚未确认的能力说明。内置模型显示为可见且不可切换，其他模型可见性对应当前目录；上下文窗口仅核参数入口与刻度展示，不把它作为实际模型容量或已生效值。
+<a id="查看配置"></a>
+## Inspect Configuration
 
-## 发布快评层
+<a id="模型与参数布局model-obs-003--v03"></a>
+### Model and Parameter Layout (MODEL-OBS-003 · v`0.3`)
 
-采用v`0.3`的正常子要点：MODEL-OBS-001–004；仅代表下述范围，不代表这些ID全部细则通过。
+Fixed: The Configuration tab displays a Save entry point and columns for model name, reasoning effort, visibility, and context window. Dynamic: Model rows correspond to the current available and hidden model directory. Do not bind names/source verbatim to the historical reference image; do not fabricate rows when there are no models.
 
-模型服务与配置的主要区域、服务目录/连接数量及当前自然详情应与公开目录和获准配置最小字段一致；模型行的名称、推理强度、可见性及上下文说明可辨，不把上下文显示当实际容量证明。
+<a id="能力与当前偏好model-obs-004--v03"></a>
+### Capabilities and Current Preferences (MODEL-OBS-004 · v`0.3`)
 
-必要参照：按目标实例实际契约核公开厂商、连接、可用/隐藏模型与推理偏好最小投影；[旧包读取记录](build.md#当前制品复核)仅作线索，无选中项按原002自然引导核对。
+Dynamic/conditional: For models with selectable reasoning tiers, the displayed value is the effective saved tier; if no valid value is saved, use the model directory's default tier. If there are no selectable tiers, show fixed capability information or information whose exact meaning remains to be confirmed. Built-in models appear visible and cannot be toggled; other model visibility matches the current directory. For context window, inspect only the control entry and scale display; do not treat it as actual model capacity or an effective value.
 
-## 专项层
+<a id="发布快评层"></a>
+## Release Quick-Review Layer
 
-本层未选：新增连接、OAuth/API凭据、连接测试、参数修改保存及模型调用。原完整判据、稳定ID、版本和历史结果保留；未确认分支不因分层获批。
+Adopted normal v`0.3` subcriteria: MODEL-OBS-001–004. This covers only the scope below, not every detail under these IDs.
 
-## 模型配置与生效候选专项
+The main areas for model services and configuration, provider directory/connection counts, and naturally selected current details should match the public directory and authorized minimum configuration fields. Model-row names, reasoning effort, visibility, and context explanation should be discernible; context display does not prove actual capacity.
 
-以下为历史需求线索，均未自动纳入当前目标版本的已采用范围；`@` 后数字为历史资产修订，不是产品需求版本。目标包适用性、需求版本与采用状态待确认；既有展示快评不证明配置、保存或模型调用成功。
+Required references: check minimum projections for public providers, connections, available/hidden models, and reasoning preferences against the target instance's actual contract. The [old-package read record](build.md#当前制品复核) is only a clue. When no item is selected, verify the original MODEL-OBS-002 natural guidance state.
 
-- **服务配置与目录（历史 `MODEL-CONFIG-01@5`）**：在获准隔离配置中通过真实表单保存指定测试服务；独立核对重新打开的配置及目标模型进入可选目录，密钥不以明文回显。只看空表单或内置模型不能证明保存与连接；真实凭据、外部端点和连接探测须另获授权，不记录完整密钥。
-- **思考强度（历史 `MODEL-REASONING-01@2`）**：在支持选项的模型上更改并保存获准档位，重新打开设置和新任务时核对同一模型显示与独立保存参照一致，其他模型不被串改；界面一致不证明供应商接受该参数。模型调用另需授权。
-- **上下文窗口（历史 `MODEL-CONTEXT-01@2`）**：在可丢弃隔离配置中选择、保存并重新打开，比较所选值与产品接收状态；不把控件显示或保存提示直接当作真实生效。当前是否支持持久化及目标版本适用性待确认，不能以实现现状或截图更改历史候选。
-- **会话模型切换（历史 `CHAT-MODEL-SWITCH-01@3`）**：在已有两个获准可用模型的隔离任务中选择目标模型，观察下一真实回合的模型身份与界面选择对应；只有选择器变化不构成成功。需要模型调用、费用和任务写入授权，不预设模型输出。
+<a id="专项层"></a>
+## Focused Scenarios
 
-测试使用专用测试账户、隔离模型配置、受控端点和非秘密独立参照；不复制真实用户密钥或配置。可选用 `examples` 中的合成原始资料作为任务输入，但其存在不证明模型已连接或回合已执行。当前完整配置/重新打开及模型切换真实窗口截图、测试端点和权限均缺；不得用既有展示图、模拟响应或预填结果代替。
+Not selected in this layer: adding connections, OAuth/API credentials, connection testing, saving parameter changes, and model invocation. Preserve original full criteria, stable IDs, versions, and historical results; layering does not authorize unconfirmed branches.
+
+<a id="模型配置与生效候选专项"></a>
+## Candidate Focused Scenarios for Model Configuration and Effect
+
+The following are historical requirement clues and are not automatically included in the adopted scope for the current target version. Numbers after `@` are historical asset revisions, not product requirement versions. Target-build applicability, requirement version, and adoption remain unconfirmed. The existing display quick review does not prove configuration, saving, or model invocation succeeded.
+
+- **Service configuration and directory (historical `MODEL-CONFIG-01@5`):** Save a specified test service through the real form in an authorized isolated configuration; independently verify the reopened configuration and that the target model appears in the selectable directory. Do not echo the key in plaintext. An empty form or built-in model alone does not prove saving or connection. Real credentials, external endpoints, and connection probes require separate authorization; do not record full keys.
+- **Reasoning effort (historical `MODEL-REASONING-01@2`):** On a model supporting selectable options, change and save an authorized tier. Reopen settings and start a new task; verify the same model displays the selected tier in line with an independent saved reference, without changing other models. UI consistency does not prove that the provider accepted the parameter. Model invocation requires separate authorization.
+- **Context window (historical `MODEL-CONTEXT-01@2`):** In a disposable isolated configuration, select, save, and reopen a value, then compare the selected value with the state received by the product. A control display or save notice alone does not prove real effect. Whether persistence is supported and whether it applies to the target version remain unconfirmed; do not change this historical candidate based on current implementation or screenshots.
+- **Switch model for a conversation (historical `CHAT-MODEL-SWITCH-01@3`):** In an isolated task with two authorized available models, select the target model and observe the model identity of the next real turn against the UI selection. A selector change alone is not success. Requires authorization for model invocation, cost, and task writes; do not preselect model output.
+
+Use a dedicated test account, isolated model configuration, controlled endpoint, and non-secret independent references. Do not copy real user keys or configuration. Synthetic original materials under `examples` may be used as task input, but their presence does not prove connection or an executed turn. Complete real-window screenshots of configuration/reopen and model switching, test endpoint, and permissions are missing; do not substitute existing display images, simulated responses, or prefilled results.

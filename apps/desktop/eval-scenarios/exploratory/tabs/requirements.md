@@ -1,73 +1,89 @@
-# 多标签与分屏
+<a id="多标签与分屏"></a>
+# Tabs and Split View
 
-分屏调整前完整窗口参考
+Full-window reference before adjusting split view
 
-分屏调整后完整窗口参考
+Full-window reference after adjusting split view
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-13；展示隔离项目中合成文档的分屏调整前后状态，不单凭截图证明拖动过程、标签排序或其他专项通过。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-13; shows before/after split-view adjustment with synthetic documents in an isolated project. The screenshots alone do not prove the drag operation, tab reordering, or success of any other specialty scenario.
 
-目标版本分屏完整窗口参考
+Full-window split-view reference for the target version
 
-参考：macOS arm64，0.3.2 / 202611121823 / preview，2026-11-12；显示同一合成文档的双分屏状态，不单凭截图证明切换、拖动或编辑传播。
+Reference: macOS arm64, 0.3.2 / 202611121823 / preview, 2026-11-12; shows two panes with the same synthetic document. The screenshot alone does not prove switching, dragging, or edit propagation.
 
-分屏页面参考
+Split-view page reference
 
-参考：macOS arm64，0.3.2 / 202611121104，2026-11-12；只展示合成文档分屏，不代表排序、编辑传播或关闭保护。
+Reference: macOS arm64, 0.3.2 / 202611121104, 2026-11-12; shows only synthetic documents in split view, not reordering, edit propagation, or close protection.
 
-已核实的正常标签、布局、共享及关闭保护行为已采用为v`0.3`需求；003编辑传播及008属写入专项，须核当轮授权；005无效/超限落点及008保存失败等异常分支仍待确认。
+Verified normal tab, layout, shared-view, and close-protection behavior has been adopted as v`0.3` requirements. Editing propagation in 003 and 008 are write-operation specialties and require authorization for the current run. Invalid/over-limit drop destinations in 005 and save-failure branches in 008 remain unconfirmed.
 
-在项目工作台打开多个文档、切换标签并安排窗格。语义入口为资料文件的正常打开、工作台新标签按钮及文档标签菜单；具体可达性待获准页面观察核实。
+Open multiple documents in the project workbench, switch tabs, and arrange panes. Semantic entries include normally opening a resource file, the New Tab button in the workbench, and the document tab menu. Actual reachability must be checked by observing the page under authorization.
 
-## 打开与切换
+<a id="打开与切换"></a>
+## Open and Switch
 
-### 标签入口与身份（TABS-OBS-001 · v`0.3`）
-固定与动态：正常打开文件或新建空白标签后，标签标题、选中态与实际内容对应；同一窗格重复打开同一文档的相同视图时聚焦已有标签，不无故复制。默认标签依当前业务视图和工作台状态出现，不要求始终显示隐藏的总览标签。
+<a id="标签入口与身份tabs-obs-001--v03"></a>
+### Tab entry and identity (TABS-OBS-001 · v`0.3`)
+Fixed and dynamic: After normally opening a file or creating a blank tab, the tab title and selected state correspond to the actual content. Reopening the same document view in the same pane focuses the existing tab rather than creating an unnecessary duplicate. Default tabs appear according to the current business view and workbench state; a hidden overview tab is not required to remain visible at all times.
 
-### 切换与干净关闭（TABS-OBS-002 · v`0.3`）
-动态与轻量交互：切换标签显示对应文档；当前、其它、左侧、右侧及全部关闭按实际标签组作用，固定不可关闭标签不被误关。干净文档关闭后有相应剩余标签或空工作面，不把关闭当作删除源文件。
+<a id="切换与干净关闭tabs-obs-002--v03"></a>
+### Switching and closing clean tabs (TABS-OBS-002 · v`0.3`)
+Dynamic with lightweight interaction: Switching tabs displays the corresponding document. Close Current, Others, Left, Right, and All act on the actual tab group; fixed tabs that cannot be closed are not closed by mistake. After closing a clean document, the remaining tabs or empty work area are appropriate. Closing a tab does not delete its source file.
 
-### 同文档多视图与共享（TABS-OBS-003 · v`0.3`）
-动态与条件：同文档拆分后两窗身份及初始内容对应同一公开文档，关闭其中一个不误关另一个；这不证明共享编辑已验证。编辑传播专项保留：在获准可编辑合成副本的一窗修改后，另一支持该内容展示的视图反映同一修改，不生成互不相干的文档副本。
+<a id="同文档多视图与共享tabs-obs-003--v03"></a>
+### Multiple views of one document and sharing (TABS-OBS-003 · v`0.3`)
+Dynamic and conditional: After splitting one document, both panes identify and initially display the same public document. Closing one does not mistakenly close the other. This does not prove shared editing has been verified. The edit-propagation specialty remains: after modifying an authorized editable synthetic copy in one pane, another view that supports displaying that content reflects the same change, without creating unrelated document copies.
 
-## 安排文档窗格
+<a id="安排文档窗格"></a>
+## Arrange Document Panes
 
-### 拆分与能力限制（TABS-OBS-004 · v`0.3`）
-条件：支持拆分的文档可通过向右或向下拆分新增同文档投影视图，原视图保留；最多两行、两列且四个非空文档窗格，不能无限增加。实际Viewer不允许移动或拆分时不要求出现可执行入口，不以扩展名保证全部文件均可分屏；侧栏和AI面板不计作文档窗格。
+<a id="拆分与能力限制tabs-obs-004--v03"></a>
+### Splitting and capability limits (TABS-OBS-004 · v`0.3`)
+Conditional: A document that supports splitting can add a view of the same document by splitting right or down while retaining the original view. The limit is two rows, two columns, and four non-empty document panes; panes cannot be added indefinitely. If the actual viewer does not allow moving or splitting, an actionable entry is not required. A matching file extension does not guarantee every file can be split. Sidebars and AI panels do not count as document panes.
 
-### 拖动、排序与移动（TABS-OBS-005 · v`0.3`）
-动态与轻量交互：标签内拖动改变顺序，跨窗格移动及边缘/中央落点与可见目标一致；移动原标签不等于复制同文档视图。无效或超过布局上限的落点不产生额外窗格或丢失标签，来源窗格移空后的布局相应收敛。
+<a id="拖动排序与移动tabs-obs-005--v03"></a>
+### Dragging, reordering, and moving (TABS-OBS-005 · v`0.3`)
+Dynamic with lightweight interaction: Dragging within a tab group changes its order. Moving across panes and dropping at an edge or center matches the visible destination. Moving the original tab is not the same as copying a view of the same document. An invalid or over-limit destination does not create extra panes or lose a tab; when its source pane becomes empty, the layout contracts accordingly.
 
-### 调整与可读性（TABS-OBS-006 · v`0.3`）
-动态与轻量交互：拖动分隔条调整相应窗格，各窗格仍有可识别内容和活动标签，当前焦点与实际操作窗格一致。支持的窗口范围内，长标题可辨、标签与关键操作可达；不以截图像素写死窗格宽高，也不要求低于原生窗口下限的手机式布局。
+<a id="调整与可读性tabs-obs-006--v03"></a>
+### Adjustment and readability (TABS-OBS-006 · v`0.3`)
+Dynamic with lightweight interaction: Dragging a divider adjusts the corresponding panes. Each pane retains identifiable content and an active tab, and focus matches the pane actually operated. Within supported window sizes, long titles remain identifiable and tabs/key actions remain reachable. Do not hard-code pane width/height in screenshot pixels or require a phone-style layout below the native window minimum.
 
-## 返回与保护内容
+<a id="返回与保护内容"></a>
+## Return and Protect Content
 
-### 项目返回与布局（TABS-OBS-007 · v`0.3`）
-动态与条件：同进程离开项目再返回时，对照离开前可见记录恢复该项目的文档标签、活动文档及窗格布局，不串用另一项目。文档分屏的运行内存与项目工作台/对话外壳的持久布局分开判断，不据切换成功承诺重启后恢复全部文档和窗格。
+<a id="项目返回与布局tabs-obs-007--v03"></a>
+### Returning to a project and its layout (TABS-OBS-007 · v`0.3`)
+Dynamic and conditional: After leaving a project and returning in the same process, compare with the visible record from before leaving; restore that project's document tabs, active document, and pane layout without mixing in another project's state. Judge the in-process memory for document split view separately from the persistent layout of the project workbench/conversation shell. Successful switching does not promise that all documents and panes restore after restart.
 
-### 未保存关闭保护（TABS-OBS-008 · v`0.3`）
-条件专项：使用可丢弃、获准编辑的文档，按共享引用数和自动保存条件判断关闭保护；关闭最后一个未保存引用时不能静默丢失改动，取消保留编辑，保存成功后才关闭，保存失败不冒充成功。仍有共享视图或自动保存已成功时不强求同一确认框；放弃仅在明确获准时执行，不能用脏标记是否可见替代未保存状态判断。
+<a id="未保存关闭保护tabs-obs-008--v03"></a>
+### Unsaved-close protection (TABS-OBS-008 · v`0.3`)
+Conditional specialty: Use a disposable, authorized editable document and assess close protection according to the number of shared references and automatic-save conditions. Closing the last unsaved reference must not silently lose edits; Cancel retains the edits, and the tab closes only after a successful save. A save failure must not appear successful. Do not require the same confirmation dialog when a shared view remains or automatic saving has already succeeded. Discard only with explicit authorization; visibility of a dirty marker is not a substitute for determining whether changes remain unsaved.
 
-## 验证归属与数据
+<a id="验证归属与数据"></a>
+## Verification Ownership and Data
 
-快评范围为001–007已采用的展示与干净文档动作，未确认异常分支不据此纳入；003编辑传播分支及008为授权专项，需要可丢弃副本及编辑、保存、放弃等对应权限，在执行前明确选入分支与计数。两窗初始文本一致不能将003编辑传播标为通过，首批只读也不退役008或将未执行专项追认为完成。
+The quick-review scope is adopted display and clean-document actions for 001–007; unconfirmed abnormal branches are not included on that basis. The edit-propagation branch in 003 and 008 are authorized specialties requiring a disposable copy and the corresponding edit/save/discard permissions. Select the branches and counting rules before execution. Identical initial text in two panes cannot mark 003 edit propagation as passed; an initial read-only run does not retire 008 or reclassify an unexecuted specialty as complete.
 
-基本场景需至少两份可打开合成文档，跨项目返回需两个可区分项目；未具备时保留未覆盖。008持有关闭保护判据，后续文档保存基线复用而非复制；本页不覆盖完整保存、Viewer内容、模型或文件管理业务。
+The basic scenario requires at least two openable synthetic documents. Returning across projects requires two distinguishable projects. If these prerequisites are unavailable, record the scenario as uncovered. 008 owns the close-protection criteria; later document-saving baselines reuse them rather than duplicating them. This page does not cover complete saving, viewer content, models, or file-management behavior.
 
-## 发布快评层
+<a id="发布快评层"></a>
+## Release Quick-Review Layer
 
-沿用原v`0.3`已采用的TABS-OBS-001–007正常展示与干净文档动作范围，不因上一轮缺证缩减：核打开/重复聚焦、标签切换与干净关闭（001/002）；核支持文档的拆分及同文档初始投影（003/004），两窗内容均与原文相符；核正常排序/移动与分隔条调整后的标签、内容及布局对应（005/006）；核同进程离开项目再返回后的原标签、活动文档与窗格恢复（007）。具体方向和支持条件按原正文冻结，不要求对所有落点与布局组合穷举。
+Carry forward the originally adopted normal display and clean-document actions for TABS-OBS-001–007 in v`0.3`; do not narrow them because of evidence gaps in a previous run. Check opening/re-focusing an already open document, tab switching, and clean closing (001/002); split supported documents and compare initial views of the same document (003/004); check that normal reordering/moving and divider adjustment correspond to the tabs, content, and layout (005/006); and check restoration of tabs, active document, and panes after leaving and returning to a project in the same process (007). Freeze specific directions and capability conditions from the original text; exhaustive testing of every destination and layout combination is not required.
 
-必要参照：共享评测项目的[overview.md](../../../../../examples/projects/evaluation/files/overview.md)与[detail.txt](../../../../../examples/projects/evaluation/files/notes/detail.txt)获准隔离副本、任务项目/路径映射、动作前可见标签与布局；跨项目返回仍需两个可区分项目。数据准备不等于导入功能测试，导入由人工确认。数据、能力或动作缺证时如实保留，不改用内部状态，不以两窗初始一致证明编辑传播。
+Required references: authorized isolated copies of shared example-project [overview.md](../../../../../examples/projects/evaluation/files/overview.md) and [detail.txt](../../../../../examples/projects/evaluation/files/notes/detail.txt), project/path mapping, and the visible tabs/layout before each action. Cross-project return still requires two distinguishable projects. Preparing data is not an import test; a human confirms import. If data, capability, or action evidence is missing, record the gap; do not switch to internal state or claim edit propagation from identical initial content in both panes.
 
-## 专项层
+<a id="专项层"></a>
+## Specialized Layer
 
-### 页签溢出列表（`TABS-OVERFLOW-CAND-001`；需求版本待确认）
+<a id="页签溢出列表tabs-overflow-cand-001需求版本待确认"></a>
+### Tab overflow list (`TABS-OVERFLOW-CAND-001`; requirements version to be confirmed)
 
-历史用户截图与增量反馈要求页签压缩到图标仍无法容纳时，在全屏按钮左侧提供所有页签列表。以同一获准窗口内可区分的实际页签身份和当前选中项为参照，核溢出入口、列表及选择后的目标；图标可容纳时不由本候选推断入口必须出现。目标包需求适用、选择目标和需求版本待核；窄窗口、主题、跨平台及窗口布局变化分别验证，不将历史开发实例结果当作本包通过。
+Historical user screenshots and follow-up feedback require a list of all tabs to the left of the full-screen button when tabs can no longer fit even after collapsing to icons. Use distinguishable real tab identities and the selected item in the same authorized window as references; check the overflow entry, list, and destination after selection. This candidate does not imply that the entry must appear when the tabs fit as icons. Applicability to the target package, selection target, and requirements version remain to be verified. Verify narrow windows, themes, cross-platform behavior, and window-layout changes separately; do not present results from historical development instances as a pass for this package.
 
-页签溢出列表自然状态
+Natural tab-overflow-list state
 
-参考：macOS arm64 `0.3.2 / 202611121823 / preview`，2026-11-13；隔离项目缩窄分屏后的真实列表，未选择菜单项，不证明目标切换、排序或正式评测通过。
+Reference: macOS arm64 `0.3.2 / 202611121823 / preview`, 2026-11-13; the real list after narrowing split view in an isolated project. No menu item was selected, so the image does not prove target switching, reordering, or formal evaluation acceptance.
 
-原001–007的全部关闭菜单、四窗极限及所有落点/窄窗组合不由一次正常动作覆盖；003共享编辑、008未保存保护仍需写入专项授权。正常移动、调整及项目返回并未移出快评；本层不证明所有ID完整细则通过，不改变自动资格或异常待确认状态。
+A single normal action does not cover all close-menu cases, four-pane limits, or every drop target/narrow-window combination in 001–007. Shared editing in 003 and unsaved-close protection in 008 still require write-specialty authorization. Normal moving, adjustment, and project return remain in quick review. This layer does not prove that every detail of every ID passes or change automated eligibility or unconfirmed abnormal states.

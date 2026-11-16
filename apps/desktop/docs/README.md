@@ -1,9 +1,11 @@
+<a id="desktop-设计规范"></a>
 # Desktop Design Standards
 
 This directory is the authoritative source for the local architecture and design rules of `apps/desktop`. The root [knowledge index](../../../docs/index.md) and [ownership guide](../../../docs/architecture/ownership.md) maintain cross-system boundaries and routes into this directory. Dynamic facts, such as component counts, token inventories, and debt statistics, are generated from source and must not be copied into manually maintained standards.
 
 For day-to-day UI development, read [DESIGN.md](../DESIGN.md) first, then use the standards below for the page and task at hand. Consult the [component assets and reuse guide](design/assets.md) or search the [complete asset inventory](_generated/components.md) for usage.
 
+<a id="路由"></a>
 ## Routes
 
 | Task | Required reading |
@@ -27,6 +29,7 @@ For day-to-day UI development, read [DESIGN.md](../DESIGN.md) first, then use th
 
 Product operation: [Built-in browser and Playwright CDP](browser.md). Required for development: [Native web pages and product overlay design constraints](browser.md#原生网页与产品浮层开发设计约束), covering CSS layering limits, tooltip lifetimes, native mouse hit-testing tradeoffs, and regression paths.
 
+<a id="状态词与强度"></a>
 ## Status Terms and Strength
 
 - `current`: a fact present in source with an identifiable reference.
@@ -34,6 +37,7 @@ Product operation: [Built-in browser and Playwright CDP](browser.md). Required f
 - `gap`: a known difference between the current implementation and the goal; do not describe it as an existing capability.
 - `advisory`: recommended direction; SHOULD/MAY do not represent gates.
 
+<a id="派生库存"></a>
 ## Generated Inventories
 
 - [Component inventory](_generated/components.md)
@@ -42,12 +46,14 @@ Product operation: [Built-in browser and Playwright CDP](browser.md). Required f
 
 `pnpm ops ci check docs desktop --write` updates these inventories from source only. `pnpm ops ci check docs desktop` checks entry points, required sections, links, generated content, UI import and dependency boundaries, and the style ratchet. Generation does not change the baseline; baseline changes require separate review and may only tighten it. `registry.json` is the local documentation contract and does not duplicate root Wiki frontmatter.
 
+<a id="更新原则"></a>
 ## Update Principles
 
 Keep architecture designs in `architecture/`. Place execution plans in `work/plan/` and link to the corresponding architecture design instead of creating a separate overall design in the plan.
 
 Manually maintained standards describe enduring invariants, ownership, decision rationale, and gates. Dynamic inventories belong only in `_generated/`. Update the corresponding gate when rules change, and regenerate inventories when dynamic source facts change. Generated files carry a source and do-not-edit notice at the top.
 
+<a id="设计文档与证据归档"></a>
 ## Design Documents and Evidence Archives
 
 `DESIGN.md` maintains the visual direction summary, page index, and reading workflow; this directory maintains detailed rules and per-frame analysis. Do not define the same values in both places. MasterGo operation parameters are in the [tooling guide](design/tooling.md), which is needed only when fetching data or editing the canvas.
