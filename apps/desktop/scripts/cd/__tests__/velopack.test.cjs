@@ -4,8 +4,19 @@ const crypto = require('node:crypto')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
+const { execFileSync } = require('node:child_process')
+const { developmentPython } = require('../../../../../scripts/shared/python.cjs')
 const { packVersion, compareVersions, envelope, packArguments, releaseManifest, packageKeys } = require('../velopack.cjs')
 const { libraries } = require('../../../native/libraries.cjs')
+const INVENTORY_TEST_TIMEOUT_MS = 30_000
+
+test('Velopack inventory rejects archive aliases and binds uncompressed bytes', () => {
+  const root = path.resolve(__dirname, '../../../../..')
+  execFileSync(developmentPython(root), ['-I', '-B', path.join(__dirname, 'velopack_test.py')], {
+    cwd: root, stdio: 'pipe', timeout: INVENTORY_TEST_TIMEOUT_MS,
+  })
+})
+
 test('Velopack versions preserve product ordering and same-version build ordering', () => {
   assert.equal(packVersion('0.2.1', '202610161200'), '0.2.1-build.202610161200')
   assert.equal(compareVersions('0.2.1-build.202610161200', '0.2.1-build.202610161201'), -1)

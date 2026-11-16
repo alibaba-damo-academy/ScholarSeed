@@ -41,7 +41,7 @@ class ConnectorStore:
                 try:
                     descriptor = directory.open_private(STATE_FILENAME, os.O_RDONLY)
                 except FileNotFoundError:
-                    state = {"entries": {}, "clients": {}}
+                    state: dict[str, dict] = {"entries": {}, "clients": {}}
                 else:
                     with os.fdopen(descriptor, "rb") as stream:
                         before = os.fstat(stream.fileno())

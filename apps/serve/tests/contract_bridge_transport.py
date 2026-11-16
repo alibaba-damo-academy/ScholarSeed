@@ -88,6 +88,78 @@ def slow_backend(status=200, payload=None, received_requests=None):
 
 
 class BridgeTransportContract(unittest.TestCase):
+    def test_request_file_sends_complete_large_body_without_model_copying(self):
+        payload = {
+            "request_id": "file-data",
+            "slot": "rich-content.compose",
+            "title": "Plot",
+            "data": {"text": "数值" * 10000},
+        }
+        received_requests = []
+        with tempfile.TemporaryDirectory() as directory:
+            workdir = Path(directory)
+            source = workdir / "数据 空格.json"
+            source.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            for path in (source.name, str(source)):
+                with (
+                    slow_backend(received_requests=received_requests),
+                    patch("service.chat.runtime.tools.BRIDGE_TIMEOUT_SECONDS", 1),
+                ):
+                    result = asyncio.run(
+                        execute_service_tool(
+                            {
+                                "capability": "component",
+                                "operation": "display",
+                                "request_file": path,
+                            },
+                            session_id="session",
+                            token="token",
+                            local_socket=None,
+                            workdir=workdir,
+                            callback_request_id="callback",
+                            callback_turn_id="turn",
+                        )
+                    )
+                self.assertTrue(result["ok"], result)
+            self.assertEqual(received_requests, [payload, payload])
+
+    def test_request_file_rejects_ambiguous_inputs_and_invalid_or_outside_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workdir = Path(directory)
+            (workdir / "invalid.json").write_text("not JSON", encoding="utf-8")
+            (workdir / "array.json").write_text("[]", encoding="utf-8")
+            arguments = {"capability": "component", "operation": "display"}
+            cases = [
+                arguments,
+                {**arguments, "request": {}, "request_file": "invalid.json"},
+                *(
+                    {**arguments, "request_file": path}
+                    for path in (
+                        "",
+                        1,
+                        "../outside.json",
+                        "missing.json",
+                        "invalid.json",
+                        "array.json",
+                        str(workdir.parent / "outside.json"),
+                    )
+                ),
+            ]
+            with patch("service.chat.runtime.tools.httpx.AsyncClient") as client:
+                for case in cases:
+                    with self.subTest(arguments=case):
+                        result = asyncio.run(
+                            execute_service_tool(
+                                case,
+                                session_id="session",
+                                token="token",
+                                local_socket=None,
+                                workdir=workdir,
+                            )
+                        )
+                        self.assertFalse(result["ok"], result)
+                client.assert_not_called()
+
     def test_existing_native_threads_keep_the_published_get_write_envelope(self):
         received = []
         write = {
@@ -155,6 +227,8 @@ class BridgeTransportContract(unittest.TestCase):
                         token="transport-test",
                         local_socket=None,
                         tool_name="update_plan",
+                        callback_request_id="callback",
+                        callback_turn_id="turn",
                     )
                 )
                 self.assertTrue(result["ok"], result)
@@ -192,9 +266,9 @@ class BridgeTransportContract(unittest.TestCase):
                     channel.request("/test", {})
                 client.assert_not_called()
 
-    def test_shared_channel_preserves_raw_limit_and_strict_request_validation(self):
-        with self.assertRaisesRegex(ValueError, "request_too_large"):
-            channel.decode("x" * (channel.BRIDGE_MAX_REQUEST_BYTES + 1), SkillAdmission)
+    def test_shared_channel_accepts_large_requests_and_preserves_strict_validation(self):
+        payload = {"path": "script.py"}
+        self.assertEqual(channel.decode(" " * 20000 + json.dumps(payload), SkillAdmission), payload)
         for payload in ({"path": 1}, {"path": ""}, {"path": "script.py", "caller": "other"}):
             with self.subTest(payload=payload), self.assertRaises(ValidationError):
                 channel.decode(json.dumps(payload), SkillAdmission)
@@ -377,7 +451,7 @@ class BridgeTransportContract(unittest.TestCase):
         )
 
     def test_registered_context_policy_controls_callback_headers(self):
-        operation = ("literature", "ingest")
+        operation = ("literature", "review")
         original = BRIDGE_REQUESTS[operation]
         for required in (False, True):
             with (
@@ -392,8 +466,8 @@ class BridgeTransportContract(unittest.TestCase):
                     execute_service_tool(
                         {
                             "capability": "literature",
-                            "operation": "ingest",
-                            "request": {"run": "run"},
+                            "operation": "review",
+                            "request": {"workspace": "survey", "checkpoint": "outline"},
                         },
                         session_id="transport-test",
                         token="transport-test",
@@ -402,23 +476,10 @@ class BridgeTransportContract(unittest.TestCase):
                         callback_turn_id="turn",
                     )
                 )
-                self.assertTrue(result["ok"])
+                self.assertTrue(result["ok"], result)
                 self.assertEqual(len(received), 1)
                 self.assertEqual(BRIDGE_CALLBACK_REQUEST_HEADER in received[0], required)
                 self.assertEqual(BRIDGE_CALLBACK_TURN_HEADER in received[0], required)
-
-    def test_ingest_waits_for_completion_in_both_transports(self):
-        with slow_backend():
-            self.assertTrue(execute("literature", "ingest", json.dumps({"run": "run"}))["ok"])
-            self.assertTrue(self.service_tool("ingest")["ok"])
-
-    def test_ingest_preserves_backend_rejection_in_both_transports(self):
-        denial = {"ok": False, "error": "download_ingest_failed"}
-        with slow_backend(400, denial):
-            with self.assertRaises(BridgeResponseError) as failure:
-                execute("literature", "ingest", json.dumps({"run": "run"}))
-            self.assertEqual(failure.exception.payload, denial)
-            self.assertEqual(self.service_tool("ingest"), denial)
 
     def test_outline_confirmation_waits_in_both_transports(self):
         request = {"workspace": "survey", "checkpoint": "outline"}

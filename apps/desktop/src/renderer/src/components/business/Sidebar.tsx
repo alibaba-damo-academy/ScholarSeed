@@ -10,8 +10,8 @@ import { useAttention } from '../../features/assistant/attention'
 import { Icon } from '../../icons'
 import type { SessionNode } from '../../model'
 import { useApp } from '../../store'
-import { searchSessionTitles } from '../../tree'
-import { Button, Input } from '../ui'
+import { projectSessionNodes, searchSessionTitles } from '../../tree'
+import { Button, IconButton, Input } from '../ui'
 import { cx } from '../ui/utils'
 import { Chrome } from './Chrome'
 import {
@@ -96,6 +96,7 @@ function SessionRow({
 }): React.JSX.Element {
   const { t } = useTranslation('components')
   const { t: assistantText } = useTranslation('assistant')
+  const { t: layoutText } = useTranslation('layout')
   const { state, set, act } = useApp()
   const format = createFormatters(state.lang)
   const active = state.activeSession === node.id && state.capGallery !== 'skill'
@@ -124,6 +125,18 @@ function SessionRow({
       )}
       style={{ paddingLeft: depth * SIDEBAR_ROW_DEPTH_PX }}
     >
+      <span className="grid size-[var(--vds-control-height-xs)] flex-none place-items-center">
+        {children.length > 0 && (
+          <IconButton
+            size="xs"
+            variant="ghostIcon"
+            label={layoutText(collapsed ? 'expandChildren' : 'collapseChildren')}
+            aria-expanded={!collapsed}
+            icon={<Icon name={collapsed ? 'chevron-right' : 'chevron-down'} />}
+            onClick={() => act.toggleSessionChildren(node.id)}
+          />
+        )}
+      </span>
       {renaming ? (
         <div
           className="flex min-h-[31px] min-w-0 w-full max-w-full flex-1 items-center gap-[9px] rounded-[7px] border-0 bg-transparent py-[4px] pl-[0] pr-[8px] text-left"
@@ -676,7 +689,9 @@ export function Sidebar(): React.JSX.Element {
                 {/* Project membership comes from the service catalog, never inferred from workdir. */}
                 {expanded &&
                   (() => {
-                    const owned = sessions.filter((node) => node.projectPath === project.path)
+                    const owned = projectSessionNodes(
+                      sessions.filter((node) => node.projectPath === project.path)
+                    )
                     return owned.length ? (
                       <div className="min-w-0 max-w-full overflow-hidden pl-[25px]">
                         {owned.map((node) => (
@@ -724,7 +739,7 @@ export function Sidebar(): React.JSX.Element {
             if (!recentSessions.length) {
               return <div className={SIDEBAR_EMPTY_CLASS_NAME}>{t('sidebar.emptyRecent')}</div>
             }
-            return <VirtualizedSessionList sessions={recentSessions} />
+            return <VirtualizedSessionList sessions={projectSessionNodes(recentSessions)} />
           })()}
       </div>
 

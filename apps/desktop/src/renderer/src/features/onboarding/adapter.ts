@@ -4,7 +4,15 @@ import { getLiterature, listLiteratures } from '../literature/api'
 import { documentWorkspaces } from '../workbench/workspace'
 import { OVERVIEW_TAB } from '../workbench/tabs'
 import { SAMPLE_SOURCE } from './sample'
-import { clearSelection, OB_TIMING, selectSentence, settle, target, waitUntil } from './dom'
+import {
+  activateCategory,
+  clearSelection,
+  OB_TIMING,
+  selectSentence,
+  settle,
+  target,
+  waitUntil,
+} from './dom'
 import type { GuideRequest, GuideStep } from './engine'
 import { PROJECT_GUIDE_ANCHORS } from '../../contracts/onboarding'
 
@@ -61,10 +69,9 @@ export function guideSteps(get: () => Store, group: OnboardingGroup): GuideStep[
         category === 'materials'
           ? PROJECT_GUIDE_ANCHORS.materialsTab
           : PROJECT_GUIDE_ANCHORS.literatureTab
-      const ready = await waitUntil(() => Boolean(target(anchor)), signal)
+      const ready = await waitUntil(() => activateCategory(anchor), signal)
       signal.throwIfAborted()
       if (!ready) throw new Error('onboarding_project_library_unavailable')
-      target(anchor)?.click()
       await settle(signal)
     }
   const groups: Record<OnboardingGroup, GuideStep[]> = {

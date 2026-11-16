@@ -1,17 +1,39 @@
 import { BROWSER_ERROR } from './browser.ts'
 
 export const OVERLAY_CHANNEL = {
-  publish: 'scholarseed:overlay-publish', dismiss: 'scholarseed:overlay-dismiss',
+  publish: 'scholarseed:overlay-publish',
+  dismiss: 'scholarseed:overlay-dismiss',
   dismissSync: 'scholarseed:overlay-dismiss-sync',
-  focus: 'scholarseed:overlay-focus', model: 'scholarseed:overlay-model',
+  focus: 'scholarseed:overlay-focus',
+  model: 'scholarseed:overlay-model',
   focusRequest: 'scholarseed:overlay-focus-request',
-  event: 'scholarseed:overlay-event', ready: 'scholarseed:overlay-ready', seed: 'scholarseed:overlay-seed'
+  event: 'scholarseed:overlay-event',
+  ready: 'scholarseed:overlay-ready',
+  seed: 'scholarseed:overlay-seed',
 } as const
 export const TOOLTIP_OVERLAY_ARGUMENT = '--scholarseed-tooltip-overlay'
-export const TOOLTIP_OVERLAY_CHANNEL = Object.fromEntries(Object.entries(OVERLAY_CHANNEL).map(([key, channel]) => [key, channel.replace('overlay-', 'tooltip-overlay-')])) as { [Key in keyof typeof OVERLAY_CHANNEL]: string }
-export const OVERLAY_LIMIT = { items: 100, text: 4096, id: 128, coordinate: 100_000, bytes: 128_000 } as const
-export interface OverlayBounds { x: number; y: number; width: number; height: number }
+export const TOOLTIP_OVERLAY_CHANNEL = Object.fromEntries(
+  Object.entries(OVERLAY_CHANNEL).map(([key, channel]) => [
+    key,
+    channel.replace('overlay-', 'tooltip-overlay-'),
+  ])
+) as { [Key in keyof typeof OVERLAY_CHANNEL]: string }
+export const OVERLAY_LIMIT = {
+  items: 100,
+  text: 4096,
+  id: 128,
+  coordinate: 100_000,
+  bytes: 128_000,
+} as const
+export interface OverlayBounds {
+  x: number
+  y: number
+  width: number
+  height: number
+}
 export interface BrowserOverlayModel {
+  toast?: { title: string; tone: 'error' | 'info' | 'success' | 'warning'; closeLabel: string }
+  toastBounds?: OverlayBounds
   tooltip?: string
   tooltipBounds?: OverlayBounds
   revision: number
@@ -22,7 +44,12 @@ export interface BrowserOverlayModel {
   items: { id: string; title: string; detail: string }[]
 }
 export type BrowserOverlayEvent = { revision: number } & (
-  { kind: 'select'; itemId: string } | { kind: 'dismiss' } | { kind: 'focus-return'; target: 'address' | 'next' }
+  | { kind: 'select'; itemId: string }
+  | { kind: 'dismiss' }
+  | { kind: 'focus-return'; target: 'address' | 'next' }
+  | { kind: 'toast-close' }
+  | { kind: 'toast-hover'; paused: boolean }
+  | { kind: 'tooltip-hover'; paused: boolean }
 )
 export type OverlayReply = { ok: true } | { ok: false; error: string }
 export interface BrowserOverlayBridge {
@@ -42,16 +69,21 @@ const THEMES = new Set(['light', 'dark'])
 const LANGUAGES = new Set(['en', 'zh-CN'])
 const STATUSES = new Set(['loading', 'ready', 'empty', 'error'])
 const TARGETS = new Set(['address', 'next'])
-function invalid(): never { throw new Error(BROWSER_ERROR.invalidCommand) }
+const TOAST_TONES = new Set(['error', 'info', 'success', 'warning'])
+function invalid(): never {
+  throw new Error(BROWSER_ERROR.invalidCommand)
+}
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return invalid()
   return value as Record<string, unknown>
 }
 function keys(value: Record<string, unknown>, names: string[]): void {
-  if (Object.keys(value).length !== names.length || names.some(name => !(name in value))) invalid()
+  if (Object.keys(value).length !== names.length || names.some((name) => !(name in value)))
+    invalid()
 }
 function text(value: unknown, limit: number, nonempty = false): string {
-  if (typeof value !== 'string' || value.length > limit || (nonempty && !value.length)) return invalid()
+  if (typeof value !== 'string' || value.length > limit || (nonempty && !value.length))
+    return invalid()
   return value
 }
 function revision(value: unknown): number {
@@ -60,42 +92,95 @@ function revision(value: unknown): number {
 }
 export function parseBrowserOverlayModel(value: unknown): BrowserOverlayModel {
   const input = object(value)
-  keys(input, ['revision', 'bounds', 'theme', 'language', 'status', 'items', ...('tooltip' in input ? ['tooltip', 'tooltipBounds'] : [])])
+  keys(input, [
+    'revision',
+    'bounds',
+    'theme',
+    'language',
+    'status',
+    'items',
+    ...('tooltip' in input ? ['tooltip', 'tooltipBounds'] : []),
+    ...('toast' in input ? ['toast', 'toastBounds'] : []),
+  ])
+  if ('tooltip' in input && 'toast' in input) invalid()
   const bounds = object(input.bounds)
   keys(bounds, ['x', 'y', 'width', 'height'])
   for (const [name, coordinate] of Object.entries(bounds)) {
-    if (typeof coordinate !== 'number' || !Number.isFinite(coordinate) || coordinate < 0
-      || coordinate > OVERLAY_LIMIT.coordinate || ((name === 'width' || name === 'height') && coordinate === 0)) invalid()
+    if (
+      typeof coordinate !== 'number' ||
+      !Number.isFinite(coordinate) ||
+      coordinate < 0 ||
+      coordinate > OVERLAY_LIMIT.coordinate ||
+      ((name === 'width' || name === 'height') && coordinate === 0)
+    )
+      invalid()
   }
-  if (!THEMES.has(input.theme as string) || !LANGUAGES.has(input.language as string) || !STATUSES.has(input.status as string)) invalid()
+  if (
+    !THEMES.has(input.theme as string) ||
+    !LANGUAGES.has(input.language as string) ||
+    !STATUSES.has(input.status as string)
+  )
+    invalid()
   if (!Array.isArray(input.items) || input.items.length > OVERLAY_LIMIT.items) invalid()
   const ids = new Set<string>()
-  const items = (input.items as unknown[]).map(value => {
+  const items = (input.items as unknown[]).map((value) => {
     const item = object(value)
     keys(item, ['id', 'title', 'detail'])
     const id = text(item.id, OVERLAY_LIMIT.id, true)
     if (ids.has(id)) invalid()
     ids.add(id)
-    return { id, title: text(item.title, OVERLAY_LIMIT.text), detail: text(item.detail, OVERLAY_LIMIT.text) }
+    return {
+      id,
+      title: text(item.title, OVERLAY_LIMIT.text),
+      detail: text(item.detail, OVERLAY_LIMIT.text),
+    }
   })
-  const model = { revision: revision(input.revision), bounds: { ...bounds } as unknown as OverlayBounds,
-    theme: input.theme, language: input.language, status: input.status, items } as BrowserOverlayModel
+  const model = {
+    revision: revision(input.revision),
+    bounds: { ...bounds } as unknown as OverlayBounds,
+    theme: input.theme,
+    language: input.language,
+    status: input.status,
+    items,
+  } as BrowserOverlayModel
   if ('tooltip' in input) {
     if (items.length || input.status !== 'ready') invalid()
     model.tooltip = text(input.tooltip, OVERLAY_LIMIT.text, true)
   }
-  if ('tooltipBounds' in input) {
-    if (!model.tooltip) invalid()
-    const content = object(input.tooltipBounds)
-    keys(content, ['x', 'y', 'width', 'height'])
-    for (const [name, coordinate] of Object.entries(content)) {
-      if (typeof coordinate !== 'number' || !Number.isFinite(coordinate) || coordinate < 0
-        || coordinate > OVERLAY_LIMIT.coordinate || ((name === 'width' || name === 'height') && coordinate === 0)) invalid()
+  if ('toast' in input) {
+    if (items.length || input.status !== 'ready') invalid()
+    const toast = object(input.toast)
+    keys(toast, ['title', 'tone', 'closeLabel'])
+    if (!TOAST_TONES.has(toast.tone as string)) invalid()
+    model.toast = {
+      title: text(toast.title, OVERLAY_LIMIT.text, true),
+      tone: toast.tone as NonNullable<BrowserOverlayModel['toast']>['tone'],
+      closeLabel: text(toast.closeLabel, OVERLAY_LIMIT.text, true),
     }
-    const tooltipBounds = content as unknown as OverlayBounds
-    if (tooltipBounds.x + tooltipBounds.width > model.bounds.width || tooltipBounds.y + tooltipBounds.height > model.bounds.height) invalid()
-    model.tooltipBounds = { ...tooltipBounds }
   }
+  for (const name of ['tooltipBounds', 'toastBounds'] as const)
+    if (name in input) {
+      if (name === 'tooltipBounds' ? !model.tooltip : !model.toast) invalid()
+      const content = object(input[name])
+      keys(content, ['x', 'y', 'width', 'height'])
+      for (const [name, coordinate] of Object.entries(content)) {
+        if (
+          typeof coordinate !== 'number' ||
+          !Number.isFinite(coordinate) ||
+          coordinate < 0 ||
+          coordinate > OVERLAY_LIMIT.coordinate ||
+          ((name === 'width' || name === 'height') && coordinate === 0)
+        )
+          invalid()
+      }
+      const tooltipBounds = content as unknown as OverlayBounds
+      if (
+        tooltipBounds.x + tooltipBounds.width > model.bounds.width ||
+        tooltipBounds.y + tooltipBounds.height > model.bounds.height
+      )
+        invalid()
+      model[name] = { ...tooltipBounds }
+    }
   if (new TextEncoder().encode(JSON.stringify(model)).byteLength > OVERLAY_LIMIT.bytes) invalid()
   return model
 }
@@ -110,16 +195,35 @@ export function parseBrowserOverlayEvent(value: unknown): BrowserOverlayEvent {
     keys(input, ['kind', 'revision'])
     return { kind: 'dismiss', revision: current }
   }
+  if (input.kind === 'toast-close') {
+    keys(input, ['kind', 'revision'])
+    return { kind: 'toast-close', revision: current }
+  }
+  if (
+    (input.kind === 'toast-hover' || input.kind === 'tooltip-hover') &&
+    typeof input.paused === 'boolean'
+  ) {
+    keys(input, ['kind', 'revision', 'paused'])
+    return { kind: input.kind, revision: current, paused: input.paused }
+  }
   if (input.kind === 'focus-return' && TARGETS.has(input.target as string)) {
     keys(input, ['kind', 'revision', 'target'])
     return { kind: 'focus-return', revision: current, target: input.target as 'address' | 'next' }
   }
   return invalid()
 }
-export function overlayBounds(bounds: OverlayBounds, zoom: number, size: { width: number; height: number }): OverlayBounds {
+export function overlayBounds(
+  bounds: OverlayBounds,
+  zoom: number,
+  size: { width: number; height: number }
+): OverlayBounds {
   if (!Number.isFinite(zoom) || zoom <= 0) return invalid()
   const x = Math.min(size.width, Math.round(bounds.x * zoom))
   const y = Math.min(size.height, Math.round(bounds.y * zoom))
-  return { x, y, width: Math.max(0, Math.min(size.width - x, Math.ceil(bounds.width * zoom))),
-    height: Math.max(0, Math.min(size.height - y, Math.ceil(bounds.height * zoom))) }
+  return {
+    x,
+    y,
+    width: Math.max(0, Math.min(size.width - x, Math.ceil(bounds.width * zoom))),
+    height: Math.max(0, Math.min(size.height - y, Math.ceil(bounds.height * zoom))),
+  }
 }

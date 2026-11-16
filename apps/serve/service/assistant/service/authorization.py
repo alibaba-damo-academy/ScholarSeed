@@ -14,6 +14,11 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from service.capabilities.service.plugins import PLUGIN_AUTHORIZATION_SLOT, PLUGIN_SELECTION_SLOT
+from service.chat.constants import (
+    PRODUCT_DECISION_SOURCE,
+    PRODUCT_DECISION_USER,
+    PRODUCT_INTERACTION_MANUAL,
+)
 from service.chat.persistence.catalog import (
     SESSION_CATALOG_TABLE,
     SQLITE_TIMEOUT_SECONDS,
@@ -30,12 +35,17 @@ from service.persistence.project import (
     table_clauses,
 )
 from service.platform.activity import ActivityLease
+from service.platform.citations import LIBRARY_REF_PREFIX
 from service.platform.context import FulltextBindingScope, FulltextTaskContext, ProductTaskType
 
 FULLTEXT_AUTHORIZATION_TABLE = "assistant_fulltext_authorization"
 RESEARCH_IDEA_FULLTEXT = "research_idea_fulltext"
 PRECISE_SEARCH_FULLTEXT = "precise_search_fulltext"
 LITERATURE_REVIEW_FULLTEXT = "literature_review_fulltext"
+LIBRARY_FULLTEXT = "library_fulltext"
+LIBRARY_QUESTION_PREFIX = "library-fulltext:"
+LIBRARY_AUTHORIZATION_HEADER = "文献全文授权"
+LIBRARY_AUTHORIZATION_QUESTION = "是否允许下载、保存并读取以下文献的全文？"
 RESEARCH_IDEA_QUESTION_PREFIX = "research-idea-fulltext:"
 PRECISE_SEARCH_QUESTION_PREFIX = "precise-search-fulltext:"
 LITERATURE_REVIEW_QUESTION_PREFIX = "literature-review-fulltext:"
@@ -58,6 +68,20 @@ TASK_KEY_COLUMN = "task_key"
 SELECTED_PAPER_IDS_KEY = "selected_paper_ids"
 DECISION_CANCELLED = "cancelled"
 DECISION_TIMED_OUT = "timed_out"
+SURVEY_LIBRARY_REF_PREFIX = "paper:" + LIBRARY_REF_PREFIX
+REAUTHORIZATION_INVALID = "fulltext_reauthorization_invalid"
+REAUTHORIZATION_TURN_PREFIX = "fulltext-reauthorize:"
+
+
+def source_identity(ref: str) -> str:
+    """A survey's wrapped local ID is the same library source, never a remote ID.
+
+    Normalize for comparison only: retain durable decisions, requested refs and
+    task/version binding. Do not infer equivalence from titles or caller aliases.
+    """
+    if ref.startswith(SURVEY_LIBRARY_REF_PREFIX):
+        return LIBRARY_REF_PREFIX + ref[len(SURVEY_LIBRARY_REF_PREFIX) :]
+    return ref
 
 
 class AuthorizationDisposition(str, Enum):
@@ -67,7 +91,7 @@ class AuthorizationDisposition(str, Enum):
 
 @dataclass(frozen=True)
 class FulltextAuthorizationPolicy:
-    task_type: ProductTaskType
+    task_type: ProductTaskType | None
     authorization_type: str
     question_prefix: str
     header: str
@@ -77,15 +101,28 @@ class FulltextAuthorizationPolicy:
     subset_selection: bool = False
 
 
+@dataclass(frozen=True)
+class TaskFulltextAuthorizationPolicy(FulltextAuthorizationPolicy):
+    task_type: ProductTaskType
+
+
 FULLTEXT_AUTHORIZATION_POLICIES = (
     FulltextAuthorizationPolicy(
+        None,
+        LIBRARY_FULLTEXT,
+        LIBRARY_QUESTION_PREFIX,
+        LIBRARY_AUTHORIZATION_HEADER,
+        LIBRARY_AUTHORIZATION_QUESTION,
+        subset_selection=True,
+    ),
+    TaskFulltextAuthorizationPolicy(
         ProductTaskType.RESEARCH_IDEA,
         RESEARCH_IDEA_FULLTEXT,
         RESEARCH_IDEA_QUESTION_PREFIX,
         RESEARCH_IDEA_AUTHORIZATION_HEADER,
         RESEARCH_IDEA_AUTHORIZATION_QUESTION,
     ),
-    FulltextAuthorizationPolicy(
+    TaskFulltextAuthorizationPolicy(
         ProductTaskType.PRECISE_SEARCH,
         PRECISE_SEARCH_FULLTEXT,
         PRECISE_SEARCH_QUESTION_PREFIX,
@@ -93,7 +130,7 @@ FULLTEXT_AUTHORIZATION_POLICIES = (
         PRECISE_SEARCH_AUTHORIZATION_QUESTION,
         subset_selection=True,
     ),
-    FulltextAuthorizationPolicy(
+    TaskFulltextAuthorizationPolicy(
         ProductTaskType.LITERATURE_REVIEW,
         LITERATURE_REVIEW_FULLTEXT,
         LITERATURE_REVIEW_QUESTION_PREFIX,
@@ -105,7 +142,9 @@ POLICIES_BY_AUTHORIZATION_TYPE = {
     policy.authorization_type: policy for policy in FULLTEXT_AUTHORIZATION_POLICIES
 }
 POLICIES_BY_TASK_TYPE = {
-    policy.task_type.value: policy for policy in FULLTEXT_AUTHORIZATION_POLICIES
+    policy.task_type.value: policy
+    for policy in FULLTEXT_AUTHORIZATION_POLICIES
+    if isinstance(policy, TaskFulltextAuthorizationPolicy)
 }
 SUPPORTED_AUTHORIZATION_TYPES = frozenset(POLICIES_BY_AUTHORIZATION_TYPE)
 
@@ -117,7 +156,7 @@ def authorization_policy(authorization_type: str) -> FulltextAuthorizationPolicy
         raise ValueError("fulltext_authorization_type_unknown") from exc
 
 
-def task_authorization_policy(task_type: str) -> FulltextAuthorizationPolicy | None:
+def task_authorization_policy(task_type: str) -> TaskFulltextAuthorizationPolicy | None:
     return POLICIES_BY_TASK_TYPE.get(task_type)
 
 
@@ -502,6 +541,76 @@ class FulltextAuthorizer:
             raise RuntimeError("fulltext authorization disappeared")
         return self._record(row)
 
+    def challenge(self, session_id: str, question_id: str) -> FulltextAuthorization:
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                f"SELECT * FROM {FULLTEXT_AUTHORIZATION_TABLE} WHERE session_id = ? AND question_id = ?",
+                (session_id, question_id),
+            ).fetchone()
+        if row is None:
+            raise ValueError(REAUTHORIZATION_INVALID)
+        return self._record(row)
+
+    def renewal(self, session_id: str, question_id: str) -> FulltextAuthorization:
+        original = self.challenge(session_id, question_id)
+        policy = authorization_policy(original.authorization_type)
+        renewal_id = uuid.uuid5(uuid.NAMESPACE_URL, question_id).hex
+        return self.challenge(session_id, policy.question_prefix + renewal_id)
+
+    def reopen(self, session_id: str, question_id: str) -> FulltextAuthorization:
+        original = self.challenge(session_id, question_id)
+        decision = self._resolved_decision(original)
+        policy = authorization_policy(original.authorization_type)
+        answers = decision.get("answers") if decision is not None else None
+        if not isinstance(answers, Mapping) or answers.get(question_id) != policy.reject:
+            raise ValueError(REAUTHORIZATION_INVALID)
+        renewal_id = uuid.uuid5(uuid.NAMESPACE_URL, question_id).hex
+        renewed_question_id = policy.question_prefix + renewal_id
+        with closing(self._connect()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                f"SELECT * FROM {FULLTEXT_AUTHORIZATION_TABLE} WHERE question_id = ?",
+                (renewed_question_id,),
+            ).fetchone()
+            if existing is not None:
+                return self._record(existing)
+            changed = connection.execute(
+                f"UPDATE {FULLTEXT_AUTHORIZATION_TABLE} SET state = ? "
+                "WHERE authorization_id = ? AND state = ?",
+                (
+                    AuthorizationState.SUPERSEDED.value,
+                    original.authorization_id,
+                    AuthorizationState.PENDING.value,
+                ),
+            )
+            if changed.rowcount != 1:
+                raise ValueError(REAUTHORIZATION_INVALID)
+            connection.execute(
+                f"INSERT INTO {FULLTEXT_AUTHORIZATION_TABLE} "
+                "(authorization_id, session_id, snapshot_id, turn_id, authorization_type, "
+                "scope_json, scope_digest, question_id, state, created_at, task_key) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    renewal_id,
+                    session_id,
+                    original.snapshot_id,
+                    REAUTHORIZATION_TURN_PREFIX + renewal_id,
+                    original.authorization_type,
+                    json.dumps(original.refs),
+                    original.scope_digest,
+                    renewed_question_id,
+                    AuthorizationState.PENDING.value,
+                    time.time(),
+                    original.task_key,
+                ),
+            )
+            row = connection.execute(
+                f"SELECT * FROM {FULLTEXT_AUTHORIZATION_TABLE} WHERE question_id = ?",
+                (renewed_question_id,),
+            ).fetchone()
+        assert row is not None
+        return self._record(row)
+
     def require(
         self,
         *,
@@ -591,19 +700,23 @@ class FulltextAuthorizer:
             if not self.decided(authorization):
                 continue
             decided = allowed | denied
-            granted = set(self.granted_refs(authorization))
+            granted = {source_identity(ref) for ref in self.granted_refs(authorization)}
             grants.update({ref: authorization.authorization_id for ref in granted - decided})
             allowed.update(granted - decided)
-            denied.update(set(authorization.refs) - granted - decided)
+            denied.update({source_identity(ref) for ref in authorization.refs} - granted - decided)
         requested = refs or tuple(
             dict.fromkeys(ref for item in authorizations for ref in item.refs)
         )
         return EffectiveFulltextScope(
-            allowed=tuple(ref for ref in requested if ref in allowed),
-            denied=tuple(ref for ref in requested if ref in denied),
-            unknown=tuple(ref for ref in requested if ref not in allowed | denied),
+            allowed=tuple(ref for ref in requested if source_identity(ref) in allowed),
+            denied=tuple(ref for ref in requested if source_identity(ref) in denied),
+            unknown=tuple(ref for ref in requested if source_identity(ref) not in allowed | denied),
             authorizations=authorizations,
-            grants=grants,
+            grants={
+                ref: grants[source_identity(ref)]
+                for ref in requested
+                if source_identity(ref) in grants
+            },
         )
 
     def session_scope(
@@ -674,6 +787,11 @@ class FulltextAuthorizer:
             if isinstance(answer, Mapping):
                 answer = answer.get("answers")
             policy = authorization_policy(authorization.authorization_type)
+            if (
+                answer in (policy.authorize, [policy.authorize])
+                and hil.decision.get(PRODUCT_DECISION_SOURCE) != PRODUCT_DECISION_USER
+            ):
+                continue
             if answer in (policy.authorize, [policy.authorize], policy.reject, [policy.reject]):
                 return hil.decision
         return None
@@ -783,6 +901,7 @@ async def authorize_sources(
     papers: tuple[Mapping[str, str], ...] = (),
     task_context: FulltextTaskContext | None = None,
     activity: ActivityLease | None = None,
+    result_card_id: str = "",
 ) -> tuple[FulltextAuthorization, AuthorizationDisposition, Mapping[str, Any] | None]:
     """Ask only for undecided refs in the verified task or current turn.
 
@@ -800,9 +919,12 @@ async def authorize_sources(
     )
     if not scope.unknown:
         challenge = next(item for item in scope.authorizations if set(item.refs) & set(refs))
+        complete = authorization_policy(authorization_type).subset_selection or set(refs) <= set(
+            scope.allowed
+        )
         disposition = (
             AuthorizationDisposition.AUTHORIZED
-            if scope.allowed
+            if scope.allowed and complete
             else AuthorizationDisposition.REJECTED
         )
         return challenge, disposition, None
@@ -814,7 +936,7 @@ async def authorize_sources(
         refs=scope.unknown,
         task_context=task_context,
     )
-    question = authorization_question(challenge, papers)
+    question = authorization_question(challenge, papers, result_card_id=result_card_id)
     reference = await live.component_for(
         (
             PLUGIN_SELECTION_SLOT
@@ -830,7 +952,9 @@ async def authorize_sources(
             "scope_count": len(challenge.refs),
         }
     decision = await live.interactions.request_product_input(
-        question, turn_id=challenge.turn_id, activity=activity
+        question,
+        turn_id=challenge.turn_id,
+        activity=activity,
     )
     scope = authorizer.effective_scope(
         session_id=live.id,
@@ -841,8 +965,13 @@ async def authorize_sources(
         client_turn_id=getattr(live, "active_product_turn_id", ""),
         task_context=task_context,
     )
+    complete = authorization_policy(authorization_type).subset_selection or set(refs) <= set(
+        scope.allowed
+    )
     disposition = (
-        AuthorizationDisposition.AUTHORIZED if scope.allowed else AuthorizationDisposition.REJECTED
+        AuthorizationDisposition.AUTHORIZED
+        if scope.allowed and complete
+        else AuthorizationDisposition.REJECTED
     )
     return challenge, disposition, decision
 
@@ -901,9 +1030,12 @@ def derive_granted_scope(
 def authorization_question(
     authorization: FulltextAuthorization,
     papers: tuple[Mapping[str, str], ...] = (),
+    *,
+    result_card_id: str = "",
 ) -> dict[str, object]:
     policy = authorization_policy(authorization.authorization_type)
     question: dict[str, object] = {
+        PRODUCT_INTERACTION_MANUAL: True,
         "id": authorization.question_id,
         "header": policy.header,
         "question": policy.question,
@@ -915,7 +1047,9 @@ def authorization_question(
             {"label": policy.reject, "description": REJECT_DESCRIPTION},
         ],
     }
-    if policy.subset_selection and papers:
+    if result_card_id:
+        question["result_card_id"] = result_card_id
+    if papers:
         allowed = frozenset(authorization.refs)
         question["papers"] = [
             {
@@ -936,6 +1070,7 @@ __all__ = [
     "FULLTEXT_AUTHORIZATION_POLICIES",
     "FulltextAuthorization",
     "FulltextAuthorizationPolicy",
+    "TaskFulltextAuthorizationPolicy",
     "FulltextAuthorizer",
     "derive_granted_scope",
     "LITERATURE_REVIEW_AUTHORIZATION_HEADER",

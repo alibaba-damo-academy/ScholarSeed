@@ -73,6 +73,7 @@ class LiteratureNote:
     updated_at: float = 0.0
     version: int = 1
     position: int = 0
+    provenance: dict | None = None
 
 
 @dataclass(frozen=True)

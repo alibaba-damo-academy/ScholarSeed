@@ -33,7 +33,8 @@ from confirmation import (
     valid_timeout_approval,
 )
 from publication import validate_publication_choice
-from task_contract import atomic_json, configure, read_request
+from task_contract import atomic_json, configure, read_request, publication_view
+from planning import require_plan, completed_outline_amendment, resume_outline_amendment, begin_outline_amendment, complete_outline_amendment
 from writing_contract import approval_snapshot, digest
 
 HOST_RECEIPT_FIELDS = frozenset(("packet_id", "snapshot_id", "request_id", "started_at", "deadline_at", "decision"))
@@ -54,7 +55,7 @@ def complete(ws, value):
         current = approval_snapshot(ws)
         existing = _read(_path(ws))
         if existing.get(HOST_RECEIPT_KEY) == value and existing.get("state") == TIMEOUT_APPLIED:
-            return status(ws, value["packet_id"])
+            return apply_timeout(ws, value["packet_id"])
         recovering = (existing.get(HOST_RECEIPT_KEY) == value
                       and existing.get("packet_id") == value["packet_id"]
                       and existing.get("state") == APPLYING_TIMEOUT
@@ -283,6 +284,20 @@ def response(ws, value):
 
 def apply_timeout(ws, packet_id):
     with lock(ws):
+        state = _read(_path(ws))
+        packet = _packet(ws, packet_id)
+        if state.get("state") == TIMEOUT_APPLIED:
+            approval = _read(Path(ws) / "04_outline/approval.json")
+            if not valid_timeout_approval(ws, approval, approval_snapshot(ws)):
+                raise ValueError("completed timeout belongs to a stale task or approval")
+            decision = {"packet_id": packet_id, "decision_id": state["decision_id"], "user_response": None}
+            completed = completed_outline_amendment(ws, packet, decision)
+            pending = resume_outline_amendment(ws, packet, decision) if not completed else None
+            if pending:
+                complete_outline_amendment(ws, packet, decision, approval)
+            else:
+                require_plan(ws)
+            return {**status(ws, packet_id), "did_apply": False}
         observed = status(ws, packet_id)
         if observed["state"] != EXPIRED:
             return {**observed, "did_apply": False}
@@ -314,7 +329,19 @@ def apply_timeout(ws, packet_id):
             atomic_json(_path(ws), state)
         # Recover a crash between configuration and receipt writes using the
         # same decision ID; no models or generation jobs are launched here.
-        configure(ws, {"publication": state["publication"]})
+        decision = {"packet_id": packet_id, "decision_id": state["decision_id"], "user_response": None}
+        pending = resume_outline_amendment(ws, packet, decision)
+        current_publication = publication_view(read_request(ws))
+        changes = {field: value for field, value in state["publication"].items()
+                   if value is not None and value != current_publication.get(field)}
+        if not pending:
+            require_plan(ws)
+            if changes:
+                pending = begin_outline_amendment(ws, packet, decision, changes)
+        if pending:
+            configure(ws, {"publication": pending["target"]["request"]["publication"]})
+        elif changes:
+            configure(ws, {"publication": changes})
         current = approval_snapshot(ws)
         if current != state["approval_snapshot"]:
             raise ValueError("task changed during timeout resolution; do not continue")
@@ -333,6 +360,8 @@ def apply_timeout(ws, packet_id):
         atomic_json(Path(ws) / "04_outline/approval.json", approval)
         state["state"] = TIMEOUT_APPLIED
         atomic_json(_path(ws), state)
+        if pending:
+            complete_outline_amendment(ws, packet, decision, approval)
         return {**status(ws, packet_id), "did_apply": True}
 
 

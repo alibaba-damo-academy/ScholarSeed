@@ -17,6 +17,7 @@ from service.literature.persistence.store import LiteratureRepository
 from service.literature.schema import PDF_MEDIA_TYPE, LiteratureItem
 from service.literature.service.attachment import LiteratureAttachmentContent
 from service.literature.service.pdf import LiteraturePdf
+from service.platform.citations import LIBRARY_COLLECTION_REF_PREFIX as COLLECTION_PREFIX
 from service.platform.citations import CitationDocument
 from service.platform.context import (
     ActiveDocumentResolution,
@@ -146,6 +147,38 @@ class LiteratureContextProvider:
 
     def resolve(self, request: AssistantContextResolveRequest) -> AssistantContextResolution:
         ref = request.ref
+        if ref.kind is ContextRefKind.LITERATURE_COLLECTION:
+            collection = (
+                next(
+                    (
+                        item
+                        for item in self._repository.collections(request.project_id)
+                        if item["id"] == ref.source_id
+                    ),
+                    None,
+                )
+                if request.project_id and ref.anchor is None
+                else None
+            )
+            if collection is None:
+                return self._failure(ref, ContextResolutionState.MISSING, REASON_SOURCE_MISSING)
+            return AssistantContextResolution(
+                state=ContextResolutionState.READY,
+                provider_version=PROVIDER_VERSION,
+                source_revision="",
+                items=(
+                    AssistantContextResolvedItem(
+                        item_id=ref.source_id,
+                        source_id=ref.source_id,
+                        label=collection["name"],
+                        source_revision="",
+                        text="",
+                        role=ContextItemRole.SCOPE,
+                        model_locator=f"{COLLECTION_PREFIX}{ref.source_id}",
+                        content_level=TOOL_SCOPE_CONTENT_LEVEL,
+                    ),
+                ),
+            )
         if ref.kind is not SUPPORTED_KIND:
             return self._failure(ref, ContextResolutionState.UNSUPPORTED, REASON_SOURCE_UNAVAILABLE)
         if ref.anchor is not None:

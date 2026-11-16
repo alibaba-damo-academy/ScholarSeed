@@ -450,6 +450,8 @@ def scan_figures(figures_dir: Path, worklist_items: list[dict] | None = None,
                 image = graphic
         if not image and (figures_dir / f"{tex_path.stem}.png").exists():
             image = f"{tex_path.stem}.png"
+        if item.get('_render_mode') == 'forest_taxonomy':
+            image = tex_path.name
 
         bullets: list[str] = []
         if not image:
@@ -478,7 +480,7 @@ def scan_figures(figures_dir: Path, worklist_items: list[dict] | None = None,
 
 def render_figure_md(meta: dict, number: int, language: str = "english",
                      caption_filter=None) -> str:
-    """Render one figure as a Markdown block: image or nested bullet list."""
+    """Render one figure as a Markdown block with its actual image or native source."""
     apply = caption_filter or cleanup_text
     word = labels_for(language)["figure"]
     if "caption_plain" in meta:

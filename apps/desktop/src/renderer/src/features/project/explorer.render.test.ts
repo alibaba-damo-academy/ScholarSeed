@@ -2,11 +2,15 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 import path from 'node:path'
-import test from 'node:test'
+import test, { after } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { chromium, expect, type Page, type Route } from '@playwright/test'
 import react from '@vitejs/plugin-react'
-import { createServer } from 'vite'
+
+import { PROJECT_ENTRY_DRAG_TYPE } from '../../drag.ts'
+import { renderServers } from '../../../../test-helpers/render.ts'
+
+const servers = renderServers({ after })
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const TREE = '**/api/content/projects/*/tree?*'
@@ -49,12 +53,74 @@ async function settleRender(page: Page): Promise<void> {
   )
 }
 
+test('Directory moves both folders and files through native drag and drop', async () => {
+  const server = await servers.create({
+    cacheKey: 'explorer',
+    configFile: false,
+    root: ROOT,
+    plugins: [react()],
+    server: { host: '127.0.0.1', port: 0 },
+  })
+  await server.listen()
+  const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
+  try {
+    const page = await browser.newPage()
+    await page.route(TREE, (route) =>
+      route.fulfill({
+        json: {
+          root: '/fixture',
+          nodes: [
+            { path: 'source', name: 'source', kind: 'dir', available: true },
+            { path: 'target', name: 'target', kind: 'dir', available: true },
+            { path: 'file.md', name: 'file.md', kind: 'file', available: true },
+          ],
+          total: 3,
+          offset: 0,
+        },
+      })
+    )
+    await page.goto(
+      new URL('/features/project/explorer.render.fixture.html', server.resolvedUrls!.local[0]).href
+    )
+    await page.evaluate((referenceType) => {
+      document.addEventListener('dragstart', (event) => {
+        document.getElementById('root')!.dataset.drag = JSON.stringify({
+          effectAllowed: event.dataTransfer?.effectAllowed,
+          reference: JSON.parse(event.dataTransfer!.getData(referenceType)),
+        })
+      })
+    }, PROJECT_ENTRY_DRAG_TYPE)
+    for (const source of ['source', 'file.md']) {
+      await page
+        .getByTestId(`explorer-select-${source}`)
+        .dragTo(page.getByTestId('explorer-node-target'))
+      await expect(page.getByTestId('fixture-drop')).toHaveText(
+        JSON.stringify({ source, destination: 'target' })
+      )
+      await expect(page.locator('#root')).toHaveAttribute(
+        'data-drag',
+        JSON.stringify({
+          effectAllowed: 'copyMove',
+          reference: {
+            projectId: 'first',
+            entry: { kind: source === 'source' ? 'dir' : 'file', path: source, name: source },
+          },
+        })
+      )
+    }
+  } finally {
+    await browser.close()
+    await server.close()
+  }
+})
+
 test(
   'Directory preserves failed pages, fences stale reads and exposes empty directories',
   { timeout: 120_000 },
   async () => {
     const artifacts = mkdtempSync(path.join(tmpdir(), 'explorer-render-'))
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'explorer',
       configFile: false,
       root: ROOT,
       plugins: [react()],

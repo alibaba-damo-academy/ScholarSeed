@@ -1,5 +1,4 @@
 import React from 'react'
-import { createPortal } from 'react-dom'
 import { ArrowLeft, Hammer, Plug } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
@@ -10,7 +9,7 @@ import { useApp } from '../../store'
 import { Connectors } from './Connectors'
 
 const NAVIGATION_TRIGGER_CLASS =
-  '!h-[var(--vds-control-height-md)] !gap-[var(--vds-navigation-button-gap)] !pl-[var(--vds-space-2)] !pr-[var(--vds-space-3)] !py-[calc(var(--vds-space-1)+var(--vds-space-half))] !rounded-[var(--vds-radius-4)] !text-[length:var(--vds-font-body-lv2)] !font-[var(--vds-fw-regular)] !leading-[var(--vds-lh-body-lv2)] data-[state=active]:!font-[var(--vds-fw-medium)] data-[state=active]:!bg-[var(--vds-other-overlay-2)] data-[state=active]:!shadow-none'
+  '!h-[var(--vds-control-height-md)] !gap-[var(--vds-navigation-button-gap)] !pl-[var(--vds-space-2)] !pr-[var(--vds-space-3)] !py-[calc(var(--vds-space-1)+var(--vds-space-half))] !rounded-[var(--vds-radius-4)] !text-[length:var(--vds-font-body-lv2)] !font-[var(--vds-fw-medium)] !leading-[var(--vds-lh-body-lv2)] data-[state=active]:!bg-[var(--vds-brand-light-bg-default)] data-[state=active]:!text-[var(--vds-brand-text-primary)] data-[state=active]:!shadow-none'
 
 function SkillCenter(): React.JSX.Element {
   const { t } = useTranslation('skills')
@@ -20,10 +19,6 @@ function SkillCenter(): React.JSX.Element {
     (project) => project.id === state.workbenchReturnProjectId
   )
   const [section, setSection] = React.useState('skills')
-  const [navigationHost, setNavigationHost] = React.useState<Element | null>(null)
-  React.useEffect(() => {
-    setNavigationHost(document.querySelector('[data-home-header-navigation]'))
-  }, [])
   const navigation = (
     <Tabs value={section} onValueChange={(value) => setSection(String(value))}>
       <TabsList
@@ -47,7 +42,6 @@ function SkillCenter(): React.JSX.Element {
       className={`h-full overflow-hidden py-[var(--vds-space-4)] ${section === 'skills' ? '[--vds-skills-page-inset:var(--vds-space-6)]' : 'px-[var(--vds-space-6)]'}`}
       data-testid="skill-center"
     >
-      {navigationHost ? createPortal(navigation, navigationHost) : navigation}
       {returnProject && (
         <Button
           variant="ghost"
@@ -63,7 +57,11 @@ function SkillCenter(): React.JSX.Element {
         </Button>
       )}
       <PageBody className="min-h-0 flex-1 grid-rows-[minmax(0,1fr)]">
-        {section === 'skills' ? <Skills /> : <Connectors />}
+        {section === 'skills' ? (
+          <Skills navigation={navigation} />
+        ) : (
+          <Connectors navigation={navigation} />
+        )}
       </PageBody>
     </Page>
   )
@@ -83,7 +81,7 @@ export function skillsFeature(): FeatureModule {
     panels: [
       {
         key: 'skills',
-        title: (i18n) => i18n.getFixedT(null, 'layout')('skills'),
+        title: (i18n) => i18n.getFixedT(null, 'layout')('extensions'),
         slot: 'page',
         render: () => <SkillCenter />,
       },

@@ -8,6 +8,7 @@ const ROOT = path.resolve(__dirname, '../..')
 const POLICY = JSON.parse(fs.readFileSync(path.join(__dirname, 'affected.policy.json'), 'utf8'))
 const TEST_SUFFIXES = ['.test.ts', '.test.tsx', '.test.mjs', '.test.cjs']
 const MAX_GREP_FILES = 40
+const NODE_TEST_CONCURRENCY = 1
 
 function changedFiles(argv) {
   const baseIndex = argv.indexOf('--base')
@@ -32,9 +33,9 @@ function adjacentTest(file) {
   const absolute = path.join(ROOT, file)
   for (const suffix of TEST_SUFFIXES) {
     const candidate = absolute.replace(/\.(tsx?|jsx?|mjs|cjs)$/, suffix)
-    if (candidate !== absolute && fs.existsSync(candidate)) return path.relative(ROOT, candidate)
+    if (candidate !== absolute && fs.existsSync(candidate)) return path.relative(ROOT, candidate).split(path.sep).join('/')
     const owned = path.join(path.dirname(absolute), '__tests__', path.basename(candidate))
-    if (candidate !== absolute && fs.existsSync(owned)) return path.relative(ROOT, owned)
+    if (candidate !== absolute && fs.existsSync(owned)) return path.relative(ROOT, owned).split(path.sep).join('/')
   }
   return null
 }
@@ -42,14 +43,16 @@ function adjacentTest(file) {
 function consumerTests(files) {
   const found = new Set()
   const candidates = files.filter(file => file.startsWith('apps/desktop/')).slice(0, MAX_GREP_FILES)
-  for (const file of candidates) {
-    const stem = path.basename(file).replace(/\.(tsx?|jsx?|mjs|cjs)$/, '')
-    const grep = spawnSync('grep', ['-rl', `/${stem}'`, `--include=*.test.ts*`, '--include=*.test.mjs',
-      '--include=*.test.cjs', 'apps/desktop'], { cwd: ROOT, encoding: 'utf8' })
-    for (const hit of (grep.stdout || '').split('\n').filter(Boolean)) found.add(hit)
-    const quoted = spawnSync('grep', ['-rl', `'${stem}`, `--include=*.test.ts*`, 'apps/desktop/src'],
-      { cwd: ROOT, encoding: 'utf8' })
-    for (const hit of (quoted.stdout || '').split('\n').filter(Boolean)) found.add(hit)
+  if (!candidates.length) return []
+  const stems = candidates.map(file => path.basename(file).replace(/\.(tsx?|jsx?|mjs|cjs)$/, ''))
+  for (const filename of fs.globSync('apps/desktop/**/*.{test.ts,test.tsx,test.mjs,test.cjs}', {
+    cwd: ROOT, exclude: ['**/node_modules', '**/out'],
+  })) {
+    const source = fs.readFileSync(path.join(ROOT, filename), 'utf8')
+    const relative = filename.split(path.sep).join('/')
+    if (stems.some(stem => source.includes(`/${stem}'`) ||
+        (relative.startsWith('apps/desktop/src/') && /\.tsx?$/.test(relative) && source.includes(`'${stem}`))))
+      found.add(relative)
   }
   return [...found]
 }
@@ -127,20 +130,28 @@ function pythonSuiteByImport(files, suites) {
 }
 
 function plan(files) {
+  files = [...new Set(files.map(file => file.replaceAll('\\', '/')))]
   const commands = []
-  const desktopTests = new Set()
+  const nodeTests = new Set()
   const pythonFiles = []
   const unmatched = []
   const ipcFiles = files.filter(file => file.startsWith('apps/desktop/') &&
     /\b(ipc|preload|handoff|bridge)/i.test(path.basename(file)))
   for (const file of files) {
+    const supplements = POLICY.supplements.filter(item => new RegExp(item.match).test(file))
+    for (const supplement of supplements) {
+      for (const test of supplement.tests) nodeTests.add(test)
+    }
     const rule = POLICY.rules.find(item => new RegExp(item.match).test(file))
-    if (!rule) { unmatched.push(file); continue }
+    if (!rule) {
+      if (!supplements.length) unmatched.push(file)
+      continue
+    }
     if (rule.resolve === 'adjacentTest') {
       const test = adjacentTest(file)
       const matches = test ? [test] : consumerTests([file])
-      for (const match of matches) desktopTests.add(match)
-      if (!matches.length) unmatched.push(file)
+      for (const match of matches) nodeTests.add(match.replaceAll('\\', '/'))
+      if (!matches.length && !supplements.length) unmatched.push(file)
     } else if (rule.resolve === 'pythonSuiteBySourceStem') {
       pythonFiles.push(file)
     } else {
@@ -150,12 +161,12 @@ function plan(files) {
   for (const file of ipcFiles) {
     for (const consumer of ipcConsumers(ipcChannelsFor(file))) {
       const test = adjacentTest(consumer)
-      if (test) desktopTests.add(test)
+      if (test) nodeTests.add(test.replaceAll('\\', '/'))
     }
   }
-  if (desktopTests.size) {
+  if (nodeTests.size) {
     commands.push({ cwd: 'apps/desktop',
-      command: `node --experimental-transform-types --test ${[...desktopTests].map(t => t.replace(/^apps\/desktop\//, '')).join(' ')}` })
+      command: `node --experimental-transform-types --test --test-concurrency=${NODE_TEST_CONCURRENCY} ${[...nodeTests].map(test => path.posix.relative('apps/desktop', test)).join(' ')}` })
   }
   if (pythonFiles.length) {
     const suites = pythonSuites()

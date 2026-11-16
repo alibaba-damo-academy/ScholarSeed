@@ -56,7 +56,19 @@ export function assistantContextSaveError(failure?: AssistantFailure): Assistant
   return detail ? { key: 'contextErrors.saveFailed', detail } : { key: 'contextErrors.saveRetry' }
 }
 
-export type AssistantContextLoadState = 'idle' | 'loading' | 'ready' | 'saving' | 'error'
+export type AssistantContextLoadState =
+  'idle' | 'loading' | 'refreshing' | 'ready' | 'saving' | 'error'
+
+export function assistantContextLoadState(
+  panel: AiPanelState,
+  sessionId: string
+): AssistantContextLoadState {
+  if (panel.sessionId !== sessionId) return 'loading'
+  if (panel.contextState === 'saving') return 'saving'
+  return panel.contextState === 'ready' || panel.contextState === 'refreshing'
+    ? 'refreshing'
+    : 'loading'
+}
 
 export function submittedContextRefIds(
   refs: readonly AssistantContextRef[],
@@ -88,6 +100,25 @@ export function assistantContextProjection(
   }
 }
 
+export function literatureAttachmentNames(
+  refs: readonly AssistantContextRef[],
+  previous: ReadonlyMap<string, string>,
+  candidates: readonly AssistantContextCandidate[]
+): ReadonlyMap<string, string> {
+  const bySource = new Map(
+    candidates
+      .filter((candidate) => candidate.kind === 'literature' && !candidate.anchor)
+      .map((candidate) => [candidate.source_id, candidate.display_file_name] as const)
+  )
+  const names = new Map<string, string>()
+  for (const ref of refs) {
+    if (ref.kind !== 'literature' || ref.anchor) continue
+    const name = bySource.get(ref.source_id) ?? previous.get(ref.ref_id)
+    if (name) names.set(ref.ref_id, name)
+  }
+  return names
+}
+
 export function loadedAssistantContext(
   panel: AiPanelState,
   selection: AssistantContextSelection | null,
@@ -99,7 +130,9 @@ export function loadedAssistantContext(
     panel.sessionId === selection.session_id &&
     panel.revision > selection.revision
   ) {
-    return panel
+    return panel.contextState === 'loading' || panel.contextState === 'refreshing'
+      ? { ...panel, contextState: 'ready', contextError: null }
+      : panel
   }
   if (!selection) {
     return { ...panel, contextState: 'error', contextError: { key: 'contextErrors.loadFailed' } }
@@ -178,6 +211,7 @@ export interface AiPanelState {
   contextPickerSource: AiContextSource
   contextSources: AiContextSourceOption[]
   contextCandidates: AssistantContextCandidate[]
+  literatureAttachmentNames: ReadonlyMap<string, string>
   contextCandidatesLoading: boolean
   /** 服务端持久化的 AI 回答批注；按当前 Session 加载。 */
   annotations: AnswerAnnotation[]
@@ -210,6 +244,7 @@ export const INITIAL_AI_PANEL_STATE: AiPanelState = {
   contextPickerSource: '',
   contextSources: [],
   contextCandidates: [],
+  literatureAttachmentNames: new Map(),
   contextCandidatesLoading: false,
   annotations: [],
   artifactLinks: [],
@@ -243,6 +278,22 @@ export function sentAnswerAnnotationIds(
     }
   }
   return ids
+}
+
+export function deletableAnswerAnnotationIds(
+  sessionId: string | null,
+  panel: AiPanelState,
+  conversation: readonly ConvItem[]
+): Set<string> {
+  if (!sessionId || panel.sessionId !== sessionId) return new Set()
+  const sent = sentAnswerAnnotationIds(conversation, panel.refs, panel.submittedRefIds)
+  return new Set(
+    panel.annotations
+      .filter(
+        (annotation) => annotation.session_id === sessionId && !sent.has(annotation.annotation_id)
+      )
+      .map((annotation) => annotation.annotation_id)
+  )
 }
 
 export const ASSISTANT_CONTEXT_FAILURE = {

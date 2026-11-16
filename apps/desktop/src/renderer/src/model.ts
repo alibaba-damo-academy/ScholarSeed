@@ -8,7 +8,8 @@ import type { ForegroundMessage } from './contracts/feedback'
 
 import type { PreferenceLanguage, PreferenceTheme } from '../../preferences'
 import type { LiteratureDocumentSource, SessionFileSource } from './contracts/workbench'
-import type { ActiveDocument, SubmissionMode, TurnInputItem } from './api'
+import type { ProjectDocumentSource } from './features/workbench/api'
+import type { ActiveDocument, GenerationPreviewData, SubmissionMode, TurnInputItem } from './api'
 
 /**
  * 外观与语言的取值以跨进程契约 `src/preferences.ts` 为单一来源（主进程要读同一份），
@@ -46,6 +47,7 @@ export type SessionStatus =
   | 'dormant'
 
 export interface SessionNode {
+  displayParentSessionId?: string | null
   id: string
   title: string
   title_fallback?: SessionTitleFallback
@@ -170,13 +172,14 @@ export interface FilePreviewTarget {
   /** Present together when content belongs to a structured session artifact. */
   sessionId?: string
   artifactId?: string
+  memberPath?: string
   title?: string
   revisionId?: string
   mediaType?: string
   renderKind?: 'markdown' | 'html' | 'text' | 'json' | 'code' | 'image'
   size?: number
   content?: string
-  source?: LiteratureDocumentSource | SessionFileSource
+  source?: LiteratureDocumentSource | SessionFileSource | ProjectDocumentSource
 }
 
 export interface RuntimeReadiness {
@@ -223,6 +226,7 @@ export interface RuntimeSnapshot {
 /** A durable file attributable to exactly one product session and Codex item. */
 export interface SessionArtifact {
   artifact_id: string
+  kind?: 'file' | 'directory'
   publication_id?: string | null
   title?: string
   path: string
@@ -379,6 +383,7 @@ export interface MessageReference {
   anchor?: {
     documentId?: string
     previewText?: string
+    snapshotText?: string
     locator?: Record<string, unknown>
   } | null
 }
@@ -397,12 +402,14 @@ export interface TurnOwned {
   itemId?: string
   /** Durable product-event order used only to rebuild an exact resume timeline. */
   eventSeq?: number
+  batchId?: string
   /** Product-event wall clock, in milliseconds, for durable activity timing. */
   startedAt?: number
   completedAt?: number
 }
 
 export type TurnOutcome = 'running' | 'completed' | 'failed' | 'interrupted' | 'unknown'
+export const USER_INTERRUPT_REASON = 'user_interrupt'
 
 export interface TurnTiming {
   startedAt: number
@@ -414,12 +421,13 @@ export interface SkillDurationEstimate {
   upperSeconds: number
   sampleCount: number
   confidence: 'low' | 'medium' | 'high'
-  basis: 'historical_skill_turns' | 'product_baseline'
+  basis: 'historical_skill_turns' | 'product_baseline' | 'execution_plan'
   modelId?: string
   reasoningEffort?: string
 }
 
 export interface WebSearchAction extends Record<string, unknown> {
+  purpose?: string
   type?: string
   query?: string
   queries?: string[]
@@ -430,6 +438,9 @@ export interface WebSearchAction extends Record<string, unknown> {
 export interface WebSearchResult extends Record<string, unknown> {
   title?: string
   url?: string
+  site_name?: string
+  published_date?: string
+  content_type?: string
 }
 
 export type SearchSource = {
@@ -454,12 +465,30 @@ export type AnswerSource =
       search_kind: 'web' | 'paper'
       search_id: string
       citation_urls: string[]
+      excerpt?: string
+      description?: string
       origin?: 'tool_declared'
       evidence?: { origin: string }[]
       reference_labels?: string[]
       occurrences?: { start_utf16: number; end_utf16: number }[]
     }
-  | { number: number; kind: 'receipt'; handle: string; citation_urls: string[] }
+  | {
+      number: number
+      kind: 'receipt'
+      handle: string
+      citation_urls: string[]
+      source_group_id?: string | null
+    }
+  | {
+      number: number
+      kind: 'project'
+      source_kind: 'resource' | 'literature'
+      project_id: string
+      path: string
+      url: string
+      title: string
+      citation_urls: string[]
+    }
 
 export interface DisplayCardData {
   component?: PluginReference
@@ -525,6 +554,8 @@ export type RuntimeStatusMessage = (
         | 'resume.reconnected'
         | 'resume.reconnect'
         | 'resume.stopped'
+        | 'resume.modelUnavailable'
+        | 'resume.modelSelectionUnknown'
         | 'runtime.retrying'
         | 'runtime.providerRetrying'
         | 'runtime.recovered'
@@ -546,6 +577,7 @@ export type ConvItem = TurnOwned &
     | {
         kind: 'user'
         text: string
+        displayMessage?: ForegroundMessage
         rewindAnchor?: number
         steer?: boolean
         steerLabel?: string
@@ -554,9 +586,14 @@ export type ConvItem = TurnOwned &
       }
     | {
         kind: 'interaction_reply'
+        decisionSource?: string
         requestId: string
         questions: HilQuestion[]
         answers: Record<string, string>
+        answerDetails?: HilAnswerDetails
+        selectedPaperIds?: string[]
+        freeText?: string
+        timedOut?: boolean
       }
     // who = 说话人 (team 群聊: 成员名; 空/undefined = lead/单 agent) → 多说话人气泡归属
     | {
@@ -573,6 +610,7 @@ export type ConvItem = TurnOwned &
       }
     | { kind: 'delivery'; delivery: DeliveryCard }
     | { kind: 'artifact'; artifact: SessionArtifact }
+    | { kind: 'generation_preview'; preview: GenerationPreviewData }
     | { kind: 'review'; review: ReviewReadyCard }
     | { kind: 'display_card'; card: DisplayCardData }
     | {
@@ -595,6 +633,7 @@ export type ConvItem = TurnOwned &
         runtimeAction?: 'retry_session_resume'
         actionSessionId?: string
         hideIcon?: boolean
+        interruptionReason?: string
         /** Terminal live-only outcome that must survive a durable history refresh. */
         retainOnHistoryRefresh?: boolean
       }
@@ -619,6 +658,8 @@ export type ConvItem = TurnOwned &
             | 'request'
             | 'model_config'
             | 'unavailable'
+            | 'timeout'
+            | 'connection'
             | 'overloaded'
             | 'content_policy'
             | 'unknown'
@@ -641,6 +682,8 @@ export type ConvItem = TurnOwned &
     | {
         kind: 'tool'
         toolId: string
+        retryOf?: string
+        recoveredBy?: string
         name: string
         status: 'running' | 'done' | 'error' | 'cancelled'
         input?: unknown
@@ -684,6 +727,7 @@ export type ConvItem = TurnOwned &
       }
     | {
         kind: 'hil'
+        decisionSource?: string
         sessionId?: string
         requestId: string
         hilKind: string
@@ -723,11 +767,18 @@ export type ConvItem = TurnOwned &
         questions?: HilQuestion[]
         options?: HilOption[]
         allowFreeText?: boolean
+        cancelTimeoutOnEdit?: boolean
+        timeoutAt?: number
+        timeoutCancelled?: boolean
+        freeText?: string
+        timedOut?: boolean
         resolved?: string
         resolvedMessage?: HilResolvedMessage
         // question 卡已答内容 (key = q.name/header || question, value = 选项 label 逗号串或自由文本);
         // 存进会话项而非组件 state, 使已答态在卡片上持久可见 (勾选/文本回显)。
         answers?: Record<string, string>
+        answerDetails?: HilAnswerDetails
+        selectedPaperIds?: string[]
         // permission detail lifted from the POLICY_ASK metadata (native path) so the card can
         // render a clean command block + scope-aware Allow instead of a raw `body` dump.
         command?: string
@@ -739,6 +790,7 @@ export type ConvItem = TurnOwned &
         prefixKind?: string // shell_prefix | file_dir | web_host
         path?: string
         diff?: string
+        changes?: Record<string, unknown>[]
         networkTarget?: string
         permissions?: Record<string, unknown>
         decisionScope?: string
@@ -748,6 +800,7 @@ export type ConvItem = TurnOwned &
           'pending' | 'submitting' | 'failed' | 'resolved' | 'cancelled' | 'stale' | 'unknown'
         lifetime?: 'turn' | 'session'
         blocking?: boolean
+        installationHandled?: boolean
         submissionError?: string
         submissionErrorMessage?: HilSubmissionMessage
         submissionRequestFailure?: ApplicationRequestFailure
@@ -789,17 +842,28 @@ export interface HilOption {
   description?: string
 }
 export interface HilQuestion {
+  requiresUserConfirmation?: boolean
+  requiresHostResponse?: boolean
   presentation?: Record<string, unknown>
   installation?: PluginReport
   component?: PluginReference
   componentData?: Record<string, unknown>
+  componentRevision?: number
   id?: string
   header?: string
   question: string
   options: { label: string; description?: string }[]
   multiSelect?: boolean
   papers?: { id: string; label: string; description?: string }[]
+  resultCardId?: string
 }
+
+export interface HilQuestionAnswer {
+  option_indices: number[]
+  text: string
+}
+
+export type HilAnswerDetails = Record<string, HilQuestionAnswer>
 
 /** one conversation thread = main session OR a parallel sub-session, each a real
  *  backend serve session. The UI renders all threads identically. */
@@ -819,7 +883,9 @@ export const PLAN_EXECUTION_TIMING_POLICY = 'leaf-execution-v1'
 
 /** 显式计划树或原生平铺快照中的一步；每次快照整列替换。 */
 export interface PlanSnapshotUI {
+  estimate?: { lower_seconds: number; upper_seconds: number } | null
   sequence: number
+  explanation?: string | null
   turnId?: string
   timestamp: number
   planId?: string
@@ -979,6 +1045,7 @@ export interface QueuedMessage {
       [key: string]: unknown
     }
   }>
+  retryBlockedErrorCode?: string
   safeErrorCode?: string
   safeErrorDetails?: Record<string, string>
   /** Local outbox rows have not yet been confirmed in the server queue. */

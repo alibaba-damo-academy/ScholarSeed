@@ -41,6 +41,8 @@ class ModelCatalogEntry:
     capabilities: ModelCapabilities = ModelCapabilities()
     context_window: int | None = None
     approval_model_ref: str = ""
+    # Opaque identity of the connection supplying a native catalog definition.
+    native_catalog_source: str = ""
 
 
 @dataclass(frozen=True)

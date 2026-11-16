@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "empty-document",
+  "revision": "1",
+  "name": "空内容文档输入",
+  "description": "用于空内容文档保存专项的合成原始文件，不包含产品状态或保存结果。",
+  "source": {
+    "kind": "synthetic",
+    "origin": "Repository-authored empty Markdown input for save evaluation.",
+    "rights": "Synthetic repository input containing no third-party or user data; repository license applies."
+  },
+  "files": [
+    {
+      "id": "empty-markdown",
+      "source": "files/empty.md",
+      "target": "empty.md",
+      "mediaType": "text/markdown",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ]
+}

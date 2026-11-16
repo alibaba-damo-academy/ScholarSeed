@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import base64
 import io
+import logging
 import zipfile
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any, Mapping
 
-from service.capabilities.service.descriptor import inspect_plugin
+from packaging.version import Version
+
+from service.capabilities.service.descriptor import HOST_INCOMPATIBLE, inspect_plugin
 from service.capabilities.service.install import MAX_UNCOMPRESSED_BYTES, ORIGIN_FILE_NAME
 from service.capabilities.service.package import (
     MAX_FILE_BYTES,
@@ -19,6 +22,8 @@ from service.capabilities.service.package import (
     safe_path,
 )
 from service.capabilities.service.utils import json_object
+
+logger = logging.getLogger(__name__)
 
 PLUGIN_ORIGIN_KIND = "local-plugin"
 PLUGIN_CAPABILITIES = (
@@ -34,7 +39,6 @@ PLUGIN_BUILTIN_SOURCE = "builtin"
 PLUGIN_USER_SOURCE = "user"
 PLUGIN_SELECTION_SLOT = "literature.selection"
 PLUGIN_AUTHORIZATION_SLOT = "literature.authorization"
-PLUGIN_OUTLINE_SLOT = "literature.outline"
 PLUGIN_QUESTION_SLOT = "interaction.question"
 PLUGIN_DISPLAY_PREFIX = "display."
 
@@ -96,7 +100,15 @@ def installed_snapshot(
         available_capabilities=capabilities,
     )
     if not report["valid"]:
-        raise ValueError("plugin_contract_incompatible")
+        errors = {issue["code"] for issue in report["issues"] if issue["severity"] == "error"}
+        if not bundled or errors != {HOST_INCOMPATIBLE}:
+            raise ValueError("plugin_contract_incompatible")
+        logger.warning(
+            "host_incompatible bundled_plugin=%s host=%s declared=%s",
+            package.name,
+            Version(host_version),
+            report["descriptor"]["host"],
+        )
     if not bundled:
         _verify_origin(root, package.fingerprint, report["descriptor"]["capabilities"])
     return {

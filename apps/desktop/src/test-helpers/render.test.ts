@@ -3,12 +3,21 @@ import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import test, { type TestContext } from 'node:test'
+import { setImmediate } from 'node:timers/promises'
 import { chromium, type Browser } from '@playwright/test'
 import { createServer, type ViteDevServer } from 'vite'
 
 import { RenderFailure, renderFixture, renderServers } from './render.ts'
 
 const CACHE_ROOT = path.resolve(import.meta.dirname, '../../node_modules/.cache')
+
+function deferred() {
+  let resolve!: () => void
+  const promise = new Promise<void>((finish) => {
+    resolve = finish
+  })
+  return { promise, resolve }
+}
 
 async function root(
   context: Pick<TestContext, 'after'>,
@@ -41,10 +50,22 @@ test('shared renderer resources keep each case isolated and close before process
       const page = await active.page(child)
       await page.goto(active.url)
       assert.equal(await page.evaluate('localStorage.getItem("case")'), null)
+      assert.equal(await page.evaluate('sessionStorage.getItem("case")'), null)
       assert.deepEqual(await page.context().cookies(), [])
       assert.equal(await page.evaluate('"caseValue" in window'), false)
+      if (iteration === 'first') {
+        await page.route('**/case-state', (route) =>
+          route.fulfill({ status: 201, body: 'first-only route' })
+        )
+      }
+      const routed = await page.evaluate(async () => {
+        const response = await fetch('/case-state')
+        return { status: response.status, text: await response.text() }
+      })
+      assert.equal(routed.status, iteration === 'first' ? 201 : 200)
+      assert.equal(routed.text.includes('first-only route'), iteration === 'first')
       await page.evaluate(
-        `localStorage.setItem("case", ${JSON.stringify(iteration)}); window.caseValue = ${JSON.stringify(iteration)}`
+        `localStorage.setItem("case", ${JSON.stringify(iteration)}); sessionStorage.setItem("case", ${JSON.stringify(iteration)}); window.caseValue = ${JSON.stringify(iteration)}`
       )
       await page.context().addCookies([{ name: 'case', value: iteration, url: active.url }])
     })
@@ -144,7 +165,7 @@ test('browser cleanup failure does not prevent listener cleanup or hide the surv
   const failure = new Error('injected browser close failure')
   const fixture = await renderFixture(directory, {
     launch: async () => {
-      browser = await chromium.launch({ headless: true })
+      browser = await chromium.launch({ headless: true, channel: process.env.PLAYWRIGHT_CHANNEL })
       recover = browser.close.bind(browser)
       browser.close = async () => {
         throw failure
@@ -187,6 +208,117 @@ test('two fixtures with the same source root never share an optimizer cache or l
   assert.equal(existsSync(second.server.config.cacheDir), true)
   await second.close()
   assert.equal(second.server.httpServer?.listening, false)
+})
+
+test(
+  'render fixture closes its server only after an active optimizer write finishes',
+  { timeout: 15_000 },
+  async (context) => {
+    const owned: { fixture?: Awaited<ReturnType<typeof renderFixture>> } = {}
+    const directory = await root(context, () => [owned.fixture?.close() ?? Promise.resolve()])
+    const writing = deferred()
+    const resumeWrite = deferred()
+    const browserClosed = deferred()
+    const order: string[] = []
+    context.signal.addEventListener('abort', () => resumeWrite.resolve(), { once: true })
+    const fixture = await renderFixture(directory, {
+      create: async (config) => {
+        const server = await createServer({
+          ...config,
+          optimizeDeps: {
+            include: ['react'],
+            rolldownOptions: {
+              plugins: [
+                {
+                  name: 'observe-render-fixture-optimizer-write',
+                  async generateBundle() {
+                    writing.resolve()
+                    await resumeWrite.promise
+                  },
+                  writeBundle() {
+                    order.push('optimizer')
+                  },
+                },
+              ],
+            },
+          },
+        })
+        const close = server.close.bind(server)
+        server.close = () => {
+          order.push('server')
+          return close()
+        }
+        return server
+      },
+      launch: async () => {
+        try {
+          const browser = await chromium.launch({
+            headless: true,
+            channel: process.env.PLAYWRIGHT_CHANNEL,
+          })
+          const close = browser.close.bind(browser)
+          browser.close = async () => {
+            await close()
+            browserClosed.resolve()
+          }
+          return browser
+        } catch (error) {
+          resumeWrite.resolve()
+          throw error
+        }
+      },
+    })
+    owned.fixture = fixture
+    await writing.promise
+    const closed = fixture.close()
+    try {
+      await browserClosed.promise
+      await setImmediate()
+    } finally {
+      resumeWrite.resolve()
+    }
+    await closed
+    assert.ok(order.includes('optimizer'))
+    assert.equal(order.at(-1), 'server')
+    assert.equal(fixture.server.httpServer?.listening, false)
+    assert.equal(existsSync(fixture.server.config.cacheDir), false)
+  }
+)
+
+test('an undrained optimizer fails cleanup but still closes the browser and listener', async (context) => {
+  const directory = await root(context)
+  const fixture = await renderFixture(directory, {
+    create: (config) =>
+      createServer({ ...config, optimizeDeps: { include: ['react'], noDiscovery: true } }),
+    optimizerDrainTimeoutMs: 100,
+  })
+  const optimizer = fixture.server.environments.client.depsOptimizer
+  const pending = deferred()
+  const cache = fixture.server.config.cacheDir
+  try {
+    assert.ok(optimizer)
+    await optimizer.metadata.discovered.react?.processing
+    const optimized = optimizer.metadata.optimized.react
+    assert.ok(optimized)
+    optimizer.metadata.discovered.react = { ...optimized, processing: pending.promise }
+    await assert.rejects(
+      fixture.close(),
+      (error) =>
+        error instanceof RenderFailure &&
+        error.errors.some(
+          (item) =>
+            item instanceof Error &&
+            item.message === `render optimizer did not drain; retained cache: ${cache}`
+        )
+    )
+    assert.equal(fixture.browser.isConnected(), false)
+    assert.equal(fixture.server.httpServer?.listening, false)
+    assert.equal(existsSync(cache), true)
+  } finally {
+    pending.resolve()
+    if (fixture.server.httpServer?.listening) await fixture.close()
+    await rm(cache, { recursive: true, force: true })
+  }
 })
 
 test('startup and actual server cleanup failures remain visible until explicit recovery', async (context) => {

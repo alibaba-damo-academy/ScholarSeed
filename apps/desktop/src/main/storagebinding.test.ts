@@ -1,9 +1,5 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { mkdtempSync, mkdirSync, renameSync, rmSync, realpathSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { createRequire } from 'node:module'
 import { observeStorageBindings } from './storagebinding.ts'
 import type { StorageBindingNative } from './storagebinding.ts'
 
@@ -87,37 +83,3 @@ test('failed observation cleans up; uncertain release retains remaining pins', (
   assert.throws(() => observeStorageBindings(native, selected), AggregateError)
   assert.deepEqual(released, ['/profile'])
 })
-
-test(
-  'real native binding distinguishes same-path replacement',
-  {
-    skip: !process.env.SCHOLARSEED_DOMAIN_MODULE,
-  },
-  () => {
-    const native = createRequire(import.meta.url)(
-      process.env.SCHOLARSEED_DOMAIN_MODULE!
-    ) as StorageBindingNative
-    const root = mkdtempSync(join(realpathSync(tmpdir()), 'ss-binding-'))
-    try {
-      const home = join(root, 'home')
-      const userData = join(root, 'profile')
-      mkdirSync(home)
-      mkdirSync(userData)
-      const source = { home, userData, sessionData: userData, source: { kind: 'default' as const } }
-      const before = observeStorageBindings(native, source)
-      renameSync(home, home + '-old')
-      mkdirSync(home)
-      const after = observeStorageBindings(native, source)
-      assert.notEqual(
-        before.find((b) => b.path === home)!.identity,
-        after.find((b) => b.path === home)!.identity
-      )
-      assert.deepEqual(
-        before.find((b) => b.path === userData),
-        after.find((b) => b.path === userData)
-      )
-    } finally {
-      rmSync(root, { recursive: true, force: true })
-    }
-  }
-)

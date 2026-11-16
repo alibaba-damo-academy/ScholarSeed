@@ -1,7 +1,8 @@
 import React from 'react'
 import { useTranslation } from 'react-i18next'
-import { ChevronRight, FolderTree, Folders } from 'lucide-react'
+import { ChevronRight, FolderTree, Folders, Globe } from 'lucide-react'
 
+import { availabilityPolicy } from '../../app/policy'
 import { Button } from '../../components/ui'
 import { useApp } from '../../store'
 import { resolveProjectTabSelection } from '../workbench/tabs'
@@ -11,7 +12,7 @@ export function NewTab({ tabId }: { tabId?: string }): React.JSX.Element {
   const { t } = useTranslation('workbench')
   const { set } = useApp()
   const workspace = useWorkspaceController()
-  const choose = (kind: 'library' | 'explorer'): void => {
+  const choose = (kind: 'library' | 'explorer' | 'browser'): void => {
     if (!tabId) return
     set((current) =>
       resolveProjectTabSelection(current.tabs, tabId, kind, workspace.pageTabsInLeaf(tabId))
@@ -44,6 +45,19 @@ export function NewTab({ tabId }: { tabId?: string }): React.JSX.Element {
           {t('tabs.projectExplorer')}
           <ChevronRight className="ml-auto" />
         </Button>
+        {availabilityPolicy.browserEnabled && (
+          <div className="relative before:pointer-events-none before:absolute before:top-0 before:left-[var(--vds-space-4)] before:right-[var(--vds-space-4)] before:border-t before:border-[var(--vds-divider-default)]">
+            <Button
+              variant="ghost"
+              icon={<Globe />}
+              className="!h-auto w-full !justify-start !rounded-[var(--vds-radius-4)] !border-0 !p-[var(--vds-space-4)] text-[var(--vds-text-secondary)]"
+              onClick={() => choose('browser')}
+            >
+              {t('tabs.browser')}
+              <ChevronRight className="ml-auto" />
+            </Button>
+          </div>
+        )}
       </div>
     </div>
   )

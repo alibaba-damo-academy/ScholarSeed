@@ -133,6 +133,7 @@
     "total": "共 {{total}} 条",
     "select": "选择 {{title}}",
     "open": "打开网页：{{title}}",
+    "openFailed": "无法在内置浏览器打开网页，请重试。",
     "destination": "资料库/{{path}}",
     "library": "资料库",
     "skillsUnavailable": "当前运行时不支持技能执行，无法启动全网搜索。"
@@ -523,11 +524,7 @@
     "completedFiles": "已审阅 {{count}} 个文件",
     "outcome": "已接受 {{accepted}} · 已拒绝 {{rejected}} · 失败 {{failed}}",
     "outcomeWithRevisions": "已接受 {{accepted}} · 已修订 {{revised}} · 已拒绝 {{rejected}} · 失败 {{failed}}",
-    "agentChange": "Agent 改动",
-    "externalChange": "外部改动",
-    "calculatingDiff": "正在统计文件差异",
-    "modified": "已修改",
-    "review": "审核"
+    "review": "查看"
   },
   "suggestion": {
     "labelExplain": "AI 解释",

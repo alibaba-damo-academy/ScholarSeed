@@ -1,8 +1,0 @@
-{
-  "scenarioId": "conversation-management",
-  "version": "2026-10-25",
-  "provisional": true,
-  "metrics": {
-    "taskCompleted": true
-  }
-}

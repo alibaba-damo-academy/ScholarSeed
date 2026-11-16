@@ -134,6 +134,7 @@
     "total": "{{total}} results",
     "select": "Select {{title}}",
     "open": "Open web page: {{title}}",
+    "openFailed": "Unable to open this page in the built-in browser. Please try again.",
     "destination": "Resource library/{{path}}",
     "library": "Resource library",
     "skillsUnavailable": "This runtime does not support skill execution, so web search cannot start."
@@ -220,7 +221,7 @@
     "linkedName": "{{name}} (linked file outside the project; changes affect the original)",
     "more": "More actions for {{name}}",
     "noMatches": "No resources match “{{query}}”.",
-    "empty": "No resources yet. Import materials for your project to get started.",
+    "empty": "No resources yet. Import resources for your project to get started.",
     "loading": "Reading the project directory…",
     "loadFailed": "Could not read the project directory. The local service may not be ready. Refresh to try again.",
     "import": "Import resources",
@@ -419,11 +420,11 @@
     "scenes": "Choose saving scenarios",
     "scenesHelp": "Select multiple scenarios; duplicate types are merged.",
     "reading": "Reading and writing",
-    "readingDescription": "Notes, papers and text materials",
+    "readingDescription": "Notes, papers and text resources",
     "data": "Tables and data",
     "dataDescription": "Spreadsheets and structured data",
     "office": "Office documents",
-    "officeDescription": "Reports, presentations and office materials",
+    "officeDescription": "Reports, presentations and office resources",
     "code": "Code",
     "codeDescription": "Source code and project configuration",
     "customized": "Customized; the actual file types and rules apply.",
@@ -532,11 +533,7 @@
     "completedFiles": "{{count}} files reviewed",
     "outcome": "Accepted {{accepted}} · Rejected {{rejected}} · Failed {{failed}}",
     "outcomeWithRevisions": "Accepted {{accepted}} · Revised {{revised}} · Rejected {{rejected}} · Failed {{failed}}",
-    "agentChange": "Agent changes",
-    "externalChange": "External changes",
-    "calculatingDiff": "Calculating file differences",
-    "modified": "Modified",
-    "review": "Review"
+    "review": "View"
   },
   "suggestion": {
     "labelExplain": "AI Explain",

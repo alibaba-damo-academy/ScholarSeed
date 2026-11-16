@@ -3,6 +3,7 @@
 #import "binding.h"
 #import "cleanup.h"
 #import "observation.h"
+#import "retirement.h"
 #include <sys/stat.h>
 #include <sys/file.h>
 #include <fcntl.h>
@@ -250,6 +251,38 @@ BOOL SSPreparationOpenMaintenanceDirectory(NSString *directory, NSError **error)
   if (!SSCleanupMaintenanceSnapshot(error)) return NO;
   return SSPreparationOpenDirectoryMode(directory, NO, YES, error);
 }
+BOOL SSPreparationRetireRequest(NSDictionary *entry, NSError **error) {
+    if (SSPreparationCloseUncertain) return Fail(error, SSPreparationUncertaintyCode());
+    if (SSPreparationFD < 0 || SSPreparationLockFD < 0) return Fail(error, EBADF);
+    if (SSPreparationReadOnly) return Fail(error, EROFS);
+    if (!SSObservationDirectorySnapshot(SSPreparationFD, SSPreparationLockFD, SSPreparationLock,
+        SSPreparationObservedDirectory, error)) return NO;
+    NSDictionary *cleanup = SSCleanupReadOnlySnapshot(error);
+    if (!cleanup || ![cleanup[@"recordCount"] isEqual:@0]) return Fail(error, EBUSY);
+    if (![entry isKindOfClass:NSDictionary.class] || entry.count != 5 ||
+        !SSRetirementPath(entry[@"source"]) || !SSRetirementPath(entry[@"target"]) ||
+        !SSRetirementHash(entry[@"request"]) || !SSRetirementHash(entry[@"journal"]) || !SSRetirementHash(entry[@"operation"])) return Fail(error, EINVAL);
+    NSDictionary *observed = SSObservationReadAt(SSPreparationFD, SSPreparationJournal, SSPreparationMaximumBytes, YES, NO, error);
+    if (!observed) return NO;
+    NSDictionary *journal = [NSPropertyListSerialization propertyListWithData:observed[@"data"] options:0 format:NULL error:error];
+    if (![journal isKindOfClass:NSDictionary.class] || ![journal[@"schema"] isEqual:SSPreparationSchema] ||
+        ![journal[@"record"] isEqual:SSPreparationRecord ?: @{}]) return Fail(error, ESTALE);
+    NSArray *retired = SSRetirementRead(SSPreparationFD, error);
+    if (!retired) return NO;
+    if (!SSPreparationRecord) {
+        return [retired containsObject:entry] ? YES : Fail(error, ESTALE);
+    }
+    if (![entry[@"journal"] isEqual:observed[@"snapshot"][@"sha256"]] ||
+        ![entry[@"source"] isEqual:SSPreparationRecord[@"source"][@"path"]] ||
+        ![entry[@"target"] isEqual:SSPreparationRecord[@"target"][@"path"]]) return Fail(error, ESTALE);
+    if (!SSRetirementAppend(SSPreparationFD, entry, error)) return UncertainIO(error, error && *error ? (int)(*error).code : EIO);
+    // The deny ledger is durable before the old journal can be advanced. No
+    // candidate or old installation path is removed; the archive owns review.
+    SSPreparationRecord = nil;
+    BOOL saved = Save(error);
+    if (!saved) return UncertainIO(error, error && *error ? (int)(*error).code : EIO);
+    return YES;
+}
 static BOOL SSPreparationOpenOwner(NSString *label, NSError **error) {
     if (SSPreparationCloseUncertain) return Fail(error, SSPreparationUncertaintyCode());
     NSCharacterSet *invalid = [[NSCharacterSet characterSetWithCharactersInString:@"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-"] invertedSet];
@@ -384,9 +417,20 @@ static BOOL PublishedCandidateMatches(void) {
 }
 static BOOL FailurePublished(void) {
     if (SSPreparationCloseUncertain) return NO;
-    if (!ValidTerminalRecord(SSPreparationRecord) || !FailureTargetRestored()) return NO;
+    if (!ValidTerminalRecord(SSPreparationRecord)) return NO;
     if (SSPreparationRecord[@"terminalVersion"]) {
-        return SSPreparationRecord[@"failure"][@"publication"] != nil && PublishedCandidateMatches();
+        // Publication commits successful restoration of the historical target.
+        // A later installation may replace that bundle. Only a different source
+        // can advance this journal; the failed source still cannot replay.
+        NSDictionary *expected = SSPreparationRecord[@"target"];
+        NSDictionary *current = Capture(expected[@"path"], YES);
+        NSString *renamed = SSPreparationRecord[@"failure"][@"target"][@"path"];
+        if (![renamed isEqual:expected[@"path"]]) {
+            struct stat remaining;
+            if (lstat(renamed.fileSystemRepresentation, &remaining) == 0 || errno != ENOENT) return NO;
+        }
+        return SSPreparationRecord[@"failure"][@"publication"] != nil &&
+            current && [current[@"parent"] isEqual:expected[@"parent"]] && PublishedCandidateMatches();
     }
     return FailureTargetRestored() && SSReadinessFailedRequestBound([NSURL fileURLWithPath:SSPreparationRecord[@"source"][@"path"]],
         [NSURL fileURLWithPath:SSPreparationRecord[@"target"][@"path"]], SSPreparationRecord[@"binding"]);
@@ -479,7 +523,7 @@ BOOL SSPreparationReconcile(NSURL *source, NSURL *target, NSDictionary *binding,
   NSDictionary *qualified = SSObservationDirectorySnapshot(SSPreparationFD, SSPreparationLockFD, SSPreparationLock, SSPreparationObservedDirectory, error);
   NSDictionary *observed = SSObservationReadAt(SSPreparationFD, SSPreparationJournal, (NSUInteger)SSPreparationMaximumBytes, YES, NO, error);
   NSDictionary *journal = observed ? [NSPropertyListSerialization propertyListWithData:observed[@"data"] options:0 format:NULL error:error] : nil;
-  if (!cleanup || !qualified || ![journal isKindOfClass:NSDictionary.class] || journal.count != 2 || ![journal[@"schema"] isEqual:SSPreparationSchema] || ![journal[@"record"] isEqual:record]) return Fail(error, ESTALE);
+  if (!cleanup || ![cleanup[@"recordCount"] isEqual:@0] || !qualified || ![journal isKindOfClass:NSDictionary.class] || journal.count != 2 || ![journal[@"schema"] isEqual:SSPreparationSchema] || ![journal[@"record"] isEqual:record]) return Fail(error, ESTALE);
   if (!AbsentPath(oldSource, error) || !AbsentPath(oldDirectory, error)) return NO;
   if (!verify(error)) return Fail(error, EPERM);
   NSDictionary *fresh = SSObservationReadAt(SSPreparationFD, SSPreparationJournal, (NSUInteger)SSPreparationMaximumBytes, YES, NO, error);
@@ -488,6 +532,12 @@ BOOL SSPreparationReconcile(NSURL *source, NSURL *target, NSDictionary *binding,
       ![qualified isEqual:SSObservationDirectorySnapshot(SSPreparationFD, SSPreparationLockFD, SSPreparationLock, SSPreparationObservedDirectory, error)] ||
       ![fresh[@"snapshot"] isEqual:observed[@"snapshot"]]) return Fail(error, ESTALE);
   if (!AbsentPath(oldSource, error) || !AbsentPath(oldDirectory, error) || !ArchiveJournal(observed[@"data"], SSPreparationSupersededPrefix, error)) return NO;
+  // The original legacy request bytes no longer exist. Bind this deny-only
+  // decision to its archived journal rather than inventing an old request.
+  NSString *journalDigest = SSObservationDigest(observed[@"data"]);
+  NSDictionary *retirement = @{@"operation":record[@"binding"][@"requestId"], @"request":journalDigest,
+    @"journal":journalDigest, @"source":oldSource, @"target":record[@"target"][@"path"]};
+  if (!SSRetirementAppend(SSPreparationFD, retirement, error)) return UncertainIO(error, errno);
   SSPreparationRecord = nil;
   if (!Save(error)) { SSPreparationRecord = [record mutableCopy]; return NO; }
   NSLog(@"[shipit-preparation] event=orphan-superseded journal=%@", SSObservationDigest(observed[@"data"]));
@@ -501,6 +551,7 @@ NSURL *SSPreparationCopy(NSURL *sourceURL, NSURL *targetURL, NSDictionary *bindi
     if (SSPreparationRecord[@"ownership"]) { Fail(error, ECANCELED); return nil; }
     NSDictionary *source = Capture(sourceURL.path, YES);
     if (!source) { Fail(error, errno); return nil; }
+    if (!SSRetirementAllows(SSPreparationFD, [NSURL fileURLWithPath:source[@"path"]], error)) return nil;
     NSDictionary *target = Capture(targetURL.path, YES);
     if (!target) { Fail(error, errno); return nil; }
     NSError *ackError = nil;
@@ -665,6 +716,101 @@ static NSDictionary *OrphanRefused(NSError **error, NSString *stage, int code) {
   Fail(error, code);
   return nil;
 }
+// Explicit retirement never infers installation success. It accepts historical
+// captures, including missing sources, only to archive and deny that exact request.
+static NSDictionary *RetirementEntry(NSDictionary *proof) {
+  NSData *journal = ProofBytes(proof[@"journalBytes"]), *state = ProofBytes(proof[@"stateBytes"]);
+  if (!journal || !state) return nil;
+  return @{@"operation":proof[@"binding"][@"requestId"], @"request":SSObservationDigest(state),
+    @"journal":SSObservationDigest(journal), @"source":proof[@"source"][@"path"], @"target":proof[@"target"][@"path"]};
+}
+BOOL SSPreparationArchiveSnapshot(NSDictionary *proof, NSError **error) {
+  NSData *journal = ProofBytes(proof[@"journalBytes"]), *state = ProofBytes(proof[@"stateBytes"]);
+  if (!journal || !state || SSPreparationReadOnly || SSPreparationFD < 0) return Fail(error, EINVAL);
+  return ArchiveJournal(journal, SSPreparationSupersededPrefix, error) && ArchiveJournal(state, SSPreparationStatePrefix, error);
+}
+NSDictionary *SSPreparationRetirementSnapshot(NSURL *source, NSURL *target, NSDictionary *binding,
+    NSURL *state, NSDictionary *expected, SSPreparationActivity (^activity)(void), NSError **error) {
+  if (SSPreparationCloseUncertain || SSPreparationReadOnly || SSPreparationFD < 0 || !SSBindingValid(binding) || !activity ||
+      !source.isFileURL || source.host.length || !target.isFileURL || target.host.length) { Fail(error, EINVAL); return nil; }
+  if (expected && (![expected isKindOfClass:NSDictionary.class] || (expected.count != 11 && expected.count != 12) ||
+      ![expected[@"kind"] isEqual:@"retired-preparation-observation"] || ![expected[@"binding"] isEqual:binding])) { Fail(error, EINVAL); return nil; }
+  if (activity() != SSPreparationActivityAbsent) return OrphanRefused(error, @"retirement-activity", EBUSY);
+  NSDictionary *cleanup = SSCleanupMaintenanceSnapshot(error);
+  NSDictionary *qualification = SSObservationDirectorySnapshot(SSPreparationFD, SSPreparationLockFD, SSPreparationLock, SSPreparationObservedDirectory, error);
+  NSDictionary *current = SSObservationReadAt(SSPreparationFD, SSPreparationJournal, SSPreparationMaximumBytes, YES, NO, error);
+  NSDictionary *loaded = current ? [NSPropertyListSerialization propertyListWithData:current[@"data"] options:0 format:NULL error:error] : nil;
+  if (!cleanup || ![cleanup[@"recordCount"] isEqual:@0] || !qualification || loaded.count != 2 ||
+      ![loaded[@"schema"] isEqual:SSPreparationSchema] || ![loaded[@"record"] isEqual:SSPreparationRecord ?: @{}]) return OrphanRefused(error, @"retirement-journal", ESTALE);
+  NSData *journalBytes = expected ? ProofBytes(expected[@"journalBytes"]) : current[@"data"];
+  NSDictionary *journal = journalBytes ? [NSPropertyListSerialization propertyListWithData:journalBytes options:0 format:NULL error:error] : nil;
+  NSDictionary *record = journal[@"record"];
+  if (journal.count != 2 || ![journal[@"schema"] isEqual:SSPreparationSchema] ||
+      ![record isKindOfClass:NSDictionary.class] || !StrictCapture(record[@"source"], YES) || !StrictCapture(record[@"target"], YES) ||
+      !SSRetirementPath(source.path) || ![record[@"source"][@"path"] isEqual:source.path] ||
+      ![record[@"target"][@"path"] isEqual:target.path] || Overlaps(source.path, target.path) ||
+      (record[@"binding"] && ![record[@"binding"] isEqual:binding])) return OrphanRefused(error, @"retirement-scope", ESTALE);
+  NSDictionary *targetCapture = Capture(target.path, YES);
+  if (!targetCapture || ![targetCapture[@"path"] isEqual:target.path]) return OrphanRefused(error, @"retirement-target", ESTALE);
+  if (SSPreparationRecord) {
+    if (![current[@"data"] isEqual:journalBytes] || (expected && ![current[@"snapshot"] isEqual:expected[@"journal"]])) return OrphanRefused(error, @"retirement-original", ESTALE);
+  } else {
+    NSDictionary *entry = expected ? RetirementEntry(expected) : nil;
+    if (!entry || ![SSRetirementRead(SSPreparationFD, error) containsObject:entry] ||
+        !ArchiveMatches(journalBytes, SSPreparationSupersededPrefix, error)) return OrphanRefused(error, @"retirement-ledger", ESTALE);
+  }
+  NSDictionary *observed = ObserveState(state, error);
+  int missing = errno;
+  NSData *stateBytes = expected ? ProofBytes(expected[@"stateBytes"]) : observed[@"data"];
+  if (!observed && (missing != ENOENT || SSPreparationRecord || !expected || !ArchiveMatches(stateBytes, SSPreparationStatePrefix, error)))
+    return OrphanRefused(error, @"retirement-state", ESTALE);
+  if (observed && expected && (![observed[@"data"] isEqual:stateBytes] || ![observed[@"snapshot"] isEqual:expected[@"state"]]))
+    return OrphanRefused(error, @"retirement-state-changed", ESTALE);
+  NSDictionary *request = stateBytes ? [NSJSONSerialization JSONObjectWithData:stateBytes options:0 error:NULL] : nil;
+  if (![request isKindOfClass:NSDictionary.class] || request.count != (request[@"binding"] ? 7u : 6u) ||
+      (request[@"binding"] && ![request[@"binding"] isEqual:binding]) || ![request[@"bundleIdentifier"] isKindOfClass:NSString.class] ||
+      !SSObservationBoolean(request[@"installationAuthorized"]) || !SSObservationBoolean(request[@"launchAfterInstallation"]) ||
+      !SSObservationBoolean(request[@"useUpdateBundleName"])) return OrphanRefused(error, @"retirement-request", EINVAL);
+  for (NSArray *pair in @[@[@"updateBundleURL", source.path], @[@"targetBundleURL", target.path]]) {
+    id text = request[pair[0]]; NSURL *url = [text isKindOfClass:NSString.class] ? [NSURL URLWithString:text] : nil;
+    if (!url.isFileURL || url.host.length || url.query || url.fragment || ![url.path isEqual:pair[1]]) return OrphanRefused(error, @"retirement-url", EINVAL);
+  }
+  NSDictionary *proof = @{@"kind":@"retired-preparation-observation", @"binding":binding, @"bundleIdentifier":request[@"bundleIdentifier"],
+    @"source":record[@"source"], @"target":targetCapture, @"journalBytes":[journalBytes base64EncodedStringWithOptions:0],
+    @"journal":expected ? expected[@"journal"] : current[@"snapshot"], @"stateBytes":[stateBytes base64EncodedStringWithOptions:0],
+    @"state":expected ? expected[@"state"] : observed[@"snapshot"], @"cleanup":cleanup, @"qualification":qualification};
+  if (expected) for (NSString *key in proof) if (![proof[key] isEqual:expected[key]]) return OrphanRefused(error, @"retirement-proof", ESTALE);
+  if (activity() != SSPreparationActivityAbsent || ![targetCapture isEqual:Capture(target.path, YES)] ||
+      ![cleanup isEqual:SSCleanupMaintenanceSnapshot(error)] ||
+      ![qualification isEqual:SSObservationDirectorySnapshot(SSPreparationFD, SSPreparationLockFD, SSPreparationLock, SSPreparationObservedDirectory, error)] ||
+      ![current[@"snapshot"] isEqual:SSObservationReadAt(SSPreparationFD, SSPreparationJournal, SSPreparationMaximumBytes, YES, NO, error)[@"snapshot"]])
+    return OrphanRefused(error, @"retirement-final", ESTALE);
+  NSDictionary *after = ObserveState(state, error);
+  if (observed ? ![after[@"snapshot"] isEqual:observed[@"snapshot"]] : after != nil || errno != ENOENT) return OrphanRefused(error, @"retirement-final-state", ESTALE);
+  return proof;
+}
+BOOL SSPreparationRetirementRepair(NSURL *source, NSURL *target, NSDictionary *binding, NSURL *state,
+    NSDictionary *expected, SSPreparationActivity (^activity)(void), BOOL (^verify)(NSError **), NSError **error) {
+  if (!expected || !verify || !SSPreparationRetirementSnapshot(source, target, binding, state, expected, activity, error) || !verify(error) ||
+      !SSPreparationRetirementSnapshot(source, target, binding, state, expected, activity, error) || !SSPreparationArchiveSnapshot(expected, error)) return NO;
+  if (SSPreparationRecord) {
+    if (!SSRetirementAppend(SSPreparationFD, RetirementEntry(expected), error)) return UncertainIO(error, errno);
+    SSPreparationRecord = nil;
+    if (!Save(error)) return UncertainIO(error, errno);
+  }
+  if (!SSPreparationRetirementSnapshot(source, target, binding, state, expected, activity, error)) return NO;
+  NSDictionary *observed = ObserveState(state, error);
+  if (!observed) return errno == ENOENT ? YES : NO;
+  int parent = OpenDirectory(state.path.stringByDeletingLastPathComponent);
+  if (parent < 0) return Fail(error, errno);
+  NSDictionary *current = SSObservationReadAt(parent, state.lastPathComponent, SSPreparationMaximumBytes, NO, NO, error);
+  BOOL removed = [current[@"snapshot"] isEqual:expected[@"state"]] && unlinkat(parent, state.lastPathComponent.fileSystemRepresentation, 0) == 0;
+  int code = errno;
+  if (removed && fsync(parent) != 0) { removed = NO; code = errno; UncertainIO(NULL, code); }
+  if (close(parent) != 0) return UncertainIO(error, errno);
+  if (!removed) return Fail(error, code ?: ESTALE);
+  return SSPreparationRetirementSnapshot(source, target, binding, state, expected, activity, error) != nil;
+}
 static NSDictionary *OrphanObservation(NSURL *source, NSURL *target, NSDictionary *binding,
     NSURL *state, NSDictionary *expected, SSPreparationActivity (^activity)(void), BOOL planning, NSError **error) {
   if (SSPreparationCloseUncertain) { Fail(error, SSPreparationUncertaintyCode()); return nil; }
@@ -677,7 +823,7 @@ static NSDictionary *OrphanObservation(NSURL *source, NSURL *target, NSDictionar
   NSDictionary *qualification = SSObservationDirectorySnapshot(SSPreparationFD, SSPreparationLockFD, SSPreparationLock, SSPreparationObservedDirectory, error);
   NSDictionary *currentJournal = SSObservationReadAt(SSPreparationFD, SSPreparationJournal, (NSUInteger)SSPreparationMaximumBytes, YES, NO, error);
   NSDictionary *journal = currentJournal ? [NSPropertyListSerialization propertyListWithData:currentJournal[@"data"] options:0 format:NULL error:error] : nil;
-  if (!cleanup || !qualification || ![journal isKindOfClass:NSDictionary.class] || journal.count != 2 || ![journal[@"schema"] isEqual:SSPreparationSchema] || ![journal[@"record"] isKindOfClass:NSDictionary.class]) return OrphanRefused(error, @"journal", ESTALE);
+  if (!cleanup || ![cleanup[@"recordCount"] isEqual:@0] || !qualification || ![journal isKindOfClass:NSDictionary.class] || journal.count != 2 || ![journal[@"schema"] isEqual:SSPreparationSchema] || ![journal[@"record"] isKindOfClass:NSDictionary.class]) return OrphanRefused(error, @"journal", ESTALE);
   NSData *journalBytes = expected ? ProofBytes(expected[@"journalBytes"]) : currentJournal[@"data"];
   NSDictionary *original = journalBytes ? [NSPropertyListSerialization propertyListWithData:journalBytes options:0 format:NULL error:error] : nil;
   if (![original isKindOfClass:NSDictionary.class]) return OrphanRefused(error, @"journal", ESTALE);
@@ -832,6 +978,7 @@ BOOL SSPreparationRecordFailure(NSURL *source, NSURL *actualTarget, NSDictionary
 SSPreparationFailure SSPreparationRecoverFailure(NSURL *source, NSURL *target, NSDictionary *binding, NSInteger *code, NSError **error) {
     if (SSPreparationCloseUncertain) { Fail(error, SSPreparationUncertaintyCode()); return SSPreparationFailureInvalid; }
     if (SSPreparationReadOnly) { Fail(error, EROFS); return SSPreparationFailureInvalid; }
+    if (!SSRetirementAllows(SSPreparationFD, source, error)) return SSPreparationFailureInvalid;
     if (!SSPreparationRecord[@"failure"]) {
         if (!SSPreparationRecord[@"ownership"]) return SSPreparationFailureNone;
         // No target acquisition is permitted until ownership intent is cleared

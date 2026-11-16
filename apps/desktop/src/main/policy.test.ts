@@ -12,15 +12,241 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve, dirname, basename } from 'node:path'
+import { createRequire } from 'node:module'
+import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 
+import type { DomainNative } from '../../native/domains.cjs'
+import { beginDomains } from '../../native/domains.cjs'
+import { REGISTRY_DIRECTORY } from '../../native/registry.cjs'
+import { DatabaseSync } from 'node:sqlite'
 import { createBrowserPolicy, normalizePolicyOrigin } from './policy.ts'
 import { createBrowserReadGrants } from './grant.ts'
 import { emptyPolicy, parsePolicy } from './policy-record.ts'
 
-const PYTHON = '/usr/bin/python3'
-const persistedTest = process.platform === 'win32' ? test.skip : test
+// The record IO is native now; inject the actual compiled library rather than a
+// host interpreter. SCHOLARSEED_LEASE_LIBRARY selects an explicit build, matching
+// the native contract convention.
+const DESKTOP = fileURLToPath(new URL('../../', import.meta.url))
+const NATIVE = createRequire(import.meta.url)(
+  process.env.SCHOLARSEED_LEASE_LIBRARY ?? resolve(DESKTOP, 'out/main/lease.node')
+) as DomainNative
+const persistedTest = test
+// POSIX mode bits have no Windows equivalent; these authority cases are Darwin-only
+// rather than silently passing on a platform that cannot express the precondition.
+const posixTest = process.platform === 'win32' ? test.skip : test
+// A directory junction is the Windows reparse-point equivalent of a directory
+// symlink; both must be rejected by the pinned-directory qualification.
+function linkDirectory(target: string, path: string): void {
+  symlinkSync(target, path, process.platform === 'win32' ? 'junction' : 'dir')
+}
+
+// Windows refuses to rename a directory while our pinned handle is open, so the
+// macOS directory-replacement injection cannot run there. Inject a leaf-level
+// failure instead; the fail-closed and recovery contract under test is identical.
+function breakPolicyAccess(home: string, otherHome: string): void {
+  if (process.platform === 'win32') {
+    const leaf = join(home, 'browser', 'agent-policy.json')
+    renameSync(leaf, join(home, 'browser', 'agent-policy.saved'))
+    mkdirSync(leaf)
+    return
+  }
+  renameSync(join(home, 'browser'), join(home, 'browser-old'))
+  linkDirectory(otherHome, join(home, 'browser'))
+}
+
+function restorePolicyAccess(home: string): void {
+  if (process.platform === 'win32') {
+    const leaf = join(home, 'browser', 'agent-policy.json')
+    rmSync(leaf, { recursive: true, force: true })
+    renameSync(join(home, 'browser', 'agent-policy.saved'), leaf)
+    return
+  }
+  rmSync(join(home, 'browser'))
+  renameSync(join(home, 'browser-old'), join(home, 'browser'))
+}
+// Isolated coordination sibling: outside the data root, never the real OS account
+// directory, so tests cannot create or mutate the user's actual lock namespace.
+function coordinationFor(home: string): string {
+  const coordination = join(dirname(home), `.coordination-${basename(home)}`)
+  mkdirSync(coordination, { recursive: true })
+  return coordination
+}
+
+const openPolicies = new Set<ReturnType<typeof createBrowserPolicy>>()
+function openPolicy(home: string, native: DomainNative | null = NATIVE) {
+  const policy = createBrowserPolicy(home, native, coordinationFor(home))
+  openPolicies.add(policy)
+  return policy
+}
+
+function closePolicies(policies: ReadonlySet<ReturnType<typeof createBrowserPolicy>>): void {
+  for (const policy of openPolicies) {
+    if (policies.has(policy)) continue
+    policy.close()
+    openPolicies.delete(policy)
+  }
+}
+
+persistedTest('a missing browser directory cannot bypass or retry a durable home barrier', (t) =>
+  withHome((home) => {
+    const coordinator = coordinationFor(home)
+    const migration = beginDomains(NATIVE, coordinator, [home], true)
+    migration.occupy()
+    migration.reserveMutation('browser-policy-test')
+    migration.close()
+    const scans = t.mock.fn(NATIVE.listAt)
+    const transport = new Proxy({} as DomainNative, {
+      get(_target, key) {
+        return key === 'listAt' ? scans : Reflect.get(NATIVE, key)
+      },
+    })
+    const policy = openPolicy(home, transport)
+    const initialScans = scans.mock.callCount()
+    assert.ok(initialScans > 0)
+    assert.equal(policy.effectiveDecision('https://www.bing.com', 'read'), 'block')
+    assert.equal(scans.mock.callCount(), initialScans * 2)
+    assert.equal(existsSync(join(home, 'browser')), false)
+    const recovery = beginDomains(NATIVE, coordinator, [home], true)
+    recovery.occupy()
+    recovery.reserveMutation('browser-policy-test').finish()
+    recovery.close()
+    assert.equal(policy.effectiveDecision('https://www.bing.com', 'read'), 'allow')
+  })
+)
+
+persistedTest('action authorization reuses occupancy but reads once at every fence', (t) =>
+  withHome((home) => {
+    const origin = 'https://example.com'
+    const writer = openPolicy(home)
+    writer.set(origin, 'interact', 'allow')
+    const reads = t.mock.fn(NATIVE.readAt)
+    const scans = t.mock.fn(NATIVE.listAt)
+    const pins = t.mock.fn(NATIVE.pin)
+    const locks = t.mock.fn(NATIVE.acquireAt)
+    const counters = { readAt: reads, listAt: scans, pin: pins, acquireAt: locks }
+    const policy = openPolicy(
+      home,
+      new Proxy({} as DomainNative, {
+        get(_target, key) {
+          return Object.hasOwn(counters, key)
+            ? Reflect.get(counters, key)
+            : Reflect.get(NATIVE, key)
+        },
+      })
+    )
+    const revision = policy.revision()
+    const initialScans = scans.mock.callCount()
+    reads.mock.resetCalls()
+    pins.mock.resetCalls()
+    locks.mock.resetCalls()
+    const durations = Array.from({ length: 20 }, () => {
+      const started = performance.now()
+      assert.equal(policy.fence(origin, 'interact', revision), true)
+      return performance.now() - started
+    })
+    assert.equal(reads.mock.callCount(), durations.length)
+    assert.equal(scans.mock.callCount(), initialScans)
+    assert.equal(locks.mock.callCount(), durations.length)
+    assert.ok(locks.mock.calls.every(({ arguments: args }) => args[1].endsWith('-policy')))
+    assert.ok(pins.mock.callCount() >= durations.length * 2)
+    t.diagnostic(
+      JSON.stringify({
+        platform: process.platform,
+        reads: reads.mock.callCount(),
+        barrierRescans: scans.mock.callCount() - initialScans,
+        meanSyncMs: durations.reduce((sum, value) => sum + value, 0) / durations.length,
+        maxSyncMs: Math.max(...durations),
+      })
+    )
+    writer.set(origin, 'interact', 'block')
+    assert.equal(policy.fence(origin, 'interact', revision), false)
+    assert.equal(reads.mock.callCount(), durations.length + 1)
+  })
+)
+
+persistedTest('policy readers respect the same home lock as writers', () =>
+  withHome((home) => {
+    const policy = openPolicy(home)
+    policy.set('https://example.com', 'read', 'allow')
+    const homePin = NATIVE.pin(home, false)
+    const coordinator = NATIVE.pin(coordinationFor(home), false)
+    const name = NATIVE.lineage(homePin).at(-1)!.replaceAll(':', '-') + '-policy'
+    const lock = NATIVE.acquireAt(coordinator, name, true)
+    try {
+      assert.equal(policy.effectiveDecision('https://example.com', 'read'), 'block')
+    } finally {
+      NATIVE.release(lock)
+      NATIVE.release(coordinator)
+      NATIVE.release(homePin)
+    }
+    assert.equal(policy.effectiveDecision('https://example.com', 'read'), 'allow')
+  })
+)
+persistedTest('policy readers and writers share a registry slot with the directory flock', () =>
+  withHome((home) => {
+    const coordinator = join(dirname(home), REGISTRY_DIRECTORY)
+    mkdirSync(coordinator, { mode: 0o700 })
+    const policy = createBrowserPolicy(home, NATIVE, coordinator)
+    const origin = 'https://example.com'
+    try {
+      policy.set(origin, 'read', 'allow')
+      const database = new DatabaseSync(join(coordinator, 'registry.sqlite'))
+      try {
+        const policySlot = database.prepare("SELECT slot FROM slots WHERE name LIKE '%-policy'")
+        assert.equal(policySlot.get(), undefined)
+        const domains = beginDomains(NATIVE, coordinator, [home])
+        try {
+          domains.occupy()
+          const binding = domains.policyBinding(home)
+          const name = binding.lineage.at(-1)!.replaceAll(':', '-') + '-policy'
+          const lock = binding.acquire(name)
+          try {
+            const active = policySlot.get()
+            assert.equal(typeof active?.slot, 'number')
+            const sweeper = beginDomains(NATIVE, coordinator, [home])
+            try {
+              sweeper.occupy()
+              assert.deepEqual(policySlot.get(), active)
+              assert.throws(() => sweeper.policyBinding(home).acquire(name), {
+                code: 'ERR_LEASE_BUSY',
+              })
+            } finally {
+              sweeper.close()
+            }
+            assert.equal(policy.effectiveDecision(origin, 'read'), 'block')
+          } finally {
+            binding.release(lock)
+          }
+        } finally {
+          domains.close()
+        }
+        assert.equal(policySlot.get(), undefined)
+      } finally {
+        database.close()
+      }
+      assert.equal(policy.effectiveDecision(origin, 'read'), 'allow')
+      if (process.platform === 'darwin') {
+        const browser = NATIVE.pin(join(home, 'browser'), false)
+        try {
+          const legacy = NATIVE.lockDirectoryAt!(browser)
+          try {
+            assert.throws(() => policy.set(origin, 'read', 'block'))
+          } finally {
+            NATIVE.release(legacy)
+          }
+          policy.set(origin, 'read', 'block')
+        } finally {
+          NATIVE.release(browser)
+        }
+      }
+    } finally {
+      policy.close()
+    }
+  })
+)
+
 const DEFAULT_SITES = [
   { origin: 'https://www.bing.com', read: 'allow', interact: 'allow' },
   { origin: 'https://cn.bing.com', read: 'allow', interact: 'allow' },
@@ -30,10 +256,10 @@ persistedTest(
   'atomic policy inspection returns a coherent decision and revision without caching revocations',
   () =>
     withHome((home) => {
-      const policy = createBrowserPolicy(home, PYTHON)
+      const policy = openPolicy(home)
       const original = policy.inspect('https://www.bing.com', 'read')
       assert.equal(original.decision, 'allow')
-      const other = createBrowserPolicy(home, PYTHON)
+      const other = openPolicy(home)
       other.set('https://www.bing.com', 'read', 'block')
       const blocked = policy.inspect('https://www.bing.com', 'read')
       assert.equal(blocked.decision, 'block')
@@ -74,7 +300,7 @@ persistedTest(
   'fresh Home uses defaults without writing and explicit revocation survives restart',
   () =>
     withHome((home) => {
-      const policy = createBrowserPolicy(home, PYTHON)
+      const policy = openPolicy(home)
       assert.equal(policy.agentUseEnabled(), true)
       assert.equal(policy.effectiveDecision('https://www.bing.com/search?q=test', 'read'), 'allow')
       assert.equal(
@@ -104,29 +330,17 @@ persistedTest(
       assert.equal(existsSync(join(home, 'browser', 'agent-policy.json')), false)
       policy.set('https://www.bing.com', 'read', 'block')
       policy.setAgentBrowserUse(false)
-      const restored = createBrowserPolicy(home, PYTHON)
+      const restored = openPolicy(home)
       assert.equal(restored.agentUseEnabled(), false)
       assert.equal(restored.decision('https://www.bing.com', 'read'), 'block')
       restored.setAgentBrowserUse(true)
       restored.set('https://cn.bing.com', 'interact', 'block')
-      assert.equal(
-        createBrowserPolicy(home, PYTHON).effectiveDecision('https://cn.bing.com', 'interact'),
-        'block'
-      )
+      assert.equal(openPolicy(home).effectiveDecision('https://cn.bing.com', 'interact'), 'block')
       restored.remove('https://cn.bing.com')
-      assert.equal(
-        createBrowserPolicy(home, PYTHON).effectiveDecision('https://cn.bing.com', 'read'),
-        'ask'
-      )
-      assert.equal(
-        createBrowserPolicy(home, PYTHON).effectiveDecision('https://cn.bing.com', 'interact'),
-        'ask'
-      )
+      assert.equal(openPolicy(home).effectiveDecision('https://cn.bing.com', 'read'), 'ask')
+      assert.equal(openPolicy(home).effectiveDecision('https://cn.bing.com', 'interact'), 'ask')
       restored.remove('https://www.bing.com')
-      assert.equal(
-        createBrowserPolicy(home, PYTHON).effectiveDecision('https://www.bing.com', 'read'),
-        'ask'
-      )
+      assert.equal(openPolicy(home).effectiveDecision('https://www.bing.com', 'read'), 'ask')
     })
 )
 
@@ -143,7 +357,7 @@ persistedTest('existing v2 policy never gains default grants or replaces a saved
         sites: {},
       })
       writeFileSync(policyPath, contents)
-      const policy = createBrowserPolicy(home, PYTHON)
+      const policy = openPolicy(home)
       assert.equal(policy.agentUseEnabled(), enabled)
       assert.equal(policy.decision('https://www.bing.com', 'read'), 'ask')
       assert.equal(policy.decision('https://www.bing.com', 'interact'), 'ask')
@@ -156,11 +370,17 @@ persistedTest('existing v2 policy never gains default grants or replaces a saved
 )
 
 function withHome(run: (home: string) => void): void {
-  const home = mkdtempSync(join(tmpdir(), 'scholarseed-browser-policy-'))
+  const previous = new Set(openPolicies)
+  const base = mkdtempSync(join(tmpdir(), 'scholarseed-browser-policy-'))
+  const home = join(base, 'home')
+  mkdirSync(home)
   try {
     run(realpathSync.native(home))
   } finally {
-    rmSync(home, { recursive: true, force: true })
+    // Windows refuses to delete a directory while native handles stay open, so
+    // every policy must release its occupancy before the fixture is removed.
+    closePolicies(previous)
+    rmSync(base, { recursive: true, force: true })
   }
 }
 
@@ -183,7 +403,7 @@ test('normalizes exact web origin including effective port and rejects opaque or
 
 persistedTest('read and interact policies match scheme host and effective port exactly', () =>
   withHome((home) => {
-    const policy = createBrowserPolicy(home, PYTHON)
+    const policy = openPolicy(home)
     policy.set('https://example.com/page', 'read', 'allow')
     assert.equal(policy.decision('https://example.com/other', 'read'), 'allow')
     assert.equal(policy.decision('https://example.com/other', 'interact'), 'ask')
@@ -208,7 +428,7 @@ persistedTest(
           sites: { 'https://example.org': { read: 'allow', interact: 'ask' } },
         })
       )
-      const policy = createBrowserPolicy(home, PYTHON)
+      const policy = openPolicy(home)
       assert.equal(policy.snapshot().agentBrowserUseEnabled, false)
       assert.equal(policy.agentUseEnabled(), false)
       assert.equal(policy.agentUseRevision(), null)
@@ -229,7 +449,7 @@ persistedTest(
       assert.equal(policy.revision(), captured + 1)
       assert.equal(policy.valid('https://example.org', 'read', captured), false)
       assert.equal(policy.effectiveDecision('https://example.org', 'read'), 'block')
-      assert.equal(createBrowserPolicy(home, PYTHON).snapshot().agentBrowserUseEnabled, false)
+      assert.equal(openPolicy(home).snapshot().agentBrowserUseEnabled, false)
       assert.equal(
         JSON.parse(readFileSync(join(browserHome, 'agent-policy.json'), 'utf8')).schemaVersion,
         2
@@ -238,9 +458,24 @@ persistedTest(
 )
 
 persistedTest('disabling Agent Browser Use invalidates a live snapshot read lease', async () => {
-  const home = mkdtempSync(join(tmpdir(), 'scholarseed-browser-policy-'))
+  const previous = new Set(openPolicies)
+  const base = mkdtempSync(join(tmpdir(), 'scholarseed-browser-policy-'))
+  const home = join(base, 'home')
+  mkdirSync(home)
   try {
-    const policy = createBrowserPolicy(realpathSync.native(home), PYTHON)
+    let diskReads = 0
+    let policyCalls = 0
+    let syncMs = 0
+    const transport = new Proxy({} as DomainNative, {
+      get(_target, key) {
+        if (key !== 'readAt') return Reflect.get(NATIVE, key)
+        return (...args: Parameters<DomainNative['readAt']>) => {
+          diskReads += 1
+          return NATIVE.readAt(...args)
+        }
+      },
+    })
+    const policy = openPolicy(realpathSync.native(home), transport)
     policy.setAgentBrowserUse(false)
     const scope = {
       sessionId: 'session',
@@ -255,10 +490,15 @@ persistedTest('disabling Agent Browser Use invalidates a live snapshot read leas
     const grants = createBrowserReadGrants({
       scope: () => scope,
       target: () => target,
-      policy: (origin) => ({
-        revision: policy.revision(),
-        decision: policy.effectiveDecision(origin, 'read'),
-      }),
+      policy: (origin) => {
+        const started = performance.now()
+        try {
+          return policy.inspect(origin, 'read')
+        } finally {
+          policyCalls += 1
+          syncMs += performance.now() - started
+        }
+      },
     })
     assert.throws(() =>
       grants.prepareRead({
@@ -271,6 +511,7 @@ persistedTest('disabling Agent Browser Use invalidates a live snapshot read leas
     )
     policy.setAgentBrowserUse(true)
     policy.set('https://example.org', 'read', 'allow')
+    diskReads = policyCalls = syncMs = 0
     const proof = grants.prepareRead({
       sessionId: 'session',
       turnId: 'turn',
@@ -286,17 +527,23 @@ persistedTest('disabling Agent Browser Use invalidates a live snapshot read leas
     })
     grants.finishSnapshot(authority, 'snapshot')
     assert.equal(grants.validateAuthority(authority), true)
+    assert.ok(policyCalls > 1)
+    assert.equal(diskReads, policyCalls)
+    console.log(
+      JSON.stringify({ platform: process.platform, grantChainDiskReads: diskReads, syncMs })
+    )
     policy.setAgentBrowserUse(false)
     assert.equal(grants.validateAuthority(authority), false)
     assert.throws(() => grants.readAuthority({ scope, tabId: 'tab', snapshotId: 'snapshot' }))
   } finally {
-    rmSync(home, { recursive: true, force: true })
+    closePolicies(previous)
+    rmSync(base, { recursive: true, force: true })
   }
 })
 
 persistedTest('block takes precedence over a prior allow and submit always asks', () =>
   withHome((home) => {
-    const policy = createBrowserPolicy(home, PYTHON)
+    const policy = openPolicy(home)
     policy.set('https://example.com/', 'read', 'allow')
     policy.set('https://example.com/', 'read', 'block')
     assert.equal(policy.decision('https://example.com/', 'read'), 'block')
@@ -308,16 +555,10 @@ persistedTest('block takes precedence over a prior allow and submit always asks'
 persistedTest('rules persist across restart and remain isolated to their user home', () =>
   withHome((firstHome) =>
     withHome((secondHome) => {
-      const first = createBrowserPolicy(firstHome, PYTHON)
+      const first = openPolicy(firstHome)
       first.set('https://example.com/', 'interact', 'allow')
-      assert.equal(
-        createBrowserPolicy(firstHome, PYTHON).decision('https://example.com/', 'interact'),
-        'allow'
-      )
-      assert.equal(
-        createBrowserPolicy(secondHome, PYTHON).decision('https://example.com/', 'interact'),
-        'ask'
-      )
+      assert.equal(openPolicy(firstHome).decision('https://example.com/', 'interact'), 'allow')
+      assert.equal(openPolicy(secondHome).decision('https://example.com/', 'interact'), 'ask')
     })
   )
 )
@@ -327,14 +568,14 @@ persistedTest('corrupt stored policy fails closed and cannot be silently overwri
     const browserHome = join(home, 'browser')
     mkdirSync(browserHome)
     writeFileSync(join(browserHome, 'agent-policy.json'), '{bad json', 'utf8')
-    const policy = createBrowserPolicy(home, PYTHON)
+    const policy = openPolicy(home)
     assert.equal(policy.decision('https://example.com/', 'read'), 'block')
     assert.throws(() => policy.set('https://example.com/', 'read', 'allow'))
     assert.equal(readFileSync(join(browserHome, 'agent-policy.json'), 'utf8'), '{bad json')
   })
 )
 
-persistedTest('world-writable policy file cannot grant access or be overwritten', () =>
+posixTest('world-writable policy file cannot grant access or be overwritten', () =>
   withHome((home) => {
     const browserHome = join(home, 'browser')
     mkdirSync(browserHome, { mode: 0o755 })
@@ -347,7 +588,7 @@ persistedTest('world-writable policy file cannot grant access or be overwritten'
     })
     writeFileSync(policyPath, contents, 'utf8')
     chmodSync(policyPath, 0o666)
-    const policy = createBrowserPolicy(home, PYTHON)
+    const policy = openPolicy(home)
     assert.equal(policy.decision('https://example.com/', 'read'), 'block')
     assert.throws(
       () => policy.set('https://example.com/', 'read', 'block'),
@@ -359,7 +600,7 @@ persistedTest('world-writable policy file cannot grant access or be overwritten'
 
 persistedTest('revoke increments revision and invalidates a captured grant before returning', () =>
   withHome((home) => {
-    const policy = createBrowserPolicy(home, PYTHON)
+    const policy = openPolicy(home)
     policy.set('https://example.com/', 'read', 'allow')
     const captured = policy.revision()
     policy.revoke('https://example.com/', 'read')
@@ -367,14 +608,14 @@ persistedTest('revoke increments revision and invalidates a captured grant befor
     assert.equal(policy.valid('https://example.com/', 'read', captured), false)
     assert.equal(policy.decision('https://example.com/', 'read'), 'ask')
     assert.deepEqual(policy.sites(), DEFAULT_SITES)
-    assert.equal(createBrowserPolicy(home, PYTHON).decision('https://example.com/', 'read'), 'ask')
+    assert.equal(openPolicy(home).decision('https://example.com/', 'read'), 'ask')
   })
 )
 
 persistedTest('policy revision observer fires for local and external revocation', () =>
   withHome((home) => {
-    const policy = createBrowserPolicy(home, PYTHON)
-    const other = createBrowserPolicy(home, PYTHON)
+    const policy = openPolicy(home)
+    const other = openPolicy(home)
     let changes = 0
     const unsubscribe = policy.onChange(() => {
       changes += 1
@@ -390,28 +631,24 @@ persistedTest('policy revision observer fires for local and external revocation'
 
 persistedTest('removing a site revokes read and interact in one revision', () =>
   withHome((home) => {
-    const policy = createBrowserPolicy(home, PYTHON)
+    const policy = openPolicy(home)
     policy.set('https://example.com', 'read', 'allow')
     policy.set('https://example.com', 'interact', 'block')
     const previous = policy.revision()
     policy.remove('https://example.com')
     assert.equal(policy.revision(), previous + 1)
     assert.deepEqual(policy.sites(), DEFAULT_SITES)
-    assert.equal(createBrowserPolicy(home, PYTHON).decision('https://example.com', 'read'), 'ask')
-    assert.equal(
-      createBrowserPolicy(home, PYTHON).decision('https://example.com', 'interact'),
-      'ask'
-    )
+    assert.equal(openPolicy(home).decision('https://example.com', 'read'), 'ask')
+    assert.equal(openPolicy(home).decision('https://example.com', 'interact'), 'ask')
   })
 )
 
 persistedTest('a failed policy write invalidates prior allow in memory', () =>
   withHome((home) =>
     withHome((otherHome) => {
-      const policy = createBrowserPolicy(home, PYTHON)
+      const policy = openPolicy(home)
       policy.set('https://example.com/', 'read', 'allow')
-      renameSync(join(home, 'browser'), join(home, 'browser-old'))
-      symlinkSync(otherHome, join(home, 'browser'))
+      breakPolicyAccess(home, otherHome)
       assert.throws(() => policy.revoke('https://example.com/', 'read'))
       assert.equal(policy.decision('https://example.com/', 'read'), 'block')
       assert.throws(() => policy.revision(), /browser_policy_io_unavailable/)
@@ -423,11 +660,10 @@ persistedTest('a failed policy write invalidates prior allow in memory', () =>
 persistedTest('refresh failure never exposes a cached revision', () =>
   withHome((home) =>
     withHome((otherHome) => {
-      const policy = createBrowserPolicy(home, PYTHON)
+      const policy = openPolicy(home)
       policy.set('https://example.com/', 'read', 'allow')
       const captured = policy.revision()
-      renameSync(join(home, 'browser'), join(home, 'browser-old'))
-      symlinkSync(otherHome, join(home, 'browser'))
+      breakPolicyAccess(home, otherHome)
       assert.throws(() => policy.revision(), /browser_policy_io_unavailable/)
       assert.equal(policy.valid('https://example.com/', 'read', captured), false)
       assert.throws(() => policy.revision(), /browser_policy_io_unavailable/)
@@ -440,17 +676,15 @@ persistedTest(
   () =>
     withHome((home) =>
       withHome((otherHome) => {
-        const policy = createBrowserPolicy(home, PYTHON)
+        const policy = openPolicy(home)
         policy.setAgentBrowserUse(true)
         policy.set('https://example.com/', 'read', 'allow')
         const captured = policy.revision()
-        renameSync(join(home, 'browser'), join(home, 'browser-old'))
-        symlinkSync(otherHome, join(home, 'browser'))
+        breakPolicyAccess(home, otherHome)
         assert.equal(policy.valid('https://example.com/', 'read', captured), false)
         assert.equal(policy.effectiveDecision('https://example.com/', 'read'), 'block')
-        rmSync(join(home, 'browser'))
-        renameSync(join(home, 'browser-old'), join(home, 'browser'))
-        const other = createBrowserPolicy(home, PYTHON)
+        restorePolicyAccess(home)
+        const other = openPolicy(home)
         other.revoke('https://example.com/', 'read')
         assert.equal(policy.valid('https://example.com/', 'read', captured), false)
         assert.equal(policy.decision('https://example.com/', 'read'), 'ask')
@@ -464,7 +698,7 @@ persistedTest('policy retries an unavailable initial read after the secure file 
     const browserHome = join(home, 'browser')
     mkdirSync(browserHome)
     writeFileSync(join(browserHome, 'agent-policy.json'), '{bad json', 'utf8')
-    const policy = createBrowserPolicy(home, PYTHON)
+    const policy = openPolicy(home)
     assert.equal(policy.decision('https://example.com/', 'read'), 'block')
     assert.throws(() => policy.snapshot(), /browser_policy_io_unavailable/)
     rmSync(join(browserHome, 'agent-policy.json'))
@@ -478,34 +712,54 @@ persistedTest('policy retries an unavailable initial read after the secure file 
   })
 )
 
-persistedTest('a revision conflict refreshes before retrying without restoring a revoke', () =>
+persistedTest('a revision conflict refreshes before retrying without restoring a revoke', (t) => {
+  t.mock.method(performance, 'now', () => 0)
   withHome((home) => {
-    const first = createBrowserPolicy(home, PYTHON)
-    first.set('https://example.com/', 'read', 'allow')
-    const second = createBrowserPolicy(home, PYTHON)
-    let conflicted = false
-    const competingOrigin = {
-      toString: () => {
-        if (!conflicted) {
-          conflicted = true
+    const second = openPolicy(home)
+    second.set('https://example.com/', 'read', 'allow')
+    let armed = false
+    let publishes = 0
+    let policyAcquisitions = 0
+    const overrides: Pick<DomainNative, 'acquireAt' | 'replaceAt'> = {
+      acquireAt(pin, name, exclusive) {
+        if (armed && name.endsWith('-policy') && ++policyAcquisitions === 2) {
+          armed = false
           second.revoke('https://example.com/', 'read')
+          assert.equal(publishes, 0)
         }
-        return 'https://other.example/'
+        return NATIVE.acquireAt(pin, name, exclusive)
       },
-    } as unknown as string
-    first.set(competingOrigin, 'interact', 'allow')
-    const latest = createBrowserPolicy(home, PYTHON)
+      replaceAt(pin, name, bytes) {
+        publishes += 1
+        NATIVE.replaceAt(pin, name, bytes)
+      },
+    }
+    const first = openPolicy(
+      home,
+      new Proxy({} as DomainNative, {
+        get(_target, key) {
+          return Object.hasOwn(overrides, key)
+            ? Reflect.get(overrides, key)
+            : Reflect.get(NATIVE, key)
+        },
+      })
+    )
+    armed = true
+    first.set('https://other.example/', 'interact', 'allow')
+    const latest = openPolicy(home)
+    assert.equal(publishes, 1)
+    assert.equal(latest.revision(), 3)
     assert.equal(latest.decision('https://example.com/', 'read'), 'ask')
     assert.equal(latest.decision('https://other.example/', 'interact'), 'allow')
     assert.equal(first.revision(), latest.revision())
   })
-)
+})
 
 persistedTest('symlinked browser policy directory is not followed', () =>
   withHome((home) =>
     withHome((otherHome) => {
-      symlinkSync(otherHome, join(home, 'browser'))
-      const policy = createBrowserPolicy(home, PYTHON)
+      linkDirectory(otherHome, join(home, 'browser'))
+      const policy = openPolicy(home)
       assert.equal(policy.decision('https://example.com/', 'read'), 'block')
       assert.throws(() => policy.set('https://example.com/', 'read', 'allow'))
     })
@@ -514,7 +768,7 @@ persistedTest('symlinked browser policy directory is not followed', () =>
 
 test('missing secure filesystem transport never grants persistent access', () =>
   withHome((home) => {
-    const policy = createBrowserPolicy(home, null)
+    const policy = openPolicy(home, null)
     assert.throws(() => policy.agentUseEnabled(), /browser_policy_io_unavailable/)
     assert.throws(() => policy.agentUseRevision(), /browser_policy_io_unavailable/)
     assert.equal(policy.decision('https://example.com/', 'read'), 'block')
@@ -525,31 +779,31 @@ test('missing secure filesystem transport never grants persistent access', () =>
 
 persistedTest('a stale process preserves another process revoke when updating another site', () =>
   withHome((home) => {
-    const first = createBrowserPolicy(home, PYTHON)
+    const first = openPolicy(home)
     first.set('https://example.com/', 'read', 'allow')
-    const stale = createBrowserPolicy(home, PYTHON)
+    const stale = openPolicy(home)
     first.revoke('https://example.com/', 'read')
     stale.set('https://other.example/', 'interact', 'allow')
-    assert.equal(createBrowserPolicy(home, PYTHON).decision('https://example.com/', 'read'), 'ask')
+    assert.equal(openPolicy(home).decision('https://example.com/', 'read'), 'ask')
     assert.equal(stale.decision('https://other.example/', 'interact'), 'allow')
   })
 )
 
 persistedTest('a stale no-op revoke refreshes before deciding there is nothing to write', () =>
   withHome((home) => {
-    const stale = createBrowserPolicy(home, PYTHON)
-    const other = createBrowserPolicy(home, PYTHON)
+    const stale = openPolicy(home)
+    const other = openPolicy(home)
     other.set('https://example.com/', 'read', 'allow')
     stale.revoke('https://example.com/', 'read')
-    assert.equal(createBrowserPolicy(home, PYTHON).decision('https://example.com/', 'read'), 'ask')
+    assert.equal(openPolicy(home).decision('https://example.com/', 'read'), 'ask')
   })
 )
 
 persistedTest('a live policy notices external revoke before validating captured allow', () =>
   withHome((home) => {
-    const first = createBrowserPolicy(home, PYTHON)
+    const first = openPolicy(home)
     first.set('https://example.com/', 'read', 'allow')
-    const second = createBrowserPolicy(home, PYTHON)
+    const second = openPolicy(home)
     const captured = second.revision()
     first.revoke('https://example.com/', 'read')
     assert.equal(second.valid('https://example.com/', 'read', captured), false)
@@ -562,38 +816,38 @@ persistedTest('literal missing marker in a policy file is treated as corrupt', (
     const browserHome = join(home, 'browser')
     mkdirSync(browserHome)
     writeFileSync(join(browserHome, 'agent-policy.json'), 'MISSING', 'utf8')
-    const policy = createBrowserPolicy(home, PYTHON)
+    const policy = openPolicy(home)
     assert.equal(policy.decision('https://example.com/', 'read'), 'block')
     assert.throws(() => policy.set('https://example.com/', 'read', 'allow'))
   })
 )
 
-persistedTest('a group-writable browser directory cannot carry persistent grants', () =>
+posixTest('a group-writable browser directory cannot carry persistent grants', () =>
   withHome((home) => {
     const browserHome = join(home, 'browser')
     mkdirSync(browserHome)
     chmodSync(browserHome, 0o770)
-    const policy = createBrowserPolicy(home, PYTHON)
+    const policy = openPolicy(home)
     assert.equal(policy.decision('https://example.com/', 'read'), 'block')
     assert.throws(() => policy.set('https://example.com/', 'read', 'allow'))
   })
 )
 
-persistedTest('a group-writable home cannot carry persistent grants', () =>
+posixTest('a group-writable home cannot carry persistent grants', () =>
   withHome((home) => {
     chmodSync(home, 0o770)
-    const policy = createBrowserPolicy(home, PYTHON)
+    const policy = openPolicy(home)
     assert.equal(policy.decision('https://example.com/', 'read'), 'block')
     assert.throws(() => policy.set('https://example.com/', 'read', 'allow'))
   })
 )
 
-persistedTest('a group-writable ancestor cannot redirect a private policy home', () =>
+posixTest('a group-writable ancestor cannot redirect a private policy home', () =>
   withHome((parent) => {
     const home = join(parent, 'nested-home')
     mkdirSync(home, { mode: 0o700 })
     chmodSync(parent, 0o770)
-    const policy = createBrowserPolicy(home, PYTHON)
+    const policy = openPolicy(home)
     assert.equal(policy.decision('https://example.com/', 'read'), 'block')
     assert.throws(() => policy.set('https://example.com/', 'read', 'allow'))
   })

@@ -64,7 +64,8 @@ export type TagVariant = 'default' | 'destructive' | 'outline' | 'secondary' | T
 export type CardPadding = 'lg' | 'md' | 'none' | 'sm'
 export type CardVariant = 'bordered' | 'elevated' | 'flat' | 'tinted'
 export type DividerOrientation = 'horizontal' | 'vertical'
-export type AlertTone = 'error' | 'info' | 'success' | 'warning'
+export type AlertTone = 'error' | 'info' | 'neutral' | 'success' | 'warning'
+export type LabelVariant = 'form' | 'display'
 export type AvatarSize = ComponentSize
 export type LoadingOverlayTone = 'default' | 'muted'
 export type PaginationItem = number | 'ellipsis-left' | 'ellipsis-right'
@@ -135,13 +136,13 @@ const BUTTON_STYLE_VARIANT_CLASS_NAMES: Record<ButtonVariant, string> = {
   primary:
     '[background:var(--vds-brand-bg-default)] text-[var(--vds-text-on-brand)] enabled:hover:[background:var(--vds-brand-bg-hover)] enabled:hover:text-[var(--vds-text-on-brand-hover)] enabled:active:[background:var(--vds-brand-bg-active)] enabled:active:text-[var(--vds-text-on-brand-active)]',
   destructive:
-    '[background:var(--vds-error-bg-default)] text-[var(--vds-static-white)] hover:[background:var(--vds-error-bg-hover)] disabled:[background:color-mix(in_srgb,var(--vds-error-bg-default)_50%,transparent)] data-[loading=true]:[background:color-mix(in_srgb,var(--vds-error-bg-default)_50%,transparent)]',
+    '[background:var(--vds-error-bg-default)] text-[var(--vds-static-white)] hover:[background:var(--vds-error-bg-hover)] disabled:!text-[var(--vds-static-white)] data-[loading=true]:!text-[var(--vds-static-white)] disabled:[background:color-mix(in_srgb,var(--vds-error-bg-default)_50%,transparent)] data-[loading=true]:[background:color-mix(in_srgb,var(--vds-error-bg-default)_50%,transparent)]',
   danger:
-    '[background:var(--vds-error-bg-default)] text-[var(--vds-static-white)] hover:[background:var(--vds-error-bg-hover)] disabled:[background:color-mix(in_srgb,var(--vds-error-bg-default)_50%,transparent)] data-[loading=true]:[background:color-mix(in_srgb,var(--vds-error-bg-default)_50%,transparent)]',
+    '[background:var(--vds-error-bg-default)] text-[var(--vds-static-white)] hover:[background:var(--vds-error-bg-hover)] disabled:!text-[var(--vds-static-white)] data-[loading=true]:!text-[var(--vds-static-white)] disabled:[background:color-mix(in_srgb,var(--vds-error-bg-default)_50%,transparent)] data-[loading=true]:[background:color-mix(in_srgb,var(--vds-error-bg-default)_50%,transparent)]',
   dropzone:
     '![border-color:var(--vds-border-default)] ![border-style:dashed] ![border-width:var(--vds-border-width-2)] [background:var(--vds-bg-white-default)] text-[var(--vds-text-primary)] hover:![border-color:var(--vds-brand-light-border)] hover:[background:var(--vds-bg-white-hover)] data-[drop-active=true]:![border-color:var(--vds-brand-light-border)] data-[drop-active=true]:[background:var(--vds-brand-light-bg-default)] data-[drop-active=true]:shadow-[var(--vds-focus-brand)] disabled:![border-color:var(--vds-border-default)] disabled:[background:var(--vds-bg-white-default)]',
   secondary:
-    '![border-color:var(--vds-brand-light-border)] [background:var(--vds-brand-light-bg-default)] text-[var(--vds-brand-text-primary)] hover:[background:var(--vds-brand-light-bg-hover)] active:[background:var(--vds-brand-light-bg-active)]',
+    '![border-color:var(--vds-brand-light-border)] disabled:![border-color:transparent] [background:var(--vds-brand-light-bg-default)] text-[var(--vds-brand-text-primary)] hover:[background:var(--vds-brand-light-bg-hover)] active:[background:var(--vds-brand-light-bg-active)]',
   outline:
     '![border-color:var(--vds-fill-6)] [background:var(--vds-bg-white-default)] text-[var(--vds-text-primary)] hover:[background:var(--vds-bg-white-hover)] active:[background:var(--vds-bg-gray-active)] disabled:![border-color:var(--vds-divider-default)] disabled:[background:var(--vds-bg-white-default)] data-[loading=true]:![border-color:var(--vds-divider-default)] data-[loading=true]:[background:var(--vds-bg-white-default)]',
   tertiary:
@@ -216,6 +217,8 @@ const TAG_SELECTED_CLASS_NAME = 'vds-tag--selected'
 const ALERT_BASE_CLASS_NAME =
   'flex min-w-0 items-start gap-[var(--vds-space-2)] rounded-[var(--vds-alert-radius)] border border-solid border-[var(--vds-alert-border)] bg-[var(--vds-alert-background)] px-[var(--vds-space-3)] py-[var(--vds-space-2)] text-[var(--vds-alert-color)] [font-family:var(--vds-font-main)]'
 const ALERT_TONE_CLASS_NAMES: Record<AlertTone, string> = {
+  neutral:
+    '[--vds-alert-background:var(--vds-surface-raised)] [--vds-alert-border:var(--vds-border-default)] [--vds-alert-color:var(--vds-text-secondary)] [--vds-alert-icon-color:var(--vds-text-secondary)]',
   info: '[--vds-alert-background:var(--vds-notice-light-bg-default)] [--vds-alert-border:var(--vds-notice-light-border)] [--vds-alert-color:var(--vds-notice-text-primary)] [--vds-alert-icon-color:var(--vds-notice-bg-default)]',
   success:
     '[--vds-alert-background:var(--vds-success-light-bg-default)] [--vds-alert-border:var(--vds-success-light-border)] [--vds-alert-color:var(--vds-success-text-primary)] [--vds-alert-icon-color:var(--vds-success-bg-default)]',
@@ -266,9 +269,19 @@ const PROGRESS_BAR_BASE_CLASS_NAME =
   'grid min-w-0 gap-[var(--vds-progress-gap)] [&.vds-progress--sm_.vds-progress-bar__track]:h-1 [&.vds-progress--md_.vds-progress-bar__track]:h-2 [&.vds-progress--lg_.vds-progress-bar__track]:h-3'
 const PROGRESS_CARD_CLASS_NAME =
   'grid min-w-0 gap-[var(--vds-space-2)] rounded-[var(--vds-radius-4)] bg-[var(--vds-bg-white-default)] p-[var(--vds-space-2)]'
-const FIELD_CLASS_NAME = 'grid min-w-0 gap-[var(--vds-space-1)]'
-const FIELD_LABEL_CLASS_NAME =
-  'text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-secondary)]'
+const FIELD_CLASS_NAME = 'grid min-w-0 gap-[var(--vds-form-field-gap)]'
+const LABEL_VARIANT_CLASS_NAMES: Record<LabelVariant, string> = {
+  form: 'text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-primary)]',
+  display:
+    'text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-tertiary)]',
+}
+
+export function labelStyleClassName(variant: LabelVariant = 'form'): string {
+  return cx(
+    '[font-family:var(--vds-font-main)] font-[var(--vds-fw-regular)]',
+    LABEL_VARIANT_CLASS_NAMES[variant]
+  )
+}
 const FIELD_MESSAGE_CLASS_NAME =
   'text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-error-text-primary)]'
 const INPUT_BASE_CLASS_NAME = [
@@ -303,7 +316,7 @@ const CONTROL_INVALID_CLASS_NAME = 'border-[var(--vds-error-bg-default)]'
 const CHECKBOX_BASE_CLASS_NAME =
   'inline-flex min-w-0 min-h-[var(--vds-checkbox-size)] items-center gap-[var(--vds-space-2)] border-0 bg-transparent p-0 text-left [font-family:var(--vds-font-main)] text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-primary)] cursor-pointer disabled:!cursor-not-allowed disabled:text-[var(--vds-text-disabled)] disabled:opacity-50'
 const CHECKBOX_BOX_CLASS_NAME =
-  'relative inline-grid flex-none place-items-center size-[var(--vds-checkbox-size)] rounded-[var(--vds-checkbox-radius)] border-solid border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] text-[var(--vds-bg-white-default)] [border-width:var(--vds-border-width-2)] group-hover:border-[var(--vds-border-default)] group-focus-visible:shadow-none group-disabled:border-[var(--vds-control-border)] group-disabled:bg-[var(--vds-bg-white-default)] group-[.vds-checkbox--checked]:border-[var(--vds-brand-bg-default)] group-[.vds-checkbox--checked]:bg-[var(--vds-brand-bg-default)] group-[.vds-checkbox--mixed]:border-[var(--vds-brand-bg-default)] group-[.vds-checkbox--mixed]:bg-[var(--vds-brand-bg-default)] group-[.vds-checkbox--checked]:group-hover:border-[var(--vds-brand-bg-default)] group-[.vds-checkbox--checked]:group-focus-visible:border-[var(--vds-brand-bg-default)]'
+  'relative inline-grid flex-none place-items-center size-[var(--vds-checkbox-size)] rounded-[var(--vds-checkbox-radius)] border-solid border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] text-[var(--vds-bg-white-default)] [border-width:var(--vds-border-width-2)] group-hover:border-[var(--vds-border-default)] group-focus-visible:shadow-none group-disabled:border-[var(--vds-control-border)] group-disabled:bg-[var(--vds-bg-white-default)] group-[.vds-checkbox--checked]:border-[var(--vds-brand-bg-default)] group-[.vds-checkbox--checked]:bg-[var(--vds-brand-bg-default)] group-[.vds-checkbox--mixed]:border-[var(--vds-brand-bg-default)] group-[.vds-checkbox--mixed]:bg-[var(--vds-brand-bg-default)] group-[.vds-checkbox--checked]:group-hover:border-[var(--vds-brand-bg-default)] group-[.vds-checkbox--checked]:group-focus-visible:border-[var(--vds-brand-bg-default)] group-[.vds-checkbox--checked]:group-disabled:!border-[var(--vds-text-disabled)] group-[.vds-checkbox--checked]:group-disabled:!bg-[var(--vds-text-disabled)]'
 const CHECKBOX_MARK_CLASS_NAME =
   'h-[5px] w-[9px] rotate-[-45deg] border-solid border-current border-t-0 border-r-0 border-b-[length:var(--vds-checkbox-mark-border)] border-l-[length:var(--vds-checkbox-mark-border)] opacity-0 translate-y-[var(--vds-checkbox-mark-offset-y)] group-[.vds-checkbox--checked]:opacity-100 group-[.vds-checkbox--mixed]:h-0 group-[.vds-checkbox--mixed]:w-[9px] group-[.vds-checkbox--mixed]:rotate-0 group-[.vds-checkbox--mixed]:translate-y-0 group-[.vds-checkbox--mixed]:border-b-[length:var(--vds-checkbox-mark-border)] group-[.vds-checkbox--mixed]:border-l-0 group-[.vds-checkbox--mixed]:opacity-100'
 const RADIO_BASE_CLASS_NAME =
@@ -335,7 +348,7 @@ const SELECT_BASE_CLASS_NAME = [
   '![color:var(--vds-text-primary)] cursor-pointer [font-family:var(--vds-font-main)] ![font-weight:400] text-left',
   'transition-[background-color,border-color,box-shadow] duration-[var(--vds-duration-fast)] ease-[var(--vds-ease-standard)]',
   'enabled:hover:![border-color:var(--vds-control-border-hover)] focus:outline-none focus-visible:![border-color:var(--vds-border-brand)] focus-visible:[box-shadow:var(--vds-focus-brand)]',
-  'disabled:cursor-default disabled:![background:var(--vds-bg-white-disable)] disabled:![color:var(--vds-text-disabled)]',
+  'disabled:cursor-default disabled:![color:var(--vds-text-disabled)]',
 ].join(' ')
 const SELECT_SIZE_CLASS_NAMES: Record<ControlSize, string> = {
   standard:
@@ -366,7 +379,7 @@ const ICON_BUTTON_SIZE_CLASS_NAMES: Record<IconButtonSize, string> = {
   lg: 'size-[var(--vds-control-height-lg)] min-w-[var(--vds-control-height-lg)] [--vds-icon-button-glyph:var(--vds-icon-8)]',
 }
 const ICON_BUTTON_CONTENT_CLASS_NAME =
-  'inline-flex size-[var(--vds-icon-button-glyph)] items-center justify-center'
+  'pointer-events-none inline-flex size-[var(--vds-icon-button-glyph)] items-center justify-center'
 const COPY_BUTTON_STATUS_CLASS_NAME =
   'absolute size-[var(--vds-sr-size)] overflow-hidden border-0 p-0 [clip:rect(0,0,0,0)] [margin:calc(var(--vds-sr-size)*-1)] whitespace-nowrap'
 const COPY_BUTTON_STATUS_CLASS_NAMES: Record<'error' | 'idle' | 'success', string | undefined> = {
@@ -430,7 +443,7 @@ const TABS_BASE_CLASS_NAMES: Record<TabsOrientation, string> = {
 const TABS_LIST_CLASS_NAME =
   'group/tabs-list relative !inline-flex h-8 min-w-0 items-center justify-center gap-0 rounded-[var(--vds-radius-3)] border-0 bg-[var(--vds-other-overlay-1)] p-[3px] text-[var(--vds-text-tertiary)] aria-[orientation=vertical]:h-auto aria-[orientation=vertical]:flex-col aria-[orientation=vertical]:items-stretch aria-[orientation=vertical]:gap-[var(--vds-space-1)]'
 const TABS_TRIGGER_CLASS_NAME =
-  'relative z-[var(--vds-z-local-raised)] inline-flex min-h-[26px] items-center justify-center rounded-[var(--vds-radius-3)] border-0 bg-transparent px-[var(--vds-space-3)] py-1 [font-family:inherit] text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-tertiary)] cursor-pointer transition-[color,box-shadow] duration-150 ease-[ease] hover:not-disabled:text-[var(--vds-text-primary)] focus-visible:outline-none focus-visible:shadow-[var(--vds-focus-ring)] disabled:cursor-not-allowed disabled:opacity-[var(--vds-opacity-disabled)] data-[state=active]:text-[var(--vds-text-primary)] group-aria-[orientation=vertical]/tabs-list:data-[state=active]:bg-[var(--vds-bg-white-default)] group-aria-[orientation=vertical]/tabs-list:data-[state=active]:shadow-[var(--vds-shadow-1-center)]'
+  'relative z-[var(--vds-z-local-raised)] inline-flex min-h-[26px] items-center justify-center rounded-[var(--vds-radius-3)] border-0 bg-transparent px-[var(--vds-space-3)] py-1 [font-family:inherit] text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-tertiary)] cursor-pointer transition-[color,box-shadow] duration-150 ease-[ease] hover:not-disabled:text-[var(--vds-text-primary)] focus-visible:outline-none focus-visible:shadow-[var(--vds-focus-ring)] disabled:cursor-not-allowed disabled:opacity-[var(--vds-opacity-disabled)] data-[state=inactive]:font-[var(--vds-fw-regular)] data-[state=active]:text-[var(--vds-text-primary)] group-aria-[orientation=vertical]/tabs-list:data-[state=active]:bg-[var(--vds-bg-white-default)] group-aria-[orientation=vertical]/tabs-list:data-[state=active]:shadow-[var(--vds-shadow-1-center)]'
 const TABS_CONTENT_CLASS_NAME =
   'min-w-0 rounded-none border-0 bg-transparent p-0 text-[var(--vds-text-secondary)]'
 const TABS_INDICATOR_CLASS_NAME =
@@ -475,7 +488,7 @@ const MENU_TRIGGER_CLASS_NAME =
 const MENUBAR_TRIGGER_CLASS_NAME =
   'min-h-8 border-transparent bg-transparent px-[var(--vds-space-3)] py-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] font-medium shadow-none hover:bg-[var(--vds-bg-white-hover)] focus-visible:bg-[var(--vds-bg-white-hover)] aria-expanded:bg-[var(--vds-bg-white-hover)]'
 const MENU_CONTENT_CLASS_NAME =
-  'absolute z-[var(--vds-z-inline-flyout)] grid w-max min-w-48 rounded-[var(--vds-radius-6)] border border-solid border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] p-[var(--vds-space-1)] text-[var(--vds-text-primary)] shadow-[var(--vds-shadow-2-center)]'
+  'absolute z-[var(--vds-z-inline-flyout)] grid max-h-[calc(100dvh-var(--vds-space-4))] w-max min-w-48 overflow-y-auto overscroll-contain rounded-[var(--vds-radius-6)] border border-solid border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] p-[var(--vds-space-1)] text-[var(--vds-text-primary)] shadow-[var(--vds-shadow-2-center)]'
 const MENU_ITEM_CLASS_NAME =
   'flex h-[var(--vds-control-height-standard)] w-full items-center gap-[var(--vds-space-2)] rounded-[var(--vds-radius-4)] border-0 bg-transparent px-[var(--vds-space-2)] py-[calc(var(--vds-space-3)/2)] text-left text-[var(--vds-text-primary)] [font:inherit] cursor-pointer hover:bg-[var(--vds-bg-white-hover-transparent)] focus-visible:bg-[var(--vds-bg-white-hover-transparent)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-[var(--vds-opacity-disabled)] [&>svg:first-child]:size-[var(--vds-icon-8)] [&>svg:first-child]:text-[var(--vds-text-tertiary)] [&>.vds-icon:first-child]:size-[var(--vds-icon-8)] [&>.vds-icon:first-child]:text-[var(--vds-text-tertiary)] [&>.iconfont:first-child]:inline-flex [&>.iconfont:first-child]:size-[var(--vds-icon-8)] [&>.iconfont:first-child]:items-center [&>.iconfont:first-child]:justify-center [&>.iconfont:first-child]:text-[length:var(--vds-icon-8)] [&>.iconfont:first-child]:text-[var(--vds-text-tertiary)]'
 // 破坏性动作用错误色文字警示，悬停或键盘聚焦时显示错误色背景。
@@ -648,7 +661,7 @@ export function checkboxClassName({
 }
 
 export function checkboxStyleClassName(): string {
-  return cx('group', CHECKBOX_BASE_CLASS_NAME)
+  return cx('group font-[var(--vds-fw-regular)]', CHECKBOX_BASE_CLASS_NAME)
 }
 
 export function radioClassName({
@@ -662,7 +675,7 @@ export function radioClassName({
 }
 
 export function radioStyleClassName(): string {
-  return cx('group', RADIO_BASE_CLASS_NAME)
+  return cx('group font-[var(--vds-fw-regular)]', RADIO_BASE_CLASS_NAME)
 }
 
 export function selectClassName({
@@ -1251,8 +1264,14 @@ export function fieldClassName({ className }: { className?: string }): string {
   return cx('vds-field', FIELD_CLASS_NAME, className)
 }
 
-export function fieldLabelClassName({ className }: { className?: string }): string {
-  return cx('vds-field__label', FIELD_LABEL_CLASS_NAME, className)
+export function fieldLabelClassName({
+  className,
+  variant = 'form',
+}: {
+  className?: string
+  variant?: LabelVariant
+}): string {
+  return cx('vds-field__label', labelStyleClassName(variant), className)
 }
 
 export function fieldMessageClassName({ className }: { className?: string }): string {
@@ -1319,7 +1338,7 @@ export const accordionContentInnerClassName = cx(
   'vds-accordion__content-inner',
   ACCORDION_CONTENT_INNER_CLASS_NAME
 )
-export const controlLabelClassName = 'min-w-0 text-inherit'
+export const controlLabelClassName = 'min-w-0 font-[var(--vds-fw-regular)] text-inherit'
 export const radioDotClassName = cx('vds-radio__dot', RADIO_DOT_CLASS_NAME)
 export const switchCheckedDecorClassName = cx(
   'vds-switch__decor vds-switch__decor--checked',
@@ -1581,16 +1600,18 @@ export function tooltipStyleClassName(): string {
 
 export const alertIconClassName =
   'vds-alert__icon inline-flex size-[var(--vds-alert-icon-size)] flex-none items-center justify-center text-[length:var(--vds-alert-icon-size)] leading-none text-[var(--vds-alert-icon-color)]'
-export const alertStackedClassName = 'vds-alert--stacked !flex-col !gap-[var(--vds-space-2)]'
+export const alertStackedClassName =
+  'vds-alert--stacked flex-wrap !items-center !gap-[var(--vds-space-3)] !rounded-[var(--vds-radius-6)] !p-[var(--vds-space-3)] [&_.vds-alert__title]:font-[var(--vds-fw-regular)] [&_.vds-alert__title]:text-[var(--vds-alert-icon-color)] [&_.vds-alert__description]:line-clamp-none [&_.vds-alert__description]:overflow-visible [&_.vds-alert__description]:text-[length:var(--vds-font-body-lv2)] [&_.vds-alert__aside]:ml-auto [&_.vds-alert__aside]:max-w-full [&_.vds-alert__action]:flex-wrap [&_.vds-alert__action]:justify-end [&_.vds-alert__action]:gap-[var(--vds-space-2)] [&_.vds-alert__content]:gap-[var(--vds-space-1)]'
 export const alertStackedHeaderClassName =
   'vds-alert__header flex w-full min-w-0 items-center gap-[var(--vds-space-half)]'
-export const alertStackedBodyClassName = 'vds-alert__body w-full min-w-0'
+export const alertStackedBodyClassName =
+  'vds-alert__body grid w-full min-w-0 gap-[var(--vds-space-1)] whitespace-pre-wrap break-words font-[var(--vds-fw-regular)] [overflow-wrap:anywhere]'
 export const alertContentClassName =
   'vds-alert__content grid min-h-[var(--vds-alert-icon-size)] min-w-0 flex-1 content-center auto-rows-min gap-0.5'
 export const alertTitleClassName =
   'vds-alert__title m-0 text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-medium)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-primary)]'
 export const alertDescriptionClassName =
-  'vds-alert__description m-0 line-clamp-2 overflow-hidden text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-secondary)]'
+  'vds-alert__description m-0 line-clamp-2 overflow-hidden text-[length:var(--vds-font-body-lv1)] font-[var(--vds-fw-regular)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-secondary)]'
 export const alertAsideClassName =
   'vds-alert__aside inline-flex flex-none items-center gap-[var(--vds-space-2)]'
 export const alertActionClassName = 'vds-alert__action inline-flex items-center'
@@ -1604,7 +1625,7 @@ export const dialogHeaderClassName =
 export const dialogFooterClassName =
   'vds-dialog__footer flex flex-wrap justify-end [gap:var(--vds-space-2)]'
 export const dialogTitleClassName =
-  'vds-dialog__title [margin:0] text-[length:var(--vds-font-title)] leading-[var(--vds-lh-title)] [font-weight:var(--vds-fw-medium)] break-words'
+  'vds-dialog__title [margin:0] text-[length:var(--vds-font-subhead)] leading-[var(--vds-lh-subhead)] [font-weight:var(--vds-fw-medium)] break-words'
 export const dialogDescriptionClassName =
   'vds-dialog__description [margin:0] text-[var(--vds-text-secondary)] text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)] break-words'
 export const dialogCloseClassName =

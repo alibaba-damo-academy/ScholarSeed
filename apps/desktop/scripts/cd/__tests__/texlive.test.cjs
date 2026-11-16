@@ -7,7 +7,7 @@ const PE = require('pe-library')
 const { normalizeTexliveTree } = require('../texlive.cjs')
 
 function fixture(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'texlive-utf8-'))
+  const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'texlive-utf8-'))
   t.after(() => fs.rmSync(root, {recursive: true, force: true}))
   const bin = path.join(root, 'bin/windows')
   fs.mkdirSync(bin, {recursive: true})

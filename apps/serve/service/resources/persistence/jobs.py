@@ -708,7 +708,7 @@ class ImportJobStore:
         if (
             not isinstance(request, dict)
             or set(request) != keys
-            or type(request["version"]) is not int
+            or (not isinstance(request["version"], int) or isinstance(request["version"], bool))
             or request["version"] != 1
         ):
             raise ValueError("unsupported LINK receipt")
@@ -723,7 +723,10 @@ class ImportJobStore:
             or request["project_id"] != job.project_id
             or request["sources"] != list(job.sources)
             or request["target_dir"] != job.target_dir
-            or type(request["generation"]) is not int
+            or (
+                not isinstance(request["generation"], int)
+                or isinstance(request["generation"], bool)
+            )
             or request["generation"] <= 0
             or request["generation"] != job.lease_generation
         ):
@@ -733,7 +736,11 @@ class ImportJobStore:
             not isinstance(indices, list)
             or not indices
             or len(indices) != len(mounts)
-            or any(type(index) is not int or not 0 <= index < len(job.sources) for index in indices)
+            or any(
+                (not isinstance(index, int) or isinstance(index, bool))
+                or not 0 <= index < len(job.sources)
+                for index in indices
+            )
             or len(set(indices)) != len(indices)
             or any(project != job.project_id or not path for project, path in mounts)
         ):

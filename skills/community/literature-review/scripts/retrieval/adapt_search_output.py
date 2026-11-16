@@ -55,6 +55,22 @@ else:
     raise RuntimeError("systematic-literature-review skill root not found above " + __file__)
 # --- end slr path bootstrap ---
 
+from search_metadata_eligibility import (
+    abstract_problem,
+    author_objects,
+    bibliography_preflight,
+    bind_author_provenance,
+    identity_issues,
+    normalize_subtopics,
+    paper_identifier,
+    problems as metadata_problems,
+    retain_author_structure,
+    retained_author_metadata,
+    same_paper,
+    title_key,
+    verified_preview,
+    year_of,
+)
 import argparse
 import hashlib
 import json
@@ -66,17 +82,17 @@ from pathlib import Path
 
 TIER_TO_LEVEL = {1: "L1", 2: "L2", 3: "L3"}
 DEFAULT_CORPUS_TARGET = 40
+LOCAL_ONLY_METADATA = {"papers": [], "search_summary": {"source_mode": "local_only"}}
+METADATA_FILTER_POLICY = "usable_title_with_abstract_or_verified_library_excerpt"
 
 
-from search_metadata_eligibility import abstract_problem, author_objects, year_of, problems as metadata_problems
 
 
 # ------------------------------------------------------------------ helpers --
 
 def _norm_title(title: str) -> str:
     """Fold a title to a comparison key: NFKD, lowercase, alphanumerics only."""
-    folded = unicodedata.normalize("NFKD", title or "")
-    return re.sub(r"[^a-z0-9]+", "", folded.lower())
+    return title_key(title)
 
 
 def _synth_id(paper: dict, used: set[str]) -> str:
@@ -158,6 +174,7 @@ def to_corpus_record(pid: str, paper: dict) -> dict:
         "abstract": (paper.get("abstract") or "").strip(),
         "year": _year_of(paper),
         "authors": _as_author_objects(paper.get("authors")),
+        "author_metadata": retained_author_metadata(paper),
         "venue": _as_venue_object(paper.get("venue") or paper.get("journal_name")),
         "arxiv_id": paper.get("arxiv_id") or None,
         "doi": paper.get("doi") or None,
@@ -166,17 +183,17 @@ def to_corpus_record(pid: str, paper: dict) -> dict:
         "relevance_level": TIER_TO_LEVEL[tier],
         "tier": tier,
         "selection_reason": paper.get("reason") or "",
-        "subtopics_covered": list(paper.get("subtopics_covered") or []),
+        "subtopics_covered": normalize_subtopics(paper.get("subtopics_covered")),
         "source": paper.get("source") or "unknown",
     }
     provenance = paper.get("publication_date_source") or {}
     hub_id = paper.get("paperhub_id")
     if not hub_id and isinstance(provenance, dict) and provenance.get("provider") == "PaperHub":
         hub_id = provenance.get("record_id")
-    if not hub_id and "paperhub" in str(paper.get("source", "")).lower():
+    if not hub_id and "paperhub" in str(paper.get("source", "")).lower() and str(paper.get("paper_id", "")).isdigit():
         hub_id = paper.get("paper_id")
     if hub_id:
-        record["paperhub_id"] = str(hub_id)
+        record["paperhub_id"] = paper_identifier(hub_id)
 
     # Keep the identifiers reachable under the spellings the bibtex synthesiser
     # looks for, without inventing any we were not given.
@@ -197,11 +214,12 @@ def to_corpus_record(pid: str, paper: dict) -> dict:
     # Optional bibliographic details remain pass-through-only.  PaperHub's
     # normalized search contract does not guarantee them, but when a backend
     # deployment supplies them they must survive into references.bib.
-    for field in ("volume", "number", "pages", "publisher", "booktitle",
+    for field in ("volume", "number", "pages", "publisher", "booktitle", "address", "isbn",
+                  "citation_key", "bib_type", "metadata_completion", "metadata_alternatives",
                   "journal", "url", "publication_date", "publication_types",
                   "reference_count", "influential_citation_count",
                   "is_open_access", "journal_name", "journal_pages",
-                  "journal_volume", "found_by", "access", "landing_page_url", "pdf_url", "pdf_urls"):
+                  "journal_volume", "abstract_provenance", "selection_evidence", "found_by", "library_refs", "knowledge_state", "state_basis", "access", "landing_page_url", "pdf_url", "pdf_urls"):
         if paper.get(field) not in (None, "", []):
             record[field] = paper[field]
 
@@ -274,19 +292,22 @@ def apply_screens(records: dict, reqs: dict) -> tuple[dict, list[dict], list[dic
     return kept, dropped, flagged
 
 
-def check_must_include(records: dict, reqs: dict) -> list[dict]:
-    out = []
-    have = {_norm_title(r["title"]) for r in records.values()}
+def required_matches(records: dict, reqs: dict):
+    """Resolve a requested full title without accepting related or extended titles."""
     for req in reqs.get("constraints", []):
         if req.get("kind") != "must_include_paper":
             continue
         value = req.get("value") or {}
         title = value.get("title") if isinstance(value, dict) else str(value)
         key = _norm_title(title or "")
-        # Substring both ways: the corpus title may carry a subtitle the user omitted.
-        found = any(key and (key in h or h in key) for h in have)
-        out.append({"req_id": req.get("id"), "title": title, "found": found})
-    return out
+        matches = [pid for pid, paper in records.items()
+                   if key and _norm_title(paper.get('title', '')) == key]
+        yield req, title, matches
+
+
+def check_must_include(records: dict, reqs: dict) -> list[dict]:
+    return [{"req_id": req.get("id"), "title": title, "found": len(matches) == 1}
+            for req, title, matches in required_matches(records, reqs)]
 
 
 def trim_to_size(records: dict, reqs: dict) -> tuple[dict, dict]:
@@ -297,17 +318,20 @@ def trim_to_size(records: dict, reqs: dict) -> tuple[dict, dict]:
     sizing = (reqs.get("retrieval") or {}).get("corpus_size") or {}
     target = sizing.get("target") or DEFAULT_CORPUS_TARGET
     ceiling = sizing.get("max") or target
+    required = set()
+    for _, title, matches in required_matches(records, reqs):
+        if len(matches) > 1:
+            raise ValueError('required paper title is ambiguous; resolve its identity: ' + str(title))
+        required.update(matches)
+    if len(required) > ceiling:
+        raise ValueError('required papers exceed the configured corpus ceiling')
     if len(records) <= ceiling:
         return records, {}
 
-    ordered = sorted(records.items(), key=lambda kv: (-kv[1]["tier"], kv[1]["title"]))
     trimmed = Counter()
-    kept = dict(records)
-    for pid, rec in ordered:
-        if len(kept) <= ceiling:
-            break
-        del kept[pid]
-        trimmed[str(rec["tier"])] += 1
+    kept = dict(list(records.items())[:ceiling])
+    for rec in list(records.values())[ceiling:]:
+        trimmed[str(rec['tier'])] += 1
     return kept, dict(trimmed)
 
 
@@ -327,7 +351,7 @@ def run(workspace: Path) -> tuple[dict, dict, dict]:
                               "did not produce a search result"},
         )
     try:
-        meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.is_file() else {"papers":[],"search_summary":{"source_mode":"local_only"}}
+        meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.is_file() else LOCAL_ONLY_METADATA
     except (json.JSONDecodeError, OSError) as exc:
         return ({}, {}, {"status": "FAILED", "task": "PAPER_RETRIEVAL",
                          "status_reason": f"metadata.json unreadable: {exc}"})
@@ -340,6 +364,14 @@ def run(workspace: Path) -> tuple[dict, dict, dict]:
         return ({}, {}, {"status": "FAILED", "task": "PAPER_RETRIEVAL",
                          "status_reason": "metadata.json does not satisfy the current "
                                           "agentic-search contract: papers must be a non-empty list"})
+
+    papers = papers[:local_plan['search_target']]
+    issues = identity_issues(papers)
+    if issues:
+        return ({}, {}, {"status": "FAILED", "task": "PAPER_RETRIEVAL",
+                         "code": "REVIEW_METADATA_INVALID", "issues": issues,
+                         "status_reason": "Search metadata contains invalid or conflicting paper identifiers",
+                         "next_action": "Repair the listed identity fields from the source candidates; preserve the selected set and evidence mappings, then retry retrieval_adapt."})
 
     # Metadata is the stable dependency contract. AS now stores its trace in
     # session/ or fallback_event.json and no longer emits legacy provenance.
@@ -374,31 +406,41 @@ def run(workspace: Path) -> tuple[dict, dict, dict]:
         if not isinstance(paper, dict):
             return ({}, {}, {"status": "FAILED", "task": "PAPER_RETRIEVAL",
                              "status_reason": "metadata.json papers[] must contain objects"})
-        pid = str(paper.get("paper_id") or "").strip()
+        pid = paper_identifier(paper.get("paper_id"))
         if not pid or pid in records:
             pid = _synth_id(paper, set(records))
         problems=metadata_problems(paper)
+        if 'execution' not in reqs and verified_preview(paper, workspace):
+            problems = [problem for problem in problems if problem["rule"] != "usable_abstract"]
         if problems:
             entry={'paper_id':pid,'title':paper.get('title',''),'tier':paper.get('tier',3),
                    'rule':problems[0]['rule'],'detail':'; '.join(p['detail'] for p in problems),
-                   'issues':problems,'req_id':None}
+                   'issues':problems,'req_id':None, 'evaluation_state':'pending_material_or_metadata'}
             metadata_rejections.append(entry)
             if any(p['rule']=='usable_abstract' for p in problems):abstract_drops.append(entry)
             else:metadata_drops.append(entry)
             continue
-        key = _norm_title(paper.get("title", ""))
-        if key and key in seen_titles:
+        incoming = to_corpus_record(pid, paper)
+        bind_author_provenance(incoming, workspace)
+        matches = [key for key, value in records.items() if same_paper(value, incoming)]
+        if len(matches) == 1:
             duplicates += 1
-            # Keep whichever the search skill ranked higher (lower tier number).
-            incumbent = records[seen_titles[key]]
-            if (paper.get("tier") or 3) < incumbent["tier"]:
-                del records[seen_titles[key]]
-                records[pid] = to_corpus_record(pid, paper)
-                seen_titles[key] = pid
-            continue
-        records[pid] = to_corpus_record(pid, paper)
-        if key:
-            seen_titles[key] = pid
+            key = matches[0]
+            incumbent = records[key]
+            primary, other = (incoming, incumbent) if incoming["tier"] < incumbent["tier"] else (incumbent, incoming)
+            merged = dict(primary)
+            retain_author_structure(merged, other)
+            for field, value in other.items():
+                if merged.get(field) in (None, "", [], {}):
+                    merged[field] = value
+            for field in ("library_refs", "found_by"):
+                values = list(dict.fromkeys([*incumbent.get(field, []), *incoming.get(field, [])]))
+                if values:
+                    merged[field] = values
+            merged["paperId"] = key
+            records[key] = merged
+        else:
+            records[pid] = incoming
 
     input_count = len(papers)
     kept, dropped, flagged = apply_screens(records, reqs)
@@ -409,13 +451,16 @@ def run(workspace: Path) -> tuple[dict, dict, dict]:
         flagged.extend(local_flags)
         flagged.extend({**entry,'reason':'User-supplied PDF retained despite screen: '+str(entry.get('reason',entry.get('rule','')))} for entry in local_drops)
         if local_plan['search_target']:
-            kept,trimmed=trim_to_size(kept,{'retrieval':{'corpus_size':{'target':local_plan['search_target']}}})
+            kept,trimmed=trim_to_size(kept,{**reqs,'retrieval':{'corpus_size':{'target':local_plan['search_target']}}})
         else:
             trimmed=dict(Counter(str(p['tier']) for p in kept.values()));kept={}
         supplement_count=len(kept);kept={**local,**kept}
     else:
         local_duplicates=[];kept,trimmed=trim_to_size(kept,reqs);supplement_count=len(kept)
     must_include = check_must_include(kept, reqs)
+    preflight = bibliography_preflight(kept)
+    # Author attribution is reported early, but is not a selection/evidence gate.
+    # The bibliography builder remains strict after material preparation.
 
     # --- status -------------------------------------------------------------
     sizing = (reqs.get("retrieval") or {}).get("corpus_size") or {}
@@ -423,8 +468,8 @@ def run(workspace: Path) -> tuple[dict, dict, dict]:
     target = local_plan["combined_target"]
     reasons = list(degradations)
     if abstract_drops:
-        reasons.append(f"excluded {len(abstract_drops)} search papers without a usable complete abstract; no abstract recovery was requested")
-        degradations.append('search abstracts filtered')
+        reasons.append(f"excluded {len(abstract_drops)} search papers without a usable abstract or verifiable library excerpt; pending material evaluation")
+        degradations.append('papers pending usable selection material')
     if local and supplement_count<local_plan["search_target"]:
         reasons.append(f"retrieved {supplement_count}/{local_plan['search_target']} supplemental papers after deduplication/screening; all {len(local)} local PDFs retained")
         degradations.append("supplemental search shortfall")
@@ -496,10 +541,11 @@ def run(workspace: Path) -> tuple[dict, dict, dict]:
         )
 
     report = {
-        "metadata_filter":{"policy":"complete_abstract_authors_year",
+        "bibliography_preflight": preflight,
+        "metadata_filter":{"policy":METADATA_FILTER_POLICY,
                            "rejected_count":len(metadata_rejections),
                            "reason_counts":dict(Counter(p['rule'] for entry in metadata_rejections for p in entry['issues']))},
-        "abstract_filter": {"policy":"require_usable_complete_search_abstract",
+        "abstract_filter": {"policy":"complete_abstract_or_verified_library_excerpt",
                             "rejected_count":len(abstract_drops),
                             "retained_remote_missing":missing_abstracts},
         "input_count": input_count+len(local),
@@ -558,6 +604,14 @@ def main() -> int:
     if corpus or report:
         (out_dir / "selected_paper.json").write_text(
             json.dumps(corpus, indent=2, ensure_ascii=False), encoding="utf-8")
+    if (corpus and report.get("local_count", 0)
+            and report.get("corpus_plan", {}).get("search_target") == 0):
+        try:
+            with (out_dir / "metadata.json").open("x", encoding="utf-8") as stream:
+                json.dump(LOCAL_ONLY_METADATA, stream,
+                          indent=2, ensure_ascii=False)
+        except FileExistsError:
+            pass
     (out_dir / "retrieval_report.json").write_text(
         json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     (out_dir / "pipeline_status.json").write_text(

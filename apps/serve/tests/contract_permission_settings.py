@@ -25,6 +25,31 @@ def main() -> int:
             document = json.loads(settings_module.SERVE_SETTINGS_FILE.read_text(encoding="utf-8"))
             assert document["default_permission_mode"] == "ask"
 
+            assert settings.follow_up()["mode"] == "queue"
+            assert settings.follow_up()["revision"] == 0
+            assert settings.set_follow_up("steer", expected_revision=0) == {
+                "mode": "steer",
+                "revision": 1,
+            }
+            assert SettingsService(environ={}).follow_up()["mode"] == "steer"
+            assert settings.set_follow_up("queue", expected_revision=1)["revision"] == 2
+            document = json.loads(settings_module.SERVE_SETTINGS_FILE.read_text(encoding="utf-8"))
+            assert document["default_permission_mode"] == "ask"
+            for mode in ("unknown", True, None):
+                try:
+                    settings.set_follow_up(mode, expected_revision=2)
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError("unsupported follow-up mode was accepted")
+            try:
+                settings.set_follow_up("steer", expected_revision=0)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("stale follow-up preference was accepted")
+            assert settings.follow_up() == {"mode": "queue", "revision": 2}
+
             try:
                 settings.set_permission_mode("unknown")
             except ValueError:

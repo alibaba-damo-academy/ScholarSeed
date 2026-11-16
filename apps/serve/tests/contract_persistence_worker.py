@@ -15,6 +15,33 @@ from service.chat.persistence.worker import PersistenceWorker
 
 
 class PersistenceContract(unittest.IsolatedAsyncioTestCase):
+    async def test_enqueued_diagnostics_finish_in_order_before_close_barrier(self) -> None:
+        worker = PersistenceWorker()
+        started, release = threading.Event(), threading.Event()
+        recorded: list[str] = []
+
+        def blocked() -> None:
+            started.set()
+            release.wait(2)
+            recorded.append("measurement")
+
+        try:
+            worker.enqueue(blocked)
+            worker.enqueue(recorded.append, "resource")
+            self.assertTrue(await asyncio.to_thread(started.wait, 1))
+            worker.stop_waiting()
+            closing = asyncio.create_task(worker.close())
+            await asyncio.sleep(0)
+            self.assertFalse(closing.done())
+            self.assertTrue(worker._closed)
+            release.set()
+            await closing
+            recorded.append("trace.close")
+            self.assertEqual(recorded, ["measurement", "resource", "trace.close"])
+        finally:
+            release.set()
+            await worker.close()
+
     async def test_busy_admission_keeps_order_and_cancelled_work_finishes_once(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / "writes.sqlite3"

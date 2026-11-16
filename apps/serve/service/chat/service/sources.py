@@ -7,7 +7,7 @@ import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qs, unquote, urlsplit, urlunsplit
 
 from markdown_it import MarkdownIt
 from markdown_it.rules_inline import StateInline
@@ -25,6 +25,12 @@ from service.platform.citations import CITATION_SCHEME
 ANSWER_REVISION_PREFIX = "sha256:"
 SEARCH_SOURCE_KIND = "searched"
 RECEIPT_SOURCE_KIND = "receipt"
+PROJECT_SOURCE_KIND = "project"
+RESOURCE_SOURCE_ROUTE = "/api/resource/raw"
+LITERATURE_SOURCE_ROUTE = "/api/v1/literatures/"
+PROJECT_SOURCE_CONTROL = re.compile(r"[\\\x00-\x1f\x7f]")
+PROJECT_SOURCE_DRIVE = re.compile(r"^[a-z]:", re.IGNORECASE)
+PROJECT_SOURCE_LINE_FRAGMENT = re.compile(r"L[1-9]\d*(?:-L?[1-9]\d*)?", re.IGNORECASE)
 WEB_SEARCH_KIND = "web"
 PAPER_SEARCH_KIND = "paper"
 TOOL_DECLARED_ORIGIN = "tool_declared"
@@ -139,6 +145,9 @@ def _search_candidates(
             if identity is None:
                 continue
             existing = candidates.get(identity)
+            description = str(row.get("description") or "").strip()
+            if existing is not None and description and not existing.get("description"):
+                existing["description"] = description[:SEARCH_EXCERPT_MAX_CHARACTERS]
             if existing is not None and (
                 declared or existing.get("origin") != TOOL_DECLARED_ORIGIN
             ):
@@ -150,6 +159,9 @@ def _search_candidates(
                 "search_kind": search_kind,
                 "search_id": str(event.payload.get("search_id") or ""),
             }
+            description = description or (existing or {}).get("description", "")
+            if description:
+                candidates[identity]["description"] = description[:SEARCH_EXCERPT_MAX_CHARACTERS]
             if declared:
                 candidates[identity]["origin"] = TOOL_DECLARED_ORIGIN
             excerpts = [
@@ -286,6 +298,49 @@ def _answer_links(markdown: str) -> tuple[list[tuple[str, str]], dict[str, str]]
     return links, {label: href for label, (href, _) in bindings.items()}
 
 
+def project_navigation(href: str) -> dict | None:
+    if not href.startswith("/api/"):
+        return None
+    url = urlsplit(href)
+    if url.netloc or (url.fragment and not PROJECT_SOURCE_LINE_FRAGMENT.fullmatch(url.fragment)):
+        return None
+    query = parse_qs(url.query, keep_blank_values=True)
+    if url.path == RESOURCE_SOURCE_ROUTE:
+        project = query.get("project", [])
+        paths = query.get("path", [])
+        if len(paths) != 1:
+            return None
+        path = paths[0]
+        kind = "resource"
+        title = path.rsplit("/", 1)[-1]
+    elif url.path.startswith(LITERATURE_SOURCE_ROUTE):
+        project = query.get("project_id", [])
+        path = unquote(url.path[len(LITERATURE_SOURCE_ROUTE) :])
+        kind = "literature"
+        title = path
+        if "/" in path:
+            return None
+    else:
+        return None
+    if (
+        len(project) != 1
+        or not project[0]
+        or PROJECT_SOURCE_CONTROL.search(path)
+        or PROJECT_SOURCE_DRIVE.match(path)
+        or any(part in {"", ".", ".."} for part in path.split("/"))
+    ):
+        return None
+    return {
+        "kind": PROJECT_SOURCE_KIND,
+        "source_kind": kind,
+        "project_id": project[0],
+        "path": path,
+        "title": title,
+        "url": href,
+        "citation_urls": [href],
+    }
+
+
 def answer_sources(
     markdown: str, events: Iterable[ProductEventRecord], *, item_id: str = ""
 ) -> dict:
@@ -300,7 +355,14 @@ def answer_sources(
     for href, title in links:
         source: dict | None = None
         identity: tuple[str, str] | None = None
-        if href.startswith(CITATION_SCHEME):
+        navigation = project_navigation(href)
+        if navigation is not None:
+            source = navigation
+            identity = (
+                PROJECT_SOURCE_KIND,
+                str((source["source_kind"], source["project_id"], source["path"])),
+            )
+        elif href.startswith(CITATION_SCHEME):
             handle = href[len(CITATION_SCHEME) :].strip()
             if handle:
                 identity = (RECEIPT_SOURCE_KIND, handle)
@@ -372,6 +434,7 @@ def answer_sources(
                 "title": citation.get("title") or href,
                 "search_kind": WEB_SEARCH_KIND,
                 "search_id": "",
+                **candidates.get(url_identity, {}),
                 "citation_urls": [href],
             }
             sources.append(source)

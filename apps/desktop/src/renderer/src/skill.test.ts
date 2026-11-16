@@ -115,6 +115,20 @@ test('skill labels prefer display names and fall back without changing identity'
   assert.equal(skill.name, 'agentic-search')
 })
 
+test('local skill names follow language without changing canonical identity', () => {
+  const skill = {
+    name: 'literature-review',
+    display_name: 'Literature Review',
+    display_names: { zh: '文献综述', 'zh-tw': '文獻綜述', en: 'Literature Review' },
+  }
+  assert.equal(skillName(skill, 'zh-CN'), '文献综述')
+  assert.equal(skillName(skill, 'ZH-TW'), '文獻綜述')
+  assert.equal(skillName(skill, 'en-US'), 'Literature Review')
+  assert.equal(skillName(skill, 'fr'), 'Literature Review')
+  assert.equal(skillName({ ...skill, display_names: { zh: '' } }, 'zh'), 'Literature Review')
+  assert.equal(skill.name, 'literature-review')
+})
+
 test('skill categories translate only explicit defaults and preserve same-name custom content', async () => {
   const localization = createLocalization(
     'en',

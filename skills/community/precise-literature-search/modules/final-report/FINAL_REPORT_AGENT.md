@@ -1,6 +1,8 @@
 # Final cited-report sub-agent
 
-You are the single final-report agent for one completed literature-search run.
+You are the single final-report agent for one literature-search run ready for
+reporting. Read [reading outcomes](../../references/reading-outcome.md) for the
+shared scope, gaps and completion rules before synthesizing the reports.
 
 Inputs supplied by the host:
 
@@ -53,12 +55,9 @@ cite it.
 
 ## No readable full text
 
-Read `references/reading-outcome.md` when the reader reports zero readable
-papers. Check active and archived reading outcomes, not only the latest round.
-For a proven all-unreadable run, use the shared limitations-report completion
-contract: no numeric full-text citations, an explicit no-fulltext heading, and
-an empty final reference section. Do not perform the full-text claim self-audit
-when no full-text claim can be made. Keep any eligible abstract alerts separate.
+Follow the shared [no-readable-full-text contract](../../references/reading-outcome.md#no-readable-full-text).
+Skip the full-text claim self-audit for an all-unreadable run; keep eligible
+abstract alerts separate.
 Otherwise follow the normal cited-report and self-audit rules below.
 
 ## Lightweight evidence self-audit
@@ -69,7 +68,7 @@ when one drives the answer; otherwise choose the main conclusion. Follow its
 inline citation to the matching paper's `Query-specific evidence:` block, then
 use the manifest to open only the recorded page or section in the verified PDF
 and compare the short excerpt and surrounding context with the report claim. Do
-not reread the whole paper or audit additional claims.
+not reread the whole paper or audit additional claims as part of this spot check.
 
 Treat support levels conservatively: `direct` may support the claim only at the
 strength and scope stated in the PDF; `indirect` requires qualified wording; and
@@ -103,16 +102,19 @@ support a stronger synthesis claim, or use an abstract alert to resolve a
 disagreement between readable papers.
 
 Mark abstract-derived reminder claims in the main body as `[A1]`, `[A2]`, and so
-on. If any are used, add exactly one `## 高度相关但未获得全文的文献（摘要级提醒）`
-or `## Highly relevant papers without full text (abstract-level alerts)` section
-immediately before the final references section. Use one single-line entry per
+on. If any are used, add exactly one abstract-alert section in the user's
+language immediately before the final references section. Use
+`## Highly relevant papers without full text (abstract-level alerts)` in English.
+For Chinese, read the exact heading from the final-report validator in
+`scripts/run_state.py`; do not paraphrase it. Use one single-line entry per
 marker in this form, with a blank line between every two entries so each is a
 separate Markdown paragraph in the document editor:
 
 `[A1] Authors. Title. Venue, Year. DOI or stable URL. Evidence level: abstract; full text not read. Abstract-based reminder: ...`
 
-Use the report language for the labels; in Chinese, include the exact meaning
-`证据级别：摘要；未阅读全文`. Ensure every main-body `[A#]` marker maps to exactly
+Use the user's language for the labels. For Chinese, use the exact abstract
+evidence and unread-full-text markers accepted by the same validator.
+Ensure every main-body `[A#]` marker maps to exactly
 one alert entry and every alert entry is used in the main body. Omit the section
 when no paper meets the threshold. Keep `[A#]` entries out of the final numbered
 reference list.
@@ -120,8 +122,9 @@ reference list.
 Use numbered inline citations (`[1]`, `[2]`, or `[1, 2]`) immediately after the
 full-text claims they support. Reuse one number per readable paper, ensure every
 inline number has exactly one bibliography entry, and include no uncited
-bibliography entries. End with exactly one `## 参考资料` or `## References`
-section. Format each entry as one line: `[n] Authors. Title. Venue, Year. DOI or
+bibliography entries. End with exactly one references section in the user's
+language: `## References` in English or the exact Chinese heading accepted by
+the same validator. Format each entry as one line: `[n] Authors. Title. Venue, Year. DOI or
 stable URL when available.` Separate every two entries with a blank line so
 each remains a distinct Markdown paragraph in the document editor. Alternatively,
 format every entry as a Markdown list item (`- [n] ...`). Put only numbered

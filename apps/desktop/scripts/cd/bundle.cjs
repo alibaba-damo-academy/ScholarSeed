@@ -13,6 +13,7 @@ const { OFFICE_COMPONENT_DIRECTORY, stageOfficeComponent } = require('../pre/off
 const { artifact: texliveArtifact, probe: probeTexlive, PLATFORM_DIRECTORY, stageVerifiedTexlive } = require('../../runtime/texlive.cjs')
 const { artifact: powershellArtifact, probe: probePowerShell, stageVerifiedPowerShell } = require('../../runtime/powershell.cjs')
 const { SKILL_PYTHON_MODULE, skillPythonLauncherPath, writeSkillPythonLauncher } = require('../../runtime/python.cjs')
+const { stageVendoredCodex } = require('../../runtime/codex.cjs')
 const { nativeTar, verifyPython } = require('../../../../scripts/shared/python.cjs')
 const { ensureRipgrep } = require('../../../../scripts/shared/ripgrep.cjs')
 const { RUNTIME_PROBE_SCRIPT } = require('../shared/probe.cjs')
@@ -53,6 +54,8 @@ const BINARY_PACKAGES = assembly.BINARY_PACKAGES
 const REQUIREMENTS_FILENAME = 'python-requirements.txt'
 const INVENTORY_FILENAME = 'python-dependencies.json'
 const VERIFIER_FILENAME = 'dependencies.py'
+const BRIDGE_COMMAND = 'scholarseed-bridge'
+const COMPAT_DIRECTORY = 'compat'
 const ENTRY_POINT_REFERENCE = /^([^\[\]]+?)(?:\s*\[([^\[\]]*)\])?$/
 const ENTRY_POINT_MODULE = /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$/
 const ENTRY_POINT_FUNCTION = /^[A-Za-z_][A-Za-z0-9_]*$/
@@ -153,7 +156,7 @@ async function bundle(context, target, environment) {
   if (process.platform !== 'win32') fs.chmodSync(config, 0o600)
   fs.mkdirSync(wheelsRoot, { recursive: true })
 
-  const wheels = []
+  const wheels = prepared.product_wheels.map(wheel => wheel.path)
   await wheelCache.withBuilder({python, uv, buildConstraints: prepared.wheel_build_constraints,
     temporaryRoot: context.verificationRoot, environment, run}, async wheelTools => {
     for (const [name, relative] of PROJECTS) {
@@ -167,10 +170,10 @@ async function bundle(context, target, environment) {
 
   if (componentsEnabled) {
     if (cachedPython) assembly.synchronize(uv, python, requirements, wheelsRoot, environment)
-    else context.pythonInstallation = assembly.stageSync(uv, python, requirements, wheelsRoot, environment,
+    else context.pythonInstallation = await assembly.stageSync(uv, python, requirements, wheelsRoot, environment,
       context.verificationRoot || undefined, prepared.source_builds)
   } else {
-    assembly.installSources(uv, python, requirements, wheelsRoot, wheelsRoot, environment, prepared.source_builds)
+    await assembly.installSources(uv, python, requirements, wheelsRoot, wheelsRoot, environment, prepared.source_builds)
     assembly.synchronize(uv, python, requirements, wheelsRoot, environment)
   }
   run(python, ['-I', '-B', helper, 'snapshot', '--plan', plan, '--requirements', requirements, '--output', inventory,
@@ -213,7 +216,8 @@ async function bundle(context, target, environment) {
   const rg = ripgrep.executable
   fs.copyFileSync(rg, path.join(bin, target.ripgrepName))
   if (process.platform !== 'win32') fs.chmodSync(path.join(bin, target.ripgrepName), 0o755)
-  fs.cpSync(context.binaries.codex.root, path.join(backend, 'codex-runtime'), { recursive: true })
+  const codexPackaging = stageVendoredCodex(context.binaries.codex, path.join(backend, 'codex-runtime'), target.platform)
+  if (codexPackaging) context.codexPackaging = codexPackaging
   // The bundled literature-review skill compiles survey PDFs with these engines,
   // so the toolchain ships with the product instead of depending on the user's
   // machine having TeX. Staging verifies the reviewed archive digest, asserts
@@ -444,6 +448,12 @@ function writeConsoleScriptShells(python, bin, target, component) {
   if (component) sitePackagesRoots.push(component.pylibs)
   const commands = collectConsoleScripts(sitePackagesRoots)
   for (const [name, entry] of Object.entries(commands)) {
+    const directory = name === BRIDGE_COMMAND ? path.join(path.dirname(bin), COMPAT_DIRECTORY) : bin
+    const filename = process.platform === 'win32' ? `${name}.cmd` : name
+    if (name === BRIDGE_COMMAND && fs.existsSync(path.join(bin, filename))) {
+      throw new Error('stale bridge launcher in Agent PATH; rebuild in a fresh resource directory')
+    }
+    fs.mkdirSync(directory, { recursive: true })
     // pip's entry-point contract is `module:function`; the launcher must call
     // exactly that function. Using `python -m module` would only work when the
     // module happens to have an `if __name__ == "__main__"` guard that
@@ -462,7 +472,7 @@ function writeConsoleScriptShells(python, bin, target, component) {
           `"%~dp0..\\python\\python.exe" -c "${pyLaunch}" %*`,
           ''
         ].join('\r\n')
-      fs.writeFileSync(path.join(bin, `${name}.cmd`), cmd)
+      fs.writeFileSync(path.join(directory, filename), cmd)
     } else {
       const shell = [
         '#!/bin/sh',
@@ -472,7 +482,7 @@ function writeConsoleScriptShells(python, bin, target, component) {
         `exec "$here/../python/bin/python3" -c '${pyLaunch}' "$@"`,
         ''
       ].join('\n')
-      const shellPath = path.join(bin, name)
+      const shellPath = path.join(directory, filename)
       fs.writeFileSync(shellPath, shell)
       fs.chmodSync(shellPath, 0o755)
     }

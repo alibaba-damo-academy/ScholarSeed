@@ -1,5 +1,5 @@
 ---
-id: reference-plugin-api-zh
+id: reference-plugin-api
 title: Plugin 可用 API
 doc_type: design
 category: skills
@@ -10,7 +10,7 @@ summary: 查询实际契约，区分前端 SDK、组件发现和 Skill 的后端
 
 # Plugin 可用 API
 
-[English](api.md) · **简体中文** · [离线阅读](../plugins.zh.html#api)
+**简体中文** · [English](api.md) · [离线阅读](../plugins.zh.html#api)
 
 [Plugin 概览](../plugins.zh.md)
 
@@ -63,9 +63,17 @@ python -m service.cli.plugins describe
 
 在界面状态更新后登记文本，书深会在“复制消息”中按顺序合并本轮正文与卡片。公共卡片由书深根据业务数据生成，无需重复登记。
 
-官方 UI 的 `Conversation.Choices`、`Results`、`Details`、`References`、`Downloads`、`Delivery` 和 `Review` 在 `mount()` 内使用时会自动登记文本。组合多个组件时会合并内容；综述的折叠章节、引用、检查和问题不会因未展开而遗漏。产物保留标题和路径，不会自动读取文件正文。
+官方 UI 的 `Conversation.Results`、`Details`、`References`、`Downloads`、`Delivery` 和 `Review` 在 `mount()` 内使用时会自动登记文本。组合多个组件时会合并内容；综述的折叠章节、引用、检查和问题不会因未展开而遗漏。产物保留标题和路径，不会自动读取文件正文。
 
-`Markdown`、`Message`、`Code`、`Formula` 和 `Artifact` 也会自动登记；代码保留未展开的完整源码，公式保留 LaTeX、说明和注释。`Tabulation` 需要提供 `copyText` 或 `invalidSource`，不会从表格 DOM 推断数据。
+`Markdown`、`Code`、`Formula` 和 `Artifact` 也会自动登记；代码保留未展开的完整源码，公式保留 LaTeX、说明和注释。`Tabulation` 需要提供 `copyText` 或 `invalidSource`，不会从表格 DOM 推断数据。
+
+用户输入、上下文、执行过程与计划、确认与澄清、下一步建议、异常与空回答使用书深原生 UI，不从官方 UI 包导出。`interaction.question` 和 `literature.authorization` 保留宿主原生入口；综述 iframe 仅展示内容，不重复提供大纲确认选项。回答与产物需要的图片、菜单及内容组件继续保留，其自身的加载、复制和渲染错误处理不受影响。
+
+`Plot` 及十种具体图表、`DataTable`、`Content` 同样自动登记。图表与数据表使用完整原始行和单位，不因折叠、筛选或分页遗漏数据，不把缺失值填成零；证据包含完整摘录与定位；产物包含已提供的预览，不自动读文件。三个统一技能组合会登记标题、内容和已保存选择，不登记提交/取消等按钮。
+
+这些组件的文本进入消息下方的整轮复制入口；卡片没有独立复制按钮。任意布局、图标或菜单不会自动变成业务文本。普通插件继续使用隔离桥，不调用 `navigator.clipboard`，也不获得宿主 DOM 或文件访问权。
+
+升级官方 UI 或插件不会重写历史卡片的固定资源快照和已登记文本。历史问题的原始内容与用户最终确认值分别保留；新增自动登记能力需在新版本/新绑定中验证，不能直接改数据库或将旧卡片的复制结果当作新版组件验收。
 
 自己绘制界面时，可以在组件内调用 `window.scholarseedUI.useCopyContent(text)`，并将 `useCopyContent` 加入 `ui.exports`。它会合并同一界面中各组件的文本，并在保存状态更新后重新登记；登记失败会在卡片内提示。不要在同一界面混用这个 Hook 和下方直接覆盖整张卡片文本的 `setCopyContent()`。
 
@@ -141,8 +149,7 @@ mount(state => React.createElement(Notes, { state }));
 | `literature authorize` | 请求用户授权读取全文 | 展示候选论文，等待用户确认后继续。 |
 | `literature result / review` | 展示检索结果或综述流程卡片 | 按检查点展示结果、收集选择或确认大纲。 |
 | `literature acquire` | 获取获准候选的开放全文 | 下载并托管文件；逐篇返回获取结果。 |
-| `literature ingest / import` | 将下载结果或会话文件导入文献库 | 写文献库并关联当前项目；`import` 按用户明确指令直接导入。 |
-| `literature delivery` | 展示全文保存流程 | 固定本次交付批次，按用户后续选择保存或入库。 |
+| `literature import` | 将会话文件导入文献库 | 按用户明确指令写入文献库并关联当前项目。 |
 | `literature collection.list / tag.list` | 列出分类或标签 | 分类属于当前项目，标签全局共享。 |
 | `literature collection.create / collection.update` | 创建、重命名或移动分类 | 修改当前项目的分类结构。 |
 | `literature tag.create / tag.update` | 创建或重命名标签 | 修改全局标签，重命名影响所有使用它的项目。 |

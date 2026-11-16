@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from hashlib import sha256
 from pathlib import Path
 
 from service.brand import HOME_ENV, default_home
 from service.content.domain.model import PROJECT_STATE_DIRNAME
+from service.platform.registry import LEGACY_DIRECTORY, REGISTRY_DIRECTORY
 from service.platform.storage import account_directory
 
 
@@ -24,7 +26,11 @@ def global_home() -> Path:
 
 
 # Permanent OS-account namespace, never derived from relocatable product data.
-COORDINATION_DIRNAME = ".scholarseed-coordination"
+COORDINATION_DIRNAME = REGISTRY_DIRECTORY if sys.platform in {"darwin", "win32"} else LEGACY_DIRECTORY
+
+
+def legacy_coordination_root() -> Path:
+    return Path(account_directory()) / LEGACY_DIRECTORY
 
 
 def coordination_root() -> Path:
@@ -74,6 +80,7 @@ BROWSER_RECEIPTS_DIR: Path = BROWSER_DIR / BROWSER_RECEIPTS_DIRNAME
 BROWSER_VAULT_FILE: Path = BROWSER_DIR / BROWSER_VAULT_FILENAME
 BROWSER_DOWNLOADS_FILE: Path = BROWSER_DIR / BROWSER_DOWNLOADS_FILENAME
 MODEL_CREDENTIALS_DB: Path = SERVICE_DIR / "model_credentials.sqlite3"
+TRANSLATION_DB: Path = SERVICE_DIR / "translation.sqlite3"
 MODEL_CREDENTIAL_LOCKS: Path = SERVICE_DIR / "model-credential-locks"
 SERVICE_BRIDGE_DIR: Path = SERVICE_DIR / "bridge"
 SERVICE_LITERATURE_DIR: Path = SERVICE_DIR / "literature"
@@ -106,6 +113,7 @@ RESOURCE_IMPORTS_DB: Path = SERVICE_DIR / "resource-imports.sqlite3"
 DESKTOP_HANDOFF_DB: Path = SERVICE_DIR / "handoff.sqlite3"
 SESSION_RUNTIME_DIR: Path = SERVICE_DIR / "sessions"
 SESSION_OUTPUT_DIRNAME = "outputs"
+PROJECT_SESSION_OUTPUT_DIRNAME = "output"
 SESSION_ARTIFACT_OBJECTS_RELATIVE = ".artifacts/objects"
 SESSION_ATTACHMENT_DIRNAME = "attachments"
 # serve 产品级设置（例如新会话的默认权限策略），与模型/provider config 隔离，不能写入
@@ -131,6 +139,7 @@ SERVICE_CASES_DIR: Path = SCHOLARSEED_HOME / "test_sessions"
 SQLITE_SIDE_CAR_SUFFIXES: tuple[str, ...] = ("-wal", "-shm")
 SERVICE_DATABASES: tuple[Path, ...] = (
     SERVICE_COMPONENTS_DATABASE,
+    TRANSLATION_DB,
     MODEL_CREDENTIALS_DB,
     SERVICE_LITERATURE_DATABASE,
     SERVICE_ACTIONS_DB,
@@ -144,6 +153,11 @@ SERVICE_DATABASES: tuple[Path, ...] = (
 def task_python_root(cwd: Path) -> Path:
     """Resolve a task environment from its execution directory, not project identity."""
     return cwd.expanduser().resolve().joinpath(*TASK_PYTHON_PARTS)
+
+
+def session_attachment_root(session_id: str, cwd: Path, project: Path | None) -> Path:
+    root = SESSION_RUNTIME_DIR / session_id if project is not None and cwd == project else cwd
+    return (root / SESSION_ATTACHMENT_DIRNAME).resolve()
 
 
 def task_python_commands(cwd: Path) -> Path:
@@ -240,6 +254,10 @@ _RUNTIME_TARGET_PATTERN = re.compile(r"^[a-z0-9]+-[a-z0-9_]+$")
 _RUNTIME_CONTENT_ID_PATTERN = re.compile(r"^[a-f0-9]{64}$")
 
 
+def texlive_cache_directory(version: str, installation: Path) -> Path:
+    return installation / RUNTIME_DIRNAME / RUNTIME_CACHE_DIRNAME / TEXLIVE_CACHE_DIRNAME / version
+
+
 def runtime_component_dir(kind: str, target: str, content_id: str) -> Path:
     """已发布组件目录 <runtime>/<kind>/<target>-<contentId>。
 
@@ -294,6 +312,7 @@ __all__ = [
     "DESKTOP_HANDOFF_DB",
     "SESSION_RUNTIME_DIR",
     "SESSION_OUTPUT_DIRNAME",
+    "PROJECT_SESSION_OUTPUT_DIRNAME",
     "SESSION_ATTACHMENT_DIRNAME",
     "SERVE_SETTINGS_FILE",
     "AUTH_FILE",

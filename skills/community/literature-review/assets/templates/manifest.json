@@ -1,0 +1,117 @@
+{
+  "retrieved_at": "2026-11-05",
+  "templates": [
+    {
+      "id": "iclr",
+      "source": "https://raw.githubusercontent.com/ICLR/Master-Template/master/iclr2026/iclr2026_conference.sty",
+      "files": [
+        {
+          "path": "iclr/COPYING.font.txt",
+          "sha256": "aaf135472f81c5b4a0dca9367e5bb5e9750032b5bebe5442b36e4c0a47430df3"
+        },
+        {
+          "path": "iclr/eso-pic.sty",
+          "sha256": "8554cb0a5449a031f5d78cc67c824d23afb4b1a4dd11ca9946447185bb274464"
+        },
+        {
+          "path": "iclr/iclr2026_conference.sty",
+          "sha256": "a4852f68e080d6c5245057ca2039100b409e31727898aa93c03d78ddb84374a3"
+        },
+        {
+          "path": "iclr/phvb.tfm",
+          "sha256": "7539db98bb44c317ba3e7db5dad7c823c262d240e5c9081927775d1797856a6d"
+        },
+        {
+          "path": "iclr/uhvb8a.pfb",
+          "sha256": "a7a8cf4b173b410fff6d8f006ace207322bc52183bf219d2ce996cab8a14000c"
+        }
+      ],
+      "archive_sha256": "a4852f68e080d6c5245057ca2039100b409e31727898aa93c03d78ddb84374a3"
+    },
+    {
+      "id": "icml",
+      "source": "https://media.icml.cc/Conferences/ICML2026/Styles/icml2026.zip",
+      "files": [
+        {
+          "path": "icml/algorithm.sty",
+          "sha256": "93fd0eb31c112eb405833db8f1d7f5d238c7e691b1c05680d7276e68f36d564a"
+        },
+        {
+          "path": "icml/algorithmic.sty",
+          "sha256": "48d18794a5d97c0479a588cc2eac0917992feb9da83acc4631b8f55757d80f9b"
+        },
+        {
+          "path": "icml/eso-pic.sty",
+          "sha256": "8554cb0a5449a031f5d78cc67c824d23afb4b1a4dd11ca9946447185bb274464"
+        },
+        {
+          "path": "icml/fancyhdr.sty",
+          "sha256": "9130c52f91087abc6d223164ffa587e207e3257fcbcd069ef09ecb5391043f14"
+        },
+        {
+          "path": "icml/float.sty",
+          "sha256": "be4a09ab7ded44b4ce97ba20a3a3efbb061d186327d5db61f8de6a3cab5019aa"
+        },
+        {
+          "path": "icml/forloop.sty",
+          "sha256": "7643af86d17f2ae51b37a18ed3cfd90251bb5ee2058a9b24485f11ac3925b333"
+        },
+        {
+          "path": "icml/icml2026.sty",
+          "sha256": "7cdcf90f6a59c5219e7f15c88f7ed09fcaf598dad91e6cdddc4dc3cb0e397a95"
+        }
+      ],
+      "archive_sha256": "8b29290f5828e176debb57ea9cc00252502973d55ea561a2f18a7f0a326bfc6c"
+    },
+    {
+      "id": "ieee",
+      "source": "https://mirrors.ctan.org/macros/latex/contrib/IEEEtran.zip",
+      "files": [
+        {
+          "path": "ieee/IEEEtran.cls",
+          "sha256": "da751920a317ed318b7b5cd7fa585a6cc7d28502d457856382e9be24b10a3bd7"
+        }
+      ],
+      "archive_sha256": "e0cd4f5afbd42c8076092280e72b3e0a5111efe501d35de9f715cfb8da313cb4"
+    },
+    {
+      "id": "aaai",
+      "publisher": "AAAI Press",
+      "official_author_kit": "https://aaai.org/authorkit26/",
+      "distribution_url": "https://raw.githubusercontent.com/Orchestra-Research/AI-Research-SKILLs/main/20-ml-paper-writing/ml-paper-writing/templates/aaai2026/aaai2026.sty",
+      "note": "Official site returned HTTP 403 during retrieval; publisher style header preserved, no independent publisher checksum available.",
+      "files": [
+        {
+          "path": "aaai/aaai2026.sty",
+          "sha256": "a39f1866a04dd1e2603613c876fa446aaea2c2f3e34d02be868fd21520bfade5"
+        }
+      ]
+    },
+    {
+      "id": "standard_chinese",
+      "source": "Repository-owned CTeX preamble extracted into standard_chinese.tex",
+      "files": [
+        {
+          "path": "standard_chinese/standard_chinese.tex",
+          "sha256": "b03536dd7567225bfd141e59e27e979d21564751b20b5900295da87d43a8401a"
+        }
+      ]
+    },
+    {
+      "id": "neurips",
+      "source": "Existing bundled NeurIPS 2026 preprint style",
+      "files": [
+        {
+          "path": "neurips/neurips_2026.sty",
+          "sha256": "c3fc2894e83d2517ca18b66741d6c595986d97957dc08ec08bb2125a7ec4555a"
+        }
+      ]
+    }
+  ],
+  "bundled_dependencies": {
+    "eso-pic.sty": "TeX Live 2024 distribution; LPPL header preserved",
+    "float.sty": "TeX Live 2024 distribution; original header preserved",
+    "forloop.sty": "Generated from CTAN forloop.dtx/forloop.ins using docstrip; https://mirrors.ctan.org/macros/latex/contrib/forloop.zip",
+    "phvb.tfm and uhvb8a.pfb": "TeX Live 2024 Helvetica-compatible URW NimbusSanL-Bold; GPL with font embedding exception, COPYING.font.txt included"
+  }
+}

@@ -6,7 +6,12 @@ import type {
   SubmissionMode,
   TurnInputItem,
 } from './api'
-import { feedback, turnAdmissionMessageKey, type FeedbackDescriptor } from './contracts/feedback.ts'
+import {
+  feedback,
+  SESSION_OPEN_UNKNOWN,
+  turnAdmissionMessageKey,
+  type FeedbackDescriptor,
+} from './contracts/feedback.ts'
 import type { ConvItem, QueuedMessage } from './model'
 
 const INITIAL_QUEUE_SEQUENCE = 0
@@ -14,6 +19,7 @@ const OPTIMISTIC_QUEUE_STATE: QueuedMessage['state'] = 'submitting'
 const SETTLED_QUEUE_STATE: QueuedMessage['state'] = 'queued'
 const UNKNOWN_QUEUE_STATE: QueuedMessage['state'] = 'outcome_unknown'
 const TURN_CONFIRMATION_STALE = 'runtime_turn_confirmation_stale'
+const AUTHORIZATION_CONTINUATION = 'authorization_continuation'
 
 export async function confirmQueuedOutcome(actions: {
   confirm: () => Promise<Pick<ConfirmUnknownTurnResponse, 'ok' | 'code' | 'error'>>
@@ -41,6 +47,7 @@ export const QUEUE_PRESENTATION_MESSAGE_KEYS = {
   outcome_unknown: 'composer.unknownOutcome',
 } as const satisfies Record<QueuedMessage['state'], string>
 export const QUEUED_MESSAGE_SAFE_ERRORS = {
+  SESSION_OPEN_UNKNOWN,
   SUBMISSION_NOT_APPLIED: 'queued_submission_not_applied',
   TURN_OUTCOME_UNCONFIRMED: 'turn_outcome_unconfirmed',
 } as const
@@ -72,6 +79,7 @@ const QUEUE_SANDBOX_ERROR_MESSAGE_KEYS = {
   windows_sandbox_tool_probe_failed: 'sandbox.toolProbeFailed',
   windows_sandbox_policy_rejected: 'sandbox.policyRejected',
   windows_sandbox_setup_cancelled: 'sandbox.setupCancelled',
+  windows_sandbox_password_policy_rejected: 'sandbox.passwordPolicyRejected',
 } as const
 const QUEUE_ADMISSION_ERROR_MESSAGE_KEYS = {
   resource_baseline_permission_denied: 'queue.permissionDenied',
@@ -85,6 +93,9 @@ export function queuedMessageErrorText(
   details?: Record<string, string>
 ): string {
   const code = typeof error === 'string' ? error : ''
+  if (code === QUEUED_MESSAGE_SAFE_ERRORS.SESSION_OPEN_UNKNOWN) {
+    return t('queue.sessionOpenUnknown', { ns: 'conversation' })
+  }
   // An ambiguous native submission must never be presented as safe to resend.
   if (state === 'outcome_unknown') return t('composer.runtimeTurnFailed')
   if (Object.prototype.hasOwnProperty.call(QUEUE_SANDBOX_ERROR_MESSAGE_KEYS, code)) {
@@ -111,9 +122,34 @@ export function queuedMessageErrorText(
   return t(key)
 }
 
+export function queuedMessageHasUnknownOpen(message: QueuedMessage): boolean {
+  return (
+    message.retryBlockedErrorCode === QUEUED_MESSAGE_SAFE_ERRORS.SESSION_OPEN_UNKNOWN ||
+    message.safeErrorCode === QUEUED_MESSAGE_SAFE_ERRORS.SESSION_OPEN_UNKNOWN
+  )
+}
+
+export function queuedMessageNeedsStatusCheck(message: QueuedMessage): boolean {
+  return (
+    message.state === UNKNOWN_QUEUE_STATE ||
+    Boolean(message.retryBlockedErrorCode) ||
+    queuedMessageHasUnknownOpen(message)
+  )
+}
+
 /** Mirrors the Service admission gate: one unconfirmed outcome blocks the whole queue. */
 export function queueBlockedByUnconfirmed(messages: QueuedMessage[]): boolean {
   return messages.some((message) => message.state === UNKNOWN_QUEUE_STATE)
+}
+
+export function canEditQueuedMessage(message: QueuedMessage): boolean {
+  return (
+    message.purpose !== AUTHORIZATION_CONTINUATION &&
+    message.serverPresent !== false &&
+    (message.state === 'queued' ||
+      message.state === 'waiting_resources' ||
+      message.state === 'failed')
+  )
 }
 
 const CANCELLABLE_QUEUE_STATES = new Set<QueuedMessage['state']>([
@@ -179,6 +215,7 @@ export function shouldPresentQueuedMessage(
   )
   if (message.state === UNKNOWN_QUEUE_STATE && hasTurnRecoveryCard) return false
   if (message.state === 'failed' || message.state === UNKNOWN_QUEUE_STATE) return true
+  if (message.purpose === AUTHORIZATION_CONTINUATION) return false
   return message.submissionMode === 'queued'
 }
 
@@ -230,6 +267,7 @@ export function queuedMessageFromPayload(payload: QueuedMessagePayload): QueuedM
     text: messageText(payload.input),
     input: payload.input,
     assistantReferences: payload.assistant_references ?? [],
+    retryBlockedErrorCode: payload.retry_blocked_error ?? undefined,
     safeErrorCode: payload.safe_error,
     safeErrorDetails: payload.safe_error_details,
     serverPresent: true,

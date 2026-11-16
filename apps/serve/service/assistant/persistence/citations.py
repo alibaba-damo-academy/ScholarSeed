@@ -6,11 +6,13 @@ import json
 import sqlite3
 from contextlib import closing
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 
 from service.assistant.persistence.store import ASSISTANT_SNAPSHOT_TABLE
 from service.assistant.persistence.utils import extend, extensions
 from service.chat.persistence.catalog import SQLITE_TIMEOUT_SECONDS
+from service.chat.persistence.utils import validate_transaction
 from service.persistence.project import (
     database_files,
     open_database,
@@ -173,8 +175,8 @@ class CitationStore:
         connection = self._connect()
         try:
             row = connection.execute(
-                f"SELECT payload FROM {CITATIONS_TABLE} WHERE session_id=? AND snapshot_id=? AND handle=?",
-                (session_id, snapshot_id, handle),
+                f"SELECT payload FROM {CITATIONS_TABLE} WHERE session_id=? AND snapshot_id=? AND handle IN (?,?)",
+                (session_id, snapshot_id, handle, self._inherited_key(snapshot_id, handle)),
             ).fetchone()
             return self._payload(row) if row else None
         finally:
@@ -184,12 +186,71 @@ class CitationStore:
         connection = self._connect()
         try:
             rows = connection.execute(
-                f"SELECT handle FROM {CITATIONS_TABLE} WHERE session_id=? AND snapshot_id=?",
+                f"SELECT payload FROM {CITATIONS_TABLE} WHERE session_id=? AND snapshot_id=?",
                 (session_id, snapshot_id),
             ).fetchall()
-            return tuple(str(row[0]) for row in rows)
+            return tuple(str(self._payload(row)["handle"]) for row in rows)
         finally:
             connection.close()
+
+    def prior_literature(self, session_id: str, snapshot_id: str, handle: str) -> dict | None:
+        """Find an immutable library receipt in this session's earlier, same-scope turns.
+
+        This does not authorize reusing one-shot attachments or selected project files.
+        Navigation still resolves the receipt against the original source revision.
+        """
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                f"""SELECT receipt.payload FROM {CITATIONS_TABLE} AS receipt
+                JOIN {ASSISTANT_SNAPSHOT_TABLE} AS origin
+                  ON origin.snapshot_id = receipt.snapshot_id
+                JOIN {ASSISTANT_SNAPSHOT_TABLE} AS target
+                  ON target.snapshot_id = ? AND target.session_id = receipt.session_id
+                WHERE receipt.session_id = ? AND json_extract(receipt.payload, '$.handle') = ?
+                  AND origin.session_id = target.session_id
+                  AND origin.project_id IS target.project_id
+                  AND origin.created_at <= target.created_at""",
+                (snapshot_id, session_id, handle),
+            ).fetchone()
+        record = self._payload(row) if row else None
+        return record if record and record.get("source_kind") == "literature" else None
+
+    @staticmethod
+    def _inherited_key(snapshot_id: str, handle: str) -> str:
+        return sha256(f"{snapshot_id}\0{handle}".encode()).hexdigest()
+
+    def inherit_snapshot(
+        self,
+        source_session_id: str,
+        source_snapshot_id: str,
+        target_session_id: str,
+        target_snapshot_id: str,
+        connection: sqlite3.Connection,
+    ) -> None:
+        validate_transaction(connection, self._database)
+        target = connection.execute(
+            f"SELECT 1 FROM {ASSISTANT_SNAPSHOT_TABLE} WHERE session_id=? AND snapshot_id=?",
+            (target_session_id, target_snapshot_id),
+        ).fetchone()
+        if target is None:
+            raise ValueError("citation_snapshot_unavailable")
+        rows = connection.execute(
+            f"SELECT source_key,payload FROM {CITATIONS_TABLE} WHERE session_id=? AND snapshot_id=?",
+            (source_session_id, source_snapshot_id),
+        ).fetchall()
+        for row in rows:
+            payload = self._payload(row)
+            connection.execute(
+                f"INSERT OR IGNORE INTO {CITATIONS_TABLE} "
+                "(handle,session_id,snapshot_id,source_key,payload) VALUES (?,?,?,?,?)",
+                (
+                    self._inherited_key(target_snapshot_id, payload["handle"]),
+                    target_session_id,
+                    target_snapshot_id,
+                    row["source_key"],
+                    row["payload"],
+                ),
+            )
 
     @staticmethod
     def _payload(row: sqlite3.Row) -> dict:

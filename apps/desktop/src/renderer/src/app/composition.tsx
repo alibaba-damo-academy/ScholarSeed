@@ -22,6 +22,7 @@ import {
   type RouteKey,
 } from '../contracts/features'
 import { assistantFeature } from '../features/assistant/feature'
+import { canvasFeature } from '../features/canvas/feature'
 import { browserFeature } from '../features/browser/feature'
 import { feedbackRecorderFeature } from '../features/feedback-recorder/feature'
 import { literatureFeature } from '../features/literature/feature'
@@ -44,6 +45,7 @@ const MODULES: readonly FeatureModule[] = [
   literatureFeature(),
   workbenchFeature(),
   assistantFeature(),
+  canvasFeature(),
   ...(availabilityPolicy.browserEnabled ? [browserFeature()] : []),
   feedbackRecorderFeature(),
 ]

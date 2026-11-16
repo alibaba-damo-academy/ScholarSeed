@@ -102,6 +102,7 @@ FORMAT_BY_SUFFIX: dict[str, FormatRegistration] = {
     ".webp": FormatRegistration(ViewerKind.IMAGE),
     ".gif": FormatRegistration(ViewerKind.IMAGE),
     ".svg": FormatRegistration(ViewerKind.IMAGE),
+    ".bmp": FormatRegistration(ViewerKind.IMAGE),
     ".doc": FormatRegistration(ViewerKind.OFFICE, versionable=True, readonly=True),
     ".docx": FormatRegistration(ViewerKind.OFFICE, versionable=True, readonly=True),
     ".xls": FormatRegistration(ViewerKind.OFFICE, versionable=True, readonly=True),

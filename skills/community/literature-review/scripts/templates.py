@@ -1,5 +1,5 @@
 #!/usr/bin/env scholarseed-skill-python
-"""Registry and integrity checks for the one rendered template and citation styles."""
+"""Inspect the publication-layout registry and citation-style integrity."""
 from __future__ import annotations
 
 import sys as _slr_sys
@@ -16,6 +16,8 @@ import argparse  # noqa: E402
 import hashlib  # noqa: E402
 import json  # noqa: E402
 import shutil  # noqa: E402
+import re  # noqa: E402
+from pathlib import Path  # noqa: E402
 import sys  # noqa: E402
 
 import slr_paths as _slr_paths  # noqa: E402
@@ -23,95 +25,15 @@ from citation_styles import CITATION_STYLES  # noqa: E402
 
 HOME = _slr_paths.HOME
 ASSETS = HOME / "assets"
-RENDERED_TEMPLATE = "neurips"
-FALLBACK_TEMPLATE = RENDERED_TEMPLATE
-
-LATEX_AUTHORING_GUIDANCE = r'''TEMPLATE CAPABILITIES
-The assembled document uses the NeurIPS preprint template for English and
-ctexart with XeLaTeX and Fandol fonts for Chinese. Its mathematical facilities
-come from amsmath, amssymb and bm. Use standard LaTeX mathematics, aligned
-equations, cases, operators and equation references. Blackboard-bold notation
-uses \mathbb with uppercase Latin letters; indicator functions use an explicitly
-defined uppercase blackboard-bold symbol. Bold mathematical symbols use \bm,
-and upright bold Latin symbols use \mathbf. Define notation consistently and
-preserve the meaning of every mathematical statement.
-
-The template provides booktabs, array, tabularx and longtable for tables,
-graphicx for images, caption for captions,
-hyperref for links and natbib for citations. Chapter content supplies prose,
-mathematics and its assigned native tables. The document assembler supplies
-the preamble, package loading, bibliography and figure wrappers. Use the
-supplied citation keys and asset labels within this shared document structure.'''
-
-# English generation has one real code path: the NeurIPS preprint preamble in
-# phase05_merge_full_draft.py. Chinese generation uses ctexart and therefore
-# does not present a template choice.
-TEMPLATES: dict[str, dict] = {
-    "ctexart": {"title":"Chinese ctexart", "language":"CHINESE", "documentclass":r"\documentclass{ctexart}",
-                "package":"ctexart", "package_options":"", "files":[], "notes":"Chinese renderer; requires XeLaTeX and ctexart.cls."},
-    "neurips": {
-        "title": "NeurIPS 2026 preprint",
-        "documentclass": "\\documentclass{article}",
-        "package": "neurips_2026",
-        "package_options": "preprint",
-        "loaded_packages": {"natbib": {"disabled_options": ["nonatbib"]}},
-        "files": [
-            "assets/templates/neurips/neurips_2026.sty",
-        ],
-        "notes": (
-            "The generation pipeline's English preamble uses this vendored "
-            "style. Chinese runs use ctexart."
-        ),
-    },
-}
+from layouts import (TEMPLATES, RENDERED_TEMPLATE, FALLBACK_TEMPLATE, LATEX_AUTHORING_GUIDANCE,
+                     canonical_template, copy_template_assets, template_preamble, document_title,
+                     list_templates, resolve_template)  # noqa: E402
 
 
 def bst_location(style_id: str) -> tuple[str | None, str]:
     """Return the vendored bibliography-style path and its provenance."""
     candidate = HOME / CITATION_STYLES[style_id]["asset"]
     return (str(candidate), "shipped") if candidate.is_file() else (None, "missing")
-
-
-def list_templates() -> list[dict]:
-    rows: list[dict] = []
-    for template_id, spec in TEMPLATES.items():
-        missing = [path for path in spec["files"] if not (HOME / path).is_file()]
-        row = {
-            "id": template_id,
-            "title": spec["title"], "language":spec.get("language","ENGLISH"),
-            "notes": spec["notes"],
-            "files": spec["files"],
-            "documentclass": spec["documentclass"],
-            "package": spec["package"],
-            "package_options": spec["package_options"],
-            "renders": True,
-            "missing_files": missing,
-            "status": "broken" if missing else "installed",
-        }
-        if missing:
-            row["action"] = (
-                f"{template_id} is registered but {', '.join(missing)} is missing; "
-                "restore the complete skill package"
-            )
-        rows.append(row)
-    return rows
-
-
-def resolve_template(template_id: str) -> dict:
-    if template_id not in TEMPLATES:
-        return {
-            "id": template_id,
-            "status": "unknown",
-            "usable": False,
-            "fallback": FALLBACK_TEMPLATE,
-            "action": (
-                f"{template_id!r} is not supported. Use {FALLBACK_TEMPLATE}; "
-                f"known templates: {', '.join(sorted(TEMPLATES))}."
-            ),
-        }
-    row = next(item for item in list_templates() if item["id"] == template_id)
-    row["usable"] = row["status"] == "installed"
-    return row
 
 
 def resolve_citation_style(style_id: str) -> dict:

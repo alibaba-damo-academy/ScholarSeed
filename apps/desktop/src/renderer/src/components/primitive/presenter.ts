@@ -114,6 +114,10 @@ function createCoordinator(bridge: MenuBridge): MenuPresenter {
       throw error
     }
     if (disposed || requested !== generation || !sameAck(model, next)) return
+    if (!reply.ok && reply.error === MENU_ERROR.revoked) {
+      invalidate('blur')
+      return
+    }
     if (!reply.ok || !sameAck(next, reply.ack)) {
       invalidate('invalid')
       await bridge.dismiss('invalid')

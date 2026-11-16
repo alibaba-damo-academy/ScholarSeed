@@ -3,18 +3,102 @@ import test, { after } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { readFile } from 'node:fs/promises'
-
 import { chromium, expect, type BrowserContext, type Page } from '@playwright/test'
 import { RenderFailure, renderFixture } from '../../../test-helpers/render.ts'
+import { WORKSPACE_WINDOW_SIZE, WORKSPACE_WINDOW_MINIMUM } from '../../../window.ts'
 
 const FIXTURE_URL = '/components/ui.render.fixture.html'
+
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+
 const MOTION_OBSERVATION_MS = 350
+test('danger buttons retain white foreground when disabled or loading in both themes', async () => {
+  await withFixture(async (page) => {
+    for (const theme of ['light', 'dark']) {
+      await page.locator('html').evaluate((element, value) => {
+        element.dataset.theme = value
+      }, theme)
+      for (const variant of ['danger', 'destructive']) {
+        for (const state of ['disabled', 'loading']) {
+          const button = page.getByTestId(`render-${variant}-${state}`)
+          await expect(button).toBeDisabled()
+          await expect(button).toHaveCSS('color', 'rgb(255, 255, 255)')
+        }
+      }
+      await expect(page.getByTestId('render-button-loading-default')).not.toHaveCSS(
+        'color',
+        'rgb(255, 255, 255)'
+      )
+    }
+  })
+})
+test('selection deletion keeps a 20px hit area and a 12px glyph', async () => {
+  await withFixture(async (page) => {
+    const button = page
+      .getByTestId('render-selection-quote')
+      .getByRole('button', { name: 'Remove selection' })
+    const bounds = await button.boundingBox()
+    const glyph = await button.locator('svg').boundingBox()
+    assert.equal(bounds?.width, 20)
+    assert.equal(bounds?.height, 20)
+    assert.equal(glyph?.width, 12)
+    assert.equal(glyph?.height, 12)
+    await expect(button).not.toHaveAttribute('title')
+    await button.hover()
+    await expect(
+      page.getByRole('tooltip', { name: /^(删除该条划词|Delete this selection)$/ })
+    ).toBeVisible()
+  })
+})
+test('ScrollArea horizontal controls follow overflow and scroll in both directions', async () => {
+  await withFixture(async (page) => {
+    const area = page.getByTestId('render-scroll-area')
+    const previous = area.getByRole('button', { name: '向左查看附件' })
+    const next = area.getByRole('button', { name: '向右查看附件' })
+    const gradientStart = (control: typeof next) =>
+      control.locator('..').evaluate((element) => {
+        const style = getComputedStyle(element)
+        return style.getPropertyValue('--tw-gradient-from').trim()
+      })
+    const defaultFade = await gradientStart(next)
+    expect(defaultFade).not.toBe('')
+    await page.mouse.move(0, 0)
+    await expect(next.locator('..')).toBeVisible()
+    await expect(next).toHaveCSS('opacity', '0')
+    await next.focus()
+    await expect(next).toHaveCSS('opacity', '1')
+    await page.mouse.move(0, 0)
+    await next.evaluate((element) => (element as HTMLButtonElement).blur())
+    await expect(next).toHaveCSS('opacity', '0')
+    await area.hover()
+    await expect(next).toHaveCSS('opacity', '1')
+    await expect(previous).toHaveCount(0)
+    await next.click()
+    await expect(previous).toBeVisible()
+    expect(await gradientStart(previous)).toBe(defaultFade)
+    await expect(next).toHaveCount(0)
+    await previous.click()
+    await expect(previous).toHaveCount(0)
+    await expect(next).toBeVisible()
+    await area.evaluate((element) => {
+      element.style.setProperty('--vds-scroll-area-horizontal-fade', 'var(--vds-bg-white-default)')
+    })
+    expect(await gradientStart(next)).not.toBe(defaultFade)
+    await next.click()
+    expect(await gradientStart(previous)).not.toBe(defaultFade)
+    await previous.click()
+    await area.evaluate((element) => {
+      element.style.maxWidth = '640px'
+    })
+    await expect(next).toHaveCount(0)
+  })
+})
 const ISOLATION_KEYS = {
   storage: 'ui-render-case',
   global: 'uiRenderCase',
   cookie: 'ui-render-case',
 }
+
 let preparing: ReturnType<typeof renderFixture> | undefined
 
 test('ScrollArea overlay keeps both axes outside layout and synchronizes keyboard and track clicks', async () => {
@@ -48,12 +132,23 @@ test('ScrollArea overlay keeps both axes outside layout and synchronizes keyboar
         .poll(async () => Number(await bar.getAttribute('aria-valuenow')))
         .toBeGreaterThan(0)
     }
+    const horizontal = root.locator('[role="scrollbar"][aria-orientation="horizontal"]')
+    await horizontal.focus()
+    await page.keyboard.press('Home')
+    await expect(root.getByRole('button', { name: 'Overlay previous' })).toHaveCount(0)
+    await root.getByRole('button', { name: 'Overlay next' }).click()
+    await expect(horizontal).toHaveAttribute('aria-valuenow', '160')
+    await root.getByRole('button', { name: 'Overlay previous' }).click()
+    await expect(horizontal).toHaveAttribute('aria-valuenow', '0')
+    await expect(root.getByRole('scrollbar')).toHaveCount(2)
   })
 })
 
 test('ResizableHandle supports independent pixel offsets and releases capture', async () => {
   await withFixture(async (page) => {
     const handle = page.getByTestId('render-resizable-standalone')
+    const parent = page.getByTestId('render-resizable-offset-parent')
+    const parentWidth = await parent.evaluate((element) => element.getBoundingClientRect().width)
     await expect(handle.locator('span')).toHaveCount(0)
     await handle.scrollIntoViewIfNeeded()
     const bounds = await handle.boundingBox()
@@ -75,6 +170,10 @@ test('ResizableHandle supports independent pixel offsets and releases capture', 
     )
     await page.mouse.move(start + 80, middle)
     await expect(page.getByTestId('render-resizable-offset')).toHaveText('80')
+    assert.equal(
+      await parent.evaluate((element) => element.getBoundingClientRect().width),
+      parentWidth
+    )
     await page.mouse.up()
     await expect(handle).not.toHaveAttribute('data-resizing', 'true')
     await page.mouse.move(start + 100, middle)
@@ -1104,6 +1203,121 @@ test('toasts center on the application viewport outside transformed panels', asy
   })
 })
 
+test('persistent alerts wrap actions and closable alerts align a 16px close icon with the title', async () => {
+  await withFixture(async (page) => {
+    const closable = page.getByTestId('render-alert-close-alignment')
+    await expect(closable.locator('.vds-alert__description')).toHaveCSS('font-weight', '400')
+    const geometry = await closable.evaluate((element) => {
+      const title = element.querySelector('.vds-alert__title')!.getBoundingClientRect()
+      const close = element.querySelector('button svg')!.getBoundingClientRect()
+      return {
+        size: close.width,
+        offset: Math.abs(title.y + title.height / 2 - close.y - close.height / 2),
+      }
+    })
+    assert.equal(geometry.size, 16)
+    assert.ok(geometry.offset < 1)
+    await expect(closable.locator('.icon-fill-status-error')).toHaveCSS('font-size', '14px')
+    const iconOffset = await closable.evaluate((element) => {
+      const title = element.querySelector('.vds-alert__title')!.getBoundingClientRect()
+      const icon = element.querySelector('.vds-alert__icon')!.getBoundingClientRect()
+      return Math.abs(title.y + title.height / 2 - icon.y - icon.height / 2)
+    })
+    assert.ok(iconOffset < 1)
+    const persistent = page.getByTestId('render-alert-persistent')
+    await expect(persistent.locator('svg.lucide-circle-alert')).toBeVisible()
+    await expect(persistent.getByRole('button', { name: '关闭' })).toHaveCount(0)
+    for (const width of [800, 320]) {
+      await persistent.evaluate((element, value) => {
+        element.style.width = `${value}px`
+      }, width)
+      assert.ok(await persistent.evaluate((element) => element.scrollWidth <= element.clientWidth))
+      await expect(persistent.getByRole('button', { name: '切换模型' })).toBeVisible()
+    }
+  })
+})
+
+test('form and display labels use regular weight and eight pixel field gaps', async () => {
+  await withFixture(async (page) => {
+    for (const [id, size] of [
+      ['render-label-form', '14px'],
+      ['render-label-display', '12px'],
+    ]) {
+      const field = page.getByTestId(id)
+      await expect(field.locator('.vds-label')).toHaveCSS('font-weight', '400')
+      await expect(field.locator('.vds-label')).toHaveCSS('font-size', size)
+      await expect(field).toHaveCSS('row-gap', '8px')
+      await field.locator('.vds-label').click()
+      await expect(field.locator('input')).toBeFocused()
+    }
+    const label = page
+      .getByTestId('render-input-display-label')
+      .locator('..')
+      .locator('.vds-field__label')
+    await expect(label).toHaveCSS('font-size', '12px')
+    await expect(label).toHaveCSS('font-weight', '400')
+  })
+})
+
+test('description-only alert examples align icons and support independent action and dismissal', async () => {
+  await withFixture(async (page) => {
+    const simple = page.getByTestId('alert-description-only')
+    const actionable = page.getByTestId('alert-description-action')
+    for (const alert of [simple, actionable]) {
+      await expect(alert).toBeVisible()
+      await expect(alert.locator('.vds-alert__title')).toHaveCount(0)
+      await expect(alert.locator('.vds-alert__description')).toHaveCSS('font-weight', '400')
+      assert.equal(
+        await alert
+          .locator('.vds-alert__description')
+          .evaluate((element) => getComputedStyle(element).color),
+        await alert
+          .locator('.vds-alert__content')
+          .evaluate((element) => getComputedStyle(element).color)
+      )
+      const alignment = await alert.evaluate((element) => {
+        const icon = element.querySelector('.vds-alert__icon')!.getBoundingClientRect()
+        const description = element
+          .querySelector('.vds-alert__description')!
+          .getBoundingClientRect()
+        const row = element.getBoundingClientRect()
+        const centers = [
+          icon,
+          description,
+          ...Array.from(element.querySelectorAll('button'), (button) =>
+            button.getBoundingClientRect()
+          ),
+        ]
+        return {
+          iconRight: icon.right,
+          descriptionLeft: description.left,
+          centerOffset: Math.abs(icon.y + icon.height / 2 - description.y - description.height / 2),
+          rowOffsets: centers.map((bounds) =>
+            Math.abs(bounds.y + bounds.height / 2 - row.y - row.height / 2)
+          ),
+        }
+      })
+      assert.ok(alignment.iconRight <= alignment.descriptionLeft)
+      assert.ok(alignment.centerOffset < 1)
+      assert.ok(
+        alignment.rowOffsets.every((offset) => offset < 1),
+        JSON.stringify(alignment.rowOffsets)
+      )
+    }
+    await expect(simple.getByRole('button')).toHaveCount(1)
+    await expect(actionable.getByRole('button')).toHaveCount(2)
+    await actionable.getByRole('button', { name: '示例操作', exact: true }).focus()
+    await page.keyboard.press('Enter')
+    await expect(actionable).toContainText('示例操作已触发')
+    await expect(simple).toBeVisible()
+    await simple.getByRole('button', { name: '关闭', exact: true }).click()
+    await expect(simple).toHaveCount(0)
+    await expect(actionable).toBeVisible()
+    await actionable.getByRole('button', { name: '关闭', exact: true }).click()
+    await expect(actionable).toHaveCount(0)
+  })
+})
+
 test('alert icons center with single-line descriptions and top-align with multiline content', async () => {
   await withFixture(async (page) => {
     for (const mode of ['single', 'multiple']) {
@@ -1179,6 +1393,7 @@ test('compact empty state uses small centered geometry without changing the defa
     }
     const standard = page.getByTestId('render-empty-state')
     await expect(standard.locator('.vds-empty-state__icon')).toHaveCSS('width', '48px')
+    await expect(standard.locator('.vds-empty-state__icon')).toHaveCSS('border-radius', '8px')
     await expect(standard.locator('.vds-empty-state__title')).toHaveCSS('font-weight', '500')
     await page.setViewportSize({ width: 360, height: 720 })
     await page.emulateMedia({ colorScheme: 'dark' })
@@ -1197,6 +1412,10 @@ test('panel empty state uses a square icon and primary title without changing ex
     const icon = panel.locator('.vds-empty-state__icon')
     for (const colorScheme of ['light', 'dark'] as const) {
       await page.emulateMedia({ colorScheme })
+      await expect(icon).toHaveCSS(
+        'background-color',
+        colorScheme === 'light' ? 'rgba(103, 73, 15, 0.04)' : 'rgba(255, 255, 255, 0.04)'
+      )
       await expect(icon).toHaveCSS('width', '36px')
       await expect(icon).toHaveCSS('height', '36px')
       await expect(icon).toHaveCSS('border-radius', '8px')
@@ -1441,12 +1660,13 @@ test('annotation summary fits its content in a grid instead of stretching to the
     const summaryBox = await summary.boundingBox()
     assert.ok(workspaceBox && summaryBox)
     assert.ok(summaryBox.width < workspaceBox.width, 'annotation chip must not fill its grid track')
+    await summary.hover()
     await summary.getByRole('button', { name: '移除全部' }).click()
     await expect(summary).toHaveCount(0)
   })
 })
 
-test('sent and composer annotation chips keep the same opaque surface, border and radius', async () => {
+test('sent and composer annotation chips share the themed surface, border and radius', async () => {
   await withFixture(async (page) => {
     const composer = page.getByTestId('answer-annotation-summary')
     const sent = page.getByTestId('render-sent-annotation-summary')
@@ -1460,11 +1680,11 @@ test('sent and composer annotation chips keep the same opaque surface, border an
       return [style.backgroundColor, style.backgroundImage, style.border, style.borderRadius]
     })
     assert.deepEqual(sentStyle, composerStyle)
-    assert.equal(
+    assert.notEqual(
       sentStyle[0],
       await workspace.evaluate((element) => getComputedStyle(element).backgroundColor)
     )
-    assert.notEqual(sentStyle[1], 'none')
+    assert.equal(sentStyle[1], 'none')
   })
 })
 
@@ -1476,6 +1696,27 @@ test('annotation summary hover list supports editing and deleting individual ann
     const second = page.getByTestId('answer-annotation-details-second')
     await expect(first).toBeVisible()
     await expect(second).toBeVisible()
+    const listStyle = await first.evaluate((element) => {
+      const list = element.parentElement!
+      const style = getComputedStyle(list)
+      const card = getComputedStyle(element)
+      return {
+        width: parseFloat(getComputedStyle(list.parentElement!).width),
+        maxHeight: style.maxHeight,
+        fontSize: style.fontSize,
+        lineHeight: style.lineHeight,
+        fontWeight: style.fontWeight,
+        padding: style.padding,
+        border: card.borderBottomWidth,
+      }
+    })
+    assert.equal(listStyle.width, 300)
+    assert.equal(listStyle.fontSize, '12px')
+    assert.equal(listStyle.lineHeight, '18px')
+    assert.equal(listStyle.fontWeight, '400')
+    assert.equal(listStyle.padding, '8px')
+    assert.equal(listStyle.border, '0px')
+    assert.ok(parseFloat(listStyle.maxHeight) <= 600)
     await expect(second.getByRole('button', { name: '编辑注释 2' })).toBeVisible()
     await first.getByRole('button', { name: '编辑注释 1' }).click()
     await first.getByRole('textbox', { name: '编辑注释 1' }).fill('修改后的注释')
@@ -1490,6 +1731,132 @@ test('annotation summary hover list supports editing and deleting individual ann
     await second.getByRole('button', { name: '移除注释 1' }).click()
     await expect(summary).toHaveCount(0)
   })
+})
+
+test('long annotation hover details keep the card removal target reachable', async () => {
+  for (const viewport of [WORKSPACE_WINDOW_SIZE, WORKSPACE_WINDOW_MINIMUM]) {
+    await withFixture(async (page) => {
+      await page.setViewportSize(viewport)
+      const summary = page.getByTestId('answer-annotation-summary')
+      await summary.evaluate((element) => element.scrollIntoView({ block: 'center' }))
+      await summary.hover()
+      const first = page.getByTestId('answer-annotation-details-first')
+      const second = page.getByTestId('answer-annotation-details-second')
+      await expect(first).toBeVisible()
+      const content = first.locator('xpath=ancestor::*[@role="region"]')
+      await expect
+        .poll(async () => {
+          const card = (await summary.boundingBox())!
+          const detail = (await content.boundingBox())!
+          return detail.y + detail.height - (card.y - 8)
+        })
+        .toBeLessThanOrEqual(1)
+      const list = first.locator('..')
+      assert.ok(await list.evaluate((element) => element.scrollHeight > element.clientHeight))
+      const edit = second.getByRole('button', { name: '编辑注释 2', exact: true })
+      await edit.scrollIntoViewIfNeeded()
+      await edit.click()
+      await second
+        .getByRole('textbox', { name: '编辑注释 2', exact: true })
+        .fill('Edited trailing annotation')
+      await second.getByRole('button', { name: '保存', exact: true }).click()
+      await expect(second).toContainText('Edited trailing annotation')
+      await second.getByRole('button', { name: '移除注释 2', exact: true }).click()
+      await expect(second).toHaveCount(0)
+      await expect(summary).toContainText('1 条注释')
+      await summary.hover()
+      await summary.getByRole('button', { name: '移除全部注释', exact: true }).click()
+      await expect(summary).toHaveCount(0)
+      await expect(content).toHaveCount(0)
+    }, FIXTURE_URL + '?long-annotations')
+  }
+})
+
+test('long sent annotation hover details stay outside the card and settle', async () => {
+  for (const viewport of [WORKSPACE_WINDOW_SIZE, WORKSPACE_WINDOW_MINIMUM]) {
+    await withFixture(async (page) => {
+      await page.setViewportSize(viewport)
+      const summary = page.getByTestId('render-sent-annotation-summary')
+      await summary.evaluate((element) =>
+        element.scrollIntoView({ block: 'center', behavior: 'instant' })
+      )
+      await expect
+        .poll(async () => {
+          const card = (await summary.boundingBox())!
+          return Math.abs(card.y - (viewport.height - card.height) / 2)
+        })
+        .toBeLessThanOrEqual(1)
+      await summary.hover()
+      const first = page.getByTestId('answer-annotation-details-first')
+      const second = page.getByTestId('answer-annotation-details-second')
+      await expect(first).toBeVisible()
+      const content = first.locator('xpath=ancestor::*[@role="region"]')
+      const scrollOwners = await content.evaluate(
+        (element) =>
+          [element, ...element.querySelectorAll<HTMLElement>('*')].filter(
+            (node) =>
+              /auto|scroll/.test(getComputedStyle(node).overflowY) &&
+              node.scrollHeight > node.clientHeight
+          ).length
+      )
+      assert.equal(scrollOwners, 1)
+      await content.evaluate(async (element) => {
+        await Promise.all(element.getAnimations().map((animation) => animation.finished))
+      })
+      const samples = await content.evaluate(async (element, duration) => {
+        const positions: Array<{ top: number; bottom: number; height: number }> = []
+        let started: number | undefined
+        await new Promise<void>((resolve) => {
+          const record = (timestamp: number): void => {
+            started ??= timestamp
+            const bounds = element.getBoundingClientRect()
+            positions.push({ top: bounds.top, bottom: bounds.bottom, height: bounds.height })
+            if (timestamp - started >= duration) resolve()
+            else requestAnimationFrame(record)
+          }
+          requestAnimationFrame(record)
+        })
+        return positions
+      }, MOTION_OBSERVATION_MS)
+      assert.ok(samples.length >= 2, JSON.stringify(samples))
+      const card = (await summary.boundingBox())!
+      assert.ok(
+        samples.every((bounds) => bounds.top >= 8 && bounds.bottom <= viewport.height - 8),
+        JSON.stringify({ viewport, card, samples })
+      )
+      assert.ok(
+        samples.every(
+          (bounds) => bounds.bottom <= card.y - 8 + 1 || bounds.top >= card.y + card.height + 8 - 1
+        ),
+        JSON.stringify({ viewport, card, samples })
+      )
+      assert.ok(
+        Math.max(...samples.map((bounds) => bounds.top)) -
+          Math.min(...samples.map((bounds) => bounds.top)) <=
+          1,
+        JSON.stringify(samples)
+      )
+      assert.ok(
+        Math.max(...samples.map((bounds) => bounds.height)) -
+          Math.min(...samples.map((bounds) => bounds.height)) <=
+          1,
+        JSON.stringify(samples)
+      )
+      const list = first.locator('..')
+      assert.ok(await list.evaluate((element) => element.scrollHeight > element.clientHeight))
+      await list.evaluate((element) =>
+        element.scrollTo({ top: element.scrollHeight, behavior: 'instant' })
+      )
+      await expect(second).toBeVisible()
+      await expect
+        .poll(async () => {
+          const detail = (await content.boundingBox())!
+          const trailing = (await second.boundingBox())!
+          return trailing.y + trailing.height - (detail.y + detail.height)
+        })
+        .toBeLessThanOrEqual(1)
+    }, FIXTURE_URL + '?long-annotations&annotation-layout=sent')
+  }
 })
 
 test('icon-only copy buttons retain 24px targets, 14px glyphs and clipboard feedback', async () => {
@@ -1526,6 +1893,7 @@ test('icon-only copy buttons retain 24px targets, 14px glyphs and clipboard feed
     assert.equal(await button.getAttribute('aria-label'), '复制')
     assert.deepEqual(await geometry(), expectedGeometry)
     await button.hover()
+    await expect(page.getByRole('tooltip').filter({ hasText: '复制' })).toBeVisible()
     assert.deepEqual(await geometry(), expectedGeometry)
     await button.focus()
     await page.keyboard.press('Enter')
@@ -1808,25 +2176,10 @@ test('multiline question options align radio and checkbox with first text line',
   })
 })
 
-test('permission dock uses the full-access icon and text-only actions', async () => {
-  const stream = await readFile(path.join(ROOT_DIR, 'components/business/Stream.tsx'), 'utf8')
-  const permissionDock = stream.slice(
-    stream.indexOf("if (presentation === 'dock' && !isQuestion && !done)"),
-    stream.indexOf("const scrollableQuestion = presentation === 'dock' && isQuestion && !done")
-  )
-  assert.match(permissionDock, /<IconFont[\s\S]*?type="icon-wanquanfangwen"/)
-  assert.match(
-    permissionDock,
-    /<Button\s+variant="outline"\s+size="sm"[\s\S]*?data-hil-decision="deny"/
-  )
-  assert.match(permissionDock, /<Button\s+variant="primary"\s+size="sm"/)
-  assert.doesNotMatch(permissionDock, /<kbd>/)
-})
-
 test('floating composer fills its available width while normal conversation stays capped', async () => {
   const composer = await readFile(path.join(ROOT_DIR, 'components/business/Composer.tsx'), 'utf8')
   const expression = composer.match(
-    /const readingColumnClass = ([\s\S]*?)\nconst popoverClass/
+    /const readingColumnClass = ([\s\S]*?)\nconst composerInputShellClass/
   )?.[1]
   assert.ok(expression)
   const columnClass = new Function(
@@ -1906,26 +2259,6 @@ test('conversation and controls share a centered capped column at every panel wi
         if (width > CONTENT_WIDTH) assert.equal(transcript.width, CONTENT_WIDTH)
       }
     }
-  })
-})
-
-test('answer selection comment fits the toolbar width in a narrow assistant', async () => {
-  const TOOLBAR_WIDTH = 260
-  await withFixture(async (page) => {
-    const source = await readFile(path.join(ROOT_DIR, 'features/assistant/Annotations.tsx'), 'utf8')
-    const draft = source.slice(source.indexOf("{draft.mode === 'actions'"))
-    const commentClass = draft.match(/\) : \(\s*<div className="([^"]+)"/)?.[1]
-    assert.ok(commentClass)
-    await page.locator('#root').evaluate(
-      (root, layout) => {
-        root.innerHTML = `<div data-layout="anchor" style="width:${layout.width}px"><div data-layout="comment" class="${layout.commentClass}"><input style="min-width:0;width:100%" /></div></div>`
-      },
-      { width: TOOLBAR_WIDTH, commentClass }
-    )
-    const anchor = await page.locator('[data-layout="anchor"]').boundingBox()
-    const comment = await page.locator('[data-layout="comment"]').boundingBox()
-    assert.ok(anchor && comment)
-    assert.ok(comment.x >= anchor.x && comment.x + comment.width <= anchor.x + anchor.width)
   })
 })
 
@@ -2015,6 +2348,24 @@ test('NavigationTabs joins active curved feet to the bottom seam without clippin
         assert.equal(foot.top, edges.outlineBottom)
       }
     }
+  })
+})
+
+test('NavigationTabs trailing action leaves clearance beyond the curved tab foot', async () => {
+  await withFixture(async (page) => {
+    const navigation = page.getByTestId('render-navigation-tabs-trailing')
+    const distances = await navigation.evaluate((element) => {
+      const action = element.parentElement!.querySelector('button[aria-label="New tab"]')!
+      const tabs = element.lastElementChild!.querySelectorAll('[role="tab"]')
+      const tab = tabs[tabs.length - 1].getBoundingClientRect()
+      const button = action.getBoundingClientRect()
+      return {
+        left: button.left - tab.right,
+        bottom: element.getBoundingClientRect().bottom - button.bottom,
+      }
+    })
+    assert.equal(distances.left, 12)
+    assert.equal(distances.bottom, 6)
   })
 })
 
@@ -2190,74 +2541,6 @@ test('EllipsisText caps long tooltip content and keeps it scrollable', async () 
     await page.waitForTimeout(100)
     await assert.ok(await tooltip.evaluate((element) => element.scrollTop > 0))
     await assert.equal(await tooltip.isVisible(), true)
-  })
-})
-
-test('NavigationTabs widens default tabs and progressively compresses to icons with an overflow menu', async () => {
-  await withFixture(async (page) => {
-    const tabs = page.getByTestId('render-navigation-tabs')
-    await tabs.getByRole('tab', { name: '总览', exact: true }).click()
-    const widths = () =>
-      tabs
-        .getByRole('tab')
-        .evaluateAll((elements) => elements.map((element) => element.getBoundingClientRect().width))
-    const initial = await widths()
-    const alpha = tabs.getByRole('tab', { name: 'Alpha.md' })
-    const beta = tabs.getByRole('tab', { name: 'Beta.md' })
-    await expect(alpha.getByRole('button')).toBeVisible()
-    await expect(beta.getByRole('button')).toBeVisible()
-    assert.equal((await alpha.boundingBox())!.width, 285)
-    await expect(tabs.locator('..').getByTestId('navigation-tabs-overflow')).toHaveCount(0)
-    await alpha.click()
-    await expect(alpha.getByRole('button')).toBeVisible()
-    assert.deepEqual(await widths(), initial)
-    const label = await alpha.locator('[data-slot="ellipsis-text"]').boundingBox()
-    const close = await alpha.getByRole('button').boundingBox()
-    assert.ok(label!.x + label!.width > close!.x)
-    const activeBounds = (await alpha.boundingBox())!
-    assert.equal(activeBounds.x + activeBounds.width - close!.x - close!.width, 3)
-    await expect(alpha.locator('[data-slot="ellipsis-text"]')).toHaveCSS('text-overflow', 'clip')
-    assert.match(
-      await alpha
-        .locator('[data-slot="ellipsis-text"]')
-        .evaluate((element) => getComputedStyle(element).maskImage),
-      /linear-gradient/
-    )
-    await tabs.evaluate((element) => {
-      element.style.width = '480px'
-    })
-    await expect(beta.getByRole('button')).toHaveCount(0)
-    await expect(tabs.locator('..').getByTestId('navigation-tabs-overflow')).toHaveCount(0)
-    await beta.hover()
-    await expect(beta.getByRole('button')).toHaveCount(0)
-    await beta.click()
-    await expect(alpha.getByRole('button')).toHaveCount(0)
-    await expect(beta.getByRole('button')).toBeVisible()
-    assert.ok((await beta.boundingBox())!.width < 285)
-    await tabs.evaluate((element) => {
-      element.style.width = '230px'
-    })
-    await expect(alpha.locator('[data-slot="ellipsis-text"]')).toBeVisible()
-    await expect(beta.locator('[data-slot="ellipsis-text"]')).toBeVisible()
-    await expect(beta.getByRole('button')).toBeVisible()
-    await tabs.evaluate((element) => {
-      element.style.width = '150px'
-    })
-    await expect(alpha.locator('[data-slot="ellipsis-text"]')).toBeHidden()
-    assert.ok((await alpha.boundingBox())!.width >= 34)
-    const menu = tabs.locator('..').getByTestId('navigation-tabs-overflow')
-    await expect(menu).toBeVisible()
-    await menu.click()
-    await expect(page.getByRole('menuitem')).toHaveCount(3)
-    await page.getByRole('menuitem', { name: 'Gamma.md', exact: true }).click()
-    await expect(tabs.getByRole('tab', { name: 'Gamma.md' })).toHaveAttribute(
-      'aria-selected',
-      'true'
-    )
-    await beta.click()
-    await beta.getByRole('button').focus()
-    await beta.getByRole('button').press('Enter')
-    await expect(page.getByTestId('render-navigation-context-tab')).toHaveText('beta')
   })
 })
 
@@ -4152,6 +4435,20 @@ test('alert dialog close button is opt-in and cancels with keyboard focus restor
     const trigger = page.getByTestId('render-alert-open-true')
     await trigger.click()
     const close = confirmation.getByRole('button', { name: '关闭', exact: true })
+    await expect(confirmation.locator('[data-slot="dialog-tone-icon"]')).toHaveCount(1)
+    await expect(confirmation.getByRole('button', { name: '删除', exact: true })).toHaveClass(
+      /vds-button--danger/
+    )
+    const dangerIcon = confirmation.locator('[data-slot="dialog-tone-icon"]')
+    const expectedColor = await dangerIcon.evaluate((element) => {
+      const probe = document.createElement('span')
+      probe.style.color = 'var(--vds-error-bg-default)'
+      element.append(probe)
+      const color = getComputedStyle(probe).color
+      probe.remove()
+      return color
+    })
+    await expect(dangerIcon).toHaveCSS('color', expectedColor)
     await expect(close).toBeVisible()
     await close.focus()
     await page.keyboard.press('Enter')
@@ -4270,6 +4567,18 @@ test('popover focuses content after positioning, restores on Escape and permits 
   })
 })
 
+test('controlled popover restores its trigger after early content focus', async () => {
+  await withFixture(async (page) => {
+    const trigger = page.getByTestId('controlled-popover-trigger')
+    const content = page.getByTestId('controlled-popover-content')
+    await trigger.click()
+    await expect(page.getByTestId('controlled-popover-menu')).toBeFocused()
+    await page.getByTestId('controlled-popover-option').click()
+    await expect(content).toBeHidden()
+    await expect(trigger).toBeFocused()
+  })
+})
+
 test('Escape on a nested hover trigger closes only its own detail', async () => {
   await withFixture(async (page) => {
     await page.getByTestId('focus-popover-trigger').click()
@@ -4301,6 +4610,130 @@ test('side hover cards stay outside their whole boundary at wide and narrow widt
       await page.keyboard.press('Escape')
       await content.waitFor({ state: 'hidden' })
     }
+  })
+})
+
+test('Dialog feedback tones add decorative title icons and preserve dismissal', async () => {
+  await withFixture(async (page) => {
+    for (const tone of ['default', 'info', 'danger', 'warning']) {
+      const trigger = page.getByTestId(`render-feedback-open-${tone}`)
+      await trigger.click()
+      const dialog = page.getByRole('dialog', { name: tone, exact: true })
+      await expect(dialog).toHaveAttribute('data-tone', tone)
+      await expect(dialog.locator('[data-slot="dialog-tone-icon"]')).toHaveCount(
+        tone === 'default' ? 0 : 1
+      )
+      await expect(dialog.getByRole('heading')).toHaveText(tone)
+      await expect(dialog.getByRole('heading')).toHaveCSS('font-size', '16px')
+      await expect(dialog.getByRole('heading')).toHaveCSS('font-weight', '500')
+      await page.keyboard.press('Escape')
+      await expect(dialog).toHaveCount(0)
+      await expect(trigger).toBeFocused()
+    }
+  })
+})
+
+test('NavigationTabs sizes default tabs to their labels and progressively compresses to icons with an overflow menu', async () => {
+  await withFixture(async (page) => {
+    const tabs = page.getByTestId('render-navigation-tabs')
+    await tabs.getByRole('tab', { name: '总览', exact: true }).click()
+    const widths = () =>
+      tabs
+        .getByRole('tab')
+        .evaluateAll((elements) => elements.map((element) => element.getBoundingClientRect().width))
+    const initial = await widths()
+    const alpha = tabs.getByRole('tab', { name: 'Alpha.md' })
+    const beta = tabs.getByRole('tab', { name: 'Beta.md' })
+    await expect(alpha.getByRole('button')).toBeVisible()
+    await expect(beta.getByRole('button')).toBeVisible()
+    assert.ok((await alpha.boundingBox())!.width < 200)
+    assert.ok((await alpha.boundingBox())!.width > 60)
+    assert.ok(
+      (await tabs.getByRole('tab', { name: 'Gamma.md' }).boundingBox())!.width >
+        (await alpha.boundingBox())!.width
+    )
+    const textRight = await alpha.locator('[data-slot="ellipsis-text"]').evaluate((element) => {
+      const range = element.ownerDocument.createRange()
+      range.selectNodeContents(element)
+      return range.getBoundingClientRect().right
+    })
+    assert.ok(textRight < (await alpha.getByRole('button').boundingBox())!.x)
+    await expect(tabs.locator('..').getByTestId('navigation-tabs-overflow')).toHaveCount(0)
+    await alpha.click()
+    await expect(alpha.getByRole('button')).toBeVisible()
+    assert.deepEqual(await widths(), initial)
+    const label = await alpha.locator('[data-slot="ellipsis-text"]').boundingBox()
+    const close = await alpha.getByRole('button').boundingBox()
+    assert.ok(label!.x + label!.width > close!.x)
+    const activeBounds = (await alpha.boundingBox())!
+    assert.equal(activeBounds.x + activeBounds.width - close!.x - close!.width, 3)
+    await expect(alpha.locator('[data-slot="ellipsis-text"]')).toHaveCSS('text-overflow', 'clip')
+    assert.match(
+      await alpha
+        .locator('[data-slot="ellipsis-text"]')
+        .evaluate((element) => getComputedStyle(element).maskImage),
+      /linear-gradient/
+    )
+    await tabs.evaluate((element) => {
+      element.style.width = '360px'
+    })
+    await expect(beta.getByRole('button')).toHaveCount(0)
+    await expect(tabs.locator('..').getByTestId('navigation-tabs-overflow')).toHaveCount(0)
+    await beta.hover()
+    await expect(beta.getByRole('button')).toHaveCount(0)
+    await beta.click()
+    await expect(alpha.getByRole('button')).toHaveCount(0)
+    await expect(beta.getByRole('button')).toBeVisible()
+    assert.ok((await beta.boundingBox())!.width < 285)
+    await tabs.evaluate((element) => {
+      element.style.width = '230px'
+    })
+    await expect(alpha.locator('[data-slot="ellipsis-text"]')).toBeVisible()
+    await expect(beta.locator('[data-slot="ellipsis-text"]')).toBeVisible()
+    await expect(beta.getByRole('button')).toBeVisible()
+    await tabs.evaluate((element) => {
+      element.style.width = '150px'
+    })
+    await expect(alpha.locator('[data-slot="ellipsis-text"]')).toBeHidden()
+    assert.ok((await alpha.boundingBox())!.width >= 34)
+    const menu = tabs.locator('..').getByTestId('navigation-tabs-overflow')
+    await expect(menu).toBeVisible()
+    await menu.click()
+    await expect(page.getByRole('menuitem')).toHaveCount(3)
+    await page.getByRole('menuitem', { name: 'Gamma.md', exact: true }).click()
+    await expect(tabs.getByRole('tab', { name: 'Gamma.md' })).toHaveAttribute(
+      'aria-selected',
+      'true'
+    )
+    await beta.click()
+    await beta.getByRole('button').focus()
+    await beta.getByRole('button').press('Enter')
+    await expect(page.getByTestId('render-navigation-context-tab')).toHaveText('beta')
+  })
+})
+
+test('hover card retains focus when its action becomes disabled and still dismisses normally', async () => {
+  await withFixture(async (page) => {
+    await page.getByTestId('focus-popover-outside').scrollIntoViewIfNeeded()
+    await page.getByTestId('viewport-hover-card-trigger').hover()
+    const content = page.getByTestId('viewport-hover-card-content')
+    await expect(content).toBeVisible()
+    const action = page.getByTestId('viewport-hover-card-action')
+    await action.click()
+    await expect(action).toBeDisabled()
+    await page.waitForTimeout(MOTION_OBSERVATION_MS)
+    await expect(content).toBeVisible()
+    await expect(content).toBeFocused()
+    await page.keyboard.press('Escape')
+    await expect(content).toBeHidden()
+    await page.getByTestId('viewport-hover-card-trigger').hover()
+    await expect(content).toBeVisible()
+    await page.mouse.move(0, 0)
+    await expect(content).toBeHidden()
+    await page.getByTestId('viewport-hover-card-trigger').focus()
+    await expect(content).toBeVisible()
+    await page.getByTestId('focus-popover-outside').focus()
+    await expect(content).toBeHidden()
   })
 })
 
@@ -4405,6 +4838,7 @@ test('icon buttons keep square geometry without text-button padding and loading 
       ['lg', 40, 16],
     ] as const) {
       const button = page.getByTestId(`square-icon-${size}`)
+      await button.scrollIntoViewIfNeeded()
       const geometry = await button.evaluate((el) => {
         const bounds = el.getBoundingClientRect()
         const icon = el.querySelector('.vds-icon-button__content')!.getBoundingClientRect()
@@ -4422,11 +4856,56 @@ test('icon buttons keep square geometry without text-button padding and loading 
       assert.equal(geometry.iconWidth, iconEdge)
       assert.equal(geometry.iconHeight, iconEdge)
       assert.ok(geometry.offsetX < 1 && geometry.offsetY < 1)
+      assert.equal(
+        await button.evaluate((element) => {
+          const bounds = element.getBoundingClientRect()
+          return (
+            document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2) ===
+            element
+          )
+        }),
+        true
+      )
     }
     const loading = page.getByTestId('square-icon-loading')
     assert.equal(await loading.isDisabled(), true)
     assert.equal(await loading.locator('.vds-icon-button__content').count(), 0)
     assert.equal(await loading.getByRole('status').count(), 1)
+  })
+})
+
+test('end aligned tooltips retain the trigger trailing edge on every side', async () => {
+  await withFixture(async (page) => {
+    for (const side of ['top', 'bottom', 'left', 'right']) {
+      const root = page.getByTestId(`render-tooltip-end-${side}`)
+      await root.evaluate((element) => {
+        Object.assign(element.style, { position: 'fixed', left: '400px', top: '200px' })
+      })
+      const trigger = root.getByRole('button')
+      await trigger.focus()
+      const content = page.getByRole('tooltip', {
+        name: `End aligned ${side} tooltip`,
+        exact: true,
+      })
+      await expect(content).toBeVisible()
+      const anchor = await root.boundingBox()
+      assert.ok(anchor)
+      await expect
+        .poll(async () => {
+          const bounds = await content.boundingBox()
+          assert.ok(bounds)
+          return side === 'top' || side === 'bottom'
+            ? Math.abs(bounds.x + bounds.width - anchor.x - anchor.width)
+            : Math.abs(bounds.y + bounds.height - anchor.y - anchor.height)
+        })
+        .toBeLessThan(1)
+      if (side === 'bottom') {
+        const bounds = await content.boundingBox()
+        assert.ok(bounds && bounds.y > anchor.y + anchor.height)
+      }
+      await page.keyboard.press('Escape')
+      await expect(content).toBeHidden()
+    }
   })
 })
 
@@ -4508,6 +4987,33 @@ test('visible tooltip dismisses on Escape without moving focused trigger', async
     await page
       .getByRole('tooltip', { name: '保存当前配置', exact: true })
       .waitFor({ state: 'hidden' })
+  })
+})
+
+test('tooltip Escape consumption is opt-out while dismissal and focus are preserved', async () => {
+  await withFixture(async (page) => {
+    await page.evaluate(() => {
+      window.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape')
+          document.body.dataset.escapeConsumed = String(event.defaultPrevented)
+      })
+    })
+    for (const [id, consumed] of [
+      ['render-tooltip', 'true'],
+      ['render-tooltip-pass-escape', 'false'],
+    ]) {
+      const trigger = page.getByTestId(id).getByRole('button')
+      await trigger.focus()
+      await expect(trigger).toHaveAttribute('aria-describedby', /.+/)
+      const contentId = await trigger.getAttribute('aria-describedby')
+      assert.ok(contentId)
+      const content = page.locator(`[id="${contentId}"]`)
+      await expect(content).toBeVisible()
+      await page.keyboard.press('Escape')
+      await expect(content).toHaveCount(0)
+      await expect(trigger).toBeFocused()
+      await expect(page.locator('body')).toHaveAttribute('data-escape-consumed', consumed)
+    }
   })
 })
 

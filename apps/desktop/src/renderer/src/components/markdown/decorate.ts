@@ -4,6 +4,7 @@ import type { EvidenceAnnotation } from '../../model'
 import {
   CITATION_MARKER,
   CITATION_PENDING,
+  groupParagraphCitations,
   REFERENCE_LABEL,
   citationReferences,
   citationText,
@@ -47,6 +48,7 @@ export interface MarkdownAnswerAnnotation {
   start_utf16: number
   end_utf16: number
   focused?: boolean
+  highlighted?: boolean
 }
 
 export interface MarkdownCitationOccurrence {
@@ -61,6 +63,7 @@ interface DecorationOptions {
   citationReferences?: readonly MarkdownCitationReference[]
   citationOccurrences?: readonly MarkdownCitationOccurrence[]
   citationPending?: boolean
+  citationGroupKeys?: Readonly<Record<string, string>>
   evidence: EvidenceAnnotation[]
   answers: MarkdownAnswerAnnotation[]
   isSourceLink?: (href: string) => boolean
@@ -831,5 +834,6 @@ export function rehypeScholarSeedDecorations(
       if (occurrences.length) markNativeCitations(tree, [], options, cache, [...occurrences])
       markSourceLinks(tree, [], options, cache)
       transformChildren(tree, [], options, cache)
+      if (options.citationGroupKeys) groupParagraphCitations(tree, options.citationGroupKeys)
     }
 }

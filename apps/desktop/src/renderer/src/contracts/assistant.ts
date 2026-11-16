@@ -9,7 +9,13 @@
  * 用户显式加入对话时冻结的 `snapshot_text`；所有选区发送时直接使用完整快照。
  */
 
-import type { SelectionLocator, LiteratureDocumentSource, SessionFileSource } from './workbench'
+import type {
+  SelectionLocator,
+  LiteratureDocumentSource,
+  SessionFileSource,
+  ProjectDocumentSource,
+} from './workbench'
+import type { ResourceNode } from './resources'
 
 export type ComposerReference =
   | {
@@ -27,8 +33,10 @@ export type ComposerReference =
       status?: string
       path: string
       referenceId?: string
+      fileName?: string
       registrationRequired?: boolean
-      previewSource?: LiteratureDocumentSource | SessionFileSource
+      localSource?: { file?: File; imagePreview?: Blob | null }
+      previewSource?: LiteratureDocumentSource | SessionFileSource | ProjectDocumentSource
       mediaType?: string
       sha256?: string
       size?: number
@@ -41,10 +49,10 @@ export type ComposerReference =
       path: string
       referenceId?: string
       registrationRequired?: boolean
+      localSource?: { file?: File }
     }
 
 export const ASSISTANT_CONTEXT_REVISION_CONFLICT = 'assistant_context_revision_conflict'
-import type { ResourceNode } from './resources'
 
 export interface ArtifactLinkIdentity {
   link_id: string
@@ -91,6 +99,7 @@ export type ContextRefKind =
   | 'session'
   | 'selection'
   | 'note'
+  | 'pdf_comment'
 
 export interface AssistantSelectionAnchor {
   /** 选区所属的来源域稳定文档 ID；文献选区使用附件 ID。 */
@@ -180,6 +189,10 @@ export interface AssistantContextCandidate {
   created_at?: number
   /** Picker-only user activity timestamp used by the recently-opened quick filter. */
   opened_at?: number
+  /** Picker-only source modification timestamp. */
+  updated_at?: number
+  /** Primary attachment name used as a presentation hint before details load. */
+  display_file_name?: string
 }
 
 export interface AssistantContextMutationResult {
@@ -300,10 +313,21 @@ export type AssistantSelectionActionMutationResult =
   { ok: true; result: AssistantSelectionActionResult } | { ok: false; error: string }
 
 /** 其它前端 Feature 只能通过这个窄入口加入上下文。 */
+export interface AssistantContextTarget {
+  readonly sessionId: string | null
+  readonly projectId: string | null
+  readonly draftScope: number
+}
+
 export interface AssistantIngress {
-  addContext(candidate: AssistantContextCandidate): Promise<AssistantContextMutationResult>
+  captureContextTarget(): AssistantContextTarget
+  addContext(
+    candidate: AssistantContextCandidate,
+    expectedTarget?: AssistantContextTarget
+  ): Promise<AssistantContextMutationResult>
   addContexts(
-    candidates: readonly AssistantContextCandidate[]
+    candidates: readonly AssistantContextCandidate[],
+    expectedTarget?: AssistantContextTarget
   ): Promise<AssistantContextMutationResult>
   invokeOnce(input: AssistantOneShotInput): Promise<AssistantInvocationMutationResult>
   translate(input: AssistantTranslationInput): Promise<AssistantInvocationMutationResult>

@@ -73,6 +73,7 @@ from service.paths import SERVICE_BRIDGE_DIR, SERVICE_CASES_DIR  # noqa: E402
 from service.platform.activity import Activities, ActivityDomain  # noqa: E402
 from service.platform.executables import (  # noqa: E402
     SKILL_PYTHON_COMMAND,
+    SKILL_PYTHON_ENV,
     SKILL_PYTHON_PROBE_ARGUMENTS,
     SKILL_PYTHON_PROBE_TIMEOUT_SECONDS,
     command_directories,
@@ -113,6 +114,7 @@ async def _ensure_skill_python_path(activities: Activities) -> None:
         )
     if launcher is None:
         return
+    os.environ[SKILL_PYTHON_ENV] = str(launcher)
     directory = str(launcher.parent)
     inherited = os.environ.get("PATH", "")
     normalized_directory = os.path.normcase(os.path.abspath(directory))
@@ -253,6 +255,7 @@ def serve_main(argv: Optional[List[str]] = None) -> int:
         help="stop normally when the owning launcher's stdin pipe closes",
     )
     ap.add_argument("--await-toolchain", action="store_true")
+    ap.add_argument("--tex-cache-root", default="")
     ap.add_argument("--await-skill-python", action="store_true")
     ap.add_argument(
         "--product",
@@ -301,6 +304,8 @@ def serve_main(argv: Optional[List[str]] = None) -> int:
     args = ap.parse_args(argv)
     if args.await_toolchain and not (args.parent_control and args.parent_stdin):
         ap.error("--await-toolchain requires private parent control and parent stdin")
+    if args.tex_cache_root and not (sys.platform == "win32" and args.await_toolchain):
+        ap.error("--tex-cache-root requires Windows managed toolchain startup")
     if args.await_skill_python and not (args.parent_control and args.parent_stdin):
         ap.error("--await-skill-python requires private parent control and parent stdin")
     log_level = _server_log_level(args.log_level)
@@ -360,6 +365,7 @@ def serve_main(argv: Optional[List[str]] = None) -> int:
         local_bridge_root=SERVICE_BRIDGE_DIR,
         runtime_discovery=runtime_discovery,
         default_project_name=args.default_project_name,
+        managed_tex_cache=args.tex_cache_root,
     )
     if args.await_toolchain:
         app.state.runtime_service.toolchain.defer()
@@ -397,6 +403,7 @@ def serve_main(argv: Optional[List[str]] = None) -> int:
         uvicorn.Config(app, host=args.host, port=args.port, log_level=log_level),
         app.state.activities,
         domains=app.state.storage_domains,
+        compiler_cache_domain=app.state.compiler_cache_domain,
         parent_stdin=args.parent_stdin,
         shutdown_seconds=args.shutdown_timeout_seconds,
         close_model_streams=app.state.completion_bridge.close,

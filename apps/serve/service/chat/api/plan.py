@@ -13,6 +13,7 @@ from service.chat.service.plan import (
     PLAN_START_REQUIRED,
     PlanConflict,
     PlanExecutionError,
+    completion_ids,
     progress_transitions,
     reconcilable_ids,
 )
@@ -20,12 +21,13 @@ from service.chat.service.sessions import SessionService
 from service.platform.activity import Activities, ActivityDomain
 from service.platform.bridge import (
     PLAN_ACTION_STATUSES,
+    PLAN_COMPLETE_ACTION,
+    PLAN_INITIAL_REVISION,
     PLAN_MUTATIONS,
     PLAN_RECONCILE_ACTION,
     PLAN_ROUTE_PREFIX,
     PlanRead,
 )
-from service.platform.vocabulary import BRIDGE_MAX_REQUEST_BYTES
 
 PLAN_CONFLICT_ACTION = (
     "Read plan/get before retrying and correct against the declared tool's request schema and current state. "
@@ -53,30 +55,29 @@ def register_plan_routes(
 
         def current(state: dict | None = None) -> dict:
             state = live.plans.current() if state is None else state
+            metadata = state.get("plan") or {}
             transitions = progress_transitions(state["items"], state)
             reconcilable = reconcilable_ids(state)
+            completable = completion_ids(state)
             return {
                 "turn_id": turn_id,
                 **state,
+                "expected_revision": metadata.get("revision", PLAN_INITIAL_REVISION),
                 "transitions": transitions,
                 "actions": {
                     identity: [
                         action
                         for action, status in PLAN_ACTION_STATUSES.items()
-                        if action != PLAN_RECONCILE_ACTION and status in allowed
+                        if action not in {PLAN_RECONCILE_ACTION, PLAN_COMPLETE_ACTION}
+                        and status in allowed
                     ]
                     + ([PLAN_RECONCILE_ACTION] if identity in reconcilable else [])
+                    + ([PLAN_COMPLETE_ACTION] if identity in completable else [])
                     for identity, allowed in transitions.items()
                 },
             }
 
-        raw = bytearray()
-        async for chunk in request.stream():
-            raw.extend(chunk)
-            if len(raw) > BRIDGE_MAX_REQUEST_BYTES:
-                return JSONResponse(
-                    {"ok": False, "error": "bridge_request_too_large"}, HTTP_400_BAD_REQUEST
-                )
+        raw = await request.body()
         if (
             sessions.bridge_caller(live.id) is not live
             or live.publication_turn_id != turn_id
@@ -96,7 +97,17 @@ def register_plan_routes(
             else:
                 raise ValueError("plan_operation_invalid")
         except PermissionError as error:
-            return JSONResponse({"ok": False, "error": str(error)}, HTTP_403_FORBIDDEN)
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": str(error),
+                    "next_action": "Read plan/get in the current active turn before retrying. "
+                    "Use its turn_id for explicit bridge requests; update_plan binds its trusted "
+                    "callback turn automatically. Do not reuse an earlier turn_id or repeat a "
+                    "rejected mutation unchanged.",
+                },
+                HTTP_403_FORBIDDEN,
+            )
         except PlanConflict as error:
             return JSONResponse(
                 {

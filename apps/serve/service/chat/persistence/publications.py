@@ -11,7 +11,12 @@ from pathlib import Path
 from typing import Any
 
 from service.persistence.project import transaction
-from service.platform.content import ArtifactScope, ArtifactScopeKind, VerifiedArtifactContent
+from service.platform.content import (
+    ArtifactContentKind,
+    ArtifactScope,
+    ArtifactScopeKind,
+    VerifiedArtifactContent,
+)
 
 PUBLICATION_TABLE = "chat_artifact_publication"
 DECLARATION_TABLE = "chat_artifact_declaration"
@@ -132,7 +137,12 @@ class PublicationStore:
     ) -> PublicationRecord:
         # Equivalent Bridge/directive declarations share a publication, while every
         # declaration retains its own request and source evidence.
-        identity = _json((session_id, turn_id, content.source_path, content.sha256, role))
+        parts = (session_id, turn_id, content.source_path, content.sha256, role)
+        identity = _json(
+            (*parts, ArtifactContentKind.DIRECTORY.value)
+            if content.kind == ArtifactContentKind.DIRECTORY
+            else parts
+        )
         publication_id = sha256(identity.encode(ENCODING)).hexdigest()
         with transaction(self.database) as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -194,6 +204,15 @@ class PublicationStore:
                 f"SELECT content FROM {PUBLICATION_TABLE} WHERE session_id != ?", (session_id,)
             )
             return any(json.loads(row["content"])["sha256"] == digest for row in rows)
+
+    def other_sessions(self, session_id: str) -> tuple[PublicationRecord, ...]:
+        with transaction(self.database) as connection:
+            return tuple(
+                self._record(row)
+                for row in connection.execute(
+                    f"SELECT * FROM {PUBLICATION_TABLE} WHERE session_id != ?", (session_id,)
+                )
+            )
 
     def remove_session(self, session_id: str) -> None:
         with transaction(self.database) as connection:

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import os
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from itertools import groupby
 
@@ -18,6 +19,10 @@ class IsolatedExecution:
     unittest cases. Separate processes alone do not isolate account-wide locks,
     registry keys, fixed ports or application instances.
     """
+
+    execution: Future[None]
+    prepare_execution: Callable[[], None]
+    finished: Callable[[], object]
 
 
 def isolated_jobs() -> int:

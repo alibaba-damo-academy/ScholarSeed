@@ -11,6 +11,10 @@ const view = readFileSync(
   'utf8'
 )
 const source = host + '\n' + view
+const receipt = readFileSync(
+  new URL('../../components/primitive/Receipt.tsx', import.meta.url),
+  'utf8'
+)
 const zh = JSON.parse(
   readFileSync(
     new URL('../../../../localization/locales/zh/assistant.json', import.meta.url),
@@ -29,7 +33,8 @@ test('artifact host wires the shared view without moving integrity or file opera
     host,
     /import\s+\{\s*Artifact,\s*ArtifactGroup,\s*ArtifactMenuItems,\s*MENU_CLASS_NAME,?\s*\}\s+from\s+['"].*Artifact['"]/
   )
-  assert.match(host, /<ArtifactGroup[\s\S]*>[\s\S]*groups\.map[\s\S]*<ArtifactEntry/)
+  assert.match(host, /artifactVersionGroups\(items\)[\s\S]*groupArtifacts\(versions\)/)
+  assert.match(host, /<ArtifactGroup key=\{key\}>[\s\S]*<ArtifactEntry/)
   for (const callback of ['preview', 'previewVersion', 'openImport'])
     assert.ok(host.includes(callback + '={' + callback + '}'))
   assert.match(host, /expectedSha256: currentSha256/)
@@ -37,29 +42,33 @@ test('artifact host wires the shared view without moving integrity or file opera
   assert.doesNotMatch(view, /from ['"].*\/(?:api|store|fileOpen)['"]|window\.scholarseed/)
 })
 
-test('artifact host stacks image previews using the same eligibility as the gallery', () => {
-  assert.match(host, /const groups = artifactVersionGroups\(items\)/)
-  assert.match(
-    host,
-    /stacked=\{Boolean\(thread.sessionId\) && groups\.some\(\(\[item\]\) => isImageArtifact\(item.artifact\)\)\}/
-  )
+test('artifact host shares image eligibility with the gallery grouping', () => {
+  assert.match(host, /groupArtifacts\(versions\)/)
+  assert.match(host, /block.kind === 'images' && thread.sessionId/)
+  assert.match(host, /<GeneratedImageGallery/)
 })
 
 test('artifact filename tooltip contains the full filename without repeating its path', () => {
-  assert.match(source, /tooltip=\{primary.name\}/)
-  assert.doesNotMatch(source, /tooltip=\{[^\n]*primary.path/)
-  assert.match(
-    source,
-    /tooltip=\{primary.name\}[\s\S]*?tooltipContentClassName="whitespace-pre-wrap"[\s\S]*?tooltipPortalled/
+  assert.match(view, /titleTooltip=\{primary.name\}/)
+  assert.doesNotMatch(view, /titleTooltip=\{[^\n]*primary.path/)
+  const receipt = readFileSync(
+    new URL('../../components/primitive/Receipt.tsx', import.meta.url),
+    'utf8'
   )
+  assert.match(receipt, /tooltip=\{titleTooltip \?\?/)
+  assert.match(receipt, /tooltipContentClassName="whitespace-pre-wrap"/)
+})
+test('image batches retain artifact actions and bind viewer menus to the selected revision', () => {
+  assert.match(host, /<GeneratedImageGallery/)
+  assert.match(host, /key=\{artifact.artifact_id \+ ':' \+ artifact.sha256\}/)
+  assert.match(host, /primary=\{artifact\}[\s\S]*mode=\{preview \? 'preview' : 'actions'\}/)
+  assert.match(host, /\{feedback\}[\s\S]*<\/DropdownMenuContent>/)
+  assert.match(host, /const feedback =/)
 })
 
-test('image batches retain full artifact cards and bind viewer menus to the selected revision', () => {
-  assert.match(host, /<GeneratedImages/)
-  assert.match(host, /key=\{artifact.artifact_id \+ ':' \+ artifact.sha256\}/)
-  assert.match(host, /primary=\{artifact\}[\s\S]*mode="actions"/)
-  assert.match(host, /\{feedback\}\s*<\/div>\s*<\/DropdownMenuContent>/)
-  assert.match(host, /const feedback =/)
+test('PDF artifacts use the ordinary file receipt without an inline first-page preview', () => {
+  assert.doesNotMatch(host, /GeneratedPdf/)
+  assert.match(view, /<Receipt[\s\S]*onOpen=\{\(\) => preview\(primary\)\}/)
 })
 
 test('artifact import uses the inline collection list with the selected ID and retry', () => {
@@ -121,28 +130,7 @@ for (const imported of [true, false]) {
   })
 }
 
-test('agent artifact actions share one menu model across right-click and overflow entry points', () => {
-  assert.match(source, /<ContextMenu[\s\S]*<ContextMenuTrigger asChild>/)
-  assert.match(source, /<DropdownMenu[\s\S]*data-testid="artifact-more-actions"/)
-  assert.match(source, /<ArtifactMenuItems \{\.\.\.menuProps\} kind="context" \/>/)
-  assert.match(source, /<ArtifactMenuItems \{\.\.\.menuProps\} kind="dropdown" \/>/)
-})
-
-test('agent artifact card exposes import before open and keeps menus free of duplicate import', () => {
-  assert.match(source, /data-testid="artifact-import-resources"[\s\S]*data-testid="artifact-open"/)
-  assert.match(source, /data-testid="artifact-more-actions"/)
-  assert.doesNotMatch(source, /artifact-\$\{kind\}-import/)
-  assert.match(source, /disabled=\{!canImport\}[\s\S]*onClick=\{openImport\}/)
-  assert.match(source, /@max-\[20rem\]\/artifact/)
-  assert.match(source, /@max-\[16\.5rem\]\/artifact/)
-  for (const id of ['openWith', 'saveAs', 'copyPath', 'reveal']) {
-    assert.match(
-      source,
-      new RegExp(
-        `artifact-\\$\\{kind\\}-${id === 'openWith' ? 'open-with' : id.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}`
-      )
-    )
-  }
+test('artifact action labels remain available in both interface languages', () => {
   for (const catalog of [zh, en]) {
     for (const key of [
       'import',

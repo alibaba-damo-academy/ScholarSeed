@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Iterator, Mapping
+from typing import Any, Callable, Iterator, Mapping
 
 from damoatrace.paths import TRACE_DIR
 from damoatrace.recording.content import CONTENT_VERSION
@@ -29,6 +29,7 @@ from scholarseed_runtime.contract.input import TurnInput
 from scholarseed_runtime.contract.resource import ResourceReceipt
 from service.brand import PRODUCT_SLUG
 from service.chat.constants import (
+    PRODUCT_DECISION_SOURCE,
     PRODUCT_EVENT_HIL_REQUESTED,
     PRODUCT_EVENT_HIL_RESOLVED,
     PRODUCT_EVENT_NATIVE_ACTIVITY_COMPLETED,
@@ -326,8 +327,22 @@ class SessionTrace:
             },
         )
 
-    def activation(self, request_id: str) -> ActivationTiming:
-        return ActivationTiming(request_id, self._activation_measurement)
+    def activation(
+        self,
+        request_id: str,
+        observer: Callable[[ActivationMeasurement], None] | None = None,
+        *,
+        dispatch: Callable[[Callable[[], None]], None] | None = None,
+    ) -> ActivationTiming:
+        def record(sample: ActivationMeasurement) -> None:
+            if dispatch is None:
+                self._activation_measurement(sample)
+            else:
+                dispatch(lambda: self._activation_measurement(sample))
+            if observer is not None:
+                observer(sample)
+
+        return ActivationTiming(request_id, record)
 
     def _activation_measurement(self, sample: ActivationMeasurement) -> None:
         self._emit(
@@ -619,6 +634,7 @@ class SessionTrace:
         purpose: str,
         requested_model_key: str,
         failure_type: str,
+        diagnostic: Mapping[str, object] | None = None,
     ) -> None:
         """Record a safe pre-result failure without serializing exception detail."""
 
@@ -631,9 +647,21 @@ class SessionTrace:
                 "purpose": purpose,
                 "requested_model_key": requested_model_key,
                 "failure_type": failure_type,
+                "diagnostic": dict(diagnostic or {}),
             },
             status="error",
             error={"class": failure_type, "message": "agent_runtime_failed"},
+        )
+
+    def invocation_timing(self, timings: Mapping[str, object]) -> None:
+        self._emit(
+            kind=TraceKind.LLM_STREAM,
+            name="scholarseed.invocation.timing",
+            attributes={
+                "runtime_id": self.runtime_id,
+                "invocation_id": self.session_id,
+                "timings": dict(timings),
+            },
         )
 
     @staticmethod
@@ -1011,6 +1039,7 @@ class SessionTrace:
                 "interaction_id": record.payload.get("request_id"),
                 "interaction_kind": record.payload.get("kind"),
                 "interaction_state": record.payload.get("state"),
+                PRODUCT_DECISION_SOURCE: record.payload.get(PRODUCT_DECISION_SOURCE),
             }
         if record.kind == PRODUCT_EVENT_RUNTIME_INCIDENT:
             diagnostics = {

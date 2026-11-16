@@ -9,6 +9,16 @@ const { nativeTar } = require('../../../scripts/shared/python.cjs')
 const { ensureArtifact } = require('../../../scripts/shared/artifacts.cjs')
 const state = require('../scripts/shared/build-state.cjs')
 const CACHE_RECEIPT = 'resolve-receipt.json'
+const SOURCE_PACKAGE = '@openai/codex'
+const SOURCE_DISTRIBUTION = 'verified-download'
+const PACKAGING_POLICIES = Object.freeze({
+  darwin: Object.freeze({
+    id: 'darwin-without-voice-v1',
+    reason: 'voice_not_supported_by_product',
+    excludedDirectories: Object.freeze(['codex-resources/voice'])
+  }),
+  win32: null
+})
 
 const run = promisify(execFile)
 const VENDOR_RELATIVE = path.join('scripts', 'vendor', 'codex')
@@ -90,14 +100,16 @@ function artifact(desktopRoot, platform, arch) {
   const manifest = JSON.parse(fs.readFileSync(path.join(root, MANIFEST_NAME), 'utf8'))
   const key = `${platform}-${arch}`
   const selected = manifest.artifacts?.[key]
+  const version = selected?.version ?? manifest.version
   if (manifest.package !== '@openai/codex' || !/^\d+\.\d+\.\d+$/.test(manifest.version) ||
+      !/^\d+\.\d+\.\d+$/.test(version) ||
       !selected || !INTEGRITY_PATTERN.test(selected.integrity) ||
       !SHA256_PATTERN.test(selected.sha256) || typeof selected.url !== 'string' ||
       !Number.isSafeInteger(selected.bytes) || selected.bytes <= 0) {
     throw new Error(`Unsupported vendored Codex platform: ${key}`)
   }
   const archive = path.join(root, selected.file)
-  return { ...selected, archive, key, root, version: manifest.version }
+  return { ...selected, archive, key, root, version }
 }
 
 async function probeVersion(executable, version) {
@@ -122,7 +134,7 @@ async function probeVersion(executable, version) {
 }
 
 function sourceRecord(selected) {
-  return { package: '@openai/codex', distribution: 'verified-download',
+  return { package: SOURCE_PACKAGE, distribution: SOURCE_DISTRIBUTION,
     archive_sha256: selected.sha256, integrity: selected.integrity }
 }
 
@@ -162,6 +174,53 @@ function verifyCachedFiles(directory, cached) {
   const order = (a, b) => a.path.localeCompare(b.path)
   if (JSON.stringify(actual.sort(order)) !== JSON.stringify(expected.sort(order)))
     throw new Error('Codex runtime cache inventory changed')
+}
+
+function stageVendoredCodex(runtime, destination, platform = process.platform) {
+  if (!Object.hasOwn(PACKAGING_POLICIES, platform)) throw new Error('Unsupported Codex packaging platform')
+  if (runtime.source?.package !== SOURCE_PACKAGE || runtime.source?.distribution !== SOURCE_DISTRIBUTION ||
+      !SHA256_PATTERN.test(runtime.source.archive_sha256)) throw new Error('Invalid Codex source receipt')
+  const source = path.resolve(runtime.root), target = path.resolve(destination)
+  if (target === source || target.startsWith(source + path.sep) || source.startsWith(target + path.sep))
+    throw new Error('Codex packaging destination overlaps source')
+  if (fs.existsSync(target)) throw new Error('Codex packaging destination already exists')
+  state.noLinks(source)
+  state.noLinks(path.dirname(target))
+  const receiptPath = path.join(source, CACHE_RECEIPT)
+  state.regular(receiptPath)
+  const receiptBytes = fs.readFileSync(receiptPath)
+  const receipt = JSON.parse(receiptBytes)
+  const cached = cachedRuntime(source, { sha256: runtime.source.archive_sha256, version: runtime.reported_version })
+  if (!cached || receipt.packaging ||
+      cached.entrypoint !== path.relative(source, runtime.path).split(path.sep).join('/') ||
+      JSON.stringify(cached.files) !== JSON.stringify(runtime.files)) throw new Error('Codex source receipt differs from frozen input')
+  verifyCachedFiles(source, cached)
+  const policy = PACKAGING_POLICIES[platform]
+  const excluded = file => policy && policy.excludedDirectories.some(directory => file.path.startsWith(directory + '/'))
+  const files = cached.files.filter(file => !excluded(file))
+  if (!files.some(file => file.path === cached.entrypoint)) throw new Error('Codex packaging excludes its entrypoint')
+  const packaging = policy ? {
+    schema: 1,
+    policy: policy.id,
+    reason: policy.reason,
+    source_receipt_sha256: crypto.createHash('sha256').update(receiptBytes).digest('hex'),
+    excluded_files: cached.files.filter(excluded).map(file => ({
+      ...file, bytes: state.regular(path.join(source, file.path)).size
+    }))
+  } : null
+  fs.mkdirSync(target)
+  for (const file of files) {
+    const filename = path.join(target, file.path)
+    fs.mkdirSync(path.dirname(filename), { recursive: true })
+    fs.copyFileSync(path.join(source, file.path), filename, fs.constants.COPYFILE_EXCL)
+    fs.chmodSync(filename, file.mode)
+  }
+  fs.writeFileSync(path.join(target, CACHE_RECEIPT), packaging
+    ? JSON.stringify({ ...receipt, files, packaging }) : receiptBytes, { flag: 'wx' })
+  verifyCachedFiles(target, { files })
+  verifyCachedFiles(source, cached)
+  if (!fs.readFileSync(receiptPath).equals(receiptBytes)) throw new Error('Codex source receipt changed during packaging')
+  return packaging
 }
 
 async function completeRuntime(directory, selected, runtime, options = {}) {
@@ -306,4 +365,4 @@ function bundledCodex(resourcesRoot, platform = process.platform) {
   return executable
 }
 
-module.exports = { artifact, bundledCodex, CACHE_VALIDATION, completeRuntime, publishRuntime, resolveVendoredCodex, verifyArchive }
+module.exports = { artifact, bundledCodex, CACHE_VALIDATION, completeRuntime, publishRuntime, resolveVendoredCodex, stageVendoredCodex, verifyArchive }

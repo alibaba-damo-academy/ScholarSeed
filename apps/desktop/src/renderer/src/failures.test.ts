@@ -25,6 +25,30 @@ const authenticationEvent = {
   },
 }
 
+for (const [code, kind] of [
+  ['timeout', 'timeout'],
+  ['connection_error', 'connection'],
+] as const) {
+  test(`${code} retains its distinct terminal recovery presentation`, () => {
+    const failure = describeTurnFailure({ code, retryable: true })
+    assert.equal(failure.failure?.kind, kind)
+    assert.equal(isRecoverableTurnFailure(failure), true)
+    assert.equal(isRecoverableTurnFailure(describeTurnFailure({ code, retryable: false })), false)
+    assert.equal(
+      isRecoverableTurnFailure({ ...failure, turnUnknown: { reason: 'timeout' } }),
+      false
+    )
+  })
+}
+
+test('transport incidents never infer a successful or safely retryable terminal turn', () => {
+  for (const code of ['rpc_timeout', 'transport_lost']) {
+    const failure = describeTurnFailure({ code })
+    assert.equal(failure.runtimeAction, undefined)
+    assert.equal(isRecoverableTurnFailure(failure), false)
+  }
+})
+
 for (const code of [
   'codex_provider_failed',
   'agent_runtime_failed',

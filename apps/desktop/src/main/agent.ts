@@ -169,6 +169,7 @@ interface AgentObservation {
   snapshotId: string
   topFrameId: string
   revocationEpoch: number
+  detach?: { completion: Promise<boolean>; finish(continuous: boolean): void }
   elements: Map<string, { element: AgentElement; fingerprints: Map<number, ObservationFingerprint> }>
 }
 interface ObservationNode { nodeName?: string; attributes?: string[]; frameId?: string }
@@ -525,7 +526,20 @@ export function createAgentBrowserController(registry: AgentBrowserPort,
     clearTimeout(lease.timer)
     lease.elements.clear()
     if (detach && !lease.contents.isDestroyed()) {
-      try { registry.detachAgent(tabId) } catch { /* target closed */ }
+      const observation = observations.get(tabId)
+      if (observation && sameAuthority(observation.authority, lease.authority)) {
+        let settle!: (continuous: boolean) => void
+        const completion = new Promise<boolean>(resolve => { settle = resolve })
+        const finish = (continuous: boolean): void => {
+          clearTimeout(timer)
+          delete observation.detach
+          if (!continuous && observations.get(tabId) === observation) observations.delete(tabId)
+          settle(continuous)
+        }
+        const timer = setTimeout(() => finish(false), COMMAND_TIMEOUT_MS)
+        observation.detach = { completion, finish }
+      }
+      try { registry.detachAgent(tabId) } catch { observation?.detach?.finish(false) }
     }
   }
   const unsubscribe = registry.onDebuggerDetach((tabId, _reason, continuity) => {
@@ -549,6 +563,7 @@ export function createAgentBrowserController(registry: AgentBrowserPort,
     }
     if (!continuous) observations.delete(tabId)
     release(tabId, false)
+    observation?.detach?.finish(continuous)
   })
   const verify = (lease: AgentLease, authority: AgentReadAuthority) => {
     validateAuthority(authority)
@@ -883,12 +898,22 @@ export function createAgentBrowserController(registry: AgentBrowserPort,
         { snapshotId: request.snapshotId, elementRef: request.elementRef,
           backendNodeId: element.backendNodeId, intent: request.intent }, element.public)
     },
-    prepareAction(request: { scope: BrowserReadScope; requestId: string; tabId: string; snapshotId: string;
-      elementRef: string; action: AgentPreparedAction['action']; intent: string; value?: string }): AgentPreparedAction {
+    async prepareAction(request: { scope: BrowserReadScope; requestId: string; tabId: string; snapshotId: string;
+      elementRef: string; action: AgentPreparedAction['action']; intent: string; value?: string;
+      signal?: AbortSignal }): Promise<AgentPreparedAction> {
+      if (request.signal?.aborted) throw new Error('request_expired')
       if (unfencedScopes.has(scopeKey(request.scope))) throw new Error('stale_ref')
       const lease = leases.get(request.tabId)
       if (!lease || lease.observationOnly || Date.now() >= lease.snapshotExpiresAt || Date.now() >= lease.expiresAt) {
-        retainedObservation(request)
+        const observation = retainedObservation(request)
+        if (lease) {
+          if (!sameAuthority(lease.authority, observation.authority) || lease.observingEffects)
+            throw new Error('stale_ref')
+          release(request.tabId, true, lease)
+        }
+        if (observation.detach && !await observation.detach.completion) throw new Error('stale_ref')
+        if (request.signal?.aborted) throw new Error('request_expired')
+        if (retainedObservation(request) !== observation || leases.has(request.tabId)) throw new Error('stale_ref')
         throw new Error(OBSERVATION_READ_REQUIRED)
       }
       if (!lease || !sameScope(lease.authority.scope, request.scope)) throw new Error('stale_ref')
@@ -1314,6 +1339,7 @@ export function createAgentBrowserController(registry: AgentBrowserPort,
     dispose(): void {
       if (disposed) return
       disposed = true
+      for (const observation of observations.values()) observation.detach?.finish(false)
       observations.clear()
       for (const waiter of effectDrainWaiters) waiter.cancel()
       unsubscribe()

@@ -142,7 +142,11 @@ export interface MarkdownSourceRange {
 }
 
 /** Align rendered characters with syntax leaf values, tolerating renderer-only whitespace. */
-function renderedPoints(leaves: MappedLeaf[], rendered: string): Array<LeafPoint | null> | null {
+function renderedPoints(
+  leaves: MappedLeaf[],
+  rendered: string,
+  sourceEnd?: number
+): Array<LeafPoint | null> | null {
   const points: Array<LeafPoint | null> = []
   let leafIndex = 0
   let valueIndex = 0
@@ -179,6 +183,8 @@ function renderedPoints(leaves: MappedLeaf[], rendered: string): Array<LeafPoint
     }
     if (!point && !whitespace) return null
     points.push(point)
+    if (sourceEnd !== undefined && point && (selectedTrailingBoundary(point) ?? -1) >= sourceEnd)
+      break
   }
   return points
 }
@@ -266,4 +272,31 @@ export function markdownSourceRange(
     segments,
     text: joinedSource(source, segments),
   }
+}
+
+export function markdownRenderedRange(
+  source: string,
+  tree: MarkdownSyntaxNode,
+  rendered: string,
+  start: number,
+  end: number
+): { from: number; to: number } | null {
+  const points = renderedPoints(syntaxLeaves(source, tree), rendered, end)
+  if (!points || start < 0 || end <= start || end > source.length) return null
+  let from = -1
+  let to = -1
+  points.forEach((point, index) => {
+    if (!point) return
+    const leading =
+      point.leaf.boundaries === null ? point.leaf.start : selectedLeadingBoundary(point)
+    const trailing =
+      point.leaf.boundaries === null ? point.leaf.end : selectedTrailingBoundary(point)
+    if (leading !== null && trailing !== null && leading >= start && trailing <= end) {
+      if (from < 0) from = index
+      to = index + 1
+    }
+  })
+  if (from < 0 || to <= from) return null
+  const mapped = markdownSourceRange(source, tree, rendered.slice(0, to), from, to)
+  return mapped?.start === start && mapped.end === end ? { from, to } : null
 }

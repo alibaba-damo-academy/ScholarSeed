@@ -1,3 +1,4 @@
+import type * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import type { ButtonHTMLAttributes, HTMLAttributes } from 'react'
 import { forwardRef } from 'react'
@@ -25,7 +26,7 @@ function PaginationButton({
   active = false,
   className,
   ...props
-}: ButtonHTMLAttributes<HTMLButtonElement> & { active?: boolean }): JSX.Element {
+}: ButtonHTMLAttributes<HTMLButtonElement> & { active?: boolean }): React.JSX.Element {
   return (
     <button
       className={cx(paginationItemClassName, active && paginationItemActiveClassName, className)}
@@ -47,7 +48,7 @@ export const Pagination = forwardRef<HTMLElement, PaginationProps>(function Pagi
     ...props
   },
   ref
-): JSX.Element {
+): React.JSX.Element {
   const { t } = useTranslation('ui')
   const safePageCount = Math.max(pageCount, 1)
   const currentPage = Math.min(Math.max(page, 1), safePageCount)

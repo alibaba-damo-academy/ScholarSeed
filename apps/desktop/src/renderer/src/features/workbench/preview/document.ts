@@ -1,11 +1,20 @@
 import { PptxViewer, RECOMMENDED_ZIP_LIMITS } from '@aiden0z/pptx-renderer'
 import { parseAsync, renderDocument } from 'docx-preview'
+import type { SelectionLocator } from '../../../contracts/workbench'
 
-import { markWordParagraphs, slideMarkers, wordAnchors, wordParagraphs, type TextAnchor } from './selection'
+import {
+  markWordParagraphs,
+  slideMarkers,
+  wordAnchors,
+  wordParagraphs,
+  type TextAnchor,
+} from './selection'
 import { mediaPreview } from './media'
 import { diagramPreview } from './diagram'
+import { mathPreview } from './math'
 
 export interface DocumentReader {
+  reveal?(locator: SelectionLocator): Promise<void>
   anchors(): TextAnchor[]
   search(query: string, step: number): Promise<{ current: number; total: number }>
   zoom(percent: number): void | Promise<void>
@@ -33,7 +42,11 @@ function searchDom(root: HTMLElement): DocumentReader['search'] {
         }
         const text = content.toLocaleLowerCase()
         const needle = query.toLocaleLowerCase()
-        for (let index = text.indexOf(needle); index >= 0; index = text.indexOf(needle, index + needle.length)) {
+        for (
+          let index = text.indexOf(needle);
+          index >= 0;
+          index = text.indexOf(needle, index + needle.length)
+        ) {
           const range = document.createRange()
           const first = nodes.find((item) => item.end > index)
           const last = nodes.find((item) => item.end >= index + query.length)
@@ -44,7 +57,8 @@ function searchDom(root: HTMLElement): DocumentReader['search'] {
         }
       }
     }
-    current = query !== previous || step === 0 ? 0 : (current + step + matches.length) % matches.length
+    current =
+      query !== previous || step === 0 ? 0 : (current + step + matches.length) % matches.length
     previous = query
     const match = matches[current]
     if (match) {
@@ -65,10 +79,11 @@ export async function mountWord(bytes: Uint8Array, root: HTMLElement): Promise<D
     className: `scholarseed-docx-${crypto.randomUUID()}`,
     renderChanges: false,
   }
-  const model = await parseAsync(await mediaPreview(bytes), options)
+  const equations = mathPreview(await mediaPreview(bytes))
+  const model = await parseAsync(equations.bytes, options)
   markWordParagraphs(source.body, model.documentPart.body.children)
   const nodes = await renderDocument(model, options)
-  root.replaceChildren(...nodes)
+  root.replaceChildren(...equations.restore(nodes))
   return {
     anchors: () => wordAnchors(root, source.paragraphs),
     search: searchDom(root),
@@ -139,6 +154,9 @@ export async function mountSlides(bytes: Uint8Array, root: HTMLElement): Promise
   let searchGeneration = 0
   return {
     anchors: () => Array.from(anchors.values()).flat(),
+    reveal: async (locator) => {
+      if (locator.kind === 'impress') await viewer.goToSlide(locator.slide - 1)
+    },
     search: async (query, step) => {
       const generation = ++searchGeneration
       viewer.clearSearchHighlights()

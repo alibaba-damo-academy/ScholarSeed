@@ -72,7 +72,7 @@ export function homeSeed(base: PreviewProject, policy: PreviewHomePolicy) {
 export function homeSessionPage<T>(sessions: readonly T[], limit: string | null, cursor: string | null, epoch: string) {
   const requested = limit === null ? Math.max(1, sessions.length) : Number(limit)
   const prefix = epoch + ':'
-  const offset = cursor === null ? 0 : cursor.startsWith(prefix) && /^\d+$/.test(cursor.slice(prefix.length)) ? Number(cursor.slice(prefix.length)) : NaN
+  const offset = cursor === null || cursor === '' ? 0 : cursor.startsWith(prefix) && /^\d+$/.test(cursor.slice(prefix.length)) ? Number(cursor.slice(prefix.length)) : NaN
   if (!Number.isSafeInteger(requested) || requested <= 0 || !Number.isSafeInteger(offset) || offset < 0 || offset > sessions.length) throw new Error('Invalid preview session page')
   const end = offset + Math.min(requested, PREVIEW_HOME.sessionPage)
   return { sessions: sessions.slice(offset, end), total: sessions.length, next_cursor: end < sessions.length ? prefix + end : null }

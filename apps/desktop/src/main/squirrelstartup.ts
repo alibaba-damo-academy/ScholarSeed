@@ -1,7 +1,7 @@
 // Read-only startup classification. None of these results authorize backend admission.
 import { execFile } from 'node:child_process'
 import { realpath } from 'node:fs/promises'
-import { basename, dirname, join, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import {
   constants,
   openSync,
@@ -19,24 +19,69 @@ import {
   validSquirrelBinding,
   type SquirrelHandoff,
   type SquirrelNativeRequest,
+  type SquirrelNativeCapture,
 } from './squirrel.ts'
 import { BUILD_NUMBER_PATTERN, isNewerRelease } from './version.ts'
+import { classifyMacosTrust, parseCodesignIdentity } from './codesign.ts'
 
 export const SQUIRREL_INSTALLATION_WINDOW_MS = 10 * 60_000
 const NATIVE_SETTLE_TIMEOUT_MS = 5000
 const NATIVE_SETTLE_INTERVAL_MS = 100
 const PROBE_TIMEOUT_MS = 2000
 const PROBE_MAX_BYTES = 1024 * 1024
-const SHIPIT_EXECUTABLE = ['Contents', 'Frameworks', 'Squirrel.framework', 'Resources', 'ShipIt']
+const SHIPIT_NAME = 'ShipIt'
+const SHIPIT_EXECUTABLE = ['Contents', 'Frameworks', 'Squirrel.framework', 'Resources', SHIPIT_NAME]
 const SHIPIT_STATE = 'ShipItState.plist'
+const SHIPIT_REQUEST_FLAGS = [
+  'installationAuthorized',
+  'launchAfterInstallation',
+  'useUpdateBundleName',
+]
 const TERMINAL_ACK = '.scholarseed-prepare.plist'
 const TERMINAL_ACK_LIMIT = 4096
 const UNSAFE_WRITE_MODE = 0o022
 const PRODUCT_CONFIG_BYTES = 64 * 1024
+const SIGNATURE_TIMEOUT_MS = 30_000
 const SOURCE_PRODUCT_CONFIG = ['Contents', 'Resources', 'product.json']
 const run = promisify(execFile)
 export type SquirrelStartupStatus = 'installing' | 'restoring' | 'failed' | 'unconfirmed'
 export type SquirrelAdmission = 'allow' | 'exit' | 'failed' | 'superseded'
+
+export async function verifySquirrelReplacement(
+  application: string,
+  bundle: string,
+  team: string,
+  build: string
+): Promise<void> {
+  const options = {
+    timeout: SIGNATURE_TIMEOUT_MS,
+    maxBuffer: PROBE_MAX_BYTES,
+    encoding: 'utf8' as const,
+  }
+  await run(
+    '/usr/bin/codesign',
+    ['--verify', '--deep', '--strict', '--all-architectures', application],
+    options
+  )
+  const identity = await run(
+    '/usr/bin/codesign',
+    ['--display', '--verbose=4', application],
+    options
+  )
+  if (
+    !classifyMacosTrust(parseCodesignIdentity(identity.stdout + '\n' + identity.stderr), {
+      expectedBundleId: bundle,
+      expectedTeamId: team,
+      metaTeamId: team,
+    }).trusted
+  )
+    throw new Error('Superseding application signature differs')
+  const product = JSON.parse(
+    readNativeRecord(join(application, ...SOURCE_PRODUCT_CONFIG), PRODUCT_CONFIG_BYTES).toString()
+  )
+  if (!BUILD_NUMBER_PATTERN.test(build) || product.build_number !== build)
+    throw new Error('Superseding application build differs')
+}
 
 export function squirrelLaunchSuperseded(
   build: string,
@@ -51,22 +96,49 @@ export function squirrelLaunchSuperseded(
   )
 }
 
-export function squirrelHelpersAbsent(processes: string, uid: number): boolean {
-  if (!processes.trim()) return false
-  return processes.split(/\r?\n/).every((line) => {
-    if (!line.trim()) return true
+export async function squirrelHelpersAbsent(
+  processes: string,
+  uid: number,
+  executables: readonly string[],
+  canonicalize: (path: string) => Promise<string> = realpath
+): Promise<boolean> {
+  if (!processes.trim() || !executables.length || executables.some((path) => !isAbsolute(path)))
+    return false
+  for (const line of processes.split(/\r?\n/)) {
+    if (!line.trim()) continue
     const match = /^\s*(\d+)\s+(.+)$/.exec(line)
     if (!match) return false
-    return ![0, uid].includes(Number(match[1])) || basename(match[2]) !== 'ShipIt'
-  })
+    if (![0, uid].includes(Number(match[1]))) continue
+    const path = match[2]
+    if (executables.includes(path)) return false
+    if (!isAbsolute(path)) {
+      if (basename(path) === SHIPIT_NAME) return false
+      continue
+    }
+    try {
+      const canonical = await canonicalize(path)
+      if (!isAbsolute(canonical) || executables.includes(canonical)) return false
+    } catch {
+      // A vanished or unreadable helper cannot be classified as another app's.
+      if (basename(path) === SHIPIT_NAME) return false
+    }
+  }
+  return true
 }
 
-export async function inspectSquirrelIdle(cache: string, bundle: string): Promise<boolean> {
+export async function inspectSquirrelIdle(
+  cache: string,
+  bundle: string,
+  application: string,
+  handoff: SquirrelHandoff | null,
+  verifyReplacement?: (application: string) => Promise<void>
+): Promise<boolean> {
   if (process.platform !== 'darwin' || !process.getuid || !/^[A-Za-z0-9.-]+$/.test(bundle))
     return false
   const uid = process.getuid()
   const directory = join(cache, `${bundle}.ShipIt`)
-  const absent = () => {
+  const statePath = join(directory, SHIPIT_STATE)
+  const snapshot = () => {
     const identity = (path: string) => {
       const info = lstatSync(path)
       if (!info.isDirectory() || ![0, uid].includes(info.uid) || info.mode & UNSAFE_WRITE_MODE)
@@ -77,23 +149,105 @@ export async function inspectSquirrelIdle(cache: string, bundle: string): Promis
     let directoryIdentity: ReturnType<typeof identity> | null = null
     try {
       directoryIdentity = identity(directory)
-      lstatSync(join(directory, SHIPIT_STATE))
-      return null
+      const state = lstatSync(statePath)
+      const bytes = readNativeRecord(statePath, PROBE_MAX_BYTES)
+      return {
+        identity: JSON.stringify({
+          cacheIdentity,
+          directoryIdentity,
+          state: {
+            dev: state.dev,
+            ino: state.ino,
+            uid: state.uid,
+            mode: state.mode,
+            size: state.size,
+            mtime: state.mtimeMs,
+            ctime: state.ctimeMs,
+          },
+        }),
+        bytes,
+      }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-      return JSON.stringify({ cacheIdentity, directoryIdentity })
+      return { identity: JSON.stringify({ cacheIdentity, directoryIdentity }), bytes: null }
     }
   }
   try {
     if ((await realpath(cache)) !== cache) return false
-    const before = absent()
-    if (!before) return false
-    const processes = await run('/bin/ps', ['-ww', '-axo', 'uid=,comm='], {
+    const target = await realpath(application)
+    if (target !== application) return false
+    const executables = [await realpath(join(target, ...SHIPIT_EXECUTABLE))]
+    const native = handoff?.nativeRequest
+    if (native) {
+      if (
+        native.target.path !== target ||
+        !validSquirrelBinding(native.binding) ||
+        !sameSquirrelBinding(handoff?.binding, native.binding) ||
+        native.binding.candidate !== handoff?.candidate
+      )
+        return false
+      // Include the bound candidate: it can own the helper during relaunch.
+      const candidateHelper = join(native.source.path, ...SHIPIT_EXECUTABLE)
+      executables.push(candidateHelper)
+      try {
+        executables.push(await realpath(candidateHelper))
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      }
+    }
+    const before = snapshot()
+    const options = {
       timeout: PROBE_TIMEOUT_MS,
       maxBuffer: PROBE_MAX_BYTES,
-      encoding: 'utf8',
-    })
-    return squirrelHelpersAbsent(processes.stdout, uid) && absent() === before
+      encoding: 'utf8' as const,
+    }
+    const helpersAbsent = async () => {
+      const processes = await run('/bin/ps', ['-ww', '-axo', 'uid=,comm='], options)
+      return squirrelHelpersAbsent(processes.stdout, uid, executables)
+    }
+    if (!(await helpersAbsent())) return false
+    let failed: (() => Promise<boolean>) | undefined
+    if (before.bytes) {
+      if (!native) return false
+      const conversion = run('/usr/bin/plutil', ['-convert', 'json', '-o', '-', '-'], options)
+      conversion.child.stdin?.end(before.bytes)
+      const request = JSON.parse((await conversion).stdout)
+      if (
+        request.bundleIdentifier !== bundle ||
+        !sameSquirrelBinding(request.binding, native.binding) ||
+        !SHIPIT_REQUEST_FLAGS.every((key) => typeof request[key] === 'boolean') ||
+        (request.installationAuthorized && !request.launchAfterInstallation) ||
+        resolve(fileURLToPath(request.targetBundleURL)) !== target ||
+        resolve(fileURLToPath(request.updateBundleURL)) !== native.source.path
+      )
+        return false
+      // A superseding installation has its own identity. Keep the historical
+      // failure bound to the old target; never rebase that failure onto this app.
+      const replacement = captureDirectory(target)
+      const contents = captureDirectory(join(target, 'Contents'))
+      if (verifyReplacement) await verifyReplacement(target)
+      const replacementStable = () =>
+        JSON.stringify(replacement) === JSON.stringify(captureDirectory(target)) &&
+        JSON.stringify(contents) === JSON.stringify(captureDirectory(join(target, 'Contents')))
+      failed = async () =>
+        replacementStable() &&
+        (await readFailure(
+          request.updateBundleURL,
+          target,
+          native,
+          verifyReplacement ? replacement : undefined
+        )) &&
+        replacementStable()
+      if (!(await failed())) return false
+    }
+    // Both branches retain native records. A failed request is terminal evidence,
+    // not an invitation to replay installation or delete an unresolved request.
+    if (!(await helpersAbsent()) || (failed && !(await failed()))) return false
+    const after = snapshot()
+    return (
+      before.identity === after.identity &&
+      (before.bytes === null ? after.bytes === null : !!after.bytes?.equals(before.bytes))
+    )
   } catch {
     return false
   }
@@ -218,10 +372,31 @@ export async function bindSquirrelRequest(
   return nativeRequest
 }
 
+function captureDirectory(path: string): SquirrelNativeCapture {
+  const identity = (value: string) => {
+    const info = lstatSync(value)
+    // /Applications can be admin-group writable. Its exact identity, rather
+    // than a private-cache permission policy, binds the replacement namespace.
+    if (!info.isDirectory() || ![0, process.getuid!()].includes(info.uid))
+      throw new Error('Unsafe Squirrel directory')
+    return { dev: info.dev, ino: info.ino, uid: info.uid }
+  }
+  return { path, parent: identity(dirname(path)), item: identity(path) }
+}
+
 export async function readSquirrelFailure(
   source: string,
   application: string,
   expected?: SquirrelNativeRequest
+): Promise<boolean> {
+  return readFailure(source, application, expected)
+}
+
+async function readFailure(
+  source: string,
+  application: string,
+  expected?: SquirrelNativeRequest,
+  replacement?: SquirrelNativeCapture
 ): Promise<boolean> {
   let descriptor: number | undefined
   try {
@@ -299,9 +474,15 @@ export async function readSquirrelFailure(
     return (
       record.schema === 1 &&
       record.ready === false &&
+      Number.isSafeInteger(record.code) &&
+      record.code !== 0 &&
       sameSquirrelBinding(record.binding, expected.binding) &&
       matches(record.source, expectedSource) &&
-      matches(record.target, expectedTarget) &&
+      (replacement
+        ? matches(expectedTarget, replacement) &&
+          expectedTarget.path === expected.target.path &&
+          same(expectedTarget.parent, expected.target.parent)
+        : matches(record.target, expectedTarget)) &&
       matches(record.source, expected.source) &&
       matches(record.target, expected.target) &&
       same(expectedSource, capture(sourcePath)) &&

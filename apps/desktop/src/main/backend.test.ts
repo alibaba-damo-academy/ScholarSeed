@@ -57,6 +57,11 @@ const hooks = registerHooks({
 })
 const backend = await import('./backend.ts')
 
+test('Desktop exports its canonical Skill launcher to the receipt-gated backend', () => {
+  const source = readFileSync(new URL('./backend.ts', import.meta.url), 'utf8')
+  assert.match(source, /const SCHOLARSEED_SKILL_PYTHON_ENV = 'SCHOLARSEED_SKILL_PYTHON'/)
+  assert.match(source, /\[SCHOLARSEED_SKILL_PYTHON_ENV\]: skillPythonLauncherPath\(skillBin\)/)
+})
 test('same-build startup survives slow preparation beyond the former overall deadline', async (context) => {
   const home = mkdtempSync(join(directory, 'existing-marker-'))
   context.after(() => rmSync(home, { recursive: true, force: true }))
@@ -550,6 +555,7 @@ test('backend preserves the default project seed and independently decodes UTF-8
   const originalEnvironment = { ...process.env }
   const output: string[] = []
   let serveArgs: readonly string[] = []
+  let serveEnvironment: NodeJS.ProcessEnv | undefined
   const stdout = new PassThrough()
   const stderr = new PassThrough()
   const child = new childProcess.ChildProcess()
@@ -570,9 +576,10 @@ test('backend preserves the default project seed and independently decodes UTF-8
   const spawning = context.mock.method(
     childProcess,
     'spawn',
-    (_command: string, args?: readonly string[]) => {
+    (_command: string, args?: readonly string[], options?: Parameters<typeof spawn>[2]) => {
       if (args?.includes('--parent-stdin')) {
         serveArgs = args
+        serveEnvironment = options?.env
         return child
       }
       const probe = new childProcess.ChildProcess()
@@ -598,6 +605,8 @@ test('backend preserves the default project seed and independently decodes UTF-8
     while (!handle.proc && !handle.error)
       await new Promise<void>((resolve) => setImmediate(resolve))
     assert.equal(handle.proc, child, output.join(''))
+    assert.equal(serveEnvironment?.SCHOLARSEED_PYTHON, process.execPath)
+    assert.equal(serveEnvironment?.SCHOLARSEED_BUNDLED_SKILL_LOCK, '')
     const seedFlag = serveArgs.indexOf('--default-project-name')
     assert.notEqual(seedFlag, -1)
     assert.equal(serveArgs[seedFlag + 1], 'Default Project')
@@ -622,6 +631,13 @@ test('backend preserves the default project seed and independently decodes UTF-8
       if (index < errBytes.length)
         decodedErr += delivered(errBytes.subarray(index, index + 1), stderr)
     }
+    // Process exit does not imply the last stderr chunk has arrived.
+    Object.defineProperty(child, 'exitCode', { value: 7 })
+    child.emit('exit', 7, null)
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    const upgrade =
+      'SchemaUpgradeRequired: SCHOLARSEED_SCHEMA_UPGRADE_REQUIRED owner=session_catalog revision=2 supported=1\n'
+    stderr.write(upgrade)
     const outEnded = once(stdout, 'end')
     const errEnded = once(stderr, 'end')
     stdout.end()
@@ -631,39 +647,47 @@ test('backend preserves the default project seed and independently decodes UTF-8
     assert.equal(decodedErr, expectedErr)
     const expected = output
       .slice(firstOutput)
-      .filter((line) => !line.startsWith('[startup]'))
+      .filter((line) => !line.startsWith('[startup]') && !line.startsWith('[shell]'))
       .join('')
     assert.doesNotMatch(expected, /\uFFFD/)
-    Object.defineProperty(child, 'exitCode', { value: 7 })
-    child.emit('exit', 7, null)
     child.emit('close', 7, null)
     assert.equal(await handle.ready, false)
-    assert.equal(handle.error?.kind, 'exited')
+    assert.equal(handle.error?.kind, 'schemaUpgradeRequired')
     assert.equal(
       handle.error && 'detail' in handle.error ? handle.error.detail : null,
       expected.trim()
     )
   } finally {
-    releaseHealth?.({
-      ok: true,
-      json: async () => ({ ok: true, features: { browser: false } }),
-    } as Response)
-    if (handle?.proc) {
-      if (child.exitCode === null) {
-        stdout.end()
-        stderr.end()
-        Object.defineProperty(child, 'exitCode', { value: 7 })
-        child.emit('exit', 7, null)
-        child.emit('close', 7, null)
+    try {
+      releaseHealth?.({
+        ok: true,
+        json: async () => ({ ok: true, features: { browser: false } }),
+      } as Response)
+      if (handle?.proc) {
+        if (child.exitCode === null) {
+          stdout.end()
+          stderr.end()
+          Object.defineProperty(child, 'exitCode', { value: 7 })
+          child.emit('exit', 7, null)
+          child.emit('close', 7, null)
+        }
+        // Attach identity only after this fixture has exited; no native family
+        // is opened for a synthetic process on Windows.
+        Object.defineProperty(child, 'pid', { value: 12345 })
+        const stopped = await streaming!.stopBackend(handle)
+        assert.equal(stopped.kind, streaming!.BackendStopKind.FailedExit)
+        assert.equal(stopped.code, 7)
+        assert.equal(await streaming!.stopBackend(handle), stopped)
+        assert.throws(() => streaming!.requireCleanBackendStop(stopped), /shutdown incomplete/)
       }
-      await streaming?.stopBackend(handle)
+    } finally {
+      spawning.mock.restore()
+      syncBuiltinESMExports()
+      fixture.deregister()
+      for (const key of Object.keys(process.env))
+        if (!(key in originalEnvironment)) delete process.env[key]
+      Object.assign(process.env, originalEnvironment)
     }
-    spawning.mock.restore()
-    syncBuiltinESMExports()
-    fixture.deregister()
-    for (const key of Object.keys(process.env))
-      if (!(key in originalEnvironment)) delete process.env[key]
-    Object.assign(process.env, originalEnvironment)
   }
 })
 
@@ -711,6 +735,45 @@ test('readiness policy errors fail immediately rather than being swallowed as he
     globalThis.fetch = original
   }
 })
+
+test(
+  'packaged macOS exposes the skill lock only for the bundled backend',
+  {
+    skip: process.platform !== 'darwin',
+  },
+  async (context) => {
+    const { app } = await import('electron')
+    const mutableApp = app as unknown as { isPackaged: boolean }
+    const originalResources = Object.getOwnPropertyDescriptor(process, 'resourcesPath')
+    const originalPython = process.env.SCHOLARSEED_PYTHON
+    const originalRepo = process.env.SCHOLARSEED_REPO
+    const resources = mkdtempSync(join(directory, 'packaged-mac-'))
+    context.after(() => rmSync(resources, { recursive: true, force: true }))
+    mutableApp.isPackaged = true
+    Object.defineProperty(process, 'resourcesPath', { value: resources, configurable: true })
+    delete process.env.SCHOLARSEED_PYTHON
+    delete process.env.SCHOLARSEED_REPO
+    try {
+      assert.equal((await backend.resolveBackendPaths()).bundledSkillLock, undefined)
+      const python = join(resources, 'backend', 'python', 'bin')
+      mkdirSync(python, { recursive: true })
+      writeFileSync(join(python, 'python3'), '')
+      assert.equal(
+        (await backend.resolveBackendPaths()).bundledSkillLock,
+        join(resources, 'backend', 'skills.lock.json')
+      )
+      process.env.SCHOLARSEED_REPO = directory
+      assert.equal((await backend.resolveBackendPaths()).bundledSkillLock, undefined)
+    } finally {
+      mutableApp.isPackaged = false
+      if (originalResources) Object.defineProperty(process, 'resourcesPath', originalResources)
+      else delete (process as unknown as { resourcesPath?: string }).resourcesPath
+      if (originalPython !== undefined) process.env.SCHOLARSEED_PYTHON = originalPython
+      if (originalRepo === undefined) delete process.env.SCHOLARSEED_REPO
+      else process.env.SCHOLARSEED_REPO = originalRepo
+    }
+  }
+)
 
 test('packaged Windows resolves versioned components and does not expand files in backend startup', async () => {
   const { app } = await import('electron')
@@ -765,8 +828,14 @@ test('packaged Windows resolves versioned components and does not expand files i
     configurable: true,
   })
   const originalPython = process.env.SCHOLARSEED_PYTHON
+  const originalRepo = process.env.SCHOLARSEED_REPO
   delete process.env.SCHOLARSEED_PYTHON
+  delete process.env.SCHOLARSEED_REPO
   try {
+    assert.equal(
+      (await backend.resolveBackendPaths()).bundledSkillLock,
+      join(current, 'resources', 'backend', 'skills.lock.json')
+    )
     const logs: string[] = []
     const diagnosticPath = join(directory, 'startup.log')
     const lifecycle = new RotatingFileLog(diagnosticPath)
@@ -829,6 +898,7 @@ test('packaged Windows resolves versioned components and does not expand files i
     if (originalResources) Object.defineProperty(process, 'resourcesPath', originalResources)
     else delete (process as unknown as { resourcesPath?: string }).resourcesPath
     if (originalPython === undefined) delete process.env.SCHOLARSEED_PYTHON
+    if (originalRepo !== undefined) process.env.SCHOLARSEED_REPO = originalRepo
     else process.env.SCHOLARSEED_PYTHON = originalPython
   }
 })

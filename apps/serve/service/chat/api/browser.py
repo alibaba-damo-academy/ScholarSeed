@@ -28,7 +28,9 @@ from service.chat.service.browserhost import (
     AGENT_BROWSER_TIMEOUT_SECONDS,
     BROWSER_UNAVAILABLE,
     BrowserHostClient,
+    BrowserObservationProof,
     BrowserScope,
+    valid_observation_proof,
 )
 from service.chat.service.sessions import SessionService
 from service.platform.activity import Activities, ActivityDomain
@@ -45,7 +47,6 @@ from service.platform.bridge import (
 )
 from service.platform.shutdown import ShutdownStage
 from service.platform.vocabulary import (
-    BRIDGE_MAX_REQUEST_BYTES,
     BRIDGE_MAX_RESPONSE_BYTES,
 )
 
@@ -203,10 +204,6 @@ def register_browser_routes(
             async with asyncio.timeout(BROWSER_BODY_TIMEOUT_SECONDS):
                 async for chunk in request.stream():
                     raw.extend(chunk)
-                    if len(raw) > BRIDGE_MAX_REQUEST_BYTES:
-                        return JSONResponse(
-                            {"ok": False, "error": "bridge_request_too_large"}, HTTP_400_BAD_REQUEST
-                        )
         except TimeoutError:
             return JSONResponse(
                 {"ok": False, "error": "bridge_request_timeout"}, HTTP_408_REQUEST_TIMEOUT
@@ -716,7 +713,7 @@ def register_browser_routes(
         async def serve_interaction_action() -> JSONResponse:
             nonlocal observation_read_request_id
             assert browser_action is not None
-            observation_proof: dict[str, object] | None = None
+            observation_proof: BrowserObservationProof | None = None
             expected_scope = {
                 "sessionId": scope["session_id"],
                 "instanceId": scope["instance_id"],
@@ -761,31 +758,12 @@ def register_browser_routes(
                         return JSONResponse(
                             {"ok": False, "error": "bridge_access_denied"}, HTTP_403_FORBIDDEN
                         )
-                    if (
-                        reading.get("ok") is not True
-                        or not isinstance(candidate, dict)
-                        or (
-                            candidate.get("scope") != expected_scope
-                            or candidate.get("request_id") != observation_read_request_id
-                            or candidate.get("tab_id") != payload["tab_id"]
-                            or candidate.get("intent") != BROWSER_OBSERVATION_READ_INTENT
-                            or candidate.get("policy_decision") not in {"ask", "allow"}
-                            or not isinstance(candidate.get("proof_id"), str)
-                            or not candidate["proof_id"]
-                            or not isinstance(candidate.get("target_instance_id"), str)
-                            or not candidate["target_instance_id"]
-                            or not isinstance(candidate.get("origin"), str)
-                            or not candidate["origin"]
-                            or isinstance(candidate.get("target_generation"), bool)
-                            or not isinstance(candidate.get("target_generation"), int)
-                            or candidate["target_generation"] < 0
-                            or isinstance(candidate.get("policy_revision"), bool)
-                            or not isinstance(candidate.get("policy_revision"), int)
-                            or candidate["policy_revision"] < 0
-                            or isinstance(candidate.get("expires_at"), bool)
-                            or not isinstance(candidate.get("expires_at"), int)
-                            or candidate["expires_at"] <= time.time() * 1000
-                        )
+                    if reading.get("ok") is not True or not valid_observation_proof(
+                        candidate,
+                        expected_scope,
+                        observation_read_request_id,
+                        payload["tab_id"],
+                        BROWSER_OBSERVATION_READ_INTENT,
                     ):
                         await cancel_action()
                         return JSONResponse({"ok": False, "error": "browser_unavailable"})

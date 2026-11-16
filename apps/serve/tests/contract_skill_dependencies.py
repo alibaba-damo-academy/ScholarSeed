@@ -75,6 +75,9 @@ NAKED_PYTHON_COMMAND = re.compile(
     r'|^[ \t]*["\'](?:python|python3)["\'][ \t]*,?[ \t]*$',
 )
 PYTHON_PROCESS_METHODS = frozenset({"call", "check_call", "check_output", "Popen", "run"})
+NODE_COMMAND = "node"
+WINDOWS_COMMAND_ENV = "COMSPEC"
+WINDOWS_COMMAND_ARGUMENTS = ("/d", "/v:off", "/s", "/c")
 
 
 def check(name: str, condition: bool, detail: str = "") -> None:
@@ -194,7 +197,9 @@ def _runtime_uses_one_interpreter() -> None:
     bundle = BUNDLE_SCRIPT.read_text(encoding="utf-8")
     launcher = SKILL_PYTHON_RUNTIME.read_text(encoding="utf-8")
     adapter = PAID_DOWNLOAD_ADAPTER.read_text(encoding="utf-8")
-    check("Electron 显式注入产品 Python", "[SCHOLARSEED_PYTHON_ENV]: python" in backend)
+    check(
+        "Electron 显式注入产品 Python", "[SCHOLARSEED_PYTHON_ENV]: backendPaths.python" in backend
+    )
     order = _merged_path_arguments(backend)
     inherited = order.index("inheritedExecutablePath") if "inheritedExecutablePath" in order else -1
     check("PATH 合并保留继承的宿主 PATH", inherited > 0, str(order))
@@ -306,9 +311,6 @@ def _bundled_toolchain_is_staged_and_proved() -> None:
 def _generation_json_uses_product_launcher() -> None:
     """Execute the admitted bundle, including the real POSIX stage seam."""
     scripts = Path(sysconfig.get_path("scripts"))
-    launcher = scripts / (
-        "scholarseed-skill-python.exe" if os.name == "nt" else "scholarseed-skill-python"
-    )
     skill = SERVICE_BUNDLED_SKILLS_DIR / "literature-review"
     helper = skill / "scripts/generation/_fast/status.py"
     environment = dict(os.environ)
@@ -316,6 +318,24 @@ def _generation_json_uses_product_launcher() -> None:
     environment["SLR_HOME"] = str(skill)
     environment["PATH"] = str(scripts) + os.pathsep + environment.get("PATH", "")
     with tempfile.TemporaryDirectory(prefix="generation-status-") as directory:
+        generated = subprocess.run(
+            [
+                NODE_COMMAND,
+                "-e",
+                "const runtime=require(process.argv[1]);"
+                "console.log(runtime.writeSkillPythonLauncher(process.argv[2],process.argv[3]));",
+                str(SKILL_PYTHON_RUNTIME),
+                str(Path(directory) / "bin"),
+                sys.executable,
+            ],
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=True,
+        )
+        launcher = Path(generated.stdout.strip())
+        environment["PATH"] = str(launcher.parent) + os.pathsep + environment["PATH"]
         document = Path(directory) / "结果 with spaces.json"
         document.write_text(
             json.dumps({"items": [{"id": "甲"}, {"id": "乙"}], "nested": {"value": "中文"}}),
@@ -329,8 +349,14 @@ def _generation_json_uses_product_launcher() -> None:
             (("get", str(document.with_suffix(".missing")), "value"), ""),
         )
         for arguments, expected in cases:
+            command: str | list[str] = [str(launcher), str(helper), *arguments]
+            if os.name == "nt":
+                prefix = subprocess.list2cmdline(
+                    [environment[WINDOWS_COMMAND_ENV], *WINDOWS_COMMAND_ARGUMENTS]
+                )
+                command = f'{prefix} "{subprocess.list2cmdline(command)}"'
             result = subprocess.run(
-                [str(launcher), str(helper), *arguments],
+                command,
                 env=environment,
                 capture_output=True,
                 text=True,

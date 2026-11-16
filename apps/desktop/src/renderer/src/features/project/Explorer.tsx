@@ -61,6 +61,7 @@ import { selectedProject, useApp } from '../../store'
 import { fetchResourceTree, resolveRevealTarget } from '../resources/api'
 import { resourceFileIcon } from '../resources/icons'
 import { resourceNameError } from '../resources/state'
+import { setFileDragPreview } from '../../components/business/DragPreview'
 import { writeProjectEntryDrag } from '../../drag'
 import { DocumentView } from '../workbench/feature'
 import { useDocumentWorkspace, useWorkspaceController } from '../workbench/workspace'
@@ -314,10 +315,9 @@ export function Directory({
                 }}
                 onDragStart={(event) => {
                   writeProjectEntryDrag(event.dataTransfer, project, node)
-                  if (!isDir) {
-                    event.dataTransfer.setData('text/x-scholarseed-project-path', node.path)
-                    event.dataTransfer.effectAllowed = 'copyMove'
-                  }
+                  setFileDragPreview(event.dataTransfer, node.name, node.kind)
+                  event.dataTransfer.setData('text/x-scholarseed-project-path', node.path)
+                  event.dataTransfer.effectAllowed = 'copyMove'
                 }}
                 onDragEnd={() => onDragTarget(null)}
               >

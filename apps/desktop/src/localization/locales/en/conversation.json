@@ -1,15 +1,104 @@
 {
+  "validation": {
+    "required": "This field is required",
+    "choice": "At least one option is required",
+    "email": "Please enter a valid email",
+    "url": "Please enter a valid URL",
+    "numeric": "Must be a number",
+    "minLength": "Must be at least {{value}} characters",
+    "maxLength": "Must be no more than {{value}} characters",
+    "min": "Must be at least {{value}}",
+    "max": "Must be no more than {{value}}"
+  },
+  "authorization": {
+    "renewed": "Authorization renewed. Continue the original task."
+  },
+  "composition": {
+    "evidenceNotice": "These excerpts and locators are supplied content, not independently verified citation receipts.",
+    "artifactNotice": "This is a content preview. File availability, opening and saving require the host artifact receipt.",
+    "continue": "Continue with selection",
+    "cancel": "Cancel",
+    "saving": "Saving selection",
+    "failed": "Selection was not saved. Retry before continuing.",
+    "done": "This card no longer accepts selections",
+    "empty": "Select an item to continue"
+  },
+  "dataTable": {
+    "title": "Data table",
+    "filter": "Filter rows",
+    "selection": "Selection",
+    "selectRow": "Select row {{id}}",
+    "empty": "No matching rows",
+    "previous": "Previous",
+    "next": "Next",
+    "page": "Page {{current}} / {{total}}"
+  },
+  "plot": {
+    "copyImage": "Copy chart image",
+    "copyData": "Copy source data",
+    "exportSVG": "Export SVG",
+    "exportSuccess": "SVG exported.",
+    "exportCanceled": "Save canceled. No file was exported.",
+    "exportFailed": "SVG export failed. Try again.",
+    "version": "Version",
+    "figureTab": "Figure",
+    "dataTab": "Data",
+    "enlarge": "Enlarge",
+    "invalid": "The chart data or field mapping is invalid. No result was inferred.",
+    "figure": "Show chart",
+    "data": "Show source data",
+    "selected": "{{count}} source rows selected",
+    "sources": "Sources",
+    "script": "Plotting script",
+    "bins": "{{count}} equal-width bins; the last interval includes its upper endpoint."
+  },
+  "answer": {
+    "empty": "The model returned no content.",
+    "retry": "Regenerate",
+    "retryPrompt": "The previous response was empty. Keep the current context and answer the preceding question again.",
+    "retryFailed": "Regeneration has not been confirmed. Try again.",
+    "retryUnavailable": "Regenerate is available for the latest empty reply when the conversation is idle and the draft is empty."
+  },
+  "canvas": {
+    "title": "Canvas",
+    "expandPreview": "Expand canvas preview",
+    "collapsePreview": "Collapse canvas preview",
+    "rollback": "Undo",
+    "cancel": "Cancel",
+    "submit": "Submit",
+    "submitting": "Waiting for submission confirmation",
+    "finished": "This interaction has ended",
+    "failed": "Canvas action failed; your changes are preserved",
+    "reopen": "Open this canvas from its conversation to restore it.",
+    "open": "Open in workbench",
+    "openFailed": "Could not open the canvas. The preview is preserved; try opening it again."
+  },
+  "diagram": {
+    "title": "Diagram",
+    "details": "View error details",
+    "figure": "Diagram",
+    "source": "Source",
+    "expand": "Enlarge",
+    "failed": "The diagram could not be rendered. The original source is preserved.",
+    "loading": "Rendering diagram"
+  },
+  "suggestions": {
+    "title": "Next steps",
+    "dismiss": "Dismiss suggestions for this turn"
+  },
   "process": {
+    "duration": "Took {{minutes}}m {{seconds}}s",
     "running": "In progress",
     "completed": "Completed",
-    "incomplete": "Incomplete",
+    "failed": "Failed",
     "interrupted": "Interrupted",
     "unknown": "Outcome not confirmed"
   },
   "sandbox": {
     "toolProbeFailed": "A built-in tool check failed in the Windows sandbox. Your message has not been sent. Send feedback with the tool check logs to help identify the cause.",
     "policyRejected": "Windows sandbox setup did not pass its security checks. Send feedback to check the installation and permissions; repeating authorization will not resolve this issue.",
-    "setupCancelled": "System authorization for Windows sandbox setup was cancelled. Send again and complete authorization when the system requests it."
+    "setupCancelled": "System authorization for Windows sandbox setup was cancelled. Send again and complete authorization when the system requests it.",
+    "passwordPolicyRejected": "Windows rejected the sandbox account password (error 2245) because it does not meet system policy. Your message has not been sent. Automatic retries have stopped. You can send again to retry initialization. If it fails again, ask your administrator to review the password policy or send feedback; do not weaken security policies."
   },
   "toolOutcome": {
     "noMatches": "No matches found",
@@ -21,10 +110,13 @@
     "unknown": "The command did not complete successfully; the cause is not yet known.",
     "toolFailed": "This tool step did not complete successfully.",
     "failedHelp": "This step may affect the task result. The agent can continue trying. Raw information is for troubleshooting only.",
+    "recovered": "Recovered",
+    "recoveredHelp": "A subsequent successful plan operation confirmed the requested state. The original failed attempt and technical details are retained.",
     "technicalDetails": "Technical details",
     "exitCode": "Exit code: {{code}}"
   },
   "queue": {
+    "sessionOpenUnknown": "Session creation could not be confirmed. Sending is paused to avoid duplicate execution. Your message is retained; check its status. If it remains unresolved, submit diagnostics through Feedback and do not resend until the outcome is confirmed.",
     "permissionDenied": "The system denied access to the project file “{{path}}”. This message has not been submitted. Check access permissions for the file and its containing folder. If it is stored in the cloud, make sure it has been downloaded locally. Resolve the issue, then send the message again.",
     "projectFile": "file with restricted access",
     "baselineFailed": "The project file check failed. This message has not been submitted. Check that the project files are accessible and consult the diagnostic logs for the specific cause. Resolve the issue, then send the message again."
@@ -75,6 +167,8 @@
     "retry": "Connection incomplete. Retrying ({{attempt}}/{{maximum}})…",
     "reconnected": "Session reconnected",
     "stopped": "Session recovery failed; this does not mean the task has ended. Check sign-in, version, or network before reconnecting.",
+    "modelUnavailable": "The model used by this session is unavailable. Restore its connection or choose another model, then reconnect.",
+    "modelSelectionUnknown": "The model change could not be confirmed, so session recovery is paused. Fully quit and reopen ScholarSeed, then check the model settings.",
     "retrying": "The session cannot be resumed yet. Retrying ({{attempt}}/{{maximum}})"
   },
   "preflight": {
@@ -118,9 +212,10 @@
       "codex_terminal_outcome_conflict": "Conflicting terminal outcomes detected; the first authoritative result was retained",
       "codex_thread_not_loaded": "The Agent session is no longer attached to this process",
       "codex_thread_closed": "The Agent session connection closed",
-      "codex_repeated_tool_loop": "This turn repeated the same tool call with the same result and was stopped. Try another model or add source material before retrying",
+      "codex_repeated_tool_loop": "This turn repeated the same tool call with the same result and was stopped. Try another model or add more resources before retrying",
       "codex_repeated_tool_interrupt_failed": "Repeated tool calls were detected, but automatic stopping failed. Stop this turn manually before retrying",
-      "credit_balance_exhausted": "The account credit balance is exhausted"
+      "credit_balance_exhausted": "The account credit balance is exhausted",
+      "windows_sandbox_password_policy_rejected": "Windows rejected the sandbox account password (error 2245) because it does not meet system policy. Automatic retries have stopped. You can reconnect to retry initialization. If it fails again, ask your administrator to review the password policy or send feedback; do not weaken security policies. The original request will not be resent automatically."
     },
     "closed": "✓ The entire session has been terminated. History is retained; you cannot send more messages in this session.",
     "legacyNotice": "Agent runtime notice: {{detail}}",
@@ -162,10 +257,17 @@
     "continueUnconfirmed": "The service did not confirm continuing."
   },
   "reply": {
-    "title": "Clarify key research questions",
+    "confirmedSummary": "Clarify key research questions, confirmed by user",
+    "expiredSummary": "Clarify key research questions, request expired",
+    "skippedSummary": "Clarify key research questions, skipped by user",
+    "title": "Clarify research requirements",
     "toggleDetails": "Show or hide previous answers",
     "readOnly": "Previous answers are read-only",
-    "skipped": "Skipped",
+    "emptyText": "Not filled in",
+    "skipped": "Not answered",
+    "submitted": "Submitted",
+    "decision": "Your decision",
+    "cancelled": "Cancelled",
     "answerLabel": "Answer to “{{question}}”: {{answer}}"
   },
   "card": {
@@ -208,16 +310,16 @@
     "frame": "The model service returned an unrecognized error.",
     "runtime": "The request did not reach Codex Runtime.",
     "quota": {
-      "message": "The allocated model quota has been exhausted.",
-      "action": "Built-in models use credits. When your credits run out, you cannot continue the task. Open “Remaining credits” to check your balance and get more credits, or switch models."
+      "message": "Model rate limit reached",
+      "action": "Try again later or switch models."
     },
     "credits": {
       "message": "Your credit balance is exhausted, so generation has stopped.",
-      "action": "Open Remaining credits or the credits page to check your balance and get more credits, then try again. Your question and context for this turn are kept."
+      "action": "Generated content, your question and context have been retained. Get more credits or switch to an available model before starting generation again."
     },
     "rateLimit": {
-      "message": "Too many model requests. Try again later.",
-      "action": "Your question and context have been retained."
+      "message": "Model rate limit reached",
+      "action": "Too many requests (429). Try again later or switch to another model."
     },
     "auth": {
       "message": "Model service authentication failed.",
@@ -230,6 +332,16 @@
       "exhausted": "The model service is temporarily unavailable after {{count}} automatic attempts",
       "action": "The model service or network connection is temporarily unavailable. Your question and context have been retained."
     },
+    "timeout": {
+      "message": "The model response timed out. This response is incomplete.",
+      "action": "Generated content, your question and context are preserved. Retry or switch models."
+    },
+    "connection": {
+      "message": "The connection was interrupted. This response is incomplete.",
+      "action": "Generated content is preserved. Check your network before continuing."
+    },
+    "switchModel": "Switch model",
+    "retry": "Retry",
     "overloaded": {
       "message": "The upstream model service reported overload.",
       "exhausted": "The upstream model service reported overload and remains unavailable after {{count}} automatic attempts.",
@@ -261,6 +373,7 @@
     "timeout": "Request timed out",
     "unavailable": "The request could not reach the backend.",
     "invalidRecovery": "The session recovery snapshot is invalid. Execution status is unconfirmed. Recovery will not automatically replay tasks or answers.",
+    "stopStateUnconfirmed": "The task status could not be confirmed. Try again shortly.",
     "failed": "Request failed",
     "authentication": "Authentication required",
     "resourceReviewRequired": "This turn created file changes that still need review. Review them before regenerating.",
@@ -308,5 +421,49 @@
       "unconfirmed": "The app was interrupted before the task finished. Some operations may have completed."
     }
   },
-  "queuePosition": "{{current}} / {{total}}"
+  "queuePosition": "{{current}} / {{total}}",
+  "clarification": {
+    "recommended": "Recommended",
+    "scrollHint": "Scroll to view questions",
+    "single": "Single choice",
+    "multiple": "Multiple choices",
+    "supplement": "Other answers or additional details (optional)",
+    "directReply": "You can also reply in the message input",
+    "skipped": "Skipped",
+    "previous": "Previous",
+    "next": "Next",
+    "submit": "Submit",
+    "editing": "Automatic continuation cancelled. Waiting for your changes.",
+    "editingFailed": "Cancellation was not confirmed. Click to retry.",
+    "useCard": "Please answer in the clarification card. Direct replies cannot include attachments, select an unspecified request, or grant authorization.",
+    "timedOutTitle": "Outline confirmation timed out",
+    "timedOut": "No reply was received within 5 minutes. Continued with the current outline and output settings, without recording user approval."
+  },
+  "message": {
+    "expand": "Show more",
+    "collapse": "Show less"
+  },
+  "fork": {
+    "label": "Branched from:",
+    "source": "source conversation",
+    "loadFailed": "Could not check the source. Click to retry.",
+    "reason": {
+      "deleted": "The source conversation was deleted. Branch history is preserved.",
+      "forbidden": "You cannot access the source conversation. Branch history is preserved.",
+      "archived": "The source conversation is archived and cannot be opened here.",
+      "anchor_unavailable": "The branching point can no longer be located. Branch history is preserved.",
+      "unavailable": "The source conversation is unavailable. Branch history is preserved."
+    }
+  },
+  "generationPreview": {
+    "label": "Generation preview",
+    "streaming": "Generating · Not saved",
+    "generated": "Preview generated · Not yet validated or saved",
+    "unavailable": "Preview unavailable · Not saved",
+    "failed": "Generation failed · Preview not saved",
+    "cancelled": "Generation cancelled · Preview not saved",
+    "timeout": "Generation timed out · Preview not saved",
+    "unverified": "This draft is unverified. The final file is authoritative.",
+    "waiting": "Waiting for prose paragraphs."
+  }
 }

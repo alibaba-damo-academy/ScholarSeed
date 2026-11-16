@@ -1,3 +1,4 @@
+import type * as React from 'react'
 import { createRoot } from 'react-dom/client'
 import { useRef, useState } from 'react'
 import { I18nextProvider } from 'react-i18next'
@@ -134,7 +135,7 @@ Object.assign(window, {
   },
 })
 const localization = createLocalization('zh', resources, { report: () => undefined })
-function Fixture(): JSX.Element {
+function Fixture(): React.JSX.Element {
   const [open, setOpen] = useState(true)
   const [identityRevision, setIdentityRevision] = useState(1)
   const [lang, setLang] = useState<'en' | 'zh'>('zh')

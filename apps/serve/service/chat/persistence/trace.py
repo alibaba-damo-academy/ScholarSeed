@@ -191,7 +191,7 @@ def trace_write_format_source() -> DocumentSource:
         if (
             not isinstance(value, dict)
             or set(value) != {"schema", "content", "projection"}
-            or type(value["schema"]) is not int
+            or (not isinstance(value["schema"], int) or isinstance(value["schema"], bool))
             or value["schema"] != 1
             or json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8") != raw
         ):
@@ -357,9 +357,9 @@ def inspect_trace_sources(
                     source.seek(0)
                 digest = sha256()
                 events, opaque = 0, 0
-                compactions = []
+                compactions: list[tuple[str, dict]] = []
 
-                def retain_compaction(session: str, value: dict) -> None:
+                def retain_compaction(session: str, value: dict, compactions=compactions) -> None:
                     nonlocal compaction_count, compaction_bytes
                     compaction_count += 1
                     compaction_bytes += len(
@@ -374,7 +374,7 @@ def inspect_trace_sources(
                         raise ValueError("Trace compaction evidence exceeds inspection budget")
                     compactions.append((session, value))
 
-                def lines():
+                def lines(digest=digest):
                     while True:
                         if compatibility_preview and time.monotonic() > deadline:
                             raise ValueError("Trace inspection exceeded time budget")

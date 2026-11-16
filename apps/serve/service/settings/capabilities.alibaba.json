@@ -7,6 +7,30 @@
     "  | gateway-config | product-declared | registry(models.dev/opencode) | user-declared | unverified。",
     "release_date/last_updated 为 ISO 日期，取自 models.dev 注册表；未收录即留空，不猜。"
   ],
+  "connections": {
+    "scholarseed-gateway:qwen3.8-flash": {
+      "responses_reasoning_summary": true,
+      "provenance": {"reasoning": "gateway-probed"},
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-responses",
+        "retrieved": "2026-11-09"
+      },
+      "notes": [
+        "The verified connection emits public summary text as reasoning_text events and completes it in item.summary. Other connections and models retain their declared response semantics."
+      ]
+    },
+    "scholarseed-gateway:qwen3.8-max": {
+      "responses_reasoning_summary": true,
+      "provenance": {"reasoning": "gateway-probed"},
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-responses",
+        "retrieved": "2026-11-08"
+      },
+      "notes": [
+        "The verified connection emits public summary text as reasoning_text events and completes it in item.summary. Other connections and models retain their declared response semantics."
+      ]
+    }
+  },
   "models": {
     "qwen3-next-80b-a3b-thinking": {
       "limits": {

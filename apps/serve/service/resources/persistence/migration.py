@@ -274,7 +274,9 @@ def identity(payload: Mapping[str, object], *, stored: bool = False) -> Snapshot
     if (
         not (object_id is None or isinstance(object_id, str))
         or not isinstance(path, str)
-        or not (mode_bits is None or type(mode_bits) is int)
+        or not (
+            mode_bits is None or (isinstance(mode_bits, int) and not isinstance(mode_bits, bool))
+        )
         or not (annotation_object_id is None or isinstance(annotation_object_id, str))
     ):
         raise MigrationError(MigrationBlocker.EVIDENCE_INVALID)
@@ -286,7 +288,8 @@ def identity(payload: Mapping[str, object], *, stored: bool = False) -> Snapshot
         annotation_object_id=annotation_object_id,
     )
     if result.state is FileState.PRESENT and (
-        result.object_id is None or type(result.mode_bits) is not int
+        result.object_id is None
+        or (not isinstance(result.mode_bits, int) or isinstance(result.mode_bits, bool))
     ):
         raise MigrationError(MigrationBlocker.EVIDENCE_INVALID)
     if result.state is FileState.TOMBSTONE and (

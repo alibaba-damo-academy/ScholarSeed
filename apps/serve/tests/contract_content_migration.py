@@ -200,17 +200,16 @@ def main() -> int:
     # ---- dry-run ----
     plan = content.migration_plan(legacy_ref.id)
     sources = {entry.source for entry in plan.entries}
-    check("dry-run 列出顶层条目, 不动文件", sources == {"文献", "笔记", "数据.csv"}, str(sources))
+    check("dry-run 保留旧文献目录, 不动文件", sources == {"笔记", "数据.csv"}, str(sources))
     check(
         "dry-run 之后磁盘原样",
         (legacy / "数据.csv").is_file() and not (legacy / MANAGED_RESOURCES_ROOT_RELATIVE).exists(),
     )
     check("dry-run 给出体积量级", plan.total_size > 0, str(plan.total_size))
     check(
-        "`文献` 整体成为 `literature`, 其余进 `resources`",
+        "旧文献留在原位，其余进 resources",
         {entry.source: entry.target for entry in plan.entries}
         == {
-            "文献": MANAGED_LITERATURE_ROOT_RELATIVE,
             "笔记": f"{MANAGED_RESOURCES_ROOT_RELATIVE}/笔记",
             "数据.csv": f"{MANAGED_RESOURCES_ROOT_RELATIVE}/数据.csv",
         },
@@ -222,12 +221,13 @@ def main() -> int:
     check(
         "迁移逐项成功且无失败项", set(outcome.moved) == sources and not outcome.failed, str(outcome)
     )
-    check("迁移后转 MANAGED", outcome.layout is ProjectLayout.MANAGED)
+    check("有旧文献的项目保持 LEGACY 以保留定位", outcome.layout is ProjectLayout.LEGACY)
     check(
-        "内置双库在磁盘上就位, 资料真的搬过去了",
+        "资料已迁移，旧文献保持原路径，不生成新文献根",
         (legacy / MANAGED_RESOURCES_ROOT_RELATIVE / "数据.csv").is_file()
         and (legacy / MANAGED_RESOURCES_ROOT_RELATIVE / "笔记" / "想法.md").is_file()
-        and (legacy / MANAGED_LITERATURE_ROOT_RELATIVE / "论文.pdf").is_file(),
+        and (legacy / "文献" / "论文.pdf").is_file()
+        and not (legacy / MANAGED_LITERATURE_ROOT_RELATIVE).exists(),
         str(sorted(item.name for item in legacy.iterdir())),
     )
     check(
@@ -238,8 +238,8 @@ def main() -> int:
         node.asset.path for node in content.tree(legacy_ref.id, RootKind.RESOURCES, 2).children
     }
     check(
-        "迁移后的资料树按 MANAGED 解析且看得见资料",
-        f"{MANAGED_RESOURCES_ROOT_RELATIVE}/数据.csv" in names,
+        "迁移后资料与旧文献都可见",
+        MANAGED_RESOURCES_ROOT_RELATIVE in names and "文献" in names,
         str(names),
     )
     check(
@@ -247,11 +247,24 @@ def main() -> int:
         any(str(row["action"]) == AUDIT_MIGRATE for row in catalog.audit()),
     )
     check(
-        "已是 MANAGED 的项目再迁移会被明确拒绝",
-        content.migration_plan(legacy_ref.id).blocked == "already_managed",
+        "旧文献不会在下一次迁移被搬动",
+        not content.migration_plan(legacy_ref.id).entries,
     )
 
     # ---- 逐项「暂不迁移」: 仍按 LEGACY ----
+    plain = root / "无文献项目"
+    plain.mkdir()
+    (plain / "笔记.md").write_text("保留资料", encoding="utf-8")
+    registry.seed_legacy(((plain, "无文献项目"),))
+    plain_ref = next(item for item in content.projects() if item.root == str(plain))
+    plain_outcome = content.migrate_project(plain_ref.id)
+    check(
+        "无旧文献的迁移仍可成为 MANAGED 且不补建 literature",
+        plain_outcome.layout is ProjectLayout.MANAGED
+        and (plain / MANAGED_RESOURCES_ROOT_RELATIVE / "笔记.md").is_file()
+        and not (plain / MANAGED_LITERATURE_ROOT_RELATIVE).exists(),
+    )
+
     outcome = content.migrate_project(partial_ref.id, skip=("笔记",))
     check(
         "暂不迁移的条目留在原位",

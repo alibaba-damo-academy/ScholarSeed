@@ -17,6 +17,7 @@ from service.assistant.service.authorization import (
     task_authorization_policy,
 )
 from service.assistant.service.citations import CitationService
+from service.assistant.service.excerpts import model_excerpt
 from service.chat.api.bridge import bridge_caller, session_bridge_admission
 from service.chat.runtime.live import LiveSession
 from service.chat.service.sessions import SessionService
@@ -30,6 +31,7 @@ from service.literature.service.fulltexts import PAPER_REF_PREFIX
 from service.platform.activity import Activities, ActivityDomain
 from service.platform.bridge import (
     ANNOTATIONS_OPERATION,
+    KNOWLEDGE_OPERATION,
     LITERATURE_READING_REQUESTS,
     LITERATURE_ROUTE_PREFIX,
     PDF_MATERIALIZE_OPERATION,
@@ -37,6 +39,7 @@ from service.platform.bridge import (
     PDF_ROUTE_PREFIX,
     LiteratureAnnotations,
     LiteratureAuthorize,
+    LiteratureKnowledge,
     LiteratureList,
     LiteratureRead,
     PdfAnnotations,
@@ -50,7 +53,6 @@ from service.platform.citations import (
     PdfMaterializerPort,
 )
 from service.platform.vocabulary import (
-    BRIDGE_MAX_REQUEST_BYTES,
     BRIDGE_MAX_RESPONSE_BYTES,
 )
 
@@ -58,7 +60,7 @@ PDF_RETRIEVED_EVENT = "pdf.retrieved"
 PDF_MATERIALIZED_EVENT = "pdf.materialized"
 LITERATURE_RETRIEVED_EVENT = "literature.retrieved"
 PDF_METADATA_OPERATIONS = frozenset(("list", "library"))
-LITERATURE_CONTENT_OPERATIONS = frozenset(("read", ANNOTATIONS_OPERATION))
+LITERATURE_CONTENT_OPERATIONS = frozenset(("read", KNOWLEDGE_OPERATION, ANNOTATIONS_OPERATION))
 MANAGED_MATERIALIZE_DENIED = "fulltext_materialize_denied"
 
 
@@ -76,11 +78,7 @@ def ensure_materializable(document: CitationDocument) -> None:
 
 
 async def _request_body(request: Request) -> bytes:
-    raw = bytearray()
-    async for chunk in request.stream():
-        raw.extend(chunk)
-        if len(raw) > BRIDGE_MAX_REQUEST_BYTES:
-            raise ValueError("bridge_request_too_large")
+    raw = await request.body()
     return bytes(raw)
 
 
@@ -337,7 +335,9 @@ def register_citation_bridge(
                 }
             else:
                 if operation in LITERATURE_CONTENT_OPERATIONS and policy is not None:
-                    if not isinstance(query, (LiteratureRead, LiteratureAnnotations)):
+                    if not isinstance(
+                        query, (LiteratureRead, LiteratureKnowledge, LiteratureAnnotations)
+                    ):
                         raise ValueError("bridge_operation_unknown")
                     if authorizer is None:
                         raise ValueError("fulltext_authorization_unavailable")
@@ -359,6 +359,28 @@ def register_citation_bridge(
                         live.id,
                         snapshot_id,
                         query,
+                    )
+                elif operation == KNOWLEDGE_OPERATION:
+                    if not isinstance(query, LiteratureKnowledge):
+                        raise ValueError("bridge_operation_unknown")
+                    question = next(
+                        (
+                            entry.text
+                            for entry in reversed(getattr(live, "history_entries", ()))
+                            if entry.role == "user"
+                            and entry.turn_id
+                            and entry.turn_id in {turn_id, live.active_product_turn_id}
+                        ),
+                        "",
+                    )
+                    prepared = await activities.to_thread(
+                        ActivityDomain.BRIDGE,
+                        citations.literature_knowledge,
+                        live.id,
+                        snapshot_id,
+                        query,
+                        turn_id,
+                        question,
                     )
                 elif operation == ANNOTATIONS_OPERATION:
                     if not isinstance(query, LiteratureAnnotations):
@@ -388,28 +410,44 @@ def register_citation_bridge(
             result: dict[str, Any] = (
                 prepared
                 if operation in ("list", "authorize", ANNOTATIONS_OPERATION)
-                else citations.commit_literature_read(live.id, snapshot_id, prepared)
+                else (
+                    citations.commit_read(live.id, snapshot_id, prepared)
+                    if operation == KNOWLEDGE_OPERATION
+                    else citations.commit_literature_read(live.id, snapshot_id, prepared)
+                )
             )
         except (KeyError, ValueError, ContentError, OSError) as error:
             code = "bridge_operation_unknown" if isinstance(error, KeyError) else str(error)
             return JSONResponse({"ok": False, "error": code}, HTTP_400_BAD_REQUEST)
+        if operation in ("read", KNOWLEDGE_OPERATION):
+            result = model_excerpt(result, offset=getattr(query, "offset", 0))
         response = JSONResponse(result)
         if len(response.body) > BRIDGE_MAX_RESPONSE_BYTES:
             return JSONResponse(
                 {"ok": False, "error": "bridge_response_too_large; reduce page range"},
                 HTTP_400_BAD_REQUEST,
             )
+        evidence_fragments = [
+            *result.get("fragments", []),
+            *(
+                fragment
+                for page in result.get("pages", [])
+                for fragment in page.get("fragments", [])
+            ),
+        ]
         await live.publish(
             LITERATURE_RETRIEVED_EVENT,
             {
                 "operation": operation,
                 "snapshot_id": snapshot_id,
                 "ref_id": result.get("ref_id", ""),
-                "pages": [page["page"] for page in result.get("pages", [])],
+                "pages": sorted(
+                    {page for fragment in evidence_fragments for page in fragment.get("pages", [])}
+                ),
                 "citation_urls": [
-                    page["citation_url"]
-                    for page in result.get("pages", [])
-                    if page.get("citation_url")
+                    fragment["citation_url"]
+                    for fragment in evidence_fragments
+                    if fragment.get("citation_url")
                 ],
             },
             turn_id=turn_id,
@@ -424,6 +462,10 @@ def register_citation_bridge(
     @router.post(LITERATURE_ROUTE_PREFIX + "read")
     async def read_literature(request: Request) -> JSONResponse:
         return await query_literature("read", request)
+
+    @router.post(LITERATURE_ROUTE_PREFIX + KNOWLEDGE_OPERATION)
+    async def knowledge_literature(request: Request) -> JSONResponse:
+        return await query_literature(KNOWLEDGE_OPERATION, request)
 
     @router.post(LITERATURE_ROUTE_PREFIX + "authorize")
     async def authorize_literature(request: Request) -> JSONResponse:

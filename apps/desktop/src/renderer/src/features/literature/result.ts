@@ -4,6 +4,7 @@ import type {
   SearchCriterion,
 } from '../../contracts/literature'
 import type { TFunction } from 'i18next'
+import type { LiteratureResultAuthorization } from './interaction'
 
 const CRITERION_LABELS = {
   paper_types: 'result.criteria.paperTypes',
@@ -99,6 +100,10 @@ export function searchCriteria(data: SearchCriteriaData, t: TFunction<'literatur
   return translated
 }
 
+export const CITATIONS_ORIGIN = 'research-idea-citations'
+/** 精确文献检索卡片: 只有它可能已经有下载完成的全文可以复用。 */
+export const PRECISE_SEARCH_ORIGIN = 'precise-search'
+
 export const RESULT_LABELS = {
   success: 'result.status.success',
   partial: 'result.status.partial',
@@ -112,7 +117,43 @@ export type ResultSort = 'relevance' | 'title' | 'year' | 'citations'
 export type AccessFilter = 'all' | 'open' | 'closed'
 export type DecisionFilter = 'all' | 'included' | 'excluded'
 export type ReviewEvidence = 'fulltext' | 'abstract' | 'metadata' | 'unknown'
-const CARD_PRESENTED_REPORT_ORIGINS = new Set(['literature-review', 'precise-search'])
+const CARD_PRESENTED_REPORT_ORIGINS = new Set(['literature-review', PRECISE_SEARCH_ORIGIN])
+const SOURCE_PROTOCOLS = new Set(['http:', 'https:'])
+
+export function literatureSourceUrl(source: {
+  doi?: unknown
+  url?: unknown
+  arxiv_id?: unknown
+}): string | null {
+  const candidates = [
+    typeof source.doi === 'string' && source.doi ? `https://doi.org/${source.doi}` : null,
+    source.url,
+    typeof source.arxiv_id === 'string' && source.arxiv_id
+      ? `https://arxiv.org/abs/${source.arxiv_id}`
+      : null,
+  ]
+  for (const value of candidates) {
+    if (typeof value !== 'string' || !value) continue
+    try {
+      const url = new URL(value)
+      if (SOURCE_PROTOCOLS.has(url.protocol)) return url.toString()
+    } catch {
+      continue
+    }
+  }
+  return null
+}
+
+export function conversationSearchSource(
+  papers: readonly ConversationSearchPaper[],
+  id: string
+): string | null {
+  const paper = papers.find(
+    (candidate) => candidate && typeof candidate === 'object' && candidate.id === id
+  )
+  return paper ? literatureSourceUrl(paper) : null
+}
+
 const SEARCH_WARNING_RULES = [
   {
     pattern: /^agentic-search used degraded retrieval \(source_mode=web_only\)$/,
@@ -255,6 +296,20 @@ export function searchResultPapers(
   return papers.map((paper) => ({ ...paper, abstract: '' }))
 }
 
+export function authorizedSearchPapers(
+  papers: readonly LiteratureSearchPaper[],
+  authorization?: LiteratureResultAuthorization
+): LiteratureSearchPaper[] {
+  const selected = authorization?.status === 'authorized' ? (authorization.selectedIds ?? []) : []
+  return papers.map((paper) => ({
+    ...paper,
+    abstract:
+      selected.includes(paper.paper_id) || selected.includes(`paper:${paper.paper_id}`)
+        ? paper.abstract
+        : '',
+  }))
+}
+
 /** Project a saved precise-search result without rerunning or reordering retrieval. */
 export function conversationSearchPapers(
   papers: readonly ConversationSearchPaper[]
@@ -268,7 +323,7 @@ export function conversationSearchPapers(
     venue: paper.venue ?? '',
     abstract: paper.abstract ?? '',
     doi: paper.doi ?? '',
-    arxiv_id: '',
+    arxiv_id: paper.arxiv_id ?? '',
     citation_count: paper.citation_count ?? null,
     tier: paper.tier ?? null,
     reason: paper.reasons.join('；'),

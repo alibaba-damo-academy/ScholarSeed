@@ -11,9 +11,13 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
 from uuid import uuid4
 
+from service.capabilities.service.declarative import OPENUI_SLOT, ConversationDocument
 from service.capabilities.service.descriptor import (
+    HOST_COMPONENT_FINGERPRINT,
     HOST_COMPONENT_PLUGIN,
+    PUBLIC_COMPONENT_PROVIDERS,
     PUBLIC_COMPONENT_SLOTS,
+    RETIRED_COMPONENT_SLOTS,
     validate_component_value,
 )
 from service.capabilities.service.ui import (
@@ -23,6 +27,7 @@ from service.capabilities.service.ui import (
     UI_UNAVAILABLE,
     public_snapshot,
     read_catalog,
+    read_declarative_catalog,
     resolve_ui,
 )
 from service.persistence.project import transaction
@@ -32,7 +37,6 @@ COMPONENT_RESOLVED = "resolved"
 COMPONENT_OBJECT_SCHEMA = {"type": "object"}
 COMPONENT_PLUGIN_UNAVAILABLE = "component_plugin_unavailable"
 UI_REVISION_INVALID = "ui_revision_invalid"
-COMPONENT_COPY_MAX_BYTES = 64 * 1024
 COMPONENT_COPY_SCHEMA = {
     "type": "object",
     "required": ["text"],
@@ -59,6 +63,20 @@ class ComponentConflict(ValueError):
 
 
 class ComponentRegistry:
+    def answer_markdown(self, session_id: str, turn_id: str) -> tuple[str, ...]:
+        with self._database() as connection:
+            rows = connection.execute(
+                "SELECT c.content FROM component_copies c JOIN component_bindings b "
+                "ON b.binding=c.binding AND b.revision=c.revision "
+                "WHERE b.session_id=? AND b.turn_id=? ORDER BY b.rowid",
+                (session_id, turn_id),
+            ).fetchall()
+            return tuple(
+                content["markdown"]
+                for row in rows
+                if isinstance((content := json.loads(row["content"])).get("markdown"), str)
+            )
+
     def __init__(self, path: Path, *, authorize: Callable[[str, str], bool] | None = None) -> None:
         self.path = path
         self.authorize = authorize or (lambda _plugin, _user: True)
@@ -87,6 +105,13 @@ class ComponentRegistry:
         with transaction(self.path, immediate=True) as connection:
             for statement in COMPONENT_SCHEMA:
                 connection.execute(statement)
+            columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(component_bindings)")
+            }
+            if "content_revision" not in columns:
+                connection.execute(
+                    "ALTER TABLE component_bindings ADD COLUMN content_revision INTEGER NOT NULL DEFAULT 0"
+                )
             yield connection
 
     def check(self, snapshots: list[dict[str, Any]]) -> dict[str, tuple[str, str, str]]:
@@ -97,6 +122,8 @@ class ComponentRegistry:
                 raise ValueError("component_plugin_reserved")
             for component in snapshot["descriptor"]["components"]:
                 slot = component.get("slot")
+                if slot in RETIRED_COMPONENT_SLOTS:
+                    raise ValueError("component_slot_reserved")
                 if component.get("public"):
                     if slot not in PUBLIC_COMPONENT_SLOTS:
                         raise ValueError("component_public_invalid")
@@ -113,6 +140,10 @@ class ComponentRegistry:
                             implementation is None
                             or component["entry"] != UI_RESOURCE_PREFIX + implementation["entry"]
                         ):
+                            logger.warning(
+                                "ui_dependency_rejected reason=component_public_invalid slot=%s",
+                                slot,
+                            )
                             raise ValueError("component_public_invalid")
                     continue
                 if slot in PUBLIC_COMPONENT_SLOTS:
@@ -124,9 +155,9 @@ class ComponentRegistry:
                 slots[slot] = (plugin, component["id"], snapshot["fingerprint"])
         return slots
 
-    def _ui(self, connection: Any) -> dict[str, Any] | None:
+    def _ui(self, connection: Any, compatibility: str = UI_COMPATIBILITY) -> dict[str, Any] | None:
         row = connection.execute(
-            "SELECT body,digest FROM system_ui WHERE compatibility=?", (UI_COMPATIBILITY,)
+            "SELECT body,digest FROM system_ui WHERE compatibility=?", (compatibility,)
         ).fetchone()
         if row is None:
             return None
@@ -155,17 +186,29 @@ class ComponentRegistry:
             "version": ui["version"] if ui is not None else None,
         }
 
-    def ui_catalog(self) -> dict[str, Any]:
+    def ui_catalog(self, mode: str = "declarative", detail: str = "prompt") -> dict[str, Any]:
         if self._changing or self._blocked:
             raise ValueError("component_registry_updating")
         ui = self.active_ui()
-        catalog = read_catalog(ui) if ui is not None else None
+        if mode not in {"declarative", "canvas", "sandbox"} or detail not in {"prompt", "schema"}:
+            raise ValueError("ui_catalog_mode")
+        catalog = read_catalog(ui) if ui is not None and mode == "sandbox" else None
+        declarative = (
+            read_declarative_catalog(ui, canvas=mode == "canvas", detail=detail)
+            if ui is not None and mode != "sandbox"
+            else None
+        )
+        if declarative is not None:
+            omitted = "schema" if detail == "prompt" else "prompt"
+            declarative = {key: value for key, value in declarative.items() if key != omitted}
+        available = catalog is not None or declarative is not None
         return {
-            "available": catalog is not None,
+            "available": available,
             "authorized": False,
-            "error": None if catalog is not None else self.ui_error or UI_CATALOG_UNAVAILABLE,
+            "error": None if available else self.ui_error or UI_CATALOG_UNAVAILABLE,
             "fingerprint": ui["fingerprint"] if ui is not None else None,
             "catalog": catalog,
+            "declarative": declarative,
         }
 
     def dependencies(self, snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -173,25 +216,50 @@ class ComponentRegistry:
 
     def install_ui(self, ui: dict[str, Any], *, initialize: bool = False) -> None:
         with self._database() as connection:
-            previous = self._ui(connection)
+            previous = self._ui(connection, ui["compatibility"])
             if previous is not None and initialize and previous["fingerprint"] == ui["fingerprint"]:
                 return
             if previous is not None:
-                if not set(previous["exports"]).issubset(ui["exports"]):
-                    raise ValueError("ui_export_missing")
                 for component in previous["components"]:
                     replacement = next(
                         (item for item in ui["components"] if item["slot"] == component["slot"]),
                         None,
                     )
-                    if replacement is None or replacement["actions"] != component["actions"]:
+                    if replacement is None and (
+                        component["slot"] in RETIRED_COMPONENT_SLOTS
+                        or PUBLIC_COMPONENT_PROVIDERS.get(component["slot"])
+                        == HOST_COMPONENT_PLUGIN
+                    ):
+                        continue
+                    if replacement is None or any(
+                        action not in replacement["actions"] for action in component["actions"]
+                    ):
+                        logger.warning(
+                            "ui_update_rejected reason=ui_component_incompatible slot=%s",
+                            component["slot"],
+                        )
                         raise ValueError("ui_component_incompatible")
-            snapshots = [
-                resolve_ui(self._revision(connection, row["fingerprint"]), ui)
-                for row in connection.execute(
-                    "SELECT DISTINCT fingerprint FROM component_slots"
-                ).fetchall()
-            ]
+            snapshots = []
+            for row in connection.execute(
+                "SELECT DISTINCT fingerprint FROM component_slots"
+            ).fetchall():
+                snapshot = self._revision(connection, row["fingerprint"])
+                dependency = snapshot["descriptor"].get("ui")
+                if dependency and dependency["compatibility"] != ui["compatibility"]:
+                    continue
+                components = snapshot["descriptor"]["components"]
+                retained = [
+                    component
+                    for component in components
+                    if component.get("slot") not in RETIRED_COMPONENT_SLOTS
+                ]
+                if len(retained) != len(components):
+                    snapshot["descriptor"]["components"] = retained
+                    if dependency is None:
+                        prior = snapshot["fingerprint"]
+                        revision = sha256(f"{prior}\n{HOST_COMPONENT_FINGERPRINT}".encode())
+                        snapshot["fingerprint"] = "sha256:" + revision.hexdigest()
+                snapshots.append(resolve_ui(snapshot, ui))
             slots = self.check(snapshots)
             body = json.dumps(ui, sort_keys=True, ensure_ascii=False, allow_nan=False)
             connection.execute(
@@ -200,6 +268,10 @@ class ComponentRegistry:
             )
             for snapshot in snapshots:
                 self._retain(connection, snapshot)
+            connection.executemany(
+                "DELETE FROM component_slots WHERE slot=?",
+                [(slot,) for slot in sorted(RETIRED_COMPONENT_SLOTS)],
+            )
             for slot, owner in slots.items():
                 connection.execute(
                     "UPDATE component_slots SET plugin=?,component=?,fingerprint=? WHERE slot=?",
@@ -315,7 +387,14 @@ class ComponentRegistry:
                 )
                 result.append({"plugin": row["plugin"], **component})
             return result + [
-                {"plugin": HOST_COMPONENT_PLUGIN, "id": slot, "slot": slot, "public": True}
+                {
+                    "plugin": HOST_COMPONENT_PLUGIN,
+                    **next(
+                        item
+                        for item in public_snapshot(slot)["descriptor"]["components"]
+                        if item["slot"] == slot
+                    ),
+                }
                 for slot in sorted(PUBLIC_COMPONENT_SLOTS)
             ]
 
@@ -348,7 +427,7 @@ class ComponentRegistry:
             if self._changing or self._blocked:
                 raise ValueError("component_registry_updating")
             if slot in PUBLIC_COMPONENT_SLOTS:
-                snapshot = public_snapshot(slot, self._available_ui(connection))
+                snapshot = public_snapshot(slot)
                 self._retain(connection, snapshot)
                 row = {
                     "plugin": HOST_COMPONENT_PLUGIN,
@@ -423,6 +502,7 @@ class ComponentRegistry:
                 "data": json.loads(row["data"]) if row["data"] is not None else None,
                 "state": json.loads(row["state"]),
                 "revision": row["revision"],
+                "content_revision": row["content_revision"],
                 "status": row["status"],
                 "session_id": row["session_id"],
                 "turn_id": row["turn_id"],
@@ -456,6 +536,43 @@ class ComponentRegistry:
             connection.execute(
                 "UPDATE component_bindings SET data=? WHERE binding=?",
                 (encoded, reference["binding"]),
+            )
+
+    def publish_document(
+        self,
+        reference: Mapping[str, Any],
+        *,
+        session_id: str,
+        user_id: str,
+        data: Mapping[str, Any],
+        content_revision: int,
+    ) -> None:
+        document = ConversationDocument.for_publication(data).model_dump()
+        if (
+            reference.get("component") != OPENUI_SLOT
+            or (not isinstance(content_revision, int) or isinstance(content_revision, bool))
+            or content_revision < 0
+        ):
+            raise ValueError("component_content_changed")
+        encoded = json.dumps(document, sort_keys=True, ensure_ascii=False, allow_nan=False)
+        with self._database() as connection:
+            row = self._binding(connection, reference, user_id)
+            if row["session_id"] != session_id:
+                raise ValueError("component_binding_invalid")
+            if row["status"] != COMPONENT_PENDING:
+                raise ValueError("component_interaction_finished")
+            if (
+                row["data"] is not None
+                and row["content_revision"] == content_revision
+                and json.loads(row["data"]) == document
+            ):
+                return
+            expected = row["content_revision"] + 1 if row["data"] is not None else 0
+            if content_revision != expected:
+                raise ValueError("component_content_changed")
+            connection.execute(
+                "UPDATE component_bindings SET data=?,content_revision=? WHERE binding=?",
+                (encoded, content_revision, reference["binding"]),
             )
 
     def draft(
@@ -492,17 +609,20 @@ class ComponentRegistry:
         content: Mapping[str, str] | None = None,
         expected_revision: int | None = None,
     ) -> dict[str, Any]:
+        encoded = None
         if content is not None:
             validate_component_value(COMPONENT_COPY_SCHEMA, content)
             encoded = json.dumps(content, ensure_ascii=False, allow_nan=False)
-            if not content["text"].strip() or len(encoded.encode()) > COMPONENT_COPY_MAX_BYTES:
+            if not content["text"].strip():
                 raise ValueError("component_copy_invalid")
         with self._database() as connection:
             row = self._binding(connection, reference, user_id)
             if row["session_id"] != session_id:
                 raise ValueError("component_binding_invalid")
             if content is not None:
-                if type(expected_revision) is not int or row["revision"] != expected_revision:
+                if (
+                    not isinstance(expected_revision, int) or isinstance(expected_revision, bool)
+                ) or row["revision"] != expected_revision:
                     raise ValueError("component_state_changed")
                 connection.execute(
                     "INSERT INTO component_copies(binding,revision,content) VALUES(?,?,?) ON CONFLICT(binding) DO UPDATE SET revision=excluded.revision,content=excluded.content",

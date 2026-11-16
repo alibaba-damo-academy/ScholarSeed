@@ -35,6 +35,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import state as search_state  # noqa: E402
 import pool_inspect as pool_view  # noqa: E402
 import search_policy  # noqa: E402
+import dedup  # noqa: E402
 
 
 TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -387,7 +388,7 @@ def select_auto_citation_anchors(
     concepts = list(concepts or [])
     candidates = []
     for paper in _merge_for_anchor_selection(papers):
-        if not str(paper.get("paper_id") or "").strip():
+        if not dedup.paperhub_id(paper):
             continue
         item = dict(paper)
         item["_anchor"] = _anchor_features(
@@ -425,7 +426,7 @@ def select_auto_citation_anchors(
         covered_sources.update(chosen["_anchor"]["sources"])
 
     return [{
-        "paper_id": str(paper.get("paper_id")),
+        "paper_id": dedup.paperhub_id(paper),
         "title": paper.get("title", ""),
         "year": paper.get("year"),
         "citation_count": paper.get("citation_count", 0),
@@ -727,6 +728,11 @@ def run_round(args):
                 )
 
     auto_citation = None
+    pool = search_state.read_pool(args.session)
+    local_ids = {str(p["paper_id"]) for p in pool.values()
+                 if p.get("paper_id") and not dedup.paperhub_id(p)}
+    if any(str(value).startswith("literature:") or str(value) in local_ids for value in explicit_citation_ids):
+        raise ValueError("citation_ids require PaperHub document IDs, not library IDs")
     citation_ids = list(explicit_citation_ids)
     citation_limit = int(plan.get("citation_limit", 30))
     if auto_config:

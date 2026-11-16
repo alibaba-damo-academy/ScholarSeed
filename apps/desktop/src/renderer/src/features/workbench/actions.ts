@@ -6,14 +6,26 @@ const EMPTY_CONTRIBUTIONS: readonly SelectionActionContribution[] = []
 
 export interface SelectionActionContribution {
   actions: ReactNode
+  toolbarEnabled?: boolean
+  forceVisible?: boolean
   replacesDefaults?: boolean
   dismiss?: () => void
   expanded: boolean
   id: string
   order: number
   panel?: ReactNode
+  ownsScroll?: boolean
   annotateResult?: SelectionAnnotation
   replaceSelection?: SelectionReplacement
+}
+
+export function selectionToolbarVisible(
+  contributions: readonly SelectionActionContribution[]
+): boolean {
+  return (
+    contributions.every((item) => item.toolbarEnabled !== false) ||
+    contributions.some((item) => item.forceVisible)
+  )
 }
 
 export interface SelectionAnnotationRequest {
@@ -37,14 +49,10 @@ export interface SelectionReplacementRequest {
 }
 
 export type SelectionReplacementError =
-  | 'selection_changed'
-  | 'replacement_failed'
-  | 'replacement_timeout'
-  | 'unsupported'
+  'selection_changed' | 'replacement_failed' | 'replacement_timeout' | 'unsupported'
 
 export type SelectionReplacementResult =
-  | { ok: true }
-  | { ok: false; error: SelectionReplacementError }
+  { ok: true } | { ok: false; error: SelectionReplacementError }
 
 export type SelectionReplacement = (
   request: SelectionReplacementRequest
@@ -53,7 +61,9 @@ export type SelectionReplacement = (
 export function selectionReplacementFor(
   contributions: readonly SelectionActionContribution[]
 ): SelectionReplacement | null {
-  return contributions.find((contribution) => contribution.replaceSelection)?.replaceSelection ?? null
+  return (
+    contributions.find((contribution) => contribution.replaceSelection)?.replaceSelection ?? null
+  )
 }
 
 export function selectionAnnotationFor(
@@ -77,9 +87,8 @@ export class SelectionActionRegistry {
     return () => this.listeners.delete(listener)
   }
 
-  get = (tabId: string): readonly SelectionActionContribution[] => (
+  get = (tabId: string): readonly SelectionActionContribution[] =>
     this.snapshots.get(tabId) ?? EMPTY_CONTRIBUTIONS
-  )
 
   register(tabId: string, contribution: SelectionActionContribution): () => void {
     const token = Symbol(contribution.id)
@@ -120,17 +129,15 @@ export class SelectionActionRegistry {
 
 export const selectionActionRegistry = new SelectionActionRegistry()
 export const SelectionActionsContext = createContext(selectionActionRegistry)
-export const useSelectionActionRegistry = (): SelectionActionRegistry => useContext(SelectionActionsContext)
+export const useSelectionActionRegistry = (): SelectionActionRegistry =>
+  useContext(SelectionActionsContext)
 
 export function useSelectionActionContribution(
   tabId: string,
   contribution: SelectionActionContribution
 ): void {
   const registry = useSelectionActionRegistry()
-  useEffect(
-    () => registry.register(tabId, contribution),
-    [registry, tabId, contribution.id]
-  )
+  useEffect(() => registry.register(tabId, contribution), [registry, tabId, contribution.id])
   useEffect(
     () => registry.update(tabId, contribution.id, contribution),
     [registry, tabId, contribution]

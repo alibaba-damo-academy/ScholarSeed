@@ -1,0 +1,110 @@
+{
+  "schemaVersion": 1,
+  "id": "evaluation",
+  "revision": "1",
+  "name": "发布快评合成资料",
+  "description": "隔离页面和核心流程评测使用的原始合成资料，不包含执行结果。",
+  "source": {
+    "kind": "synthetic",
+    "origin": "Repository-authored synthetic fixtures copied byte-for-byte from the reviewed evaluation scenarios and shared research example.",
+    "rights": "Repository synthetic inputs; repository license applies."
+  },
+  "files": [
+    {
+      "id": "overview",
+      "source": "files/overview.md",
+      "target": "overview.md",
+      "mediaType": "text/markdown",
+      "size": 212,
+      "sha256": "252d2a97beb5f1b8b786a961fbd12964e70d150700acb92a46d1a3ffa0f8b814"
+    },
+    {
+      "id": "detail",
+      "source": "files/notes/detail.txt",
+      "target": "notes/detail.txt",
+      "mediaType": "text/plain",
+      "size": 182,
+      "sha256": "5ac03866d59c97942f7c2e1ff82441aa7e72abb1d437859d0952634122e67a11"
+    },
+    {
+      "id": "summary",
+      "source": "files/notes/summary.md",
+      "target": "notes/summary.md",
+      "mediaType": "text/markdown",
+      "size": 179,
+      "sha256": "749eb83681017d3bed102829eead2d17a1f551c64e2def33df8f1de4fdcdb6fb"
+    },
+    {
+      "id": "appendix",
+      "source": "files/notes/methods/appendix.md",
+      "target": "notes/methods/appendix.md",
+      "mediaType": "text/markdown",
+      "size": 200,
+      "sha256": "e96924f026671ff3562e61a052b78cd206382d091b885ebc7ae80aa893ecd365"
+    },
+    {
+      "id": "document",
+      "source": "files/sample.md",
+      "target": "sample.md",
+      "mediaType": "text/markdown",
+      "size": 644,
+      "sha256": "a77fec4534bce0994a47e17a2bc4f862839a295ccfa82c08555180afb55ec1e0"
+    },
+    {
+      "id": "code",
+      "source": "files/sample.ts",
+      "target": "sample.ts",
+      "mediaType": "text/typescript",
+      "size": 466,
+      "sha256": "c9c2d80c1237488275599617c80a9d6f3aeb881847fa25ae6fd674d3a4dba2e8"
+    },
+    {
+      "id": "literature",
+      "source": "files/sample.bib",
+      "target": "sample.bib",
+      "mediaType": "text/plain",
+      "size": 910,
+      "sha256": "26ad695c90669ae8cc88887c64a8fda83f2cc7c9725a38754727d6b015d88d6c"
+    },
+    {
+      "id": "csv",
+      "source": "files/sample.csv",
+      "target": "sample.csv",
+      "mediaType": "text/csv",
+      "size": 116,
+      "sha256": "72131555255008d035f8846e237f5dc001bc65a682530084e04c9f3139b63cbe"
+    },
+    {
+      "id": "tsv",
+      "source": "files/sample.tsv",
+      "target": "sample.tsv",
+      "mediaType": "text/tab-separated-values",
+      "size": 116,
+      "sha256": "3ac4f4fd61f3bd6b9c6da3a7efb762bd91d53e09f23a6b20f44ad3210f18162c"
+    },
+    {
+      "id": "pdf",
+      "source": "files/sample.pdf",
+      "target": "sample.pdf",
+      "mediaType": "application/pdf",
+      "size": 2182,
+      "sha256": "ebcb3b918e0367e4d5715efe7628ff5a9e6701fc89a163776270d49700d74a36"
+    },
+    {
+      "id": "image",
+      "source": "files/icon.png",
+      "target": "icon.png",
+      "mediaType": "image/png",
+      "size": 92265,
+      "sha256": "0830e69b8b3f1203bbefee47649f4de25bd78a4ea9e6ad82591c837e8241d2a2"
+    },
+    {
+      "id": "workbook",
+      "source": "files/sample.xlsx",
+      "target": "sample.xlsx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "size": 4271,
+      "sha256": "4cb12501e1a90ccf80851937f4ab8222407608e6f49aeb459954bec4dad0230e"
+    }
+  ]
+}

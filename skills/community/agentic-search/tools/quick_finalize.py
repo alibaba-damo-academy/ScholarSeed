@@ -7,34 +7,66 @@ provenance, avoiding a second long model-selection turn.
 """
 
 import argparse
-from collections import Counter
 import json
 import math
 import os
 import re
 import sys
+from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pool_inspect  # noqa: E402
 import search_policy  # noqa: E402
 import state as search_state  # noqa: E402
 
-
 STOPWORDS = {
-    "about", "after", "also", "among", "before", "being", "could", "from",
-    "have", "into", "many", "more", "most", "other", "over", "paper",
-    "papers", "recent", "research", "should", "some", "such", "than", "that",
-    "their", "these", "they", "this", "through", "under", "using", "what",
-    "when", "where", "which", "while", "with", "would",
+    "about",
+    "after",
+    "also",
+    "among",
+    "before",
+    "being",
+    "could",
+    "from",
+    "have",
+    "into",
+    "many",
+    "more",
+    "most",
+    "other",
+    "over",
+    "paper",
+    "papers",
+    "recent",
+    "research",
+    "should",
+    "some",
+    "such",
+    "than",
+    "that",
+    "their",
+    "these",
+    "they",
+    "this",
+    "through",
+    "under",
+    "using",
+    "what",
+    "when",
+    "where",
+    "which",
+    "while",
+    "with",
+    "would",
 }
 
 
 def _exclusive_cutoff_year(query):
     """Return the exclusive year in a natural-language ``before YEAR`` query."""
     match = re.search(
-        r"\bbefore\s+(?:(?:jan(?:uary)?)\s+(?:1(?:st)?\s*,?\s*)?)?"
-        r"((?:19|20|21)\d{2})\b",
-        str(query), re.I,
+        r"\bbefore\s+(?:(?:jan(?:uary)?)\s+(?:1(?:st)?\s*,?\s*)?)?" r"((?:19|20|21)\d{2})\b",
+        str(query),
+        re.I,
     )
     return int(match.group(1)) if match else None
 
@@ -63,10 +95,7 @@ def _sources(paper):
 
 def _title_probe_matches(papers):
     hits, _ = pool_inspect._title_probe_best_hits(papers, 100)
-    return {
-        _identity(item["paper"]): item
-        for item in hits if item["match_score"] >= 0.55
-    }
+    return {_identity(item["paper"]): item for item in hits if item["match_score"] >= 0.55}
 
 
 def _score(paper, concepts, title_matches):
@@ -99,11 +128,13 @@ def _select(papers, concepts, count, diversity_weight):
         item["_quick_score"] = _score(item, concepts, title_matches)
         item["_title_hit"] = title_matches.get(_identity(item))
         candidates.append(item)
-    candidates.sort(key=lambda item: (
-        -item["_quick_score"],
-        pool_inspect._title_key(item.get("title")),
-        str(item.get("paper_id") or ""),
-    ))
+    candidates.sort(
+        key=lambda item: (
+            -item["_quick_score"],
+            pool_inspect._title_key(item.get("title")),
+            str(item.get("paper_id") or ""),
+        )
+    )
 
     selected = []
     while candidates and len(selected) < count:
@@ -144,15 +175,34 @@ def _reason(paper):
 
 def _public_paper(paper, tier, concepts, include_abstract):
     fields = (
-        "paper_id", "title", "authors", "year", "venue", "journal_name",
-        "journal_pages", "journal_volume", "citation_count", "doi", "arxiv_id",
-        "is_open_access", "url", "publication_date", "reference_count",
-        "influential_citation_count", "publication_types", "source", "found_by",
+        "paper_id",
+        "title",
+        "authors",
+        "year",
+        "venue",
+        "journal_name",
+        "journal_pages",
+        "journal_volume",
+        "citation_count",
+        "doi",
+        "arxiv_id",
+        "is_open_access",
+        "url",
+        "publication_date",
+        "reference_count",
+        "influential_citation_count",
+        "publication_types",
+        "source",
+        "found_by",
+        "paperhub_id",
+        "library_refs",
+        "knowledge_state",
+        "state_basis",
+        "selection_evidence",
+        "abstract_provenance",
     )
     output = {field: paper.get(field) for field in fields if field in paper}
-    output["access"] = (
-        "open" if paper.get("is_open_access") is True else "closed_or_unknown"
-    )
+    output["access"] = "open" if paper.get("is_open_access") is True else "closed_or_unknown"
     if include_abstract:
         output["abstract"] = paper.get("abstract", "")
     output["tier"] = tier
@@ -171,8 +221,13 @@ def _tier(index, budget):
 
 
 def finalize_quick(
-    session_dir, output_dir, concepts_text=None, count=None,
-    diversity_weight=0.2, include_abstract=False,
+    session_dir,
+    output_dir,
+    concepts_text=None,
+    count=None,
+    diversity_weight=0.2,
+    include_abstract=False,
+    titles=None,
 ):
     """Finalize one Quick session and return a compact result summary."""
     state = search_state.read_state(session_dir)
@@ -181,14 +236,21 @@ def finalize_quick(
     policy = search_policy.from_state(state)
     if policy["mode"] != "quick":
         raise ValueError("quick_finalize requires a Quick-mode session")
-    count = int(count or policy["selected_count"])
-    if not 5 <= count <= 25:
-        raise ValueError("count must be between 5 and 25")
+    count = int(policy["selected_count"] if count is None else count)
+    if not search_policy.QUICK_MIN_COUNT <= count <= search_policy.QUICK_MAX_COUNT:
+        raise ValueError("count must be between 1 and 25")
     if not 0 <= diversity_weight <= 1:
         raise ValueError("diversity_weight must be between 0 and 1")
 
     pool = search_state.read_pool(session_dir)
     papers = list(pool.values()) if isinstance(pool, dict) else list(pool)
+    if titles is not None:
+        allowed = {pool_inspect._title_key(title) for title in titles}
+        if not allowed or "" in allowed:
+            raise ValueError("exact titles must be non-empty")
+        papers = [
+            paper for paper in papers if pool_inspect._title_key(paper.get("title")) in allowed
+        ]
     if not papers:
         raise ValueError("search pool is empty")
     cutoff = _exclusive_cutoff_year(state.get("query", ""))
@@ -196,7 +258,8 @@ def finalize_quick(
     if cutoff:
         before = len(papers)
         papers = [
-            paper for paper in papers
+            paper
+            for paper in papers
             if not isinstance(paper.get("year"), int) or paper["year"] < cutoff
         ]
         cutoff_filtered = before - len(papers)
@@ -221,6 +284,9 @@ def finalize_quick(
             "total_queries": len(state.get("searched_queries", [])),
             "pool_size": len(papers),
             "selected_count": len(output_papers),
+            "requested_count": count,
+            "selection_titles": titles,
+            "result_status": "complete" if len(output_papers) == count else "partial",
             "tier_budget": configured_budget,
             "selection_strategy": policy["selection_strategy"],
             "concepts": concepts,

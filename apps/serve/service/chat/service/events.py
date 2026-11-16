@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Iterator
 from typing import Any, Mapping
 
 from service.chat.constants import (
@@ -13,6 +13,7 @@ from service.chat.constants import (
     PRODUCT_EVENT_ANSWER_SOURCES,
     PRODUCT_EVENT_ARTIFACT_FAILED,
     PRODUCT_EVENT_DISPLAY_CARD,
+    PRODUCT_EVENT_GENERATION_PREVIEW,
     PRODUCT_EVENT_HIL_REQUESTED,
     PRODUCT_EVENT_HIL_RESOLVED,
     PRODUCT_EVENT_MESSAGE_DELTA,
@@ -26,6 +27,7 @@ from service.chat.constants import (
     PRODUCT_EVENT_REVIEW_READY,
     PRODUCT_EVENT_SKILL_COMPLETED,
     PRODUCT_EVENT_SKILL_STARTED,
+    PRODUCT_EVENT_SOURCE_CANDIDATES,
     PRODUCT_EVENT_SUBAGENT_COMPLETED,
     PRODUCT_EVENT_SUBAGENT_FAILED,
     PRODUCT_EVENT_SUBAGENT_INTERRUPTED,
@@ -46,6 +48,7 @@ from service.chat.constants import (
     PRODUCT_TURN_OUTCOME_FAILED,
     PRODUCT_TURN_OUTCOME_INTERRUPTED,
     PRODUCT_TURN_OUTCOME_UNKNOWN,
+    RETIRED_DISPLAY_CARD_TYPES,
     SSE_CONNECTED_EVENT,
     SSE_DISCONNECTED_EVENT,
     SSE_HEARTBEAT_SECONDS,
@@ -62,6 +65,7 @@ from service.chat.persistence.events import (
 )
 from service.chat.provenance import MODEL_RUN_FIELD, ModelRun
 from service.chat.runtime.live import LiveSession
+from service.chat.service.plan import PlanToolProjection
 from service.platform.context import ASSISTANT_CONTEXT_MARKER
 
 SSE_DATA_PREFIX = "data: "
@@ -70,6 +74,7 @@ SSE_HEARTBEAT_FRAME = "event: heartbeat\ndata: {}\n\n"
 HISTORY_ACTIVITY_EVENT_KINDS = frozenset(
     {
         PRODUCT_EVENT_ANSWER_SOURCES,
+        PRODUCT_EVENT_GENERATION_PREVIEW,
         PRODUCT_EVENT_ARTIFACT_FAILED,
         PRODUCT_EVENT_TURN_FAILED,
         PRODUCT_EVENT_TURN_INTERRUPTED,
@@ -81,6 +86,7 @@ HISTORY_ACTIVITY_EVENT_KINDS = frozenset(
         PRODUCT_EVENT_TOOL_COMPLETED,
         PRODUCT_EVENT_WEB_SEARCH_STARTED,
         PRODUCT_EVENT_WEB_SEARCH_COMPLETED,
+        PRODUCT_EVENT_SOURCE_CANDIDATES,
         PRODUCT_EVENT_PAPER_SEARCH_STARTED,
         PRODUCT_EVENT_PLAN_SNAPSHOT,
         PRODUCT_EVENT_PAPER_SEARCH_COMPLETED,
@@ -132,6 +138,14 @@ class EventService:
 
         return self._events.portable_history(session_id)
 
+    def _records(self, session_id: str, after_seq: int = 0) -> Iterator[ProductEventRecord]:
+        while True:
+            page = self._events.replay(session_id, after_seq=after_seq, limit=MAXIMUM_REPLAY_LIMIT)
+            yield from page
+            if len(page) < MAXIMUM_REPLAY_LIMIT:
+                return
+            after_seq = page[-1].product_seq
+
     def activity_snapshot(self, session_id: str) -> list[dict[str, Any]]:
         """Return the ordered transcript timeline anchors and technical activity.
 
@@ -142,21 +156,14 @@ class EventService:
         """
 
         snapshot: list[dict[str, Any]] = []
-        last_sequence = 0
-        while True:
-            page = self._events.replay(
-                session_id,
-                after_seq=last_sequence,
-                limit=MAXIMUM_REPLAY_LIMIT,
-            )
-            snapshot.extend(
-                LiveSession.event_envelope(record)
-                for record in page
-                if record.kind in HISTORY_ACTIVITY_EVENT_KINDS
-            )
-            if not page or len(page) < MAXIMUM_REPLAY_LIMIT:
-                break
-            last_sequence = page[-1].product_seq
+        projection = PlanToolProjection()
+        for original in self._records(session_id):
+            record = projection.project(original)
+            if record.kind in HISTORY_ACTIVITY_EVENT_KINDS and not (
+                record.kind == PRODUCT_EVENT_DISPLAY_CARD
+                and record.payload.get("type") in RETIRED_DISPLAY_CARD_TYPES
+            ):
+                snapshot.append(LiveSession.event_envelope(record))
         return snapshot
 
     def turn_activity_snapshot(self, session_id: str) -> list[dict[str, Any]]:
@@ -253,11 +260,11 @@ class EventService:
         messages = self._user_message_snapshot(session_id)
         turn_order = {
             str(record.vendor_turn_id or record.payload.get("client_turn_id") or ""): index
-            for index, record in enumerate(messages)
+            for index, (record, _sent_at) in enumerate(messages)
             if record.vendor_turn_id
             or str(record.payload.get("binding") or "") == USER_MESSAGE_BINDING_CANCELLED
         }
-        for record in messages:
+        for record, sent_at in messages:
             cancelled = str(record.payload.get("binding") or "") == USER_MESSAGE_BINDING_CANCELLED
             refs = record.payload.get("refs")
             references = (
@@ -301,6 +308,7 @@ class EventService:
                 )
             if target is not None:
                 target["text"] = text
+                target["sent_at"] = sent_at
                 target["refs"] = references
                 if cancelled:
                     target["status"] = USER_MESSAGE_BINDING_CANCELLED
@@ -319,6 +327,7 @@ class EventService:
                 "kind": "user",
                 "role": "user",
                 "text": text,
+                "sent_at": sent_at,
                 "turn_id": turn_id,
                 "item_id": str(record.vendor_item_id or (turn_id if cancelled else "")),
                 "refs": references,
@@ -382,8 +391,8 @@ class EventService:
                 row[MODEL_RUN_FIELD] = message_models[identity]
         return decorated
 
-    def _user_message_snapshot(self, session_id: str) -> list[ProductEventRecord]:
-        latest: dict[str, ProductEventRecord] = {}
+    def _user_message_snapshot(self, session_id: str) -> list[tuple[ProductEventRecord, float]]:
+        latest: dict[str, tuple[ProductEventRecord, float]] = {}
         order: list[str] = []
         last_sequence = 0
         while True:
@@ -403,7 +412,10 @@ class EventService:
                 )
                 if client_turn_id not in latest:
                     order.append(client_turn_id)
-                latest[client_turn_id] = record
+                sent_at = (
+                    latest[client_turn_id][1] if client_turn_id in latest else record.created_at
+                )
+                latest[client_turn_id] = (record, sent_at)
             if not page or len(page) < MAXIMUM_REPLAY_LIMIT:
                 break
             last_sequence = page[-1].product_seq
@@ -431,25 +443,20 @@ class EventService:
             },
         )
         last = max(0, int(from_seq or 0))
+        projection = PlanToolProjection()
         try:
             self._logger.debug(
                 SSE_REPLAY_STARTED_EVENT,
                 extra={"session_id": session_id, "from_seq": last},
             )
             replayed = 0
-            while True:
-                page = self._events.replay(
-                    session_id,
-                    after_seq=last,
-                    limit=MAXIMUM_REPLAY_LIMIT,
-                )
-                for record in page:
+            for original in self._records(session_id):
+                record = projection.project(original)
+                if record.product_seq > last:
                     envelope = LiveSession.event_envelope(record)
                     yield sse_encode(envelope)
                     last = record.product_seq
                     replayed += 1
-                if len(page) < MAXIMUM_REPLAY_LIMIT:
-                    break
             self._logger.debug(
                 SSE_REPLAY_FINISHED_EVENT,
                 extra={
@@ -472,16 +479,11 @@ class EventService:
                 # Notifications are wakeups, never the sequence source. Product
                 # writers outside the agent loop can commit between live events.
                 delivered = False
-                while True:
-                    page = self._events.replay(
-                        session_id, after_seq=last, limit=MAXIMUM_REPLAY_LIMIT
-                    )
-                    for record in page:
-                        yield sse_encode(LiveSession.event_envelope(record))
-                        last = record.product_seq
-                        delivered = True
-                    if len(page) < MAXIMUM_REPLAY_LIMIT:
-                        break
+                for original in self._records(session_id, after_seq=last):
+                    record = projection.project(original)
+                    yield sse_encode(LiveSession.event_envelope(record))
+                    last = record.product_seq
+                    delivered = True
                 if not delivered:
                     yield SSE_HEARTBEAT_FRAME
         finally:

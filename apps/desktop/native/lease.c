@@ -50,6 +50,15 @@ static napi_value fail_detail(napi_env env, const char *code, uint32_t system_co
     napi_throw_error(env, "ERR_LEASE_NATIVE", "native lease error construction failed");
     return NULL;
   }
+  if (source && source->native_status) {
+    napi_value status;
+    if (napi_create_int32(env, source->native_status, &status) == napi_ok) {
+      // An own data property cannot invoke a patched Error prototype setter.
+      napi_property_descriptor property = { .utf8name = "nativeStatus", .value = status,
+        .attributes = napi_writable | napi_configurable };
+      napi_define_properties(env, error, 1, &property);
+    }
+  }
 #ifdef _WIN32
   const char *native_reason = sc_diagnostic_system_reason(system_code);
   if (!strcmp(code, "ERR_LEASE_PERMISSION") || native_reason) {
@@ -70,8 +79,6 @@ static napi_value fail_detail(napi_env env, const char *code, uint32_t system_co
       napi_define_properties(env, error, 1, &property);
     }
   }
-#else
-  (void)source;
 #endif
   napi_throw(env, error);
   return NULL;
@@ -231,18 +238,20 @@ static file_handle open_file(napi_env env, napi_value value) {
 #endif
 
 static napi_value hold(napi_env env, struct context *owner, file_handle file,
-                       bool exclusive, struct lease *parent) {
+                       bool exclusive, struct lease *parent, uint32_t offset) {
   napi_value result;
   uint32_t error = 0;
   bool busy = false;
 #ifdef _WIN32
   OVERLAPPED overlap = {0};
+  overlap.Offset = offset;
   if (!LockFileEx(file, LOCKFILE_FAIL_IMMEDIATELY | (exclusive ? LOCKFILE_EXCLUSIVE_LOCK : 0),
                   0, 1, 0, &overlap)) {
     error = GetLastError();
     busy = error == ERROR_LOCK_VIOLATION;
   }
 #else
+  (void)offset;
   if (flock(file, LOCK_NB | (exclusive ? LOCK_EX : LOCK_SH)) != 0) {
     error = (uint32_t)errno;
     busy = error == EWOULDBLOCK || error == EAGAIN;
@@ -280,7 +289,7 @@ static napi_value acquire(napi_env env, napi_callback_info info) {
       napi_get_value_bool(env, argv[1], &exclusive) != napi_ok)
     return fail(env, "ERR_LEASE_ARGUMENT", 0);
   file_handle file = open_file(env, argv[0]);
-  return file == INVALID_FILE ? NULL : hold(env, data, file, exclusive, NULL);
+  return file == INVALID_FILE ? NULL : hold(env, data, file, exclusive, NULL, 0);
 }
 
 static struct lease *lookup(napi_env env, struct context *owner, napi_value value) {
@@ -394,6 +403,48 @@ static napi_value identity(napi_env env, napi_callback_info info) {
   return result;
 }
 
+static napi_value lock_identity(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value argv[2], result;
+  void *data = NULL;
+  if (napi_get_cb_info(env, info, &argc, argv, NULL, &data) != napi_ok || argc != 1)
+    return fail(env, "ERR_LEASE_ARGUMENT", 0);
+  struct lease *lease = lookup(env, data, argv[0]);
+  if (!lease) return NULL;
+  if (lease->state != LEASE_HELD || lease->directory) return fail(env, "ERR_LEASE_ARGUMENT", 0);
+  char identity[DIRECTORY_IDENTITY_BYTES];
+  struct directory_error error = {0};
+  if (!directory_file_identity(lease->file, identity, &error)) return fail_directory(env, &error);
+  if (napi_create_string_utf8(env, identity, NAPI_AUTO_LENGTH, &result) != napi_ok)
+    return fail(env, "ERR_LEASE_NATIVE", 0);
+  return result;
+}
+
+static napi_value file_identity_at(napi_env env, napi_callback_info info) {
+  size_t argc = 3;
+  napi_value argv[3], result;
+  void *data = NULL;
+  if (napi_get_cb_info(env, info, &argc, argv, NULL, &data) != napi_ok || argc != 2)
+    return fail(env, "ERR_LEASE_ARGUMENT", 0);
+  struct lease *parent = lookup(env, data, argv[0]);
+  if (!parent) return NULL;
+  if (parent->state != LEASE_HELD || !parent->directory) return fail(env, "ERR_LEASE_ARGUMENT", 0);
+  char *name = text_argument(env, argv[1], 128);
+  if (!name) return NULL;
+  struct directory_error error = {0};
+  file_handle file = directory_bound_file(parent->directory, name, NULL, &error);
+  free(name);
+  if (file == INVALID_FILE) return fail_directory(env, &error);
+  char identity[DIRECTORY_IDENTITY_BYTES];
+  bool observed = directory_file_identity(file, identity, &error);
+  uint32_t closed = close_file(file);
+  if (closed) return fail(env, "ERR_LEASE_RELEASE", closed);
+  if (!observed) return fail_directory(env, &error);
+  if (napi_create_string_utf8(env, identity, NAPI_AUTO_LENGTH, &result) != napi_ok)
+    return fail(env, "ERR_LEASE_NATIVE", 0);
+  return result;
+}
+
 #ifndef _WIN32
 static napi_value persistent_identity(napi_env env, napi_callback_info info) {
   size_t argc = 2;
@@ -452,24 +503,82 @@ static napi_value lineage(napi_env env, napi_callback_info info) {
 }
 
 static napi_value acquire_at(napi_env env, napi_callback_info info) {
-  size_t argc = 4;
-  napi_value argv[4];
+  size_t argc = 6;
+  napi_value argv[6];
   void *data = NULL;
   bool exclusive = false;
-  if (napi_get_cb_info(env, info, &argc, argv, NULL, &data) != napi_ok || argc != 3 ||
+  if (napi_get_cb_info(env, info, &argc, argv, NULL, &data) != napi_ok || argc < 3 || argc > 5 ||
       napi_get_value_bool(env, argv[2], &exclusive) != napi_ok) return fail(env, "ERR_LEASE_ARGUMENT", 0);
+  uint32_t offset = 0;
+  if (argc >= 4) {
+    double requested;
+    if (napi_get_value_double(env, argv[3], &requested) != napi_ok ||
+        !(requested >= 0 && requested <= UINT32_MAX) || (double)(uint32_t)requested != requested)
+      return fail(env, "ERR_LEASE_ARGUMENT", 0);
+    offset = (uint32_t)requested;
+  }
+#ifndef _WIN32
+  if (offset != 0) return fail(env, "ERR_LEASE_ARGUMENT", 0);
+#endif
   struct lease *parent = lookup(env, data, argv[0]);
   if (!parent) return NULL;
   if (parent->state != LEASE_HELD) return fail(env, "ERR_LEASE_CLOSED", 0);
   if (!parent->directory) return fail(env, "ERR_LEASE_ARGUMENT", 0);
   char *name = text_argument(env, argv[1], 128);
   if (!name) return NULL;
+  char *expected = argc == 5 ? text_argument(env, argv[4], DIRECTORY_IDENTITY_BYTES) : NULL;
+  if (argc == 5 && !expected) { free(name); return NULL; }
   struct directory_error error = {0};
-  file_handle file = directory_file(parent->directory, name, &error);
+  file_handle file = expected ? directory_bound_file(parent->directory, name, expected, &error) :
+    directory_file(parent->directory, name, &error);
+  free(expected);
   free(name);
   if (file == INVALID_FILE) return fail_directory(env, &error);
-  return hold(env, data, file, exclusive, parent);
+  return hold(env, data, file, exclusive, parent, offset);
 }
+
+static napi_value lock_directory_at(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value argv[2];
+  void *data = NULL;
+  if (napi_get_cb_info(env, info, &argc, argv, NULL, &data) != napi_ok || argc != 1)
+    return fail(env, "ERR_LEASE_ARGUMENT", 0);
+  struct lease *parent = lookup(env, data, argv[0]);
+  if (!parent) return NULL;
+  if (parent->state != LEASE_HELD) return fail(env, "ERR_LEASE_CLOSED", 0);
+  if (!parent->directory) return fail(env, "ERR_LEASE_ARGUMENT", 0);
+  struct directory_error error = {0};
+  file_handle file = directory_lock_self(parent->directory, &error);
+  if (file == INVALID_FILE) return fail_directory(env, &error);
+  return hold(env, data, file, true, parent, 0);
+}
+
+#ifdef __APPLE__
+static napi_value prune_lock_only_at(napi_env env, napi_callback_info info) {
+  size_t argc = 3;
+  napi_value argv[3], result;
+  void *data = NULL;
+  if (napi_get_cb_info(env, info, &argc, argv, NULL, &data) != napi_ok || argc != 2)
+    return fail(env, "ERR_LEASE_ARGUMENT", 0);
+  struct lease *pin = lookup(env, data, argv[0]);
+  if (!pin) return NULL;
+  if (pin->state != LEASE_HELD) return fail(env, "ERR_LEASE_CLOSED", 0);
+  if (!pin->directory) return fail(env, "ERR_LEASE_ARGUMENT", 0);
+  char *name = text_argument(env, argv[1], DIRECTORY_NAME_BYTES);
+  if (!name) return NULL;
+  struct directory_error error = {0};
+  bool removed;
+  bool valid = directory_prune_lock_only(pin->directory, name, &removed, &error);
+  free(name);
+  if (!valid) {
+    if (!strcmp(error.code, "ERR_LEASE_RELEASE")) pin->state = LEASE_UNCERTAIN;
+    return fail_directory(env, &error);
+  }
+  if (napi_get_boolean(env, removed, &result) != napi_ok)
+    return fail(env, "ERR_LEASE_NATIVE", 0);
+  return result;
+}
+#endif
 
 static napi_value reclaim_at(napi_env env, napi_callback_info info) {
   size_t argc = 3;
@@ -568,6 +677,35 @@ static napi_value create_at(napi_env env, napi_callback_info info) {
   free(name);
   if (!created) {
     if (!strcmp(error.code, "ERR_LEASE_RELEASE")) parent->state = LEASE_UNCERTAIN;
+    return fail_directory(env, &error);
+  }
+  if (napi_get_undefined(env, &result) != napi_ok) return fail(env, "ERR_LEASE_NATIVE", 0);
+  return result;
+}
+
+static napi_value replace_at(napi_env env, napi_callback_info info) {
+  size_t argc = 4, length = 0;
+  napi_value argv[4], result;
+  void *data = NULL, *buffer = NULL;
+  bool is_buffer = false;
+  if (napi_get_cb_info(env, info, &argc, argv, NULL, &data) != napi_ok || argc != 3 ||
+      napi_is_buffer(env, argv[2], &is_buffer) != napi_ok || !is_buffer ||
+      napi_get_buffer_info(env, argv[2], &buffer, &length) != napi_ok ||
+      !length || length > DIRECTORY_READ_LIMIT)
+    return fail(env, "ERR_LEASE_ARGUMENT", 0);
+  struct lease *parent = lookup(env, data, argv[0]);
+  if (!parent) return NULL;
+  if (parent->state != LEASE_HELD) return fail(env, "ERR_LEASE_CLOSED", 0);
+  if (!parent->directory) return fail(env, "ERR_LEASE_ARGUMENT", 0);
+  char *name = text_argument(env, argv[1], 128);
+  if (!name) return NULL;
+  struct directory_error error = {0};
+  bool replaced = directory_replace(parent->directory, name, buffer, length, &error);
+  free(name);
+  if (!replaced) {
+    // A sync failure after the rename landed leaves the published record uncertain.
+    if (!strcmp(error.code, "ERR_LEASE_RELEASE") || !strcmp(error.code, "ERR_LEASE_SYNC"))
+      parent->state = LEASE_UNCERTAIN;
     return fail_directory(env, &error);
   }
   if (napi_get_undefined(env, &result) != napi_ok) return fail(env, "ERR_LEASE_NATIVE", 0);
@@ -703,6 +841,62 @@ static napi_value read_at(napi_env env, napi_callback_info info) {
 #include "startup.h"
 #include "family.h"
 
+#ifdef _WIN32
+static napi_value clear_cache_at(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value argv[2], result;
+  void *data = NULL;
+  if (napi_get_cb_info(env, info, &argc, argv, NULL, &data) != napi_ok || argc != 1)
+    return fail(env, "ERR_LEASE_ARGUMENT", 0);
+  struct lease *parent = lookup(env, data, argv[0]);
+  if (!parent) return NULL;
+  if (parent->state != LEASE_HELD) return fail(env, "ERR_LEASE_CLOSED", 0);
+  if (!parent->directory) return fail(env, "ERR_LEASE_ARGUMENT", 0);
+  struct directory_error error = {0};
+  if (!directory_clear_cache(parent->directory, &error)) {
+    if (!strcmp(error.code, "ERR_LEASE_RELEASE")) parent->state = LEASE_UNCERTAIN;
+    return fail_directory(env, &error);
+  }
+  if (napi_get_undefined(env, &result) != napi_ok) return fail(env, "ERR_LEASE_NATIVE", 0);
+  return result;
+}
+
+static napi_value cache_names_at(napi_env env, napi_callback_info info, bool discard) {
+  size_t argc = 4;
+  napi_value argv[4], result;
+  void *data = NULL;
+  if (napi_get_cb_info(env, info, &argc, argv, NULL, &data) != napi_ok || argc != 3)
+    return fail(env, "ERR_LEASE_ARGUMENT", 0);
+  struct lease *parent = lookup(env, data, argv[0]);
+  if (!parent) return NULL;
+  if (parent->state != LEASE_HELD) return fail(env, "ERR_LEASE_CLOSED", 0);
+  if (!parent->directory) return fail(env, "ERR_LEASE_ARGUMENT", 0);
+  char *staged = text_argument(env, argv[1], DIRECTORY_NAME_BYTES);
+  if (!staged) return NULL;
+  char *name = text_argument(env, argv[2], DIRECTORY_NAME_BYTES);
+  if (!name) { free(staged); return NULL; }
+  struct directory_error error = {0};
+  bool published = discard ? directory_discard_cache_alias(parent->directory, staged, name, &error)
+                           : directory_publish_cache(parent->directory, staged, name, &error);
+  free(staged);
+  free(name);
+  if (!published) {
+    if (!strcmp(error.code, "ERR_LEASE_RELEASE")) parent->state = LEASE_UNCERTAIN;
+    return fail_directory(env, &error);
+  }
+  if (napi_get_undefined(env, &result) != napi_ok) return fail(env, "ERR_LEASE_NATIVE", 0);
+  return result;
+}
+
+static napi_value publish_cache_at(napi_env env, napi_callback_info info) {
+  return cache_names_at(env, info, false);
+}
+
+static napi_value discard_cache_alias_at(napi_env env, napi_callback_info info) {
+  return cache_names_at(env, info, true);
+}
+#endif
+
 static napi_value initialize(napi_env env, napi_value exports) {
   struct context *owner = calloc(1, sizeof(*owner));
   if (!owner) return fail(env, "ERR_LEASE_ALLOCATION", 0);
@@ -712,6 +906,9 @@ static napi_value initialize(napi_env env, napi_value exports) {
   }
   napi_property_descriptor properties[] = {
 #ifdef _WIN32
+      {"clearCacheAt", NULL, clear_cache_at, NULL, NULL, NULL, napi_default, owner},
+      {"publishCacheAt", NULL, publish_cache_at, NULL, NULL, NULL, napi_default, owner},
+      {"discardCacheAliasAt", NULL, discard_cache_alias_at, NULL, NULL, NULL, napi_default, owner},
       {"openFamily", NULL, open_family, NULL, NULL, NULL, napi_default, NULL},
       {"assertUpdateInstallationIdle", NULL, assert_installation_idle, NULL, NULL, NULL, napi_default, NULL},
 #endif
@@ -722,14 +919,21 @@ static napi_value initialize(napi_env env, napi_value exports) {
       {"pin", NULL, pin, NULL, NULL, NULL, napi_default, owner},
       {"pinChild", NULL, pin_child, NULL, NULL, NULL, napi_default, owner},
       {"identity", NULL, identity, NULL, NULL, NULL, napi_default, owner},
+      {"lockIdentity", NULL, lock_identity, NULL, NULL, NULL, napi_default, owner},
+      {"fileIdentityAt", NULL, file_identity_at, NULL, NULL, NULL, napi_default, owner},
 #ifndef _WIN32
       {"persistentIdentity", NULL, persistent_identity, NULL, NULL, NULL, napi_default, owner},
 #endif
+#ifdef __APPLE__
+      {"pruneLockOnlyAt", NULL, prune_lock_only_at, NULL, NULL, NULL, napi_default, owner},
+#endif
       {"lineage", NULL, lineage, NULL, NULL, NULL, napi_default, owner},
       {"acquireAt", NULL, acquire_at, NULL, NULL, NULL, napi_default, owner},
+      {"lockDirectoryAt", NULL, lock_directory_at, NULL, NULL, NULL, napi_default, owner},
       {"reclaimAt", NULL, reclaim_at, NULL, NULL, NULL, napi_default, owner},
       {"createChild", NULL, create_child, NULL, NULL, NULL, napi_default, owner},
       {"createAt", NULL, create_at, NULL, NULL, NULL, napi_default, owner},
+      {"replaceAt", NULL, replace_at, NULL, NULL, NULL, napi_default, owner},
       {"consumeAt", NULL, consume_at, NULL, NULL, NULL, napi_default, owner},
       {"listAt", NULL, list_at, NULL, NULL, NULL, napi_default, owner},
       {"readAt", NULL, read_at, NULL, NULL, NULL, napi_default, owner},

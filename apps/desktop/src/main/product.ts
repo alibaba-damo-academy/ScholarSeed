@@ -42,6 +42,8 @@ export interface DesktopProductConfig {
 
 export interface DesktopFeaturePolicy {
   browser: boolean
+  browserAgentNavigation: boolean
+  browserAdvancedSettings: boolean
   feedbackRecorder: boolean
 }
 
@@ -119,6 +121,8 @@ const SECURE_CODEX_RUNTIME_FALLBACK: CodexRuntimePolicy = Object.freeze({
 
 const SECURE_FEATURE_FALLBACK: DesktopFeaturePolicy = Object.freeze({
   browser: false,
+  browserAgentNavigation: false,
+  browserAdvancedSettings: false,
   feedbackRecorder: false,
 })
 
@@ -296,6 +300,14 @@ function parseFeaturePolicy(value: unknown): DesktopFeaturePolicy {
   return {
     browser:
       source.browser === undefined ? false : exactBoolean(source.browser, 'features.browser'),
+    browserAgentNavigation:
+      source.browser_agent_navigation === undefined
+        ? false
+        : exactBoolean(source.browser_agent_navigation, 'features.browser_agent_navigation'),
+    browserAdvancedSettings:
+      source.browser_advanced_settings === undefined
+        ? false
+        : exactBoolean(source.browser_advanced_settings, 'features.browser_advanced_settings'),
     feedbackRecorder: exactBoolean(source.feedback_recorder, 'features.feedback_recorder'),
   }
 }

@@ -23,6 +23,7 @@ TEXT_SUFFIXES = frozenset(
         ".java",
         ".js",
         ".json",
+        ".lean",
         ".log",
         ".markdown",
         ".md",

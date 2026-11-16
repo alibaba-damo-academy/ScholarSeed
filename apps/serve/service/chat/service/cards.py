@@ -15,8 +15,6 @@ from service.chat.persistence.events import ProductEventStore
 from service.platform.bridge import DisplayCardContent
 from service.platform.files import file_access_code
 
-DISPLAY_CARD_MAX_CONTENT_BYTES = 65_536
-DISPLAY_CARD_MAX_BYTES_PER_TURN = 131_072
 DISPLAY_CARD_ENCODING = "utf-8"
 DISPLAY_CARD_ID_PREFIX = "card"
 DISPLAY_CARD_IDEMPOTENCY_PREFIX = "display-card"
@@ -120,9 +118,7 @@ def normalize_card(
             raise DisplayCardError(DISPLAY_CARD_PATH_UNAVAILABLE) from error
         try:
             with source.open("rb") as stream:
-                encoded_source = stream.read(DISPLAY_CARD_MAX_CONTENT_BYTES + 1)
-            if len(encoded_source) > DISPLAY_CARD_MAX_CONTENT_BYTES:
-                raise DisplayCardError("display_card_content_too_large")
+                encoded_source = stream.read()
             value = json.loads(encoded_source.decode(DISPLAY_CARD_ENCODING))
         except OSError as error:
             LOGGER.warning(
@@ -140,8 +136,6 @@ def normalize_card(
     normalized = registry.validate(card_type, value)
     encoded = json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     encoded_size = len(encoded.encode(DISPLAY_CARD_ENCODING))
-    if encoded_size > DISPLAY_CARD_MAX_CONTENT_BYTES:
-        raise DisplayCardError("display_card_content_too_large")
     return normalized, sha256(encoded.encode(DISPLAY_CARD_ENCODING)).hexdigest(), encoded_size
 
 

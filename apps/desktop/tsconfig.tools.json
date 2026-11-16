@@ -3,9 +3,6 @@
   "files": ["vite.preview.config.ts"],
   "exclude": [
     "preview/*.test.ts",
-    "preview/*.spec.ts",
-    "preview/playwright.config.ts",
-    "preview/testing.ts",
-    "preview/capture.ts"
+    "preview/*.spec.ts"
   ]
 }

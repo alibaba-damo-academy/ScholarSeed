@@ -1,3 +1,4 @@
+import type * as React from 'react'
 import {
   MenuCheckboxItem,
   MenuContent,
@@ -10,17 +11,28 @@ import {
   MenuSeparator,
   MenuShortcut,
   MenuSubTrigger,
-  MenuTrigger
+  MenuTrigger,
 } from './Menu'
 import { createContext, useContext, type HTMLAttributes, type ReactNode } from 'react'
 import { menubarClassName, menubarTriggerClassName } from './classes'
 import { cx } from './utils'
 
-export const Menubar = ({ children, className }: { children?: ReactNode; className?: string }): JSX.Element => (
-  <div className={cx(menubarClassName, className)} role="menubar">{children}</div>
+export const Menubar = ({
+  children,
+  className,
+}: {
+  children?: ReactNode
+  className?: string
+}): React.JSX.Element => (
+  <div className={cx(menubarClassName, className)} role="menubar">
+    {children}
+  </div>
 )
 export const MenubarMenu = MenuRoot
-export const MenubarTrigger = ({ className, ...props }: Parameters<typeof MenuTrigger>[0]): JSX.Element => (
+export const MenubarTrigger = ({
+  className,
+  ...props
+}: Parameters<typeof MenuTrigger>[0]): React.JSX.Element => (
   <MenuTrigger className={cx(menubarTriggerClassName, className)} {...props} />
 )
 export const MenubarContent = MenuContent
@@ -29,11 +41,21 @@ export const MenubarGroup = MenuGroup
 export const MenubarSeparator = MenuSeparator
 export const MenubarLabel = MenuLabel
 export const MenubarShortcut = MenuShortcut
-export const MenubarPortal = ({ children }: { children?: ReactNode }): JSX.Element => <>{children}</>
-export const MenubarSub = ({ children, defaultOpen }: { children?: ReactNode; defaultOpen?: boolean }): JSX.Element => (
-  <MenuRoot closeOnSiblingOpen={false} defaultOpen={defaultOpen}>{children}</MenuRoot>
+export const MenubarPortal = ({ children }: { children?: ReactNode }): React.JSX.Element => (
+  <>{children}</>
 )
-export const MenubarSubContent = (props: MenuContentProps): JSX.Element | null => (
+export const MenubarSub = ({
+  children,
+  defaultOpen,
+}: {
+  children?: ReactNode
+  defaultOpen?: boolean
+}): React.JSX.Element => (
+  <MenuRoot closeOnSiblingOpen={false} defaultOpen={defaultOpen} nested>
+    {children}
+  </MenuRoot>
+)
+export const MenubarSubContent = (props: MenuContentProps): React.JSX.Element | null => (
   <MenuContent {...props} side="right" />
 )
 export const MenubarSubTrigger = MenuSubTrigger
@@ -51,10 +73,12 @@ export function MenubarRadioGroup({
   onValueChange,
   value,
   ...props
-}: HTMLAttributes<HTMLDivElement> & MenubarRadioGroupContextValue): JSX.Element {
+}: HTMLAttributes<HTMLDivElement> & MenubarRadioGroupContextValue): React.JSX.Element {
   return (
     <MenubarRadioGroupContext.Provider value={{ onValueChange, value }}>
-      <MenuGroup role="group" {...props}>{children}</MenuGroup>
+      <MenuGroup role="group" {...props}>
+        {children}
+      </MenuGroup>
     </MenubarRadioGroupContext.Provider>
   )
 }
@@ -64,9 +88,10 @@ export function MenubarRadioItem({
   onSelect,
   value,
   ...props
-}: Parameters<typeof MenuRadioItem>[0] & { value?: string }): JSX.Element {
+}: Parameters<typeof MenuRadioItem>[0] & { value?: string }): React.JSX.Element {
   const radioGroup = useContext(MenubarRadioGroupContext)
-  const selected = value !== undefined && radioGroup?.value !== undefined ? radioGroup.value === value : checked
+  const selected =
+    value !== undefined && radioGroup?.value !== undefined ? radioGroup.value === value : checked
 
   return (
     <MenuRadioItem

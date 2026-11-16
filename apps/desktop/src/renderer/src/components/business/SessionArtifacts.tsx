@@ -31,6 +31,7 @@ export function SessionArtifacts({
   boundaryRef,
   renderActions,
   renderLiteratureActions,
+  onOpenDirectory,
 }: {
   onOpened?: () => void
   boundaryRef?: React.RefObject<HTMLElement | null>
@@ -41,6 +42,7 @@ export function SessionArtifacts({
     artifact?: SessionArtifact
   }) => React.ReactNode
   renderLiteratureActions?: (document: TaskDocument) => React.ReactNode
+  onOpenDirectory?: (artifact: SessionArtifact) => void
 }): React.JSX.Element {
   const { t } = useTranslation('components')
   const { state, act } = useApp()
@@ -62,6 +64,9 @@ export function SessionArtifacts({
     thread.workdir
   )
   const [directoryFailed, setDirectoryFailed] = React.useState(false)
+  const directorySession = React.useRef(thread.sessionId)
+  directorySession.current = thread.sessionId
+  React.useEffect(() => setDirectoryFailed(false), [thread.sessionId])
   const documents = current?.literature ?? []
   const indexedPaths = new Set(
     [...(thread.artifacts ?? []), ...(current?.artifacts ?? [])].map(
@@ -81,6 +86,10 @@ export function SessionArtifacts({
     workingFiles.length > 0
 
   const preview = (artifact: SessionArtifact): void => {
+    if (artifact.kind === 'directory') {
+      onOpenDirectory?.(artifact)
+      return
+    }
     const absolute = artifact.absolute_path ?? artifact.path
     const sessionId = thread.sessionId || undefined
     void openByDefault(
@@ -122,9 +131,13 @@ export function SessionArtifacts({
           unstyled
           className={`${OVERVIEW_ROW_CLASS} hover:!bg-transparent`}
           data-testid={`session-artifact-${artifact.artifact_id}`}
+          disabled={artifact.kind === 'directory' && !onOpenDirectory}
           onClick={() => preview(artifact)}
         >
-          <FileFormatIcon name={artifact.name} />
+          <FileFormatIcon
+            name={artifact.name}
+            kind={artifact.kind === 'directory' ? 'dir' : 'file'}
+          />
           <EllipsisText wrapperClassName="min-w-0 flex-1" tooltip={artifact.path} tooltipPortalled>
             {artifact.name}
           </EllipsisText>
@@ -205,14 +218,19 @@ export function SessionArtifacts({
   return (
     <OverviewSection title={t('overview.artifacts')} testId="session-artifacts">
       <div className="grid gap-[var(--vds-space-2)]" data-testid="session-artifacts-body">
-        {hasArtifacts && thread.workdir && (
+        {hasArtifacts && (
           <Button
             unstyled
             className={`${OVERVIEW_ROW_CLASS} !h-[var(--vds-task-overview-directory-height)]`}
             data-testid="task-overview-directory"
+            disabled={!current?.directory_path}
             onClick={() => {
               setDirectoryFailed(false)
-              void openSystemPath(thread.workdir!).then((result) => setDirectoryFailed(!result.ok))
+              const sessionId = thread.sessionId
+              if (current?.directory_path)
+                void openSystemPath(current.directory_path).then((result) => {
+                  if (directorySession.current === sessionId) setDirectoryFailed(!result.ok)
+                })
             }}
           >
             <Folder aria-hidden />

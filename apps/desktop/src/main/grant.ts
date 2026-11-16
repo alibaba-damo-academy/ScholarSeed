@@ -150,9 +150,12 @@ interface ApprovalWaiter {
 interface Owners {
   scope(sessionId: string, turnId: string): BrowserReadScope | null
   target(tabId: string): BrowserReadTarget | null
-  policy(origin: string): { revision: number; decision: 'ask' | 'allow' | 'block' }
+  policy(origin: string, tabId: string): { revision: number; decision: 'ask' | 'allow' | 'block' }
   navigateTarget?(tabId: string): BrowserNavigateSource | null
-  navigatePolicy?(origin: string): { revision: number; decision: 'ask' | 'allow' | 'block' }
+  navigatePolicy?(
+    origin: string,
+    tabId: string
+  ): { revision: number; decision: 'ask' | 'allow' | 'block' }
 }
 
 function sameScope(left: BrowserReadScope, right: BrowserReadScope): boolean {
@@ -253,7 +256,7 @@ export function createBrowserReadGrants(owners: Owners) {
   const validLease = (lease: BrowserReadLease): boolean => {
     const scope = currentOwners.scope(lease.grant.scope.sessionId, lease.grant.scope.turnId)
     const target = currentOwners.target(lease.grant.tabId)
-    const policy = currentOwners.policy(lease.grant.target.origin)
+    const policy = currentOwners.policy(lease.grant.target.origin, lease.grant.tabId)
     const expired = Date.now() >= lease.expiresAt
     const scopeCurrent = !!scope && sameScope(scope, lease.grant.scope)
     const targetCurrent = !!target && sameTarget(target, lease.grant.target)
@@ -287,8 +290,8 @@ export function createBrowserReadGrants(owners: Owners) {
       return false
     const scope = currentOwners.scope(grant.scope.sessionId, grant.scope.turnId)
     const target = currentOwners.target(grant.tabId)
-    const read = currentOwners.policy(grant.target.origin)
-    const interact = currentOwners.navigatePolicy?.(grant.target.origin)
+    const read = currentOwners.policy(grant.target.origin, grant.tabId)
+    const interact = currentOwners.navigatePolicy?.(grant.target.origin, grant.tabId)
     const valid =
       grant.expiresAt > Date.now() &&
       !!scope &&
@@ -355,7 +358,7 @@ export function createBrowserReadGrants(owners: Owners) {
       target.generation !== request.targetGeneration
     )
       throw new Error(STALE_GRANT)
-    const policy = currentOwners.policy(target.origin)
+    const policy = currentOwners.policy(target.origin, request.tabId)
     if (
       policy.revision !== proof.policyRevision ||
       policy.decision !== proof.policyDecision ||
@@ -388,7 +391,7 @@ export function createBrowserReadGrants(owners: Owners) {
     grants.delete(id)
     const scope = currentOwners.scope(grant.scope.sessionId, grant.scope.turnId)
     const target = currentOwners.target(grant.tabId)
-    const policy = currentOwners.policy(grant.target.origin)
+    const policy = currentOwners.policy(grant.target.origin, grant.tabId)
     if (
       !scope ||
       !sameScope(scope, grant.scope) ||
@@ -406,7 +409,7 @@ export function createBrowserReadGrants(owners: Owners) {
   const validNavigateProof = (proof: BrowserNavigateProof): boolean => {
     const scope = currentOwners.scope(proof.scope.sessionId, proof.scope.turnId)
     const source = navigateSource(proof.tabId)
-    const policy = currentOwners.navigatePolicy?.(proof.destinationOrigin)
+    const policy = currentOwners.navigatePolicy?.(proof.destinationOrigin, proof.tabId)
     return (
       proof.expiresAt > Date.now() &&
       !!scope &&
@@ -503,8 +506,8 @@ export function createBrowserReadGrants(owners: Owners) {
         address.searchParams.get(request.parameter) !== request.query
       )
         throw new Error(STALE_GRANT)
-      const read = currentOwners.policy(target.origin)
-      const interact = currentOwners.navigatePolicy?.(target.origin)
+      const read = currentOwners.policy(target.origin, request.authority.tabId)
+      const interact = currentOwners.navigatePolicy?.(target.origin, request.authority.tabId)
       if (!interact || read.decision === 'block' || interact.decision === 'block')
         throw new Error(STALE_GRANT)
       if (read.decision !== 'allow' || interact.decision !== 'allow')
@@ -565,7 +568,7 @@ export function createBrowserReadGrants(owners: Owners) {
         !target.origin
       )
         throw new Error(STALE_GRANT)
-      const policy = currentOwners.policy(target.origin)
+      const policy = currentOwners.policy(target.origin, request.tabId)
       if (policy.decision === 'block') throw new Error(STALE_GRANT)
       if (requests.size >= MAX_SCOPE_REQUESTS || proofs.size >= MAX_READ_PROOFS)
         throw new Error('grant_capacity_exhausted')
@@ -609,7 +612,7 @@ export function createBrowserReadGrants(owners: Owners) {
       const destination = canonicalDestination(request.url)
       const scope = currentOwners.scope(request.sessionId, request.turnId)
       const source = navigateSource(request.tabId)
-      const policy = currentOwners.navigatePolicy(destination.origin)
+      const policy = currentOwners.navigatePolicy(destination.origin, request.tabId)
       if (
         !scope ||
         scope.sessionId !== request.sessionId ||
@@ -767,7 +770,7 @@ export function createBrowserReadGrants(owners: Owners) {
       if (!proof || proof.proofId !== proofId) throw new Error(STALE_GRANT)
       const scope = currentOwners.scope(proof.scope.sessionId, proof.scope.turnId)
       const target = currentOwners.target(proof.tabId)
-      const policy = currentOwners.policy(proof.target.origin)
+      const policy = currentOwners.policy(proof.target.origin, proof.tabId)
       if (
         !scope ||
         !sameScope(scope, proof.scope) ||
@@ -912,7 +915,8 @@ export function createBrowserReadGrants(owners: Owners) {
       )
         throw new Error(STALE_GRANT)
       const lease = leases.get(authority.grantId)
-      const interactPolicy = lease && currentOwners.navigatePolicy?.(lease.grant.target.origin)
+      const interactPolicy =
+        lease && currentOwners.navigatePolicy?.(lease.grant.target.origin, lease.grant.tabId)
       if (
         !lease ||
         (lease.snapshotId !== snapshotId && lease.actionSnapshotId !== snapshotId) ||

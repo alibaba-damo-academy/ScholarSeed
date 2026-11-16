@@ -17,7 +17,34 @@ export type SystemPermissionStatus =
   | 'project-scoped'
   | 'query-error'
 
-export type SystemPermissionDetailCode = 'project-scoped' | 'system-settings' | 'notifications-unavailable' | 'not-implemented'
+export type SystemPermissionTarget = SystemPermissionId | 'files-folders'
+
+const SETTINGS_TARGETS: Record<string, Partial<Record<SystemPermissionTarget, string>>> = {
+  darwin: {
+    notifications: 'x-apple.systempreferences:com.apple.preference.notifications',
+    'files-folders':
+      'x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders',
+  },
+  win32: {
+    notifications: 'ms-settings:notifications',
+    'files-folders': 'ms-settings:privacy-broadfilesystemaccess',
+  },
+}
+
+export function systemPermissionSettingsUrl(
+  platform: string,
+  target: SystemPermissionTarget
+): string | null {
+  const targets = Object.prototype.hasOwnProperty.call(SETTINGS_TARGETS, platform)
+    ? SETTINGS_TARGETS[platform]
+    : undefined
+  return targets && Object.prototype.hasOwnProperty.call(targets, target)
+    ? (targets[target] ?? null)
+    : null
+}
+
+export type SystemPermissionDetailCode =
+  'project-scoped' | 'system-settings' | 'notifications-unavailable' | 'not-implemented'
 
 export interface SystemPermissionRecord {
   id: SystemPermissionId
@@ -38,7 +65,7 @@ const PLANNED_PERMISSION_IDS: SystemPermissionId[] = [
   'accessibility',
   'microphone',
   'automation',
-  'location'
+  'location',
 ]
 
 export function unavailablePermissionRecords(): SystemPermissionRecord[] {
@@ -47,6 +74,6 @@ export function unavailablePermissionRecords(): SystemPermissionRecord[] {
     status: 'unavailable',
     actionable: false,
     implemented: false,
-    detailCode: 'not-implemented'
+    detailCode: 'not-implemented',
   }))
 }

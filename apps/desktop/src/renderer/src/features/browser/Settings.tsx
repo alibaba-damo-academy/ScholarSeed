@@ -1,6 +1,7 @@
 import { BROWSER_ERROR_KEYS, VAULT_ERROR_KEYS, VAULT_STATE_KEYS, DATA_TYPE_KEYS } from './messages'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { ChevronDown } from 'lucide-react'
 
 import { BROWSER_ERROR } from '../../../../browser'
 import type {
@@ -27,29 +28,40 @@ import {
   AlertDialogPortal,
   AlertDialogTitle,
   Button,
+  Breadcrumb,
+  BreadcrumbList,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
   Card,
   CardDescription,
   CardTitle,
   Checkbox,
+  Collapsible,
+  CollapsibleTrigger,
+  CollapsibleContent,
   Input,
+  PageSection,
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
   Switch,
+  useToast,
 } from '../../components/ui'
 import type { BrowserSettingsSection } from '../../../../navigation'
 import { History, type HistoryActionLease } from './History'
-import { SettingsPage } from '../../components/business/Settings'
+import { SettingsField, SettingsGroup, SettingsPage } from '../../components/business/Settings'
 import { VAULT_ERROR, type VaultError, type VaultIntent, type VaultStatus } from '../../../../vault'
 
 const EMPTY_AUTOMATION: BrowserSnapshot['automation'] = { enabled: false, port: null }
 const LOOPBACK_HOST = '127.0.0.1'
 const HOUR_MILLISECONDS = 60 * 60 * 1000
 const DAY_MILLISECONDS = 24 * HOUR_MILLISECONDS
-type ClearChoice = 'hour' | 'day' | 'all-history' | 'site' | 'selected' | 'all-data'
-const DATA_TYPE_CHOICES: BrowserDataType[] = ['history', 'cookies', 'storage', 'cache']
+type ClearChoice = 'hour' | 'day' | 'all-history'
+const DATA_TYPE_CHOICES: BrowserDataType[] = ['history', 'cookies', 'cache']
 const INITIAL_VAULT_STATUS: VaultStatus = { state: 'unavailable', generation: 0 }
 
 function VaultSettings(): React.JSX.Element {
@@ -115,13 +127,19 @@ function VaultSettings(): React.JSX.Element {
     status.state === 'unavailable' || status.state === 'unlocking' || status.state === 'locking'
   return (
     <Card className="grid gap-[var(--vds-space-4)]" data-testid="browser-settings-vault">
-      <div>
-        <CardTitle>{t('vault.title')}</CardTitle>
-        <CardDescription>{t('vault.description')}</CardDescription>
+      <div className="flex items-start justify-between gap-[var(--vds-space-4)]">
+        <div className="min-w-0">
+          <CardTitle className="!text-[length:var(--vds-font-body-lv2)] !font-[var(--vds-fw-regular)]">
+            {t('vault.title')}
+          </CardTitle>
+          <CardDescription className="!text-[length:var(--vds-font-body-lv2)] !leading-[var(--vds-lh-body-lv2)]">
+            {t('vault.description')}
+          </CardDescription>
+        </div>
+        <p role="status" className="shrink-0 text-[var(--vds-text-secondary)]">
+          {t(VAULT_STATE_KEYS[status.state])}
+        </p>
       </div>
-      <p role="status" className="text-[var(--vds-text-secondary)]">
-        {t(VAULT_STATE_KEYS[status.state])}
-      </p>
       {count !== null && (
         <p className="text-[var(--vds-text-secondary)]">{t('vault.summary', { count })}</p>
       )}
@@ -167,7 +185,7 @@ function VaultSettings(): React.JSX.Element {
           </Button>
         )}
       </div>
-      {error && (
+      {error && error !== VAULT_ERROR.revoked && (
         <p role="alert" className="text-[var(--vds-error-text-primary)]">
           {t(VAULT_ERROR_KEYS[error])}
         </p>
@@ -184,12 +202,13 @@ export function BrowserSettings({
   onSection,
   isSurfaceCurrent = CURRENT_SURFACE,
 }: {
-  onHistoryReopened: () => void
+  onHistoryReopened: (pageId: string) => void
   section?: BrowserSettingsSection
   onSection?: (section: BrowserSettingsSection) => void
   isSurfaceCurrent?: () => boolean
 }): React.JSX.Element {
   const { t } = useTranslation('browser')
+  const showAdvancedSettings = window.scholarseed.browserAdvancedSettingsEnabled === true
   const [automation, setAutomation] = useState(EMPTY_AUTOMATION)
   const [error, setError] = useState<BrowserErrorCode | null>(null)
   const [dataError, setDataError] = useState<BrowserErrorCode | null>(null)
@@ -197,9 +216,11 @@ export function BrowserSettings({
   const [copied, setCopied] = useState(false)
   const [clearChoice, setClearChoice] = useState<ClearChoice>('hour')
   const [selectedDataTypes, setSelectedDataTypes] = useState<BrowserDataType[]>([])
-  const [siteOrigin, setSiteOrigin] = useState('')
   const [confirmClear, setConfirmClear] = useState(false)
-  const [dataMessage, setDataMessage] = useState<string | null>(null)
+  useEffect(() => {
+    if (section === 'data') setConfirmClear(true)
+  }, [section])
+  const { toast } = useToast()
   const [sharedMutation, setSharedMutation] = useState<object | null>(null)
   const [historyInvalidationGeneration, setHistoryInvalidationGeneration] = useState(0)
   const invalidation = useRef(0)
@@ -208,7 +229,6 @@ export function BrowserSettings({
   if (surface.current.section !== section || surface.current.current !== isSurfaceCurrent) {
     surface.current = { section, current: isSurfaceCurrent, epoch: surface.current.epoch + 1 }
     setConfirmClear(false)
-    setDataMessage(null)
     setDataError(null)
   }
   const surfaceEpoch = surface.current.epoch
@@ -219,6 +239,7 @@ export function BrowserSettings({
   const historyBusy = sharedMutation !== null
   const [downloadSettings, setDownloadSettings] = useState<BrowserDownloadSettings | null>(null)
   const [downloadBusy, setDownloadBusy] = useState(false)
+  const downloadMutation = useRef(false)
   const [downloadError, setDownloadError] = useState<BrowserErrorCode | null>(null)
   const [policy, setPolicy] = useState<BrowserPolicySnapshot | null>(null)
   const [policyLoading, setPolicyLoading] = useState(true)
@@ -233,6 +254,14 @@ export function BrowserSettings({
 
   useEffect(() => {
     mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!showAdvancedSettings) return
+    let active = true
     const bridge = window.scholarseed.browser
     const unsubscribe = bridge.subscribe((snapshot) => {
       sequence.current += 1
@@ -242,20 +271,21 @@ export function BrowserSettings({
     void bridge
       .snapshot()
       .then((reply) => {
-        if (!mounted.current) return
+        if (!active) return
         if (!reply.ok) setError(reply.error)
         else if (sequence.current === revision) setAutomation(reply.snapshot.automation)
       })
       .catch(() => {
-        if (mounted.current) setError(BROWSER_ERROR.operationFailed)
+        if (active) setError(BROWSER_ERROR.operationFailed)
       })
     return () => {
-      mounted.current = false
+      active = false
       unsubscribe()
     }
-  }, [])
+  }, [showAdvancedSettings])
 
   useEffect(() => {
+    if (section !== 'overview') return
     let active = true
     void window.scholarseed.browser
       .downloads({ kind: 'read' })
@@ -270,9 +300,10 @@ export function BrowserSettings({
     return () => {
       active = false
     }
-  }, [])
+  }, [section])
 
   useEffect(() => {
+    if (!showAdvancedSettings) return
     let active = true
     void window.scholarseed.browser
       .policy({ kind: 'read' })
@@ -291,7 +322,7 @@ export function BrowserSettings({
     return () => {
       active = false
     }
-  }, [])
+  }, [showAdvancedSettings])
 
   const retryPolicy = async (): Promise<void> => {
     if (policyLoading || policyBusy) return
@@ -341,17 +372,20 @@ export function BrowserSettings({
   const updateDownloads = async (
     request: Exclude<BrowserDownloadRequest, { kind: 'read' }>
   ): Promise<void> => {
-    if (downloadBusy) return
+    if (downloadMutation.current || !surfaceCurrent()) return
+    downloadMutation.current = true
     setDownloadBusy(true)
     setDownloadError(null)
     try {
       const reply = await window.scholarseed.browser.downloads(request)
+      if (!mounted.current || !surfaceCurrent()) return
       if (reply.ok) setDownloadSettings(reply.settings)
       else setDownloadError(reply.error)
     } catch {
-      setDownloadError(BROWSER_ERROR.operationFailed)
+      if (mounted.current && surfaceCurrent()) setDownloadError(BROWSER_ERROR.operationFailed)
     } finally {
-      setDownloadBusy(false)
+      downloadMutation.current = false
+      if (mounted.current) setDownloadBusy(false)
     }
   }
 
@@ -374,19 +408,17 @@ export function BrowserSettings({
     const lease = acquireAction()
     if (!lease) return
     setDataError(null)
-    setDataMessage(null)
-    const request: BrowserDataRequest =
+    const since =
       clearChoice === 'hour'
-        ? { kind: 'clear-history', since: Date.now() - HOUR_MILLISECONDS }
+        ? Date.now() - HOUR_MILLISECONDS
         : clearChoice === 'day'
-          ? { kind: 'clear-history', since: Date.now() - DAY_MILLISECONDS }
-          : clearChoice === 'all-history'
-            ? { kind: 'clear-history' }
-            : clearChoice === 'site'
-              ? { kind: 'clear-site-data', origin: siteOrigin.trim() }
-              : clearChoice === 'selected'
-                ? { kind: 'clear-selected', types: selectedDataTypes }
-                : { kind: 'clear-all' }
+          ? Date.now() - DAY_MILLISECONDS
+          : undefined
+    const request: BrowserDataRequest = {
+      kind: 'clear-selected',
+      types: selectedDataTypes,
+      ...(selectedDataTypes.includes('history') && since !== undefined ? { since } : {}),
+    }
     try {
       const reply = await window.scholarseed.browser.clearData(request)
       if (!lease.current()) return
@@ -394,7 +426,7 @@ export function BrowserSettings({
       else {
         invalidation.current += 1
         setHistoryInvalidationGeneration(invalidation.current)
-        setDataMessage(t('settings.clearDone'))
+        toast({ tone: 'success', title: t('settings.clearDone') })
       }
     } catch {
       if (lease.current()) setDataError(BROWSER_ERROR.operationFailed)
@@ -436,26 +468,129 @@ export function BrowserSettings({
       surfaceCurrent() && mutation.current === null && expected === invalidation.current,
     [surfaceCurrent]
   )
+  const clearDialog = (
+    <AlertDialog open={confirmClear} onOpenChange={setConfirmClear}>
+      <AlertDialogPortal>
+        <AlertDialogContent
+          showCloseButton
+          aria-label={t('settings.dataTitle')}
+          className="!z-[var(--vds-z-modal-nested)]"
+          overlayClassName="!z-[var(--vds-z-modal-nested-overlay)]"
+        >
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('settings.dataTitle')}</AlertDialogTitle>
+            <AlertDialogDescription className="[font-weight:var(--vds-fw-regular)] !text-[var(--vds-text-tertiary)]">
+              {t('settings.clearDialogDescription')}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="grid gap-[var(--vds-space-2)]">
+            <p>{t('settings.historyTimeRange')}</p>
+            <Select
+              disabled={historyBusy}
+              value={clearChoice}
+              onValueChange={(value) => setClearChoice(value as ClearChoice)}
+            >
+              <SelectTrigger aria-label={t('settings.historyTimeRange')}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="!z-[var(--vds-z-modal-nested-flyout)]">
+                <SelectItem value="hour">{t('settings.clearHour')}</SelectItem>
+                <SelectItem value="day">{t('settings.clearDay')}</SelectItem>
+                <SelectItem value="all-history">{t('settings.clearHistory')}</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div
+            className="grid gap-[var(--vds-space-4)]"
+            role="group"
+            aria-label={t('settings.clearCategories')}
+          >
+            {DATA_TYPE_CHOICES.map((type) => (
+              <Checkbox
+                key={type}
+                label={t(type === 'cookies' ? 'settings.cookiesStorage' : DATA_TYPE_KEYS[type])}
+                checked={selectedDataTypes.includes(type)}
+                disabled={historyBusy}
+                onCheckedChange={(checked) =>
+                  setSelectedDataTypes((current) => {
+                    const types: BrowserDataType[] =
+                      type === 'cookies' ? ['cookies', 'storage'] : [type]
+                    return checked
+                      ? [...new Set([...current, ...types])]
+                      : current.filter((value) => !types.includes(value))
+                  })
+                }
+              />
+            ))}
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={historyBusy}>{t('settings.cancel')}</AlertDialogCancel>
+            <AlertDialogAction
+              variant="danger"
+              disabled={historyBusy || selectedDataTypes.length === 0}
+              onClick={() => void clearData()}
+            >
+              {t('settings.clearSelectedAction')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialogPortal>
+    </AlertDialog>
+  )
   const history = (
-    <History
-      onReopened={onHistoryReopened}
-      invalidationGeneration={historyInvalidationGeneration}
-      disabled={historyBusy}
-      acquireAction={acquireAction}
-      isCurrent={historyCurrent}
-    />
+    <>
+      {clearDialog}
+      <History
+        onClear={() => setConfirmClear(true)}
+        clearDialogOpen={confirmClear}
+        onManage={section === 'overview' ? () => onSection?.('history') : undefined}
+        onReopened={onHistoryReopened}
+        invalidationGeneration={historyInvalidationGeneration}
+        disabled={historyBusy}
+        acquireAction={acquireAction}
+        isCurrent={historyCurrent}
+      />
+      {dataError && (
+        <p
+          role="alert"
+          data-testid="browser-clear-error"
+          className="text-[var(--vds-error-text-primary)]"
+        >
+          {t(BROWSER_ERROR_KEYS[dataError])}
+        </p>
+      )}
+    </>
   )
 
-  if (section === 'history')
+  if (section === 'history' || section === 'data')
     return (
       <SettingsPage
         data-testid="account-settings-browser-history"
-        title={t('settings.historyPageTitle')}
+        scroll="none"
+        title={
+          <Breadcrumb className="!text-[length:var(--vds-font-subhead)] !leading-[var(--vds-lh-subhead)]">
+            <BreadcrumbList>
+              <BreadcrumbItem>
+                <BreadcrumbLink
+                  className="!text-[var(--vds-text-tertiary)] hover:!text-[var(--vds-text-primary)]"
+                  href="#"
+                  onClick={(event) => {
+                    event.preventDefault()
+                    onSection?.('overview')
+                  }}
+                >
+                  {t('settings.title')}
+                </BreadcrumbLink>
+              </BreadcrumbItem>
+              <BreadcrumbSeparator />
+              <BreadcrumbItem>
+                <BreadcrumbPage>{t('settings.historyPageTitle')}</BreadcrumbPage>
+              </BreadcrumbItem>
+            </BreadcrumbList>
+          </Breadcrumb>
+        }
         description={t('settings.historyDescription')}
       >
-        <Button variant="outline" onClick={() => onSection?.('overview')}>
-          {t('settings.historyBack')}
-        </Button>
         {history}
       </SettingsPage>
     )
@@ -464,395 +599,360 @@ export function BrowserSettings({
     <SettingsPage
       data-testid="account-settings-browser"
       title={t('settings.title')}
-      description={t('settings.description')}
+      description={null}
+      className="!gap-[var(--vds-space-5)] [&_p]:!text-[length:var(--vds-font-body-lv1)] [&_p]:!leading-[var(--vds-lh-body-lv1)] [&>[data-slot=page-body]]:gap-[var(--vds-space-5)] [&_[data-slot=page-section]>h2]:!leading-[var(--vds-control-label-line-height)]"
     >
-      <VaultSettings />
-      <Card className="grid gap-[var(--vds-space-4)]" data-testid="browser-settings-cdp">
-        <div className="flex items-start justify-between gap-[var(--vds-space-4)]">
-          <div className="min-w-0">
-            <CardTitle>{t('settings.cdpTitle')}</CardTitle>
-            <CardDescription>{t('settings.cdpDescription')}</CardDescription>
-          </div>
-          <Switch
-            checked={automation.enabled}
-            disabled={busy || unavailable}
-            label={t(automation.enabled ? 'disableAutomation' : 'enableAutomation')}
-            onCheckedChange={(enabled) => {
-              void dispatch({ kind: 'automation', enabled })
-            }}
-          />
-        </div>
-        <p className="text-[var(--vds-text-secondary)]" role="status">
-          {address ? t('settings.address', { address }) : t('settings.disabled')}
-        </p>
-        {address && (
-          <Button
-            type="button"
-            variant="outline"
-            disabled={busy}
-            onClick={() => {
-              void dispatch({ kind: 'copy-endpoint' })
-            }}
+      <PageSection title={t('settings.generalTitle')} className="!gap-[var(--vds-space-3)]">
+        <SettingsGroup data-testid="browser-history-management">
+          <SettingsField
+            title={t('settings.historyTitle')}
+            variant="panel"
+            description={
+              <span className="text-[var(--vds-text-placeholder)]">
+                {t('settings.historyOverviewDescription')}
+              </span>
+            }
           >
-            {t('copyEndpoint')}
-          </Button>
-        )}
-        {copied && (
-          <p role="status" className="text-[var(--vds-text-secondary)]">
-            {t('copied')}
-          </p>
-        )}
-        <p className="text-[var(--vds-text-secondary)]">{t('settings.warning')}</p>
-        {error && (
-          <p role="alert" className="text-[var(--vds-error-text-primary)]">
-            {t(BROWSER_ERROR_KEYS[error])}
-          </p>
-        )}
-      </Card>
-      <Card className="grid gap-[var(--vds-space-4)]" data-testid="browser-settings-downloads">
-        <div>
-          <CardTitle>{t('settings.downloadTitle')}</CardTitle>
-          <CardDescription>{t('settings.downloadDescription')}</CardDescription>
-        </div>
-        <p
-          className="break-all text-[var(--vds-text-secondary)]"
-          data-testid="browser-download-directory"
-        >
-          {downloadSettings?.directory ?? t('settings.downloadLoading')}
-        </p>
+            <Button
+              size="sm"
+              variant="outline"
+              className="!text-[length:var(--vds-font-body-lv1)] !leading-[var(--vds-lh-body-lv1)]"
+              onClick={() => onSection?.('history')}
+            >
+              {t('settings.manageHistory')}
+            </Button>
+          </SettingsField>
+        </SettingsGroup>
+      </PageSection>
+      <PageSection title={t('settings.downloadTitle')} className="!gap-[var(--vds-space-3)]">
+        <SettingsGroup data-testid="browser-settings-downloads">
+          <SettingsField
+            title={t('settings.downloadLocation')}
+            variant="panel"
+            description={
+              <span
+                className="break-all text-[var(--vds-text-placeholder)]"
+                data-testid="browser-download-directory"
+              >
+                {downloadSettings?.directory ?? t('settings.downloadLoading')}
+              </span>
+            }
+          >
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="!text-[length:var(--vds-font-body-lv1)] !leading-[var(--vds-lh-body-lv1)]"
+              disabled={downloadBusy || !downloadSettings}
+              onClick={() => {
+                void updateDownloads({ kind: 'choose-directory' })
+              }}
+            >
+              {t('settings.downloadChoose')}
+            </Button>
+            {downloadSettings && !downloadSettings.isDefault && (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="!text-[length:var(--vds-font-body-lv1)] !leading-[var(--vds-lh-body-lv1)]"
+                disabled={downloadBusy}
+                onClick={() => {
+                  void updateDownloads({ kind: 'reset-directory' })
+                }}
+              >
+                {t('settings.downloadReset')}
+              </Button>
+            )}
+          </SettingsField>
+          <SettingsField
+            title={t('settings.downloadAskEveryTime')}
+            description={t('settings.downloadAskDescription')}
+            variant="panel"
+          >
+            <Switch
+              checked={downloadSettings?.askEveryTime ?? false}
+              disabled={downloadBusy || !downloadSettings?.automaticAvailable}
+              label={t('settings.downloadAskEveryTime')}
+              onCheckedChange={(enabled) => {
+                void updateDownloads({ kind: 'set-ask-every-time', enabled })
+              }}
+            />
+          </SettingsField>
+        </SettingsGroup>
         {downloadSettings && !downloadSettings.directoryAvailable && (
           <p role="alert" className="text-[var(--vds-error-text-primary)]">
             {t('settings.downloadMissing')}
           </p>
         )}
-        <div className="flex items-center justify-between gap-[var(--vds-space-4)]">
-          <span>{t('settings.downloadAskEveryTime')}</span>
-          <Switch
-            checked={downloadSettings?.askEveryTime ?? true}
-            disabled={downloadBusy || !downloadSettings?.automaticAvailable}
-            label={t('settings.downloadAskEveryTime')}
-            onCheckedChange={(enabled) => {
-              void updateDownloads({ kind: 'set-ask-every-time', enabled })
-            }}
-          />
-        </div>
         {downloadSettings && !downloadSettings.automaticAvailable && (
           <p className="text-[var(--vds-text-secondary)]">
             {t('settings.downloadAutomaticUnavailable')}
           </p>
         )}
-        <p className="text-[var(--vds-text-secondary)]">
-          {t('settings.downloadAgentNavigationBlocked')}
-        </p>
-        <div className="flex flex-wrap gap-[var(--vds-space-2)]">
-          <Button
-            type="button"
-            variant="outline"
-            disabled={downloadBusy || !downloadSettings}
-            onClick={() => {
-              void updateDownloads({ kind: 'choose-directory' })
-            }}
-          >
-            {t('settings.downloadChoose')}
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            disabled={downloadBusy || !downloadSettings || downloadSettings.isDefault}
-            onClick={() => {
-              void updateDownloads({ kind: 'reset-directory' })
-            }}
-          >
-            {t('settings.downloadReset')}
-          </Button>
-        </div>
         {downloadError && (
           <p role="alert" className="text-[var(--vds-error-text-primary)]">
             {t(BROWSER_ERROR_KEYS[downloadError])}
           </p>
         )}
-      </Card>
-      <Card className="grid gap-[var(--vds-space-4)]" data-testid="browser-settings-agent-sites">
-        <div className="flex items-start justify-between gap-[var(--vds-space-4)]">
-          <div className="min-w-0">
-            <CardTitle>{t('settings.agentUseTitle')}</CardTitle>
-            <CardDescription>{t('settings.agentUseDescription')}</CardDescription>
-          </div>
-          <Switch
-            checked={policy?.agentBrowserUseEnabled ?? false}
-            disabled={policyBusy || !policy}
-            label={t('settings.agentUseTitle')}
-            onCheckedChange={(enabled) => {
-              void updatePolicy({ kind: 'set-agent-use', enabled })
-            }}
-          />
-        </div>
-        {policy && !policy.agentBrowserUseEnabled && (
-          <p role="status" className="text-[var(--vds-text-secondary)]">
-            {t('settings.agentUseOff')}
-          </p>
-        )}
-        <div>
-          <CardTitle>{t('settings.agentSitesTitle')}</CardTitle>
-          <CardDescription>{t('settings.agentSitesDescription')}</CardDescription>
-        </div>
-        <p className="text-[var(--vds-text-secondary)]">{t('settings.agentSubmit')}</p>
-        {policyLoading ? (
-          <p role="status" className="text-[var(--vds-text-secondary)]">
-            {t('settings.agentSitesLoading')}
-          </p>
-        ) : !policy ? (
-          <div className="grid gap-[var(--vds-space-2)]">
-            <p role="alert" className="text-[var(--vds-error-text-primary)]">
-              {t('settings.agentSitesUnavailable')}
-            </p>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => {
-                void retryPolicy()
-              }}
-            >
-              {t('settings.agentSitesRetry')}
+      </PageSection>
+      {showAdvancedSettings && (
+        <Collapsible className="items-start">
+          <CollapsibleTrigger asChild>
+            <Button variant="ghost" size="sm" className="group w-fit justify-self-start">
+              {t('settings.advanced')}
+              <ChevronDown aria-hidden="true" className="group-data-[state=open]:rotate-180" />
             </Button>
-          </div>
-        ) : (
-          <>
-            <div className="flex min-w-0 flex-wrap items-end gap-[var(--vds-space-2)]">
-              <Input
-                label={t('settings.agentOrigin')}
-                placeholder="https://example.org"
-                value={policyOrigin}
-                onChange={(event) => setPolicyOrigin(event.target.value)}
-                disabled={policyBusy}
-              />
-              <Select
-                value={policyAction}
-                onValueChange={(value) => setPolicyAction(value as BrowserPolicyAction)}
-                disabled={policyBusy}
-              >
-                <SelectTrigger aria-label={t('settings.agentAction')}>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="read">{t('settings.agentRead')}</SelectItem>
-                  <SelectItem value="interact">{t('settings.agentInteract')}</SelectItem>
-                </SelectContent>
-              </Select>
-              <Select
-                value={policyDecision}
-                onValueChange={(value) => setPolicyDecision(value as BrowserPolicyDecision)}
-                disabled={policyBusy}
-              >
-                <SelectTrigger aria-label={t('settings.agentDecision')}>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="allow">{t('settings.agentAllow')}</SelectItem>
-                  <SelectItem value="block">{t('settings.agentBlock')}</SelectItem>
-                </SelectContent>
-              </Select>
-              <Button
-                type="button"
-                variant="outline"
-                disabled={policyBusy || !policyOrigin.trim()}
-                onClick={() => {
-                  void updatePolicy({
-                    kind: 'set',
-                    origin: policyOrigin.trim(),
-                    action: policyAction,
-                    decision: policyDecision,
-                  })
-                }}
-              >
-                {t('settings.agentAdd')}
-              </Button>
-            </div>
-            {policy.sites.length === 0 ? (
-              <p className="text-[var(--vds-text-secondary)]">{t('settings.agentSitesEmpty')}</p>
-            ) : (
-              <ul className="grid gap-[var(--vds-space-3)]" data-testid="browser-agent-site-list">
-                {policy.sites.map((site) => (
-                  <li
-                    key={site.origin}
-                    className="flex min-w-0 flex-wrap items-center gap-[var(--vds-space-3)] border-b border-[var(--vds-border-default)] pb-[var(--vds-space-3)]"
+          </CollapsibleTrigger>
+          <CollapsibleContent
+            data-testid="browser-settings-advanced"
+            className="grid w-full gap-[var(--vds-space-4)] border-0 bg-transparent p-0 text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] leading-[var(--vds-lh-body-lv2)] [&_.vds-card__title]:!text-[length:var(--vds-font-body-lv2)] [&_.vds-card__title]:!font-[var(--vds-fw-regular)] [&_.vds-card__description]:!text-[length:var(--vds-font-body-lv2)] [&_.vds-card__description]:!leading-[var(--vds-lh-body-lv2)] [&_.vds-button]:!h-[var(--vds-control-height-sm)] [&_.vds-button]:!text-[length:var(--vds-font-body-lv2)] [&_.vds-input]:!h-[var(--vds-control-height-sm)] [&_.vds-input]:!text-[length:var(--vds-font-body-lv2)] [&_.vds-select]:!h-[var(--vds-control-height-sm)] [&_.vds-select]:!text-[length:var(--vds-font-body-lv2)]"
+          >
+            <VaultSettings />
+            <Card className="grid gap-[var(--vds-space-4)]" data-testid="browser-settings-cdp">
+              <div className="flex items-start justify-between gap-[var(--vds-space-4)]">
+                <div className="min-w-0">
+                  <CardTitle className="!text-[length:var(--vds-font-body-lv2)] !font-[var(--vds-fw-regular)]">
+                    {t('settings.cdpTitle')}
+                  </CardTitle>
+                  <CardDescription className="!text-[length:var(--vds-font-body-lv2)] !leading-[var(--vds-lh-body-lv2)]">
+                    {t('settings.cdpDescription')}
+                  </CardDescription>
+                </div>
+                <Switch
+                  checked={automation.enabled}
+                  disabled={busy || unavailable}
+                  label={t(automation.enabled ? 'disableAutomation' : 'enableAutomation')}
+                  onCheckedChange={(enabled) => {
+                    void dispatch({ kind: 'automation', enabled })
+                  }}
+                />
+              </div>
+              <p className="text-[var(--vds-text-secondary)]" role="status">
+                {address ? t('settings.address', { address }) : t('settings.disabled')}
+              </p>
+              {address && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => {
+                    void dispatch({ kind: 'copy-endpoint' })
+                  }}
+                >
+                  {t('copyEndpoint')}
+                </Button>
+              )}
+              {copied && (
+                <p role="status" className="text-[var(--vds-text-secondary)]">
+                  {t('copied')}
+                </p>
+              )}
+              <p className="text-[var(--vds-text-secondary)]">{t('settings.warning')}</p>
+              {error && (
+                <p role="alert" className="text-[var(--vds-error-text-primary)]">
+                  {t(BROWSER_ERROR_KEYS[error])}
+                </p>
+              )}
+            </Card>
+            <Card
+              className="grid gap-[var(--vds-space-4)]"
+              data-testid="browser-settings-agent-sites"
+            >
+              <div className="flex items-start justify-between gap-[var(--vds-space-4)]">
+                <div className="min-w-0">
+                  <CardDescription className="!text-[length:var(--vds-font-body-lv2)] !leading-[var(--vds-lh-body-lv2)]">
+                    {t('settings.agentUseDescription')}
+                  </CardDescription>
+                </div>
+                <Switch
+                  checked={policy?.agentBrowserUseEnabled ?? false}
+                  disabled={policyBusy || !policy}
+                  label={t('settings.agentUseTitle')}
+                  onCheckedChange={(enabled) => {
+                    void updatePolicy({ kind: 'set-agent-use', enabled })
+                  }}
+                />
+              </div>
+              {policy && !policy.agentBrowserUseEnabled && (
+                <p role="status" className="text-[var(--vds-text-secondary)]">
+                  {t('settings.agentUseOff')}
+                </p>
+              )}
+              <div>
+                <CardTitle className="!text-[length:var(--vds-font-body-lv2)] !font-[var(--vds-fw-regular)]">
+                  {t('settings.agentSitesTitle')}
+                </CardTitle>
+                <CardDescription className="!text-[length:var(--vds-font-body-lv2)] !leading-[var(--vds-lh-body-lv2)]">
+                  {t('settings.agentSitesDescription')}
+                </CardDescription>
+              </div>
+              <p className="text-[var(--vds-text-secondary)]">{t('settings.agentSubmit')}</p>
+              {policyLoading ? (
+                <p role="status" className="text-[var(--vds-text-secondary)]">
+                  {t('settings.agentSitesLoading')}
+                </p>
+              ) : !policy ? (
+                <div className="grid gap-[var(--vds-space-2)]">
+                  <p role="alert" className="text-[var(--vds-error-text-primary)]">
+                    {t('settings.agentSitesUnavailable')}
+                  </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => {
+                      void retryPolicy()
+                    }}
                   >
-                    <span className="min-w-0 break-all">{site.origin}</span>
+                    {t('settings.agentSitesRetry')}
+                  </Button>
+                </div>
+              ) : (
+                <>
+                  <div className="grid min-w-0 grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,3fr)] items-end gap-[var(--vds-space-3)] [&>*]:min-w-0">
+                    <Input
+                      size="standard"
+                      label={t('settings.agentOrigin')}
+                      placeholder="https://example.org"
+                      value={policyOrigin}
+                      onChange={(event) => setPolicyOrigin(event.target.value)}
+                      disabled={policyBusy}
+                    />
                     <Select
-                      value={site.read}
-                      onValueChange={(value) => {
-                        void updatePolicy({
-                          kind: 'set',
-                          origin: site.origin,
-                          action: 'read',
-                          decision: value as BrowserPolicyDecision,
-                        })
-                      }}
+                      size="standard"
+                      value={policyAction}
+                      onValueChange={(value) => setPolicyAction(value as BrowserPolicyAction)}
                       disabled={policyBusy}
                     >
-                      <SelectTrigger aria-label={`${site.origin} · ${t('settings.agentRead')}`}>
+                      <SelectTrigger aria-label={t('settings.agentAction')}>
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="ask">{t('settings.agentAsk')}</SelectItem>
-                        <SelectItem value="allow">{t('settings.agentAllow')}</SelectItem>
-                        <SelectItem value="block">{t('settings.agentBlock')}</SelectItem>
+                        <SelectItem value="read">{t('settings.agentRead')}</SelectItem>
+                        <SelectItem value="interact">{t('settings.agentInteract')}</SelectItem>
                       </SelectContent>
                     </Select>
                     <Select
-                      value={site.interact}
-                      onValueChange={(value) => {
-                        void updatePolicy({
-                          kind: 'set',
-                          origin: site.origin,
-                          action: 'interact',
-                          decision: value as BrowserPolicyDecision,
-                        })
-                      }}
+                      size="standard"
+                      value={policyDecision}
+                      onValueChange={(value) => setPolicyDecision(value as BrowserPolicyDecision)}
                       disabled={policyBusy}
                     >
-                      <SelectTrigger aria-label={`${site.origin} · ${t('settings.agentInteract')}`}>
+                      <SelectTrigger aria-label={t('settings.agentDecision')}>
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="ask">{t('settings.agentAsk')}</SelectItem>
                         <SelectItem value="allow">{t('settings.agentAllow')}</SelectItem>
                         <SelectItem value="block">{t('settings.agentBlock')}</SelectItem>
                       </SelectContent>
                     </Select>
                     <Button
+                      size="standard"
                       type="button"
                       variant="outline"
-                      disabled={policyBusy}
+                      disabled={policyBusy || !policyOrigin.trim()}
                       onClick={() => {
-                        void updatePolicy({ kind: 'remove', origin: site.origin })
+                        void updatePolicy({
+                          kind: 'set',
+                          origin: policyOrigin.trim(),
+                          action: policyAction,
+                          decision: policyDecision,
+                        })
                       }}
                     >
-                      {t('settings.agentRemove', { origin: site.origin })}
+                      {t('settings.agentAdd')}
                     </Button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </>
-        )}
-        {policyError && policy && (
-          <p role="alert" className="text-[var(--vds-error-text-primary)]">
-            {t(BROWSER_ERROR_KEYS[policyError])}
-          </p>
-        )}
-      </Card>
-      {history}
-      <Card className="grid gap-[var(--vds-space-4)]" data-testid="browser-settings-data">
-        <div>
-          <CardTitle>{t('settings.dataTitle')}</CardTitle>
-          <CardDescription>{t('settings.dataDescription')}</CardDescription>
-        </div>
-        <Select
-          disabled={historyBusy}
-          value={clearChoice}
-          onValueChange={(value) => setClearChoice(value as ClearChoice)}
-        >
-          <SelectTrigger aria-label={t('settings.clearScope')}>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="hour">{t('settings.clearHour')}</SelectItem>
-            <SelectItem value="day">{t('settings.clearDay')}</SelectItem>
-            <SelectItem value="all-history">{t('settings.clearHistory')}</SelectItem>
-            <SelectItem value="site">{t('settings.clearSite')}</SelectItem>
-            <SelectItem value="selected">{t('settings.clearSelected')}</SelectItem>
-            <SelectItem value="all-data">{t('settings.clearAll')}</SelectItem>
-          </SelectContent>
-        </Select>
-        {clearChoice === 'site' && (
-          <Input
-            disabled={historyBusy}
-            label={t('settings.siteOrigin')}
-            placeholder="https://example.org"
-            value={siteOrigin}
-            onChange={(event) => setSiteOrigin(event.target.value)}
-          />
-        )}
-        {(clearChoice === 'site' || clearChoice === 'selected') && (
-          <p className="text-[var(--vds-text-secondary)]">{t('settings.profileClearNotice')}</p>
-        )}
-        {clearChoice === 'selected' && (
-          <div
-            className="grid gap-[var(--vds-space-2)]"
-            role="group"
-            aria-label={t('settings.clearSelected')}
-          >
-            {DATA_TYPE_CHOICES.map((type) => (
-              <Checkbox
-                key={type}
-                label={t(DATA_TYPE_KEYS[type])}
-                checked={selectedDataTypes.includes(type)}
-                disabled={historyBusy}
-                onCheckedChange={(checked) =>
-                  setSelectedDataTypes((current) =>
-                    checked
-                      ? DATA_TYPE_CHOICES.filter(
-                          (choice) => choice === type || current.includes(choice)
-                        )
-                      : current.filter((choice) => choice !== type)
-                  )
-                }
-              />
-            ))}
-            <p className="text-[var(--vds-text-secondary)]">{t('settings.selectedDataNotice')}</p>
-          </div>
-        )}
-        <Button
-          type="button"
-          variant="outline"
-          disabled={
-            historyBusy ||
-            (clearChoice === 'site' && !siteOrigin.trim()) ||
-            (clearChoice === 'selected' && selectedDataTypes.length === 0)
-          }
-          onClick={() => setConfirmClear(true)}
-        >
-          {t('settings.clearAction')}
-        </Button>
-        {dataMessage && (
-          <p role="status" className="text-[var(--vds-text-secondary)]">
-            {dataMessage}
-          </p>
-        )}
-        {dataError && (
-          <p role="alert" className="text-[var(--vds-error-text-primary)]">
-            {t(BROWSER_ERROR_KEYS[dataError])}
-          </p>
-        )}
-        <AlertDialog open={confirmClear} onOpenChange={setConfirmClear}>
-          <AlertDialogPortal>
-            <AlertDialogContent
-              className="!z-[var(--vds-z-modal-nested)]"
-              overlayClassName="!z-[var(--vds-z-modal-nested-overlay)]"
-            >
-              <AlertDialogHeader>
-                <AlertDialogTitle>{t('settings.clearConfirmTitle')}</AlertDialogTitle>
-                <AlertDialogDescription>
-                  {t('settings.clearConfirmDescription')}
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel disabled={historyBusy}>{t('settings.cancel')}</AlertDialogCancel>
-                <AlertDialogAction
-                  variant="danger"
-                  disabled={historyBusy}
-                  onClick={() => {
-                    void clearData()
-                  }}
-                >
-                  {t('settings.clearAction')}
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialogPortal>
-        </AlertDialog>
-      </Card>
+                  </div>
+                  {policy.sites.length === 0 ? (
+                    <p className="text-[var(--vds-text-secondary)]">
+                      {t('settings.agentSitesEmpty')}
+                    </p>
+                  ) : (
+                    <ul
+                      className="grid gap-[var(--vds-space-3)]"
+                      data-testid="browser-agent-site-list"
+                    >
+                      {policy.sites.map((site) => (
+                        <li
+                          key={site.origin}
+                          className="grid min-w-0 grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,3fr)] items-center gap-[var(--vds-space-3)] [&>*]:min-w-0"
+                        >
+                          <span className="min-w-0 break-all">{site.origin}</span>
+                          <Select
+                            size="standard"
+                            value={site.read}
+                            onValueChange={(value) => {
+                              void updatePolicy({
+                                kind: 'set',
+                                origin: site.origin,
+                                action: 'read',
+                                decision: value as BrowserPolicyDecision,
+                              })
+                            }}
+                            disabled={policyBusy}
+                          >
+                            <SelectTrigger
+                              aria-label={`${site.origin} · ${t('settings.agentRead')}`}
+                            >
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="ask">{t('settings.agentAsk')}</SelectItem>
+                              <SelectItem value="allow">{t('settings.agentAllow')}</SelectItem>
+                              <SelectItem value="block">{t('settings.agentBlock')}</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <Select
+                            size="standard"
+                            value={site.interact}
+                            onValueChange={(value) => {
+                              void updatePolicy({
+                                kind: 'set',
+                                origin: site.origin,
+                                action: 'interact',
+                                decision: value as BrowserPolicyDecision,
+                              })
+                            }}
+                            disabled={policyBusy}
+                          >
+                            <SelectTrigger
+                              aria-label={`${site.origin} · ${t('settings.agentInteract')}`}
+                            >
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="ask">{t('settings.agentAsk')}</SelectItem>
+                              <SelectItem value="allow">{t('settings.agentAllow')}</SelectItem>
+                              <SelectItem value="block">{t('settings.agentBlock')}</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <Button
+                            size="standard"
+                            className="min-w-0 whitespace-normal"
+                            type="button"
+                            variant="outline"
+                            disabled={policyBusy}
+                            onClick={() => {
+                              void updatePolicy({ kind: 'remove', origin: site.origin })
+                            }}
+                          >
+                            {t('settings.agentRemove', { origin: site.origin })}
+                          </Button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </>
+              )}
+              {policyError && policy && (
+                <p role="alert" className="text-[var(--vds-error-text-primary)]">
+                  {t(BROWSER_ERROR_KEYS[policyError])}
+                </p>
+              )}
+            </Card>
+          </CollapsibleContent>
+        </Collapsible>
+      )}
     </SettingsPage>
   )
 }

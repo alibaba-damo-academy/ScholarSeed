@@ -1,4 +1,6 @@
 import React from 'react'
+import { WebNavigationContext } from '../../contracts/navigation'
+import type { ElementContent } from 'hast'
 import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
 import ReactMarkdown, { type Components } from 'react-markdown'
@@ -23,17 +25,35 @@ import {
   type MarkdownCitationOccurrence,
   rehypeScholarSeedDecorations,
 } from '../markdown/decorate'
-import { GFM_PLUGIN } from '../markdown/gfm'
+import { GFM_PLUGIN } from '../../../../markdown/gfm.ts'
+import { remarkLiteralHtml } from '../../../../markdown/literal.ts'
 import {
   CITATION_MARKER,
   CITATION_PENDING,
+  CITATION_GROUP,
+  CITATION_GROUP_HIDDEN,
+  type MarkdownCitationEntry,
   type MarkdownCitationReference,
 } from '../markdown/citations'
 import { relativeSessionFilePath } from '../markdown/links'
-import { prepareMarkdownSource, prepareMathSource, visibleMarkdownText } from '../markdown/source'
-import { FORMULA_SOURCE, rehypeAnswerMath, remarkAnswerMath } from '../markdown/math'
+import { sourceLeaf } from '../markdown/source'
+import {
+  prepareMarkdownSource,
+  prepareMathSource,
+  visibleMarkdownText,
+} from '../../../../markdown/source.ts'
+import {
+  FORMULA_SOURCE,
+  INLINE_FORMULA_SOURCE,
+  rehypeAnswerMath,
+  remarkAnswerMath,
+} from '../../../../markdown/math.ts'
 import { Code } from './Code'
-import { Formula } from './Formula'
+import { SourceBoundary } from './Recovery'
+import { Link } from './Link'
+import { Illustration } from './Illustration'
+import { Diagram } from './Diagram'
+import { Formula, InlineFormula } from './Formula'
 import { Tabulation } from './Tabulation'
 import {
   rehypeTabulation,
@@ -50,13 +70,13 @@ export type { MarkdownAnswerAnnotation }
 
 const MARKDOWN_CLASS_NAME = [
   'md min-w-0 max-w-full cursor-text select-text font-[var(--font)] text-[15.5px] font-normal leading-[1.62] text-[var(--text)]',
-  '[overflow-wrap:anywhere] break-words [&>*:first-child]:mt-0',
+  '[overflow-wrap:anywhere] break-words [&>*:first-child]:mt-0 [&>*:last-child]:mb-0',
   '[&_strong]:font-semibold [&_strong]:text-[var(--text)] [&_em]:italic',
   /* inline code 用 inline-block + max-w-full：inline 非替换元素不受 max-width 约束，
-     带 px/border 的长文件路径 code 会溢出行盒（对话区横向滚动条）；成为 inline-block
+     带水平内边距的长文件路径 code 会溢出行盒（对话区横向滚动条）；成为 inline-block
      后 max-w-full 生效，短 code 仍内联、长 code 在 chip 内折行。 */
-  '[&_code]:inline-block [&_code]:max-w-full [&_code]:align-baseline [&_code]:whitespace-normal [&_code]:rounded-[4px] [&_code]:border [&_code]:border-[var(--border-soft)]',
-  '[&_code]:bg-[var(--bg-3)] [&_code]:px-[5px] [&_code]:py-px [&_code]:font-[var(--font-mono)]',
+  '[&_code]:inline-block [&_code]:max-w-full [&_code]:align-baseline [&_code]:whitespace-normal [&_code]:rounded-[4px]',
+  '[&_code]:bg-[var(--vds-other-overlay-1)] [&_code]:px-[5px] [&_code]:py-0 [&_code]:font-[var(--font-mono)]',
   '[&_code]:text-[0.86em] [&_code]:[overflow-wrap:anywhere] [&_code]:break-words',
   '[&_code]:[-webkit-box-decoration-break:clone] [&_code]:[box-decoration-break:clone]',
   '[&_a]:font-[550] [&_a]:text-[var(--text)] [&_a]:underline',
@@ -86,8 +106,7 @@ const MARKDOWN_TABLE_CLASS_NAME = [
   'md-table m-0 table border-collapse font-[family-name:var(--font-sans)] text-[length:var(--vds-font-body-lv2)]',
   '[&_th]:bg-[var(--vds-surface-muted)] [&_th]:font-[var(--vds-fw-medium)] [&_th]:text-[var(--vds-text-secondary)]',
 ].join(' ')
-const MARKDOWN_ANSWER_ANNOTATION_CLASS_NAME =
-  'md-answer-annotation rounded-[3px] bg-[color-mix(in_srgb,var(--accent)_14%,transparent)] text-inherit'
+const MARKDOWN_ANSWER_ANNOTATION_CLASS_NAME = 'md-answer-annotation rounded-[3px] text-inherit'
 const MARKDOWN_ANSWER_ANNOTATION_FOCUSED_CLASS_NAME =
   'bg-[color-mix(in_srgb,var(--vds-notice-5)_28%,transparent)] ring-2 ring-[var(--vds-notice-5)] ring-offset-2 ring-offset-[var(--vds-bg-page)]'
 const EMPTY_CITATION_URLS: string[] = []
@@ -183,15 +202,6 @@ function useEvidenceSourcePreviews(
         : {},
     [active, sourceKey, t]
   )
-}
-
-function openExternalSource(url: string): void {
-  if (!url) return
-  if (window.scholarseed?.openExternal) {
-    void window.scholarseed.openExternal(url)
-    return
-  }
-  window.open(url, '_blank', 'noreferrer')
 }
 
 function EvidenceReferenceSpan({
@@ -419,6 +429,12 @@ function EvidenceReferenceSpan({
 }
 
 interface MarkdownRenderOptions {
+  renderCitationGroup?: (entries: MarkdownCitationEntry[]) => React.ReactNode
+  source?: string
+  sourceMapped?: boolean
+  pending?: boolean
+  resolveImage?: (path: string) => string | undefined
+  loadRemoteImage?: (url: string) => Promise<Uint8Array>
   onCopy?: (source: string, html?: string) => Promise<void>
   onOpenExternal?: (url: string) => void
   evidence: Map<string, EvidenceAnnotation>
@@ -451,16 +467,24 @@ function PendingCitation(): React.JSX.Element {
   )
 }
 
+function markdownNodeText(node: ElementContent): string {
+  return node.type === 'text'
+    ? node.value
+    : node.type === 'element'
+      ? node.children.map(markdownNodeText).join('')
+      : ''
+}
+
 function markdownComponents(): Components {
   return {
     div: ({ node, ...props }) => {
-      const { onCopy } = React.useContext(MarkdownRenderContext)
+      const { onCopy, pending } = React.useContext(MarkdownRenderContext)
       const source = node?.properties[FORMULA_SOURCE]
       const invalidTable = node?.properties[TABLE_INVALID]
       if (typeof invalidTable === 'string')
-        return <Tabulation invalidSource={invalidTable} onCopy={onCopy} />
+        return <Tabulation invalidSource={invalidTable} onCopy={onCopy} pending={pending} />
       return typeof source === 'string' ? (
-        <Formula source={source} onCopy={onCopy} />
+        <Formula source={source} onCopy={onCopy} pending={pending} />
       ) : (
         <div {...props} />
       )
@@ -513,23 +537,36 @@ function markdownComponents(): Components {
     ),
     hr: ({ node: _node, ...props }) => <hr className={MARKDOWN_HR_CLASS_NAME} {...props} />,
     pre: ({ node: _node, children, ...props }) => {
-      const { onCopy } = React.useContext(MarkdownRenderContext)
-      const child = React.Children.toArray(children)[0]
-      if (
-        !React.isValidElement<{ className?: string; children?: React.ReactNode }>(child) ||
-        typeof child.props.children !== 'string'
-      ) {
+      const { onCopy, pending, source, sourceMapped } = React.useContext(MarkdownRenderContext)
+      const child = _node?.children.find(
+        (node) => node.type === 'element' && node.tagName === 'code'
+      )
+      if (!child || child.type !== 'element') {
         return (
           <pre className={MARKDOWN_PRE_CLASS_NAME} {...props}>
             {children}
           </pre>
         )
       }
-      const language = child.props.className
-        ?.split(' ')
-        .find((value) => value.startsWith('language-'))
-        ?.slice('language-'.length)
-      return <Code code={child.props.children} language={language} onCopy={onCopy} />
+      const classes = child.properties.className
+      const language = Array.isArray(classes)
+        ? classes
+            .map(String)
+            .find((value) => value.startsWith('language-'))
+            ?.slice('language-'.length)
+        : undefined
+      const text = markdownNodeText(child)
+      const start = _node?.position?.start.offset
+      const end = _node?.position?.end.offset
+      const mapping =
+        sourceMapped && source !== undefined && start !== undefined && end !== undefined
+          ? (sourceLeaf(source, text, start, end, 'fenced-code') ?? undefined)
+          : undefined
+      return language === 'mermaid' ? (
+        <Diagram source={text} onCopy={onCopy} pending={pending} sourceMap={mapping} />
+      ) : (
+        <Code code={text} language={language} onCopy={onCopy} sourceMap={mapping} />
+      )
     },
     table: ({ node, ...props }) => {
       const { onCopy } = React.useContext(MarkdownRenderContext)
@@ -568,12 +605,24 @@ function markdownComponents(): Components {
     },
     a: ({ node: _node, href, children, ...props }) => {
       const {
+        renderCitationGroup,
         renderCitation,
         onOpenSessionFile,
         renderSessionFileLink,
         renderSourceLink,
         onOpenExternal,
+        onCopy,
       } = React.useContext(MarkdownRenderContext)
+      if (renderCitationGroup && _node?.properties[CITATION_GROUP_HIDDEN]) return null
+      if (renderCitationGroup && typeof _node?.properties[CITATION_GROUP] === 'string') {
+        return (
+          <>
+            {renderCitationGroup(
+              JSON.parse(_node.properties[CITATION_GROUP]) as MarkdownCitationEntry[]
+            )}
+          </>
+        )
+      }
       if (_node?.properties[CITATION_PENDING]) return <PendingCitation />
       if (renderCitation && href && _node?.properties[CITATION_MARKER]) {
         const start = _node?.position?.start.offset
@@ -601,40 +650,77 @@ function markdownComponents(): Components {
           </Button>
         )
       }
-      return url ? (
-        <a
-          {...props}
-          href={url}
-          rel="noopener noreferrer"
-          onClick={(event) => {
-            event.preventDefault()
-            onOpenExternal?.(url)
-          }}
+      const label = _node?.children.map(markdownNodeText).join('')
+      return url && onOpenExternal ? (
+        <Link
+          anchorProps={props}
+          url={url}
+          compact={label === href || label === url}
+          onOpen={onOpenExternal}
+          onCopy={onCopy}
         >
           {children}
-        </a>
+        </Link>
       ) : (
         <span>{children}</span>
       )
     },
-    img: ({ node: _node, alt }) => {
+    img: ({ node: _node, alt, src }) => {
       const { t } = useTranslation('ui')
-      return <span className="md-image-placeholder">{alt || t('markdown.image')}</span>
+      const {
+        resolveImage,
+        loadRemoteImage,
+        renderSessionFileLink,
+        onOpenSessionFile,
+        onOpenExternal,
+      } = React.useContext(MarkdownRenderContext)
+      const path = src ? relativeSessionFilePath(src) : null
+      const external = safeExternalUrl(src ?? '')
+      const action =
+        path && renderSessionFileLink ? (
+          renderSessionFileLink(path, t('markdown.openImage'))
+        ) : path && onOpenSessionFile ? (
+          <Button variant="outline" size="sm" onClick={() => onOpenSessionFile(path)}>
+            {t('markdown.openImage')}
+          </Button>
+        ) : external && onOpenExternal ? (
+          <Button variant="outline" size="sm" onClick={() => onOpenExternal(external)}>
+            {t('markdown.openImage')}
+          </Button>
+        ) : undefined
+      return (
+        <Illustration
+          key={src}
+          source={src ?? ''}
+          url={path ? resolveImage?.(path) : undefined}
+          loadRemoteImage={external.startsWith('https:') ? loadRemoteImage : undefined}
+          alt={alt}
+          action={action}
+        />
+      )
     },
     mark: ({ node: _node, className: _className, ...props }) => {
+      const { annotations } = React.useContext(MarkdownRenderContext)
+      const annotationId = (props as Record<string, unknown>)[
+        'data-scholarseed-answer-annotation-id'
+      ] as string | undefined
+      const highlighted = annotationId ? annotations.get(annotationId)?.highlighted : false
       const focused =
         (props as Record<string, unknown>)['data-scholarseed-answer-annotation-focused'] === 'true'
       return (
         <mark
           className={`${MARKDOWN_ANSWER_ANNOTATION_CLASS_NAME} ${
-            focused ? MARKDOWN_ANSWER_ANNOTATION_FOCUSED_CLASS_NAME : ''
-          }`}
+            highlighted ? 'bg-[var(--vds-other-overlay-2)]' : 'bg-transparent'
+          } ${focused ? MARKDOWN_ANSWER_ANNOTATION_FOCUSED_CLASS_NAME : ''}`}
           {...props}
         />
       )
     },
     span: ({ node: _node, children, ...props }) => {
-      const { evidence, annotations, renderMarker } = React.useContext(MarkdownRenderContext)
+      const { evidence, annotations, renderMarker, pending } =
+        React.useContext(MarkdownRenderContext)
+      const formula = _node?.properties[INLINE_FORMULA_SOURCE]
+      if (typeof formula === 'string') return <InlineFormula source={formula} pending={pending} />
       if (_node?.properties[CITATION_PENDING]) return <PendingCitation />
       const data = props as Record<string, unknown>
       const evidenceId = data['data-scholarseed-evidence-id'] as string | undefined
@@ -669,11 +755,18 @@ export function Markdown(
   props: Omit<React.ComponentProps<typeof MarkdownContent>, 'onOpenExternal' | 'onCopy'>
 ): React.JSX.Element {
   return (
-    <MarkdownContent {...props} onOpenExternal={openExternalSource} onCopy={copyMarkdownSource} />
+    <MarkdownContent
+      {...props}
+      onOpenExternal={React.useContext(WebNavigationContext)}
+      onCopy={copyMarkdownSource}
+    />
   )
 }
 
 export function MarkdownContent({
+  pending = false,
+  resolveImage,
+  loadRemoteImage,
   text,
   onCopy,
   className,
@@ -685,6 +778,8 @@ export function MarkdownContent({
   answerAnnotations = [],
   renderAnswerAnnotationMarker,
   renderCitation,
+  renderCitationGroup,
+  citationGroupKeys,
   onOpenSessionFile,
   renderSessionFileLink,
   renderSourceLink,
@@ -695,6 +790,9 @@ export function MarkdownContent({
   citationPending = false,
 }: {
   text: string
+  pending?: boolean
+  resolveImage?: (path: string) => string | undefined
+  loadRemoteImage?: (url: string) => Promise<Uint8Array>
   onCopy?: (source: string, html?: string) => Promise<void>
   className?: string
   math?: boolean
@@ -709,15 +807,18 @@ export function MarkdownContent({
     children: React.ReactNode,
     href: string
   ) => React.ReactNode
+  renderCitationGroup?: (entries: MarkdownCitationEntry[]) => React.ReactNode
+  citationGroupKeys?: Readonly<Record<string, string>>
   onOpenSessionFile?: (path: string) => void
   renderSessionFileLink?: (path: string, children: React.ReactNode) => React.ReactNode
   renderSourceLink?: (href: string, children: React.ReactNode) => React.ReactNode
-  onOpenExternal: (url: string) => void
+  onOpenExternal?: (url: string) => void
   citationUrls?: string[]
   citationReferences?: MarkdownCitationReference[]
   citationOccurrences?: MarkdownCitationOccurrence[]
   citationPending?: boolean
 }): React.JSX.Element {
+  const { t } = useTranslation('ui')
   const renderMath = math ?? texMath
   const parseCache = React.useMemo(() => createMarkdownParseCache(), [renderMath])
   const source = String(text || '')
@@ -734,10 +835,16 @@ export function MarkdownContent({
   const citationUrlSet = React.useMemo(() => new Set(citationUrls), [citationUrls])
   const renderOptions = React.useMemo(
     () => ({
+      source,
+      sourceMapped,
+      pending,
+      resolveImage,
+      loadRemoteImage,
       evidence: evidenceById,
       annotations: answersById,
       renderMarker: renderAnswerAnnotationMarker,
       renderCitation,
+      renderCitationGroup,
       onOpenSessionFile,
       renderSessionFileLink,
       renderSourceLink,
@@ -745,10 +852,16 @@ export function MarkdownContent({
       onCopy,
     }),
     [
+      source,
+      sourceMapped,
+      pending,
+      resolveImage,
+      loadRemoteImage,
       answersById,
       evidenceById,
       renderAnswerAnnotationMarker,
       renderCitation,
+      renderCitationGroup,
       onOpenSessionFile,
       renderSessionFileLink,
       renderSourceLink,
@@ -767,6 +880,7 @@ export function MarkdownContent({
         citationReferences,
         citationOccurrences,
         citationPending,
+        citationGroupKeys: renderCitationGroup ? citationGroupKeys : undefined,
         isSourceLink: renderSourceLink ? (href) => renderSourceLink(href, null) != null : undefined,
       }),
     [
@@ -775,6 +889,8 @@ export function MarkdownContent({
       citationReferences,
       citationOccurrences,
       citationPending,
+      citationGroupKeys,
+      renderCitationGroup,
       evidence,
       source,
       sourceMapped,
@@ -784,38 +900,56 @@ export function MarkdownContent({
   return (
     <MarkdownRenderContext.Provider value={renderOptions}>
       <div className={`${MARKDOWN_CLASS_NAME} ${className ?? ''}`}>
-        <ReactMarkdown
-          components={MARKDOWN_COMPONENTS}
-          rehypePlugins={
-            renderMath
-              ? [decoration, rehypeTabulation, rehypeAnswerMath, rehypeKatex]
-              : [decoration, rehypeTabulation]
-          }
-          remarkPlugins={
-            renderMath
-              ? [
-                  GFM_PLUGIN,
-                  remarkTabulation,
-                  remarkCjkFriendly,
-                  remarkBreaks,
-                  remarkAnswerMath,
-                  parseCache,
-                ]
-              : [GFM_PLUGIN, remarkTabulation, remarkCjkFriendly, remarkBreaks, parseCache]
-          }
-          skipHtml
-          urlTransform={(url, key) =>
-            key === 'href' && renderSourceLink?.(url, null) != null
-              ? url
-              : renderCitation && (isCitationUrl(url) || citationUrlSet.has(url))
-                ? url
-                : (onOpenSessionFile || renderSessionFileLink) && relativeSessionFilePath(url)
-                  ? url
-                  : safeExternalUrl(url)
-          }
+        <SourceBoundary
+          source={visibleMarkdownText(source)}
+          message={t('markdown.renderFailed')}
+          onCopy={onCopy}
         >
-          {renderedSource}
-        </ReactMarkdown>
+          <ReactMarkdown
+            components={MARKDOWN_COMPONENTS}
+            rehypePlugins={
+              renderMath
+                ? [decoration, rehypeTabulation, [rehypeAnswerMath, preparedSource], rehypeKatex]
+                : [decoration, rehypeTabulation]
+            }
+            remarkPlugins={
+              renderMath
+                ? [
+                    GFM_PLUGIN,
+                    remarkTabulation,
+                    remarkCjkFriendly,
+                    remarkBreaks,
+                    remarkAnswerMath,
+                    remarkLiteralHtml,
+                    parseCache,
+                  ]
+                : [
+                    GFM_PLUGIN,
+                    remarkTabulation,
+                    remarkCjkFriendly,
+                    remarkBreaks,
+                    remarkLiteralHtml,
+                    parseCache,
+                  ]
+            }
+            skipHtml
+            urlTransform={(url, key) =>
+              key === 'src' &&
+              (resolveImage || renderSessionFileLink || onOpenSessionFile) &&
+              relativeSessionFilePath(url)
+                ? url
+                : key === 'href' && renderSourceLink?.(url, null) != null
+                  ? url
+                  : renderCitation && (isCitationUrl(url) || citationUrlSet.has(url))
+                    ? url
+                    : (onOpenSessionFile || renderSessionFileLink) && relativeSessionFilePath(url)
+                      ? url
+                      : safeExternalUrl(url)
+            }
+          >
+            {renderedSource}
+          </ReactMarkdown>
+        </SourceBoundary>
       </div>
     </MarkdownRenderContext.Provider>
   )

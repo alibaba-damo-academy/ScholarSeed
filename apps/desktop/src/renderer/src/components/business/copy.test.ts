@@ -14,6 +14,112 @@ import { answerCopyText, hasCopyCard, readCardCopy, replyCopyText } from './copy
 
 const reference = { plugin: 'notes', component: 'focus', fingerprint: 'v1', binding: 'binding' }
 
+test('search reply copy receives the linked authoritative authorization projection', async () => {
+  const card: ConvItem = {
+    kind: 'display_card',
+    turnId: 'turn',
+    card: {
+      cardId: 'result',
+      type: 'literature-search',
+      component: { plugin: 'host', component: 'display.literature-search', fingerprint: 'v1' },
+      content: {
+        selection: { artifact_id: 'selection' },
+        fulltext_authorization: { disposition: 'not_required', evidence_kind: 'abstract' },
+      },
+    },
+  }
+  const pending: ConvItem = {
+    kind: 'hil',
+    turnId: 'turn',
+    requestId: 'authorization',
+    hilKind: 'question',
+    hilState: 'pending',
+    questions: [{ id: 'question', question: 'Read?', resultCardId: 'result', options: [] }],
+  }
+  const legacy = {
+    ...card,
+    card: { ...card.card, content: { selection: { artifact_id: 'selection' } } },
+  }
+  for (const [items, expected] of [
+    [[card], 'unknown'],
+    [[legacy], 'unknown'],
+    [[card, pending], 'pending'],
+    [[card, { ...pending, hilState: 'resolved', answers: { question: '一键授权' } }], 'authorized'],
+    [[card, { ...pending, hilState: 'cancelled' }], 'unknown'],
+    [[card, { ...pending, hilState: 'resolved', answers: { question: '拒绝' } }], 'rejected'],
+  ] as const) {
+    await replyCopyText(
+      items,
+      'turn',
+      async (_reference, data) => {
+        assert.equal(
+          (data.context as { authorization?: { status: string } })?.authorization?.status,
+          expected
+        )
+        return { text: 'result' }
+      },
+      'missing'
+    )
+  }
+})
+
+test('reply copy leaves non-search card data unchanged', async () => {
+  const content = { title: 'Review', context: { projectId: 'project' } }
+  await replyCopyText(
+    [
+      {
+        kind: 'display_card',
+        turnId: 'turn',
+        card: {
+          cardId: 'review',
+          type: 'literature-review',
+          component: reference,
+          content,
+        },
+      },
+    ],
+    'turn',
+    async (_reference, data) => {
+      assert.equal(data, content)
+      return { text: 'Review' }
+    },
+    'missing'
+  )
+})
+
+test('whole-answer copying preserves project titles and URLs shared by body and table', () => {
+  const local = '/api/resource/raw?project=p&path=output%2Freport.md#L2'
+  const web = 'https://example.test/paper'
+  const sources: AnswerSource[] = [
+    {
+      kind: 'project',
+      number: 1,
+      source_kind: 'resource',
+      project_id: 'p',
+      path: 'output/report.md',
+      title: 'report.md',
+      url: local,
+      citation_urls: [local],
+    },
+    {
+      kind: 'searched',
+      number: 2,
+      title: '论文',
+      url: web,
+      search_kind: 'paper',
+      search_id: 'read',
+      citation_urls: [web],
+    },
+  ]
+  const copied = answerCopyText(
+    `正文[实验说明](${local})。\n\n| 项目 | 来源 |\n| --- | --- |\n| 数据 | [1](${local}) |\n| 论文 | [2](${web}) |`,
+    sources
+  )
+  assert.ok(copied.includes(`[1] report.md\n${local}`))
+  assert.ok(copied.includes(`[2] 论文\n${web}`))
+  assert.equal(copied.split(local).length, 2)
+})
+
 test('private outline copy uses product-owned snapshot projection rather than stale plugin text', async () => {
   const localization = createInstance()
   await localization.init({
@@ -114,8 +220,12 @@ test('localized reply copy keeps normalized historical authorization options sel
     undefined,
     { policies: [literatureRetrievalAuthorization], localization }
   )
-  assert.match(copied, /\[x\] Authorize/)
-  assert.doesNotMatch(copied, /\[ \] Authorize/)
+  const optionLines = copied.split('\n').filter((line) => /^\[[x ]\] /.test(line))
+  const { authorize, reject, authorizeDescription, rejectDescription } = en.review.authorization
+  assert.deepEqual(optionLines, [
+    `[x] ${authorize} ${authorizeDescription}`,
+    `[ ] ${reject} ${rejectDescription}`,
+  ])
 })
 
 test('current copy presentation survives stale plugin state without changing server business data', async (context) => {

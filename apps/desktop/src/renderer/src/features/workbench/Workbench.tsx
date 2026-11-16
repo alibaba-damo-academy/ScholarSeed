@@ -8,6 +8,7 @@ import { useApp } from '../../store'
 import { DocumentDock } from './Dock'
 import {
   FIXED_TAB_BY_VIEW,
+  OVERVIEW_TAB,
   synchronizeWorkbenchTab,
   tabMatchesProject,
   workbenchTabVisible,
@@ -20,19 +21,22 @@ export function Workbench(): React.JSX.Element {
   const { state, set } = useApp()
   const documents = useDocumentWorkspace()
   const workspace = useWorkspaceController()
-  const pageTabs = state.tabs.filter(
-    (tab) =>
+  const pageTabs = state.tabs.filter((tab) => {
+    const dockable = featureRegistry.viewers.get(tab.kind)?.dockable
+    return (
       availabilityPolicy.tabAvailable(tab) &&
       tabMatchesProject(tab, state.homeSelectedProjectId) &&
-      featureRegistry.viewers.get(tab.kind)?.dockable
-  )
+      (typeof dockable === 'function' ? dockable(tab.id) : dockable)
+    )
+  })
   const pageIds = JSON.stringify(pageTabs.map((tab) => tab.id))
   useLayoutEffect(() => {
     const ids: string[] = JSON.parse(pageIds)
     workspace.synchronizePageTabs(ids)
     if (ids.includes(state.activeTab)) workspace.focusTab(state.activeTab)
-    else if (workspace.getSnapshot().tabs[state.activeTab]?.embedded) {
-      workspace.setTabEmbedded(state.activeTab, false)
+    else if (workspace.getSnapshot().tabs[state.activeTab]) {
+      if (workspace.getSnapshot().tabs[state.activeTab].embedded)
+        workspace.setTabEmbedded(state.activeTab, false)
       workspace.focusTab(state.activeTab)
     }
   }, [workspace, pageIds, state.activeTab])
@@ -40,7 +44,7 @@ export function Workbench(): React.JSX.Element {
     (entry) =>
       availabilityPolicy.tabAvailable(entry) &&
       tabMatchesProject(entry, state.homeSelectedProjectId) &&
-      workbenchTabVisible(entry, state.mainView)
+      workbenchTabVisible(entry, state.mainView, state.activeSession)
   )
   const activeTab = visibleTabs.find((entry) => entry.id === state.activeTab)
   const focusedTab = documents.focusedTabId ? documents.tabs[documents.focusedTabId] : undefined
@@ -54,12 +58,16 @@ export function Workbench(): React.JSX.Element {
   const fixedTab = visibleTabs.find((entry) => entry.id === FIXED_TAB_BY_VIEW[state.mainView]?.id)
   const fallbackTab = fixedTab ?? visibleTabs[0]
   const fallbackTabId = focusedDocument?.id ?? fallbackTab?.id
-  const activeTabNeedsSync = !activeTab && !documents.tabs[state.activeTab]
+  const closedProjectWorkbench =
+    state.homeSelectedProjectId &&
+    !state.workbenchLayout.open &&
+    state.activeTab === OVERVIEW_TAB.id
+  const activeTabNeedsSync =
+    !closedProjectWorkbench && !activeTab && !documents.tabs[state.activeTab]
   const tab = activeTab ?? (activeTabNeedsSync && !focusedDocument ? fallbackTab : undefined)
   const kind = tab?.kind === 'file' ? viewerForPath(tab.id) : (tab?.kind ?? 'new_tab')
   const viewer = featureRegistry.viewers.get(kind)
   const contributedViewActive = Boolean(tab && tab.kind !== 'file' && viewer)
-
   useEffect(() => {
     if (!activeTabNeedsSync || !fallbackTabId) return
     set((current) => synchronizeWorkbenchTab(current, state, fallbackTabId))
@@ -72,21 +80,28 @@ export function Workbench(): React.JSX.Element {
     set,
   ])
 
-  if (documents.tabs[state.activeTab] || pageTabs.some((page) => page.id === state.activeTab))
-    return <DocumentDock />
-  if (activeTabNeedsSync && focusedDocument) return <DocumentDock />
-  if (tab && !contributedViewActive && Object.keys(documents.tabs).length > 0) {
-    return <DocumentDock />
-  }
-  if (!tab) return <></>
-  if (!viewer) {
-    return (
-      <Pending
-        feature={t('unavailable.tab')}
-        owner={t('unavailable.workspace')}
-        detail={t('unavailable.viewer', { kind })}
-      />
-    )
-  }
-  return <>{viewer.render({ active: true, path: tab?.id ?? '', tabId: tab?.id })}</>
+  const dockActive = Boolean(
+    documents.tabs[state.activeTab] ||
+    pageTabs.some((page) => page.id === state.activeTab) ||
+    (activeTabNeedsSync && focusedDocument) ||
+    (tab && !contributedViewActive && Object.keys(documents.tabs).length > 0)
+  )
+  const retainDock = tab?.kind === 'browser' && pageTabs.some((page) => visibleTabs.includes(page))
+
+  return (
+    <>
+      {(dockActive || retainDock) && <DocumentDock hidden={!dockActive} />}
+      {!dockActive &&
+        tab &&
+        (viewer ? (
+          viewer.render({ active: true, path: tab.id, tabId: tab.id })
+        ) : (
+          <Pending
+            feature={t('unavailable.tab')}
+            owner={t('unavailable.workspace')}
+            detail={t('unavailable.viewer', { kind })}
+          />
+        ))}
+    </>
+  )
 }

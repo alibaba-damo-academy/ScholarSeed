@@ -14,6 +14,7 @@ import { applicationResources } from './resources.ts'
 import { copyFile, mkdir, mkdtemp, open, readFile, rm, writeFile, rename } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { redactDiagnosticError } from './redaction.ts'
 import {
   prepareWindowsToolGroup,
   prepareWindowsTransfer,
@@ -67,6 +68,18 @@ export function initializeWindowsVelopack(): void {
 }
 // index.ts imports this module first: installer hooks run before normal app state.
 initializeWindowsVelopack()
+export type WindowsPreparationStage =
+  | 'release-manifest'
+  | 'installation-preflight'
+  | 'package-cache'
+  | 'delta-download'
+  | 'full-download'
+  | 'package-verification'
+  | 'release-receipt'
+  | 'runtime-manifest'
+  | 'runtime-components'
+  | 'cleanup'
+
 export interface PrepareWindowsVelopackOptions {
   /** Pinned published release directory, ending in /velopack (not a moving latest feed). */
   baseUrl: string
@@ -78,6 +91,10 @@ export interface PrepareWindowsVelopackOptions {
   diagnosticFile: string
   signal?: AbortSignal
   onProgress?: (percent: number) => void
+  onStage?: (stage: WindowsPreparationStage) => void
+  onFullDownload?: (evidence: FullDownloadEvidence) => void
+  onCleanupError?: (error: unknown) => void
+  log?: (message: string) => void
 }
 export interface PreparedWindowsVelopack {
   packagePath: string
@@ -130,36 +147,94 @@ async function responseBytes(url: string, maximum: number, signal?: AbortSignal)
   }
   return Buffer.concat(chunks)
 }
-async function downloadAsset(
+type DownloadStage =
+  'response' | 'file-open' | 'response-body' | 'file-write' | 'file-close' | 'digest'
+
+interface FullDownloadEvidence {
+  stage: DownloadStage
+  result: 'ready' | 'failed' | 'cleanup-failed'
+  httpStatus?: number
+  expectedBytes: number
+  receivedBytes: number
+  writtenBytes: number
+  diagnostic?: unknown
+}
+
+export async function downloadVelopackAsset(
   base: URL,
   asset: PackageAsset,
   directory: string,
   signal: AbortSignal,
-  progress?: (percent: number) => void
+  progress?: (percent: number) => void,
+  report?: (evidence: FullDownloadEvidence) => void
 ): Promise<void> {
   const url = new URL(encodeURIComponent(asset.FileName), base)
-  const response = await fetch(url, { signal, redirect: 'follow' })
-  if (!response.ok || !response.body || new URL(response.url).protocol !== 'https:')
-    throw new Error(`Velopack asset request failed (${response.status})`)
   const destination = join(directory, asset.FileName)
-  const file = await open(destination, 'wx')
-  let size = 0
+  let stage: DownloadStage = 'response'
+  let httpStatus: number | undefined
+  let receivedBytes = 0
+  let writtenBytes = 0
+  const emit = (result: FullDownloadEvidence['result'], at: DownloadStage, error?: unknown) =>
+    report?.({
+      stage: at,
+      result,
+      httpStatus,
+      expectedBytes: asset.Size,
+      receivedBytes,
+      writtenBytes,
+      ...(error === undefined ? {} : { diagnostic: redactDiagnosticError(error) }),
+    })
   try {
-    for await (const chunk of response.body) {
-      signal.throwIfAborted()
-      size += chunk.length
-      if (size > asset.Size) throw new Error('Velopack asset exceeds signed size')
-      let offset = 0
-      while (offset < chunk.length) {
-        const result = await file.write(chunk, offset, chunk.length - offset)
-        offset += result.bytesWritten
-      }
-      progress?.(Math.floor((size / asset.Size) * 100))
+    const response = await fetch(url, { signal, redirect: 'follow' })
+    httpStatus = response.status
+    if (!response.ok || !response.body || new URL(response.url).protocol !== 'https:') {
+      await response.body?.cancel().catch(() => {})
+      throw new Error(`Velopack asset request failed (${response.status})`)
     }
-  } finally {
-    await file.close()
+    stage = 'file-open'
+    const file = await open(destination, 'wx').catch(async (error: unknown) => {
+      await response.body?.cancel().catch(() => {})
+      throw error
+    })
+    let failed = false
+    try {
+      stage = 'response-body'
+      for await (const chunk of response.body) {
+        signal.throwIfAborted()
+        receivedBytes += chunk.length
+        if (receivedBytes > asset.Size) throw new Error('Velopack asset exceeds signed size')
+        stage = 'file-write'
+        let offset = 0
+        while (offset < chunk.length) {
+          const result = await file.write(chunk, offset, chunk.length - offset)
+          if (!result.bytesWritten) throw new Error('Velopack asset write made no progress')
+          offset += result.bytesWritten
+          writtenBytes += result.bytesWritten
+        }
+        progress?.(Math.floor((receivedBytes / asset.Size) * 100))
+        stage = 'response-body'
+      }
+    } catch (error) {
+      failed = true
+      throw error
+    } finally {
+      try {
+        await file.close()
+      } catch (error) {
+        if (!failed) {
+          stage = 'file-close'
+          throw error
+        }
+        emit('cleanup-failed', 'file-close', error)
+      }
+    }
+    stage = 'digest'
+    await verifyPackageAsset(destination, asset, signal)
+    emit('ready', stage)
+  } catch (error) {
+    emit('failed', stage, error)
+    throw error
   }
-  await verifyPackageAsset(destination, asset, signal)
 }
 async function writeReceipt(path: string, envelope: unknown): Promise<void> {
   const temporary = `${path}.${randomUUID()}`
@@ -175,6 +250,7 @@ export async function prepareWindowsVelopack(
   options: PrepareWindowsVelopackOptions
 ): Promise<PreparedWindowsVelopack> {
   if (process.platform !== 'win32') throw new Error('Velopack is Windows only')
+  options.onStage?.('release-manifest')
   initializeWindowsVelopack()
   const signal = AbortSignal.any([
     ...(options.signal ? [options.signal] : []),
@@ -196,6 +272,7 @@ export async function prepareWindowsVelopack(
     ).toString('utf8')
   )
   const manifest = verifyPackageEnvelope(envelope, options.keys, identity, options.candidate)
+  options.onStage?.('installation-preflight')
   const paths = await locator()
   // Apply is launched after elevation with the installation's package directory.
   // Download/delta cache remains user-owned and need not share its volume.
@@ -210,10 +287,9 @@ export async function prepareWindowsVelopack(
   const receipt = join(paths.PackagesDir, POLICY.receipt)
   const full = manifest.assets.find((asset) => asset.Type === 'Full')!
   const packagePath = join(paths.PackagesDir, full.FileName)
-  let manager: UpdateManager
-  let current: string
+  let failed = false
   try {
-    manager = new UpdateManager(
+    const manager = new UpdateManager(
       new FileSource(temporary),
       {
         AllowVersionDowngrade: false,
@@ -224,25 +300,21 @@ export async function prepareWindowsVelopack(
     )
     if (manager.getAppId() !== manifest.app_id)
       throw new Error('Installed Velopack application identity differs')
-    current = manager.getCurrentVersion()
+    const current = manager.getCurrentVersion()
     assertNewerPackage(manifest.pack_version, current)
-  } catch (error) {
-    await rm(temporary, { recursive: true, force: true })
-    throw error
-  }
-  const target: UpdateInfo = {
-    TargetFullRelease: officialAsset(full, manifest.app_id),
-    DeltasToTarget: [],
-    IsDowngrade: false,
-  }
-  let verified = false
-  let handedOff = false
-  let transfer: WindowsTransfer | null = null
-  const verifyPrepared = async () => {
-    await verifyPackageInventory(packagePath, manifest, [], options.signal)
-    verified = true
-  }
-  try {
+    const target: UpdateInfo = {
+      TargetFullRelease: officialAsset(full, manifest.app_id),
+      DeltasToTarget: [],
+      IsDowngrade: false,
+    }
+    let verified = false
+    let handedOff = false
+    let transfer: WindowsTransfer | null = null
+    const verifyPrepared = async () => {
+      await verifyPackageInventory(packagePath, manifest, [], options.signal)
+      verified = true
+    }
+    options.onStage?.('package-cache')
     // Signed baseline receipt is cache metadata, not a rollback record. Its absence is a full fallback.
     const delta = manifest.assets.find((asset) => asset.Type === 'Delta')
     if (delta && manifest.base_version === current) {
@@ -272,34 +344,51 @@ export async function prepareWindowsVelopack(
     // Never let the SDK's "already exists" shortcut accept unchecked bytes.
     try {
       await verifyPrepared()
+      options.onStage?.('release-receipt')
       await writeReceipt(receipt, envelope)
     } catch (error) {
       verified = false
       signal.throwIfAborted()
+      options.onStage?.('package-cache')
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') await rm(packagePath, { force: true })
       if (target.DeltasToTarget.length) {
         try {
-          await downloadAsset(base, delta!, temporary, signal, options.onProgress)
-          await verifyDeltaPackagePaths(join(temporary, delta!.FileName), patchRoots, signal)
+          options.onStage?.('delta-download')
+          await downloadVelopackAsset(base, delta!, temporary, signal, options.onProgress)
+          options.onStage?.('package-verification')
+          const deltaPath = join(temporary, delta!.FileName)
+          await verifyDeltaPackagePaths(deltaPath, patchRoots, signal)
           await manager.downloadUpdateAsync(target, options.onProgress)
           await verifyPrepared()
         } catch {
           signal.throwIfAborted()
+          options.onStage?.('package-cache')
           await rm(packagePath, { force: true })
           target.BaseRelease = undefined
           target.DeltasToTarget = []
         }
       }
       if (!verified) {
-        await downloadAsset(base, full, temporary, signal, options.onProgress)
+        options.onStage?.('full-download')
+        await downloadVelopackAsset(
+          base,
+          full,
+          temporary,
+          signal,
+          options.onProgress,
+          options.onFullDownload
+        )
+        options.onStage?.('package-verification')
         await manager.downloadUpdateAsync(
           { ...target, BaseRelease: undefined, DeltasToTarget: [] },
           options.onProgress
         )
         await verifyPrepared()
       }
+      options.onStage?.('release-receipt')
       await writeReceipt(receipt, envelope)
     }
+    options.onStage?.('runtime-manifest')
     const runtime = verifyRuntimeEnvelope(
       JSON.parse(
         (
@@ -314,12 +403,14 @@ export async function prepareWindowsVelopack(
       ),
       options.keys
     )
+    options.onStage?.('runtime-components')
     await downloadRuntimeComponents({
       root: paths.RootAppDir,
       native: options.native,
       baseUrl: options.componentBaseUrl,
       manifest: runtime,
       signal,
+      log: options.log,
       onProgress: (state) => options.onProgress?.(Math.floor((state.received / state.total) * 100)),
     })
     return {
@@ -361,7 +452,18 @@ export async function prepareWindowsVelopack(
         await pending?.close()
       },
     }
+  } catch (error) {
+    failed = true
+    throw error
   } finally {
-    await rm(temporary, { recursive: true, force: true })
+    try {
+      await rm(temporary, { recursive: true, force: true })
+    } catch (error) {
+      if (!failed) {
+        options.onStage?.('cleanup')
+        throw error
+      }
+      options.onCleanupError?.(error)
+    }
   }
 }

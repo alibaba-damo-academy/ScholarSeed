@@ -1,4 +1,15 @@
 {
+  "taskArchive": {
+    "confirmTitle": "归档此任务？",
+    "stopTitle": "停止并归档此任务？",
+    "confirmDescription": "确定要归档「{{title}}」吗？归档后，任务将移至侧栏下方的「已归档」，可随时恢复。对话记录和任务产物会保留。",
+    "confirm": "归档",
+    "stopConfirm": "停止并归档",
+    "cancel": "取消",
+    "loading": "正在确认任务状态…",
+    "statusFailed": "无法确认此任务的状态，请取消后重新打开归档确认。",
+    "failed": "归档未完成，任务仍保留在列表中。请重试。"
+  },
   "defaultName": "书深默认项目",
   "title": "项目",
   "archive": {

@@ -1,5 +1,8 @@
 import type { RuntimePreparation } from './api'
+import { feedback, runtimePreparationMessageKey } from './contracts/feedback.ts'
 import {
+  HOST_CONFIGURATION_UNCERTAIN,
+  RECONFIGURATION_ERRORS,
   RECONFIGURATION_POLL_MS,
   RECONFIGURATION_REQUEST_TIMEOUT_MS,
 } from '../../reconfiguration.ts'
@@ -7,12 +10,44 @@ import {
 export const PREPARATION_SUPERSEDED_ERROR = 'runtime_preparation_superseded'
 export const PREPARATION_INSTANCE_CHANGED_ERROR = 'runtime_preparation_instance_changed'
 const PREPARATION_INVALID_RESPONSE_ERROR = 'runtime_preparation_invalid_response'
-const PREPARATION_HOST_BUSY_ERROR = 'runtime_host_busy'
 const PREPARATION_PENDING = 'accepted'
 const HTTP_CLIENT_ERROR = 400
 const HTTP_SERVER_ERROR = 500
 const HTTP_NOT_FOUND = 404
+const HTTP_REQUEST_TIMEOUT = 408
 const HTTP_CONFLICT = 409
+
+type PreparationOutcome = Pick<RuntimePreparation, 'state' | 'error'>
+
+export function runtimePreparationFailure(operation?: PreparationOutcome) {
+  if (operation?.state === 'restart_required')
+    return feedback('components', 'runtimeSwitch.restartRequired')
+  if (operation?.state === 'unsupported') return feedback('components', 'runtimeSwitch.unsupported')
+  if (operation?.error === HOST_CONFIGURATION_UNCERTAIN)
+    return feedback('components', 'runtimeSwitch.restartRequired')
+  return feedback(
+    'components',
+    operation?.state === 'rejected'
+      ? runtimePreparationMessageKey(operation.error)
+      : 'runtimePreparation.unknown'
+  )
+}
+
+export function runtimePreparationForegroundFailure(operation: PreparationOutcome) {
+  if (operation.state === 'rejected' && operation.error === RECONFIGURATION_ERRORS.hostBusy) return
+  return runtimePreparationFailure(operation)
+}
+
+export function runtimePreparationRequestFailure(error: unknown) {
+  const message = error instanceof Error ? error.message : ''
+  if (
+    message === PREPARATION_INSTANCE_CHANGED_ERROR ||
+    (errorStatus(error) !== HTTP_REQUEST_TIMEOUT && fatalRequest(error))
+  ) {
+    return runtimePreparationFailure({ state: 'rejected', error: message })
+  }
+  return runtimePreparationFailure()
+}
 
 export interface PreparationSnapshot {
   model: string
@@ -70,7 +105,7 @@ function fatalRequest(error: unknown): boolean {
     !(
       status === HTTP_CONFLICT &&
       error instanceof Error &&
-      error.message === PREPARATION_HOST_BUSY_ERROR
+      error.message === RECONFIGURATION_ERRORS.hostBusy
     )
   )
 }
@@ -123,6 +158,16 @@ function retainedContextMatches(
     },
     context
   )
+}
+
+export function preparationResultMatches(
+  snapshot: PreparationSnapshot,
+  context: PreparationContext,
+  state: RuntimePreparation['state']
+): boolean {
+  return state === 'restart_required'
+    ? retainedContextMatches(snapshot, context)
+    : preparationContextMatches(snapshot, context)
 }
 
 export function waitForPreparation(

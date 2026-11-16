@@ -3,7 +3,7 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
-import { BROWSER_ERROR } from '../browser.ts'
+import { BROWSER_ERROR, MAX_HISTORY_SEARCH_CHARS } from '../browser.ts'
 import type {
   BrowserHistoryPage,
   BrowserHistoryQuery,
@@ -22,8 +22,8 @@ import {
   inspectHistorySchema,
 } from './history-record.ts'
 const HISTORY_PROOF_TTL_MS = 60_000
+const HISTORY_APPROVAL_HANDOFF_MS = 5_000
 const MAX_HISTORY_PROOFS = 4096
-const MAX_HISTORY_SEARCH_CHARS = 256
 const MAX_HISTORY_INTENT_CHARS = 512
 const MAX_HISTORY_OFFSET = 1000
 const MAX_HISTORY_LIMIT = 20
@@ -357,6 +357,12 @@ export interface HistoryAgentAuthority {
     historyRevision: number
     expiresAt: number
   }): void
+  waitForApproval(input: {
+    scope: BrowserReadScope
+    requestId: string
+    proofId: string
+    signal?: AbortSignal
+  }): Promise<void>
   execute(input: {
     scope: BrowserReadScope
     requestId: string
@@ -390,7 +396,10 @@ export function createHistoryAgentAuthority(
   history: BrowserHistory,
   agentUseRevision: () => number | null
 ): HistoryAgentAuthority {
-  const proofs = new Map<string, { proof: HistoryAgentProof; granted: boolean }>()
+  const proofs = new Map<
+    string,
+    { proof: HistoryAgentProof; granted: boolean; notifyGrant?: () => void }
+  >()
   const leases = new Map<string, { scope: BrowserReadScope; proofId: string; owner: object }>()
   const watchedOwners = new WeakSet<object>()
   const endedOwners = new WeakSet<object>()
@@ -411,10 +420,7 @@ export function createHistoryAgentAuthority(
       throw new Error('browser_unavailable')
     return revision
   }
-  const current = (
-    requestId: string,
-    proofId: string
-  ): { proof: HistoryAgentProof; granted: boolean } => {
+  const current = (requestId: string, proofId: string) => {
     const record = proofs.get(requestId)
     if (!record || record.proof.proofId !== proofId) throw new Error('approval_required')
     if (record.proof.expiresAt <= Date.now()) {
@@ -485,6 +491,37 @@ export function createHistoryAgentAuthority(
       )
         throw new Error('approval_required')
       record.granted = true
+      record.notifyGrant?.()
+    },
+    async waitForApproval(input) {
+      if (input.signal?.aborted) throw new Error('request_expired')
+      const record = current(input.requestId, input.proofId)
+      if (!sameScope(record.proof.scope, input.scope)) throw new Error('stale_scope')
+      if (record.granted) return
+      if (record.notifyGrant) throw new Error('approval_required')
+      await new Promise<void>((resolve, reject) => {
+        const cleanup = (): void => {
+          clearTimeout(timer)
+          delete record.notifyGrant
+          input.signal?.removeEventListener('abort', abort)
+        }
+        const abort = (): void => {
+          cleanup()
+          reject(new Error('request_expired'))
+        }
+        const timer = setTimeout(
+          () => {
+            cleanup()
+            reject(new Error('approval_required'))
+          },
+          Math.min(HISTORY_APPROVAL_HANDOFF_MS, record.proof.expiresAt - Date.now())
+        )
+        record.notifyGrant = () => {
+          cleanup()
+          resolve()
+        }
+        input.signal?.addEventListener('abort', abort, { once: true })
+      })
     },
     execute(input) {
       if (clearing) throw new Error('history_clearing')

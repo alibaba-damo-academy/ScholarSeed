@@ -14,11 +14,13 @@ RECORD_SOURCE_UNAVAILABLE = "records_source_unavailable"
 
 SCHEMA_VERSION = 1
 REVISION_PREFIX = "sha256:"
-MARK_STYLES = frozenset({"highlight", "underline", "strikethrough"})
+POINT_COMMENT_STYLE = "comment"
+MARK_STYLES = frozenset({"highlight", "underline", "strikethrough", POINT_COMMENT_STYLE})
 MARK_COLORS = frozenset({"yellow", "orange", "green", "teal", "blue", "purple", "red", "gray"})
 ANCHOR_STATES = frozenset({"anchored", "stale"})
 EMPTY_RECORDS = {"schema_version": SCHEMA_VERSION, "marks": [], "comments": [], "notes": []}
 FEEDBACK_TEXT_CHARS = 4_000
+NATIVE_ANNOTATIONS = "native_annotations"
 
 
 class RecordOwner(str, Enum):
@@ -93,6 +95,8 @@ class PdfRecordTargetPort(Protocol):
 
     def snapshot_target(self, target: RecordTarget) -> PdfRecordSnapshot: ...
 
+    def peek_target(self, target: RecordTarget) -> PdfRecordSnapshot: ...
+
     def commit_target(
         self,
         target: RecordTarget,
@@ -156,6 +160,21 @@ def _quads(value: Any) -> list[list[float]]:
     return normalized
 
 
+def _point(value: Any) -> list[float]:
+    if not isinstance(value, list) or len(value) != 2:
+        raise ValueError
+    if any(
+        not isinstance(coordinate, (int, float))
+        or isinstance(coordinate, bool)
+        or not math.isfinite(coordinate)
+        or coordinate < 0
+        or coordinate > 1
+        for coordinate in value
+    ):
+        raise ValueError
+    return [float(coordinate) for coordinate in value]
+
+
 def decode_records(payload: bytes | dict[str, Any]) -> dict[str, Any]:
     decoded = json.loads(payload) if isinstance(payload, bytes) else payload
     if not isinstance(decoded, dict) or decoded.get("schema_version") != SCHEMA_VERSION:
@@ -187,14 +206,22 @@ def decode_records(payload: bytes | dict[str, Any]) -> dict[str, Any]:
         ):
             raise ValueError
         mark_ids.add(mark_id)
+        geometry: dict[str, Any]
+        if style == POINT_COMMENT_STYLE:
+            if raw.get("quads") != [] or raw.get("text") != "":
+                raise ValueError
+            geometry = {"point": _point(raw.get("point")), "quads": [], "text": ""}
+        else:
+            if "point" in raw:
+                raise ValueError
+            geometry = {"quads": _quads(raw.get("quads")), "text": _text(raw.get("text"))}
         marks.append(
             {
                 "id": mark_id,
                 "style": style,
                 "color": color,
                 "page": _page(raw.get("page")),
-                "quads": _quads(raw.get("quads")),
-                "text": _text(raw.get("text")),
+                **geometry,
                 "anchor_state": anchor_state,
                 "created_at": _timestamp(raw.get("created_at")),
                 "updated_at": _timestamp(raw.get("updated_at")),
@@ -255,11 +282,55 @@ def decode_records(payload: bytes | dict[str, Any]) -> dict[str, Any]:
                 "excerpts": excerpts,
             }
         )
-    return {"schema_version": SCHEMA_VERSION, "marks": marks, "comments": comments, "notes": notes}
+    result = {
+        "schema_version": SCHEMA_VERSION,
+        "marks": marks,
+        "comments": comments,
+        "notes": notes,
+    }
+    if NATIVE_ANNOTATIONS in decoded:
+        sources = decoded[NATIVE_ANNOTATIONS]
+        if not isinstance(sources, list):
+            raise ValueError
+        normalized_sources = []
+        for source in sources:
+            if not isinstance(source, dict):
+                raise ValueError
+            rect = source.get("rect")
+            if (
+                not isinstance(rect, list)
+                or len(rect) != 4
+                or any(
+                    not isinstance(n, (float, int)) or isinstance(n, bool) or not math.isfinite(n)
+                    for n in rect
+                )
+            ):
+                raise ValueError
+            normalized_sources.append(
+                {
+                    "id": _identifier(source.get("id")),
+                    "page": _page(source.get("page")),
+                    "rect": [float(n) for n in rect],
+                    **{
+                        key: _text(source.get(key, ""))
+                        for key in ("subtype", "name", "contents", "author", "created", "modified")
+                    },
+                }
+            )
+        result[NATIVE_ANNOTATIONS] = normalized_sources
+    return result
 
 
 def encode_records(records: dict[str, Any]) -> bytes:
     return canonical(decode_records(records))
+
+
+def retain_native_sources(records: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:
+    """Keep import provenance when an older client saves only canonical records."""
+    normalized = decode_records(records)
+    if NATIVE_ANNOTATIONS not in normalized and NATIVE_ANNOTATIONS in previous:
+        normalized[NATIVE_ANNOTATIONS] = previous[NATIVE_ANNOTATIONS]
+    return normalized
 
 
 def payload_revision(payload: bytes) -> str:

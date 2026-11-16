@@ -44,6 +44,25 @@ def command(environment: dict[str, str], *arguments: str) -> list[str] | str:
 
 
 class TaskPythonContracts(unittest.TestCase):
+    def test_task_environment_does_not_inherit_product_l1_distribution(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cwd = Path(directory)
+            prepare_commands(cwd)
+            environment = task_environment(cwd)
+            result = subprocess.run(
+                command(
+                    environment,
+                    "-c",
+                    "import importlib.util; assert importlib.util.find_spec('knowledge_layer') is None",
+                ),
+                env=environment,
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     @unittest.skipUnless(sys.platform == "darwin", "macOS execution identity")
     def test_macos_aliases_reject_untrusted_targets_and_cycles(self) -> None:
         for target in ("../python", "/usr/bin/python3", "python", "python3", "directory/python"):

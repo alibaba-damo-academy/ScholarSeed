@@ -12,27 +12,207 @@ const { judgeRun } = require('./verdict.cjs')
 const { parseNodeEvents, nodeReporterArgs } = require('./events.cjs')
 const EXTERNAL_CASES = require('./external-cases.json')
 const QUARANTINE = require('./quarantine.json')
-const { NODE_ARGS, testFiles, expandTestGlob } = require('../../apps/desktop/scripts/ci/test.cjs')
+const { NODE_ARGS, TEST_CONCURRENCY, NATIVE_TEST_FILES, unitTestFiles, expandTestGlob } = require('../../apps/desktop/scripts/ci/test.cjs')
 const { CONTRACT_FILES } = require('../../apps/desktop/scripts/ci/pretest.cjs')
 
 const ROOT = path.resolve(__dirname, '../..')
 const DESKTOP = path.join(ROOT, 'apps', 'desktop')
+const PDFE_REGRESSION_CASES = [
+  'native draft mixed context previews, removes and sends actual references',
+  'native draft shared attachment deletion preserves unselected sources and does not open previews',
+  'native mixed context shows four layers, image viewer and source conversation',
+  'native mixed context file opens existing PDF workbench',
+  'native context references group submitted selections',
+  'native context references remove only the last draft reference at input start',
+  'native translation configuration saves prompts, validates demo credentials and installs packages',
+  'native translation PDF preserves old results until refresh and opens the exact service configuration',
+  'native translation failures retain demo input and never enable failed services or packages',
+  'native translation selection respects the toolbar gate without clearing the saved preference',
+  'native translation configuration supports dark English, keyboard navigation and the native minimum window',
+  'literature grid surfaces cover every configured column when horizontally scrolled',
+  'native authorization shows one standalone status row without a separate receipt',
+  'native authorization expansion restores the conversation bottom position',
+  'native authorization cards keep eight pixel gaps above and below',
+  'native scrollbar thumbs keep token colors and geometry in both themes',
+  'native project center consumes every declared data policy through workbench navigation',
+  'native shared example reads public project files and creates a genuinely empty project',
+  'native credits report explicit unavailability while preserving simulated login',
+  'native project center records appearance under normal host conditions',
+  'native project center follows host theme notifications without reloading either document',
+  'native project center retains global login, theme and language through navigation and reset',
+  'native composer menus coordinate stationary pointers and keyboard selection',
+  'native dialog navigation preserves original entries, drafts and bilingual themed groups',
+  'native product uses top-level shared renderer, real OS fonts and isolated secure windows',
+  'native scenario controls, F8 and help preserve the same product draft and component entry',
+  'native dock and detach preserve both renderer documents, draft and workbench search',
+  'native dialog application: project-group-rename',
+  'native embedded render failure recovers locally without changing project or session state',
+  'native literature search restores terminal identities and preserves selection and details without imports',
+  'native feedback submission preserves consent and explicit retry: feedback-normal',
+  'native feedback submission preserves consent and explicit retry: feedback-failed',
+  'native feedback submission preserves consent and explicit retry: feedback-rate-limited',
+  'native version comparison preserves one file and both immutable Monaco revisions without writes',
+  'native legacy XLS uses its bounded Office child runtime and dedicated compilation policy',
+  'native project documents preserve manual Markdown saves and rendered PDF samples after reload',
+  'native reviewed data viewer preserves its sample through reload and public reentry: spreadsheet',
+  'native reviewed data viewer preserves its sample through reload and public reentry: table',
+  'native reviewed data viewer preserves its sample through reload and public reentry: unsupported',
+  'native archived task history stays read-only through dark English tree reentry and restore',
+  'native archived task catalogue lifecycle: empty',
+  'native archived task catalogue lifecycle: pending',
+  'native archived task catalogue lifecycle: failed',
+  'native archived task history lifecycle: pending',
+  'native archived task history lifecycle: failed',
+  'native archived task history lifecycle: empty',
+  'native archived task deletion lifecycle: pending',
+  'native archived task deletion lifecycle: failed',
+  'native archived projects restore mixed selection through single and batch actions',
+  'native archived projects retry partial batch restoration through the retained project selection',
+  'native archived projects batch mutation: restore',
+  'native archived projects batch mutation: delete',
+  'native archived project read lifecycle: pending',
+  'native archived project read lifecycle: failed',
+  'native archived project recovery keeps single restore busy through its receipt and catalogue refresh',
+  'native archived project empty catalogue is genuine and read-only',
+  'native archived project dark English public settings navigation cancels deletion without mutation',
+  'archives project single deletion preserves the failure reason and allows retry',
+  'archives project batch deletion preserves the failure reason and allows retry',
+  'native read-only authorization is compact without changing selectable authorization',
+  'native fulltext authorization scenes show pending authorized rejected and reopen the same mock scope',
+  'native review decision lifecycle: accept',
+  'native review decision lifecycle: reject',
+  'native review decision lifecycle: revise',
+  'native review failed submission retains its decision through explicit retry',
+  'native review conflict revises the current disk content',
+  'native home and project search operate the shared product navigation',
+  'native project creation preserves failed form input and retries successfully',
+  'native project center creates from empty, edits, pins and archives across page boundaries',
+  'native project center distinguishes task loading, read failure and successful retry from emptiness',
+  'native project catalog loading and persistent failure recover through real controls without fake emptiness',
+  'native resource entry opens its project directory and reviewed document',
+  'native resource browsing preserves shared nested content and genuine emptiness: browsing-paged',
+  'native resource browsing preserves shared nested content and genuine emptiness: browsing-empty',
+  'native resource read lifecycle: listing-pending',
+  'native resource read lifecycle: listing-failed',
+  'native resource read lifecycle: explorer-pending',
+  'native resource read lifecycle: explorer-failed',
+  'native resource pagination failure preserves its first page and supports dark English keyboard retry',
+  'native resource pending pagination preserves generation: complete',
+  'native resource pending pagination preserves generation: refresh',
+  'native resource pending pagination preserves generation: remount',
+  'native literature empty catalogue distinguishes filtering from emptiness',
+  'native literature catalogue preserves filters, sorted rows, saved notes and the same PDF after reload',
+  'native literature metadata lifecycle: metadata-pending',
+  'native literature metadata lifecycle: metadata-failed',
+  'native literature read lifecycle: library-pending',
+  'native literature read lifecycle: library-failed',
+  'native literature read lifecycle: detail-pending',
+  'native literature read lifecycle: detail-failed',
+  'native literature detail failure supports dark English minimum-window keyboard retry',
+  'native skills retains policy and persists edits and confirmed deletion across reentry',
+  'native controls preserve settings selection across collapse and native viewport changes',
+  'native docked resizing preserves project form and workbench search without dock transitions',
+  'native workbench navigation and help preserve product form input and return from UI assets',
+  'native close decision lifecycle: surface-close-pending',
+  'native close decision lifecycle: surface-close-failed',
+  'native simulated permission lifecycle: settings-permissions-states',
+  'native simulated permission lifecycle: settings-permissions-pending',
+  'native simulated permission lifecycle: settings-permissions-failed',
+  'native account client lifecycle: settings-account-states',
+  'native account client lifecycle: settings-account-ready',
+  'native account client lifecycle: settings-account-pending',
+  'native account client lifecycle: settings-account-failed',
+  'native account client lifecycle: settings-account-anonymous',
+  'native preferences page uses real controls and persists appearance, auto-save and language after reload',
+  'native shortcuts page filters, rejects conflicts, records a real key combination and restores its persisted default',
+  'native selection prompts page validates empty drafts, saves through the actual form and restores the persisted default',
+  'native notification settings preserve the real sound preference without invoking native notification controls',
+  'native about settings display the real preview information, persist an update preference and block external link actions',
+  'native file version settings lifecycle: settings-files-states',
+  'native file version settings lifecycle: settings-files-save-pending',
+  'native file version settings lifecycle: settings-files-save-failed',
+  'native model profiles read-only lifecycle: settings-models-states',
+  'native model profiles read-only lifecycle: settings-models-empty',
+  'native model profiles read-only lifecycle: settings-models-pending',
+  'native model profiles read-only lifecycle: settings-models-failed',
+  'native document content lifecycle: viewer-markdown-pending',
+  'native document content lifecycle: viewer-markdown-failed',
+  'native document content lifecycle: viewer-markdown-retry',
+  'native document content lifecycle: viewer-pdf-pending',
+  'native document content lifecycle: viewer-pdf-failed',
+  'native document content lifecycle: viewer-pdf-retry',
+  'native document content lifecycle: viewer-code-pending',
+  'native document content lifecycle: viewer-image-retry',
+  'native document content lifecycle: viewer-office-failed',
+  'native delivery cancellation and later publication preserve the same session history after reentry',
+  'native browser settings preserve rules and history across edits, confirmation and reentry',
+  'native browser settings read lifecycle: settings-browser-empty',
+  'native browser settings read lifecycle: settings-browser-pending',
+  'native browser settings read lifecycle: settings-browser-failed',
+  'native browser settings read lifecycle: settings-browser-retry',
+  'native browser policy write lifecycle: settings-browser-write-pending',
+  'native browser policy write lifecycle: settings-browser-write-failed',
+  'native developer keys preserve managed identity and one-time simulated secrets across mutation and reentry',
+  'native developer list lifecycle: settings-developer-empty',
+  'native developer list lifecycle: settings-developer-pending',
+  'native developer list lifecycle: settings-developer-failed',
+  'native developer creation lifecycle: settings-developer-save-pending',
+  'native developer creation lifecycle: settings-developer-save-failed',
+  'native storage configuration preserves virtual roots across cancellation, reload and appearance changes',
+  'native storage save lifecycle: settings-storage-save-pending',
+  'native storage save lifecycle: settings-storage-save-failed',
+  'native storage reads isolate waiting and failed sources without virtual writes',
+  'native storage read recovery preserves public reentry and narrow keyboard access',
+  'native shared queue extraction retains the original Composer keyboard submission and stop path',
+  'native approval resumes the same request and turn through public reentry',
+  'native approval decision preserves terminal identity through reload: deny',
+  'native approval decision preserves terminal identity through reload: cancel',
+  'native tool lifecycle preserves live output and restored identity: done',
+  'native tool lifecycle preserves live output and restored identity: error',
+  'native tool lifecycle preserves live output and restored identity: cancelled',
+  'native project new tab keeps its identity through selection, closing and reentry: library',
+  'native project new tab keeps its identity through selection, closing and reentry: explorer',
+  'native browser guidance uses current controls and rejects external navigation: page-browser',
+  'native browser guidance uses current controls and rejects external navigation: viewer-browser',
+  'native project layout preserves mounted controls and persists panel placement across reload',
+  'native long stream cancellation persists its interrupted answer through actual product reentry',
+  'native conversation diagnostics preserve two-turn history and reset sanitized metadata',
+  'native failed conversation resumes its closed stream without duplicate turns or answers',
+  'native failure evidence captures rendered surfaces without showing hidden controls',
+  'native published outputs preserve filters, file and snapshot sources across reload and appearance',
+  'native output catalogue wait: outputs-pending',
+  'native output catalogue wait: outputs-history-pending',
+  'native output catalogue recovery: outputs-catalog-failed',
+  'native output catalogue recovery: outputs-history-failed',
+  'native output file content lifecycle: outputs-content-pending',
+  'native output file content lifecycle: outputs-content-failed',
+]
 const SERVE = path.join(ROOT, 'apps', 'serve')
 const PYTHON = path.join(ROOT, '.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python')
 const PYTEST_PLUGIN = 'scripts.ci.quality'
+const PYTEST_STATE = {
+  prefix: 'pytest-home-',
+  paths: {
+    SCHOLARSEED_HOME: [], DAMOATRACE_HOME: [], DAMOATRACE_LEDGER_ROOT: ['projects'],
+    SCHOLARSEED_CODEX_HOME: ['codex'], CODEX_HOME: ['codex'],
+    TMPDIR: ['tmp'], TEMP: ['tmp'], TMP: ['tmp'],
+  },
+  excluded: ['SCHOLARSEED_REAL_HOME'],
+  environment: { PYTHONDONTWRITEBYTECODE: '1' },
+  status: { cleaned: 'cleaned', retained: 'retained', failed: 'failed' },
+}
 const PLAYWRIGHT = path.join(DESKTOP, 'node_modules', '@playwright', 'test', 'cli.js')
 const CODEX_TOOLCHAIN = path.join(ROOT, 'scripts', 'pre', 'toolchain.cjs')
 const STAGE_TIMEOUT_MS = 1_800_000
 const LIVE_TIMEOUT_MS = 3_600_000
 const RUN_ALL_TIMEOUT_EXIT_CODE = 124
-const DESKTOP_TEST_CONCURRENCY_DEFAULT = 4
 const SUPERVISOR_TEST_CONCURRENCY = 1
 const CI_JOB_QUOTA_MAX = 8
 // run_all.py 缺省 min(8, CPU)；此处显式接线同语义的 CPU-aware jobs，保持既有默认上限。
 const RUN_ALL_DEFAULT_JOBS = 8
 // 并发收益只在独占运行面成立：与其他 ci:test/E2E 会话并行时满核反而拖慢（实测 desktop-unit
 // 4→10 并发在双运行下 481s→600s）。CI_STAGE_QUOTA 由调度器或调用方按预算显式注入；
-// 无显式预算时保持历史默认（desktop 4 / run-all 8），CPU-aware 扩展只走调度器配额。
+// 无显式预算时run-all保持历史默认8；Desktop混合宿主测试遵守其Owner的串行资源策略。
 const STAGE_QUOTA_ENV = 'CI_STAGE_QUOTA'
 
 function ciStageQuota(budget, fallback) {
@@ -181,12 +361,12 @@ function validatePlaywrightOmissions(readSource = filename =>
   }
 }
 
-function desktopCoverageArgs(quarantine, budget = null) {
+function desktopCoverageArgs(quarantine) {
   return [path.join(DESKTOP, 'node_modules', 'c8', 'bin', 'c8.js'), process.execPath,
     ...NODE_ARGS,
-    `--test-concurrency=${ciStageQuota(budget, DESKTOP_TEST_CONCURRENCY_DEFAULT)}`,
+    `--test-concurrency=${TEST_CONCURRENCY}`,
     ...(quarantine ? [`--test-skip-pattern=${nodeOmissionPattern()}`] : []),
-    ...testFiles()]
+    ...unitTestFiles()]
 }
 
 function planStages(platform, skillHubEnvironment = process.env, { profile = 'full', quarantine = false, quota = null } = {}) {
@@ -218,12 +398,16 @@ function planStages(platform, skillHubEnvironment = process.env, { profile = 'fu
     if (offline) stages.push({ id: 'python-integration-serve', kind: 'skip',
       skipReason: 'real_model_config' })
     stages.push({ id: 'python-serve-independent', kind: 'python', cwd: SERVE,
-      args: [...PYTEST_ARGS, 'tests/contract_literature_fulltext.py',
+      args: [...PYTEST_ARGS, 'tests/contract_browser_approval_response.py',
+        'tests/test_run_all_report.py',
         'tests/contract_literature_papermeta.py', 'tests/contract_pdf_engine.py',
         'tests/contract_ppt.py', 'tests/contract_pptx.py'], env: { PYTHONPATH: [ROOT, SERVE].join(path.delimiter) },
       reportKind: 'pytest' })
     stages.push({ id: 'python-root-independent', kind: 'python', cwd: ROOT,
-      args: [...PYTEST_ARGS, 'tests/test_codex_loop.py'], env: { PYTHONPATH: ROOT }, reportKind: 'pytest' })
+      args: [...PYTEST_ARGS, 'tests/test_codex_loop.py', 'tests/contract_permission.py',
+        'tests/contract_codex_shutdown.py', 'tests/contract_resume_deadline.py',
+        'scripts/dev/__tests__/test_watch.py'],
+      env: { PYTHONPATH: ROOT }, reportKind: 'pytest' })
     stages.push({ id: 'python-precise-independent', kind: 'python', cwd: ROOT,
       args: [...PYTEST_ARGS, 'tests/integration/precise'], env: { PYTHONPATH: [
         path.join(ROOT, 'skills', 'community', 'precise-literature-search', 'scripts'),
@@ -237,9 +421,19 @@ function planStages(platform, skillHubEnvironment = process.env, { profile = 'fu
       args: [...PYTEST_ARGS, 'apps/serve/service/capabilities/skills/literature-review/scripts'],
       dependsOn: 'skills-source-verify', reportKind: 'pytest' })
     stages.push({ id: 'python-websearch-independent', kind: 'python', cwd: ROOT,
-      args: [...PYTEST_ARGS, 'skills/community/web-search/scripts/test_search.py'], reportKind: 'pytest' })
+      args: [...PYTEST_ARGS, 'skills/community/web-search/scripts/test_search.py',
+        'skills/community/web-search/scripts/test_capture.py'], reportKind: 'pytest' })
     stages.push({ id: 'python-agentic-independent', kind: 'python', cwd: ROOT,
-      args: [...PYTEST_ARGS, 'skills/community/agentic-search/tools/tests'], reportKind: 'pytest' })
+      args: [...PYTEST_ARGS, 'skills/community/agentic-search/tools/tests'],
+      env: { PYTHONPATH: path.join(ROOT, 'skills', 'community', 'agentic-search', 'tools') }, reportKind: 'pytest' })
+    stages.push({ id: 'python-formal-independent', kind: 'python', cwd: ROOT,
+      args: [...PYTEST_ARGS, 'skills/community/formal-verification/tests/test_proof_client.py'],
+      reportKind: 'pytest' })
+    stages.push({ id: 'python-highlights-independent', kind: 'python', cwd: ROOT,
+      args: [...PYTEST_ARGS, 'skills/community/highlights-to-insights'],
+      env: { PYTHONPATH: ['scripts', 'tests'].map(directory =>
+        path.join(ROOT, 'skills', 'community', 'highlights-to-insights', directory)).join(path.delimiter) },
+      reportKind: 'pytest' })
     stages.push({ id: 'python-acceptance-all', kind: 'python', cwd: SERVE,
       args: ['-m', 'tests.acceptance_all'], reportKind: 'acceptance-all',
       requiresLivePrerequisites: !offline, skipReason: offline ? 'real_model_config' : undefined })
@@ -255,8 +449,6 @@ function planStages(platform, skillHubEnvironment = process.env, { profile = 'fu
         '--cache', skillHubEnvironment.SCHOLARSEED_CI_SKILLHUB_CACHE || ''],
       reportArg: true, reportKind: 'skillhub', dependsOn: 'ci-skillhub-prerequisites',
       skipReason: offline ? 'skillhub_config' : undefined })
-    stages.push({ id: 'python-trace', kind: 'python', cwd: ROOT,
-      args: ['-m', 'damoatrace.tests.e2e_trace_query_cli'] })
   }
   stages.push({ id: 'desktop-pretest', kind: 'npm', cwd: ROOT,
     args: ['--prefix', 'apps/desktop', 'run', 'pretest'], reportKind: 'node-summary',
@@ -269,13 +461,15 @@ function planStages(platform, skillHubEnvironment = process.env, { profile = 'fu
     stages.push({ id: 'desktop-toolchain', kind: 'node', cwd: ROOT,
       args: ['scripts/pre/toolchain.cjs', 'check'] })
     stages.push({ id: 'desktop-i18n-test', kind: 'node', cwd: DESKTOP,
-      args: ['--test', `--test-skip-pattern=${nodeOmissionPattern('desktop-i18n-test')}`,
-        'scripts/ci/localization/__tests__/*.test.mjs'], quarantine, reportKind: 'node-summary' })
+      args: ['--test', 'scripts/ci/localization/__tests__/*.test.mjs'], reportKind: 'node-summary' })
+    stages.push({ id: 'desktop-i18n-check', kind: 'node', cwd: DESKTOP,
+      args: [path.resolve(__dirname, '../pre/toolchain.cjs'), 'run', 'i18n:check'] })
     stages.push(...QUARANTINE.stages.map(stage => ({ id: stage.id, kind: 'skip',
       skipReason: stage.reason })))
   }
   stages.push({ id: 'desktop-unit', kind: 'node', cwd: DESKTOP,
-    args: desktopCoverageArgs(quarantine, budget),
+    args: desktopCoverageArgs(quarantine),
+    timeoutMs: 0,
     quarantine, ignoreLifecycle: true,
     reportKind: 'node-summary' })
   stages.push({ id: 'desktop-extra-node', kind: 'node', cwd: ROOT,
@@ -287,18 +481,25 @@ function planStages(platform, skillHubEnvironment = process.env, { profile = 'fu
       'scripts/__tests__/ops.test.cjs', 'scripts/__tests__/desktop.test.cjs', 'scripts/__tests__/organization.test.cjs', 'scripts/ci/__tests__/routing.test.cjs',
       'scripts/shared/__tests__/interpreter.test.cjs',
       'scripts/shared/__tests__/source.test.cjs',
+      'scripts/shared/__tests__/examples.test.cjs',
+      'scripts/shared/__tests__/preparation.test.cjs',
+      'scripts/cd/public/__tests__/acceptance.test.cjs',
+      'scripts/ci/docs/__tests__/commands.test.cjs',
       'scripts/cd/public/__tests__/npm.test.mjs', 'scripts/ci/__tests__/test.test.cjs', 'scripts/ci/__tests__/affected.test.mjs',
       'scripts/cd/__tests__/package.test.cjs', 'scripts/cd/__tests__/distribution.test.cjs', 'scripts/ci/__tests__/verdict.test.cjs', 'scripts/ci/__tests__/model.test.cjs',
       'scripts/ci/__tests__/events.test.cjs', 'scripts/ci/__tests__/transport.test.cjs', 'scripts/ci/__tests__/smoke.test.cjs',
       'scripts/ci/__tests__/skillhub.test.cjs', 'scripts/ci/__tests__/progress.test.cjs', 'scripts/ci/__tests__/diagnostics.test.cjs',
-      'apps/desktop/scripts/ci/__tests__/visual.test.mjs',
-      'apps/desktop/src/renderer/src/features/workbench/office/local-fonts.test.cjs'],
+      ...NATIVE_TEST_FILES.map(filename =>
+        path.relative(ROOT, path.resolve(DESKTOP, filename)).split(path.sep).join('/'))],
+    timeoutMs: 0,
     quarantine, reportKind: 'node-summary' })
-  stages.push({ id: 'desktop-bun', kind: 'bun', cwd: DESKTOP,
-    args: ['test', 'src/renderer/src/directive.test.js', 'src/renderer/src/drag.test.js'] })
   stages.push({ id: 'desktop-build', kind: 'npm', cwd: ROOT,
     dependsOn: 'skills-source-verify',
     args: ['--prefix', 'apps/desktop', 'run', 'build'] })
+  stages.push({ id: 'desktop-pdfe', kind: 'playwright', cwd: DESKTOP,
+    args: ['test', '--config', 'preview/native.config.ts', '--project=pdfe',
+      '--grep', PDFE_REGRESSION_CASES.join('|'),
+      '--reporter=json', '--retries=0'], profile, expectedTitles: PDFE_REGRESSION_CASES })
   stages.push({ id: 'desktop-e2e', kind: 'playwright', cwd: DESKTOP,
     args: ['test', '--project=smoke', '--project=workbench', '--project=update', '--project=live', '--reporter=json', '--retries=0'],
     dependsOn: 'desktop-build', requiresLivePrerequisites: !offline, profile, quarantine })
@@ -314,12 +515,13 @@ function stageBlockReason(stage, prerequisiteError, completedStages, npmAvailabl
   return null
 }
 
-function summarizePlaywright(report, platform, profile = 'full', requireAllExternal = false, quarantine = false) {
+function summarizePlaywright(report, platform, profile = 'full', requireAllExternal = false, quarantine = false, expectedTitles = null) {
   if (!report || !Array.isArray(report.suites) || !report.stats || !Array.isArray(report.errors)) {
     throw new Error('invalid Playwright JSON report')
   }
   if (report.errors.length > 0) throw new Error('Playwright reported global errors')
   const cases = []
+  const titles = []
   const observedExternal = new Set()
   const observedQuarantine = new Set()
   let reportedTests = 0
@@ -327,6 +529,7 @@ function summarizePlaywright(report, platform, profile = 'full', requireAllExter
     for (const spec of suite.specs || []) {
       for (const entry of spec.tests || []) {
         reportedTests += 1
+        titles.push(spec.title)
         const reason = (entry.annotations || []).find(item => item.type === 'skip')?.description || ''
         const foreign = entry.status === 'skipped' && entry.projectName === 'smoke' &&
           spec.file === 'close.spec.ts' && FOREIGN_PLATFORM_SKIP[platform].some(allowed =>
@@ -370,6 +573,9 @@ function summarizePlaywright(report, platform, profile = 'full', requireAllExter
   if (requireAllExternal && quarantine && QUARANTINE.playwright.some(item =>
     !observedQuarantine.has(`${item.project}:${item.file}:${item.title}`))) {
     throw new Error('Playwright quarantine policy has missing cases')
+  }
+  if (expectedTitles && (titles.length !== expectedTitles.length || expectedTitles.some(title => titles.filter(item => item === title).length !== 1))) {
+    throw new Error('Playwright stage collection differs from its declared titles')
   }
   return cases
 }
@@ -659,7 +865,6 @@ function reviewedCodex(run = spawnSync) {
 function executable(stage) {
   if (stage.kind === 'python') return [PYTHON, stage.args]
   if (stage.kind === 'node') return [process.execPath, stage.args]
-  if (stage.kind === 'bun') return [process.platform === 'win32' ? 'bun.exe' : 'bun', stage.args]
   if (stage.kind === 'playwright') return [process.execPath, [PLAYWRIGHT, ...stage.args]]
   const npmCli = process.env.npm_execpath
   if (!npmCli) throw new Error('quality workflow requires the package-manager context established by pnpm ops ci test --profile quality')
@@ -672,6 +877,7 @@ function stageLaunch(stage, directory) {
   const [command, declaredArgs, shell] = executable(stage)
   let args = [...declaredArgs]
   let nodeEvents = null
+  let stateHome = null
   if (stage.reportKind === 'node-summary' && stage.quarantine) {
     validateNodeOmissions()
     if (!stage.args.includes(`--test-skip-pattern=${nodeOmissionPattern(stage.id)}`)) {
@@ -697,6 +903,19 @@ function stageLaunch(stage, directory) {
   }
   if (stage.reportKind === 'pytest') {
     env.PYTHONPATH = [env.PYTHONPATH, ROOT].filter(Boolean).join(path.delimiter)
+    stateHome = fs.mkdtempSync(path.join(fs.realpathSync(directory), PYTEST_STATE.prefix))
+    try {
+      for (const [name, parts] of Object.entries(PYTEST_STATE.paths)) {
+        const target = path.join(stateHome, ...parts)
+        fs.mkdirSync(target, { recursive: true })
+        env[name] = target
+      }
+      for (const name of PYTEST_STATE.excluded) delete env[name]
+      Object.assign(env, PYTEST_STATE.environment)
+    } catch (error) {
+      fs.rmSync(stateHome, { recursive: true, force: true })
+      throw error
+    }
   }
   if (stage.id === 'desktop-e2e') {
     if (stage.quarantine) validatePlaywrightOmissions()
@@ -714,14 +933,14 @@ function stageLaunch(stage, directory) {
     }
   }
   if (stage.ignoreLifecycle) env.npm_config_ignore_scripts = 'true'
-  return { command, args, env, raw, shell, nodeEvents }
+  return { command, args, env, raw, shell, nodeEvents, stateHome }
 }
 
 function summarizeStageResult(stage, directory, platform, commit, launch, result, started) {
   const { command, args, raw } = launch
   fs.writeFileSync(path.join(directory, `${stage.id}.stdout.log`), result.stdout || '')
   fs.writeFileSync(path.join(directory, `${stage.id}.stderr.log`), result.stderr || result.error?.message || String(result.error || ''))
-  const exitCode = result.status ?? 1
+  let exitCode = result.status ?? 1
   let cases = [{ id: stage.id, status: exitCode === 0 ? 'passed' : 'failed', retries: 0 }]
   let reportValid = true
   let reportError = null
@@ -729,7 +948,7 @@ function summarizeStageResult(stage, directory, platform, commit, launch, result
     try {
       fs.writeFileSync(raw, result.stdout || '')
       cases = summarizePlaywright(JSON.parse(result.stdout), platform, stage.profile,
-        stage.profile === 'offline', stage.quarantine)
+        stage.profile === 'offline' && stage.id === 'desktop-e2e', stage.quarantine, stage.expectedTitles)
       if (!cases.length) reportValid = false
     } catch {
       cases = []
@@ -787,10 +1006,26 @@ function summarizeStageResult(stage, directory, platform, commit, launch, result
   } else {
     atomicJSON(raw, { command: [command, ...args], exitCode, durationMs: Date.now() - started })
   }
+  let state
+  if (launch.stateHome) {
+    state = { home: launch.stateHome, status: PYTEST_STATE.status.retained }
+    if (!result.error && !result.signal) {
+      try {
+        fs.rmSync(launch.stateHome, { recursive: true, force: true })
+        state.status = PYTEST_STATE.status.cleaned
+      } catch (error) {
+        state.status = PYTEST_STATE.status.failed
+        state.error = error.message
+        exitCode ||= 1
+      }
+    }
+    if (state.status !== PYTEST_STATE.status.cleaned) exitCode ||= 1
+  }
   return { id: stage.id, platform, commit, exitCode, timedOut: result.error?.code === 'ETIMEDOUT',
     report: reportValid ? raw : null,
     reportSha256: reportValid ? reportSha256(raw) : null,
-    cases, durationMs: Date.now() - started, ...(reportError ? { reportError } : {}) }
+    cases, durationMs: Date.now() - started, ...(reportError ? { reportError } : {}),
+    ...(state ? { state } : {}) }
 }
 
 function formatStageProgress(stageId, status, durationMs, timestamp = new Date()) {
@@ -804,15 +1039,20 @@ function logStageResult(record) {
   process.stderr.write(formatStageProgress(record.id, status, record.durationMs))
 }
 
+function stageTimeout(stage) {
+  return stage.timeoutMs ?? (stage.id === 'desktop-e2e' ? LIVE_TIMEOUT_MS : STAGE_TIMEOUT_MS)
+}
+
 function runStage(stage, directory, platform, commit) {
-  const launch = stageLaunch(stage, directory)
   const started = Date.now()
+  const launch = stageLaunch(stage, directory)
+  const timeout = stageTimeout(stage)
   let result
   if (stage.progress) {
     const progress = path.join(directory, `${stage.id}.progress`)
     fs.mkdirSync(progress)
     const spec = { id: stage.id, command: launch.command, args: launch.args, cwd: stage.cwd,
-      shell: launch.shell, timeout: stage.id === 'desktop-e2e' ? LIVE_TIMEOUT_MS : STAGE_TIMEOUT_MS,
+      shell: launch.shell, timeout,
       progress, stdout: path.join(directory, `${stage.id}.stdout.log`),
       stderr: path.join(directory, `${stage.id}.stderr.log`),
       result: path.join(directory, `${stage.id}.process.json`) }
@@ -828,7 +1068,7 @@ function runStage(stage, directory, platform, commit) {
   } else {
     result = spawnSync(launch.command, launch.args, { cwd: stage.cwd, env: launch.env, encoding: 'utf8',
       shell: launch.shell,
-      timeout: stage.id === 'desktop-e2e' ? LIVE_TIMEOUT_MS : STAGE_TIMEOUT_MS,
+      timeout,
       maxBuffer: 64 * 1024 * 1024 })
   }
   return summarizeStageResult(stage, directory, platform, commit, launch, result, started)
@@ -906,6 +1146,7 @@ function scheduleStages({ planned, directory, platform, commit, prerequisiteErro
         record = recordBlockedStage(stage, directory, platform, commit, reason)
       } else {
         let launch
+        const started = Date.now()
         try {
           launch = stageLaunch(stage, directory)
         } catch (error) {
@@ -915,24 +1156,25 @@ function scheduleStages({ planned, directory, platform, commit, prerequisiteErro
           break
         }
         const env = { ...launch.env, CI_STAGE_QUOTA: String(cost) }
-        const started = Date.now()
+        const timeout = stageTimeout(stage)
+        const deadlineSignal = timeout > 0 ? AbortSignal.timeout(timeout) : undefined
         process.stderr.write(formatStageProgress(stage.id, 'starting'))
         const child = spawn(launch.command, launch.args, { cwd: stage.cwd, env, encoding: 'utf8',
-          shell: launch.shell,
-          timeout: stage.id === 'desktop-e2e' ? LIVE_TIMEOUT_MS : STAGE_TIMEOUT_MS })
+          shell: launch.shell, signal: deadlineSignal })
         let stdout = ''
         let stderr = ''
+        let childError = null
         child.stdout?.on('data', chunk => { stdout += chunk })
         child.stderr?.on('data', chunk => { stderr += chunk })
         child.on('error', error => {
-          running.delete(stage.id)
-          finish(summarizeStageResult(stage, directory, platform, commit, launch,
-            { stdout, stderr: String(error), error }, started))
+          childError = error
         })
         child.on('close', (status, signal) => {
           running.delete(stage.id)
           finish(summarizeStageResult(stage, directory, platform, commit, launch,
-            { stdout, stderr, status, error: signal === 'SIGTERM' ? { code: 'ETIMEDOUT' } : null }, started))
+            { stdout, stderr: childError ? `${stderr}${String(childError)}` : stderr, status, signal,
+              error: deadlineSignal?.aborted ? { code: 'ETIMEDOUT' }
+                : childError || (signal === 'SIGTERM' ? { code: 'ETIMEDOUT' } : null) }, started))
         })
         running.set(stage.id, child)
         usedQuota += cost
@@ -959,8 +1201,8 @@ async function main(argv = process.argv.slice(2)) {
   const profile = argv.includes('--with-external') ? 'full' : 'offline'
   const quarantine = profile === 'offline' && !argv.includes('--strict')
   const resultPath = qualityResultPath(argv)
-  fs.mkdirSync(path.join(ROOT, 'tmp'), { recursive: true })
-  const directory = fs.mkdtempSync(path.join(ROOT, 'tmp', 'ci-test-'))
+  // Keep mutable fixtures outside source-tree watchers and metadata scanners.
+  const directory = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'ci-test-'))
   const source = gitSource()
   const commit = source.commit
   const platform = process.platform

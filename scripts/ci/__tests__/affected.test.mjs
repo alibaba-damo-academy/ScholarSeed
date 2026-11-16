@@ -86,3 +86,92 @@ test('plan falls back to L2 when nothing maps', () => {
   assert.equal(result.unmatched.length, 2)
   assert.equal(result.fallback, 'pnpm ops ci test --profile quality')
 })
+
+const SDK_TESTS = [
+  'packages/ui/build.test.cjs',
+  'packages/ui/render.test.cjs',
+  'packages/ui/preview/browser.test.cjs',
+]
+
+function selectedNodeTests(result) {
+  return result.commands.filter(item => item.command.startsWith('node ')).flatMap(item =>
+    item.command.split(' ').filter(argument => /\.test\.(?:ts|tsx|mjs|cjs)$/.test(argument))
+      .map(file => path.relative(ROOT, path.resolve(ROOT, item.cwd, file)).replaceAll(path.sep, '/')))
+}
+
+test('SDK shared sources retain the complete existing resource test closure', () => {
+  for (const file of [
+    'packages/ui/ui.css',
+    'apps/desktop/src/renderer/src/components/primitive/utils.ts',
+    'apps/desktop/src/renderer/src/components/primitive/Gallery.tsx',
+    'apps/desktop/src/renderer/src/components/primitive/Images.tsx',
+    'apps/desktop/src/renderer/src/features/literature/Matches.tsx',
+    'apps/desktop/src/renderer/src/features/literature/export.ts',
+  ]) {
+    const result = plan([file])
+    const selected = selectedNodeTests(result)
+    for (const expected of SDK_TESTS) assert.ok(selected.includes(expected), `${file}: ${expected}`)
+    assert.deepEqual(result.unmatched, [], file)
+    assert.equal(result.fallback, null, file)
+  }
+})
+
+test('SDK supplements remain additive when adjacent or consumer tests already match', () => {
+  const result = plan([
+    'apps/desktop/src/renderer/src/components/primitive/utils.ts',
+    'apps/desktop/src/renderer/src/features/literature/export.ts',
+  ])
+  const selected = selectedNodeTests(result)
+  for (const file of [
+    ...SDK_TESTS,
+    'apps/desktop/src/renderer/src/features/assistant/Outputs.render.test.ts',
+    'apps/desktop/src/renderer/src/features/literature/export.test.ts',
+  ]) assert.ok(selected.includes(file), file)
+})
+
+test('SDK test inputs deduplicate into one serial Node command and preserve unknown fallback', () => {
+  const result = plan([...SDK_TESTS, ...SDK_TESTS, 'packages/ui/ui.css', 'README.md'])
+  assert.deepEqual(selectedNodeTests(result).sort(), [...SDK_TESTS].sort())
+  assert.equal(result.commands.length, 1)
+  assert.match(result.commands[0].command, /--test-concurrency=1\b/)
+  assert.deepEqual(result.unmatched, ['README.md'])
+  assert.equal(result.fallback, 'pnpm ops ci test --profile quality')
+  for (const file of SDK_TESTS) {
+    const selection = plan([file])
+    assert.deepEqual(selectedNodeTests(selection).sort(), [...SDK_TESTS].sort())
+    assert.equal(selection.fallback, null)
+  }
+})
+
+test('SDK routing normalizes Windows input paths without handing root paths to the Desktop cwd', () => {
+  const files = ['packages/ui/ui.css', 'apps/desktop/src/renderer/src/features/literature/export.ts']
+  const result = plan(files)
+  assert.deepEqual(plan(files.map(file => file.replaceAll('/', '\\'))), result)
+  assert.equal(result.commands[0].cwd, 'apps/desktop')
+  assert.match(result.commands[0].command, /\.\.\/\.\.\/packages\/ui\/build\.test\.cjs/)
+  assert.doesNotMatch(result.commands[0].command, /\\/)
+})
+
+for (const [file, consumers] of [
+  ['apps/desktop/src/renderer/src/components/primitive/utils.ts', [
+    'apps/desktop/src/renderer/src/components/markdown.render.test.ts',
+  ]],
+  ...['Gallery.tsx', 'Images.tsx'].map(name => [
+    `apps/desktop/src/renderer/src/components/primitive/${name}`, [
+      'apps/desktop/src/renderer/src/features/assistant/Images.render.test.ts',
+      'apps/desktop/src/renderer/src/components/primitive/images.render.test.cjs',
+    ],
+  ]),
+]) {
+  test(`SDK supplements retain Desktop shared consumers for ${path.basename(file)}`, () => {
+    const result = plan([file])
+    const selected = selectedNodeTests(result)
+    for (const expected of [...SDK_TESTS, ...consumers])
+      assert.ok(selected.includes(expected), `${file}: ${expected}`)
+    assert.equal(new Set(selected).size, selected.length)
+    assert.equal(result.commands.length, 1)
+    assert.match(result.commands[0].command, /--test-concurrency=1\b/)
+    assert.deepEqual(result.unmatched, [])
+    assert.equal(result.fallback, null)
+  })
+}

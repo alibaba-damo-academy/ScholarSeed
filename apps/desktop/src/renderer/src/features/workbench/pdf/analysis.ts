@@ -1,11 +1,16 @@
 import { apiFetch } from '../../../api.ts'
 import { postActionStream } from '../../../action.ts'
 import { sseData } from '../../../sse.ts'
+import type { SessionFileSource } from '../../../contracts/workbench.ts'
 import {
   ASSISTANT_TRANSLATION_TARGETS,
   type AssistantTranslationTarget,
 } from '../../../contracts/assistant.ts'
-import { PDF_AI_TASK_UNRESOLVED, pdfAiFailure, type PdfAiFailure } from './failure.ts'
+import {
+  PDF_AI_TASK_UNRESOLVED,
+  pdfAiFailure,
+  type PdfAiFailure,
+} from '../../../components/business/diagnostic.ts'
 
 export type PdfAction =
   | 'document_translation'
@@ -37,11 +42,19 @@ export interface PdfSelection {
   page: number
   quads: number[][]
 }
-export interface PdfAiContent {
-  text: string
-  uncertain?: boolean
-  evidence?: { page: number; quote: string }[]
-}
+export type {
+  ReadingEvidence,
+  ReadingSummary,
+  ReadingKnowledge,
+  ReadingMetadata,
+  PdfAiContent,
+} from '../../../contracts/literature'
+import type {
+  ReadingSummary,
+  ReadingKnowledge,
+  ReadingMetadata,
+  PdfAiContent,
+} from '../../../contracts/literature'
 export const PDF_TRANSLATION_TARGETS = ASSISTANT_TRANSLATION_TARGETS
 export type TranslationDirection = AssistantTranslationTarget
 export type PdfResponseLanguage = 'zh' | 'en'
@@ -54,15 +67,30 @@ export interface TranslationSentence {
   located: boolean
   paragraph_start?: boolean
   heading?: boolean
-}
-export interface ReadingSummary extends PdfAiContent {
-  paper_type: string
-  contribution: PdfAiContent
-  claims: PdfAiContent[]
-  method: PdfAiContent
-  limitations: PdfAiContent
+  heading_level?: number
+  block_id?: string
+  source_id?: string
+  paragraph_id?: string
+  source_quads?: number[][]
+  translated_spans?: { text: string; bold: boolean }[]
+  emphasis_complete?: boolean
+  emphasis?: { id: string; source_text: string }[]
 }
 export interface PdfAiResult extends PdfAiContent {
+  client_attempt_id?: string
+  translation_validation?: {
+    version: string
+    corrections: number
+    attempts: {
+      invocation_id: string
+      status: string
+      error_code?: string
+      response_sha256?: string
+    }[]
+  }
+  structure_version?: string
+  l1?: ReadingKnowledge
+  metadata?: ReadingMetadata
   kind: PdfAction
   revision: string
   literature_id: string
@@ -83,7 +111,36 @@ export interface PdfAiResult extends PdfAiContent {
   pages?: { page: number; blocks: TranslationSentence[] }[]
   response_language?: PdfResponseLanguage
 }
+export type PdfCitationSource =
+  | {
+      kind: 'answer'
+      session_id: string
+      answer_id: string
+      answer_revision: string
+      handle: string
+    }
+  | ({ kind: 'saved' } & NonNullable<SessionFileSource['savedCitation']>)
+  | ({ kind: 'artifact' } & NonNullable<SessionFileSource['artifactCitation']>)
+
+export function pdfCitationSource(source: SessionFileSource): PdfCitationSource | undefined {
+  if ([source.citation, source.savedCitation, source.artifactCitation].filter(Boolean).length !== 1)
+    return undefined
+  if (source.artifactCitation) return { kind: 'artifact', ...source.artifactCitation }
+  if (source.savedCitation) return { kind: 'saved', ...source.savedCitation }
+  if (source.citation)
+    return {
+      kind: 'answer',
+      session_id: source.sessionId,
+      answer_id: source.citation.answerId,
+      answer_revision: source.citation.answerRevision,
+      handle: source.citation.handle,
+    }
+  return undefined
+}
+
 export interface PdfAiRequest {
+  artifact?: { session_id: string; artifact_id: string; member?: string }
+  citation?: PdfCitationSource
   literature_id: string
   attachment_id?: string
   path?: string
@@ -106,10 +163,17 @@ export interface PdfAiRequest {
   response_language: PdfResponseLanguage
 }
 export interface PdfAiProgress {
-  phase: 'segment' | 'synthesis'
+  phase: 'segment' | 'synthesis' | 'classify' | 'extract' | 'repair' | 'translation'
   current: number
   total: number
   cached: number
+}
+
+export function pdfSelectionRefreshPending(
+  request: Pick<PdfAiRequest, 'model_key'> | undefined,
+  modelKey: string
+): boolean {
+  return Boolean(request && request.model_key !== modelKey)
 }
 export interface PdfAiPreview {
   text?: string
@@ -149,7 +213,7 @@ interface FigureStreamResult extends FigurePrepared {
   error_detail: string
 }
 export const PDF_AI_PREFIX = '/api/literature/ai'
-const PDF_AI_INVALID_RESPONSE = 'pdf_ai_invalid_response'
+export const PDF_AI_INVALID_RESPONSE = 'pdf_ai_invalid_response'
 const PDF_AI_TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled'])
 const PDF_AI_TASK_STATUSES = new Set(['pending', 'running', 'unknown', ...PDF_AI_TERMINAL_STATUSES])
 const PDF_AI_RECOVERY_DELAYS = [1000, 2000, 4000, 8000, 16000, 16000, 16000] as const
@@ -416,6 +480,21 @@ function visualRegionPrefix(source: PdfVisualRegionSource): string {
   return `/api/workbench/pdf/regions?${query}`
 }
 
+export async function loadPdfVisualRegions(
+  source: PdfVisualRegionSource,
+  startPage: number,
+  endPage: number
+): Promise<PdfVisualRegionManifest> {
+  const separator = visualRegionPrefix(source).includes('?') ? '&' : '?'
+  const query = new URLSearchParams({
+    revision: source.revision,
+    start_page: String(startPage),
+    end_page: String(endPage),
+  })
+  const response = await apiFetch(`${visualRegionPrefix(source)}${separator}${query}`)
+  if (!response.ok) throw new Error(`pdf_visual_regions_${response.status}`)
+  return (await response.json()) as PdfVisualRegionManifest
+}
 export async function loadPdfVisualRegionImage(
   source: PdfVisualRegionSource,
   region: PdfVisualRegion

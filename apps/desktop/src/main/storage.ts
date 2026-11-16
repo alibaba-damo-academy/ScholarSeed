@@ -29,6 +29,7 @@ import { app } from 'electron'
 import type { CommitDataHomeResult } from '../storage'
 import { writeJson } from './journal.ts'
 import { desktopDirectoryWriter } from './writer'
+import { REGISTRY_DIRECTORY } from '../../native/registry.cjs'
 
 /** 产品家目录环境变量名（与 serve `brand.py:HOME_ENV` 同字面值）。 */
 export const SCHOLARSEED_HOME_ENV = 'SCHOLARSEED_HOME'
@@ -39,7 +40,7 @@ const DEV_DEFAULT_WORKSPACE_SUBPATH = ['tmp', 'desktop-workspace'] as const
 /** 默认家目录名（~/.scholarseed）。 */
 export const SCHOLARSEED_HOME_DIRNAME = '.scholarseed'
 /** Permanent OS-account namespace shared with Serve's paths owner. */
-export const COORDINATION_DIRNAME = '.scholarseed-coordination'
+export const COORDINATION_DIRNAME = REGISTRY_DIRECTORY
 /** 容器根默认目录名（自定义 home 时落 <home 父目录>/Projects）。 */
 export const PROJECTS_DIRNAME = 'Projects'
 /** 默认 home 时容器根沿用「文档/ScholarSeed」（与既有打包默认一致）。 */

@@ -213,7 +213,7 @@ def _batch_decision(payload: object) -> ReviewBatchDecision:
         or not file_id
         or not isinstance(review_id, str)
         or not review_id
-        or type(revision) is not int
+        or (not isinstance(revision, int) or isinstance(revision, bool))
         or revision < 1
         or "expected_disk_revision" not in payload
         or (expected is not None and not isinstance(expected, str))
@@ -467,7 +467,7 @@ def register_version_routes(app: FastAPI) -> None:
         revision, version_id = payload.get("pending_revision"), payload.get("version_id")
         expected = payload.get("expected_disk_revision")
         if (
-            type(revision) is not int
+            (not isinstance(revision, int) or isinstance(revision, bool))
             or revision < 1
             or not isinstance(version_id, str)
             or not version_id
@@ -549,7 +549,7 @@ def register_version_routes(app: FastAPI) -> None:
         review_id = payload.get("review_id")
         expected = payload.get("expected_disk_revision")
         if (
-            type(revision) is not int
+            (not isinstance(revision, int) or isinstance(revision, bool))
             or revision < 1
             or not isinstance(review_id, str)
             or not review_id
@@ -692,7 +692,13 @@ def register_version_routes(app: FastAPI) -> None:
             )
             or (
                 expected_pending_revision is not None
-                and (type(expected_pending_revision) is not int or expected_pending_revision < 1)
+                and (
+                    (
+                        not isinstance(expected_pending_revision, int)
+                        or isinstance(expected_pending_revision, bool)
+                    )
+                    or expected_pending_revision < 1
+                )
             )
         ):
             return _error(ResourceVersionError("invalid_snapshot_fence"))
@@ -759,7 +765,8 @@ def register_version_routes(app: FastAPI) -> None:
         alias = payload.get("alias")
         expected_revision = payload.get("expected_revision")
         if (alias is not None and not isinstance(alias, str)) or (
-            type(expected_revision) is not int or expected_revision < 0
+            (not isinstance(expected_revision, int) or isinstance(expected_revision, bool))
+            or expected_revision < 0
         ):
             return _error(ResourceVersionError("invalid_version_alias"))
         try:

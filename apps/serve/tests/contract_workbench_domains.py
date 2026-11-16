@@ -1408,6 +1408,7 @@ def test_managed_layout_tree_root_is_the_resources_library() -> None:
         root_name_hits.status_code == 200 and root_name_hits.json()["hits"] == [],
         root_name_hits.text[:200],
     )
+    (root / MANAGED_LITERATURE_ROOT_RELATIVE).mkdir()
     (root / MANAGED_LITERATURE_ROOT_RELATIVE / "不该被资料搜索命中.md").write_text(
         "perovskite", encoding="utf-8"
     )

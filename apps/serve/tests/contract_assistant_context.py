@@ -246,6 +246,39 @@ class AssistantContextContract(unittest.TestCase):
         self.assertEqual(frozen.snapshot.items[0].excerpt_text, "")
         self.assertNotIn("证据正文", frozen.model_context)
 
+    def test_metadata_only_library_scopes_keep_stable_source_locators(self) -> None:
+        service = AssistantService(self.store)
+        refs = tuple(
+            ContextRef(
+                ref_id="random-" + kind.value,
+                kind=kind,
+                source_id="actual-source",
+                label="Selected source",
+            )
+            for kind in (ContextRefKind.LITERATURE, ContextRefKind.LITERATURE_COLLECTION)
+        )
+        selected = service.replace_selection(
+            session_id=SESSION_A,
+            expected_revision=0,
+            project_policy=ProjectContextPolicy.EXPLICIT_ONLY,
+            search_scope=SearchScope.DISABLED,
+            refs=refs,
+        )
+        frozen = service.freeze(
+            session_id=SESSION_A,
+            client_turn_id="review-turn",
+            expected_revision=selected.revision,
+            question="Write a review",
+            metadata_only=True,
+        ).context
+        self.assertIsNotNone(frozen)
+        scopes = json.loads(frozen.model_context.splitlines()[1])["scopes"]
+        self.assertEqual(
+            [scope["locator"] for scope in scopes],
+            ["literature:actual-source", "literature_collection:actual-source"],
+        )
+        self.assertTrue(all(item.excerpt_text == "" for item in frozen.snapshot.items))
+
     def test_default_session_title_freezes_source_without_changing_model_or_history_content(
         self,
     ) -> None:

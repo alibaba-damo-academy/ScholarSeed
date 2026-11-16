@@ -1,12 +1,21 @@
+import type { OfficeImageResult } from './images'
+
+export const IMPORT_PICKER_CHANNEL = 'scholarseed:pick-import'
+export const IMPORT_PICKER_PREVIEW = 'images'
+
+export interface ImportPreview {
+  path: string
+  imagePreview: OfficeImageResult
+}
+
 /** Electron 主进程向 renderer 暴露的导入选择范围。 */
 export const IMPORT_PICKER_TARGET = {
   RESOURCE: 'resource',
   FILE: 'file',
-  DIRECTORY: 'directory'
+  DIRECTORY: 'directory',
 } as const
 
-export type ImportPickerTarget =
-  (typeof IMPORT_PICKER_TARGET)[keyof typeof IMPORT_PICKER_TARGET]
+export type ImportPickerTarget = (typeof IMPORT_PICKER_TARGET)[keyof typeof IMPORT_PICKER_TARGET]
 
 const IMPORT_PICKER_TARGETS = new Set<unknown>(Object.values(IMPORT_PICKER_TARGET))
 
@@ -21,6 +30,5 @@ export function supportsImportPickerTarget(
   platform: string | undefined,
   target: ImportPickerTarget
 ): boolean {
-  return target !== IMPORT_PICKER_TARGET.RESOURCE
-    || platform === UNIFIED_IMPORT_PICKER_PLATFORM
+  return target !== IMPORT_PICKER_TARGET.RESOURCE || platform === UNIFIED_IMPORT_PICKER_PLATFORM
 }

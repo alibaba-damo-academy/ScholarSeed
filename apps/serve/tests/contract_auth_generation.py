@@ -17,6 +17,7 @@ from service.identity.persistence.users import UserRepository
 from service.identity.service.account import JWKS_PATH, REVOCATIONS_PATH, AccountTrust
 from service.identity.service.account_token import AccountTokenHolder
 from service.identity.service.auth import AuthService
+from service.identity.service.scope import ExecutionIdentity
 from service.identity.service.skill_credentials import SKILL_API_KEY_ENV, SkillCredentialService
 from service.platform.activity import Activities
 
@@ -59,7 +60,7 @@ class GatedAuth(AuthService):
         return verified
 
 
-def http_fixture(held_call: int):
+def http_fixture(held_call: int, retire=None):
     private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     public = json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(private.public_key()))
     public.update({"kid": "generation-key", "alg": "RS256", "use": "sig"})
@@ -92,6 +93,7 @@ def http_fixture(held_call: int):
         "https://account.test", client=upstream, environ={}, activities=activities
     )
     callbacks = []
+    execution_identity = ExecutionIdentity()
 
     async def on_logout(owner: str):
         callbacks.append(owner)
@@ -106,11 +108,13 @@ def http_fixture(held_call: int):
         service=auth,
         account_tokens=holder,
         on_logout=on_logout,
+        execution_identity=execution_identity,
+        on_retire_execution_scope=retire,
     )
 
     @app.get("/api/probe")
     async def probe():
-        return {"ok": True}
+        return {"scope": execution_identity.scope(USER)}
 
     return app, auth, holder, skills, first, second, upstream, callbacks
 
@@ -118,7 +122,10 @@ def http_fixture(held_call: int):
 class AuthRouteGenerationTests(unittest.IsolatedAsyncioTestCase):
     async def test_both_logout_identity_await_windows_preserve_new_credential(self) -> None:
         for held_call in (1, 2):
-            app, auth, holder, skills, first, second, upstream, callbacks = http_fixture(held_call)
+            retired = []
+            app, auth, holder, skills, first, second, upstream, callbacks = http_fixture(
+                held_call, retired.append
+            )
             holder.remember(USER, first)
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://serve.test"
@@ -144,10 +151,44 @@ class AuthRouteGenerationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(skills.revision, skill_before)
                 self.assertEqual(skills.cached_environment(USER)[SKILL_API_KEY_ENV], "ssk-new")
                 self.assertEqual(callbacks, [])
-                await client.get("/api/probe", headers={"Authorization": f"Bearer {first}"})
+                self.assertEqual(retired, [])
+                stale = await client.get("/api/probe", headers={"Authorization": f"Bearer {first}"})
+                self.assertIsNone(stale.json()["scope"])
                 self.assertEqual(holder.current(USER), second)
                 self.assertEqual(getattr(holder, "revision", 0), holder_before)
             upstream.close()
+
+    async def test_current_logout_rotates_scope_and_fences_old_requests(self) -> None:
+        retired = []
+        app, auth, holder, _skills, first, second, upstream, callbacks = http_fixture(
+            0, retired.append
+        )
+        first_headers = {"Authorization": f"Bearer {first}"}
+        second_headers = {"Authorization": f"Bearer {second}"}
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://serve.test"
+        ) as client:
+            original = (await client.get("/api/probe", headers=first_headers)).json()["scope"]
+            auth.held_call = auth.calls + 1
+            pending = asyncio.create_task(client.get("/api/probe", headers=first_headers))
+            try:
+                self.assertTrue(await asyncio.to_thread(auth.started.wait, GATE_TIMEOUT))
+                await client.post("/api/auth/logout", headers=first_headers)
+                self.assertEqual(retired, [original])
+                self.assertEqual(callbacks, [USER])
+                new = (await client.get("/api/probe", headers=second_headers)).json()["scope"]
+                self.assertTrue(new)
+                self.assertNotEqual(new, original)
+            finally:
+                auth.release.set()
+            self.assertIsNone((await pending).json()["scope"])
+            await client.post("/api/auth/logout", headers=first_headers)
+            self.assertEqual(retired, [original])
+            self.assertEqual(holder.current(USER), second)
+            self.assertEqual(
+                (await client.get("/api/probe", headers=second_headers)).json()["scope"], new
+            )
+        upstream.close()
 
     async def test_absent_logout_does_not_remember_and_old_request_cannot_restore(self) -> None:
         app, _auth, holder, skills, first, _second, upstream, callbacks = http_fixture(0)

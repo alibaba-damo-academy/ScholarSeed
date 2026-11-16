@@ -77,6 +77,7 @@ from service.platform.domains import (
     pinned_inspection,
 )
 from service.platform.locator import directory_locator
+from service.platform.registry import REGISTRY_DIRECTORY, RegistryNative
 from service.platform.startup import (
     SQLITE_SNAPSHOT_ATTEMPTS,
     acquire_startup_domains,
@@ -1208,16 +1209,24 @@ def exercise_application_isolation() -> None:
             # Lock only the target slot: a complete maintenance domain would
             # also block unrelated initialization through common ancestors.
             coordinator = str(bootstrap.coordination_root())
-            pin = native.pin(coordinator, True)
-            startup.callback(native.release, pin)
+            coordination_path = Path(coordinator)
+            coordination_native = (
+                RegistryNative(native, coordination_path)
+                if coordination_path.name == REGISTRY_DIRECTORY
+                else native
+            )
+            pin = coordination_native.pin(coordinator, True)
+            startup.callback(coordination_native.release, pin)
             ancestor = str(missing[0].parent)
             ancestor_pin = native.pin(ancestor, False, DirectoryRole.PROJECT)
             try:
                 identity = native.lineage(ancestor_pin)[-1]
             finally:
                 native.release(ancestor_pin)
-            blocker = native.acquire_at(pin, f"{identity.replace(':', '-')}-admission-a", True)
-            startup.callback(native.release, blocker)
+            blocker = coordination_native.acquire_at(
+                pin, f"{identity.replace(':', '-')}-admission-a", True
+            )
+            startup.callback(coordination_native.release, blocker)
             hint = directory_locator(native, str(missing[0]), role=DirectoryRole.PROJECT)
             assert hint.anchor == ancestor and not hint.anchor_rejected
             observed = startup.enter_context(unittest.TestCase().assertLogs(bootstrap._log))

@@ -7,6 +7,24 @@ test('resource translation exposes only the supported target languages', () => {
   assert.deepEqual(ASSISTANT_TRANSLATION_TARGETS, ['zh-CN', 'en'])
 })
 
+test('resource AI suggestions stay below modal feedback and its scrim', () => {
+  const suggestion = readFileSync(new URL('./Suggestion.tsx', import.meta.url), 'utf8')
+  const feedback = readFileSync(new URL('../../components/business/Feedback.tsx', import.meta.url), 'utf8')
+  const tokens = readFileSync(new URL('../../design/zindex.css', import.meta.url), 'utf8')
+  const layer = (name: string): number => {
+    const value = tokens.match(new RegExp(`${name}:\\s*(\\d+);`))
+    assert.ok(value, `Missing numeric layer ${name}`)
+    return Number(value[1])
+  }
+
+  assert.match(suggestion, /z-\[var\(--vds-z-floating-panel\)\]/)
+  assert.match(feedback, /z-\[var\(--vds-z-dialog-overlay\)\]/)
+  assert.match(feedback, /z-\[var\(--vds-z-dialog\)\]/)
+  assert.ok(layer('--vds-z-floating-panel') > layer('--vds-z-resize-handle'))
+  assert.ok(layer('--vds-z-floating-panel') < layer('--vds-z-dialog-overlay'))
+  assert.ok(layer('--vds-z-dialog-overlay') < layer('--vds-z-dialog'))
+})
+
 test('resource translation keeps current source and exposes shared target and model pickers', () => {
   const suggestion = readFileSync(new URL('./Suggestion.tsx', import.meta.url), 'utf8')
   const selection = readFileSync(new URL('../workbench/Selection.tsx', import.meta.url), 'utf8')
@@ -56,6 +74,9 @@ test('resource AI suggestions expose optional instructions and prompt settings g
   assert.doesNotMatch(suggestion, /suggestion\.directionHint/)
   assert.doesNotMatch(suggestion, /action !== 'polish' \? <IconButton/)
   assert.doesNotMatch(selection, /<ResourceSuggestion[\s\S]*?toolbarRef=\{toolbarRef\}[\s\S]*?\/>/)
-  assert.match(guide, /act\.openSettings\('prompts'\)/)
+  assert.match(guide, /page = 'prompts'/)
+  assert.match(guide, /act\.openSettings\(page\)/)
+  assert.match(suggestion, /page=\{action === 'translate' \? 'translation' : 'prompts'\}/)
+  assert.match(suggestion, /page="translation"/)
   assert.match(guide, /variant="link"/)
 })

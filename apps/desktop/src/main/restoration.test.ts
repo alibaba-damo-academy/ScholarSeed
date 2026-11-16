@@ -17,6 +17,8 @@ import { constants } from 'node:os'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import test from 'node:test'
+import fingerprints from '../../native/shipit/fingerprint.cjs'
+import { retirementOperation } from './terminal.ts'
 import {
   applyTerminalRecovery,
   TerminalRestorationError,
@@ -29,6 +31,8 @@ import {
   updateRepairSelection,
   UPDATE_REPAIR_ARGUMENT,
   UPDATE_REPAIR_SELECTION,
+  updateRepairMode,
+  UPDATE_REPAIR_MODE,
   planInstalledUpdate,
   verifyRepairApplication,
   UPDATE_REPAIR_PROTOCOL,
@@ -259,12 +263,13 @@ function fixture(context: test.TestContext) {
   }
 }
 
-function orphanFixture(context: test.TestContext) {
+function orphanFixture(context: test.TestContext, retirement = false, legacy = false) {
   const current = fixture(context)
   const selection = JSON.parse(readFileSync(current.contextPath, 'utf8'))
   const handoff = JSON.parse(readFileSync(current.handoff, 'utf8'))
   handoff.state = 'failed'
   delete handoff.nativeRequest
+  if (legacy) delete handoff.binding
   writeFileSync(current.handoff, JSON.stringify(handoff), { mode: 0o600 })
   const policy = JSON.parse(
     readFileSync(join(current.options.application, 'Contents', 'Resources', 'product.json'), 'utf8')
@@ -299,9 +304,49 @@ function orphanFixture(context: test.TestContext) {
     })
   )
   writeFileSync(nativeState, state, { mode: 0o600 })
+  if (retirement) {
+    const helper = join(
+      current.options.application,
+      'Contents/Frameworks/Squirrel.framework/Resources/ShipIt'
+    )
+    const receipt = join(current.options.application, 'Contents/Resources/shipit/build.json')
+    mkdirSync(dirname(helper), { recursive: true, mode: 0o700 })
+    mkdirSync(dirname(receipt), { recursive: true, mode: 0o700 })
+    // Mach-O structure fixture only; the explicit signature dependency is mocked.
+    const bytes = Buffer.alloc(144)
+    bytes.writeUInt32LE(0xfeedfacf, 0)
+    bytes.writeUInt32LE(2, 16)
+    bytes.writeUInt32LE(88, 20)
+    bytes.writeUInt32LE(0x19, 32)
+    bytes.writeUInt32LE(72, 36)
+    bytes.write('__LINKEDIT', 40)
+    bytes.writeBigUInt64LE(120n, 72)
+    bytes.writeBigUInt64LE(24n, 80)
+    bytes.writeUInt32LE(0x1d, 104)
+    bytes.writeUInt32LE(16, 108)
+    bytes.writeUInt32LE(128, 112)
+    bytes.writeUInt32LE(16, 116)
+    writeFileSync(helper, bytes, { mode: 0o700 })
+    writeFileSync(
+      receipt,
+      JSON.stringify({
+        schema: 1,
+        executableDigest: fingerprints.fingerprint(helper),
+        overlays: { 'retirement.h': 'a'.repeat(64) },
+      }),
+      { mode: 0o600 }
+    )
+    writeFileSync(
+      join(current.options.application, 'Contents/Resources/product.json'),
+      JSON.stringify({ ...policy, build_number: '202611091703' }),
+      { mode: 0o600 }
+    )
+    rmSync(source, { recursive: true })
+  }
   const proof = {
     ...current.proof,
-    kind: 'orphan-preparation-observation',
+    kind: retirement ? 'retired-preparation-observation' : 'orphan-preparation-observation',
+    ...(retirement ? { binding: retirementOperation(readFileSync(current.handoff)) } : {}),
     stateBytes: state.toString('base64'),
     journalBytes: Buffer.from('legacy native journal').toString('base64'),
   }
@@ -315,7 +360,7 @@ function orphanFixture(context: test.TestContext) {
         ...tools,
         open: (configuration) => {
           const config = JSON.parse(configuration)
-          assert.equal(config.mode, 'orphan')
+          assert.equal(config.mode, retirement ? 'retire' : 'orphan')
           if (config.expected) assert.deepEqual(config.expected, proof)
           const qualified = tools.open(configuration)
           return {
@@ -332,6 +377,7 @@ function orphanFixture(context: test.TestContext) {
     },
   }
   const scope = {
+    ...(retirement ? { recovery: 'retire' as const } : {}),
     application: current.options.application,
     repairApplication,
     coordinator: current.options.coordinator,
@@ -373,7 +419,7 @@ macosTest(
     assert.equal(existsSync(current.handoff), false)
     assert.equal(existsSync(current.nativeState), false)
     assert.ok(
-      current.events.indexOf('consume:context.json') < current.events.indexOf('native-repair')
+      current.events.indexOf('native-repair') < current.events.indexOf('consume:context.json')
     )
     assert.ok(
       current.events.indexOf('native-repair') < current.events.indexOf('consume:squirrel.json')
@@ -478,7 +524,7 @@ macosTest(
 )
 
 macosTest(
-  'external repair resumes from its own durable intent after context and native state have disappeared',
+  'external repair resumes native retirement before consuming the still-original context',
   async (context) => {
     const current = orphanFixture(context)
     current.interruptNative()
@@ -486,7 +532,7 @@ macosTest(
       repairInstalledUpdate(current.scope, current.runtime),
       TerminalRestorationError
     )
-    assert.equal(existsSync(current.contextPath), false)
+    assert.equal(existsSync(current.contextPath), true)
     assert.equal(existsSync(current.nativeState), false)
     assert.equal(existsSync(current.handoff), true)
     assert.equal(current.reserved(), true)
@@ -718,6 +764,92 @@ macosTest(
   }
 )
 
+for (const legacy of [false, true])
+  macosTest(
+    `explicit retirement resumes a newer installed app with missing source and legacy=${legacy}`,
+    async (context) => {
+      const current = orphanFixture(context, true, legacy)
+      const original = readFileSync(current.handoff)
+      current.interruptNative()
+      await assert.rejects(repairInstalledUpdate(current.scope, current.runtime))
+      assert.deepEqual(readFileSync(current.handoff), original)
+      assert.equal(existsSync(current.contextPath), true)
+      current.resumeNative()
+      const result = await repairInstalledUpdate(current.scope, current.runtime)
+      assert.equal(result.outcome, 'recovered')
+      assert.equal(result.installationPerformed, false)
+      assert.equal(existsSync(current.handoff), false)
+      assert(current.events.indexOf('occupy') < current.events.indexOf('native-open'))
+      assert(current.events.indexOf('create:intent') < current.events.indexOf('native-repair'))
+      writeFileSync(current.handoff, original, { mode: 0o600 })
+      await assert.rejects(repairInstalledUpdate(current.scope, current.runtime))
+      assert.deepEqual(readFileSync(current.handoff), original)
+    }
+  )
+
+macosTest(
+  'retirement refuses a helper without sealed ledger capability before native mutation',
+  async (context) => {
+    const current = orphanFixture(context, true)
+    const receipt = join(current.options.application, 'Contents/Resources/shipit/build.json')
+    writeFileSync(receipt, JSON.stringify({ schema: 1, overlays: {} }), { mode: 0o600 })
+    await assert.rejects(repairInstalledUpdate(current.scope, current.runtime))
+    assert.equal(current.events.includes('native-open'), false)
+    assert.equal(existsSync(current.handoff), true)
+    assert.equal(existsSync(current.contextPath), true)
+  }
+)
+
+test('retirement requires an explicit target and a unique mode', () => {
+  assert.equal(updateRepairMode([]), 'orphan')
+  assert.equal(
+    updateRepairMode([UPDATE_REPAIR_MODE + 'retire', UPDATE_REPAIR_ARGUMENT + '/app']),
+    'retire'
+  )
+  assert.throws(() => updateRepairMode([UPDATE_REPAIR_MODE + 'retire']))
+  assert.throws(() =>
+    updateRepairMode([UPDATE_REPAIR_MODE + 'force', UPDATE_REPAIR_ARGUMENT + '/app'])
+  )
+  assert.throws(() =>
+    updateRepairMode([
+      UPDATE_REPAIR_MODE + 'retire',
+      UPDATE_REPAIR_MODE + 'retire',
+      UPDATE_REPAIR_ARGUMENT + '/app',
+    ])
+  )
+})
+
+macosTest('retirement rejects a different frozen native source before parking', async (context) => {
+  const current = orphanFixture(context, true)
+  const handoff = JSON.parse(readFileSync(current.handoff, 'utf8'))
+  handoff.nativeRequest = {
+    binding: handoff.binding,
+    source: { ...current.proof.source, path: current.proof.source.path + '.other' },
+    target: current.proof.target,
+  }
+  writeFileSync(current.handoff, JSON.stringify(handoff), { mode: 0o600 })
+  await assert.rejects(repairInstalledUpdate(current.scope, current.runtime))
+  assert.equal(current.events.includes('native-open'), false)
+  assert.equal(existsSync(current.contextPath), true)
+})
+
+macosTest(
+  'retirement rejects a substituted helper despite a sealed capability declaration',
+  async (context) => {
+    const current = orphanFixture(context, true)
+    const helper = join(
+      current.options.application,
+      'Contents/Frameworks/Squirrel.framework/Resources/ShipIt'
+    )
+    const bytes = readFileSync(helper)
+    bytes[120] = 1
+    writeFileSync(helper, bytes)
+    await assert.rejects(repairInstalledUpdate(current.scope, current.runtime))
+    assert.equal(current.events.includes('native-open'), false)
+    assert.equal(existsSync(current.contextPath), true)
+  }
+)
+
 test('terminal restoration refuses non-Darwin before loading tools or touching records', async () => {
   const runtime = {
     platform: 'win32',
@@ -743,7 +875,7 @@ macosTest(
     assert.equal(existsSync(current.contextPath), false)
     assert.equal(existsSync(current.handoff), false)
     assert.equal(current.reserved(), false)
-    assert(current.events.indexOf('native-open') < current.events.indexOf('occupy'))
+    assert(current.events.indexOf('occupy') < current.events.indexOf('native-open'))
     assert(current.events.indexOf('reserve') < current.events.indexOf('consume:context.json'))
     assert(
       current.events.indexOf('consume:context.json') <

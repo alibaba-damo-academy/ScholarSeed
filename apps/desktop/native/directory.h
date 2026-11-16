@@ -32,6 +32,9 @@ struct directory_records {
 struct directory_error {
   const char *code;
   uint32_t system;
+  /* Raw NTSTATUS before Win32 mapping; 0 when unavailable. Several NTSTATUS values
+     collapse to one Win32 code, so occupancy and permission loss stay separable. */
+  int32_t native_status;
   const char *permission_reason;
   uint32_t permission_mask;
   int permission_index, permission_scope;
@@ -51,6 +54,21 @@ struct directory *directory_open_role(const char *path, bool create, enum direct
 struct directory *directory_open(const char *path, bool create, struct directory_error *error);
 struct directory *directory_pin_child(struct directory *parent, const char *name, struct directory_error *error);
 file_handle directory_file(struct directory *directory, const char *name, struct directory_error *error);
+file_handle directory_bound_file(struct directory *directory, const char *name,
+                                 const char *identity, struct directory_error *error);
+bool directory_file_identity(file_handle file, char *identity, struct directory_error *error);
+/* Exclusive lock on the pinned directory itself, for legacy-writer compatibility.
+   Darwin only; Windows has no legacy directory-flock writer to exclude. */
+file_handle directory_lock_self(struct directory *directory, struct directory_error *error);
+/* Single staged slot for directory_replace. The caller's exclusive record lock
+   makes any existing staged record a crashed writer's orphan, so residue is
+   bounded to one file and no random name generator is needed. */
+#define DIRECTORY_REPLACE_STAGED "replace-staged"
+/* Atomically replace one leaf with the supplied bytes, relative to the pinned
+   directory. Once the rename lands, no pathname deletion or overwrite follows:
+   a later sync failure is reported as ERR_LEASE_SYNC (result uncertain). */
+bool directory_replace(struct directory *directory, const char *name, const unsigned char *buffer,
+                       size_t length, struct directory_error *error);
 bool directory_read(struct directory *directory, const char *name, unsigned char *buffer,
                     size_t limit, size_t *length, bool *missing, struct directory_error *error);
 /* Caller holds the shared namespace guard against every cooperating mutator.
@@ -62,6 +80,10 @@ bool directory_create(struct directory *directory, const char *name, const unsig
                       size_t length, struct directory_error *error);
 bool directory_consume(struct directory *directory, const char *name, const unsigned char *expected,
                        size_t length, uint64_t device, uint64_t inode, struct directory_error *error);
+#ifdef __APPLE__
+bool directory_prune_lock_only(struct directory *directory, const char *name, bool *removed,
+                               struct directory_error *error);
+#endif
 bool directory_child(struct directory *directory, const char *name,
                      char identity[DIRECTORY_IDENTITY_BYTES], struct directory_error *error);
 const char *directory_identity(struct directory *directory);
@@ -74,4 +96,12 @@ bool directory_persistent_identity(struct directory *directory,
 size_t directory_depth(struct directory *directory);
 const char *directory_ancestor(struct directory *directory, size_t index);
 uint32_t directory_close(struct directory *directory);
+#ifdef _WIN32
+/* Caller holds exclusive maintenance for the pinned disposable cache root. */
+bool directory_clear_cache(struct directory *directory, struct directory_error *error);
+bool directory_publish_cache(struct directory *directory, const char *staged, const char *name,
+                             struct directory_error *error);
+bool directory_discard_cache_alias(struct directory *directory, const char *staged, const char *name,
+                                   struct directory_error *error);
+#endif
 #endif

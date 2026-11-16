@@ -67,6 +67,21 @@ test('selection action key changes with evidence, action policy or question', ()
   )
 })
 
+test('answer selection actions follow the horizontal design order with a copy divider', () => {
+  const source = readFileSync(new URL('./Annotations.tsx', import.meta.url), 'utf8')
+  const menu = source.slice(
+    source.indexOf('<FloatingToolbar'),
+    source.indexOf("label={a('remaining.selectionActions')}")
+  )
+  const labels = [
+    ...menu.matchAll(/a\('remaining\.(addConversation|importAnswer|copyText)'\)/g),
+  ].map((match) => match[1])
+  assert.deepEqual(labels, ['addConversation', 'importAnswer', 'copyText'])
+  assert.doesNotMatch(menu, /flex-col/)
+  assert.match(menu, /<Divider\s+orientation="vertical"/)
+  assert.doesNotMatch(menu, /w-\[190px\]/)
+})
+
 test('answer selection menu items share one style without a default fill', () => {
   const annotations = readFileSync(new URL('./Annotations.tsx', import.meta.url), 'utf8')
   const menu = annotations.slice(
@@ -87,12 +102,35 @@ function SELECTION_ACTION_SOURCE(source: string): string {
   return line
 }
 
-test('inline annotation marker is forced to a perfect circle', () => {
+test('inline annotation marker matches the asymmetric design bubble without a drawn tail', () => {
   const notes = readFileSync(new URL('./Notes.tsx', import.meta.url), 'utf8')
-  const badge = notes.slice(notes.indexOf('const ANNOTATION_BADGE_CLASS'))
-  // 徽章由回答内联与用户消息共用: 等宽高 + 全圆角保证圆形气泡, 改成不等宽高会破坏设计稿标识。
+  const badge = notes.slice(
+    notes.indexOf('const ANNOTATION_BADGE_CLASS'),
+    notes.indexOf('function AnnotationCommentEditor')
+  )
   assert.match(badge, /size-\[var\(--vds-badge-height-sm\)\]/)
-  assert.match(badge, /rounded-\[var\(--vds-radius-circle\)\]/)
+  assert.match(badge, /rounded-\[var\(--vds-radius-8\)\]/)
+  assert.match(badge, /rounded-bl-\[var\(--vds-radius-1\)\]/)
+  assert.match(badge, /bg-\[var\(--vds-text-primary\)\]/)
+  assert.match(badge, /text-\[length:var\(--vds-font-body-lv1\)\]/)
+  assert.doesNotMatch(badge, /<svg|<circle|<path|translate-/)
+})
+
+test('pending annotation removal deletes annotations and their context together', () => {
+  const panel = readFileSync(new URL('./AiPanel.tsx', import.meta.url), 'utf8')
+  const summary = panel.slice(
+    panel.indexOf('<AnnotationSummary'),
+    panel.indexOf('testId="ai-context-ref"')
+  )
+  assert.match(summary, /act\.deleteAnswerAnnotation\(annotationId\)/)
+  assert.match(summary, /onClear=\{removeGroup\}/)
+  assert.match(
+    panel,
+    /if \(canDeleteAnnotation\) void act\.deleteAnswerAnnotations\(annotationIds\)/
+  )
+  assert.match(panel, /else void act\.detachAnswerAnnotations\(annotationIds\)/)
+  assert.match(summary, /else void act\.detachAnswerAnnotation\(annotationId\)/)
+  assert.doesNotMatch(summary, /act\.detachAiContext/)
 })
 
 test('pending annotations reuse the same tag format as other context references', () => {
@@ -103,11 +141,11 @@ test('pending annotations reuse the same tag format as other context references'
     'utf8'
   )
 
-  // 引入标签统一走 ComposerRefChip: 注释汇总与资料/文件/选区/技能同一格式,
+  // 引入标签统一走 ReferenceAttachment: 注释汇总与资料/文件/选区/技能同一格式,
   // 托盘内不允许再出现第二套色系(brand Tag)。
-  assert.match(panel, /<ComposerRefChip/)
-  assert.match(notes, /export function AnnotationSummary[\s\S]*?<ComposerRefChip/)
-  assert.match(skillRefs, /<ComposerRefChip/)
+  assert.match(panel, /<ReferenceAttachment/)
+  assert.match(notes, /export function AnnotationSummary[\s\S]*?<ReferenceAttachment/)
+  assert.match(skillRefs, /<ReferenceAttachment/)
   assert.match(panel, /<AnnotationSummary[\s\S]*?testId="ai-context-ref"/)
   assert.doesNotMatch(notes, /tone="brand"/)
   assert.doesNotMatch(panel, /tone="brand"/)

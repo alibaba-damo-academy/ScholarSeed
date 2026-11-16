@@ -6,8 +6,10 @@ export interface PublicComponentProps {
   slot: string
   data: Record<string, unknown>
   status: string
-  onAction: (action: string, values: Record<string, unknown>) => void
+  onAction: (action: string, values: Record<string, unknown>) => void | Promise<void>
   onRequest?: PluginRequestHandler
+  draft?: Record<string, unknown>
+  onDraft?: (values: Record<string, unknown>) => Promise<unknown>
 }
 export interface PublicComponentContribution {
   copy?: (

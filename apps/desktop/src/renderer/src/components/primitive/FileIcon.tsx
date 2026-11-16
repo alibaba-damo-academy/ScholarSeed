@@ -1,5 +1,6 @@
 import React, { type HTMLAttributes, type ComponentType } from 'react'
 import {
+  BookOpenText,
   File,
   FileArchive,
   FileAudio,
@@ -12,19 +13,21 @@ import {
   Presentation,
   type LucideIcon,
 } from 'lucide-react'
-import excel from '../../assets/fileIcon/fill-file-excel.webp'
-import pdf from '../../assets/fileIcon/fill-file-pdf.webp'
-import zip from '../../assets/fileIcon/fill-file-zip.webp'
-import text from '../../assets/fileIcon/fill-file-text.webp'
-import html from '../../assets/fileIcon/fill-file-html.webp'
-import image from '../../assets/fileIcon/fill-file-image.webp'
-import tsx from '../../assets/fileIcon/fill-file-tsx.webp'
-import ppt from '../../assets/fileIcon/fill-file-ppt.webp'
-import word from '../../assets/fileIcon/fill-file-word.webp'
-import mov from '../../assets/fileIcon/fill-file-mov.webp'
-import music from '../../assets/fileIcon/fill-file-music.webp'
-import folder from '../../assets/fileIcon/fill-file-folder.webp'
+import excel from '../../assets/fileIcon/fill-file-excel-l.svg'
+import pdf from '../../assets/fileIcon/fill-file-pdf-l.svg'
+import zip from '../../assets/fileIcon/fill-file-zip-l.svg'
+import text from '../../assets/fileIcon/fill-file-text-l.svg'
+import html from '../../assets/fileIcon/fill-file-html-l.svg'
+import image from '../../assets/fileIcon/fill-file-image-l.svg'
+import tsx from '../../assets/fileIcon/fill-file-tsx-l.svg'
+import ppt from '../../assets/fileIcon/fill-file-ppt-l.svg'
+import word from '../../assets/fileIcon/fill-file-word-l.svg'
+import mov from '../../assets/fileIcon/fill-file-mov-l.svg'
+import music from '../../assets/fileIcon/fill-file-music-l.svg'
+import folder from '../../assets/fileIcon/fill-file-folder-l.svg'
 import { fileIconKind, type FileIconKind } from './utils'
+
+export const FILE_FALLBACK_ICON_CLASS_NAME = '!size-3/4 text-[var(--vds-icon-outline-default)]'
 
 interface FileIconProps extends HTMLAttributes<HTMLSpanElement> {
   size?: number | string
@@ -109,30 +112,43 @@ function DocumentIcon({
   )
 }
 
+export function hasFileFormatAsset(name: string, kind: 'file' | 'dir' = 'file'): boolean {
+  return kind === 'dir' || Boolean(fileIconKind(name))
+}
+
+function LiteratureIcon(props: FileIconProps): React.JSX.Element {
+  return <DocumentIcon {...props} icon={BookOpenText} strokeWidth={1.5} />
+}
+
 export function fileIconForName(
   name: string,
-  kind: 'file' | 'dir' = 'file'
+  kind: 'file' | 'dir' = 'file',
+  source?: 'literature'
 ): ComponentType<FileIconProps> {
   if (kind === 'dir') return FILE_ICON_COMPONENTS.folder
   const matched = fileIconKind(name)
-  return matched ? FILE_ICON_COMPONENTS[matched] : DocumentIcon
+  if (matched) return FILE_ICON_COMPONENTS[matched]
+  return source === 'literature' ? LiteratureIcon : DocumentIcon
 }
 
 export function FileFormatIcon({
   name,
   kind,
+  source,
   appearance = 'asset',
   ...props
 }: FileIconProps & {
   name: string
   kind?: 'file' | 'dir'
+  source?: 'literature'
   appearance?: 'asset' | 'outline'
 }): React.JSX.Element {
   if (appearance === 'outline') {
     const matched = kind === 'dir' ? 'folder' : fileIconKind(name)
+    if (!matched && source === 'literature') return <LiteratureIcon {...props} />
     const Icon = matched ? FILE_OUTLINE_ICONS[matched] : File
     return <DocumentIcon {...props} icon={Icon} />
   }
-  const Icon = fileIconForName(name, kind)
+  const Icon = fileIconForName(name, kind, source)
   return <Icon {...props} />
 }

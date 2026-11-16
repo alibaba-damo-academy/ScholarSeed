@@ -20,11 +20,11 @@
     "name": "Getting started",
     "description": "Create a project and explore tasks, files, and the workspace",
     "title": "Welcome to ScholarSeed",
-    "introduction": "Research starts with a project. Materials, literature, task conversations, and outputs stay together, giving AI the context for your work.",
+    "introduction": "Research starts with a project. Resources, literature, task conversations, and outputs stay together, giving AI the context for your work.",
     "projectTitle": "Projects",
     "projectBody": "One project for each research direction, with all related files in one place.",
     "taskTitle": "Tasks",
-    "taskBody": "One conversation per question. AI searches, reads, and writes with your project materials.",
+    "taskBody": "One conversation per question. AI searches, reads, and writes with your project resources.",
     "outputTitle": "Outputs",
     "outputBody": "Reviews, briefs, and drafts return to project files, with citations you can trace.",
     "skipGuide": "Skip the guide",
@@ -33,20 +33,20 @@
   },
   "project": {
     "name": "Projects",
-    "description": "Project files, materials, literature, and tasks",
+    "description": "Project files, resources, literature, and tasks",
     "switcher": {
       "title": "This is your project",
-      "body": "Search, reading, writing, and AI conversations use the materials and literature in this project. Switch or create projects here."
+      "body": "Search, reading, writing, and AI conversations use the resources and literature in this project. Switch or create projects here."
     },
     "composer": {
       "title": "Describe your task in one sentence",
-      "body": "Describe your research task. Use @ to add project materials or literature, and / to invoke research skills."
+      "body": "Describe your research task. Use @ to add project resources or literature, and / to invoke research skills."
     },
     "files": {
       "title": "Project files",
-      "body": "Materials, literature, and AI-generated outputs are collected here. Open them in the workspace.",
+      "body": "Resources, literature, and AI-generated outputs are collected here. Open them in the workspace.",
       "materials": {
-        "title": "Materials",
+        "title": "Resources",
         "body": "Notes, data, and documents you import, available for AI to read."
       },
       "literature": {

@@ -2,15 +2,11 @@
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
     "target": "ES2022",
-    "types": [
-      "node",
-      "electron-vite/node"
-    ],
-    "lib": [
-      "ES2022"
-    ]
+    "types": ["node", "electron-vite/node"],
+    "lib": ["ES2022"]
   },
   "include": [
+    "src/markdown/**/*",
     "scripts/recovery.ts",
     "scripts/recovery.test.ts",
     "src/main/**/*",
@@ -20,11 +16,14 @@
     "src/fonts.ts",
     "src/pdfe.ts",
     "src/browser.ts",
+    "src/browserdiagnostics.ts",
     "src/startup.ts",
     "src/delivery.ts",
     "src/authentication.ts",
     "src/overlay.ts",
     "src/menu.ts",
+    "src/settings.ts",
+    "src/portal.ts",
     "src/approval.ts",
     "src/clipboard.ts",
     "src/feedback.ts",
@@ -40,8 +39,10 @@
     "src/notifications.ts",
     "src/skills.ts",
     "src/plugins.ts",
+    "../../packages/ui/document.ts",
     "src/mcp-settings.ts",
     "src/reconfiguration.ts",
+    "src/translation.ts",
     "src/storage.ts",
     "src/subscriptions.ts",
     "src/updates.ts",

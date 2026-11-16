@@ -298,6 +298,31 @@ def test_no_big_default_survives_in_the_sources() -> None:
         )
 
 
+def test_reasoning_summary_declaration_is_connection_scoped() -> None:
+    registry = bundled_registry()
+    for model in ("qwen3.8-max", "qwen3.8-flash"):
+        check(
+            "verified gateway models declare their Responses summary dialect",
+            registry.lookup(model, GATEWAY_CONNECTION).responses_reasoning_summary is True,
+        )
+    for model, lane in (
+        ("qwen3.8-max", ""),
+        ("qwen3.8-max", "personal"),
+        ("qwen3.8-flash", ""),
+        ("qwen3.8-flash", "personal"),
+        ("qwen3.8-max-0902", GATEWAY_CONNECTION),
+        ("unknown-model", GATEWAY_CONNECTION),
+    ):
+        check(
+            "other connections and models do not inherit public summary semantics",
+            getattr(registry.lookup(model, lane), "responses_reasoning_summary", None) is not True,
+        )
+    check(
+        "summary dialect declaration requires a boolean",
+        bool(registry_error(capability_document(responses_reasoning_summary="yes"))),
+    )
+
+
 def test_loading_rejects_incoherent_declarations() -> None:
     """§9.1：任一不自洽都在加载期失败，不静默修正。"""
     cases: dict[str, dict[str, Any]] = {
@@ -1138,6 +1163,7 @@ def test_product_event_projects_the_resolution() -> None:
 
 
 TESTS = (
+    test_reasoning_summary_declaration_is_connection_scoped,
     test_gateway_lane_resolves_the_declared_truth,
     test_resolution_matches_only_the_exact_wire_id,
     test_undeclared_model_produces_no_window,

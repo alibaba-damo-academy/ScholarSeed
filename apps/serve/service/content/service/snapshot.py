@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import json
 import logging
 import os
 import re
 import stat
 import time
 import uuid
+from dataclasses import asdict
 from pathlib import Path
 from threading import Lock
 
@@ -18,16 +20,30 @@ from service.content.persistence import snapshots
 from service.content.service.native import copy_descriptor_exclusive, creation_marker
 from service.content.service.utils import directory
 from service.platform.content import (
+    DIRECTORY_MANIFEST_VERSION,
+    ArtifactContentKind,
+    ArtifactDirectoryEntry,
+    ArtifactDirectoryManifest,
+    ArtifactFileEntry,
     ArtifactScope,
     ArtifactSnapshotFailure,
     ArtifactStorageLocation,
     VerifiedArtifactContent,
 )
 from service.platform.files import CONTENT_SNIFF_BYTES, guess_media_type
-from service.platform.storage import NOFOLLOW, NONBLOCK, DirectoryHandle, preserve_mode
+from service.platform.storage import (
+    FILE_ATTRIBUTE_REPARSE_POINT,
+    NOFOLLOW,
+    NONBLOCK,
+    DirectoryHandle,
+    preserve_mode,
+)
 
 CHUNK_BYTES = 1024 * 1024
 MAX_ARTIFACT_BYTES = 128 * 1024 * 1024
+MAX_DIRECTORY_ENTRIES = 2048
+MAX_DIRECTORY_DEPTH = 32
+DIRECTORY_MEDIA_TYPE = "application/vnd.scholarseed.directory+json"
 OBJECT_MODE = 0o400
 TEMP_MODE = 0o600
 DEFAULT_MEDIA_TYPE = "application/octet-stream"
@@ -186,6 +202,37 @@ def _capture_once(
     *,
     expected_sha256: str = "",
 ) -> VerifiedArtifactContent:
+    root = Path(location.source_root).expanduser().resolve()
+    try:
+        relative = source.relative_to(root)
+    except ValueError as error:
+        raise ContentError(PATH_INVALID) from error
+    if not relative.parts:
+        raise ContentError(PATH_INVALID)
+    try:
+        with directory(root, relative.parts[:-1]) as parent:
+            identity = parent.stat(relative.name)
+        if _linked(identity):
+            raise ContentError(PATH_INVALID)
+        if stat.S_ISDIR(identity.st_mode):
+            return _capture_directory_once(location, scope, source, expected_sha256=expected_sha256)
+    except OSError as error:
+        logger.exception(
+            "artifact_snapshot_capture_failed errno=%s winerror=%s",
+            error.errno,
+            getattr(error, "winerror", None),
+        )
+        raise ContentError(_failure_code(error)) from error
+    return _capture_file_once(location, scope, source, expected_sha256=expected_sha256)
+
+
+def _capture_file_once(
+    location: ArtifactStorageLocation,
+    scope: ArtifactScope,
+    source: Path,
+    *,
+    expected_sha256: str = "",
+) -> VerifiedArtifactContent:
     """Copy one stable file, then atomically install it under its verified digest."""
 
     root = Path(location.source_root).expanduser().resolve()
@@ -260,6 +307,212 @@ def _capture_once(
             getattr(exc, "winerror", None),
         )
         raise ContentError(_failure_code(exc)) from exc
+
+
+def _linked(identity: os.stat_result) -> bool:
+    return stat.S_ISLNK(identity.st_mode) or bool(
+        getattr(identity, "st_file_attributes", 0) & FILE_ATTRIBUTE_REPARSE_POINT
+    )
+
+
+def _directory_inventory(
+    location: ArtifactStorageLocation, source: Path
+) -> dict[str, tuple[int, ...]]:
+    root = Path(location.source_root).expanduser().resolve()
+    relative = source.relative_to(root)
+    inventory: dict[str, tuple[int, ...]] = {}
+    total = 0
+
+    def visit(parent: DirectoryHandle, name: str, prefix: str, depth: int) -> None:
+        nonlocal total
+        if depth > MAX_DIRECTORY_DEPTH or len(inventory) > MAX_DIRECTORY_ENTRIES:
+            raise ContentError(TOO_LARGE)
+        identity = parent.stat(name)
+        if _linked(identity):
+            raise ContentError(PATH_INVALID)
+        if not prefix and not stat.S_ISDIR(identity.st_mode):
+            raise ContentError(SOURCE_CHANGED)
+        inventory[prefix] = (identity.st_mode, *_signature(identity))
+        if stat.S_ISDIR(identity.st_mode):
+            child = parent.directory(name)
+            try:
+                if child.identity() != (identity.st_dev, identity.st_ino):
+                    raise ContentError(SOURCE_CHANGED)
+                try:
+                    names = child.names(MAX_DIRECTORY_ENTRIES + 1)
+                except OSError as error:
+                    if error.errno == errno.ENOSPC:
+                        raise ContentError(TOO_LARGE) from error
+                    raise
+                for member in sorted(names):
+                    if (
+                        not member
+                        or member in {".", ".."}
+                        or any(value in member for value in ("/", "\\", ":", "\x00"))
+                    ):
+                        raise ContentError(PATH_INVALID)
+                    visit(child, member, f"{prefix}/{member}" if prefix else member, depth + 1)
+            finally:
+                child.close()
+        elif stat.S_ISREG(identity.st_mode):
+            total += identity.st_size
+            if total > MAX_ARTIFACT_BYTES:
+                raise ContentError(TOO_LARGE)
+        else:
+            raise ContentError(PATH_INVALID)
+
+    with directory(root, relative.parts[:-1]) as parent:
+        visit(parent, relative.name, "", 0)
+    if len(inventory) - 1 > MAX_DIRECTORY_ENTRIES:
+        raise ContentError(TOO_LARGE)
+    return inventory
+
+
+def _store_payload(location: ArtifactStorageLocation, scope: ArtifactScope, payload: bytes) -> str:
+    digest = hashlib.sha256(payload).hexdigest()
+    with directory(
+        Path(location.storage_root), Path(location.objects_relative).parts, create=True
+    ) as objects:
+        name = f"{TEMP_PREFIX}{uuid.uuid4().hex}"
+        descriptor = objects.open(name, os.O_RDWR | os.O_CREAT | os.O_EXCL | NOFOLLOW, TEMP_MODE)
+        try:
+            with os.fdopen(os.dup(descriptor), "wb") as stream:
+                stream.write(payload)
+                stream.flush()
+                preserve_mode(stream.fileno(), OBJECT_MODE)
+                os.fsync(stream.fileno())
+            _publish_object(location, scope, objects, descriptor, digest, len(payload))
+        finally:
+            try:
+                identity = os.fstat(descriptor)
+                objects.unlink(name, expected=identity)
+            finally:
+                os.close(descriptor)
+    return digest
+
+
+def _capture_directory_once(
+    location: ArtifactStorageLocation,
+    scope: ArtifactScope,
+    source: Path,
+    *,
+    expected_sha256: str = "",
+) -> VerifiedArtifactContent:
+    if expected_sha256 and not DIGEST_PATTERN.fullmatch(expected_sha256):
+        raise ContentError(PATH_INVALID)
+    objects = Path(location.storage_root) / location.objects_relative
+    if objects.is_relative_to(source):
+        raise ContentError(PATH_INVALID)
+    before = _directory_inventory(location, source)
+    entries: list[ArtifactDirectoryEntry | ArtifactFileEntry] = []
+    total = 0
+    for path, identity in sorted(before.items()):
+        if not path:
+            continue
+        if stat.S_ISDIR(identity[0]):
+            entries.append(ArtifactDirectoryEntry(path))
+        else:
+            content = _capture_file_once(location, scope, source / path)
+            entries.append(
+                ArtifactFileEntry(path, content.sha256, content.size, content.media_type)
+            )
+            total += content.size
+            if total > MAX_ARTIFACT_BYTES:
+                raise ContentError(TOO_LARGE)
+    if before != _directory_inventory(location, source):
+        raise ContentError(SOURCE_CHANGED)
+    value = ArtifactDirectoryManifest(tuple(entries), total, DIRECTORY_MANIFEST_VERSION)
+    try:
+        payload = json.dumps(
+            asdict(value), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    except UnicodeError as error:
+        raise ContentError(PATH_INVALID) from error
+    digest = hashlib.sha256(payload).hexdigest()
+    if expected_sha256 and expected_sha256 != digest:
+        raise ContentError(SOURCE_CHANGED)
+    _store_payload(location, scope, payload)
+    relative = source.relative_to(Path(location.source_root).expanduser().resolve())
+    return VerifiedArtifactContent(
+        scope,
+        relative.as_posix(),
+        relative.name,
+        DIRECTORY_MEDIA_TYPE,
+        len(payload),
+        digest,
+        ArtifactContentKind.DIRECTORY,
+    )
+
+
+def manifest(
+    location: ArtifactStorageLocation, content: VerifiedArtifactContent
+) -> ArtifactDirectoryManifest:
+    if content.kind != ArtifactContentKind.DIRECTORY:
+        raise ContentError(PATH_INVALID)
+    try:
+        payload = read(location, content)
+        raw = json.loads(payload)
+        if (
+            set(raw) != {"version", "total_size", "entries"}
+            or raw["version"] != DIRECTORY_MANIFEST_VERSION
+            or not isinstance(raw["entries"], list)
+            or len(raw["entries"]) > MAX_DIRECTORY_ENTRIES
+        ):
+            raise ValueError(INTEGRITY_MISMATCH)
+        entries: list[ArtifactDirectoryEntry | ArtifactFileEntry] = []
+        directories = {""}
+        previous = ""
+        total = 0
+        for value in raw["entries"]:
+            path = value["path"]
+            if (
+                not isinstance(path, str)
+                or not path
+                or path <= previous
+                or path.startswith("/")
+                or any(part in {"", ".", ".."} for part in path.split("/"))
+                or any(char in path for char in ("\\", ":", "\x00"))
+                or len(path.split("/")) > MAX_DIRECTORY_DEPTH
+                or path.rpartition("/")[0] not in directories
+            ):
+                raise ValueError(INTEGRITY_MISMATCH)
+            if value["kind"] == ArtifactContentKind.DIRECTORY:
+                if set(value) != {"path", "kind"}:
+                    raise ValueError(INTEGRITY_MISMATCH)
+                entries.append(ArtifactDirectoryEntry(path))
+                directories.add(path)
+            elif value["kind"] == ArtifactContentKind.FILE:
+                if (
+                    set(value) != {"path", "kind", "sha256", "size", "media_type"}
+                    or not isinstance(value["sha256"], str)
+                    or not DIGEST_PATTERN.fullmatch(value["sha256"])
+                    or (not isinstance(value["size"], int) or isinstance(value["size"], bool))
+                    or not 0 <= value["size"] <= MAX_ARTIFACT_BYTES
+                    or not isinstance(value["media_type"], str)
+                    or not value["media_type"]
+                ):
+                    raise ValueError(INTEGRITY_MISMATCH)
+                entries.append(
+                    ArtifactFileEntry(path, value["sha256"], value["size"], value["media_type"])
+                )
+                total += value["size"]
+            else:
+                raise ValueError(INTEGRITY_MISMATCH)
+            previous = path
+        result = ArtifactDirectoryManifest(tuple(entries), total, DIRECTORY_MANIFEST_VERSION)
+        if (
+            total > MAX_ARTIFACT_BYTES
+            or (not isinstance(raw["total_size"], int) or isinstance(raw["total_size"], bool))
+            or raw["total_size"] != total
+            or json.dumps(
+                asdict(result), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+            != payload
+        ):
+            raise ValueError(INTEGRITY_MISMATCH)
+        return result
+    except (KeyError, TypeError, ValueError, UnicodeError) as error:
+        raise ContentError(INTEGRITY_MISMATCH) from error
 
 
 def remove(location: ArtifactStorageLocation, content: VerifiedArtifactContent) -> None:

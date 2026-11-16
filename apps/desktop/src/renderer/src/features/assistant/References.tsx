@@ -19,6 +19,7 @@ import {
 } from '../../components/business/SessionArtifacts'
 import { FileFormatIcon } from '../../components/primitive'
 import { activeThread, useApp } from '../../store'
+import { WebNavigationContext } from '../../contracts/navigation'
 import { getLiterature } from '../literature/api'
 import { resolveRevealTarget } from '../resources/api'
 import { fetchSessionReferencePreview } from './api'
@@ -48,6 +49,7 @@ export function OverviewReferences({
   boundaryRef?: React.RefObject<HTMLElement | null>
 }): React.JSX.Element {
   const { state, act } = useApp()
+  const openWebSource = React.useContext(WebNavigationContext)
   const { t: text } = useTranslation('components')
   const { t: assistantText } = useTranslation('assistant')
   const { toast } = useToast()
@@ -160,7 +162,7 @@ export function OverviewReferences({
                     disabled={opening}
                     onClick={() => {
                       if (source.reference) void open(source.reference)
-                      else if (source.url) void window.scholarseed.openExternal(source.url)
+                      else if (source.url) openWebSource(source.url, onOpened)
                       else setDetail(source)
                     }}
                   >

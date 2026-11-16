@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "id": "resource-conflict",
+  "revision": "1",
+  "name": "资料同名冲突合成输入",
+  "description": "同名不同内容的原始文件，用于人工确认的资料导入冲突专项，不包含产品状态或导入结果。",
+  "source": {
+    "kind": "synthetic",
+    "origin": "Repository-authored synthetic files for manual resource conflict evaluation.",
+    "rights": "Synthetic repository input containing no third-party or user data; repository license applies."
+  },
+  "files": [
+    {
+      "id": "existing-plan",
+      "source": "files/existing/plan.md",
+      "target": "existing/plan.md",
+      "mediaType": "text/markdown",
+      "size": 82,
+      "sha256": "789bf4f16e54ac6f457099209f4c0091083e374409a33f5a3d22480ccebbf6e9"
+    },
+    {
+      "id": "incoming-plan",
+      "source": "files/incoming/plan.md",
+      "target": "incoming/plan.md",
+      "mediaType": "text/markdown",
+      "size": 82,
+      "sha256": "84c2b1083d41892dad01c605c04b36cdb3881576e6fcfb41c4564b1b90eb0a60"
+    }
+  ]
+}

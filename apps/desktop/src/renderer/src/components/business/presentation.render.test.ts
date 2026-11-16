@@ -1,20 +1,22 @@
 import assert from 'node:assert/strict'
 import path from 'node:path'
-import test from 'node:test'
+import test, { after } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { chromium, expect } from '@playwright/test'
 import react from '@vitejs/plugin-react'
-import { createServer } from 'vite'
+import { renderServers } from '../../../../test-helpers/render.ts'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
+const servers = renderServers({ after })
 
 test(
   'project choices and tag headers preserve alignment and intrinsic tag width',
   { timeout: 60_000 },
-  async () => {
-    const server = await createServer({
+  async (context) => {
+    const server = await servers.create({
       configFile: false,
       root: ROOT,
+      cacheKey: 'presentation',
       plugins: [
         {
           name: 'presentation-fixture',
@@ -56,7 +58,7 @@ test(
           const item={id:'paper',tags:[{id:'first',name:'一二三四五六七八九十'},...Array.from({length:12},(_,index)=>({id:'tag-'+index,name:'标签'+index}))]};
           function ToolbarFixture(){
             const [target,setTarget]=useState(null);
-            return <div data-testid="toolbar-fixture" style={{width:160}}><div ref={setTarget}/><LibraryToolbarTarget.Provider value={target}><LibraryToolbar query="" onQuery={()=>{}} placeholder="搜索文献" refreshing={false} onRefresh={()=>{}}><LibraryAction label="添加测试文献"/></LibraryToolbar></LibraryToolbarTarget.Provider></div>;
+            return <div data-testid="toolbar-fixture" style={{width:160}}><div ref={setTarget}/><LibraryToolbarTarget.Provider value={target}><LibraryToolbar query="" onQuery={()=>{}} placeholder="搜索文献" refreshing={false} onRefresh={()=>{}} leading={<Groups projectId="project" collections={[{id:'test',name:'123'}]} value="test" onValueChange={()=>{}} onCollectionsChange={()=>{}} onReload={()=>{}}/>}><LibraryAction label="添加测试文献"/></LibraryToolbar></LibraryToolbarTarget.Provider></div>;
           }
           function Fixture(){
             const [width,setWidth]=useState(110);
@@ -70,6 +72,7 @@ test(
       ],
       server: { host: '127.0.0.1', port: 0 },
     })
+    context.diagnostic(`optimizer cache: ${server.config.cacheDir}`)
     await server.listen()
     const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
@@ -78,11 +81,30 @@ test(
       page.on('console', (message) => {
         if (message.type() === 'error') process.stderr.write(message.text() + '\n')
       })
-      await page.goto(new URL('/__presentation', server.resolvedUrls!.local[0]).href, {
-        waitUntil: 'domcontentloaded',
+      page.on('requestfailed', (request) => {
+        context.diagnostic(`${request.failure()?.errorText} ${request.url()}`)
+      })
+      page.on('response', (response) => {
+        if (response.status() >= 400) context.diagnostic(`${response.status()} ${response.url()}`)
       })
       const choice = page.getByRole('button', { name: '项目文件', exact: true })
-      await choice.waitFor({ state: 'visible' })
+      await page
+        .goto(new URL('/__presentation', server.resolvedUrls!.local[0]).href, {
+          waitUntil: 'domcontentloaded',
+        })
+        .then(() => choice.waitFor({ state: 'visible' }))
+        .catch(async (error) => {
+          const document = await page
+            .evaluate(() => ({
+              url: location.href,
+              readyState: globalThis.document.readyState,
+              rootChildren: globalThis.document.getElementById('root')?.childElementCount,
+              scripts: Array.from(globalThis.document.scripts, (script) => script.src),
+            }))
+            .catch((failure) => ({ error: String(failure) }))
+          context.diagnostic(`Document: ${JSON.stringify(document)}`)
+          throw error
+        })
       page.setDefaultTimeout(5000)
       await choice.hover()
       await expect(choice).toHaveCSS('border-radius', '8px')
@@ -198,10 +220,8 @@ test(
       const toolbar = page.getByTestId('toolbar-fixture')
       const search = toolbar.getByRole('button', { name: '搜索文献', exact: true })
       const refresh = toolbar.getByRole('button', { name: '刷新资料库', exact: true })
-      await expect(search).toHaveCSS(
-        'color',
-        await refresh.evaluate((element) => getComputedStyle(element).color)
-      )
+      await expect(search).toBeVisible()
+      await expect(refresh).toHaveCount(0)
       const toolbarAction = toolbar.getByRole('button', { name: '添加测试文献', exact: true })
       for (const width of [100, 400, 100, 400]) {
         await toolbar.evaluate((element, next) => {
@@ -215,10 +235,45 @@ test(
           assert.equal(bounds.width, bounds.height)
         }
       }
+      const threshold = await toolbar.locator('[data-compact]').evaluate((element) => {
+        const controls = Array.from(element.children).filter(
+          (child) => getComputedStyle(child).position !== 'absolute'
+        )
+        const gap = parseFloat(getComputedStyle(element).columnGap)
+        return Math.ceil(
+          controls.reduce((width, control) => width + control.getBoundingClientRect().width, 0) +
+            gap * (controls.length - 1)
+        )
+      })
+      for (const initialWidth of [400, 100]) {
+        await toolbar.evaluate((element, width) => {
+          element.style.width = width + 'px'
+        }, initialWidth)
+        const mode = toolbar.locator('[data-compact]')
+        await expect(mode).toHaveAttribute('data-compact', String(initialWidth === 100))
+        const modes = await mode.evaluate(async (element, width) => {
+          const modes: Array<string | null> = []
+          const observer = new MutationObserver(() =>
+            modes.push(element.getAttribute('data-compact'))
+          )
+          observer.observe(element, { attributes: true, attributeFilter: ['data-compact'] })
+          element.closest<HTMLElement>('[data-testid="toolbar-fixture"]')!.style.width =
+            width + 'px'
+          for (let frame = 0; frame < 20; frame++) {
+            await new Promise(requestAnimationFrame)
+          }
+          observer.disconnect()
+          return [...modes, element.getAttribute('data-compact')]
+        }, threshold - 4)
+        assert.ok(
+          modes.every((mode) => mode === 'true'),
+          JSON.stringify(modes)
+        )
+      }
       const action = page.getByRole('button', { name: '添加文献', exact: true })
       const actionBounds = (await action.boundingBox())!
       assert.equal(actionBounds.width, actionBounds.height)
-      await page.getByRole('button', { name: '文献分类', exact: true }).click()
+      await page.locator('button[data-library-group]').filter({ hasText: '分组1' }).click()
       const group = page.getByTestId('literature-group-row').first()
       await group.hover()
       for (const button of await group.getByRole('button').all()) {

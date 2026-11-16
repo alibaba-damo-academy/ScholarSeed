@@ -1,3 +1,4 @@
+export const SCHEMA_UPGRADE_REQUIRED = 'schemaUpgradeRequired'
 export const STARTUP_CHANNEL = 'scholarseed:startup'
 export const STARTUP_RETRY_CHANNEL = 'scholarseed:startup-retry'
 export const STARTUP_PHASE = {
@@ -55,6 +56,8 @@ export class StartupState {
 
   fail(generation: number, error: string, retryable = true): void {
     if (generation !== this.value.generation) return
+    // Closing a rejected backend can fail too; preserve the actionable cause.
+    if (this.value.error === SCHEMA_UPGRADE_REQUIRED) return
     this.update({ phase: STARTUP_PHASE.failed, apiBase: null, error, retryable })
   }
 

@@ -345,7 +345,7 @@ test('Office frame runs Writer autoscroll as a serial one-line transaction', () 
   assert.match(worker, /let writerAutoscrollCursor/)
   assert.match(
     worker,
-    /writerAutoscrollCursor \?\?= readonlyWriterSelectionCursor\(controller, Math\.sign\(vertical \|\| horizontal\)\)/
+    /writerAutoscrollCursor \?\?= readonlyWriterSelectionCursor\(\s*controller,\s*Math\.sign\(vertical \|\| horizontal\)\s*\)/
   )
   assert.match(
     worker,

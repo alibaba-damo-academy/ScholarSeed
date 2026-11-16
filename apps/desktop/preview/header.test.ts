@@ -20,7 +20,7 @@ const OUTPUT = join(ROOT, 'test-results', 'pdfe-header-unit')
 test('headless workbench chrome regression: public controls, assets navigation, icons and dock divider interaction', { timeout: 120_000 }, async context => {
   const source = (file: string) => '/@fs/' + join(ROOT, file).split('\\').join('/')
   const fixture = await renderFixture(join(ROOT, 'src/renderer'), {
-    create: config => createServer({ ...config, css: { postcss: styles('pdfe') }, server: { ...config.server, fs: { allow: [ROOT] } }, plugins: [...config.plugins ?? [], supportedFontSources(), {
+    create: config => createServer({ ...config, css: { postcss: styles('pdfe') }, server: { ...config.server, fs: { allow: [ROOT, join(ROOT, '../../packages/ui')] } }, plugins: [...config.plugins ?? [], supportedFontSources(), {
       name: 'pdfe-header-unit',
       configureServer(server) {
         server.middlewares.use(async (request, response, next) => {

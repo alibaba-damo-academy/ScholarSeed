@@ -1,9 +1,9 @@
 import React, { useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { EllipsisVertical } from 'lucide-react'
-import finderIcon from '../../assets/finder.svg'
-import folderIcon from '../../assets/fileIcon/fill-file-folder.webp'
+import { EllipsisVertical, MoreHorizontal } from 'lucide-react'
 
+import finderIcon from '../../assets/finder.svg'
+import folderIcon from '../../assets/fileIcon/fill-file-folder-l.svg'
 import { artifactVersionGroups, type ArtifactItem } from '../../activity'
 import {
   appsForFile,
@@ -40,14 +40,16 @@ import { listLiteratureCollections, type LibraryCollection } from '../literature
 import {
   fetchArtifactSha256,
   fetchResourceDirectoryTree,
+  resolveArtifactDirectorySource,
   importArtifactToLiterature,
   importArtifactToResources,
 } from './api'
 import { assistantFailureDetail } from './failure'
 import { ResourceSaveDialog } from './Save'
-import { GeneratedImage, GeneratedImages } from './Images'
-import { isImageArtifact } from './pictures'
+import { GeneratedImage, GeneratedImageGallery } from './Images'
+import { groupArtifacts } from './delivery'
 import { LiteratureCollections } from './Collections'
+import { ArtifactDirectory } from './Directory'
 
 const IMPORT_ERROR_TEXT = {
   assistant_project_unavailable: 'artifactEntry.projectUnavailable',
@@ -283,9 +285,9 @@ function isMarkdownArtifact(artifact: SessionArtifact): boolean {
 
 function artifactType(artifact: SessionArtifact, fileLabel: string): string {
   const suffix = artifact.name.split('.').at(-1)?.trim().toLocaleLowerCase()
-  if (isMarkdownArtifact(artifact)) return 'Markdown'
+  if (isMarkdownArtifact(artifact)) return 'md'
   if (suffix === 'py') return 'Python'
-  if (suffix) return suffix.toLocaleUpperCase()
+  if (suffix && artifact.name.includes('.')) return suffix.toLocaleUpperCase()
   return artifact.media_type?.split(';', 1)[0] || fileLabel
 }
 
@@ -309,42 +311,59 @@ export function ArtifactCard({
   items: ArtifactItem[]
   turnId?: string
 }): React.JSX.Element {
-  const { state } = useApp()
+  const { state, act } = useApp()
   const thread = activeThread(state)
-  const groups = artifactVersionGroups(items)
-  const group = (
-    <ArtifactGroup
-      stacked={Boolean(thread.sessionId) && groups.some(([item]) => isImageArtifact(item.artifact))}
-    >
-      {groups.map((versions) => (
-        <ArtifactEntry
-          key={versions[0].artifact.artifact_id}
-          primary={versions[0].artifact}
-          versions={versions.map((item) => item.artifact)}
-        />
-      ))}
-    </ArtifactGroup>
-  )
+  const versions = artifactVersionGroups(items).map((group) => group.map((item) => item.artifact))
+  const blocks = groupArtifacts(versions)
   return (
-    <section data-testid="turn-artifacts" data-turn-id={turnId} data-message-turn-id={turnId}>
-      {thread.sessionId ? (
-        <GeneratedImages
-          sessionId={thread.sessionId}
-          artifacts={groups.map((versions) => versions[0].artifact)}
-          renderActions={(artifact) => (
-            <ArtifactEntry
-              key={artifact.artifact_id + ':' + artifact.sha256}
-              primary={artifact}
-              versions={[artifact]}
-              mode="actions"
+    <section
+      data-artifact-list
+      data-testid="turn-artifacts"
+      data-turn-id={turnId}
+      data-message-turn-id={turnId}
+    >
+      {blocks.map((block) => {
+        const key = block.entries[0][0].artifact_id
+        if (block.kind === 'images' && thread.sessionId)
+          return (
+            <GeneratedImageGallery
+              key={key}
+              sessionId={thread.sessionId}
+              artifacts={block.entries.map((entry) => entry[0])}
+              onOpenPdf={(artifact) =>
+                act.openFilePreview({
+                  path: artifact.path,
+                  title: artifact.title || artifact.name,
+                  absolutePath: artifactAbsolutePath(artifact, thread.workdir),
+                  sessionId: thread.sessionId!,
+                  artifactId: artifact.artifact_id,
+                  mediaType: artifact.media_type,
+                  size: artifact.size,
+                })
+              }
+              renderActions={(artifact, preview, onClose) => (
+                <ArtifactEntry
+                  key={artifact.artifact_id + ':' + artifact.sha256}
+                  primary={artifact}
+                  versions={
+                    block.entries.find(
+                      (entry) => entry[0].artifact_id === artifact.artifact_id
+                    ) ?? [artifact]
+                  }
+                  mode={preview ? 'preview' : 'actions'}
+                  onPreviewClose={onClose}
+                />
+              )}
             />
-          )}
-        >
-          {group}
-        </GeneratedImages>
-      ) : (
-        group
-      )}
+          )
+        return (
+          <ArtifactGroup key={key}>
+            {block.entries.map((entry) => (
+              <ArtifactEntry key={entry[0].artifact_id} primary={entry[0]} versions={entry} />
+            ))}
+          </ArtifactGroup>
+        )
+      })}
     </section>
   )
 }
@@ -354,10 +373,12 @@ export function ArtifactEntry({
   versions,
   mode = 'card',
   context,
+  onPreviewClose,
 }: {
   primary: SessionArtifact
   versions: SessionArtifact[]
-  mode?: 'card' | 'actions' | 'overview'
+  mode?: 'card' | 'actions' | 'overview' | 'preview'
+  onPreviewClose?: () => void
   context?: { sessionId: string | null; projectPath?: string | null; workdir?: string }
 }): React.JSX.Element {
   const { state, act, set } = useApp()
@@ -370,13 +391,16 @@ export function ArtifactEntry({
   const [openWithApps, setOpenWithApps] = useState<OpenWithApp[] | null>(null)
   const [openWithLoading, setOpenWithLoading] = useState(false)
   const [dialogOpen, setDialogOpen] = useState(false)
+  const [directoryPreview, setDirectoryPreview] = useState<SessionArtifact | null>(null)
+  const [availableDirectory, setAvailableDirectory] = useState<string>()
+  const directoryCheck = React.useRef(0)
   const actionsWereOpen = React.useRef(false)
   React.useEffect(() => {
-    const next = dropdownMenuOpen || dialogOpen
+    const next = dropdownMenuOpen || dialogOpen || Boolean(directoryPreview)
     if (mode !== 'overview' || actionsWereOpen.current === next) return
     actionsWereOpen.current = next
     onActionsOpenChange(next)
-  }, [dropdownMenuOpen, dialogOpen])
+  }, [dropdownMenuOpen, dialogOpen, directoryPreview])
   const [saving, setSaving] = useState(false)
   const [savingLiterature, setSavingLiterature] = useState(false)
   const [literatureError, setLiteratureError] = useState<ArtifactError | null>(null)
@@ -393,12 +417,35 @@ export function ArtifactEntry({
   const [targetProjectId, setTargetProjectId] = useState('')
   const primaryName = fileNameParts(primary.name)
   const absolutePath = artifactAbsolutePath(primary, thread.workdir)
-  const canUsePath = Boolean(absolutePath && primary.status !== 'deleted')
+  const directory = primary.kind === 'directory'
+  const canUsePath = Boolean(absolutePath && primary.status !== 'deleted' && !directory)
+  const directorySource =
+    directory && primary.status !== 'deleted' ? primary.absolute_path : undefined
+
+  const checkDirectorySource = async (): Promise<void> => {
+    const request = ++directoryCheck.current
+    setAvailableDirectory(undefined)
+    if (!thread.sessionId || !directorySource) return
+    const source = await resolveArtifactDirectorySource(thread.sessionId, primary)
+    if (request === directoryCheck.current) setAvailableDirectory(source)
+  }
 
   React.useEffect(() => {
     setOpenWithApps(null)
-    setOpenWithLoading(false)
-  }, [absolutePath])
+    const discoverApps = mode === 'card' && canUsePath
+    setOpenWithLoading(discoverApps)
+    if (!discoverApps) return
+
+    let active = true
+    void appsForFile(absolutePath).then((apps) => {
+      if (!active) return
+      setOpenWithApps(apps)
+      setOpenWithLoading(false)
+    })
+    return () => {
+      active = false
+    }
+  }, [absolutePath, canUsePath, mode])
 
   const closeMenus = (): void => {
     setDropdownMenuOpen(false)
@@ -443,6 +490,23 @@ export function ArtifactEntry({
   }
 
   const preview = (artifact: SessionArtifact): void => {
+    if (artifact.kind === 'directory') {
+      closeMenus()
+      setDirectoryPreview(artifact)
+      return
+    }
+    if (mode === 'card') {
+      set((current) => ({
+        workbenchLayout: {
+          ...current.workbenchLayout,
+          open: true,
+          full: false,
+          taskTab: false,
+          conversationFull: false,
+          swapped: false,
+        },
+      }))
+    }
     const sessionId = thread.sessionId || undefined
     const absolute = artifactAbsolutePath(artifact, thread.workdir)
     void openByDefault(
@@ -473,6 +537,10 @@ export function ArtifactEntry({
   }
 
   const previewVersion = (artifact: SessionArtifact): void => {
+    if (artifact.kind === 'directory') {
+      setDirectoryPreview(artifact)
+      return
+    }
     act.openFilePreview({
       path: artifact.path,
       absolutePath: artifactAbsolutePath(artifact, thread.workdir),
@@ -639,7 +707,9 @@ export function ArtifactEntry({
     }
   }
   /* 副标题只展示文件类型, 不再拼接「· Agent 产物」来源后缀。 */
-  const primaryMeta = artifactType(primary, a('artifactEntry.file'))
+  const primaryMeta = directory
+    ? a('artifactEntry.directoryLabel')
+    : artifactType(primary, a('artifactEntry.file'))
   const links =
     state.aiPanel.sessionId === thread.sessionId
       ? state.aiPanel.artifactLinks.filter(
@@ -651,12 +721,20 @@ export function ArtifactEntry({
     state.aiPanel.sessionId === thread.sessionId ? state.aiPanel.artifactLinksState : 'idle'
   const revealLabel = a(revealLabelKey())
   const canImport =
-    Boolean(thread.sessionId) && !saving && !savingLiterature && state.projects.length > 0
+    !directory &&
+    Boolean(thread.sessionId) &&
+    !saving &&
+    !savingLiterature &&
+    state.projects.length > 0
   const menuProps = {
     apps: openWithApps,
     appsLoading: openWithLoading,
-    canSaveAs: Boolean(thread.sessionId),
-    canUsePath,
+    canSaveAs: !directory && Boolean(thread.sessionId),
+    directory,
+    onOpen: directory && mode === 'overview' ? () => preview(primary) : undefined,
+    canUsePath: directory
+      ? Boolean(directorySource && directorySource === availableDirectory)
+      : canUsePath,
     downloading,
     loadApps: loadOpenWithApps,
     onCopyPath: () => void copyArtifactPath(),
@@ -760,7 +838,13 @@ export function ArtifactEntry({
   return (
     <>
       {mode !== 'card' ? (
-        <DropdownMenu open={dropdownMenuOpen} onOpenChange={setDropdownMenuOpen}>
+        <DropdownMenu
+          open={dropdownMenuOpen}
+          onOpenChange={(open) => {
+            setDropdownMenuOpen(open)
+            if (open && directory) void checkDirectorySource()
+          }}
+        >
           <DropdownMenuTrigger asChild>
             <IconButton
               data-testid={`output-actions-${primary.artifact_id}`}
@@ -770,20 +854,31 @@ export function ArtifactEntry({
                     ? event.currentTarget.closest<HTMLElement>('.group\\/overview-file')
                     : null
               }}
-              icon={<EllipsisVertical />}
+              icon={mode === 'preview' ? <MoreHorizontal /> : <EllipsisVertical />}
               label={a('artifactEntry.moreActions', { name: primary.name })}
-              size="sm"
-              variant="ghostIcon"
+              size={mode === 'actions' ? 'md' : 'sm'}
+              variant={mode === 'actions' ? 'icon' : 'ghostIcon'}
               className={mode === 'overview' ? OVERVIEW_ACTION_CLASS : undefined}
             />
           </DropdownMenuTrigger>
           <DropdownMenuContent
-            className={`${MENU_CLASS_NAME} ${mode === 'overview' ? '!z-[var(--vds-z-inline-flyout)]' : ''}`}
+            className={`${MENU_CLASS_NAME} ${mode === 'preview' ? '!z-[var(--vds-z-modal-nested-flyout)]' : mode === 'overview' ? '!z-[var(--vds-z-inline-flyout)]' : ''}`}
             side={mode === 'overview' ? 'left' : undefined}
             horizontalAnchorRef={mode === 'overview' ? rowAnchorRef : undefined}
             sideOffset={mode === 'overview' ? '--vds-space-3' : undefined}
           >
-            {mode !== 'overview' && (
+            {mode === 'preview' && (
+              <DropdownMenuItem
+                onSelect={() => {
+                  closeMenus()
+                  previewVersion(primary)
+                  onPreviewClose?.()
+                }}
+              >
+                {a('images.openWorkbench')}
+              </DropdownMenuItem>
+            )}
+            {mode !== 'overview' && mode !== 'preview' && (
               <>
                 <DropdownMenuItem onSelect={() => void preview(primary)}>
                   {a('artifactEntry.open')}
@@ -817,9 +912,6 @@ export function ArtifactEntry({
                 >
                   {a('artifactEntry.addToConversation')}
                 </DropdownMenuItem>
-                <DropdownMenuItem disabled={!canImport} onSelect={openImport}>
-                  {a('artifactEntry.import')}
-                </DropdownMenuItem>
               </>
             )}
             <ArtifactMenuItems
@@ -828,7 +920,17 @@ export function ArtifactEntry({
               overview={mode === 'overview'}
               onImport={openImport}
               canImport={canImport}
+              imagePreview={mode === 'preview'}
             />
+            {mode === 'actions' &&
+              versions.slice(1).map((version, index) => (
+                <DropdownMenuItem
+                  key={version.artifact_id}
+                  onSelect={() => previewVersion(version)}
+                >
+                  {a('artifactEntry.previousVersion', { version: versions.length - index - 1 })}
+                </DropdownMenuItem>
+              ))}
             <div className="grid min-w-0 gap-[var(--vds-space-2)] whitespace-normal break-words px-[var(--vds-space-2)] text-left [&_p]:m-0">
               {feedback}
             </div>
@@ -841,6 +943,7 @@ export function ArtifactEntry({
           primaryMeta={primaryMeta}
           canImport={canImport}
           menuProps={menuProps}
+          onMenuOpen={directory ? () => void checkDirectorySource() : undefined}
           preview={preview}
           previewVersion={previewVersion}
           openImport={openImport}
@@ -849,7 +952,16 @@ export function ArtifactEntry({
           {feedback}
         </Artifact>
       )}
+      {directoryPreview && thread.sessionId && (
+        <ArtifactDirectory
+          artifact={directoryPreview}
+          sessionId={thread.sessionId}
+          onClose={() => setDirectoryPreview(null)}
+          onOpen={act.openFilePreview}
+        />
+      )}
       <ResourceSaveDialog
+        nested={mode === 'preview'}
         description={a('artifactEntry.copyDescription')}
         error={
           destination === 'literature'
@@ -875,13 +987,6 @@ export function ArtifactEntry({
         saving={saving || savingLiterature}
         submitDisabled={destination === 'literature' && literatureCollections === null}
         rootLabel={a('save.materialsRoot')}
-        summary={
-          destination === 'literature'
-            ? a('artifactEntry.literatureDescription', {
-                name: sessionProject?.name ?? a('artifactEntry.currentProject'),
-              })
-            : a('artifactEntry.copyDescription')
-        }
         title={a('artifactEntry.saveResources')}
         tree={resourceTree}
         destination={destination}
@@ -901,6 +1006,7 @@ export function ArtifactEntry({
             value={literatureCollection}
             onValueChange={setLiteratureCollection}
             disabled={savingLiterature}
+            nested={mode === 'preview'}
             failed={literatureError?.key === 'artifactEntry.collectionsFailed'}
             onRetry={() => void openLiteratureImport()}
           />

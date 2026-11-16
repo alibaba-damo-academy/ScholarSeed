@@ -193,7 +193,7 @@ test('Browser settings retry recovers a repaired Agent policy file', async ({}, 
   mkdirSync(browserHome, { recursive: true })
   const policyPath = join(browserHome, 'agent-policy.json')
   writeFileSync(policyPath, '{bad json')
-  const desktop = new DesktopSession(runtime, testInfo, { browserEnabled: true, nativeWindowLifecycle: true })
+  const desktop = new DesktopSession(runtime, testInfo, { browserEnabled: true, browserAdvancedSettings: true, nativeWindowLifecycle: true })
   mkdirSync(ARTIFACTS, { recursive: true })
   try {
     const launching = desktop.launch()
@@ -205,6 +205,7 @@ test('Browser settings retry recovers a repaired Agent policy file', async ({}, 
     const page = await launching
     await openAccountSettings(page)
     await page.getByTestId('account-settings-nav-browser').click()
+    await page.getByRole('button', { name: '高级设置', exact: true }).click()
     const sites = page.getByTestId('browser-settings-agent-sites')
     await expect(sites.getByRole('button', { name: '重新读取网站规则' })).toBeVisible()
     await expect(sites.getByRole('switch', { name: 'Agent Browser Use' })).toBeDisabled()

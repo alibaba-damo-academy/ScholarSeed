@@ -1,7 +1,7 @@
 ---
 name: research-idea-partner
 description: 当用户希望生成或发展研究想法、研究方向或研究计划时使用，适用于任何领域，不限于 AI/ML。可由研究主题、问题陈述、待探索的模糊方向、希望延伸的论文，或用户正在推进的工作触发。作为研究合作者，在想法生成时大胆且有判断，在交付与决策时尊重用户选择；当用户希望在重要用途前进行严格检查时，还会核验所生成研究想法中的引用是否忠实。不要用于撰写完整论文、代替用户运行实验或普通的非研究类编码任务。
-version: "1.2.15"
+version: "1.2.24"
 metadata:
   short-description: 生成并发展研究想法
 ---
@@ -39,13 +39,14 @@ Fast 跳过文献检索，交付时说明想法未经文献核查；Deep 使用 
 - 人读优先,且呈现随场景而变——没有唯一固定格式。想法有多个时,先给一行式菜单,并给一个"按用户在乎的维度一眼可比"的面(紧凑表格,或一句"想要 X 就选它"——哪种合适用哪种),再在下面(或用户挑中时)展开结构一致的完整卡片。别一次把所有方向全铺开,也别把决策帮助压在最末。数学要能真渲染(用 `$…$`/`$$…$$`,绝不用 `\(…\)`/`\[…\]`),或干脆用文字说。绝不甩 JSON。
 - 帮用户做决定,不是给排行榜。沿他在乎的维度推荐——真实价值与提升空间、可行性、多快出第一个信号、风险——并主动确认他真正需要什么。让他在权衡之前先看懂每个想法。
 - 把想法生成当作迭代,而非一次性。有些方向值得深挖;深挖会长出新想法,有时还要新的检索。顺着用户被吸引的那条线走。
-- 对话本身就是交付——想法**一定要在回复里给出**(至少菜单 + 对比/决策面,卡片随展开给)。值得留存时,**再另存**一份人读的 markdown——只用一个文件 `research_ideas/<项目>/ideas.md`(不要自创 `report.md` 之类的名字,也不要散落在工作目录里);项目已存在就先读了、接着往下走。若为这些想法跑过文献检索,把检索报告也一并留下,作为想法的伴生文件放在一起——`research_ideas/<项目>/literature_report.md`,名字要清楚,不要在工作区根目录甩一个光秃秃的 `report.md`。**绝不静默动用户的磁盘**:每次写、移动或更新文件,都要在回复里用一句大白话说清楚——存到哪、里面是什么(ideas.md = 想法;literature_report.md = 想法赖以成立的先行工作地图)——让用户始终知道产生了什么文件。存的文件只是可回访的额外副本,**绝不能替代把想法呈现出来**:绝不能只回一句"已存到 ideas.md",却把正文晾在文件里没推到对话。
+- 对话本身就是交付——想法**一定要在回复里给出**(至少菜单 + 对比/决策面,卡片随展开给)。值得留存时,**再另存**一份人读的 markdown——只用一个文件 `SESSION_DIR/research_ideas/ideas.md`(不要自创 `report.md` 之类的名字,也不要散落在工作目录里);SESSION_DIR 是当前会话已选定的实际输出目录，不按标题重新拼接。续作只沿用已确认属于原任务的实际目录（含旧布局），先读再写；展示卡片和发布使用相对 cwd 的真实路径。若为这些想法跑过文献检索,把检索报告也一并留下,作为想法的伴生文件放在一起——`SESSION_DIR/research_ideas/literature_report.md`,名字要清楚,不要在工作区根目录甩一个光秃秃的 `report.md`。**绝不静默动用户的磁盘**:每次写、移动或更新文件,都要在回复里用一句大白话说清楚——存到哪、里面是什么(ideas.md = 想法;literature_report.md = 想法赖以成立的先行工作地图)——让用户始终知道产生了什么文件。存的文件只是可回访的额外副本,**绝不能替代把想法呈现出来**:绝不能只回一句"已存到 ideas.md",却把正文晾在文件里没推到对话。
 
-- 保存或更新交付文件后，按 `scholarseed-product-operations` → `references/artifacts.md` 发布最终版本：`ideas.md` 为 `final`，生成了 `literature_report.md` 时将其作为 `supporting` 发布。列出路径或展示文献引用不等于发布文件；仅在发布成功后确认交付，否则说明失败。
+- Deep 模式在写入 `references.json` 并核对正文引用一致性后，通过 `scholarseed_bridge` 调用 `{"capability":"literature","operation":"result","request":{"run":"SESSION_DIR/research_ideas","checkpoint":"citations"}}`，替换为相对 cwd 的真实目录。会话只显示简洁回执，完整实际引用清单在共用的文献检索结果页查看。保留正文作者—年份引用链接；该清单不与检索候选或已授权文献合并，也不授予全文访问权。Fast 模式不发布；失败时说明入口未展示，保留已有文件。
+- 保存或更新交付文件后，按 `scholarseed-product-operations` → `references/scholarseed-bridge/guides/artifacts.md` 将最终版本的 `ideas.md` 发布为 `final`。成功的 `citations` 检查点已经将 `literature_report.md` 和 `references.json` 发布为不可变的 `supporting` 快照；不要再通过 artifact 能力重复发布相同版本，也不要修改角色绕过冲突。更新任一配套文件后，重新发布更新后的 citations 检查点。若检查点未成功，则通过 artifact 能力将报告发布为 `supporting`，并说明实际引用入口缺失。仅在发布成功后确认交付，否则说明失败。
 
 ## Fast 交付后提供下一轮入口
 
-先在对话中呈现想法，保存或更新 `research_ideas/<project>/ideas.md`，并按上面的文件发布流程发布最终版本。随后通过 `scholarseed_bridge` 发布非阻塞的 `next-steps` 展示卡片，正常结束本轮。客户端在本轮完成后先显示文件卡片，再显示后续建议。此处不得调用 `request_user_input`、等待回答或在本轮执行建议动作；生成前的 Fast／Deep 选择仍是独立的轮内澄清。
+先在对话中呈现想法，保存或更新 `SESSION_DIR/research_ideas/ideas.md`，并按上面的文件发布流程发布最终版本。随后通过 `scholarseed_bridge` 发布非阻塞的 `next-steps` 展示卡片，正常结束本轮。客户端在本轮完成后先显示文件卡片，再显示后续建议。此处不得调用 `request_user_input`、等待回答或在本轮执行建议动作；生成前的 Fast／Deep 选择仍是独立的轮内澄清。
 
 调用格式为 `{"capability":"display-card","operation":"publish","request":{"type":"next-steps","content":{"data":{"title":"接下来你希望做什么？","options":[{"label":"Deep · 文献支撑","description":"为这些想法检索相关工作，补充文献脉络和可追溯引用，检查已有先例。"},{"label":"Validation · 验证方案","description":"为选定想法设计具体实验方案。"}],"free_text_label":"其他需求","submit_label":"发送"}}}}`。所有文字字段跟随任务上下文语言。两个可见选项和自由输入均通过正常对话入口发送新用户消息，开启下一轮，不恢复等待中的工具调用。卡片不包含隐藏命令或额外动作字段。
 

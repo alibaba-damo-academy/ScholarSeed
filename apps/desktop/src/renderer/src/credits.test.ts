@@ -26,7 +26,7 @@ const loginEffect = block(
 test('the warning hook judges the balance with the shared bucket, never a local threshold', () => {
   assert.match(
     creditsSource,
-    /import \{\n\s*INITIAL_CREDITS_STATE,\n\s*accountCredits,\n\s*creditsWarningBucket,\n\s*setAccountBase,\n\s*type CreditsWarningBucket\n\} from '\.\/account'/
+    /import \{\n\s*INITIAL_CREDITS_STATE,\n\s*accountCredits,\n\s*creditsWarningBucket,\n\s*reconcileCreditsSummary,\n\s*setAccountBase,\n\s*type CreditsWarningBucket,?\n\} from '\.\/account'/
   )
   // hook 收三个输入：后端就绪、本轮是否在跑、当前活动会话；积分态经 useApp().set 写进全局 store。
   assert.match(
@@ -34,9 +34,12 @@ test('the warning hook judges the balance with the shared bucket, never a local 
     /export function useCreditsLowWarning\(\n\s*backendReady: boolean,\n\s*running: boolean,\n\s*activeSession: string \| null\n\): void \{/
   )
   assert.match(creditsSource, /import \{ useApp \} from '\.\/store'/)
-  assert.match(creditsSource, /const \{ set \} = useApp\(\)/)
+  assert.match(creditsSource, /const \{ state, set \} = useApp\(\)/)
   assert.match(creditsSource, /set\(\{ credits: INITIAL_CREDITS_STATE \}\)/)
-  assert.match(creditsSource, /const bucket = creditsWarningBucket\(result\.data\.balance_credits\)/)
+  assert.match(
+    creditsSource,
+    /const bucket = creditsWarningBucket\(result\.data\.balance_credits\)/
+  )
   // 阈值只能在 account.ts 有一份：这里再写一个数字，两条线就会各自漂移。
   assert.doesNotMatch(creditsSource, /CREDITS_LOW_WARNING_THRESHOLD/)
   assert.doesNotMatch(creditsSource, /balance_credits *[<>]=?/)
@@ -48,6 +51,19 @@ test('the warning hook judges the balance with the shared bucket, never a local 
   assert.equal(creditsWarningBucket(-12), 'exhausted')
 })
 
+test('balance refreshes fence stale responses before publishing state or a warning', () => {
+  assert.match(creditsSource, /creditsRef\.current = state\.credits/)
+  assert.match(checkEffect, /const requestedSummary = creditsRef\.current\.summary/)
+  assert.match(
+    checkEffect,
+    /if \(\s*reconcileCreditsSummary\(creditsRef\.current, requestedSummary, result\.data\) ===\s*creditsRef\.current\s*\)\s*return/
+  )
+  assert.match(
+    checkEffect,
+    /credits: reconcileCreditsSummary\(current\.credits, requestedSummary, result\.data\)/
+  )
+})
+
 test('the toast fires on a bucket transition only, so one balance cannot warn every turn', () => {
   assert.match(creditsSource, /const warned = React\.useRef<CreditsWarningBucket>\(null\)/)
   // 同桶不重复弹；跃迁才弹。exhausted 改由 Composer 常驻卡承载，toast 只负责 low 桶。
@@ -55,7 +71,7 @@ test('the toast fires on a bucket transition only, so one balance cannot warn ev
   assert.match(checkEffect, /warned\.current = bucket\s*if \(bucket !== 'low'\) return/)
   assert.match(
     checkEffect,
-    /toast\(\{\s*title: t\('accountMenu\.creditsLow', \{\s*balance: Math\.floor\(result\.data\.balance_credits\)\s*\}\),\s*tone: 'warning'\s*\}\)/
+    /toast\(\{\s*title: t\('accountMenu\.creditsLow', \{\s*balance: Math\.floor\(result\.data\.balance_credits\),?\s*\}\),\s*tone: 'warning',?\s*\}\)/
   )
   // 余额显示取整：不把 0.7 积分渲染成一位小数假精度。
   assert.match(checkEffect, /balance: Math\.floor\(result\.data\.balance_credits\)/)
@@ -78,7 +94,10 @@ test('a recharge, an exempt account or a sign-out re-arms the warning', () => {
 
 test('a credits fetch failure never presents itself as an exhausted balance', () => {
   // 失败走 error phase 占位，不合成 summary、不弹 toast。
-  assert.match(checkEffect, /if \(cancelled\) return\s*if \(!result\.ok\) \{\s*set\(\(current\) => \(\{\s*credits: \{ \.\.\.current\.credits, phase: 'error' \}\s*\}\)\)\s*return\s*\}/)
+  assert.match(
+    checkEffect,
+    /if \(cancelled\) return\s*if \(!result\.ok\) \{\s*set\(\(current\) => \(\{\s*credits: \{ \.\.\.current\.credits, phase: 'error' \},?\s*\}\)\)\s*return\s*\}/
+  )
   assert.match(accountSource, /balance_credits: number \| null/)
   assert.doesNotMatch(creditsSource, /balance_credits \?\? 0/)
   assert.doesNotMatch(checkEffect, /toast\(\{[\s\S]*?!result\.ok/)
@@ -86,7 +105,10 @@ test('a credits fetch failure never presents itself as an exhausted balance', ()
 
 test('the balance is refetched after every turn finishes, on window refocus and whenever login state changes', () => {
   // running 落沿（true → false）才 bump 序号：turn 中途不打扰网关。
-  assert.match(creditsSource, /if \(wasRunning\.current && !running\) setCheckSeq\(\(seq\) => seq \+ 1\)/)
+  assert.match(
+    creditsSource,
+    /if \(wasRunning\.current && !running\) setCheckSeq\(\(seq\) => seq \+ 1\)/
+  )
   assert.match(creditsSource, /wasRunning\.current = running/)
   assert.match(creditsSource, /\}, \[running\]\)/)
   // 重取 effect 的依赖含活动会话和 store 的 set：进入会话也要重取。
@@ -117,8 +139,12 @@ test('the balance is refetched after every turn finishes, on window refocus and 
 })
 
 test('every window listener the hook adds is removed again and late responses are dropped', () => {
-  const added = [...creditsSource.matchAll(/window\.addEventListener\('([^']+)'/g)].map(([, name]) => name)
-  const removed = [...creditsSource.matchAll(/window\.removeEventListener\('([^']+)'/g)].map(([, name]) => name)
+  const added = [...creditsSource.matchAll(/window\.addEventListener\('([^']+)'/g)].map(
+    ([, name]) => name
+  )
+  const removed = [...creditsSource.matchAll(/window\.removeEventListener\('([^']+)'/g)].map(
+    ([, name]) => name
+  )
   assert.ok(added.length >= 3, 'the hook must react to the auth lifecycle and window focus')
   assert.deepEqual([...removed].sort(), [...added].sort())
   // 消费者侧订阅的必须是 scholarseed: 前缀的事件名。
@@ -135,11 +161,16 @@ test('the auth lifecycle event names the renderer broadcasts are the scholarseed
   // 生产者侧的约定：登录失效 / 恢复都走 scholarseed: 前缀（App.tsx、account.ts、api.ts、
   // invocation.ts 全部一致）。消费者必须订同一组名字，否则事件发了没人接。
   const dispatched = new Set(
-    [...appSource.matchAll(/dispatchEvent\(new CustomEvent\('([^']+)'\)\)/g)].map(([, name]) => name)
+    [...appSource.matchAll(/dispatchEvent\(new CustomEvent\('([^']+)'\)\)/g)].map(
+      ([, name]) => name
+    )
   )
   assert.ok(dispatched.has('scholarseed:auth-required'))
   assert.ok(dispatched.has('scholarseed:auth-restored'))
-  assert.match(accountSource, /window\.dispatchEvent\(new CustomEvent\('scholarseed:auth-required'\)\)/)
+  assert.match(
+    accountSource,
+    /window\.dispatchEvent\(new CustomEvent\('scholarseed:auth-required'\)\)/
+  )
   assert.doesNotMatch(appSource, /CustomEvent\('shushen:/)
   assert.doesNotMatch(accountSource, /CustomEvent\('shushen:/)
 })

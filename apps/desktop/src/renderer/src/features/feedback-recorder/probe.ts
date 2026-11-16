@@ -4,10 +4,12 @@ import {
   type RecordedStep,
   type StepKind,
 } from './model.ts'
+import { API_DIAGNOSTIC_HEADER, HTTP_LATENCY_DIAGNOSTIC_PREFIX } from '../../../../requests.ts'
 import { summarizeTarget } from './target.ts'
 import {
   fileMetadata,
   isCredentialName,
+  networkTiming,
   redactUrl,
   responseFileMetadata,
   summarizeBody,
@@ -16,6 +18,9 @@ import {
 } from './utils.ts'
 
 const REQUEST_STEP_WINDOW_MS = 10_000
+const SERVE_API_PREFIX = '/api/'
+const HTTP_PROTOCOLS = new Set(['http:', 'https:'])
+const TIMING_ENTRY_LIMIT = 128
 const PAGE_LABEL_MAX_LENGTH = 80
 const BODY_CAPTURE_PENDING = '[正文摘要生成中]'
 const PASSWORD_INPUT_TYPE = 'password'
@@ -54,10 +59,38 @@ interface XhrMeta {
   stepId?: string
 }
 
+interface PendingTiming {
+  record: NetworkRecord
+  url: string
+  fetchCalledAt: number
+  fetchSettledAt: number
+}
+
+interface FetchWindow {
+  url: string
+  overlapping: boolean
+}
+
 let currentLease: RecorderLease | null = null
 
 function id(prefix: string): string {
   return `${prefix}-${crypto.randomUUID()}`
+}
+
+function reportTiming(record: NetworkRecord): void {
+  if (!record.correlationId) return
+  try {
+    console.info(
+      HTTP_LATENCY_DIAGNOSTIC_PREFIX,
+      JSON.stringify({
+        client_request_id: record.correlationId,
+        status: record.status ?? null,
+        timing: record.timing,
+      })
+    )
+  } catch {
+    return
+  }
 }
 
 function normalizedLabel(value: string | null | undefined): string | undefined {
@@ -228,6 +261,48 @@ export function installRecorderProbe(options: RecorderProbeOptions): RecorderLea
   const originalPushState = history.pushState
   const originalReplaceState = history.replaceState
   const xhrMetadata = new WeakMap<XMLHttpRequest, XhrMeta>()
+  const timingEntries: PerformanceResourceTiming[] = []
+  const pendingTimings = new Map<string, PendingTiming>()
+  const fetchWindows = new Set<FetchWindow>()
+
+  const updateTiming = (pending: PendingTiming) => {
+    const { record, url, fetchCalledAt, fetchSettledAt } = pending
+    const entries = timingObserver
+      ? timingEntries.filter((entry) => entry.name === url)
+      : (performance.getEntriesByName(url, 'resource') as PerformanceResourceTiming[])
+    const timing = networkTiming(entries, fetchCalledAt, fetchSettledAt, performance.timeOrigin)
+    if (timing.state === 'unavailable') return
+    record.timing = timing
+    reportTiming(record)
+    pendingTimings.delete(record.requestId)
+    options.onRequest({ ...record })
+  }
+  const timingObserver =
+    typeof PerformanceObserver === 'function'
+      ? new PerformanceObserver((list) => {
+          if (!active) return
+          timingEntries.push(...(list.getEntries() as PerformanceResourceTiming[]))
+          timingEntries.splice(0, Math.max(0, timingEntries.length - TIMING_ENTRY_LIMIT))
+          for (const pending of pendingTimings.values()) updateTiming(pending)
+        })
+      : null
+  timingObserver?.observe({ type: 'resource' })
+
+  const captureTiming = (
+    record: NetworkRecord,
+    url: string,
+    fetchCalledAt: number,
+    fetchSettledAt: number
+  ) => {
+    if (!record.correlationId || record.timing?.state !== 'unavailable') return
+    const pending = { record, url, fetchCalledAt, fetchSettledAt }
+    pendingTimings.set(record.requestId, pending)
+    if (pendingTimings.size > TIMING_ENTRY_LIMIT) {
+      const oldest = pendingTimings.keys().next().value
+      if (oldest !== undefined) pendingTimings.delete(oldest)
+    }
+    updateTiming(pending)
+  }
 
   const record = (
     kind: StepKind,
@@ -306,9 +381,32 @@ export function installRecorderProbe(options: RecorderProbeOptions): RecorderLea
 
   const fetchWrapper: typeof window.fetch = async (input, init) => {
     const startedAtMs = Date.now()
+    const fetchCalledAt = performance.now()
+    const requestId = id('request')
     const request = input instanceof Request ? input : null
     const method = String(init?.method || request?.method || 'GET').toUpperCase()
     const url = request?.url || String(input)
+    let correlationId: string | undefined
+    let fetchInit = init
+    let timingUrl = url
+    try {
+      const base = new URL(window.scholarseed?.getApiBase() || window.location.href)
+      const target = new URL(url, window.location.href)
+      const prefix = base.pathname.replace(/\/$/, '') + SERVE_API_PREFIX
+      if (
+        HTTP_PROTOCOLS.has(base.protocol) &&
+        target.origin === base.origin &&
+        target.pathname.startsWith(prefix)
+      ) {
+        correlationId = crypto.randomUUID().replaceAll('-', '')
+        const headers = new Headers(init?.headers ?? request?.headers)
+        headers.set(API_DIAGNOSTIC_HEADER, correlationId)
+        fetchInit = { ...init, headers }
+        timingUrl = target.href
+      }
+    } catch {
+      correlationId = undefined
+    }
     const requestBody =
       init?.body !== undefined
         ? bodyText(init.body)
@@ -319,13 +417,31 @@ export function installRecorderProbe(options: RecorderProbeOptions): RecorderLea
     const requestSummary =
       request && init?.body === undefined ? requestText(request) : Promise.resolve(requestBody)
     const stepId = associatedStep(options, startedAtMs)
+    const timingWindow = { url: timingUrl, overlapping: false }
+    if (correlationId) {
+      for (const other of fetchWindows) {
+        if (other.url === timingUrl) other.overlapping = timingWindow.overlapping = true
+      }
+      if (fetchWindows.size >= TIMING_ENTRY_LIMIT) timingWindow.overlapping = true
+      else fetchWindows.add(timingWindow)
+    }
     try {
-      const response = await originalFetch(input, init)
+      const response = await originalFetch(input, fetchInit)
+      const fetchSettledAt = performance.now()
       const endedAtMs = Date.now()
       if (active) {
         const responseSummary = responseText(response, url)
         const record: NetworkRecord = {
-          requestId: id('request'),
+          requestId,
+          ...(correlationId
+            ? {
+                correlationId,
+                timing: {
+                  ...networkTiming([], fetchCalledAt, fetchSettledAt, performance.timeOrigin),
+                  ...(timingWindow.overlapping ? { state: 'ambiguous' as const } : {}),
+                },
+              }
+            : {}),
           startedAt: new Date(startedAtMs).toISOString(),
           endedAt: new Date(endedAtMs).toISOString(),
           durationMs: endedAtMs - startedAtMs,
@@ -337,18 +453,34 @@ export function installRecorderProbe(options: RecorderProbeOptions): RecorderLea
             responseFileMetadata(response.headers, response.url || url) || BODY_CAPTURE_PENDING,
           ...(stepId ? { stepId } : {}),
         }
-        options.onRequest(record)
+        options.onRequest({ ...record })
+        reportTiming(record)
+        captureTiming(record, timingUrl, fetchCalledAt, fetchSettledAt)
         void Promise.all([requestSummary, responseSummary]).then(([requestBody, responseBody]) => {
-          if (active) options.onRequest({ ...record, requestBody, responseBody })
+          Object.assign(record, { requestBody, responseBody })
+          if (active) {
+            options.onRequest({ ...record })
+            captureTiming(record, timingUrl, fetchCalledAt, fetchSettledAt)
+          }
         })
       }
       return response
     } catch (error) {
       const endedAtMs = Date.now()
+      const fetchSettledAt = performance.now()
       if (active) {
         const cancelled = isCancellation(error)
-        options.onRequest({
-          requestId: id('request'),
+        const record: NetworkRecord = {
+          requestId,
+          ...(correlationId
+            ? {
+                correlationId,
+                timing: {
+                  ...networkTiming([], fetchCalledAt, fetchSettledAt, performance.timeOrigin),
+                  ...(timingWindow.overlapping ? { state: 'ambiguous' as const } : {}),
+                },
+              }
+            : {}),
           startedAt: new Date(startedAtMs).toISOString(),
           endedAt: new Date(endedAtMs).toISOString(),
           durationMs: endedAtMs - startedAtMs,
@@ -358,9 +490,14 @@ export function installRecorderProbe(options: RecorderProbeOptions): RecorderLea
           ...(cancelled ? { cancelled: true } : {}),
           error: error instanceof Error ? error.message : String(error),
           ...(stepId ? { stepId } : {}),
-        })
+        }
+        options.onRequest({ ...record })
+        reportTiming(record)
+        captureTiming(record, timingUrl, fetchCalledAt, fetchSettledAt)
       }
       throw error
+    } finally {
+      fetchWindows.delete(timingWindow)
     }
   }
   window.fetch = fetchWrapper
@@ -453,6 +590,10 @@ export function installRecorderProbe(options: RecorderProbeOptions): RecorderLea
       if (!active) return
       flushPendingInput()
       active = false
+      timingObserver?.disconnect()
+      pendingTimings.clear()
+      fetchWindows.clear()
+      timingEntries.length = 0
       document.removeEventListener('click', onClick, true)
       document.removeEventListener('input', onInput, true)
       document.removeEventListener('change', onChange, true)

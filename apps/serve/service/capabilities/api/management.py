@@ -24,7 +24,6 @@ from service.chat.api.bridge import bridge_caller, session_bridge_admission
 from service.chat.service.sessions import PRODUCT_PERMISSION_MODES, SessionService
 from service.platform.activity import Activities
 from service.platform.bridge import BRIDGE_CALLBACK_REQUEST_HEADER, BRIDGE_CALLBACK_TURN_HEADER
-from service.platform.vocabulary import BRIDGE_MAX_REQUEST_BYTES
 
 SKILL_ACCESS_DENIED = "skill_access_denied"
 SKILL_PERMISSION_DENIED = "skill_permission_denied"
@@ -90,11 +89,7 @@ def register_skill_management(
         request_type = SKILL_MANAGEMENT_REQUESTS.get(operation)
         if request_type is None:
             raise SkillManagementError(400, "bridge_operation_unknown")
-        raw = bytearray()
-        async for chunk in request.stream():
-            raw.extend(chunk)
-            if len(raw) > BRIDGE_MAX_REQUEST_BYTES:
-                raise SkillManagementError(413, "bridge_request_too_large")
+        raw = await request.body()
         try:
             command = request_type.model_validate_json(raw)
         except ValueError:

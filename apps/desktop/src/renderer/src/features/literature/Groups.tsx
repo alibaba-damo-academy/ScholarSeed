@@ -8,6 +8,7 @@ import {
   Trash,
   EllipsisVertical,
   Pencil,
+  Folder,
 } from 'lucide-react'
 
 import {
@@ -240,7 +241,8 @@ export function Groups({
                     </DropdownMenuTrigger>
                     <DropdownMenuSubContent side="right" align="start">
                       <DropdownMenuItem
-                        onSelect={() => {
+                        onClick={(event) => {
+                          event.preventDefault()
                           setError(null)
                           setDraft({ id: collection.id, name: collection.name })
                         }}
@@ -291,10 +293,16 @@ export function Groups({
               size="md"
               aria-label={layout('paperGroup')}
               data-library-group
-              className="w-max max-w-[var(--vds-library-paper-filter-width)] group-data-[compact=true]/library-toolbar:w-[var(--vds-library-paper-filter-compact-width)] !font-[var(--vds-fw-regular)]"
+              className="relative w-max max-w-[var(--vds-library-paper-filter-width)] !px-0 group-data-[compact=true]/library-toolbar:w-[var(--vds-library-paper-filter-compact-width)] !font-[var(--vds-fw-regular)]"
             >
-              <span className="min-w-0 truncate">{label}</span>
-              <ChevronDown />
+              <Folder className="hidden group-data-[compact=true]/library-toolbar:block" />
+              <span
+                data-library-group-content
+                className="flex min-w-0 items-center gap-[var(--vds-space-2)] [padding:var(--vds-control-padding-md)] group-data-[compact=true]/library-toolbar:absolute group-data-[compact=true]/library-toolbar:invisible group-data-[compact=true]/library-toolbar:w-max"
+              >
+                <span className="min-w-0 truncate">{label}</span>
+                <ChevronDown data-library-group-chevron />
+              </span>
             </Button>
           </DropdownMenuTrigger>
         </Tooltip>

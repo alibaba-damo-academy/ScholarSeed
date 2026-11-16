@@ -14,7 +14,7 @@ test('real Agent lists a page hosted inside the Desktop browser', async ({}, tes
   const runtime = createRuntime(testInfo)
   const blocker = seedLiveConfig(runtime)
   test.skip(Boolean(blocker), blocker ?? '')
-  const desktop = new DesktopSession(runtime, testInfo, { browserEnabled: true, nativeWindowLifecycle: true })
+  const desktop = new DesktopSession(runtime, testInfo, { browserEnabled: true, browserAdvancedSettings: true, nativeWindowLifecycle: true })
   try {
     const launching = desktop.launch()
     await expect.poll(() => desktop.app?.windows().find(candidate => candidate.url().startsWith('http:'))?.url(), { timeout: 45_000 }).toBeTruthy()
@@ -33,6 +33,7 @@ test('real Agent lists a page hosted inside the Desktop browser', async ({}, tes
     }, { timeout: 45_000 }).toBe(true)
     await openAccountSettings(page)
     await page.getByTestId('account-settings-nav-browser').click()
+    await page.getByRole('button', { name: '高级设置', exact: true }).click()
     const agentUse = page.getByTestId('browser-settings-agent-sites').getByRole('switch', { name: 'Agent Browser Use' })
     await expect(agentUse).not.toBeChecked()
     await agentUse.click()

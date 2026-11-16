@@ -10,6 +10,7 @@ import {
 import {
   BROWSER_COMMAND_CHANNEL,
   BROWSER_DOWNLOAD_CHANNEL,
+  BROWSER_DOWNLOAD_NOTICE_CHANNEL,
   BROWSER_FIND_CHANNEL,
   BROWSER_PAGE_CHANNEL,
   BROWSER_FRAME_ACK_CHANNEL,
@@ -81,6 +82,7 @@ test('preload exposes exact browser methods and removes only its snapshot subscr
     'policy',
     'snapshot',
     'subscribe',
+    'subscribeDownloads',
     'subscribeFind',
     'subscribeReveal',
   ])
@@ -94,12 +96,21 @@ test('preload exposes exact browser methods and removes only its snapshot subscr
   assert.deepEqual(findTargets, [target])
   stopFind()
   assert.equal(listeners.get(BROWSER_FIND_CHANNEL)!.size, 0)
+  const notices: unknown[] = []
+  const stopDownloads = bridge!.browser.subscribeDownloads!((notice) => notices.push(notice))
+  const downloadNotice = { id: 'download-id', status: 'started' }
+  for (const callback of listeners.get(BROWSER_DOWNLOAD_NOTICE_CHANNEL)!)
+    callback({ untrustedEvent: true }, downloadNotice)
+  assert.deepEqual(notices, [downloadNotice])
+  stopDownloads()
+  assert.equal(listeners.get(BROWSER_DOWNLOAD_NOTICE_CHANNEL)!.size, 0)
   const revealed: unknown[] = []
   const stopReveal = bridge!.browser.subscribeReveal!((value) => revealed.push(value))
   const stopOtherReveal = bridge!.browser.subscribeReveal!((value) => revealed.push(value))
   stopReveal()
   const reveal = { sessionId: 'session', target }
-  for (const callback of listeners.get(BROWSER_REVEAL_CHANNEL)!) callback({ untrustedEvent: true }, reveal)
+  for (const callback of listeners.get(BROWSER_REVEAL_CHANNEL)!)
+    callback({ untrustedEvent: true }, reveal)
   assert.deepEqual(revealed, [reveal])
   stopOtherReveal()
   assert.equal(listeners.get(BROWSER_REVEAL_CHANNEL)!.size, 0)

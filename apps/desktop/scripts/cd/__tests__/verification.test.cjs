@@ -14,9 +14,10 @@ const hook = source.slice(source.indexOf('async function verify(builderContext)'
 function fixture(platform = 'darwin', signingRequired = true, allowExecution = false) {
   const events = []
   let changed = false
+  let incompatible = false
   const frozen = { platform, signingRequired, productName: 'ScholarSeed', runDirectory: '/build',
     native: {}, closure: {}, notices: {}, browser: {}, config: { sha256: 'digest' },
-    product: { sha256: 'digest', config: {} }, lockSha256: 'digest',
+    product: { sha256: 'digest', config: {} },
     binaries: { codex: { sha256: 'digest' }, rg: { sha256: 'digest', executable_sha256: 'digest' } },
     texlive: { executables: [], reported: [] },
     pythonDependencies: { requirements_sha256: 'digest', inventory_sha256: 'digest', verifier_sha256: 'digest', bytecode: {} },
@@ -31,6 +32,11 @@ function fixture(platform = 'darwin', signingRequired = true, allowExecution = f
     verifyExecution: async () => probe('first-execution'),
     shipit: { verify: async () => events.push('shipit') },
     verifyNotices() {}, verifyAsarClosure: () => ({ asar_bytes: 1 }), readNative() {},
+    verifyMacOSTree: () => {
+      events.push('macos')
+      if (incompatible) throw new Error('payload requires macOS 14.0')
+      return {minimum: '13.0', files: []}
+    },
     inspectBrowser: async (_root, _browser, signed) => { events.push(`inventory:${signed}`); return {} },
     verifyBrowser: async () => probe('browser'),
     sha256: async () => changed ? 'changed' : 'digest', executableDigest: async () => 'digest',
@@ -43,14 +49,23 @@ function fixture(platform = 'darwin', signingRequired = true, allowExecution = f
     verifyComponentArchives: async () => { events.push('components'); return {current, imports: null, browser: null, closure: {}} },
   }
   const functions = runInNewContext(`${content}\n${hook}\n({verifyContent, verify})`, sandbox)
-  return { ...functions, frozen, events, change: () => { changed = true } }
+  return { ...functions, frozen, events, change: () => { changed = true }, rejectMinimum: () => { incompatible = true } }
 }
+
+test('afterPack rejects an incompatible native payload before any runtime execution', async () => {
+  const f = fixture()
+  f.rejectMinimum()
+  await assert.rejects(f.verify({appOutDir: '/out'}), /requires macOS 14.0/)
+  assert.ok(!f.events.includes('first-execution'))
+  assert.ok(!f.events.includes('browser'))
+})
 
 for (const signingRequired of [true, false]) {
   test(`macOS afterPack validates frozen content without executing runtime (signed lane=${signingRequired})`, async () => {
     const f = fixture('darwin', signingRequired)
     await f.verify({ appOutDir: '/out' })
     assert.ok(f.events.includes('inventory:false'))
+    assert.ok(f.events.includes('macos'))
     assert.ok(!f.events.includes('first-execution'))
     const receipt = f.events.at(-1)
     assert.equal(receipt.imports, null)
@@ -77,7 +92,7 @@ for (const signed of [true, false]) {
   test(`final macOS verification preserves every runtime gate (signed=${signed})`, async () => {
     const f = fixture('darwin', signed, true)
     await f.verifyContent('/app', f.frozen, signed)
-    assert.deepEqual(f.events.filter(e => !e.startsWith('inventory:')), ['shipit', 'browser', 'tex', 'python', 'python-identity', 'python', 'bytecode'])
+    assert.deepEqual(f.events.filter(e => !e.startsWith('inventory:')), ['shipit', 'macos', 'browser', 'tex', 'python', 'python-identity', 'python', 'bytecode'])
   })
 }
 

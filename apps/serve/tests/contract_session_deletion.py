@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from scholarseed_runtime.contract.artifact import ArtifactRole
+from service.chat.constants import PRODUCT_EVENT_USER_MESSAGE
 from service.chat.persistence.catalog import SessionCatalogStore, SessionPrincipal, SessionStatus
 from service.chat.persistence.events import ProductEventStore
 from service.chat.service.deletion import SessionDeletion
@@ -89,6 +90,62 @@ class DeletionTests(unittest.TestCase):
             ),
             provenance={},
         )
+
+    def test_project_cwd_deletion_preserves_agent_output_and_shared_container(self):
+        record = self.register()
+        record = self.catalog.relocate(
+            record.session_id,
+            self.owner,
+            runtime_workdir=self.project.root,
+            project_path=self.project.root,
+            output_root=self.project.root,
+        )
+        output = Path(self.project.root) / "output" / "研究"
+        output.mkdir(parents=True)
+        source = output / "report.md"
+        source.write_text("agent output")
+        original = output.parent / "original.txt"
+        original.write_text("user input")
+        self.deletion.delete(record)
+        self.assertEqual(source.read_text(), "agent output")
+        self.assertEqual(original.read_text(), "user input")
+        self.assertTrue(Path(self.project.root).is_dir())
+
+    def test_inherited_attachment_storage_survives_source_deletion_across_generations(self):
+        source = self.register()
+        source = self.catalog.relocate(
+            source.session_id,
+            self.owner,
+            runtime_workdir=self.project.root,
+            project_path=self.project.root,
+            output_root=self.project.root,
+        )
+        attachment = self.runtime / source.session_id / "attachments" / "input.txt"
+        attachment.parent.mkdir(parents=True)
+        attachment.write_text("retained input", encoding="utf-8")
+        events = ProductEventStore(self.catalog.database)
+        sent = events.append(
+            session_id=source.session_id,
+            runtime_id="codex",
+            vendor_thread_id=source.vendor_thread_id,
+            vendor_turn_id="turn",
+            vendor_item_id=None,
+            kind=PRODUCT_EVENT_USER_MESSAGE,
+            payload={"refs": [{"type": "file", "id": "input", "path": str(attachment)}]},
+            idempotency_key="input",
+        )
+        child = self.register("child")
+        events.inherit_history(source.session_id, child, sent.product_seq)
+        grandchild = self.register("grandchild")
+        child = self.catalog.get(child.session_id)
+        events.inherit_history(child.session_id, grandchild, child.last_product_seq)
+        deletion = SessionDeletion(self.content, self.publications, self.runtime, events=events)
+        deletion.delete(source)
+        self.catalog.release(source.session_id, self.owner)
+        deletion.delete(child)
+        self.catalog.release(child.session_id, self.owner)
+        self.assertEqual(attachment.read_text(encoding="utf-8"), "retained input")
+        self.assertTrue(events.workspace_referenced(source.session_id))
 
     def test_deletes_owned_bytes_and_publications_but_keeps_inputs_and_copies(self):
         record = self.register()

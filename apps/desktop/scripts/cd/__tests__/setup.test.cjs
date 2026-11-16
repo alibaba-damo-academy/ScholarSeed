@@ -6,7 +6,21 @@ const os = require('node:os')
 const path = require('node:path')
 const crypto = require('node:crypto')
 const {spawnSync} = require('node:child_process')
-const {rootBudget, messages, legacyPolicy, stageSetup, compileSetup, verifyDependencies} = require('../setup.cjs')
+const {replacementPackage, rootBudget, messages, legacyPolicy, stageSetup, compileSetup, verifyDependencies} = require('../setup.cjs')
+test('replacement uses the exact inspected full package already inside Setup', () => {
+  const full = Buffer.from('exact package bytes')
+  const payload = Buffer.concat([Buffer.from('engine'), full, Buffer.from('signature')])
+  const files = [{path: 'lib/app/Squirrel.exe', size: 10, sha256: 'a'.repeat(64)}]
+  const policy = replacementPackage(payload, full, files)
+  assert.deepEqual(payload.subarray(policy.offset, policy.offset + policy.size), full)
+  assert.equal(policy.sha256, crypto.createHash('sha256').update(full).digest('hex'))
+  assert.equal(policy.updaterSha256, files[0].sha256)
+  assert.throws(() => replacementPackage(payload, Buffer.from('different package'), files))
+  assert.throws(() => replacementPackage(Buffer.concat([payload, full]), full, files))
+  assert.throws(() => replacementPackage(payload, Buffer.alloc(0), files))
+  for (const inventory of [[], [...files, ...files], [{...files[0], sha256: ''}], [{...files[0], size: 0}]])
+    assert.throws(() => replacementPackage(payload, full, inventory))
+})
 test('installer path budget covers update staging and root backup', () => {
   const name = 'scholarseed-0.2.0-build.202610170000-full.nupkg'
   const relative = 'very/'.repeat(20)+'program.exe'
@@ -23,7 +37,7 @@ test('installer freezes complete English and Chinese resources', () => {
   const resources = messages()
   assert.deepEqual(Object.keys(resources.en),Object.keys(resources.zh))
   for (const m of Object.values(resources)) {
-    for (const key of ['legacyRemoval','legacyUnknown','title','heading','description','directory','browse','install','cancel','existing','invalid','failed','unsafe','installing','preparing','migration','migrating','migrationUnsupported','migrationRunning','migrationIncomplete','migrationIdentity',
+    for (const key of ['closeRunning','running','downgrade','legacyRemoval','legacyUnknown','title','heading','description','directory','browse','install','cancel','existing','invalid','failed','unsafe','installing','preparing','migration','migrating','migrationUnsupported','migrationRunning','migrationIncomplete','migrationIdentity',
       'invalidPath','tooLong','invalidName','relocation','reparse','protected','drive','notEmpty','notWritable','permission','inspection','riskChanged','launch','risk','riskEntry','riskTitle','riskSilent','riskQuestion','riskOwner','riskAccess']) {
       assert.equal(typeof m[key], 'string', key)
       assert.ok(m[key].trim().length, key)
@@ -98,6 +112,7 @@ test('installer staging preserves module layout and exact embedded input', conte
   const payload = Buffer.from('test payload')
   const source = stageSetup(temporary, goRoot, payload)
   assert.ok(fs.existsSync(path.join(source, 'handoff/admission_windows.go')))
+  assert.deepEqual(fs.readFileSync(path.join(source, 'handoff/retirement.ps1')), fs.readFileSync(path.join(sourceDirectory, '../../updater/handoff/retirement.ps1')))
   assert.ok(fs.existsSync(path.join(source, 'internal/security/evaluate.go')))
   assert.ok(fs.existsSync(path.join(source, 'cmd/setup/permission_windows.go')))
   assert.deepEqual(fs.readFileSync(path.join(source, 'cmd/setup/payload.bin')), payload)
@@ -122,8 +137,9 @@ test('isolated Windows installer compiles and verifies its embedded payload', {
   assert.equal(version.stdout.trim(), `go version ${require('../../../updater/toolchain.json').version} windows/amd64`)
   const payload = Buffer.from('isolated compiler payload probe')
   const source = stageSetup(temporary, goRoot, payload)
-  const policy = {appId: 'scholarseed', maxRootUnits: 120, messages: messages(), legacy: legacyPolicy(),
+  const policy = {appId: 'scholarseed', packVersion: '0.3.2-build.202611091617', maxRootUnits: 120, messages: messages(), legacy: legacyPolicy(),
     payloadSha256: crypto.createHash('sha256').update(payload).digest('hex')}
+  policy.replacement = {offset: 0, size: payload.length, sha256: policy.payloadSha256, updaterSize: 1, updaterSha256: 'a'.repeat(64)}
   assert.ok(fs.statSync(compileSetup(source, temporary, go, environment, policy)).size > payload.length)
   assert.throws(() => compileSetup(source, temporary, go, environment, {...policy, payloadSha256: '0'.repeat(64)}), /payload check failed|native compiler failed/)
 })

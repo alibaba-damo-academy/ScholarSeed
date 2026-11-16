@@ -1,22 +1,29 @@
 import { assistantFailureDetail } from './failure'
+import { sessionFileRawUrl } from '../../api'
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Copy, MessageCirclePlus, Plus } from 'lucide-react'
 
 import type { ResourceLocationRef } from '../../contracts/resources'
-import { isCitationUrl } from '../../contracts/citations'
-import { Icon } from '../../icons'
+import { CITATION_URL_PREFIX, citationReferenceUrl, isCitationUrl } from '../../contracts/citations'
+import { citationSourceGroupKeys } from '../../components/business/grouping'
 import type { AnswerCoverage, AnswerSource } from '../../model'
 import { activeThread, useApp } from '../../store'
 import { Markdown } from '../../components/primitive/Markdown'
 import { writeClipboard } from '../../components/primitive/clipboard'
 import { mappedSourceBoundary } from '../../components/markdown/source'
-import { Button, FloatingToolbar, IconButton, Input, useToast } from '../../components/ui'
+import { Button, Divider, FloatingToolbar, Portal, useToast } from '../../components/ui'
 import { expandedResourceAncestors } from '../../contracts/resources'
 import { citationSources, fetchResourceDirectoryTree, saveAnswerSelectionToResource } from './api'
 import { ANSWER_ANNOTATION_LOCATION, sha256Text } from './anchors'
 import { ResourceSaveDialog } from './Save'
-import { CitationLink, CitationSources, WebCitationLink } from './Citations'
+import {
+  CitationGroup,
+  CitationLink,
+  CitationSources,
+  WebCitationLink,
+  useAnswerCitationSources,
+} from './Citations'
 import { AnnotationBadgeNote, annotationDisplay } from './Notes'
 import { sentAnswerAnnotationIds } from './state'
 import { defaultExcerptName } from './names'
@@ -25,11 +32,10 @@ import {
   shouldClosePointerToolbar,
   type SelectionToolbarPosition,
 } from './selection-toolbar'
-import { SessionFileLink } from './Links'
-import { answerProjectSource, sharedTaskSources } from './sources'
+import { ProjectSourceLink, SessionFileLink } from './Links'
+import { answerProjectSource, projectSourceName, sharedTaskSources } from './sources'
 
-const ANSWER_ID_PREFIX = 'answer:'
-const ITEM_ID_PREFIX = 'item:'
+import { answerIdentifier, ITEM_ID_PREFIX } from './bindings'
 // 设计稿: 注释标识悬浮在被注释文本结束处的上方(蓝色气泡+序号);
 // 零宽行内锚点不参与文字排版, 浮层相对锚点抬升到当前行上方。
 const INLINE_MARKER_ANCHOR_CLASS = 'relative inline-block h-0 w-0'
@@ -37,7 +43,6 @@ const INLINE_MARKER_FLOAT_CLASS =
   'absolute bottom-full left-0 z-[var(--vds-z-local-top)] mb-[var(--vds-space-3)] -translate-x-1/2'
 const ANSWER_ANNOTATION_FOCUS_DURATION_MS = 2400
 const CONVERSATION_STREAM_SELECTOR = '.conversation-stream'
-const SELECTION_TOOLBAR_MAX_WIDTH_PX = 390
 const SELECTION_TOOLBAR_VIEWPORT_MARGIN_PX = 16
 const ANNOTATION_ERROR_MESSAGES = {
   answer_revision_conflict: 'remaining.revisionConflict',
@@ -48,21 +53,18 @@ const ANNOTATION_SAVE_FALLBACK_MESSAGE = 'remaining.annotationFailed'
 const ANSWER_ANNOTATION_SAVE_TOAST_ID = 'answer-annotation-save-failed'
 // 选区菜单项共用一套样式：默认不上底色，仅 hover 时高亮，避免某一项看起来像已选中。
 const SELECTION_ACTION_CLASS =
-  'w-full justify-start rounded-[var(--vds-radius-3)] !border-0 px-[var(--vds-space-3)] !text-[var(--vds-text-primary)] !shadow-none hover:!bg-[var(--vds-surface-hover)]'
+  'shrink-0 whitespace-nowrap !gap-[calc(var(--vds-space-1)+var(--vds-space-half))] rounded-[var(--vds-radius-3)] !border-0 px-[var(--vds-space-3)] !text-[length:var(--vds-font-body-lv1)] !leading-[var(--vds-lh-body-lv1)] !text-[var(--vds-text-primary)] !shadow-none hover:!bg-[var(--vds-surface-hover)]'
 
 interface SelectionDraft {
   clientAnnotationId: string
-  annotationId?: string
   startUtf16: number
   endUtf16: number
   selectedMarkdown: string
   previewText: string
   clipboardText: string
   left: number
-  width: number
   selectionTop: number
   selectionBottom: number
-  mode: 'actions' | 'comment'
 }
 
 function descendantLeaf(node: Node, root: HTMLElement, edge: 'first' | 'last'): HTMLElement | null {
@@ -225,6 +227,7 @@ function fallbackSelectionOffsets(
 }
 
 export function AnnotatedAnswer({
+  pending = false,
   citationEnabled,
   text,
   eventSeq,
@@ -236,6 +239,8 @@ export function AnnotatedAnswer({
   answerSources,
   answerCoverage,
   citationPending = false,
+  showSources = true,
+  loadRemoteImage,
 }: {
   citationEnabled: boolean
   text: string
@@ -259,6 +264,9 @@ export function AnnotatedAnswer({
   answerSources?: AnswerSource[]
   answerCoverage?: AnswerCoverage
   citationPending?: boolean
+  pending?: boolean
+  showSources?: boolean
+  loadRemoteImage?: Parameters<typeof Markdown>[0]['loadRemoteImage']
 }): React.JSX.Element {
   const { state, act } = useApp()
   const { t } = useTranslation('components')
@@ -266,8 +274,15 @@ export function AnnotatedAnswer({
   const { toast } = useToast()
   const rootRef = useRef<HTMLDivElement>(null)
   const toolbarRef = useRef<HTMLDivElement>(null)
-  const commentRef = useRef('')
+  const [toolbarElement, setToolbarElement] = useState<HTMLDivElement | null>(null)
+  const bindToolbar = React.useCallback((element: HTMLDivElement | null) => {
+    toolbarRef.current = element
+    setToolbarElement(element)
+  }, [])
+  const [toolbarLeft, setToolbarLeft] = useState(0)
+  const [editingAnnotationId, setEditingAnnotationId] = useState<string | null>(null)
   const annotationSavingRef = useRef(false)
+  const [highlightedAnnotationId, setHighlightedAnnotationId] = useState<string | null>(null)
   const [draft, setDraft] = useState<SelectionDraft | null>(null)
   const [toolbarPosition, setToolbarPosition] = useState<SelectionToolbarPosition>({
     placement: 'below',
@@ -276,9 +291,10 @@ export function AnnotatedAnswer({
   const selectionIdentity = draft?.clientAnnotationId ?? null
   const selectionTop = draft?.selectionTop ?? 0
   const selectionBottom = draft?.selectionBottom ?? 0
+  const selectionLeft = draft?.left ?? 0
   useLayoutEffect(() => {
     const root = rootRef.current
-    const toolbar = toolbarRef.current
+    const toolbar = toolbarElement
     if (!selectionIdentity || !root || !toolbar) return
     const stream = root.closest<HTMLElement>(CONVERSATION_STREAM_SELECTOR)
     const updatePosition = (): void => {
@@ -289,11 +305,22 @@ export function AnnotatedAnswer({
         Math.min(window.innerHeight, streamBounds?.bottom ?? window.innerHeight) -
         SELECTION_TOOLBAR_VIEWPORT_MARGIN_PX
       const toolbarHeight = toolbar.getBoundingClientRect().height
+      const toolbarHalfWidth = toolbar.getBoundingClientRect().width / 2
+      const selectionCenter = rootBounds.left + selectionLeft
+      setToolbarLeft(
+        Math.max(
+          SELECTION_TOOLBAR_VIEWPORT_MARGIN_PX + toolbarHalfWidth,
+          Math.min(
+            selectionCenter,
+            window.innerWidth - SELECTION_TOOLBAR_VIEWPORT_MARGIN_PX - toolbarHalfWidth
+          )
+        )
+      )
       setToolbarPosition((current) => {
         const next = selectionToolbarPosition({
           currentPlacement: current.placement,
           devicePixelRatio: window.devicePixelRatio,
-          rootTop: rootBounds.top,
+          rootTop: 0,
           selectionBottom: rootBounds.top + selectionBottom,
           selectionTop: rootBounds.top + selectionTop,
           toolbarHeight,
@@ -315,12 +342,11 @@ export function AnnotatedAnswer({
       window.removeEventListener('resize', updatePosition)
       window.removeEventListener('scroll', updatePosition, true)
     }
-  }, [selectionBottom, selectionIdentity, selectionTop])
+  }, [selectionBottom, selectionIdentity, selectionLeft, selectionTop, toolbarElement])
   const draftRef = useRef<SelectionDraft | null>(null)
   useEffect(() => {
     draftRef.current = draft
   }, [draft])
-  const [comment, setComment] = useState('')
   const [saving, setSaving] = useState(false)
   const [saveDialogOpen, setSaveDialogOpen] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
@@ -336,7 +362,20 @@ export function AnnotatedAnswer({
     [thread.conversation, sessionProject]
   )
   const targetProject = state.projects.find((project) => project.id === targetProjectId) ?? null
-  const answerId = messageId ?? (eventSeq !== undefined ? `${ANSWER_ID_PREFIX}${eventSeq}` : null)
+  const answerId = answerIdentifier(messageId, eventSeq)
+  const resolvedCitationSources = useAnswerCitationSources(
+    thread.sessionId,
+    answerId,
+    text,
+    citationEnabled &&
+      !pending &&
+      (text.includes(CITATION_URL_PREFIX) ||
+        Boolean(answerSources?.some((source) => source.kind === 'receipt')))
+  )
+  const citationGroupKeys = useMemo(
+    () => citationSourceGroupKeys(resolvedCitationSources, answerSources),
+    [resolvedCitationSources, answerSources]
+  )
   const originalQuestion = useMemo(() => {
     const item = thread.conversation.find(
       (candidate) => candidate.kind === 'user' && candidate.turnId === turnId
@@ -411,13 +450,6 @@ export function AnnotatedAnswer({
     if (start === null || end === null || end <= start) return
     const rootBounds = root.getBoundingClientRect()
     const selectionBounds = range.getBoundingClientRect()
-    const toolbarWidth = Math.min(
-      SELECTION_TOOLBAR_MAX_WIDTH_PX,
-      Math.max(0, rootBounds.width - SELECTION_TOOLBAR_VIEWPORT_MARGIN_PX)
-    )
-    const toolbarHalfWidth = toolbarWidth / 2
-    setComment('')
-    commentRef.current = ''
     setSaveError(null)
     setToolbarPosition({
       placement: 'below',
@@ -430,17 +462,9 @@ export function AnnotatedAnswer({
       selectedMarkdown: text.slice(start, end),
       previewText,
       clipboardText,
-      width: toolbarWidth,
-      left: Math.min(
-        rootBounds.width - toolbarHalfWidth,
-        Math.max(
-          toolbarHalfWidth,
-          selectionBounds.left + selectionBounds.width / 2 - rootBounds.left
-        )
-      ),
+      left: selectionBounds.left + selectionBounds.width / 2 - rootBounds.left,
       selectionTop: selectionBounds.top - rootBounds.top,
       selectionBottom: selectionBounds.bottom - rootBounds.top,
-      mode: 'actions',
     })
   }
 
@@ -527,35 +551,12 @@ export function AnnotatedAnswer({
       }
       const annotationId = result.annotation.annotation_id
       setDraft((current) =>
-        current?.clientAnnotationId === draft.clientAnnotationId
-          ? { ...current, annotationId, mode: 'comment' }
-          : current
+        current?.clientAnnotationId === draft.clientAnnotationId ? null : current
       )
+      setEditingAnnotationId(annotationId)
       window.getSelection()?.removeAllRanges()
     } catch {
       showAnnotationError()
-    } finally {
-      annotationSavingRef.current = false
-      setSaving(false)
-    }
-  }
-
-  const saveAnnotation = async (): Promise<void> => {
-    if (!draft?.annotationId || annotationSavingRef.current) return
-    annotationSavingRef.current = true
-    setSaving(true)
-    try {
-      const annotation = state.aiPanel.annotations.find(
-        (item) => item.annotation_id === draft.annotationId
-      )
-      const unchanged = annotation?.comment === commentRef.current.trim()
-      if (unchanged || (await act.updateAnswerAnnotation(draft.annotationId, commentRef.current))) {
-        setDraft((current) =>
-          current?.clientAnnotationId === draft.clientAnnotationId ? null : current
-        )
-      } else {
-        showAnnotationError()
-      }
     } finally {
       annotationSavingRef.current = false
       setSaving(false)
@@ -626,6 +627,7 @@ export function AnnotatedAnswer({
     start_utf16: annotation.start_utf16,
     end_utf16: annotation.end_utf16,
     focused: annotation.annotation_id === focusedAnnotation?.annotation_id,
+    highlighted: annotation.annotation_id === highlightedAnnotationId,
   }))
 
   useEffect(() => {
@@ -716,6 +718,11 @@ export function AnnotatedAnswer({
     >
       <Markdown
         math
+        loadRemoteImage={loadRemoteImage}
+        pending={pending}
+        resolveImage={
+          thread.sessionId ? (path) => sessionFileRawUrl(thread.sessionId!, path) : undefined
+        }
         answerAnnotations={answerAnnotations}
         className={markdownClassName ?? 'md-agent'}
         evidence={evidence}
@@ -723,6 +730,17 @@ export function AnnotatedAnswer({
           const project = state.projects.find((candidate) => candidate.path === thread.projectPath)
           const source = project && answerProjectSource(href, project, observedSources)
           if (!source || !project) return undefined
+          const name = projectSourceName(source, observedSources)
+          if (name)
+            return (
+              <ProjectSourceLink
+                name={name}
+                onOpen={() => {
+                  if (source.kind === 'resource') act.openResourceFile(source.path, project.id)
+                  else void act.openLiteratureItem(source.id, project.id)
+                }}
+              />
+            )
           return (
             <Button
               unstyled
@@ -760,6 +778,22 @@ export function AnnotatedAnswer({
             : []
         )}
         citationPending={citationPending}
+        citationGroupKeys={citationGroupKeys}
+        renderCitationGroup={
+          answerId && thread.sessionId && citationEnabled
+            ? (entries) => (
+                <CitationGroup
+                  key={`${thread.sessionId}:${answerId}:${entries[0].start}`}
+                  sessionId={thread.sessionId!}
+                  answerId={answerId}
+                  text={text}
+                  entries={entries}
+                  sources={resolvedCitationSources}
+                  answerSources={answerSources}
+                />
+              )
+            : undefined
+        }
         citationOccurrences={answerSources?.flatMap((source) =>
           source.kind === 'searched'
             ? (source.occurrences ?? []).map((occurrence) => ({
@@ -782,6 +816,11 @@ export function AnnotatedAnswer({
                     />
                   )
                 }
+                const identity = resolvedCitationSources.find((candidate) =>
+                  source?.kind === 'receipt'
+                    ? candidate.handle === source.handle
+                    : citationReferenceUrl(candidate.handle) === href
+                )
                 if (source?.kind === 'receipt') {
                   return (
                     <CitationLink
@@ -791,6 +830,7 @@ export function AnnotatedAnswer({
                       text={text}
                       range={range}
                       displayNumber={source.number}
+                      identity={identity}
                     >
                       {children}
                     </CitationLink>
@@ -803,6 +843,7 @@ export function AnnotatedAnswer({
                     answerId={answerId}
                     text={text}
                     range={range}
+                    identity={identity}
                   >
                     {children}
                   </CitationLink>
@@ -824,6 +865,19 @@ export function AnnotatedAnswer({
                   ariaLabel={a('remaining.annotationLabel', { number, comment: noteText })}
                   noteText={noteText}
                   number={number}
+                  open={editingAnnotationId === annotation.annotation_id ? true : undefined}
+                  onOpenChange={(open) => {
+                    if (!open && editingAnnotationId === annotation.annotation_id) {
+                      setEditingAnnotationId(null)
+                    }
+                    setHighlightedAnnotationId((current) =>
+                      open
+                        ? annotation.annotation_id
+                        : current === annotation.annotation_id
+                          ? null
+                          : current
+                    )
+                  }}
                   onRemove={(annotationId) => act.deleteAnswerAnnotation(annotationId)}
                   onSave={(annotationId, nextComment) =>
                     act.updateAnswerAnnotation(annotationId, nextComment)
@@ -836,7 +890,7 @@ export function AnnotatedAnswer({
         sourceMapped
         text={text}
       />
-      {answerId && thread.sessionId && (citationEnabled || answerCoverage) && (
+      {showSources && answerId && thread.sessionId && (citationEnabled || answerCoverage) && (
         <CitationSources
           sessionId={thread.sessionId}
           answerId={answerId}
@@ -847,27 +901,18 @@ export function AnnotatedAnswer({
         />
       )}
       {draft ? (
-        <div
-          className={`answer-selection-anchor flex min-w-0 flex-col items-center -translate-x-1/2 ${
-            toolbarPosition.placement === 'above' ? '-translate-y-full pb-2' : 'pt-2'
-          }`}
-          ref={toolbarRef}
-          style={{ left: draft.left, top: toolbarPosition.top, width: draft.width }}
-          onMouseUp={(event) => event.stopPropagation()}
-        >
-          {draft.mode === 'actions' ? (
+        <Portal hosted>
+          <div
+            className={`answer-selection-anchor !z-[var(--vds-z-inline-flyout)] !fixed flex w-max flex-col items-center -translate-x-1/2 ${
+              toolbarPosition.placement === 'above' ? '-translate-y-full pb-2' : 'pt-2'
+            }`}
+            ref={bindToolbar}
+            style={{ left: toolbarLeft, top: toolbarPosition.top }}
+            onMouseUp={(event) => event.stopPropagation()}
+          >
             <FloatingToolbar
               actions={
-                <div className="flex w-full flex-col">
-                  <Button
-                    className={SELECTION_ACTION_CLASS}
-                    icon={<Copy size={14} />}
-                    onClick={() => void copySelection()}
-                    size="sm"
-                    variant="ghost"
-                  >
-                    {a('remaining.copyText')}
-                  </Button>
+                <div className="flex w-max flex-nowrap items-center gap-[var(--vds-space-half)]">
                   <Button
                     className={SELECTION_ACTION_CLASS}
                     icon={<MessageCirclePlus size={14} />}
@@ -888,53 +933,26 @@ export function AnnotatedAnswer({
                   >
                     {a('remaining.importAnswer')}
                   </Button>
+                  <Divider
+                    orientation="vertical"
+                    className="!h-[var(--vds-space-4)] !min-h-0 !self-center !m-0"
+                  />
+                  <Button
+                    className={SELECTION_ACTION_CLASS}
+                    icon={<Copy size={14} />}
+                    onClick={() => void copySelection()}
+                    size="sm"
+                    variant="ghost"
+                  >
+                    {a('remaining.copyText')}
+                  </Button>
                 </div>
               }
-              className="w-[190px] max-w-full !rounded-[var(--vds-radius-5)]"
+              className="w-max max-w-none [&_[role=toolbar]]:!p-[calc(var(--vds-space-2)-var(--vds-border-width-1))]"
               label={a('remaining.selectionActions')}
             />
-          ) : (
-            <div className="flex w-[328px] max-w-full min-w-0 flex-col gap-1">
-              <FloatingToolbar
-                actions={
-                  <>
-                    <Input
-                      aria-label={a('remaining.comment')}
-                      autoFocus
-                      className="h-8 w-full min-w-0 rounded-[var(--vds-radius-3)] border border-solid border-transparent !bg-transparent px-2 text-[length:var(--vds-font-body-lv1)] !shadow-none placeholder:text-[var(--vds-text-placeholder)] focus:outline-none focus-visible:border-[var(--vds-border-brand)] focus-visible:!shadow-none"
-                      disabled={saving}
-                      maxLength={600}
-                      onChange={(event) => {
-                        commentRef.current = event.target.value
-                        setComment(event.target.value)
-                      }}
-                      onKeyDown={(event) => {
-                        if (event.key !== 'Enter' || event.nativeEvent.isComposing) return
-                        event.preventDefault()
-                        void saveAnnotation()
-                      }}
-                      placeholder={a('remaining.optionalComment')}
-                      size="sm"
-                      unstyled
-                      value={comment}
-                    />
-                    <IconButton
-                      disabled={saving}
-                      icon={<Icon name="close" size={13} />}
-                      label={a('remaining.cancelAdd')}
-                      onClick={closeDraft}
-                      size="sm"
-                      variant="ghost"
-                    />
-                  </>
-                }
-                className="min-h-10 w-full !rounded-[var(--vds-radius-4)] !border-[var(--vds-border-default)] !bg-[var(--vds-surface-raised)] shadow-[var(--vds-shadow-md)] [&_.vds-field]:flex-1 [&_.vds-floating-toolbar__actions]:gap-1 [&_.vds-floating-toolbar__actions]:p-1.5"
-                expanded
-                label={a('remaining.addAnnotation')}
-              />
-            </div>
-          )}
-        </div>
+          </div>
+        </Portal>
       ) : null}
       <ResourceSaveDialog
         description={a('remaining.excerptDescription')}

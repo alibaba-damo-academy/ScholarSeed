@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { registerNativeLayer, raiseNativeLayers } from './layers.ts'
 import { realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -42,6 +43,8 @@ import type { BrowserPageTarget, FindQuery, FindState } from '../browser.ts'
 
 const MENU_ENTRY = 'menu.html'
 const MENU_GEOMETRY_TOLERANCE = 1
+const MENU_GEOMETRY_WORLD = 1004
+const MENU_VIEWPORT_SCRIPT = '({ width: window.innerWidth, height: window.innerHeight })'
 const TRANSPARENT_BACKGROUND = '#00000000'
 const DENY = { action: 'deny' } as const
 const REVOKED: MenuReply = { ok: false, error: MENU_ERROR.revoked }
@@ -88,6 +91,7 @@ export class MenuActionRegistry {
   }
 }
 export interface MenuOwner {
+  prepare(): void
   publish(model: unknown): Promise<MenuReply>
   dismiss(reason: MenuDismissReason): void
   dispose(): void
@@ -124,6 +128,13 @@ interface MenuPresentation {
   timer: ReturnType<typeof setTimeout>
   removers: (() => void)[]
 }
+interface MenuRenderer {
+  view: WebContentsView
+  session: Session
+  loaded: boolean
+  timer: ReturnType<typeof setTimeout>
+  removers: (() => void)[]
+}
 export function createMenuOwner(window: BrowserWindow, options: MenuOptions): MenuOwner {
   const product = window.webContents
   const removers: (() => void)[] = []
@@ -137,8 +148,21 @@ export function createMenuOwner(window: BrowserWindow, options: MenuOptions): Me
   let recovery: { generation: number; committed: WebFrameMain | null } | null = null
   const rendererProtocol = new URL(options.rendererUrl).protocol
   let current: MenuPresentation | null = null
+  let renderer: MenuRenderer | null = null
   let lease: MenuSeed | null = null
   let highestRevision = 0
+  let geometryGeneration = 0
+  const measuredViewports = new WeakMap<
+    MenuModel,
+    {
+      width: number
+      height: number
+      contentWidth: number
+      contentHeight: number
+      zoom: number
+      frame: WebFrameMain
+    }
+  >()
   const diagnose = (
     stage: string,
     fields: Record<string, string | number | boolean | undefined> = {}
@@ -233,13 +257,30 @@ export function createMenuOwner(window: BrowserWindow, options: MenuOptions): Me
   const geometryValid = (model: MenuModel): boolean => {
     const [width, height] = window.getContentSize()
     const zoom = product.getZoomFactor()
+    const measured = measuredViewports.get(model)
+    const docked = product.isDevToolsOpened()
+    if (
+      docked &&
+      (!measured ||
+        measured.frame !== product.mainFrame ||
+        measured.contentWidth !== width ||
+        measured.contentHeight !== height ||
+        measured.zoom !== zoom)
+    )
+      return false
+    const expectedWidth = docked ? measured!.width * zoom : width
+    const expectedHeight = docked ? measured!.height * zoom : height
     return (
       Number.isFinite(zoom) &&
       zoom > 0 &&
       width > 0 &&
       height > 0 &&
-      Math.abs(model.viewport.width * zoom - width) <= MENU_GEOMETRY_TOLERANCE &&
-      Math.abs(model.viewport.height * zoom - height) <= MENU_GEOMETRY_TOLERANCE
+      expectedWidth > 0 &&
+      expectedHeight > 0 &&
+      expectedWidth <= width + MENU_GEOMETRY_TOLERANCE &&
+      expectedHeight <= height + MENU_GEOMETRY_TOLERANCE &&
+      Math.abs(model.viewport.width * zoom - expectedWidth) <= MENU_GEOMETRY_TOLERANCE &&
+      Math.abs(model.viewport.height * zoom - expectedHeight) <= MENU_GEOMETRY_TOLERANCE
     )
   }
   const settle = (presentation: MenuPresentation, reply: MenuReply): void => {
@@ -257,7 +298,19 @@ export function createMenuOwner(window: BrowserWindow, options: MenuOptions): Me
     isolated.setPermissionCheckHandler(null)
     void isolated.clearStorageData().catch(() => undefined)
   }
+  const releaseRenderer = (): void => {
+    const previous = renderer
+    renderer = null
+    if (!previous) return
+    clearTimeout(previous.timer)
+    for (const remove of previous.removers.splice(0)) remove()
+    if (!window.isDestroyed()) window.contentView.removeChildView(previous.view)
+    if (!previous.view.webContents.isDestroyed())
+      previous.view.webContents.close({ waitForBeforeUnload: false })
+    releaseSession(previous.session)
+  }
   const dismiss = (reason: MenuDismissReason): void => {
+    geometryGeneration += 1
     if (reason !== 'action') resultGeneration += 1
     const previous = current
     const returnFocus =
@@ -266,7 +319,10 @@ export function createMenuOwner(window: BrowserWindow, options: MenuOptions): Me
       eligible()
     current = null
     lease = null
-    if (!previous) return
+    if (!previous) {
+      if (reason !== 'replaced') releaseRenderer()
+      return
+    }
     if (previous.model.surface === 'browser-find' && previous.model.target.kind === 'browser')
       options.find?.stop(previous.model.target)
     diagnose('dismissed', {
@@ -283,9 +339,13 @@ export function createMenuOwner(window: BrowserWindow, options: MenuOptions): Me
     previous.view.setVisible(false)
     if (!window.isDestroyed()) window.contentView.removeChildView(previous.view)
     for (const remove of previous.removers.splice(0)) remove()
-    if (!previous.view.webContents.isDestroyed())
-      previous.view.webContents.close({ waitForBeforeUnload: false })
-    releaseSession(previous.session)
+    const retain =
+      previous.loaded &&
+      previous.model.surface === 'browser-menu' &&
+      (reason === 'outside' || reason === 'escape' || reason === 'action' || reason === 'replaced')
+    if (retain && !previous.view.webContents.isDestroyed())
+      previous.view.webContents.send(MENU_CHANNEL.model, null)
+    else releaseRenderer()
     notify(MENU_CHANNEL.revoked, { ...ack(previous.model), reason })
     if (returnFocus && !current && !lease && eligible()) {
       if (previous.model.find?.origin === 'page' && previous.model.target.kind === 'browser') {
@@ -336,6 +396,8 @@ export function createMenuOwner(window: BrowserWindow, options: MenuOptions): Me
       presentation.view.webContents.setZoomFactor(product.getZoomFactor())
       presentation.view.setBounds({ x: 0, y: 0, width, height })
       window.contentView.addChildView(presentation.view)
+      registerNativeLayer(window, presentation.view, 'popup')
+      raiseNativeLayers(window)
       presentation.view.setVisible(true)
       if (!presentation.view.getVisible()) throw new Error(MENU_ERROR.failed)
       const focused = new Promise<MenuReply>((resolve) => {
@@ -359,15 +421,165 @@ export function createMenuOwner(window: BrowserWindow, options: MenuOptions): Me
       return { ok: false, error: MENU_ERROR.failed }
     }
   }
+  const ensureRenderer = (): MenuRenderer => {
+    if (renderer) return renderer
+    const started = performance.now()
+    const resources = overlayResources(options.directory, MENU_ENTRY)
+    diagnose('resources-ready', { elapsedMs: performance.now() - started })
+    const isolated = options.createSession()
+    let view: WebContentsView | null = null
+    try {
+      isolated.setPermissionRequestHandler((_contents, _permission, callback) => callback(false))
+      isolated.setPermissionCheckHandler(() => false)
+      isolated.webRequest.onBeforeRequest((details, callback) =>
+        callback({ cancel: !resources.has(details.url) })
+      )
+      view = options.createView({
+        session: isolated,
+        preload: options.preload,
+        sandbox: true,
+        contextIsolation: true,
+        nodeIntegration: false,
+        webviewTag: false,
+        webSecurity: true,
+        allowRunningInsecureContent: false,
+        devTools: false,
+        backgroundThrottling: false,
+      })
+      const prepared: MenuRenderer = {
+        view,
+        session: isolated,
+        loaded: false,
+        removers: [],
+        timer: setTimeout(() => {
+          if (renderer !== prepared) return
+          dismiss('timeout')
+          releaseRenderer()
+        }, MENU_LIMIT.paintTimeout),
+      }
+      renderer = prepared
+      view.setVisible(false)
+      view.setBackgroundColor(TRANSPARENT_BACKGROUND)
+      const contents = view.webContents
+      const [width, height] = window.getContentSize()
+      view.setBounds({ x: 0, y: 0, width, height })
+      contents.setZoomFactor(product.getZoomFactor())
+      contents.setWindowOpenHandler(() => DENY)
+      listen(isolated, 'will-download', (event) => event.preventDefault(), prepared.removers)
+      for (const name of [
+        'will-navigate',
+        'will-frame-navigate',
+        'will-redirect',
+        'will-attach-webview',
+      ])
+        listen(contents, name, (event) => event.preventDefault(), prepared.removers)
+      for (const name of ['render-process-gone', 'destroyed'])
+        listen(
+          contents,
+          name,
+          () => {
+            if (renderer === prepared) {
+              dismiss('crash')
+              releaseRenderer()
+            }
+          },
+          prepared.removers
+        )
+      diagnose('renderer-created', { elapsedMs: performance.now() - started })
+      void contents
+        .loadURL(pathToFileURL(join(realpathSync(options.directory), MENU_ENTRY)).href)
+        .then(() => {
+          if (renderer !== prepared) return
+          clearTimeout(prepared.timer)
+          prepared.loaded = true
+          const presentation = current?.view === prepared.view ? current : null
+          if (presentation) {
+            presentation.loaded = true
+            window.contentView.addChildView(prepared.view)
+            registerNativeLayer(window, prepared.view, 'popup')
+            raiseNativeLayers(window)
+          }
+          contents.setBackgroundThrottling(false)
+          diagnose('loaded', { elapsedMs: performance.now() - started })
+          if (presentation) contents.send(MENU_CHANNEL.model, presentation.model)
+        })
+        .catch(() => {
+          if (renderer !== prepared) return
+          diagnose('load-failed', { elapsedMs: performance.now() - started })
+          if (current?.view === prepared.view) {
+            settle(current, { ok: false, error: MENU_ERROR.failed })
+            dismiss('invalid')
+          }
+          releaseRenderer()
+        })
+      return prepared
+    } catch (error) {
+      if (renderer?.view === view) releaseRenderer()
+      else {
+        if (view && !view.webContents.isDestroyed())
+          view.webContents.close({ waitForBeforeUnload: false })
+        releaseSession(isolated)
+      }
+      throw error
+    }
+  }
   const publish = async (value: unknown): Promise<MenuReply> => {
     let model: MenuModel
     try {
       model = parseMenuModel(value)
+      if (product.isDevToolsOpened()) {
+        const generation = geometryGeneration
+        const frame = product.mainFrame
+        const [contentWidth, contentHeight] = window.getContentSize()
+        const zoom = product.getZoomFactor()
+        let timer: ReturnType<typeof setTimeout> | undefined
+        try {
+          const measured = await Promise.race([
+            product.executeJavaScriptInIsolatedWorld(MENU_GEOMETRY_WORLD, [
+              { code: MENU_VIEWPORT_SCRIPT },
+            ]),
+            new Promise<never>((_resolve, reject) => {
+              timer = setTimeout(
+                () => reject(new Error(MENU_ERROR.failed)),
+                MENU_LIMIT.paintTimeout
+              )
+            }),
+          ])
+          if (generation !== geometryGeneration || disposed || frame !== product.mainFrame)
+            return REVOKED
+          if (!measured || !Number.isFinite(measured.width) || !Number.isFinite(measured.height))
+            throw new Error(MENU_ERROR.invalid)
+          measuredViewports.set(model, {
+            width: measured.width,
+            height: measured.height,
+            contentWidth,
+            contentHeight,
+            zoom,
+            frame,
+          })
+        } catch (error) {
+          if (generation !== geometryGeneration || disposed || product.isDestroyed()) return REVOKED
+          diagnose('geometry-measurement-failed')
+          throw error
+        } finally {
+          clearTimeout(timer)
+        }
+      }
       const validation = {
         eligible: eligible(PRESENTATION_REQUIRES_FOCUS[model.surface]),
         revisionValid: model.revision > highestRevision,
         target: targetValid(model),
         geometry: geometryValid(model),
+      }
+      if (!validation.eligible) {
+        diagnose('publication-revoked', {
+          sessionId: model.sessionId,
+          surface: model.surface,
+          revision: model.revision,
+          ...validation,
+        })
+        dismiss('blur')
+        return REVOKED
       }
       if (!Object.values(validation).every(Boolean)) {
         diagnose('validation-rejected', {
@@ -378,6 +590,11 @@ export function createMenuOwner(window: BrowserWindow, options: MenuOptions): Me
           focused: window.isFocused(),
           visible: window.isVisible(),
           minimized: window.isMinimized(),
+          viewportWidth: model.viewport.width,
+          viewportHeight: model.viewport.height,
+          contentWidth: window.getContentSize()[0],
+          contentHeight: window.getContentSize()[1],
+          zoomFactor: product.getZoomFactor(),
         })
         throw new Error(MENU_ERROR.invalid)
       }
@@ -417,43 +634,17 @@ export function createMenuOwner(window: BrowserWindow, options: MenuOptions): Me
       })
     }
     dismiss('replaced')
-    let createdSession: Session | null = null
-    let createdView: WebContentsView | null = null
     try {
-      const resources = overlayResources(options.directory, MENU_ENTRY)
-      const isolated = options.createSession()
-      createdSession = isolated
-      isolated.setPermissionRequestHandler((_contents, _permission, callback) => callback(false))
-      isolated.setPermissionCheckHandler(() => false)
-      isolated.webRequest.onBeforeRequest((details, callback) =>
-        callback({ cancel: !resources.has(details.url) })
-      )
-      const view = options.createView({
-        session: isolated,
-        preload: options.preload,
-        sandbox: true,
-        contextIsolation: true,
-        nodeIntegration: false,
-        webviewTag: false,
-        webSecurity: true,
-        allowRunningInsecureContent: false,
-        devTools: false,
-        backgroundThrottling: false,
-      })
-      createdView = view
-      view.setVisible(false)
-      view.setBackgroundColor(TRANSPARENT_BACKGROUND)
+      const prepared = ensureRenderer()
+      const view = prepared.view
       const contents = view.webContents
-      const [width, height] = window.getContentSize()
-      view.setBounds({ x: 0, y: 0, width, height })
-      contents.setZoomFactor(product.getZoomFactor())
-      contents.setWindowOpenHandler(() => DENY)
-      const result = new Promise<MenuReply>((resolve) => {
+      diagnose('renderer-acquired', { warm: prepared.loaded })
+      return new Promise<MenuReply>((resolve) => {
         const presentation: MenuPresentation = {
           model,
           view,
-          session: isolated,
-          loaded: false,
+          session: prepared.session,
+          loaded: prepared.loaded,
           painted: false,
           shown: false,
           pending: resolve,
@@ -464,15 +655,6 @@ export function createMenuOwner(window: BrowserWindow, options: MenuOptions): Me
           removers: [],
         }
         current = presentation
-        listen(
-          contents,
-          'console-message',
-          (details) => {
-            if (details.level === 'error') console.error('Menu renderer error', details.message)
-            else console.info('Menu renderer console', details.level, details.message)
-          },
-          presentation.removers
-        )
         listen(contents, 'focus', () => confirmFocus(presentation), presentation.removers)
         listen(
           contents,
@@ -491,49 +673,14 @@ export function createMenuOwner(window: BrowserWindow, options: MenuOptions): Me
           },
           presentation.removers
         )
-        listen(isolated, 'will-download', (event) => event.preventDefault(), presentation.removers)
-        for (const name of [
-          'will-navigate',
-          'will-frame-navigate',
-          'will-redirect',
-          'will-attach-webview',
-        ]) {
-          listen(contents, name, (event) => event.preventDefault(), presentation.removers)
+        if (prepared.loaded) {
+          window.contentView.addChildView(view)
+          registerNativeLayer(window, view, 'popup')
+          raiseNativeLayers(window)
+          contents.setBackgroundThrottling(false)
+          contents.send(MENU_CHANNEL.model, model)
         }
-        listen(
-          contents,
-          'render-process-gone',
-          () => {
-            if (current === presentation) dismiss('crash')
-          },
-          presentation.removers
-        )
-        listen(
-          contents,
-          'destroyed',
-          () => {
-            if (current === presentation) dismiss('crash')
-          },
-          presentation.removers
-        )
-        void contents
-          .loadURL(pathToFileURL(join(realpathSync(options.directory), MENU_ENTRY)).href)
-          .then(() => {
-            if (current !== presentation) return
-            presentation.loaded = true
-            window.contentView.addChildView(view)
-            contents.setBackgroundThrottling(false)
-            diagnose('loaded', { revision: presentation.model.revision })
-            contents.send(MENU_CHANNEL.model, presentation.model)
-          })
-          .catch(() => {
-            if (current !== presentation) return
-            diagnose('load-failed')
-            settle(presentation, { ok: false, error: MENU_ERROR.failed })
-            dismiss('invalid')
-          })
       })
-      return result
     } catch {
       diagnose('create-failed', {
         sessionId: model.sessionId,
@@ -541,16 +688,12 @@ export function createMenuOwner(window: BrowserWindow, options: MenuOptions): Me
         surface: model.surface,
       })
       if (current) dismiss('invalid')
-      else {
-        if (createdView && !createdView.webContents.isDestroyed())
-          createdView.webContents.close({ waitForBeforeUnload: false })
-        if (createdSession) releaseSession(createdSession)
-      }
+      else releaseRenderer()
       return { ok: false, error: MENU_ERROR.failed }
     }
   }
   const validate = (event: IpcMainInvokeEvent, menu = false): void => {
-    const contents = menu ? current?.view.webContents : product
+    const contents = menu ? renderer?.view.webContents : product
     if (
       disposed ||
       !productAvailable ||
@@ -590,7 +733,7 @@ export function createMenuOwner(window: BrowserWindow, options: MenuOptions): Me
     removers.push(() => options.ipc.removeHandler(channel))
   }
   handle(MENU_CHANNEL.seed, (event, args) => {
-    if (event.sender === current?.view.webContents) {
+    if (event.sender === renderer?.view.webContents) {
       validate(event, true)
       if (args.length) throw new Error(MENU_ERROR.invalid)
       return current?.loaded ? current.model : null
@@ -795,9 +938,14 @@ export function createMenuOwner(window: BrowserWindow, options: MenuOptions): Me
       refreshPresentation()
     })
   for (const event of ['focus', 'show', 'restore'] as const)
-    listen(window, event, refreshPresentation)
+    listen(window, event, () => {
+      refreshPresentation()
+      if (!current && options.nativeVisible?.()) prepare()
+    })
   listen(product, 'did-start-loading', () => dismiss('navigation'))
   listen(product, 'zoom-changed', () => dismiss('resize'))
+  for (const event of ['devtools-opened', 'devtools-closed'])
+    listen(product, event, () => dismiss('resize'))
   for (const name of ['render-process-gone', 'destroyed'])
     listen(product, name, () => {
       productAvailable = false
@@ -881,11 +1029,27 @@ export function createMenuOwner(window: BrowserWindow, options: MenuOptions): Me
   const dispose = (): void => {
     if (disposed) return
     dismiss('dispose')
+    releaseRenderer()
     disposed = true
     for (const remove of removers.splice(0)) remove()
     requests.clear()
   }
   listen(window, 'closed', dispose)
   refreshPresentation()
-  return { publish, dismiss, dispose, refreshPresentation }
+  const prepare = (): void => {
+    if (
+      disposed ||
+      !productAvailable ||
+      window.isDestroyed() ||
+      product.isDestroyed() ||
+      product.isCrashed()
+    )
+      return
+    try {
+      ensureRenderer()
+    } catch {
+      diagnose('prepare-failed')
+    }
+  }
+  return { publish, dismiss, dispose, refreshPresentation, prepare }
 }

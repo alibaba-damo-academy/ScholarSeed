@@ -173,6 +173,19 @@ def main() -> int:
         assert status['status']=='PARTIAL_SUCCESS'
         assert adapter.abstract_problem({'abstract':'Full-looking text.','abstract_truncated':True})
 
+        # Project candidates follow the same eligibility gate; identity survives merging.
+        configure(workspace,{'retrieval':{'corpus_size':{'target':4}}})
+        candidate_base={'title':'Same work','abstract':'Complete source abstract.','authors':['Ada'], 'year':2025,'tier':2}
+        mixed=[{**candidate_base,'paper_id':'literature:a','source':'project_library','doi':'10.1/a','library_refs':['literature:a']},
+               {**candidate_base,'paper_id':'100','source':'paperhub','title':'Changed title','doi':'10.1/a','paperhub_id':'100'},
+               {**candidate_base,'paper_id':'101','source':'paperhub','doi':'10.1/b'},
+               {**candidate_base,'paper_id':'literature:missing','source':'project_library','title':'Missing abstract','abstract':''}]
+        (output/'metadata.json').write_text(json.dumps({'papers':mixed}))
+        merged,merged_report,_=adapter.run(workspace)
+        assert len(merged)==2 and len(merged_report['dropped'])==1
+        reused=next(p for p in merged.values() if p.get('doi')=='10.1/a')
+        assert reused['library_refs']==['literature:a'] and reused['paperhub_id']=='100'
+
         # A valid-but-fully-filtered import clears the selected projection;
         # stale papers must not silently survive a failed rerun.
         (output/'selected_paper.json').write_text(json.dumps(corpus))

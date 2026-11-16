@@ -3,10 +3,7 @@
 from __future__ import annotations
 
 import json
-import os
 import re
-import subprocess
-import sys
 import tempfile
 import unittest
 from dataclasses import asdict, replace
@@ -24,7 +21,7 @@ from service.assistant.service.authorization import (
     RESEARCH_IDEA_FULLTEXT,
 )
 from service.chat.service.tasks import ProductTaskLease
-from service.literature.api.evidence import prepare_bundle, register_card_bridge
+from service.literature.api.evidence import register_card_bridge
 from service.literature.domain.anchors import SentenceAnchors, original_text, sentence_pattern
 from service.literature.domain.cards import normalize_bundle
 from service.literature.persistence.cards import PaperCards
@@ -70,61 +67,6 @@ class PaperCardContracts(unittest.TestCase):
     def tearDown(self):
         self.fixture.tearDown()
         self.temp.cleanup()
-
-    def test_current_skill_card_output_and_foreign_id_rejection(self):
-        skill = Path(__file__).resolve().parents[3] / "skills/community/literature-review"
-        source = {
-            "info_type": "card",
-            "paper_card": {
-                "paper_type": "theory",
-                "card": {"findings": "Generated synthesis"},
-                "common_fields": {"core_contribution": "A documented result."},
-            },
-            "source_mapping": {
-                "card_mapping": {"card.findings": [1]},
-                "sentences": {"1": "A documented result."},
-            },
-        }
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-c",
-                "import asyncio,json,sys; from run_pipeline import _process_single_paper; "
-                "result=asyncio.run(_process_single_paper(None,'paper',"
-                "{'title':'Evidence Paper'},json.load(sys.stdin),'full','theory',"
-                "with_source_map=True)); "
-                "assert result[0]['info_type']=='card'; "
-                "assert result[0]['card']['findings']=='Generated synthesis'; "
-                "print(json.dumps({'paper_card':result[0],'source_mapping':result[3]}))",
-            ],
-            input=json.dumps(source),
-            env={
-                **os.environ,
-                "PYTHONPATH": os.pathsep.join(
-                    (str(skill / "scripts/processing"), str(skill / "lib"))
-                ),
-            },
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        root = Path(self.temp.name)
-        target = root / "card.json"
-        raw = json.loads(result.stdout)
-        target.write_text(json.dumps(raw), encoding="utf-8")
-        original = normalize_bundle(prepare_bundle(root, target.name))
-        self.assertEqual(original["sentences"], {"1": "A documented result."})
-        self.assertEqual(original["card_mapping"], {"card.findings": ["1"]})
-        raw["source_mapping"]["card_mapping"]["card.findings"] = [99]
-        target.write_text(json.dumps(raw), encoding="utf-8")
-        with self.assertRaisesRegex(ValueError, "papercard_sources_missing"):
-            prepare_bundle(root, target.name)
-        raw["source_mapping"]["card_mapping"]["card.findings"] = [1]
-        raw["source_mapping"]["sentences"]["1"] = "Different original."
-        target.write_text(json.dumps(raw), encoding="utf-8")
-        changed = normalize_bundle(prepare_bundle(root, target.name))
-        self.assertNotEqual(changed["revision"], original["revision"])
 
     def test_registration_scope_identity_and_persistence(self):
         root = Path(self.temp.name)

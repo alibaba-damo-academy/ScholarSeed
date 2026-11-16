@@ -5,7 +5,6 @@ import zh from '../../localization/locales/zh/components.json' with { type: 'jso
 import en from '../../localization/locales/en/components.json' with { type: 'json' }
 import zhConversation from '../../localization/locales/zh/conversation.json' with { type: 'json' }
 import enConversation from '../../localization/locales/en/conversation.json' with { type: 'json' }
-
 import {
   QUEUE_PRESENTATION_MESSAGE_KEYS,
   canCancelQueuedMessage,
@@ -16,6 +15,7 @@ import {
   optimisticQueuedMessage,
   queueBlockedByUnconfirmed,
   queuedMessageErrorText,
+  queuedMessageNeedsStatusCheck,
   queuedWithdrawalFeedback,
   queuedMessageFromPayload,
   rejectOptimisticQueuedMessage,
@@ -23,10 +23,23 @@ import {
   shouldOptimisticallyPresentUserMessage,
   shouldPresentQueuedMessage,
   upsertQueuedMessage,
+  canEditQueuedMessage,
 } from './queue.ts'
 import { mergeQueuedOutbox, releaseQueuedOutbox, retainQueuedOutbox } from './outbox.ts'
 
 const input = [{ type: 'text' as const, text: '继续补充证据' }]
+
+test('internal authorization stays out of the user outbox but keeps actionable failures', () => {
+  const message = {
+    ...optimisticQueuedMessage([], 'authorization', input, [], undefined, 'queued'),
+    purpose: 'authorization_continuation',
+  }
+  assert.equal(shouldPresentQueuedMessage(message, []), false)
+  assert.equal(canEditQueuedMessage(message), false)
+  assert.equal(shouldPresentQueuedMessage({ ...message, state: 'failed' }, []), true)
+  assert.equal(canEditQueuedMessage({ ...message, state: 'failed' }), false)
+  assert.equal(shouldPresentQueuedMessage({ ...message, state: 'outcome_unknown' }, []), true)
+})
 
 test('unknown confirmation refreshes authoritative state before reporting a stale or failed action', async () => {
   for (const result of [
@@ -625,6 +638,7 @@ test('queue failure codes translate while unknown codes use state-specific fallb
     ['windows_sandbox_policy_rejected', 'policyRejected'],
     ['windows_sandbox_tool_probe_failed', 'toolProbeFailed'],
     ['windows_sandbox_setup_cancelled', 'setupCancelled'],
+    ['windows_sandbox_password_policy_rejected', 'passwordPolicyRejected'],
   ] as const) {
     assert.equal(queuedMessageErrorText(code, 'failed', translate), zhConversation.sandbox[key])
     assert.equal(
@@ -681,4 +695,59 @@ test('an unconfirmed queue outcome blocks the remaining queue presentation', () 
   assert.equal(queueBlockedByUnconfirmed([]), false)
   const failed = { ...unknown, state: 'failed' as const }
   assert.equal(queueBlockedByUnconfirmed([failed, queued]), false)
+})
+
+test('queue editing is available only before submission and never for an optimistic unconfirmed row', () => {
+  const message = optimisticQueuedMessage([], 'editable', input, [], 0, 'queued')
+  assert.equal(canEditQueuedMessage({ ...message, serverPresent: true, state: 'queued' }), true)
+  assert.equal(
+    canEditQueuedMessage({ ...message, serverPresent: true, state: 'waiting_resources' }),
+    true
+  )
+  assert.equal(
+    canEditQueuedMessage({ ...message, serverPresent: true, state: 'submitting' }),
+    false
+  )
+  assert.equal(
+    canEditQueuedMessage({ ...message, serverPresent: true, state: 'outcome_unknown' }),
+    false
+  )
+  assert.equal(canEditQueuedMessage({ ...message, serverPresent: false }), false)
+})
+
+test('unknown session open retains the original failure and only offers a status check', async () => {
+  const message = queuedMessageFromPayload({
+    queued_message_id: 'blocked-open',
+    enqueue_seq: 1,
+    state: 'failed',
+    submission_mode: 'direct',
+    input: [],
+    safe_error: 'windows_sandbox_setup_cancelled',
+    retry_blocked_error: 'runtime_session_open_unknown',
+  })
+  assert.equal(message.safeErrorCode, 'windows_sandbox_setup_cancelled')
+  assert.equal(queuedMessageNeedsStatusCheck(message), true)
+  assert.equal(
+    queuedMessageNeedsStatusCheck({ ...message, retryBlockedErrorCode: undefined }),
+    false
+  )
+  for (const lng of ['zh', 'en']) {
+    const instance = createInstance()
+    await instance.init({
+      lng,
+      fallbackLng: false,
+      resources: {
+        zh: { components: zh, conversation: zhConversation },
+        en: { components: en, conversation: enConversation },
+      },
+    })
+    assert.equal(
+      queuedMessageErrorText(
+        message.retryBlockedErrorCode,
+        message.state,
+        instance.getFixedT(lng, 'components')
+      ),
+      (lng === 'zh' ? zhConversation : enConversation).queue.sessionOpenUnknown
+    )
+  }
 })

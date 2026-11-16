@@ -110,3 +110,7 @@ class SecurityContracts(unittest.TestCase):
         for mask in (-1, 0x100000000, True):
             with self.subTest(mask=mask), self.assertRaises(ValueError):
                 security.Entry(0, mask, 0, False, False, False, False, False)
+
+
+if __name__ == "__main__":
+    unittest.main()

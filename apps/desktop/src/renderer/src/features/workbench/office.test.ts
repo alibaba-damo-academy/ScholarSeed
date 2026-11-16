@@ -290,7 +290,7 @@ test('Office palette follows platform theme tokens without rebuilding or restart
     source,
     /config\.paletteUrl,config\.docUrl,config\.docxUrl,config\.selectionUrl,config\.threadUrl/
   )
-  assert.match(threadSource, /case 'theme': applyPalette\(event\.data\.palette\); break/)
+  assert.match(threadSource, /case 'theme':\s*applyPalette\(event\.data\.palette\);?\s*break/)
   assert.match(paletteSource, /ApplicationAppearance/)
   assert.match(paletteSource, /AppBackground/)
   assert.match(paletteSource, /CalcGrid/)
@@ -702,7 +702,7 @@ test('Impress selections preserve exact UTF-16 ranges through the runtime locato
   assert.match(threadSource, /clipboard\.setContents\(snapshot, null\)/)
   assert.match(
     threadSource,
-    /ScholarSeedOfficeSelection\.describeImpress\(xModel, controller, impressShape, impressTransferableSupplier\(\),/
+    /ScholarSeedOfficeSelection\.describeImpress\(\s*xModel,\s*controller,\s*impressShape,\s*impressTransferableSupplier\(\),/
   )
   assert.match(
     runtimeSource,
@@ -724,7 +724,7 @@ test('Impress pointer release commits the final native text selection', () => {
   assert.match(threadSource, /const SELECTION_COMMIT_COMMAND = 'selection_commit'/)
   assert.match(
     threadSource,
-    /case SELECTION_COMMIT_COMMAND: cancelSelectionReport\(\); reportSelection\(\); break/
+    /case SELECTION_COMMIT_COMMAND:\s*cancelSelectionReport\(\);?\s*reportSelection\(\);?\s*break/
   )
 })
 
@@ -773,7 +773,7 @@ test('Writer and Calc pointer drags keep the action menu hidden until release', 
   assert.match(threadSource, /const SELECTION_STEP_COUNT = 1/)
   assert.match(
     threadSource,
-    /function prepareWriterAutoscroll\(message\)[\s\S]*selectionDragging && documentKind === 'writer' && xModel[\s\S]*readonlyWriterSelectionCursor\(controller, Math\.sign\(vertical \|\| horizontal\)\)[\s\S]*pendingWriterAutoscroll = \{ requestId: message\.requestId, cursor, horizontal, vertical \}[\s\S]*SELECTION_AUTOSCROLL_READY_COMMAND/
+    /function prepareWriterAutoscroll\(message\)[\s\S]*selectionDragging && documentKind === 'writer' && xModel[\s\S]*readonlyWriterSelectionCursor\(\s*controller,\s*Math\.sign\(vertical \|\| horizontal\)\s*\)[\s\S]*pendingWriterAutoscroll = \{ requestId: message\.requestId, cursor, horizontal, vertical \}[\s\S]*SELECTION_AUTOSCROLL_READY_COMMAND/
   )
   assert.match(
     threadSource,
@@ -983,7 +983,10 @@ test('Writer replacement respects runtime readonly downgrade and native module p
   assert.match(hostSource, /!session\.capabilities\.can_edit/)
   assert.match(threadSource, /!replacementAllowed/)
   assert.match(threadSource, /replacementAllowed = policy\.editable && documentKind === 'writer'/)
-  assert.match(threadSource, /function closeDocument\(\) \{\s*replacementAllowed = false/)
+  assert.match(
+    threadSource,
+    /function closeDocument\(\) \{\s*cancelSelectionReveal\(\)\s*replacementAllowed = false/
+  )
 })
 
 test('Office history compares immutable versions through one toggled snapshot', () => {

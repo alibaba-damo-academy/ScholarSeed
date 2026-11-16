@@ -12,8 +12,6 @@ const CONTRACT_FILES = Object.freeze([
   'runtime/powershell.test.cjs',
   'runtime/texlive.test.cjs',
   'runtime/components.test.cjs',
-  'scripts/cd/__tests__/browser.test.cjs',
-  'scripts/cd/__tests__/execution.test.cjs',
   'scripts/cd/__tests__/closure.test.cjs',
   'scripts/shared/__tests__/python.test.cjs',
   'scripts/cd/__tests__/toolchain.test.cjs',

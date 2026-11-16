@@ -1,7 +1,54 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { currentRuntimeReconfiguration, getSharedRuntimeReconfiguration, getRuntimeReconfiguration } from './api.ts'
-import { RECONFIGURATION_RECOVERY, reconfigurationRecovery } from '../../reconfiguration.ts'
+import {
+  currentRuntimeReconfiguration,
+  getSharedRuntimeReconfiguration,
+  getRuntimeReconfiguration,
+} from './api.ts'
+import {
+  RECONFIGURATION_RECOVERY,
+  reconfigurationRecovery,
+  ReconfigurationQueryError,
+  reconfigurationRetryDelay,
+  RECONFIGURATION_MAX_FAILURES,
+  RECONFIGURATION_POLL_MS,
+  isReconfigurationState,
+  readReconfigurationFailureState,
+} from '../../reconfiguration.ts'
+
+test('operation validation accepts progress states while turn rejection accepts only failure states', () => {
+  for (const state of ['rejected', 'restart_required', 'unsupported']) {
+    assert.equal(isReconfigurationState(state), true)
+    assert.equal(readReconfigurationFailureState(state), state)
+  }
+  for (const state of ['accepted', 'applied']) {
+    assert.equal(isReconfigurationState(state), true)
+    assert.equal(readReconfigurationFailureState(state), undefined)
+  }
+  for (const state of [undefined, null, 'unknown', ['rejected']]) {
+    assert.equal(isReconfigurationState(state), false)
+    assert.equal(readReconfigurationFailureState(state), undefined)
+  }
+})
+
+test('status observation retries transient failures with a finite exponential backoff', () => {
+  assert.equal(reconfigurationRetryDelay(new Error('network'), 1), RECONFIGURATION_POLL_MS)
+  assert.equal(reconfigurationRetryDelay(new Error('network'), 2), RECONFIGURATION_POLL_MS * 2)
+  assert.equal(
+    reconfigurationRetryDelay(new Error('network'), RECONFIGURATION_MAX_FAILURES),
+    undefined
+  )
+  for (const status of [401, 403, 404, 422]) {
+    assert.equal(reconfigurationRetryDelay(new ReconfigurationQueryError(status), 1), undefined)
+  }
+  for (const status of [408, 429, 500, 503]) {
+    assert.equal(
+      reconfigurationRetryDelay(new ReconfigurationQueryError(status), 1),
+      RECONFIGURATION_POLL_MS
+    )
+  }
+  assert.equal(reconfigurationRetryDelay(new ReconfigurationQueryError(), 1), undefined)
+})
 
 test('shared host recovery waits across sessions and unknown reads without treating them as retry failures', () => {
   assert.equal(reconfigurationRecovery('accepted', false), RECONFIGURATION_RECOVERY.wait)
@@ -20,28 +67,56 @@ test('runtime observation only reads and rejects mismatched or unknown operation
   const requestId = '12345678-1234-1234-1234-123456789abc'
   let status = 503
   let payload = {
-    session_id: sessionId, request_id: requestId, model_id: 'target', state: 'applied', error: '',
+    session_id: sessionId,
+    request_id: requestId,
+    model_id: 'target',
+    state: 'applied',
+    error: '',
   }
   const methods: string[] = []
-  Object.defineProperty(globalThis, 'window', { configurable: true, value: {
-    setTimeout, clearTimeout, scholarseed: { getApiBase: () => '' },
-  } })
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      setTimeout,
+      clearTimeout,
+      scholarseed: { getApiBase: () => '' },
+    },
+  })
   globalThis.fetch = async (_url, init) => {
     methods.push(init?.method ?? 'GET')
     return new Response(status === 204 ? null : JSON.stringify(payload), { status })
   }
   try {
-    await assert.rejects(currentRuntimeReconfiguration(sessionId), /runtime_reconfiguration_unknown/)
+    await assert.rejects(
+      currentRuntimeReconfiguration(sessionId),
+      /runtime_reconfiguration_unknown/
+    )
     status = 200
     assert.equal((await currentRuntimeReconfiguration(sessionId))?.state, 'applied')
     assert.equal((await getRuntimeReconfiguration(sessionId, requestId)).request_id, requestId)
     await assert.rejects(getRuntimeReconfiguration('c'.repeat(32), requestId))
-    await assert.rejects(getRuntimeReconfiguration(sessionId, '87654321-1234-1234-1234-123456789abc'))
+    await assert.rejects(
+      getRuntimeReconfiguration(sessionId, '87654321-1234-1234-1234-123456789abc')
+    )
     payload = { ...payload, state: 'unknown' }
-    await assert.rejects(currentRuntimeReconfiguration(sessionId))
+    await assert.rejects(
+      currentRuntimeReconfiguration(sessionId),
+      (error) => error instanceof ReconfigurationQueryError && !error.retryable
+    )
+    status = 403
+    await assert.rejects(
+      getRuntimeReconfiguration(sessionId, requestId),
+      (error) =>
+        error instanceof ReconfigurationQueryError && error.status === status && !error.retryable
+    )
     status = 204
     assert.equal(await currentRuntimeReconfiguration(sessionId), undefined)
-    assert.ok(methods.every(method => method === 'GET'))
+    assert.ok(methods.every((method) => method === 'GET'))
+    globalThis.fetch = async () => new Response('invalid JSON')
+    await assert.rejects(
+      currentRuntimeReconfiguration(sessionId),
+      (error) => error instanceof ReconfigurationQueryError && !error.retryable
+    )
   } finally {
     globalThis.fetch = originalFetch
     if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
@@ -52,17 +127,23 @@ test('runtime observation only reads and rejects mismatched or unknown operation
 test('shared recovery deadline covers a stalled fetch and response body', async () => {
   const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
   const originalFetch = globalThis.fetch
-  Object.defineProperty(globalThis, 'window', { configurable: true, value: {
-    setTimeout, clearTimeout, scholarseed: { getApiBase: () => '' },
-  } })
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      setTimeout,
+      clearTimeout,
+      scholarseed: { getApiBase: () => '' },
+    },
+  })
   try {
     const fetchController = new AbortController()
-    globalThis.fetch = async (_url, init) => new Promise((_resolve, reject) => {
-      const signal = init?.signal
-      assert.ok(signal)
-      assert.equal(signal, fetchController.signal)
-      signal.addEventListener('abort', () => reject(signal.reason), { once: true })
-    })
+    globalThis.fetch = async (_url, init) =>
+      new Promise((_resolve, reject) => {
+        const signal = init?.signal
+        assert.ok(signal)
+        assert.equal(signal, fetchController.signal)
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+      })
     const stalledFetch = getSharedRuntimeReconfiguration(fetchController.signal)
     fetchController.abort()
     await assert.rejects(stalledFetch)
@@ -70,16 +151,22 @@ test('shared recovery deadline covers a stalled fetch and response body', async 
     const bodyController = new AbortController()
     let requests = 0
     let bodyReady: () => void = () => undefined
-    const ready = new Promise<void>(resolve => { bodyReady = resolve })
+    const ready = new Promise<void>((resolve) => {
+      bodyReady = resolve
+    })
     globalThis.fetch = async (_url, init) => {
       const signal = init?.signal
       assert.ok(signal)
       assert.equal(signal, bodyController.signal)
       requests += 1
-      return new Response(new ReadableStream({ start(controller) {
-        signal.addEventListener('abort', () => controller.error(signal.reason), { once: true })
-        bodyReady()
-      } }))
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            signal.addEventListener('abort', () => controller.error(signal.reason), { once: true })
+            bodyReady()
+          },
+        })
+      )
     }
     const stalledBody = getSharedRuntimeReconfiguration(bodyController.signal)
     await ready

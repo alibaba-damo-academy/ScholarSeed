@@ -56,7 +56,10 @@ async function openCard(skill, id) {
       submit(action,values) { window.fixture.calls.push({action,values}); state.data={...state.data,...values}; listener(state) },
       async request(action,values) {
         window.fixture.calls.push({action,values});
+        if (window.fixture.rejectNext) { window.fixture.rejectNext=false; throw new Error('preview_navigation_failed'); }
+        if (window.fixture.delayNext) { window.fixture.delayNext=false; await new Promise(resolve => { window.fixture.release=resolve }); }
         const response=execution.execute(action,values);
+        window.fixture.response=response.data;
         if(response.state==='failed') throw new Error(response.data.error);
         return response.data.result;
       }
@@ -71,14 +74,79 @@ async function openCard(skill, id) {
   await page.goto('http://research.test/')
   const frame = page.frameLocator('iframe')
   const context = page.frames().find(value => value.url().endsWith('/frame'))
-  return { page, frame, context, errors }
+  return { page, frame, context, errors, component, scenario }
 }
 
 for (const skill of skills) {
+  test(`${skill}: result titles navigate by bound paper identity and keep retry in the card`, async (testContext) => {
+    const { page, frame, context, errors } = await openCard(skill, 'details')
+    try {
+      const paper = frame.getByRole('link', { name: '样例 1：长上下文方法对比', exact: true }).first()
+      await paper.click()
+      await expect.poll(() => context.evaluate(() => window.fixture.calls)).toEqual([
+        { action: 'open-source', values: { refId: 'sample-0' } },
+      ])
+      await context.evaluate(() => { window.fixture.rejectNext = true })
+      await paper.click()
+      await expect(frame.getByRole('alert')).toContainText('打开失败，请重试。')
+      await expect(paper).toBeEnabled()
+      await frame.getByRole('alert').getByRole('button', { name: '关闭通知', exact: true }).click()
+      await expect(frame.getByRole('alert')).toHaveCount(0)
+      await paper.click()
+      await expect(frame.getByRole('alert')).toHaveCount(0)
+      await context.evaluate(() => {
+        const request = window.plugin.request
+        window.plugin.request = (action, values) => {
+          window.plugin.request = request
+          window.fixture.calls.push({ action, values })
+          throw new Error('preview_navigation_thrown')
+        }
+      })
+      await paper.click()
+      await expect(frame.getByRole('alert')).toContainText('打开失败，请重试。')
+      await frame.getByRole('alert').getByRole('button', { name: '关闭通知', exact: true }).click()
+      await paper.click()
+      await expect(frame.getByRole('alert')).toHaveCount(0)
+      assert.deepEqual(await context.evaluate(() => window.fixture.calls), [
+        { action: 'open-source', values: { refId: 'sample-0' } },
+        { action: 'open-source', values: { refId: 'sample-0' } },
+        { action: 'open-source', values: { refId: 'sample-0' } },
+        { action: 'open-source', values: { refId: 'sample-0' } },
+        { action: 'open-source', values: { refId: 'sample-0' } },
+      ])
+      assert.deepEqual(errors, [])
+    } finally {
+      if (errors.length) testContext.diagnostic(JSON.stringify({ errors }))
+      await page.close()
+    }
+  })
+
+  test(`${skill}: compact result receipt navigates by bound card identity and keeps retry`, async () => {
+    const { page, frame, context, errors } = await openCard(skill, 'results')
+    try {
+      const receipt = frame.getByTestId('artifact-open')
+      await expect(frame.getByTestId('receipt-toggle')).toHaveCount(0)
+      await expect(frame.getByTestId('receipt-preview')).toHaveCount(0)
+      await expect(frame.getByRole('button', { name: /打开文献：/ })).toHaveCount(0)
+      await context.evaluate(() => { window.fixture.rejectNext = true })
+      await receipt.click()
+      await expect(frame.getByRole('alert')).toContainText('打开失败，请重试。')
+      await expect(receipt).toBeEnabled()
+      await receipt.click()
+      await expect(frame.getByRole('alert')).toHaveCount(0)
+      assert.deepEqual(await context.evaluate(() => window.fixture.calls), [
+        { action: 'open-results', values: {} },
+        { action: 'open-results', values: {} },
+      ])
+      assert.deepEqual(errors, [])
+    } finally { await page.close() }
+  })
+
   test(`${skill}: independent result card sends its original detail operation`, async () => {
     const { page, frame, context, errors } = await openCard(skill, 'results')
     try {
-      await frame.getByRole('button', { name: '查看全部结果', exact: true }).click()
+      await expect(frame.getByTestId('receipt-toggle')).toHaveCount(0)
+      await frame.getByTestId('artifact-open').click()
       assert.deepEqual(await context.evaluate(() => window.fixture.calls), [{ action: 'open-results', values: {} }])
       assert.deepEqual(errors, [])
     } finally { await page.close() }
@@ -93,37 +161,52 @@ for (const skill of skills) {
   })
 }
 
-test('references retain their searchable list and nested destination menu in isolation', async () => {
-  const { page, frame, context, errors } = await openCard('research-idea-partner', 'references')
+test('result navigation waits for its host reply and retries the same detail request after failure', async () => {
+  const { page, frame, context, errors } = await openCard('agentic-search', 'results')
   try {
-    await expect(frame.getByText('样例 1：长上下文方法对比', { exact: true })).toBeVisible()
-    await frame.getByRole('searchbox', { name: '搜索文献标题' }).fill('样例 1：')
-    await expect(frame.getByText('样例 2：长上下文方法对比', { exact: true })).toHaveCount(0)
-    await frame.getByRole('button', { name: '添加到文献库：样例 1：长上下文方法对比', exact: true }).click()
-    await frame.getByRole('menuitem', { name: '加入我的分类', exact: true }).hover()
-    await frame.getByRole('menuitem', { name: '新建分类…', exact: true }).click()
-    await expect(frame.getByRole('dialog')).toBeVisible()
-    await frame.getByRole('textbox', { name: '分类名称' }).fill('隔离预览分类')
-    await frame.getByRole('button', { name: '创建并添加', exact: true }).click()
-    await expect(frame.getByRole('dialog')).toHaveCount(0)
-    await expect(frame.getByText('已添加', { exact: true })).toBeVisible()
-    const calls = await context.evaluate(() => window.fixture.calls)
-    assert.ok(calls.some(call => call.action === 'create-collection' && call.values.name === '隔离预览分类'))
-    assert.ok(calls.some(call => call.action === 'add-reference' && call.values.refId === 'sample-0'))
+    const details = frame.getByTestId('artifact-open')
+    await context.evaluate(() => { window.fixture.rejectNext = true })
+    await details.click()
+    await expect(frame.getByRole('alert')).toContainText('打开失败，请重试。')
+    await context.evaluate(() => { window.fixture.delayNext = true })
+    await details.click()
+    await expect(details).toBeDisabled()
+    await details.press('Enter')
+    assert.deepEqual(await context.evaluate(() => window.fixture.calls), [
+      { action: 'open-results', values: {} }, { action: 'open-results', values: {} },
+    ])
+    await expect(details).toHaveAttribute('aria-busy', 'true')
+    await expect(frame.getByRole('button', { name: /打开文献：/ })).toHaveCount(0)
+    await context.evaluate(() => window.fixture.release())
+    await expect(details).toBeEnabled()
+    await expect(frame.getByRole('alert')).toHaveCount(0)
+    assert.deepEqual(await context.evaluate(() => window.fixture.calls), [
+      { action: 'open-results', values: {} }, { action: 'open-results', values: {} },
+    ])
+    assert.deepEqual(errors, [])
+  } finally { await page.close() }
+})
+
+test('related citations reuse Results and hand the list to native navigation', async () => {
+  const { page, frame, context, errors } = await openCard('research-idea-partner', 'results')
+  try {
+    await context.evaluate(() => {
+      window.fixture.state.data.origin = 'research-idea-citations'
+      window.fixture.publish()
+    })
+    await expect(frame.getByTestId('artifact-open')).toContainText('实际引用文献')
+    await expect(frame.getByRole('searchbox')).toHaveCount(0)
+    await expect(frame.getByRole('menuitem')).toHaveCount(0)
+    await frame.getByTestId('artifact-open').click()
+    assert.deepEqual(await context.evaluate(() => window.fixture.calls), [{ action: 'open-results', values: {} }])
     assert.deepEqual(errors, [])
   } finally { await page.close() }
 })
 
 for (const [skill, id] of [
-  ['precise-literature-search', 'question'],
-  ['precise-literature-search', 'paper-selection'],
   ['precise-literature-search', 'results'],
   ['precise-literature-search', 'details'],
-  ['precise-literature-search', 'downloads'],
-  ['precise-literature-search', 'delivery'],
-  ['research-idea-partner', 'references'],
-  ['literature-review', 'authorization'],
-  ['literature-review', 'outline'],
+  ['research-idea-partner', 'results'],
   ['literature-review', 'review'],
 ]) {
   test(`${skill}/${id}: official composition registers copy text without clipboard access`, async () => {
@@ -148,21 +231,21 @@ for (const [skill, id] of [
   })
 }
 
-test('composed outline keeps review text and current choices across saved revisions and terminal state', async () => {
-  const {page, context, errors} = await openCard('literature-review', 'outline')
+test('review iframe retains content but leaves outline questions and resolution to the native host', async () => {
+  const { page, frame, context, errors } = await openCard('literature-review', 'review')
   try {
-    await expect.poll(() => context.evaluate(() => window.fixture.copies.at(-1)?.content.text ?? '')).toContain('[ ] 按当前方案开始撰写')
+    await expect.poll(() => context.evaluate(() => window.fixture.copies.at(-1)?.content.text ?? '')).toContain('问题与评估设置')
+    await expect(frame.getByRole('radio')).toHaveCount(0)
+    await expect(frame.getByRole('checkbox')).toHaveCount(0)
     await context.evaluate(() => {
       window.fixture.state.revision = 1
-      window.fixture.state.draft = {answers:['按当前方案开始撰写']}
+      window.fixture.state.draft = { answers: ['按当前方案开始撰写'] }
       window.fixture.state.status = 'resolved'
       window.fixture.publish()
     })
-    await expect.poll(() => context.evaluate(() => window.fixture.copies.at(-1)?.content.text ?? '')).toContain('[x] 按当前方案开始撰写')
-    const final = await context.evaluate(() => window.fixture.copies.at(-1))
-    assert.match(final.content.text, /问题与评估设置/)
-    assert.ok(final.content.text.indexOf('问题与评估设置') < final.content.text.indexOf('[x]'))
-    assert.equal(final.revision, 1)
+    await expect.poll(() => context.evaluate(() => window.fixture.copies.at(-1)?.revision)).toBe(1)
+    assert.deepEqual(await context.evaluate(() => window.fixture.calls), [])
+    assert.doesNotMatch(await context.evaluate(() => window.fixture.copies.at(-1).content.text), /\[x\] 按当前方案开始撰写/)
     assert.deepEqual(errors, [])
   } finally { await page.close() }
 })
@@ -189,19 +272,19 @@ test('copy registration failure is visible and recovers on the next saved state'
 })
 
 test('queued registrations keep the newest saved revision after an older request settles', async () => {
-  const {page, context, errors} = await openCard('literature-review', 'outline')
+  const {page, context, errors} = await openCard('literature-review', 'review')
   try {
     await expect.poll(() => context.evaluate(() => window.fixture.copies.length)).toBeGreaterThan(0)
     await context.evaluate(() => {
       window.fixture.deferCopy = true
       window.fixture.state.revision = 1
-      window.fixture.state.draft = {answers:['按当前方案开始撰写']}
+      window.fixture.state.data = { ...window.fixture.state.data, title: '较早的大纲版本' }
       window.fixture.publish()
     })
     await expect.poll(() => context.evaluate(() => typeof window.fixture.settleCopy)).toBe('function')
     await context.evaluate(() => {
       window.fixture.state.revision = 2
-      window.fixture.state.draft = {answers:['修改大纲']}
+      window.fixture.state.data = { ...window.fixture.state.data, title: '最新的大纲版本' }
       window.fixture.publish()
     })
     await expect(context.locator('input')).toHaveCount(0)
@@ -209,8 +292,8 @@ test('queued registrations keep the newest saved revision after an older request
     await expect.poll(() => context.evaluate(() => window.fixture.copies.at(-1).revision)).toBe(2)
     const copied = await context.evaluate(() => window.fixture.copies.at(-1).content.text)
     assert.match(copied, /问题与评估设置/)
-    assert.match(copied, /\[x\] 修改大纲/)
-    assert.match(copied, /\[ \] 按当前方案开始撰写/)
+    assert.match(copied, /最新的大纲版本/)
+    assert.doesNotMatch(copied, /较早的大纲版本/)
     assert.deepEqual(errors, [])
   } finally { await page.close() }
 })
@@ -229,34 +312,80 @@ test('a fresh card snapshot retries failed registration even when text and revis
   } finally { await page.close() }
 })
 
-test('delivery loads its real component state through sample request responses', async () => {
-  const { page, frame, context, errors } = await openCard('precise-literature-search', 'delivery')
+test('retired download and delivery cards are absent from the published skill and UI', async () => {
+  const plugin = JSON.parse(await fs.readFile(path.resolve(__dirname,
+    '../../skills/community/precise-literature-search/.scholarseed-plugin.json'), 'utf8'))
+  for (const id of ['downloads', 'delivery']) {
+    assert.ok(!plugin.components.some(component => component.id === id), id)
+  }
+  const { page, context, errors } = await openCard('precise-literature-search', 'results')
   try {
-    await expect(frame.getByRole('button', { name: '选择保存位置', exact: true })).toBeVisible()
-    await frame.getByRole('button', { name: '选择保存位置', exact: true }).click()
-    await expect(frame.getByRole('dialog')).toBeVisible()
-    await frame.getByRole('button', { name: '稍后保存', exact: true }).click()
-    await expect(frame.getByRole('dialog')).toHaveCount(0)
-    await expect(frame.getByRole('button', { name: '选择保存位置', exact: true })).toBeVisible()
-    assert.ok((await context.evaluate(() => window.fixture.calls)).some(call => call.action === 'delivery'))
+    const names = await context.evaluate(() => Object.keys(window.scholarseedUI.Conversation))
+    assert.ok(!names.includes('Downloads'))
+    assert.ok(!names.includes('Delivery'))
     assert.deepEqual(errors, [])
   } finally { await page.close() }
 })
 
-test('review composition keeps outline choices, confirmed state and artifact operations', async () => {
-  const outline = await openCard('literature-review', 'outline')
+test('review receipt declares host navigation and opens the same preview identity', async () => {
+  const { page, frame, context, errors, component, scenario } = await openCard('literature-review', 'review')
   try {
-    await expect(outline.frame.getByText('问题与评估设置', { exact: true }).first()).toBeVisible()
-    const choice = outline.frame.getByRole('radio', { name: /按当前方案开始撰写/ })
-    await choice.click()
-    assert.deepEqual(await outline.context.evaluate(() => window.fixture.calls), [{ action: 'choose', values: { answers: ['按当前方案开始撰写'] } }])
-    await expect(choice).toBeChecked()
-    await outline.context.evaluate(() => { window.fixture.state.status = 'resolved'; window.fixture.publish() })
-    await expect(choice).toBeDisabled()
+    const receipt = frame.getByTestId('artifact-open')
+    await expect(receipt).toBeVisible()
+    assert.deepEqual(await context.evaluate(() => window.fixture.calls), [])
+    assert.ok(component.actions.some(action => action.id === 'open-results' && action.capability === 'navigation.open'))
+    assert.equal(scenario.responses['open-results']?.state, 'resolved')
+    await receipt.click()
+    await expect.poll(() => context.evaluate(() => window.fixture.calls)).toEqual([{ action: 'open-results', values: {} }])
+    assert.deepEqual(await context.evaluate(() => window.fixture.response.view), {
+      title: scenario.data.title,
+      body: scenario.responses['open-results'].data.view.body,
+      identifier: scenario.data.workspace,
+    })
+    await expect(frame.getByRole('alert')).toHaveCount(0)
+    assert.deepEqual(errors, [])
+  } finally { await page.close() }
+})
+
+test('review composition keeps outline display and artifact operations without question controls', async () => {
+  const outline = await openCard('literature-review', 'review')
+  try {
+    const receipt = outline.frame.locator('[data-artifact-receipt]')
+    await expect(receipt).toContainText('综述核对')
+    await expect(receipt.locator('.lucide-book-open-check')).toBeVisible()
+    await expect(receipt.getByRole('button')).toHaveCount(2)
+    await expect(outline.frame.getByTestId('receipt-preview')).toHaveCount(0)
+    await expect(outline.frame.getByTestId('artifact-more-actions')).toHaveCount(0)
+    await receipt.getByRole('button', { name: '打开', exact: true }).press('Enter')
+    assert.deepEqual(await outline.context.evaluate(() => window.fixture.calls), [{ action: 'open-results', values: {} }])
+    assert.equal(outline.component.actions.find(action => action.id === 'open-results')?.capability, 'navigation.open')
+    await expect(outline.frame.getByRole('alert')).toHaveCount(0)
+    const mountDetails = () => {
+      const { React, Conversation, createLiteraturePorts, mount } = window.scholarseedUI
+      mount(state => React.createElement(Conversation.Review, {
+        content: state.data,
+        detail: true,
+        ports: createLiteraturePorts((action, values) => window.plugin.request(action, values), state.data.context ?? {}),
+      }))
+    }
+    await outline.context.evaluate(mountDetails)
+    await expect(outline.frame.getByText('1. 问题与评估设置', { exact: true }).first()).toBeVisible()
+    await outline.frame.getByRole('button', { name: '引用依据说明' }).first().focus()
+    await expect(outline.frame.getByRole('tooltip')).toContainText('不等于已阅读全文')
+    await expect(outline.frame.getByRole('radio')).toHaveCount(0)
+    assert.deepEqual(await outline.context.evaluate(() => window.fixture.calls), [{ action: 'open-results', values: {} }])
     assert.deepEqual(outline.errors, [])
   } finally { await outline.page.close() }
   const review = await openCard('literature-review', 'review')
   try {
+    await review.context.evaluate(() => {
+      const { React, Conversation, createLiteraturePorts, mount } = window.scholarseedUI
+      mount(state => React.createElement(Conversation.Review, {
+        content: state.data,
+        detail: true,
+        ports: createLiteraturePorts((action, values) => window.plugin.request(action, values), state.data.context ?? {}),
+      }))
+    })
     await review.frame.getByRole('button', { name: '打开正文', exact: true }).click()
     assert.ok((await review.context.evaluate(() => window.fixture.calls)).some(call => call.action === 'open-artifact' && call.values.artifactId === 'sample-body'))
     assert.deepEqual(review.errors, [])

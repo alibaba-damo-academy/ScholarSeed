@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict'
-import test from 'node:test'
+import test, { after } from 'node:test'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { chromium, expect, type Browser } from '@playwright/test'
 import react from '@vitejs/plugin-react'
-import { createServer } from 'vite'
+
+import { renderServers } from '../../../test-helpers/render.ts'
+
+const servers = renderServers({ after })
 
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const FIXTURE_URL = '/components/feedback.render.fixture.html'
@@ -34,7 +37,8 @@ const FEEDBACK_LANGUAGES = [
 ] as const
 
 test('feedback recording entry delegates without submitting and is absent when unavailable', async () => {
-  const server = await createServer({
+  const server = await servers.create({
+    cacheKey: 'feedback',
     configFile: false,
     root: ROOT_DIR,
     plugins: [react()],
@@ -92,7 +96,8 @@ test('feedback recording entry delegates without submitting and is absent when u
 })
 
 test('failure recovery opens feedback without workspace state and reports partial diagnostics', async () => {
-  const server = await createServer({
+  const server = await servers.create({
+    cacheKey: 'feedback',
     configFile: false,
     root: ROOT_DIR,
     plugins: [react()],
@@ -130,7 +135,8 @@ test('failure recovery opens feedback without workspace state and reports partia
 })
 
 test('feedback stays above an open reader floating window', async () => {
-  const server = await createServer({
+  const server = await servers.create({
+    cacheKey: 'feedback',
     configFile: false,
     root: ROOT_DIR,
     plugins: [react()],
@@ -173,8 +179,80 @@ test('feedback stays above an open reader floating window', async () => {
   }
 })
 
+test('feedback dims selection explanations, blocks background hits and preserves their state', async () => {
+  const server = await servers.create({
+    cacheKey: 'feedback',
+    configFile: false,
+    root: ROOT_DIR,
+    plugins: [react()],
+    server: { host: '127.0.0.1', port: 0 },
+  })
+  let browser: Browser | undefined
+  try {
+    await server.listen()
+    const url = server.resolvedUrls?.local[0]
+    assert.ok(url)
+    browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
+    const page = await browser.newPage()
+    for (const sample of [
+      { width: 1280, height: 800, colorScheme: 'light' },
+      { width: 1040, height: 660, colorScheme: 'dark' },
+    ] as const) {
+      await page.setViewportSize(sample)
+      await page.emulateMedia({ colorScheme: sample.colorScheme })
+      await page.goto(new URL(FIXTURE_URL, url).toString())
+      await page.getByRole('button', { name: 'Open selection explanation' }).click()
+      const suggestion = page.getByTestId('resource-ai-suggestion')
+      const instruction = suggestion.getByRole('textbox')
+      await instruction.fill('Keep this explanation context')
+      await page.getByRole('button', { name: 'Open feedback', exact: true }).click()
+      const feedback = page.getByTestId('feedback-dialog')
+      await expect(feedback).toBeVisible()
+      const layers = await page.evaluate(() => {
+        const suggestion = document.querySelector<HTMLElement>('[data-resource-ai-suggestion]')!
+        const feedback = document.querySelector<HTMLElement>('[data-testid="feedback-dialog"]')!
+        const scrim = document.querySelector<HTMLElement>('.feedback-scrim')!
+        const suggestionRect = suggestion.getBoundingClientRect()
+        const feedbackRect = feedback.getBoundingClientRect()
+        const left = Math.max(suggestionRect.left, feedbackRect.left)
+        const right = Math.min(suggestionRect.right, feedbackRect.right)
+        const top = Math.max(suggestionRect.top, feedbackRect.top)
+        const bottom = Math.min(suggestionRect.bottom, feedbackRect.bottom)
+        return {
+          suggestion: Number(getComputedStyle(suggestion).zIndex),
+          scrim: Number(getComputedStyle(scrim).zIndex),
+          feedback: Number(getComputedStyle(feedback).zIndex),
+          scrimColor: getComputedStyle(scrim).backgroundColor,
+          overlapHit: left < right && top < bottom && feedback.contains(
+            document.elementFromPoint((left + right) / 2, (top + bottom) / 2)
+          ),
+          backgroundHit: scrim.contains(document.elementFromPoint(
+            suggestionRect.left + 1, suggestionRect.top + 1
+          )),
+        }
+      })
+      assert.ok(layers.suggestion < layers.scrim)
+      assert.ok(layers.scrim < layers.feedback)
+      assert.notEqual(layers.scrimColor, 'rgba(0, 0, 0, 0)')
+      assert.equal(layers.overlapHit, true)
+      assert.equal(layers.backgroundHit, true)
+      await page.getByTestId('feedback-description').fill('Feedback is unobstructed')
+      await page.keyboard.press('Tab')
+      assert.equal(await feedback.evaluate((node) => node.contains(document.activeElement)), true)
+      await page.keyboard.press('Escape')
+      await expect(feedback).toHaveCount(0)
+      await expect(instruction).toHaveValue('Keep this explanation context')
+      await instruction.fill('Explanation remains editable')
+    }
+  } finally {
+    await browser?.close()
+    await server.close()
+  }
+})
+
 test('feedback receipt copies its label and allows partial mouse selection', async () => {
-  const server = await createServer({
+  const server = await servers.create({
+    cacheKey: 'feedback',
     configFile: false,
     root: ROOT_DIR,
     plugins: [react()],
@@ -223,7 +301,8 @@ test('feedback receipt copies its label and allows partial mouse selection', asy
 })
 
 test('queued resource toasts redraw without replacement, duplicate delivery, or extended expiry', async () => {
-  const server = await createServer({
+  const server = await servers.create({
+    cacheKey: 'feedback',
     configFile: false,
     root: ROOT_DIR,
     plugins: [react()],
@@ -271,7 +350,8 @@ test('queued resource toasts redraw without replacement, duplicate delivery, or 
 })
 
 test('feedback previews preserve the draft, restore focus and release image URLs', async () => {
-  const server = await createServer({
+  const server = await servers.create({
+    cacheKey: 'feedback',
     configFile: false,
     root: ROOT_DIR,
     plugins: [react()],

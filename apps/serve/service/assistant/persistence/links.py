@@ -116,12 +116,19 @@ class ArtifactLinkCatalog:
                 for key in ("link_id", "fingerprint", "source_sha256")
             ):
                 raise ArtifactLinkError(LINK_INVALID)
-            if type(row["projected"]) is not int or row["projected"] not in (0, 1):
-                raise ArtifactLinkError(LINK_INVALID)
+            projected = row["projected"]
             if (
-                type(row["created_at"]) not in (int, float)
-                or not math.isfinite(row["created_at"])
-                or row["created_at"] < 0
+                not isinstance(projected, int)
+                or isinstance(projected, bool)
+                or projected not in (0, 1)
+            ):
+                raise ArtifactLinkError(LINK_INVALID)
+            createdAt = row["created_at"]
+            if (
+                not isinstance(createdAt, (int, float))
+                or isinstance(createdAt, bool)
+                or not math.isfinite(createdAt)
+                or createdAt < 0
             ):
                 raise ArtifactLinkError(LINK_INVALID)
             targets = json.loads(row["target_ids"])

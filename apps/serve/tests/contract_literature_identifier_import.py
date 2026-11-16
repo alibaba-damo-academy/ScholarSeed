@@ -90,6 +90,7 @@ class IdentifierImportTests(unittest.TestCase):
         app = FastAPI()
         register_global_routes(app)
         self.client = TestClient(app)
+        self.addCleanup(self.client.close)
 
     def post(self, payload: dict[str, str]):
         return self.client.post(IDENTIFIER_ROUTE, json=payload)

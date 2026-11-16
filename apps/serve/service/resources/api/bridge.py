@@ -6,6 +6,7 @@ import base64
 import json
 import uuid
 from collections.abc import Callable
+from pathlib import PurePosixPath, PureWindowsPath
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, FastAPI, Request
@@ -14,7 +15,6 @@ from pydantic import ValidationError
 from starlette.status import (
     HTTP_400_BAD_REQUEST,
     HTTP_403_FORBIDDEN,
-    HTTP_413_CONTENT_TOO_LARGE,
 )
 
 from service.chat.api.bridge import bridge_caller, session_bridge_admission
@@ -26,26 +26,34 @@ from service.platform.bridge import (
     RESOURCE_READ_ENCODING_TEXT,
     RESOURCE_ROUTE_PREFIX,
     RESOURCE_SCOPE,
+    RESOURCE_TEXT_MAX_CHARS,
     RESOURCE_UNAVAILABLE_WARNING,
+    ResourceExternalRead,
     ResourceList,
     ResourceListEntry,
     ResourceListResult,
     ResourceListWarning,
     ResourceRead,
     ResourceReadResult,
+    ResourceTextRead,
 )
 from service.platform.content import ContentPort
 from service.platform.context import (
+    AssistantContextBudget,
+    AssistantContextProvider,
+    AssistantContextResolveRequest,
     AssistantTurnSnapshot,
     ContextOrigin,
+    ContextRef,
     ContextRefKind,
     ContextResolutionState,
 )
 from service.platform.queries import RESOURCE_SOURCE_ROUTE
 from service.platform.vocabulary import (
-    BRIDGE_MAX_REQUEST_BYTES,
     BRIDGE_MAX_RESPONSE_BYTES,
 )
+from service.resources.service.access import ExternalReadDenied, read_external
+from service.resources.service.decisions import recovery_question, retry_requested
 
 RESOURCE_LISTED_EVENT = "resource.listed"
 RESOURCE_LIST_EVENT_KEY_PREFIX = "resource-list"
@@ -55,14 +63,13 @@ RESOURCE_PROJECT_REQUIRED = "resource_project_required"
 RESOURCE_OFFSET_OUT_OF_RANGE = "resource_offset_out_of_range"
 RESOURCE_CHANGED_DURING_READ = "resource_changed_during_read"
 RESOURCE_SOURCE_REVISION_CHANGED = "source_revision_changed"
+RESOURCE_ABSOLUTE_PATH_ERROR = (
+    "project_relative_path_required; use resource/read-external for absolute paths"
+)
 
 
 async def _request_body(request: Request) -> bytes:
-    raw = bytearray()
-    async for chunk in request.stream():
-        raw.extend(chunk)
-        if len(raw) > BRIDGE_MAX_REQUEST_BYTES:
-            raise OverflowError("bridge_request_too_large")
+    raw = await request.body()
     return bytes(raw)
 
 
@@ -105,6 +112,8 @@ def _read_resource(
     query: ResourceRead,
     expected_revision: str = "",
 ) -> ResourceReadResult:
+    if PurePosixPath(query.path).is_absolute() or PureWindowsPath(query.path).anchor:
+        raise ContentError(RESOURCE_ABSOLUTE_PATH_ERROR)
     normalized_path = query.path.replace("\\", "/").strip("/")
     for root in content.external_roots(project_id):
         if not root.available and (
@@ -151,8 +160,128 @@ def register_resource_bridge(
     *,
     activities: Activities,
     snapshot_by_id: Callable[[str, str], AssistantTurnSnapshot | None] | None = None,
+    context_provider: AssistantContextProvider | None = None,
+    user_message: Callable[[str, str], str] | None = None,
 ) -> APIRouter:
     router = APIRouter(dependencies=[Depends(session_bridge_admission(sessions, activities))])
+
+    @router.post(RESOURCE_ROUTE_PREFIX + "read-external")
+    async def read_external_resource(request: Request) -> JSONResponse:
+        live = bridge_caller(request, sessions)
+        if live is None or not live.ledger.active_turn_id:
+            return JSONResponse({"ok": False, "error": "bridge_access_denied"}, HTTP_403_FORBIDDEN)
+        project_id, turn_id = live.project_id, live.ledger.active_turn_id
+        try:
+            query = ResourceExternalRead.model_validate(json.loads(await _request_body(request)))
+        except (ValueError, ValidationError):
+            return JSONResponse(
+                {"ok": False, "error": "bridge_invalid_parameters"}, HTTP_400_BAD_REQUEST
+            )
+        try:
+            result = await read_external(
+                live,
+                query,
+                content,
+                activities,
+                lambda: _active_scope(sessions, live, project_id, turn_id),
+                user_message,
+            )
+        except ExternalReadDenied as error:
+            return JSONResponse({"ok": False, "error": str(error)}, HTTP_403_FORBIDDEN)
+        except (ContentError, OSError, ValueError) as error:
+            return JSONResponse({"ok": False, "error": str(error)}, HTTP_400_BAD_REQUEST)
+        response = JSONResponse(result.model_dump(mode="json"))
+        if len(response.body) > BRIDGE_MAX_RESPONSE_BYTES:
+            return JSONResponse(
+                {"ok": False, "error": "bridge_response_too_large; reduce limit"},
+                HTTP_400_BAD_REQUEST,
+            )
+        return response
+
+    @router.post(RESOURCE_ROUTE_PREFIX + "read-text")
+    async def read_text(request: Request) -> JSONResponse:
+        live = bridge_caller(request, sessions)
+        if live is None or not live.ledger.active_turn_id or not live.project_id:
+            return JSONResponse({"ok": False, "error": "bridge_access_denied"}, HTTP_403_FORBIDDEN)
+        project_id, turn_id = live.project_id, live.ledger.active_turn_id
+        generation = getattr(live, "interrupt_generation", None)
+        attachment = getattr(live, "attachment_generation", None)
+
+        def current() -> bool:
+            return (
+                _active_scope(sessions, live, project_id, turn_id)
+                and getattr(live, "interrupt_generation", None) == generation
+                and getattr(live, "attachment_generation", None) == attachment
+            )
+
+        try:
+            query = ResourceTextRead.model_validate(json.loads(await _request_body(request)))
+        except (ValueError, ValidationError):
+            return JSONResponse(
+                {"ok": False, "error": "bridge_invalid_parameters"}, HTTP_400_BAD_REQUEST
+            )
+        if context_provider is None:
+            return JSONResponse(
+                {"ok": False, "error": "resource_text_unavailable"}, HTTP_400_BAD_REQUEST
+            )
+        files: list[dict] = []
+        removed, failures = [], []
+        for path in query.paths:
+            while current():
+                resolution = await activities.to_thread(
+                    ActivityDomain.BRIDGE,
+                    context_provider.resolve,
+                    AssistantContextResolveRequest(
+                        requester_session_id=live.id,
+                        project_id=project_id,
+                        question="",
+                        ref=ContextRef(
+                            ref_id=path, kind=ContextRefKind.FILE, source_id=path, label=path
+                        ),
+                        budget=AssistantContextBudget(
+                            max_chars=RESOURCE_TEXT_MAX_CHARS // len(query.paths), max_items=1
+                        ),
+                    ),
+                )
+                if not current():
+                    break
+                if resolution.state in (
+                    ContextResolutionState.READY,
+                    ContextResolutionState.TRUNCATED,
+                ):
+                    files.extend(
+                        {
+                            "path": path,
+                            "text": item.text,
+                            "revision": item.source_revision,
+                            "truncated": item.truncated,
+                            "media_type": item.media_type,
+                        }
+                        for item in resolution.items
+                    )
+                    break
+                reason = resolution.issues[0].code if resolution.issues else resolution.state.value
+                question = recovery_question(path, reason)
+                with activities.continue_from(
+                    live.turn_activity, ActivityDomain.BRIDGE
+                ) as activity:
+                    decision = await live.interactions.request_product_input(
+                        question,
+                        turn_id=turn_id,
+                        item_id=question["id"],
+                        activity=activity,
+                    )
+                if not current():
+                    break
+                if not retry_requested(question, decision):
+                    removed.append(path)
+                    failures.append({"path": path, "reason": reason})
+                    break
+            if not current():
+                return JSONResponse(
+                    {"ok": False, "error": "bridge_access_denied"}, HTTP_403_FORBIDDEN
+                )
+        return JSONResponse({"ok": True, "files": files, "removed": removed, "failures": failures})
 
     @router.post(RESOURCE_ROUTE_PREFIX + "list")
     async def list_resources(request: Request) -> JSONResponse:
@@ -168,8 +297,6 @@ def register_resource_bridge(
         try:
             raw = await _request_body(request)
             query = ResourceList.model_validate(json.loads(raw))
-        except OverflowError as error:
-            return JSONResponse({"ok": False, "error": str(error)}, HTTP_413_CONTENT_TOO_LARGE)
         except (ValueError, ValidationError):
             return JSONResponse(
                 {"ok": False, "error": "bridge_invalid_parameters"}, HTTP_400_BAD_REQUEST
@@ -213,8 +340,6 @@ def register_resource_bridge(
         try:
             raw = await _request_body(request)
             query = ResourceRead.model_validate(json.loads(raw))
-        except OverflowError as error:
-            return JSONResponse({"ok": False, "error": str(error)}, HTTP_413_CONTENT_TOO_LARGE)
         except (ValueError, ValidationError):
             return JSONResponse(
                 {"ok": False, "error": "bridge_invalid_parameters"}, HTTP_400_BAD_REQUEST

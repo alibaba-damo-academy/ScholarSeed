@@ -1,0 +1,21 @@
+{
+  "type": "object",
+  "properties": {
+    "caption": {
+      "type": "string",
+      "maxLength": 65536
+    },
+    "source": {
+      "type": "string",
+      "maxLength": 65536
+    },
+    "notes": {
+      "type": "string",
+      "maxLength": 65536
+    }
+  },
+  "required": [
+    "source"
+  ],
+  "additionalProperties": false
+}

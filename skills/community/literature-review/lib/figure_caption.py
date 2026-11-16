@@ -1,6 +1,8 @@
 """Plain publication captions and deterministic LaTeX serialization."""
 import re
 
+from prose import escape_latex, plain_text
+
 CAPTION_CONTENT_GUIDANCE = """CAPTION CONTENT
 A caption names the asset's subject and explains its comparison, relationship or
 necessary qualification. Start directly with that content. The publisher supplies
@@ -15,9 +17,11 @@ not in its own caption. Caption text contains no drawing or pipeline instruction
 
 # Require an asset noun plus a number (or explicit label punctuation), not a
 # bare year or a scientific word beginning with Fig/Table. Chinese prose may
-# immediately follow the number; English needs a word boundary.
+# immediately follow Arabic digits. Chinese numerals need a separator/end:
+# without one, ordinary technical prose and a display label are ambiguous.
+# English needs a word boundary.
 _LABEL = re.compile(
-    r'^\s*(?:(?:图|表)\s*(?:[A-Z]?\d+(?:[.．]\d+)*|[一二三四五六七八九十]+)'
+    r'^\s*(?:(?:图|表)\s*(?:[A-Z]?\d+(?:[.．]\d+)*|[一二三四五六七八九十]+(?=$|[\s.:：、．]))'
     r'|(?:Figure|Fig|Table|Tab)\.?\s*[A-Z]?\d+(?:\.\d+)*\b'
     r'|(?:图|表|Figure|Fig|Table|Tab)\s*[.:：、．])', re.I)
 
@@ -25,20 +29,9 @@ _LABEL = re.compile(
 def has_numbering_prefix(value):
     return isinstance(value, str) and bool(_LABEL.match(value))
 
-_SPECIAL = {'\\':r'\textbackslash{}','%':r'\%','&':r'\&','$':r'\$',
-            '#':r'\#','_':r'\_','{':r'\{','}':r'\}','~':r'\textasciitilde{}','^':r'\textasciicircum{}'}
-
-
 def caption_text(value):
-    if not isinstance(value,str) or not value.strip(): raise ValueError('_caption must be nonempty publication prose')
-    value=value.strip()
-    # ORIGIN's JSON authors escaped literal LaTeX specials. Accept those
-    # spellings without escaping them a second time; store plain prose now.
-    value=re.sub(r'\\([%&$#_{}])',r'\1',value)
+    value=plain_text(value,'_caption')
     if has_numbering_prefix(value): raise ValueError('_caption must not contain a Figure/图 or Table/表 numbering prefix')
-    if re.search(r'\\(?:[A-Za-z]+|[()\[\]])',value):
-        raise ValueError('_caption uses LaTeX commands; submit plain reader-facing prose, with mathematical symbols in Unicode')
-    if '\n\n' in value: raise ValueError('_caption must be one paragraph of publication prose')
     return value
 
 
@@ -51,7 +44,7 @@ def caption_errors(value, item=None, field="_caption"):
 
 
 def caption_latex(value):
-    return ''.join(_SPECIAL.get(ch,ch) for ch in caption_text(value))
+    return escape_latex(caption_text(value))
 
 
 def caption_markdown(value):

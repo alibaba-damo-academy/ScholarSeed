@@ -64,6 +64,37 @@ class ResourceListingTests(unittest.TestCase):
         return {entry["path"]: entry for entry in response.json()["items"]}
 
     def test_flat_complete_pagination_depth_and_project_scope(self) -> None:
+        registered = self.content.projects()
+        for parameters, expected, detail in (
+            ({}, 422, None),
+            ({"project": ""}, 422, None),
+            ({"project": "current"}, 400, "no_project_selected"),
+            ({"project": "unknown-project"}, 404, "unknown_project"),
+            ({"project": self.project.root}, 404, "unknown_project"),
+            ([("project", self.project.id), ("project", "")], 422, None),
+            ([("project", self.project.id), ("project", "current")], 400, "no_project_selected"),
+            (
+                [("project", self.project.id), ("project", "unknown-project")],
+                404,
+                "unknown_project",
+            ),
+        ):
+            response = self.client.get("/api/resource/list", params=parameters)
+            self.assertEqual(response.status_code, expected, f"{parameters}: {response.text}")
+            if expected == 422:
+                self.assertEqual(response.json()["detail"][0]["loc"], ["query", "project"])
+                self.assertEqual(
+                    response.json()["detail"][0]["type"],
+                    "missing" if not parameters else "string_too_short",
+                )
+            else:
+                self.assertEqual(response.json(), {"detail": detail})
+            self.assertEqual(self.content.projects(), registered)
+        response = self.client.get(
+            "/api/resource/list",
+            params=[("project", "unknown-project"), ("project", self.project.id)],
+        )
+        self.assertEqual(response.status_code, 200, response.text)
         deep = self.resources / "一" / "二" / "三" / "四"
         deep.mkdir(parents=True)
         (deep / "深处.csv").write_text("name,value\n验证,1\n", encoding="utf-8")

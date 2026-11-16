@@ -10,6 +10,32 @@
     "maxPythonSuitesPerCommand": 12,
     "ipcFilePattern": "\\b(ipc|preload|handoff|bridge)\\b"
   },
+  "supplements": [
+    {
+      "id": "official-ui-shared-resources",
+      "match": "^(?:packages/ui/(?:ui\\.css|(?:build|render)\\.test\\.cjs|preview/browser\\.test\\.cjs)|apps/desktop/src/renderer/src/(?:components/primitive/(?:utils\\.ts|Gallery\\.tsx|Images\\.tsx)|features/literature/(?:Matches\\.tsx|export\\.ts)))$",
+      "tests": [
+        "packages/ui/build.test.cjs",
+        "packages/ui/render.test.cjs",
+        "packages/ui/preview/browser.test.cjs"
+      ]
+    },
+    {
+      "id": "desktop-shared-card-styles",
+      "match": "^apps/desktop/src/renderer/src/components/primitive/utils\\.ts$",
+      "tests": [
+        "apps/desktop/src/renderer/src/components/markdown.render.test.ts"
+      ]
+    },
+    {
+      "id": "desktop-shared-image-preview",
+      "match": "^apps/desktop/src/renderer/src/components/primitive/(?:Gallery|Images)\\.tsx$",
+      "tests": [
+        "apps/desktop/src/renderer/src/features/assistant/Images.render.test.ts",
+        "apps/desktop/src/renderer/src/components/primitive/images.render.test.cjs"
+      ]
+    }
+  ],
   "rules": [
     {
       "id": "desktop-adjacent-unit",

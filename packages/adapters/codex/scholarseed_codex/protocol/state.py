@@ -65,7 +65,7 @@ CODEX_DEFAULT_SANDBOX_MODE = "workspace-write"
 CODEX_SANDBOX_MODES = ("read-only", "workspace-write", "danger-full-access")
 
 
-CODEX_MULTI_AGENT_MODES = ("disabled", "custom", "explicitRequestOnly", "proactive")
+CODEX_MULTI_AGENT_MODES = ("none", "custom", "explicitRequestOnly", "proactive")
 
 
 CODEX_APPROVAL_POLICIES = ("untrusted", "on-request", "never")
@@ -137,6 +137,8 @@ CODEX_STDERR_DIAGNOSTIC_CHANNEL = "stderr"
 
 RPC_METHOD_NOT_FOUND = -32601
 SANDBOX_EXECUTION_METHOD = "command/exec"
+
+RPC_INVALID_REQUEST = -32600
 
 
 RPC_INVALID_PARAMS = -32602
@@ -365,6 +367,8 @@ class AppServerError(RuntimeError):
         self.native_code = native_code
         self.retryability = retryability
         self.submission_not_applied = submission_not_applied
+        # Set only at the pre-thread boundary; resource cleanup is separate proof.
+        self.thread_open_not_applied = False
 
 
 def _message_phase(value: object) -> MessagePhase | None:

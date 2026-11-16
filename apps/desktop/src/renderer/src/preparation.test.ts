@@ -3,15 +3,75 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { runInNewContext } from 'node:vm'
 import ts from 'typescript'
+import { RECONFIGURATION_ERRORS } from '../../reconfiguration.ts'
 import type { RuntimePreparation } from './api'
 import {
   PREPARATION_INSTANCE_CHANGED_ERROR,
   PREPARATION_SUPERSEDED_ERROR,
   RuntimePreparationController,
+  runtimePreparationFailure,
+  runtimePreparationForegroundFailure,
+  runtimePreparationRequestFailure,
   preparationContextMatches,
+  preparationResultMatches,
   waitForPreparation,
   type PreparationSnapshot,
 } from './preparation.ts'
+
+test('preparation failure feedback follows the recovery state, never a guessed model cause', () => {
+  for (const [state, error, expected] of [
+    ['restart_required', '', 'runtimeSwitch.restartRequired'],
+    ['unsupported', '', 'runtimeSwitch.unsupported'],
+    ['rejected', 'private-token', 'runtimePreparation.failed'],
+    ['rejected', RECONFIGURATION_ERRORS.hostBusy, 'runtimePreparation.busy'],
+    ['rejected', 'runtime_host_configuration_uncertain', 'runtimeSwitch.restartRequired'],
+  ] as const) {
+    const result = runtimePreparationFailure({ state, error })
+    assert.equal(result.ns, 'components')
+    assert.equal(result.key, expected)
+    assert.equal(JSON.stringify(result).includes('private-token'), false)
+  }
+  assert.equal(runtimePreparationFailure().key, 'runtimePreparation.unknown')
+})
+
+test('preparation distinguishes definite request rejection from a lost response', () => {
+  const statusError = (status: number, message = 'private-token') =>
+    Object.assign(new Error(message), { status })
+  for (const error of [
+    statusError(400),
+    statusError(403),
+    statusError(409),
+    statusError(422),
+    new Error(PREPARATION_INSTANCE_CHANGED_ERROR),
+  ]) {
+    const result = runtimePreparationRequestFailure(error)
+    assert.equal(result.key, 'runtimePreparation.failed')
+    assert.equal(JSON.stringify(result).includes('private-token'), false)
+  }
+  assert.equal(
+    runtimePreparationRequestFailure(statusError(409, 'runtime_host_configuration_uncertain')).key,
+    'runtimeSwitch.restartRequired'
+  )
+  for (const error of [
+    new TypeError('connection lost'),
+    new SyntaxError('invalid response'),
+    new DOMException('request timed out', 'TimeoutError'),
+    statusError(408),
+    statusError(503),
+  ]) {
+    assert.equal(runtimePreparationRequestFailure(error).key, 'runtimePreparation.unknown')
+  }
+})
+
+test('only duplicate foreground feedback is suppressed when the runtime host is busy', () => {
+  const busy = { state: 'rejected', error: RECONFIGURATION_ERRORS.hostBusy } as const
+  assert.equal(runtimePreparationFailure(busy).key, 'runtimePreparation.busy')
+  assert.equal(runtimePreparationForegroundFailure(busy), undefined)
+  assert.equal(
+    runtimePreparationForegroundFailure({ state: 'unsupported', error: '' })?.key,
+    'runtimeSwitch.unsupported'
+  )
+})
 
 test('confirmed login invalidates old preparation before the new account catalog arrives', () => {
   const source = readFileSync(new URL('./store.tsx', import.meta.url), 'utf8')
@@ -325,6 +385,24 @@ test('host-busy before registration waits and retries only the original preparat
   await probe.controller.prepare('model-a')
   assert.equal(probe.requests.length, 2)
   assert.equal(probe.requests[0].requestId, probe.requests[1].requestId)
+})
+
+test('registered busy preparation ends without retry and a new attempt gets a new identity', async () => {
+  const probe = fixture()
+  probe.handlers.prepare = async () =>
+    probe.requests.length === 1
+      ? { ...probe.operation('rejected'), error: RECONFIGURATION_ERRORS.hostBusy }
+      : probe.operation('applied')
+
+  const rejected = await probe.controller.prepare('model-a')
+  assert.equal(rejected.error, RECONFIGURATION_ERRORS.hostBusy)
+  assert.equal(probe.requests.length, 1)
+  assert.deepEqual(probe.reads, [])
+  assert.deepEqual(probe.publications, [rejected])
+
+  const applied = await probe.controller.prepare('model-a')
+  assert.equal(applied.state, 'applied')
+  assert.notEqual(applied.request_id, rejected.request_id)
 })
 
 test('preparation waits behind an existing selection writer and keeps only the latest queued target', async () => {
@@ -645,6 +723,10 @@ test('preparation context is scoped to model, draft, project, session and servic
     sessionId: null,
   }
   assert.equal(preparationContextMatches(probe.snapshot(), context), true)
+  const disconnected = { ...probe.snapshot(), serviceInstanceId: null }
+  assert.equal(preparationResultMatches(disconnected, context, 'restart_required'), true)
+  for (const state of ['accepted', 'applied', 'rejected', 'unsupported'] as const)
+    assert.equal(preparationResultMatches(disconnected, context, state), false)
   for (const patch of [
     { model: 'other' },
     { serviceInstanceId: 'other' },
@@ -653,5 +735,9 @@ test('preparation context is scoped to model, draft, project, session and servic
     { activeSession: 'other' },
   ]) {
     assert.equal(preparationContextMatches({ ...probe.snapshot(), ...patch }, context), false)
+    assert.equal(
+      preparationResultMatches({ ...disconnected, ...patch }, context, 'restart_required'),
+      false
+    )
   }
 })

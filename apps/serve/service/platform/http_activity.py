@@ -18,6 +18,7 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from service.platform.activity import Activities, ActivityDomain, MaintenanceActive
+from service.platform.latency import LoopMonitor, RequestLatency
 
 
 def _maintenance_response(
@@ -48,28 +49,44 @@ class HttpActivityMiddleware:
     def __init__(self, app: ASGIApp, *, activities: Activities) -> None:
         self.app = app
         self.activities = activities
+        self.monitor = LoopMonitor()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "lifespan":
+            async with self.monitor:
+                await self.app(scope, receive, send)
+            return
         if scope["type"] == "websocket" and not self.activities.workbench_ready:
             await send({"type": "websocket.close", "code": 1013})
             return
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-        if (
-            scope.get("method") not in {"GET", "HEAD", "OPTIONS"}
-            and not self.activities.workbench_ready
-        ):
-            await _maintenance_response()(scope, receive, send)
-            return
-        with ExitStack() as stack:
-            try:
-                stack.enter_context(self.activities.observe_request())
-            except MaintenanceActive:
-                response = _maintenance_response()
-                await response(scope, receive, send)
+        with RequestLatency(scope, monitor=self.monitor) as observation:
+
+            async def observedSend(message: Any) -> None:
+                if message["type"] == "http.response.start":
+                    message = {
+                        **message,
+                        "headers": observation.timingHeaders(message.get("headers", [])),
+                    }
+                    observation.headers(message["status"])
+                await send(message)
+
+            if (
+                scope.get("method") not in {"GET", "HEAD", "OPTIONS"}
+                and not self.activities.workbench_ready
+            ):
+                await _maintenance_response()(scope, receive, observedSend)
                 return
-            await self.app(scope, receive, send)
+            with ExitStack() as stack:
+                try:
+                    stack.enter_context(self.activities.observe_request())
+                except MaintenanceActive:
+                    response = _maintenance_response()
+                    await response(scope, receive, observedSend)
+                    return
+                await self.app(scope, receive, observedSend)
 
 
 def execution_admission(

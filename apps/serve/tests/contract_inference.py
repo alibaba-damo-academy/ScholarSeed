@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 
 import httpx
 
+from scholarseed_runtime.contract import ModelThinking
 from service.chat.service.completions import CompletionBridge, CompletionCleanupUnknown
 from service.chat.service.models import API_BILLING, ModelService, SessionModelUnavailableError
 from service.inference.transport import (
@@ -24,6 +25,7 @@ from service.inference.transport import (
     chat_body,
     receive,
     responses_body,
+    thinking_for,
 )
 from service.platform.inference import (
     ModelInvocationEventKind,
@@ -369,6 +371,117 @@ class InferenceContracts(unittest.IsolatedAsyncioTestCase):
                 body = encoder(replace(REQUEST, require_tool_free=required), connection(), {})
                 self.assertEqual(body["tools"], [])
                 self.assertEqual(body["tool_choice"], "none")
+
+    async def test_session_generation_keeps_schema_account_and_selected_effort_without_agent(self):
+        schema = {
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+            "additionalProperties": False,
+        }
+        for protocol in (RESPONSES_PROTOCOL, CHAT_PROTOCOL):
+            with self.subTest(protocol=protocol):
+                selected = connection(protocol)
+                selected.update(
+                    provider="openai",
+                    reasoning_options=[{"kind": "effort", "values": ["low", "medium", "high"]}],
+                )
+                self.models.inference_connection.return_value = selected
+                requests = []
+
+                def handler(request):
+                    requests.append(json.loads(request.content))
+                    return completed(protocol, '{"text":"accepted"}')
+
+                with self.client(handler):
+                    result = await self.provider.invoke(
+                        replace(
+                            REQUEST,
+                            user_id="actual-account",
+                            owner_id="parent-session",
+                            output_schema=schema,
+                            reasoning_effort="high",
+                            limits=ModelInvocationLimits(100, None),
+                        )
+                    )
+                self.assertEqual(result.status, ModelInvocationStatus.COMPLETED)
+                self.assertEqual(len(requests), 1)
+                body = requests[0]
+                expected = {"name": "generation", "schema": schema, "strict": True}
+                if protocol == RESPONSES_PROTOCOL:
+                    self.assertEqual(body["text"]["format"], {"type": "json_schema", **expected})
+                    self.assertEqual(body["reasoning"]["effort"], "high")
+                else:
+                    self.assertEqual(
+                        body["response_format"], {"type": "json_schema", "json_schema": expected}
+                    )
+                    self.assertEqual(body["reasoning_effort"], "high")
+                self.assertNotIn("max_tokens", body)
+                self.assertNotIn("max_output_tokens", body)
+                self.assertEqual(body["tools"], [])
+                self.assertEqual(body["tool_choice"], "none")
+                self.assertEqual(
+                    self.models.inference.call_args.kwargs["user_id"], "actual-account"
+                )
+
+    async def test_invalid_structured_result_is_not_completed_or_retried(self):
+        schema = {"type": "object", "required": ["text"]}
+        for protocol in (RESPONSES_PROTOCOL, CHAT_PROTOCOL):
+            for text in ('{"wrong":true}', "not json"):
+                with self.subTest(protocol=protocol, text=text):
+                    self.models.inference_connection.return_value = connection(protocol)
+                    handler = Mock(return_value=completed(protocol, text))
+                    with self.client(handler):
+                        result = await self.provider.invoke(replace(REQUEST, output_schema=schema))
+                    self.assertEqual(result.status, ModelInvocationStatus.FAILED)
+                    handler.assert_called_once()
+                    self.assertEqual(result.output_text, "")
+
+    def test_selected_thinking_is_forwarded_only_through_declared_controls(self):
+        selected = connection(CHAT_PROTOCOL)
+        selected["reasoning_options"] = [
+            {"kind": "toggle", "wire": {CHAT_PROTOCOL: "enable_thinking"}}
+        ]
+        resolution = thinking_for(replace(REQUEST, thinking=ModelThinking(enabled=False)), selected)
+        self.assertEqual(resolution.parameters, {"enable_thinking": False})
+
+    async def test_output_schema_resolves_only_local_references(self):
+        for reference, expected in (
+            ("#/$defs/result", ModelInvocationStatus.COMPLETED),
+            ("https://untrusted.example/schema", ModelInvocationStatus.FAILED),
+        ):
+            with self.subTest(reference=reference):
+                schema = {"$defs": {"result": {"type": "string"}}, "$ref": reference}
+                handler = Mock(return_value=completed(text='"value"'))
+                with self.client(handler), patch("urllib.request.urlopen") as external:
+                    result = await self.provider.invoke(replace(REQUEST, output_schema=schema))
+                self.assertEqual(result.status, expected)
+                external.assert_not_called()
+                handler.assert_called_once()
+
+    async def test_exact_model_never_submits_to_an_automatic_fallback(self):
+        handler = Mock(return_value=completed())
+        with self.client(handler):
+            result = await self.provider.invoke(replace(REQUEST, exact_model=True))
+        self.assertEqual(result.status, ModelInvocationStatus.FAILED)
+        self.assertEqual(result.error_code, TOOL_FREE_UNSUPPORTED)
+        handler.assert_not_called()
+
+    def test_responses_json_object_input_includes_json_directive(self):
+        body = responses_body(replace(REQUEST, json_output=True), connection(), {})
+        self.assertEqual(
+            body["input"],
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "source"},
+                        {"type": "input_text", "text": "Return the result as a JSON object."},
+                    ],
+                }
+            ],
+        )
+        self.assertEqual(body["text"]["format"], {"type": "json_object"})
 
     def test_responses_plain_text_input_has_no_json_directive(self):
         body = responses_body(REQUEST, connection(), {})

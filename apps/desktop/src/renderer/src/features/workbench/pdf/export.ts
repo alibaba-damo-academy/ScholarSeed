@@ -8,8 +8,9 @@ import {
   PDFString,
   PDFDocument as PDFLibDocument,
   PDFName,
+  PDFNumber,
   rgb,
-  type PDFPage
+  type PDFPage,
 } from 'pdf-lib'
 
 import { normalizeQuads } from './geometry.ts'
@@ -17,11 +18,12 @@ import { EncryptedPdfError } from './loading.ts'
 import type { PdfMark, PdfRecords, PdfRecordSnapshot } from '../api.ts'
 import {
   PDF_HIGHLIGHT_OPACITY,
+  PDF_COMMENT_PIN_RADIUS,
   PDF_MARK_RGB,
   PDF_RECORD_SCHEMA_VERSION,
   PDF_STRIKETHROUGH_THICKNESS,
   PDF_UNDERLINE_OPACITY,
-  PDF_UNDERLINE_THICKNESS
+  PDF_UNDERLINE_THICKNESS,
 } from './records.ts'
 const ANNOTATIONS_ATTACHMENT_NAME = 'scholarseed-annotations.json'
 const CONTENTS_KEY = PDFName.of('Contents')
@@ -32,13 +34,18 @@ const PDF_KEYS = {
   files: PDFName.of('EF'),
   stream: PDFName.of('F'),
   associated: PDFName.of('AF'),
-  states: PDFName.of('ExtGState')
+  states: PDFName.of('ExtGState'),
 } as const
 const PDF_PAINT_STATE_PATTERN = /\/([^\s]+) gs/g
 
 export const PDF_EXPORT_ERROR_CODE = 'exportFailed'
 export type PdfExportStage = 'load' | 'normalize' | 'draw' | 'attach' | 'save' | 'dialog'
-export interface PdfExportResult { ok: boolean; canceled?: boolean; path?: string; error?: string }
+export interface PdfExportResult {
+  ok: boolean
+  canceled?: boolean
+  path?: string
+  error?: string
+}
 
 export class PdfExportError extends Error {
   readonly stage: PdfExportStage
@@ -79,29 +86,67 @@ export function normalizePageContents(page: PDFPage): void {
   page.node.set(CONTENTS_KEY, rebuilt)
 }
 
-function drawMarks(page: PDFPage, marks: readonly PdfMark[], normalize = true): void {
+function pagePoint(
+  page: PDFPage,
+  x: number,
+  y: number,
+  display: boolean
+): { x: number; y: number } {
+  if (!display) return { x: x * page.getWidth(), y: (1 - y) * page.getHeight() }
+  const crop = page.getCropBox()
+  const rotation = ((page.getRotation().angle % 360) + 360) % 360
+  if (rotation === 90) return { x: crop.x + y * crop.width, y: crop.y + x * crop.height }
+  if (rotation === 180) return { x: crop.x + (1 - x) * crop.width, y: crop.y + y * crop.height }
+  if (rotation === 270)
+    return { x: crop.x + (1 - y) * crop.width, y: crop.y + (1 - x) * crop.height }
+  return { x: crop.x + x * crop.width, y: crop.y + (1 - y) * crop.height }
+}
+
+function drawMarks(
+  page: PDFPage,
+  marks: readonly PdfMark[],
+  normalize = true,
+  display = true
+): void {
   for (const mark of marks) {
-    const { width, height } = page.getSize()
     const [red, green, blue] = PDF_MARK_RGB[mark.color]
     const color = rgb(red, green, blue)
-    for (const [left, top, right, bottom] of (normalize ? normalizeQuads(mark.quads) : mark.quads)) {
+    if (mark.style === 'comment') {
+      const radius = PDF_COMMENT_PIN_RADIUS
+      const point = pagePoint(page, mark.point[0], mark.point[1], display)
+      if (!display) {
+        point.x = Math.max(radius, Math.min(page.getWidth() - radius, point.x))
+        point.y = Math.max(radius, Math.min(page.getHeight() - radius, point.y))
+      }
+      page.drawCircle({
+        ...point,
+        size: radius,
+        color,
+        opacity: PDF_UNDERLINE_OPACITY,
+      })
+      continue
+    }
+    for (const [left, top, right, bottom] of normalize ? normalizeQuads(mark.quads) : mark.quads) {
       if (mark.style === 'underline' || mark.style === 'strikethrough') {
         const lineY = mark.style === 'underline' ? bottom : (top + bottom) / 2
         page.drawLine({
-          start: { x: left * width, y: (1 - lineY) * height },
-          end: { x: right * width, y: (1 - lineY) * height },
-          thickness: mark.style === 'underline' ? PDF_UNDERLINE_THICKNESS : PDF_STRIKETHROUGH_THICKNESS,
+          start: pagePoint(page, left, lineY, display),
+          end: pagePoint(page, right, lineY, display),
+          thickness:
+            mark.style === 'underline' ? PDF_UNDERLINE_THICKNESS : PDF_STRIKETHROUGH_THICKNESS,
           color,
-          opacity: PDF_UNDERLINE_OPACITY
+          opacity: PDF_UNDERLINE_OPACITY,
         })
       } else {
+        const first = pagePoint(page, left, top, display)
+        const second = pagePoint(page, right, bottom, display)
         page.drawRectangle({
-          x: left * width,
-          y: (1 - bottom) * height,
-          width: (right - left) * width,
-          height: (bottom - top) * height,
+          x: Math.min(first.x, second.x),
+          y: Math.min(first.y, second.y),
+          width: display ? Math.abs(second.x - first.x) : (right - left) * page.getWidth(),
+          height: display ? Math.abs(second.y - first.y) : (bottom - top) * page.getHeight(),
           color,
-          opacity: PDF_HIGHLIGHT_OPACITY
+          opacity: PDF_HIGHLIGHT_OPACITY,
         })
       }
     }
@@ -125,8 +170,10 @@ function annotationAttachment(pdf: PDFLibDocument): AnnotationAttachment | null 
     if (entries) {
       for (let index = 0; index < entries.size(); index += 2) {
         const name = pdf.context.lookup(entries.get(index))
-        if ((name instanceof PDFString || name instanceof PDFHexString)
-          && name.decodeText() === ANNOTATIONS_ATTACHMENT_NAME) {
+        if (
+          (name instanceof PDFString || name instanceof PDFHexString) &&
+          name.decodeText() === ANNOTATIONS_ATTACHMENT_NAME
+        ) {
           return { entries, index, file: entries.lookup(index + 1, PDFDict) }
         }
       }
@@ -150,7 +197,9 @@ function attachedRecords(pdf: PDFLibDocument): PdfRecords | null {
     const files = attachment.file.lookup(PDF_KEYS.files, PDFDict)
     const stream = pdf.context.lookup(files.get(PDF_KEYS.stream))
     if (!(stream instanceof PDFRawStream)) throw new Error('invalid embedded PDF attachment')
-    const records: PdfRecords = JSON.parse(new TextDecoder().decode(decodePDFRawStream(stream).decode()))
+    const records: PdfRecords = JSON.parse(
+      new TextDecoder().decode(decodePDFRawStream(stream).decode())
+    )
     if (records.schema_version !== PDF_RECORD_SCHEMA_VERSION || !Array.isArray(records.marks)) {
       throw new Error('invalid embedded PDF records')
     }
@@ -182,9 +231,13 @@ function comparablePaint(page: PDFPage, content: string): string {
   return content.replace(PDF_PAINT_STATE_PATTERN, (operator, name: string) => {
     const state = states?.lookupMaybe(PDFName.of(name), PDFDict)
     if (!state) return operator
-    return state.entries().map(([key, value]) =>
-      `${key.toString()}=${page.doc.context.lookup(value)?.toString()}`
-    ).sort().join(';') + ' gs'
+    return (
+      state
+        .entries()
+        .map(([key, value]) => `${key.toString()}=${page.doc.context.lookup(value)?.toString()}`)
+        .sort()
+        .join(';') + ' gs'
+    )
   })
 }
 
@@ -193,15 +246,71 @@ function comparablePaint(page: PDFPage, content: string): string {
  * and graphics states against their canonical embedded records. Original PDF
  * content and the on-disk file are never rewritten by the viewer.
  */
-export async function restoreAnnotatedPdf(bytes: Uint8Array): Promise<Uint8Array> {
+function removeNativeAnnotations(
+  pdf: PDFLibDocument,
+  sources: PdfRecords['native_annotations']
+): boolean {
+  let changed = false
+  const text = (dict: PDFDict, key: string): string => {
+    const value = dict.lookup(PDFName.of(key))
+    return value instanceof PDFString || value instanceof PDFHexString ? value.decodeText() : ''
+  }
+  for (const [pageIndex, page] of pdf.getPages().entries()) {
+    const entries = page.node.lookupMaybe(PDFName.of('Annots'), PDFArray)
+    if (!entries) continue
+    const removed = new Set<string>()
+    for (let index = 0; index < entries.size(); index += 1) {
+      const annotation = entries.lookup(index)
+      if (!(annotation instanceof PDFDict)) continue
+      const rect = annotation.lookupMaybe(PDFName.of('Rect'), PDFArray)
+      if (
+        sources?.some(
+          (source) =>
+            source.page === pageIndex + 1 &&
+            annotation.get(PDFName.of('Subtype'))?.toString() === source.subtype &&
+            text(annotation, 'NM') === source.name &&
+            text(annotation, 'Contents') === source.contents &&
+            text(annotation, 'T') === source.author &&
+            text(annotation, 'CreationDate') === source.created &&
+            text(annotation, 'M') === source.modified &&
+            rect?.size() === 4 &&
+            source.rect.every((value, offset) => {
+              const coordinate = rect.lookup(offset)
+              return coordinate instanceof PDFNumber && coordinate.asNumber() === value
+            })
+        )
+      )
+        removed.add(entries.get(index).toString())
+    }
+    for (let index = entries.size() - 1; index >= 0; index -= 1) {
+      const annotation = entries.lookup(index)
+      const popup =
+        annotation instanceof PDFDict &&
+        annotation.get(PDFName.of('Subtype'))?.toString() === '/Popup' &&
+        removed.has(annotation.get(PDFName.of('Parent'))?.toString() ?? '')
+      if (removed.has(entries.get(index).toString()) || popup) {
+        entries.remove(index)
+        changed = true
+      }
+    }
+  }
+  return changed
+}
+
+export async function restoreAnnotatedPdf(
+  bytes: Uint8Array,
+  sources?: PdfRecords['native_annotations']
+): Promise<Uint8Array> {
   const pdf = await PDFLibDocument.load(bytes, { ignoreEncryption: true })
   if (pdf.isEncrypted) throw new EncryptedPdfError()
   const records = attachedRecords(pdf)
-  if (!records?.marks.length) return bytes
+  let changed = removeNativeAnnotations(pdf, sources ?? records?.native_annotations)
+  if (!records?.marks.length) return changed ? pdf.save() : bytes
   const template = await PDFLibDocument.create()
-  let changed = false
   for (const [index, page] of pdf.getPages().entries()) {
-    const marks = records.marks.filter(mark => mark.anchor_state === 'anchored' && mark.page === index + 1)
+    const marks = records.marks.filter(
+      (mark) => mark.anchor_state === 'anchored' && mark.page === index + 1
+    )
     if (!marks.length) continue
     const contents = pdf.context.lookup(page.node.get(CONTENTS_KEY))
     if (!(contents instanceof PDFArray) || !contents.size()) continue
@@ -210,11 +319,21 @@ export async function restoreAnnotatedPdf(bytes: Uint8Array): Promise<Uint8Array
     const actualContent = new TextDecoder().decode(decodePDFRawStream(last).decode())
     let matches = false
     // Both historical raw quads and current normalized quads are supported.
-    for (const normalize of [true, false]) {
+    for (const [normalize, display] of [
+      [true, true],
+      [false, true],
+      [true, false],
+      [false, false],
+    ]) {
       const expected = template.addPage([page.getWidth(), page.getHeight()])
-      drawMarks(expected, marks, normalize)
+      const crop = page.getCropBox()
+      expected.setCropBox(crop.x, crop.y, crop.width, crop.height)
+      expected.setRotation(page.getRotation())
+      drawMarks(expected, marks, normalize, display)
       const expectedStreams = expected.node.lookup(CONTENTS_KEY, PDFArray)
-      const expectedStream = template.context.lookup(expectedStreams.get(expectedStreams.size() - 1))
+      const expectedStream = template.context.lookup(
+        expectedStreams.get(expectedStreams.size() - 1)
+      )
       if (!(expectedStream instanceof PDFContentStream)) throw new Error('missing PDF paint stream')
       const expectedContent = new TextDecoder().decode(expectedStream.getUnencodedContents())
       if (comparablePaint(page, actualContent) === comparablePaint(expected, expectedContent)) {
@@ -236,7 +355,9 @@ export async function buildAnnotatedPdf(
 ): Promise<Uint8Array> {
   let pdf: PDFLibDocument
   try {
-    pdf = await PDFLibDocument.load(await restoreAnnotatedPdf(bytes))
+    pdf = await PDFLibDocument.load(
+      await restoreAnnotatedPdf(bytes, records.records.native_annotations)
+    )
   } catch (error) {
     throw exportFailure('load', error)
   }
@@ -255,7 +376,10 @@ export async function buildAnnotatedPdf(
 
   try {
     for (const [index, page] of pages.entries()) {
-      drawMarks(page, anchored.filter(mark => mark.page === index + 1))
+      drawMarks(
+        page,
+        anchored.filter((mark) => mark.page === index + 1)
+      )
     }
   } catch (error) {
     throw exportFailure('draw', error)
@@ -263,24 +387,32 @@ export async function buildAnnotatedPdf(
 
   try {
     removeAnnotationAttachment(pdf)
-    const attachment = new TextEncoder().encode(JSON.stringify({
-        schema_version: PDF_RECORD_SCHEMA_VERSION,
-        marks: anchored,
-        comments: records.records.comments.filter((comment) =>
-          anchored.some((mark) => mark.id === comment.mark_id)
-        ),
-        notes: records.records.notes.map((note) => ({
-          ...note,
-          excerpts: note.excerpts.filter((excerpt) =>
-            anchored.some((mark) => mark.id === excerpt.mark_id)
-          )
-        }))
-      }, null, 2))
-    await pdf.attach(
-      attachment,
-      ANNOTATIONS_ATTACHMENT_NAME,
-      { mimeType: 'application/json', description: attachmentDescription }
+    const attachment = new TextEncoder().encode(
+      JSON.stringify(
+        {
+          schema_version: PDF_RECORD_SCHEMA_VERSION,
+          ...(records.records.native_annotations
+            ? { native_annotations: records.records.native_annotations }
+            : {}),
+          marks: anchored,
+          comments: records.records.comments.filter((comment) =>
+            anchored.some((mark) => mark.id === comment.mark_id)
+          ),
+          notes: records.records.notes.map((note) => ({
+            ...note,
+            excerpts: note.excerpts.filter((excerpt) =>
+              anchored.some((mark) => mark.id === excerpt.mark_id)
+            ),
+          })),
+        },
+        null,
+        2
+      )
     )
+    await pdf.attach(attachment, ANNOTATIONS_ATTACHMENT_NAME, {
+      mimeType: 'application/json',
+      description: attachmentDescription,
+    })
   } catch (error) {
     throw exportFailure('attach', error)
   }

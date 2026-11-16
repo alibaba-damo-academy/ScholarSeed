@@ -97,7 +97,7 @@ export function Recorder(): React.JSX.Element {
   const rootRef = React.useRef<HTMLDivElement>(null)
   const leaseRef = React.useRef<RecorderLease | null>(null)
   const sessionRef = React.useRef<RecordingSession | null>(null)
-  const latestStepRef = React.useRef<RecordingSession['steps'][number]>()
+  const latestStepRef = React.useRef<RecordingSession['steps'][number] | undefined>(undefined)
   const stepCountRef = React.useRef(0)
   const entryRef = React.useRef<HTMLButtonElement | null>(null)
   const [entryHost, setEntryHost] = React.useState<Element | null>(null)

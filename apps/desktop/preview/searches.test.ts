@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { projectOfficialWebSearch, WEB_SEARCH_CANDIDATE_LIMIT } from '../src/renderer/src/features/resources/search.ts'
 import { PreviewSearches, PREVIEW_SEARCH } from './searches.ts'
 
 test('literature history is scene scoped, isolated and consumable as a terminal production task', () => {
@@ -27,25 +26,8 @@ test('library lookup resolves only seeded paper identities and does not fabricat
   assert.throws(() => searches.resultStatus({ papers: [{ id: 'unknown' }] }), { status: 422 })
 })
 
-test('official results pass the actual renderer projection with query and execution identity intact', () => {
-  const searches = new PreviewSearches()
-  const query = 'reviewed mock search'
-  const result = searches.webSearch({ query, limit: WEB_SEARCH_CANDIDATE_LIMIT })
-  const projection = projectOfficialWebSearch(JSON.stringify(result), query, result.search_id)
-  assert.equal(projection.executionEvidenceFound, true)
-  assert.equal(projection.structuredOutputFound, true)
-  assert.equal(projection.error, undefined)
-  assert.equal(projection.candidates.length, 2)
-  assert.equal(projection.candidates[0].title, PREVIEW_SEARCH.webTitle)
-  assert.ok(projection.candidates.every(candidate => new URL(candidate.url).hostname === PREVIEW_SEARCH.hostname))
-  assert.notEqual(result.search_id, searches.webSearch({ query, limit: 1 }).search_id)
-  assert.equal(searches.webSearch({ query, limit: 1 }).candidates.length, 1)
-})
 
-test('search input boundaries reject malformed, excessive and empty requests without execution', () => {
+test('library lookup rejects malformed requests without execution', () => {
   const searches = new PreviewSearches()
-  for (const body of [null, {}, { query: '' }, { query: 'x', limit: 0 }, { query: 'x', limit: WEB_SEARCH_CANDIDATE_LIMIT + 1 }, { query: 'x', limit: 1.5 }, { query: 'x'.repeat(PREVIEW_SEARCH.maxQuery + 1) }]) {
-    assert.throws(() => searches.webSearch(body), { status: 422, code: 'preview_search_invalid' })
-  }
   for (const body of [null, {}, { papers: 'invalid' }]) assert.throws(() => searches.resultStatus(body), { status: 422 })
 })

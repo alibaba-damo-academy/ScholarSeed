@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { PROJECT_NAME_MAX } from '../src/renderer/src/contracts/content.ts'
 import type { ProjectRef } from '../src/renderer/src/contracts/content.ts'
 import { PreviewFiles } from './files.ts'
+import type { PreviewFileSeed } from './files.ts'
 
 const POLICY = { queuedMs: 25, runningMs: 250, maximumOperations: 128, maximumDirectoryPlans: 128 } as const
 const HTTP = { badRequest: 400, notFound: 404, unavailable: 503 } as const
@@ -49,13 +50,13 @@ export class ProjectSimulation {
   private closed = false
   private failNext: boolean
 
-  constructor(private readonly root: string, seed: readonly PreviewProject[], creationPolicy?: 'fail-once') {
+  constructor(private readonly root: string, seed: readonly PreviewProject[], creationPolicy?: 'fail-once', fileSeed: PreviewFileSeed = 'example') {
     this.projects = seed.map(project => ({ ...project }))
-    for (const project of seed) this.fileSystems.set(project.id, new PreviewFiles())
+    for (const project of seed) this.fileSystems.set(project.id, new PreviewFiles(fileSeed))
     this.failNext = creationPolicy === 'fail-once'
   }
 
-  all(): PreviewProject[] { return this.projects.map(project => ({ ...project })).sort((left, right) => right.created_at - left.created_at) }
+  all(): PreviewProject[] { return this.projects.map(project => ({ ...project })).sort((left, right) => right.created_at - left.created_at || (left.id < right.id ? 1 : left.id > right.id ? -1 : 0)) }
 
   files(projectId: string): PreviewFiles {
     if (!this.projects.some(project => project.id === projectId)) throw new PreviewProjectError(HTTP.notFound, ERROR.unknownProject)
@@ -156,8 +157,7 @@ export class ProjectSimulation {
         const invalid = nameError(name)
         if (invalid) throw new PreviewProjectError(HTTP.badRequest, invalid)
         if (this.failNext) { this.failNext = false; throw new PreviewProjectError(HTTP.badRequest, ERROR.simulatedFailure) }
-        const files = new PreviewFiles()
-        for (const entry of files.manifest()) files.delete(entry.path)
+        const files = new PreviewFiles('empty')
         const project: PreviewProject = { id: randomUUID(), name, root: directory, layout: 'managed', available: true, created_at: Date.now() / 1000 }
         this.projects.push(project)
         this.fileSystems.set(project.id, files)

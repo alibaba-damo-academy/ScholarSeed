@@ -19,6 +19,7 @@ from scholarseed_runtime.contract.inventory import (
 )
 from service.capabilities.domain import SKILL_MANIFEST_NAME
 from service.capabilities.service.attribution import read_attribution
+from service.capabilities.service.clawhub import CLAWHUB_SOURCE
 from service.capabilities.service.components import ComponentRegistry
 from service.capabilities.service.delivery import InstallationCandidates
 from service.capabilities.service.descriptor import HOST_COMPONENT_PLUGIN, PLUGIN_DESCRIPTOR
@@ -29,6 +30,7 @@ from service.capabilities.service.install import (
 )
 from service.capabilities.service.installed import installed_inventory
 from service.capabilities.service.plugins import PLUGIN_ORIGIN_KIND, identity_snapshot
+from service.capabilities.service.ui import resolve_ui
 from service.paths import SERVICE_SKILL_STATE_FILE
 from service.platform.storage import filesystem_path
 
@@ -75,8 +77,8 @@ SKILL_STATE_RUNTIME_RECOVERY_WORKSPACES = "workspaces"
 SKILL_RECOVERY_VERSION = 1
 SKILL_ICON_FALLBACK = "skills"
 SKILL_ICON_PATTERN = re.compile(r"^[a-z][a-z0-9-]*$")
-SKILL_DESCRIPTION_LOCALE_PATTERN = re.compile(
-    r"^description[_-]([a-zA-Z]{2,3}(?:[-_][a-zA-Z0-9]{2,8})*)$"
+SKILL_COPY_LOCALE_PATTERN = re.compile(
+    r"^(display_name|description)[_-]([a-zA-Z]{2,3}(?:[-_][a-zA-Z0-9]{2,8})*)$"
 )
 SKILL_PRESENTATION_FILE = Path(__file__).resolve().parents[1] / "catalog.json"
 SKILL_PRESENTATION_SCHEMA = 3
@@ -275,15 +277,17 @@ def restore_skill_state(record: dict[str, Any]) -> None:
     disabled = record.get(SKILL_STATE_DISABLED)
     deleted = record.get(SKILL_STATE_DELETED)
     recovery = record.get(SKILL_STATE_RUNTIME_RECOVERY)
-    if not isinstance(recovery, dict) or any(
-        not isinstance(items, list) or any(not isinstance(item, str) for item in items)
-        for items in (disabled, deleted)
+    if (
+        not isinstance(recovery, dict)
+        or not isinstance(disabled, list)
+        or not isinstance(deleted, list)
+        or any(not isinstance(item, str) for item in (*disabled, *deleted))
     ):
         raise ValueError("plugin_recovery_state_invalid")
     version = recovery.get(SKILL_STATE_RUNTIME_RECOVERY_VERSION)
     workspaces = recovery.get(SKILL_STATE_RUNTIME_RECOVERY_WORKSPACES)
     if (
-        type(version) is not int
+        (not isinstance(version, int) or isinstance(version, bool))
         or not isinstance(workspaces, list)
         or any(not isinstance(item, str) for item in workspaces)
     ):
@@ -610,10 +614,11 @@ class SkillCatalog:
         manifest = self.manifest(skill.path)
         if not self._plugin_declared(skill):
             return ""
+        source = self.source(skill.path)
         try:
-            identity_snapshot(
-                {"path": str(manifest), "source": self.source(skill.path), "active": True}
-            )
+            snapshot = identity_snapshot({"path": str(manifest), "source": source, "active": True})
+            if source == SKILL_SOURCE_BUILTIN:
+                resolve_ui(snapshot, self.components.active_ui() if self.components else None)
         except (ValueError, OSError, KeyError, TypeError) as error:
             return f"plugin_invalid: {error}"
         return ""
@@ -679,7 +684,20 @@ class SkillCatalog:
         directory = manifest.parent
         source = self.source(manifest)
         metadata = self._json_file(directory / SKILL_PRODUCT_METADATA_FILE)
-        hub_record = self._json_file(directory / ORIGIN_FILE_NAME)
+        origin_record = self._json_file(directory / ORIGIN_FILE_NAME)
+        local_plugin = (
+            source == SKILL_SOURCE_USER and origin_record.get("kind") == PLUGIN_ORIGIN_KIND
+        )
+        installation_source = state.installation_sources.get(
+            skill.name, SKILL_INSTALLATION_UPLOAD if local_plugin else SKILL_INSTALLATION_UNKNOWN
+        )
+        hub_record = (
+            origin_record
+            if not local_plugin
+            and installation_source in {SKILL_INSTALLATION_MARKETPLACE, SKILL_INSTALLATION_UNKNOWN}
+            and origin_record.get("source") == CLAWHUB_SOURCE
+            else {}
+        )
         attribution = read_attribution(directory, skill.name)
         fingerprint = self._fingerprint(directory)
         dependencies = [
@@ -734,7 +752,19 @@ class SkillCatalog:
             )
             category_source = source
         description = str(hub_record.get("description") or skill.description)
-        descriptions = self._localized_descriptions(manifest)
+        localized = self._localized_copy(manifest)
+        display_names = localized["display_name"]
+        descriptions = localized["description"]
+        for fieldName, copies in (("display_names", display_names), ("descriptions", descriptions)):
+            recorded = hub_record.get(fieldName)
+            if isinstance(recorded, Mapping):
+                copies.update(
+                    {
+                        key.replace("_", "-").lower(): value.strip()
+                        for key, value in recorded.items()
+                        if isinstance(key, str) and isinstance(value, str) and value.strip()
+                    }
+                )
         display_name = hub_record.get("display_name") or skill.display_name
         if source == SKILL_SOURCE_BUILTIN and locale:
             language = locale.strip().replace("_", "-").lower().split("-")[0]
@@ -772,9 +802,7 @@ class SkillCatalog:
             "blurb": str(metadata.get("blurb") or skill.short_description or description),
             "icon": icon,
             "hub": hub_record or None,
-            "installationSource": state.installation_sources.get(
-                skill.name, SKILL_INSTALLATION_UNKNOWN
-            ),
+            "installationSource": installation_source,
             **attribution,
             "updated_at": self._mtime(manifest),
             "active": active,
@@ -791,6 +819,7 @@ class SkillCatalog:
             "runtime_availability": skill.availability.value,
             "runtime_revision": runtime_revision,
             "display_name": display_name,
+            "display_names": display_names or None,
             SKILL_INVOCATION_METADATA_KEY: trusted_invocation,
         }
 
@@ -876,32 +905,22 @@ class SkillCatalog:
         return dict(value) if isinstance(value, Mapping) else {}
 
     @staticmethod
-    def _localized_descriptions(manifest: Path) -> dict[str, str]:
-        """Collect `description_<lang>` entries from the manifest frontmatter.
-
-        Frontend-only: the default `description` still drives agent-facing
-        matching; these copies are shown in the UI when the current language
-        matches.
-        """
-
+    def _localized_copy(manifest: Path) -> dict[str, dict[str, str]]:
+        localized: dict[str, dict[str, str]] = {"display_name": {}, "description": {}}
         manifest = filesystem_path(manifest)
         if not manifest.is_file():
-            return {}
+            return localized
         try:
             frontmatter, _body = parse_skill_frontmatter(manifest.read_text(encoding="utf-8"))
         except (OSError, SkillPackageError):
-            return {}
-        descriptions: dict[str, str] = {}
+            return localized
         for key, value in frontmatter.items():
-            match = SKILL_DESCRIPTION_LOCALE_PATTERN.fullmatch(str(key))
-            if match is None:
+            match = SKILL_COPY_LOCALE_PATTERN.fullmatch(str(key))
+            if match is None or not isinstance(value, str) or not value.strip():
                 continue
-            description = str(value or "").strip()
-            if not description:
-                continue
-            locale = match.group(1).replace("_", "-").lower()
-            descriptions[locale] = description
-        return descriptions
+            locale = match.group(2).replace("_", "-").lower()
+            localized[match.group(1)][locale] = value.strip()
+        return localized
 
     def _fingerprint(self, directory: Path) -> str:
         """Hash the skill directory, reusing the previous digest while nothing changed."""

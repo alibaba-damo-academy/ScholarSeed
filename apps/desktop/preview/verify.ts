@@ -1,9 +1,13 @@
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { dirname, extname, isAbsolute, relative, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import ts from 'typescript'
+import { resolveExample } from '../../../scripts/shared/examples.cjs'
 
 const DESKTOP_ROOT = fileURLToPath(new URL('../', import.meta.url))
+const REPOSITORY_ROOT = resolve(DESKTOP_ROOT, '../..')
+const DEVELOPMENT_ROOTS = [resolve(REPOSITORY_ROOT, 'examples'), ...['examples.cjs', 'examples.d.cts', 'preparation.cjs', 'preparation.d.cts'].map(name => resolve(REPOSITORY_ROOT, 'scripts/shared', name))]
 const OUTPUT_DIRECTORIES = ['main', 'preload', 'renderer'] as const
 const OUTPUT_EXTENSIONS = new Set(['.js', '.mjs', '.cjs', '.html', '.css'])
 const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs']
@@ -18,6 +22,8 @@ export interface PreviewExclusionOptions {
   readonly outputRoot?: string
   readonly sourceEntries?: readonly string[]
   readonly previewRoot?: string
+  readonly developmentRoots?: readonly string[]
+  readonly sampleFiles?: readonly string[]
 }
 
 export interface PreviewExclusionReport {
@@ -32,13 +38,16 @@ function inside(root: string, path: string): boolean {
   return suffix === '' || (!suffix.startsWith('..') && !isAbsolute(suffix))
 }
 
-function scanDirectory(directory: string, artifacts: string[]): void {
+function scanDirectory(directory: string, artifacts: string[], samples: ReadonlyMap<number, ReadonlySet<string>>): void {
   if (!existsSync(directory) || !lstatSync(directory).isDirectory()) throw new Error(`Missing production output directory: ${directory}`)
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
     const path = resolve(directory, entry.name)
     if (entry.isSymbolicLink()) throw new Error(`Production output symlink is outside verification scope: ${path}`)
-    if (entry.isDirectory()) scanDirectory(path, artifacts)
-    else if (entry.isFile() && OUTPUT_EXTENSIONS.has(extname(path))) {
+    if (entry.isDirectory()) scanDirectory(path, artifacts, samples)
+    else if (entry.isFile()) {
+      const digests = samples.get(lstatSync(path).size)
+      if (digests && digests.has(createHash('sha256').update(readFileSync(path)).digest('hex'))) throw new Error(`Example sample in production artifact: ${path}`)
+      if (!OUTPUT_EXTENSIONS.has(extname(path))) continue
       const content = readFileSync(path, 'utf8')
       for (const marker of PREVIEW_MARKERS) {
         if (content.includes(marker)) throw new Error(`Preview marker ${marker} in production artifact: ${path}`)
@@ -58,7 +67,7 @@ function sourcePath(importer: string, specifier: string): string | null {
   return null
 }
 
-function sourceClosure(entries: readonly string[], previewRoot: string): Pick<PreviewExclusionReport, 'sourceModules' | 'unresolvedDynamicImports'> {
+function sourceClosure(entries: readonly string[], previewRoot: string, developmentRoots: readonly string[]): Pick<PreviewExclusionReport, 'sourceModules' | 'unresolvedDynamicImports'> {
   const canonicalPreviewRoot = existsSync(previewRoot) ? realpathSync(previewRoot) : previewRoot
   const modules = new Set<string>()
   const unresolved = new Set<string>()
@@ -66,6 +75,7 @@ function sourceClosure(entries: readonly string[], previewRoot: string): Pick<Pr
     if (!existsSync(path)) throw new Error(`Missing production source entry: ${path}`)
     const canonical = realpathSync(path)
     if (inside(canonicalPreviewRoot, canonical)) throw new Error(`Production source imports preview module: ${canonical}`)
+    if (developmentRoots.some(root => inside(existsSync(root) ? realpathSync(root) : resolve(root), canonical))) throw new Error(`Production source imports development module: ${canonical}`)
     if (modules.has(canonical)) return
     modules.add(canonical)
     const extension = extname(canonical)
@@ -99,14 +109,23 @@ export function verifyProductionPreviewExclusion(options: PreviewExclusionOption
   const outputRoot = resolve(options.outputRoot ?? resolve(DESKTOP_ROOT, 'out'))
   const directories = OUTPUT_DIRECTORIES.map(directory => resolve(outputRoot, directory))
   const artifacts: string[] = []
+  const samples = new Map<number, Set<string>>()
+  const sampleFiles = options.sampleFiles ?? resolveExample().projects.flatMap(project => project.files.map(file => file.sourcePath))
+  for (const sample of sampleFiles) {
+    const bytes = readFileSync(sample)
+    const hashes = samples.get(bytes.byteLength) ?? new Set<string>()
+    hashes.add(createHash('sha256').update(bytes).digest('hex'))
+    samples.set(bytes.byteLength, hashes)
+  }
   for (const directory of directories) {
     const before = artifacts.length
-    scanDirectory(directory, artifacts)
+    scanDirectory(directory, artifacts, samples)
     if (artifacts.length === before) throw new Error(`No JS/HTML/CSS artifacts in production output: ${directory}`)
   }
   const closure = sourceClosure(
     options.sourceEntries ?? PRODUCTION_ENTRIES.map(entry => resolve(DESKTOP_ROOT, entry)),
     resolve(options.previewRoot ?? resolve(DESKTOP_ROOT, 'preview')),
+    options.developmentRoots ?? DEVELOPMENT_ROOTS,
   )
   return { outputDirectories: directories, artifacts: artifacts.sort(), ...closure }
 }

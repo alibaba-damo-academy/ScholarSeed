@@ -36,7 +36,10 @@ test('plain numeric citations link to matching bibliography entries without chan
     paragraph.children.filter((child) => child.type === 'link').map((child) => child.url),
     ['#ref-1', '#ref-3', '#ref-4', '#existing']
   )
-  assert.equal(tree.children.some((child) => child.type === 'html'), false)
+  assert.equal(
+    tree.children.some((child) => child.type === 'html'),
+    false
+  )
   assert.equal(paragraph.children.find((child) => child.type === 'inlineCode')?.value, '代码[1]')
   assert.equal(source.includes('](#ref-1)'), false)
 })
@@ -46,18 +49,26 @@ test('unmatched numbers and documents without a bibliography remain ordinary tex
     const tree = unified().use(remarkParse).parse(source)
     projectNumericCitations(tree)
     assert.equal(tree.children[0].type, 'paragraph')
-    assert.equal(tree.children[0].children.some((child) => child.type === 'link'), false)
-    assert.equal(tree.children.some((child) => child.type === 'html'), false)
+    assert.equal(
+      tree.children[0].children.some((child) => child.type === 'link'),
+      false
+    )
+    assert.equal(
+      tree.children.some((child) => child.type === 'html'),
+      false
+    )
   }
 })
 
 test('link projection keeps original citation and fragment URLs outside the sanitized href', () => {
   const ctx = new Ctx(new Container(), new Clock())
   ctx.inject(linkAttr.key, () => ({ rel: 'noopener' }))
-  configureCitationLinks(ctx)
+  configureCitationLinks(ctx, 'shared-citation-marker')
   for (const href of [
     'https://example.org',
     'scholarseed-cite:receipt',
+    '#ref-15',
+    'references.md#ref-paper',
     '#ref',
     'javascript:alert(1)',
   ]) {
@@ -67,6 +78,9 @@ test('link projection keeps original citation and fragment URLs outside the sani
       'data-document-link': href,
       contenteditable: 'false',
       tabindex: 0,
+      ...(['scholarseed-cite:receipt', '#ref-15', 'references.md#ref-paper'].includes(href)
+        ? { class: 'shared-citation-marker', 'data-citation-marker': 'true' }
+        : {}),
     })
     assert.deepEqual({ ...mark.attrs }, { href, title: 'Original title' })
   }

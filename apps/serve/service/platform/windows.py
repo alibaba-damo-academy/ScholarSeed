@@ -5,6 +5,8 @@ from __future__ import annotations
 import ctypes
 import errno
 import os
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager
 from ctypes import wintypes
 from enum import IntEnum
 from typing import Any, Callable, Literal, NoReturn, overload
@@ -43,6 +45,7 @@ FILE_OBJECT = 1
 OWNER_INFORMATION = 1
 DACL_INFORMATION = 4
 TOKEN_QUERY = 8
+TOKEN_DUPLICATE = 2
 TOKEN_USER = 1
 TOKEN_GROUPS = 2
 GROUP_ENABLED = 0x00000004
@@ -54,6 +57,12 @@ VALID_ACE_FLAGS = 0x1F
 ACL_SIZE_INFORMATION = 2
 ALLOW_ACE = 0
 SDDL_REVISION = 1
+INHERITED_DIRECTORY_SECURITY = "O:{user}D:(A;OICI;FA;;;{user})"
+SEF_DACL_AUTO_INHERIT = 0x01
+FILE_GENERIC_READ = 0x00120089
+FILE_GENERIC_WRITE = 0x00120116
+FILE_GENERIC_EXECUTE = 0x001200A0
+FILE_ALL_ACCESS = 0x001F01FF
 LOCK_EXCLUSIVE_IMMEDIATE = 3
 DIRECTORY_INFORMATION = 1
 STATUS_NO_MORE_FILES = 0x80000006
@@ -88,6 +97,15 @@ class UnicodeString(ctypes.Structure):
         ("length", wintypes.USHORT),
         ("maximum", wintypes.USHORT),
         ("buffer", wintypes.LPWSTR),
+    ]
+
+
+class GenericMapping(ctypes.Structure):
+    _fields_ = [
+        ("read", wintypes.DWORD),
+        ("write", wintypes.DWORD),
+        ("execute", wintypes.DWORD),
+        ("all", wintypes.DWORD),
     ]
 
 
@@ -327,6 +345,27 @@ if KERNEL is not None and SECURITY is not None and NT is not None:
         wintypes.BOOL,
     )
     _configure(SECURITY, "IsValidAcl", [wintypes.LPVOID], wintypes.BOOL)
+    _configure(
+        SECURITY,
+        "CreatePrivateObjectSecurityEx",
+        [
+            wintypes.LPVOID,
+            wintypes.LPVOID,
+            ctypes.POINTER(wintypes.LPVOID),
+            wintypes.LPVOID,
+            wintypes.BOOL,
+            wintypes.ULONG,
+            wintypes.HANDLE,
+            ctypes.POINTER(GenericMapping),
+        ],
+        wintypes.BOOL,
+    )
+    _configure(
+        SECURITY,
+        "DestroyPrivateObjectSecurity",
+        [ctypes.POINTER(wintypes.LPVOID)],
+        wintypes.BOOL,
+    )
     _configure(
         SECURITY,
         "GetSecurityInfo",
@@ -725,6 +764,65 @@ def identity(handle: int) -> tuple[int, int]:
     return info.volume, int.from_bytes(info.identifier, "little")
 
 
+def _destroy_private_security(descriptor: wintypes.LPVOID) -> None:
+    check(_native(SECURITY).DestroyPrivateObjectSecurity(ctypes.byref(descriptor)))
+
+
+@contextmanager
+def _inherited_directory_security(
+    parent: int, creator: wintypes.LPVOID
+) -> Iterator[wintypes.LPVOID]:
+    """Compose parent ACEs before native creation, without changing existing ACLs."""
+    security, kernel = _native(SECURITY), _native(KERNEL)
+    parent_descriptor = wintypes.LPVOID()
+    descriptor = wintypes.LPVOID()
+    token = wintypes.HANDLE()
+    mapping = GenericMapping(
+        FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_GENERIC_EXECUTE, FILE_ALL_ACCESS
+    )
+    with ExitStack() as cleanup:
+        code = security.GetSecurityInfo(
+            parent,
+            FILE_OBJECT,
+            DACL_INFORMATION,
+            None,
+            None,
+            None,
+            None,
+            ctypes.byref(parent_descriptor),
+        )
+        if parent_descriptor:
+            cleanup.callback(kernel.LocalFree, parent_descriptor)
+        if code:
+            raise _error(code)
+        if not parent_descriptor:
+            raise OSError("parent security descriptor unavailable")
+        check(
+            security.OpenProcessToken(
+                kernel.GetCurrentProcess(), TOKEN_QUERY | TOKEN_DUPLICATE, ctypes.byref(token)
+            )
+        )
+        cleanup.callback(close, _handle(token))
+        # NtCreateFile receives the finished descriptor. An unprotected creator
+        # DACL alone does not materialize the parent's inheritable sandbox ACEs.
+        created = security.CreatePrivateObjectSecurityEx(
+            parent_descriptor,
+            creator,
+            ctypes.byref(descriptor),
+            None,
+            True,
+            SEF_DACL_AUTO_INHERIT,
+            token,
+            ctypes.byref(mapping),
+        )
+        if descriptor:
+            cleanup.callback(_destroy_private_security, descriptor)
+        check(created)
+        if not descriptor:
+            raise OSError("inherited security descriptor unavailable")
+        yield descriptor
+
+
 def open_relative(
     parent: int,
     name: str,
@@ -734,12 +832,16 @@ def open_relative(
     access: int = READ | SYNCHRONIZE,
     share: int = SHARE_READ,
     private: bool = True,
+    inherit_acl: bool = False,
 ) -> int:
     """Open product data using OS access; private controls creation only.
 
     Existing data ACLs are preserved and do not need to match our newly-created
-    descriptor. Explicit protection and sandbox admission retain their own checks.
+    descriptor. Inherited directory creation adds host access without excluding
+    parent grants. Explicit protection and sandbox admission retain their checks.
     """
+    if inherit_acl and (not private or disposition != CREATE or directory is not True):
+        raise ValueError("inherited host access requires exclusive directory creation")
     if NT is None:
         raise OSError("Windows native backend unavailable")
     encoded = name.encode("utf-16-le")
@@ -748,15 +850,25 @@ def open_relative(
     security = wintypes.LPVOID()
     handle = wintypes.HANDLE()
     if private and disposition != OPEN:
+        user = current_sid()
+        descriptor = (
+            INHERITED_DIRECTORY_SECURITY.format(user=user)
+            if inherit_acl
+            else f"O:{user}D:P(A;;FA;;;{user})(A;;FA;;;SY)"
+        )
         check(
             _native(SECURITY).ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                f"O:{current_sid()}D:P(A;;FA;;;{current_sid()})(A;;FA;;;SY)",
+                descriptor,
                 SDDL_REVISION,
                 ctypes.byref(security),
                 None,
             )
         )
-    try:
+    with ExitStack() as opened, ExitStack() as cleanup:
+        if security:
+            cleanup.callback(_native(KERNEL).LocalFree, security)
+        if inherit_acl:
+            security = cleanup.enter_context(_inherited_directory_security(parent, security))
         attributes = ObjectAttributes(
             ctypes.sizeof(ObjectAttributes),
             parent,
@@ -788,27 +900,24 @@ def open_relative(
             if code == ERROR_ALREADY_EXISTS:
                 raise FileExistsError(code, "private entry exists")
             raise _error(code)
-        try:
-            tag, info = TagInfo(), FileInfo()
-            check(
-                _native(KERNEL).GetFileInformationByHandleEx(
-                    handle, TAG_INFO, ctypes.byref(tag), ctypes.sizeof(tag)
-                )
+        opened.callback(close, _handle(handle))
+        tag, info = TagInfo(), FileInfo()
+        check(
+            _native(KERNEL).GetFileInformationByHandleEx(
+                handle, TAG_INFO, ctypes.byref(tag), ctypes.sizeof(tag)
             )
-            check(_native(KERNEL).GetFileInformationByHandle(handle, ctypes.byref(info)))
-            if tag.attributes & REPARSE_ATTRIBUTE or (
-                directory is not None and bool(tag.attributes & DIRECTORY_ATTRIBUTE) != directory
-            ):
-                raise OSError("reparse or incorrect entry type rejected")
-            if not tag.attributes & DIRECTORY_ATTRIBUTE and info.links != 1:
-                raise OSError("multiple-link private file rejected")
-            return _handle(handle)
-        except BaseException:
-            close(_handle(handle))
-            raise
-    finally:
-        if security:
-            _native(KERNEL).LocalFree(security)
+        )
+        check(_native(KERNEL).GetFileInformationByHandle(handle, ctypes.byref(info)))
+        if tag.attributes & REPARSE_ATTRIBUTE or (
+            directory is not None and bool(tag.attributes & DIRECTORY_ATTRIBUTE) != directory
+        ):
+            raise OSError("reparse or incorrect entry type rejected")
+        if not tag.attributes & DIRECTORY_ATTRIBUTE and info.links != 1:
+            raise OSError("multiple-link private file rejected")
+        # Release security resources before transferring the opened handle.
+        cleanup.close()
+        opened.pop_all()
+        return _handle(handle)
 
 
 def rename(handle: int, directory: int, name: str, replace: bool) -> None:

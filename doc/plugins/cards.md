@@ -22,6 +22,7 @@ First choose what drives the card, then choose its UI. **A public slot is a busi
 | --- | --- |
 | Reuse search, paper selection, authorization, or saving | A public slot driven by its domain tool |
 | Compose an existing conversation UI | Conversation components, connected to actual props and callbacks |
+| Compose charts, tables, evidence, or artifact previews | Use the unified Skill and composition slots below first |
 | Collect choices for your own workflow | A custom slot, data/action schemas, and component code |
 
 ## Public Business Slots
@@ -33,8 +34,6 @@ First choose what drives the card, then choose its UI. **A public slot is a busi
 | `preview.literature-results` | Full results, filters, pagination, and sources | Open from the summary to select papers, inspect sources, or add to the library. | [Details](../../apps/desktop/src/renderer/src/features/literature/Details.tsx) |
 | `literature.selection` | A paper subset | Compatibility with existing literature flows; returns selected paper IDs. | [Choices](../../apps/desktop/src/renderer/src/features/literature/Choices.tsx) |
 | `literature.authorization` | Papers within a full-text authorization request | The literature authorization flow waits for confirmation before acquiring full text. | [Choices](../../apps/desktop/src/renderer/src/features/literature/Choices.tsx) |
-| `display.literature-downloads` | Per-paper acquisition or import outcomes | Shown after acquisition/import; users can open full text or the library. | [Downloads](../../apps/desktop/src/renderer/src/features/literature/Downloads.tsx) |
-| `display.literature-delivery` | Save location, file conflicts, and outcomes | Started with `literature delivery`; the user chooses and confirms a destination. | [Delivery](../../apps/desktop/src/renderer/src/features/literature/Delivery.tsx) |
 | `display.literature-references` | References and source actions | Shows cited literature, with source opening, import, and collection actions. | [References](../../apps/desktop/src/renderer/src/features/literature/References.tsx) |
 
 To reference a public component, set `public: true`, specify the existing slot and scenario file, and omit `entry`. Follow the actual data and actions returned by the [component catalog](api.md#discover-components-and-slots).
@@ -71,8 +70,20 @@ The component previews retained in the [Chinese edition](cards.zh.md#公共卡�
 
 - **Questions and paper selection:** `interaction.question` shows choices; `literature.selection` shows a selectable subset. The outer interaction owns the question and whole-turn confirmation, not the option component alone.
 - **Search summary and full results:** `display.literature-search` summarizes results; `preview.literature-results` contains the full list, filters, and operations. See `results.json`, `details.json`, and `question.json` in [agentic-search/components](../../skills/community/agentic-search/components).
-- **Full-text authorization and acquisition:** `literature.authorization` shows the requested papers; the native flow owns its buttons and authorization result. `display.literature-downloads` shows per-paper outcomes. Examples: [authorization.json](../../skills/community/literature-review/components/authorization.json) and [downloads.json](../../skills/community/precise-literature-search/components/downloads.json); paper-subset examples use `scenario.json` in the corresponding component directory.
-- **Delivery and references:** `display.literature-delivery` covers save destinations and conflicts. `display.literature-references` presents cited papers and source operations. Their UI does not independently grant download, filesystem, or library permissions.
+- **Full-text authorization:** `literature.authorization` shows the requested papers. Managed acquisition supports authorized reading; it does not write to the library or save files for the user.
+- **Research results:** the results view keeps explicit library actions and BibTeX export. References continue to link to their sources.
+
+## Unified Skill and Composition Slots
+
+The Agent loads the conversation-card guide through `scholarseed-product-operations`, discovers current official UI, and reads its three references. The entry is `skills/community/scholarseed-product-operations/references/scholarseed-chat-ui/guides/conversation.md`. The three formerly separate conversation skills are consolidated here and are not installed separately.
+
+| Composition slot | Purpose | Contract and examples |
+| --- | --- | --- |
+| `rich-content.compose` | Charts, tables, formulas, diagrams, code, and prose | `references/scholarseed-chat-ui/guides/content.md` |
+| `research-evidence.select` | Complete evidence, locations, and selections | `references/scholarseed-chat-ui/guides/evidence.md` |
+| `artifacts-workbench.preview` | File paths, versions, and supplied previews | `references/scholarseed-chat-ui/guides/workbench.md` |
+
+Use schema-compliant JSON when a composition meets the need; do not generate another plugin. New interactions outside these compositions use `plugin-create` for creation, checks, and publication, followed by user installation confirmation. Domain slots remain driven by domain tools; an arbitrary Conversation export is not an invocable slot. Organize answers as explanation, component card, and interpretation rather than packing many unrelated components into one plugin page. Technical names and logs are debugging details.
 
 ## Conversation Components
 
@@ -80,15 +91,33 @@ Read components from `window.scholarseedUI.Conversation` and declare `Conversati
 
 | Category | Current exports | Your responsibility |
 | --- | --- | --- |
-| Research cards | `Choices`, `Results`, `Details`, `References`, `Downloads`, `Delivery`, `Review` | Real business data, operation ports, and authorization outcomes. Research cards generally take `content` and `ports`; Choices takes `data/status/slot/submit`. |
-| Prose and source content | `Markdown`, `Message`, `Code`, `Formula`, `Tabulation` | Original content, copy/open callbacks, citations, and mathematical meaning. Displaying code does not execute it. |
-| Artifacts | `Artifact`, `ArtifactGroup`, `ArtifactMenuItems`, `ArtifactDestination` | Immutable file/version identity and save/import/open operations and outcomes; groups only provide layout. |
-| Images | `ImageView`, `Images`, `ImageThumbnail` | Authorized URLs, asset identity, load failures, selection, and actions; components do not read arbitrary local files. |
-| Citations and context | `CitationLink`, `WebCitationLink`, `CitationSources`, `ConversationReference`, `ComposerRefChip` | Citation resolution, authorized previews, history snapshots, pagination, and navigation; a label is not read permission. |
-| Execution | `ExecutionProcess`, `ExecutionBatch`, `ToolExecution`, `ExecutionIO`, `ExecutionStatus`, `WebSearchRecord` | Actual turns, state, I/O, and time; unknown or interrupted results must not appear successful. |
-| Task support | `Plan`, `Failure`, `Suggestions`, `Attachments`, `FileFormatIcon` | Plan projection, recovery eligibility, sending, file identity, and opening; UI does not automatically resume tasks or send messages. |
+| Prose and rich content | `Markdown`, `Code`, `Formula`, `Tabulation`, `Diagram`, `Canvas`, `Content` | Original content and controlled copy/open callbacks; display is not execution. Shared image implementations remain native; Markdown multi-image integration is separately planned. |
+| Charts and tables | `Plot`, `BarChart`, `GroupedBarChart`, `StackedBarChart`, `LineChart`, `ScatterChart`, `PieChart`, `DonutChart`, `Histogram`, `BoxPlot`, `Heatmap`, `DataTable` | Explicit columns, units, missing values, and sources; use official ECharts/TanStack components, not executable configuration. |
+| Research results | `Results`, `Details`, `References`, `Downloads`, `Delivery`, `Review` | Real domain data and operation ports, normally supplied as `content` and `ports`. |
+| Citations and evidence | `CitationLink`, `CitationSources` | Complete excerpts, locations, historical snapshots, and navigation; labels are not read permission. |
+| Artifacts and workbench | `FileFormatIcon`, `Artifact`, `ArtifactGroup`, `ArtifactMenuItems`, `FileMenuItems`, `ArtifactDestination` | Immutable file/version identities and save/import/open outcomes; icons, groups, and menus are not independent business cards. |
+
+User input and context, execution and plans, confirmation and clarification, next steps, failures, and empty answers use native ScholarSeed UI, with no corresponding official package export or iframe entry. `interaction.question` and `literature.authorization` remain native contributions. Shared content images, menus, and component-local error handling remain available.
 
 Inspect `catalog.composition.Conversation` for input guidance and [source and types](api.md#source-and-types) for exact signatures. Exported components do not imply that all internal callbacks are available to ordinary plugins.
+
+### Live Official Component Preview
+
+After installing this checkout's Desktop frontend dependencies, run:
+
+```sh
+pnpm ops dev browser
+```
+
+Open the [Desktop component gallery](http://localhost:5173/?dev=components) on the renderer's loopback address.
+
+Schema-backed seeded random data and JSON editing are preview tools, not real papers, saved results, or permission evidence. New components still need editable data contracts and safe interaction bindings. Preview does not call real business services or replace installation, copy, or Agent acceptance; documentation screenshots are not a live preview.
+
+### Copy Content, Not Interface Controls
+
+Whole-message copying merges prose and registered card text in turn order, with no separate card copy button. Charts and tables retain complete data and units, code retains collapsed lines, evidence retains excerpts and saved selections, and artifact previews retain supplied content and versions without reading linked files.
+
+Layout, icons, and menus have no copyable business text. Register custom content through the [copy SDK](api.md#register-copyable-card-content). Automatic registration uses `mount()` context; do not overwrite sibling components with `setCopyContent()`.
 
 ## UI Controls
 

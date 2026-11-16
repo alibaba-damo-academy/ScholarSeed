@@ -21,6 +21,7 @@ import {
   LIBRARY_HEADER_ACTION_CLASS,
   LIBRARY_TABLE_HEADER_CLASS,
   LibraryFilter,
+  LibraryLoading,
   LibraryToolbar,
 } from '../../components/business/Library'
 import { libraryFileType, libraryUpdatedAt } from '../../components/business/utils'
@@ -28,6 +29,7 @@ import { FileFormatIcon } from '../../components/primitive'
 import { absoluteSessionFilePath } from '../../components/markdown/links'
 import { artifactIsDeliverable } from '../../model'
 import { activeThread, selectedProject, useApp } from '../../store'
+import { setFileDragPreview } from '../../components/business/DragPreview'
 import { writeProjectEntryDrag } from '../../drag'
 import { subscribeFileEvents } from '../project/events'
 import { ArtifactEntry } from './Artifacts'
@@ -157,6 +159,10 @@ function OutputDirectory({
     <>
       {rows.map((item) => {
         const relative = [path, item.name].filter(Boolean).join('/')
+        const projectPath =
+          visiblePage?.project_path == null
+            ? undefined
+            : [visiblePage.project_path, relative].filter(Boolean).join('/')
         const open = Boolean(query) || expanded.has(session.session_id + ':' + relative)
         const artifact =
           item.artifact && artifactIsDeliverable(item.artifact) ? item.artifact : undefined
@@ -175,14 +181,16 @@ function OutputDirectory({
             <TableRow
               className="group/output"
               data-testid={artifact ? `output-${artifact.artifact_id}` : undefined}
-              draggable={Boolean(visiblePage?.project_path)}
+              draggable={Boolean(projectPath)}
               onDragStart={(event) => {
-                if (visiblePage?.project_path)
-                  writeProjectEntryDrag(event.dataTransfer, project, {
-                    path: visiblePage.project_path + '/' + relative,
-                    name: item.name,
-                    kind: item.dir ? 'dir' : 'file',
-                  })
+                if (!projectPath) return
+                const kind = item.dir ? 'dir' : 'file'
+                writeProjectEntryDrag(event.dataTransfer, project, {
+                  path: projectPath,
+                  name: item.name,
+                  kind,
+                })
+                setFileDragPreview(event.dataTransfer, item.name, kind)
               }}
             >
               <TableCell>
@@ -216,11 +224,7 @@ function OutputDirectory({
                   ) : (
                     <OutputFileLink
                       project={project}
-                      projectPath={
-                        visiblePage?.project_path
-                          ? visiblePage.project_path + '/' + relative
-                          : undefined
-                      }
+                      projectPath={projectPath}
                       absolutePath={
                         visiblePage ? absoluteSessionFilePath(visiblePage.root, relative) : ''
                       }
@@ -229,7 +233,8 @@ function OutputDirectory({
                       path={relative}
                       onOpen={preview}
                     >
-                      <span className="inline-flex w-full min-w-0 items-center gap-[var(--vds-space-2)] text-left">
+                      <span className="inline-flex w-full min-w-0 items-center gap-[var(--vds-space-2)] border border-transparent [padding:var(--vds-control-padding-md)] text-left">
+                        <span aria-hidden="true" className="size-[var(--vds-icon-8)] shrink-0" />
                         <FileFormatIcon name={item.name} />
                         <EllipsisText
                           wrapperClassName="min-w-0 flex-1"
@@ -271,11 +276,7 @@ function OutputDirectory({
                   <OutputFileLink
                     mode="actions"
                     project={project}
-                    projectPath={
-                      visiblePage.project_path
-                        ? visiblePage.project_path + '/' + relative
-                        : undefined
-                    }
+                    projectPath={projectPath}
                     absolutePath={absoluteSessionFilePath(visiblePage.root, relative)}
                     sessionId={session.session_id}
                     path={relative}
@@ -604,16 +605,12 @@ export function Outputs(): React.JSX.Element {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {!sessions.length && (searchingFiles || loading || failed) && (
+            {!sessions.length && !loading && !searchingFiles && failed && (
               <TableRow>
                 <TableCell colSpan={5}>
-                  {loading || searchingFiles ? (
-                    <Spinner />
-                  ) : failed ? (
-                    <Button variant="outline" onClick={refresh}>
-                      {t('readFailed')}
-                    </Button>
-                  ) : null}
+                  <Button variant="outline" onClick={refresh}>
+                    {t('readFailed')}
+                  </Button>
                 </TableCell>
               </TableRow>
             )}
@@ -676,6 +673,7 @@ export function Outputs(): React.JSX.Element {
             })}
           </TableBody>
         </Table>
+        {!sessions.length && (loading || searchingFiles) && <LibraryLoading />}
         {!loading && !failed && !searchingFiles && !search?.failed && !sessions.length && (
           <EmptyState
             image={{ src: emptyImage, alt: '' }}

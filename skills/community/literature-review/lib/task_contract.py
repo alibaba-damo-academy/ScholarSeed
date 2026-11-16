@@ -12,6 +12,8 @@ from confirmation import lock, SECONDS
 from chapter_plan import ROLES
 from bibliography_contract import is_bibliography_title
 from citation_styles import style_ids
+from layouts import TEMPLATES, canonical_template
+from strategy import policy, validate_strategy, require_capabilities, QUICK
 
 CONTRACT_VERSION = 1
 VERBATIM_MATCH_PERCENT = 60
@@ -20,7 +22,8 @@ REQUEST_FIELDS = {'local_pdfs','writing_strategy','chapter_concurrency','intent'
     'retrieval','publication','constraints','output_scope','selected_section_ids',
     'user_instructions','outline_review','section_instructions','length_target',
     'length_min','length_max','length_unit','user_requests','effective_requirements',
-    'stage_instructions','auto_authorization','review_timeout_seconds'}
+    'stage_instructions','auto_authorization','review_timeout_seconds',
+    'execution','deliverable','sources'}
 RETRIEVAL_FIELDS = {'corpus_size','dimensions','time_range','temporal_policy','mode'}
 PUBLICATION_FIELDS = {'format','template','citation_style'}
 TIME_RANGE_FIELDS = {'start_year','end_year'}
@@ -63,7 +66,7 @@ def json_input(path):
 
 def validate_template_value(value):
     if not isinstance(value,str) or not value.strip():
-        raise ValueError('publication.template must be a nonempty string, e.g. "ctexart" or "neurips"; objects are not accepted')
+        raise ValueError('publication.template must be a nonempty string, e.g. "standard_chinese" or "neurips"; objects are not accepted')
 
 
 def verbatim_matches(quote, originals):
@@ -87,8 +90,9 @@ def validate_request(data):
         'user_instructions':'', 'user_requests':[], 'effective_requirements':'',
         'stage_instructions':'', 'section_instructions':{}, 'constraints':[], **data})
     if result['output_scope'] not in ('survey', 'section'): raise ValueError('output_scope must be survey or section')
-    result.setdefault('writing_strategy','chapter_delta' if result['output_scope']=='survey' else 'whole')
-    result.setdefault('chapter_concurrency',3)
+    validate_strategy(result)
+    result.setdefault('writing_strategy','whole' if result.get('execution',{}).get('mode') == QUICK else 'chapter_delta' if result['output_scope']=='survey' else 'whole')
+    result.setdefault('chapter_concurrency',5)
     from local_papers import validate_files
     result['local_pdfs']=validate_files(result.get('local_pdfs',[]))
     if result['writing_strategy'] not in ('whole','chapter_delta'):raise ValueError('writing_strategy must be whole or chapter_delta')
@@ -103,7 +107,9 @@ def validate_request(data):
     result.setdefault('language', 'CHINESE' if re.search(r'[\u3400-\u9fff]',result['intent']) else 'ENGLISH')
     if result['language'] not in ('CHINESE','ENGLISH'): raise ValueError('language must be CHINESE or ENGLISH; local exceptions belong in effective_requirements')
     result.setdefault('outline_review', 'required' if result['output_scope']=='survey' else 'auto')
-    if result['outline_review'] not in ('auto','required','timeout_auto'): raise ValueError('outline_review must be auto, required or timeout_auto')
+    if result['outline_review'] not in ('auto','required','timeout_auto','plan'): raise ValueError('outline_review must be auto, required, timeout_auto or plan')
+    if result['outline_review']=='plan' and 'execution' not in result:
+        raise ValueError('outline_review=plan requires execution')
     if result['outline_review']=='timeout_auto':
         result.setdefault('review_timeout_seconds',SECONDS)
     if 'review_timeout_seconds' in result and (type(result['review_timeout_seconds']) is not int or result['review_timeout_seconds']!=SECONDS):
@@ -127,13 +133,13 @@ def validate_request(data):
     if result.get('length_unit','words') not in ('words','cjk_chars','characters','pages'): raise ValueError('invalid length_unit')
     retrieval=result.setdefault('retrieval',{})
     if not isinstance(retrieval,dict) or set(retrieval)-RETRIEVAL_FIELDS: raise ValueError('invalid retrieval fields')
-    retrieval.setdefault('corpus_size',{'target':40})
+    retrieval.setdefault('corpus_size',{'target':policy(result)['papers']})
     size=retrieval['corpus_size']
     if not isinstance(size,dict) or set(size)-{'target','min','max'}: raise ValueError('invalid retrieval.corpus_size')
     for k,v in size.items():
         if type(v) is not int or v<1: raise ValueError('retrieval.corpus_size.'+k+' must be positive')
     if size.get('min',0)>size.get('max',float('inf')): raise ValueError('corpus minimum exceeds maximum')
-    retrieval.setdefault('mode','balanced')
+    retrieval.setdefault('mode',policy(result)['search_mode'])
     if not isinstance(retrieval['mode'],str) or not retrieval['mode']: raise ValueError('retrieval.mode must be nonempty')
     window=retrieval.get('time_range',{})
     if not isinstance(window,dict) or set(window)-TIME_RANGE_FIELDS:
@@ -142,7 +148,9 @@ def validate_request(data):
     if window.get('start_year') and window.get('end_year') and window['start_year']>window['end_year']: raise ValueError('invalid hard year range')
     pub=result.setdefault('publication',{})
     if not isinstance(pub,dict) or set(pub)-PUBLICATION_FIELDS: raise ValueError('publication accepts format, template, citation_style only')
-    if pub.get('format','latex_pdf') not in ('latex_pdf','markdown'): raise ValueError('invalid publication.format')
+    if result.get('execution',{}).get('mode') == QUICK:
+        pub.setdefault('format','markdown')
+    if pub.get('format','latex_pdf') not in ('latex_pdf','markdown','docx'): raise ValueError('invalid publication.format')
     if pub.get('citation_style','numeric') not in style_ids(): raise ValueError('invalid citation_style; supported: ' + ', '.join(style_ids()))
     if 'template' in pub: validate_template_value(pub['template'])
     constraints=result['constraints']; seen=set()
@@ -174,6 +182,7 @@ def validate_request(data):
         elif kind=='must_include_paper':
             if not isinstance(value,dict) or not value.get('title'): raise ValueError(loc+': paper title required')
         elif not isinstance(value,str) or not value.strip(): raise ValueError(loc+': value must be nonempty text')
+    require_capabilities(result)
     publication_view(result)
     structural_contract(result)  # detect contradictory required/forbidden roles
     return result
@@ -215,12 +224,20 @@ def read_query(workspace): return query_view(read_request(workspace))
 
 
 def publication_view(request):
-    expected='ctexart' if request['language']=='CHINESE' else 'neurips'
-    chosen=request['publication'].get('template',expected)
-    if chosen!=expected and not (request['language']=='ENGLISH' and chosen=='ctexart'):
-        raise ValueError('template is not supported by the current language renderer: '+request['publication']['template'])
-    return {'format':'latex_pdf','template':'ctexart' if request['language']=='CHINESE' else 'neurips',
-            'citation_style':'numeric', **request['publication']}
+    if request['publication'].get('format')=='markdown':
+        return {'format':'markdown','citation_style':'numeric',**request['publication'],'template':None}
+    if request['publication'].get('format')=='docx':
+        template=request['publication'].get('template','word')
+        if template not in ('word','ctexart','standard_chinese','neurips'):
+            raise ValueError('DOCX supports the word template')
+        return {'format':'docx','citation_style':'numeric',**request['publication'],'template':'word'}
+    expected='standard_chinese' if request['language']=='CHINESE' else 'neurips'
+    chosen=canonical_template(request['publication'].get('template',expected))
+    if chosen not in TEMPLATES or (request['language']=='CHINESE' and chosen!='standard_chinese'):
+        raise ValueError('template is not supported for the requested language')
+    return {'format':'latex_pdf', **request['publication'], 'template':chosen,
+            'citation_style':request['publication'].get('citation_style','numeric')}
+
 
 
 def sync_views(workspace, request=None):
@@ -237,18 +254,18 @@ def configure(workspace, patch):
         return _configure(workspace,patch)
 
 
-def _configure(workspace, patch):
-    ws=Path(workspace); path=ws/'01_input/writing_request.json'
-    before=read_request(ws) if path.exists() else None
+def preview_request(before, patch):
     if not isinstance(patch,dict): raise ValueError('request update must be an object')
     merged={**(before or {}),**patch}
+    if not before and 'execution' in merged:
+        merged.setdefault('outline_review','plan')
     if not before and merged.get('output_scope','survey')=='survey':
         merged.setdefault('outline_review','timeout_auto')
     if before and 'output_scope' in patch and patch['output_scope']!=before['output_scope'] and 'writing_strategy' not in patch:
         merged['writing_strategy']='chapter_delta' if patch['output_scope']=='survey' else 'whole'
     if before and 'output_scope' in patch and patch['output_scope']!=before['output_scope'] and 'outline_review' not in patch:
-        merged['outline_review']='timeout_auto' if patch['output_scope']=='survey' else 'auto'
-    for key in ('retrieval','publication'):
+        merged['outline_review']='plan' if 'execution' in merged else 'timeout_auto' if patch['output_scope']=='survey' else 'auto'
+    for key in ('retrieval','publication','execution'):
         if key in patch:
             if not isinstance(patch[key],dict): raise ValueError(key+' must be an object')
             merged[key]={**(before or {}).get(key,{}),**patch[key]}
@@ -261,6 +278,13 @@ def _configure(workspace, patch):
             raise ValueError(f'constraints/{i}: bibliography is publisher-owned, not a required_section; '
                              'preserve the user request for a complete reference list in effective_requirements '
                              'or an other constraint, and remove this chapter constraint')
+    return current
+
+
+def _configure(workspace, patch):
+    ws=Path(workspace); path=ws/'01_input/writing_request.json'
+    before=read_request(ws) if path.exists() else None
+    current=preview_request(before,patch)
     changed=[key for key in current if not before or current[key]!=before.get(key)]
     affected=[]
     if changed:

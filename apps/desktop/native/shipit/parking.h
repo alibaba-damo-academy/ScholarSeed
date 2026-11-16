@@ -4,14 +4,33 @@
 
 static const NSUInteger SSParkingArguments = 3;
 static NSString * const SSParkingHelperPath = @"Contents/Frameworks/Squirrel.framework/Resources/ShipIt";
+static inline SSPreparationActivity SSParkingActivity(NSDictionary *config, NSDictionary *expected, SSProcessExemption exemption) {
+  NSURL *source = [NSURL fileURLWithPath:config[@"source"]], *target = [NSURL fileURLWithPath:config[@"target"]];
+  SSPreparationActivity current = InspectActivityPolicy(source, target, exemption);
+  if (current != SSPreparationActivityAbsent) return current;
+  NSData *bytes = nil;
+  if (expected) bytes = [[NSData alloc] initWithBase64EncodedString:expected[@"journalBytes"] options:0];
+  else {
+    int directory = SSObservationOpenDirectory(config[@"preparation"]);
+    if (directory < 0) return SSPreparationActivityUnknown;
+    bytes = SSObservationReadAt(directory, @"journal.plist", SSSuccessionStateBytes, YES, NO, NULL)[@"data"];
+    if (close(directory) != 0) return SSPreparationActivityUnknown;
+  }
+  NSDictionary *journal = bytes ? [NSPropertyListSerialization propertyListWithData:bytes options:0 format:NULL error:NULL] : nil;
+  if (![journal isKindOfClass:NSDictionary.class] || ![journal[@"record"] isKindOfClass:NSDictionary.class]) return SSPreparationActivityUnknown;
+  NSString *candidate = journal[@"record"][@"candidate"][@"path"];
+  if (!candidate) return SSPreparationActivityAbsent;
+  if (![candidate isKindOfClass:NSString.class] || ![candidate hasPrefix:@"/"]) return SSPreparationActivityUnknown;
+  return InspectActivityPolicy([NSURL fileURLWithPath:candidate], target, exemption);
+}
 
 static inline NSString *SSParkingLabel(id bundle) {
   return [bundle isKindOfClass:NSString.class] && [bundle rangeOfString:SSSuccessionBundlePattern options:NSRegularExpressionSearch].location == 0
     ? [bundle stringByAppendingString:SSSuccessionHelperSuffix] : nil;
 }
 
-static inline NSDictionary *SSParkingJob(NSString *label, NSError **error) {
-  NSArray *jobs = CFBridgingRelease(SMCopyAllJobDictionaries(kSMDomainUserLaunchd));
+static inline NSDictionary *SSParkingJobDomain(NSString *label, CFStringRef domain, NSError **error) {
+  NSArray *jobs = CFBridgingRelease(SMCopyAllJobDictionaries(domain));
   if (![jobs isKindOfClass:NSArray.class]) { SSObservationFail(error, EIO); return nil; }
   NSDictionary *selected = @{};
   for (id job in jobs) {
@@ -22,6 +41,13 @@ static inline NSDictionary *SSParkingJob(NSString *label, NSError **error) {
     }
   }
   return selected;
+}
+static inline NSDictionary *SSParkingJob(NSString *label, NSError **error) {
+  return SSParkingJobDomain(label, kSMDomainUserLaunchd, error);
+}
+static inline BOOL SSParkingSystemAbsent(NSString *label, NSError **error) {
+  NSDictionary *job = SSParkingJobDomain(label, kSMDomainSystemLaunchd, error);
+  return job && !job.count ? YES : SSObservationFail(error, EBUSY);
 }
 
 static inline BOOL SSParkingMatches(NSDictionary *job, NSString *helper, NSString *label, NSString *state) {
@@ -34,6 +60,7 @@ static inline BOOL SSParkingMatches(NSDictionary *job, NSString *helper, NSStrin
 }
 
 static inline BOOL SSParkSuccession(NSDictionary *config, NSError **error) {
+  BOOL retirement = [config[@"mode"] isEqual:@"retire"];
   NSString *label = nil;
   NSURL *state = [NSURL fileURLWithPath:config[@"state"]];
   int parent = SSObservationOpenDirectory(state.path.stringByDeletingLastPathComponent);
@@ -46,11 +73,13 @@ static inline BOOL SSParkSuccession(NSDictionary *config, NSError **error) {
     NSDictionary *expected = config[@"expected"];
     label = SSParkingLabel(expected[@"bundleIdentifier"]);
     if (!label) return SSObservationFail(error, EINVAL);
+    if (!SSParkingSystemAbsent(label, error)) return NO;
     NSDictionary *job = SSParkingJob(label, error);
     return job && !job.count ? YES : SSObservationFail(error, EBUSY);
   }
   NSMutableDictionary *request = [[NSJSONSerialization JSONObjectWithData:observed[@"data"] options:NSJSONReadingMutableContainers error:error] mutableCopy];
-  if (![request isKindOfClass:NSDictionary.class] || ![request[@"binding"] isEqual:config[@"binding"]]) return SSObservationFail(error, ESTALE);
+  if (![request isKindOfClass:NSDictionary.class] ||
+      (request[@"binding"] ? ![request[@"binding"] isEqual:config[@"binding"]] : !retirement)) return SSObservationFail(error, ESTALE);
   for (NSArray *pair in @[@[@"updateBundleURL", @"source"], @[@"targetBundleURL", @"target"]]) {
     id value = request[pair[0]];
     NSURL *url = [value isKindOfClass:NSString.class] ? [NSURL URLWithString:value] : nil;
@@ -59,6 +88,16 @@ static inline BOOL SSParkSuccession(NSDictionary *config, NSError **error) {
   }
   label = SSParkingLabel(request[@"bundleIdentifier"]);
   if (!label) return SSObservationFail(error, EINVAL);
+  if (!SSParkingSystemAbsent(label, error)) return NO;
+  BOOL (^verify)(NSError **) = ^BOOL(NSError **failure) {
+    if (!retirement) return SSVerifySuccession(request, state, label, SSSuccessionRollbackKey, failure);
+    int directory = SSObservationOpenDirectory(state.path.stringByDeletingLastPathComponent);
+    if (directory < 0) return SSObservationFail(failure, errno);
+    NSDictionary *current = SSObservationReadAt(directory, state.lastPathComponent, SSSuccessionStateBytes, NO, NO, failure);
+    BOOL valid = [current[@"snapshot"] isEqual:observed[@"snapshot"]] && SSVerifyRetirementTrust(request, label, failure);
+    if (close(directory) != 0) return SSObservationFail(failure, errno);
+    return valid;
+  };
   NSDictionary *job = SSParkingJob(label, error);
   if (!job) return NO;
   if (!job.count) return YES;
@@ -68,7 +107,7 @@ static inline BOOL SSParkSuccession(NSDictionary *config, NSError **error) {
   NSString *helper = @(canonical);
   if (![helper hasPrefix:[config[@"target"] stringByAppendingPathComponent:@"Contents/"]] ||
       !SSParkingMatches(job, helper, label, state.path) ||
-      !SSVerifySuccession(request, state, label, SSSuccessionRollbackKey, error)) return SSObservationFail(error, EPERM);
+      !verify(error)) return SSObservationFail(error, EPERM);
   SSProcessExemption exemption = nil;
   id process = job[@"PID"];
   if (process && (!SSObservationInteger(process) || [process longLongValue] < 0 || [process longLongValue] > INT_MAX)) return SSObservationFail(error, EINVAL);
@@ -85,18 +124,22 @@ static inline BOOL SSParkSuccession(NSDictionary *config, NSError **error) {
     }
   }
   NSURL *source = request[@"updateBundleURL"], *target = request[@"targetBundleURL"];
-  if (!SSPreparationOrphanSnapshot(source, target, config[@"binding"], state, config[@"expected"],
-      ^SSPreparationActivity { return InspectActivityPolicy(source, target, exemption); }, error)) return NO;
+  NSDictionary *proof = retirement
+    ? SSPreparationRetirementSnapshot(source, target, config[@"binding"], state, config[@"expected"],
+        ^SSPreparationActivity { return SSParkingActivity(config, config[@"expected"], exemption); }, error)
+    : SSPreparationOrphanSnapshot(source, target, config[@"binding"], state, config[@"expected"],
+        ^SSPreparationActivity { return SSParkingActivity(config, config[@"expected"], exemption); }, error);
+  if (!proof || !SSPreparationArchiveSnapshot(proof, error)) return NO;
   NSDictionary *fresh = SSParkingJob(label, error);
   if (!fresh || !SSParkingMatches(fresh, helper, label, state.path) ||
-      !SSVerifySuccession(request, state, label, SSSuccessionRollbackKey, error)) return SSObservationFail(error, ESTALE);
+      !verify(error)) return SSObservationFail(error, ESTALE);
   CFErrorRef failure = NULL;
   if (!SMJobRemove(kSMDomainUserLaunchd, (__bridge CFStringRef)label, NULL, true, &failure)) {
     if (error) *error = CFBridgingRelease(failure); else if (failure) CFRelease(failure);
     return NO;
   }
   NSDictionary *remaining = SSParkingJob(label, error);
-  if (!remaining || remaining.count || !SSVerifySuccession(request, state, label, SSSuccessionRollbackKey, error)) return SSObservationFail(error, ESTALE);
+  if (!remaining || remaining.count || !verify(error)) return SSObservationFail(error, ESTALE);
   NSLog(@"[shipit-preparation] event=legacy-user-job-parked label=%@", label);
   return YES;
 }

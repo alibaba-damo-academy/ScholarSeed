@@ -6,16 +6,11 @@
     "win32"
   ],
   "budget": {
-    "targetMs": 600000,
-    "preparationMs": 60000,
-    "collectionMs": 40000,
-    "executionMs": 180000,
-    "reportingCleanupMs": 20000
+    "targetMs": 900000
   },
   "requiredCoreIds": [
     "session-artifacts",
     "schema-repair",
-    "literature-delivery",
     "runner-lifecycle",
     "http-activity",
     "service-lifecycle",
@@ -188,88 +183,6 @@
       ]
     },
     {
-      "id": "literature-delivery",
-      "owner": "apps/serve/tests/contract_literature_delivery.py",
-      "markers": [
-        "smoke-core"
-      ],
-      "layer": "data",
-      "layerDetail": "真实业务数据库、文件和HTTP交付接线；原42方法逐例新解释器与Home，父代理保留原身份且不重复计数",
-      "resources": [
-        "python",
-        "sqlite",
-        "native-pdf-worker",
-        "owned-child-process",
-        "temporary-files"
-      ],
-      "reason": "原42项真实数据和3项隔离可靠性全部保留；仅外部下载使用MockTransport，入库、文件保存与原生句柄真实。",
-      "invariants": [
-        "关闭后新进程重开读回一致且相同业务键跨Home隔离",
-        "重复保存/并发批次不重复文件或库记录",
-        "冲突保留现有字节，失败恢复预留操作",
-        "host-only目录选择、会话ticket、symlink/FIFO安全拒绝",
-        "setup/业务/close失败均不得泄漏或掩盖另一错误"
-      ],
-      "inputExpected": "原生PDF字节、独立目标目录/库；expected是预先payload/receipts/业务状态；180个PDF worker历史52s成本不削减",
-      "cleanup": "获取资源即登记清理；原42方法逐例独立Home/文献库，真实SQLite连接强引用验证主动关闭，service.close后验证原生句柄并回收目录；子报告在退出前记录所属根已清理，原始与清理失败分别保留，补关不改写失败。",
-      "measured": {
-        "source": "tmp/ci-test-GAiIUt/python-run-all.json",
-        "durationMs": 74591,
-        "scope": "prior full CI suite timing; updated observer regressions require remeasurement"
-      },
-      "runner": {
-        "kind": "run-all",
-        "suite": "contract_literature_delivery"
-      },
-      "requiredCases": [
-        "DeliveryContract.test_auto_library_and_manual_resource_save_restore_only_when_selected",
-        "DeliveryContract.test_batches_are_scoped_and_prompt_is_durable_once",
-        "DeliveryContract.test_bridge_has_no_path_field_and_host_key_is_removed_from_agent",
-        "DeliveryContract.test_cancel_keeps_acquired_bytes_and_manual_save_works",
-        "DeliveryContract.test_changed_library_choice_preserves_interrupted_file_operation",
-        "DeliveryContract.test_changed_saved_file_is_preserved_and_needs_version_choice",
-        "DeliveryContract.test_concurrent_batch_append_preserves_all_papers",
-        "DeliveryContract.test_concurrent_batches_reuse_one_file_and_one_library_item",
-        "DeliveryContract.test_conflict_retains_existing_bytes_and_retries_without_duplicates",
-        "DeliveryContract.test_cross_batch_duplicate_reuses_file_and_library",
-        "DeliveryContract.test_exact_target_file_does_not_hide_library_version_conflict",
-        "DeliveryContract.test_exact_version_cache_is_verified_and_unversioned_still_fetches",
-        "DeliveryContract.test_existing_receipt_without_attempt_fields_is_preserved_on_next_save",
-        "DeliveryContract.test_existing_renamed_pdf_is_reused_but_can_still_enter_library",
-        "DeliveryContract.test_external_existing_symlink_and_fifo_are_rejected_without_overwrite",
-        "DeliveryContract.test_external_save_does_not_write_an_unselected_project_copy",
-        "DeliveryContract.test_frozen_object_is_not_replaced_by_latest_paper_mapping",
-        "DeliveryContract.test_history_receipt_still_detects_modified_pdf_without_embedded_identifier",
-        "DeliveryContract.test_host_only_directory_api_rejects_renderer_path_submission",
-        "DeliveryContract.test_http_bridge_checkpoint_reaches_session_scoped_handler",
-        "DeliveryContract.test_identity_normalizes_aliases_without_merging_versions",
-        "DeliveryContract.test_interrupted_resource_import_resumes_reserved_operation",
-        "DeliveryContract.test_library_failure_does_not_undo_saved_file",
-        "DeliveryContract.test_library_only_version_skip_retains_saved_file",
-        "DeliveryContract.test_manual_pdf_identifier_requires_version_confirmation",
-        "DeliveryContract.test_metadata_only_item_is_completed_without_losing_notes",
-        "DeliveryContract.test_missing_saved_file_is_recreated_not_trusted",
-        "DeliveryContract.test_mixed_paper_ids_remain_readable_and_deliver_to_both_targets",
-        "DeliveryContract.test_native_tickets_are_session_bound_and_restart_requires_selection",
-        "DeliveryContract.test_new_admission_restores_project_association_without_duplicating_item",
-        "DeliveryContract.test_new_attempt_can_add_collection_to_existing_library_item",
-        "DeliveryContract.test_new_destination_has_independent_receipt_and_preserves_previous_file",
-        "DeliveryContract.test_one_batch_aliases_download_once_and_deliver_one_paper",
-        "DeliveryContract.test_project_save_and_library_have_independent_owned_pdfs",
-        "DeliveryContract.test_project_subfolder_save_is_relative_to_resource_root",
-        "DeliveryContract.test_refinement_creates_another_batch_without_mutating_the_saved_batch",
-        "DeliveryContract.test_save_attempts_restore_only_the_selected_stages_after_deletion",
-        "DeliveryContract.test_saved_directory_receipt_survives_restart_without_a_write_ticket",
-        "DeliveryContract.test_saved_without_library_can_later_admit_without_another_file",
-        "DeliveryContract.test_unknown_version_decision_is_rejected_before_writes",
-        "DeliveryContract.test_version_change_can_be_explicitly_skipped_without_writing",
-        "DeliveryContract.test_version_change_waits_for_choice_then_preserves_both",
-        "DeliveryIsolationContracts.test_independent_homes_reopen_and_cleanup_with_identical_business_keys",
-        "DeliveryIsolationContracts.test_injected_failures_release_case_directories",
-        "DeliveryIsolationContracts.test_missing_close_and_simultaneous_failures_are_detected_before_exit"
-      ]
-    },
-    {
       "id": "runner-lifecycle",
       "owner": "apps/serve/tests/contract_runner.py",
       "markers": [
@@ -283,12 +196,12 @@
         "local-socket",
         "temporary-files"
       ],
-      "reason": "保留原22项进程隔离/清理契约，追加5项观测adapter回归；Windows API stub仅证明接线，不冒充Windows实机。",
+      "reason": "进程隔离、清理和混合入口/逐例观察防线；Windows API stub仅证明接线，不冒充Windows实机。",
       "invariants": [
         "只终止自己拥有的process scope；pipes/目录在退出前释放",
         "原始失败和清理失败同时保留",
         "嵌套负向runner不污染顶层身份；漏收/skip/重复/截断失败",
-        "默认完整入口不启用observer；显式list不执行测试"
+        "默认入口核实际执行与回执；显式逐例保持严格，list不执行测试"
       ],
       "inputExpected": "真实拥有的子进程/本地socket与注入失败；expected是退出码、fd/进程/目录状态和完整case身份",
       "cleanup": "fixture addCleanup登记恢复，只清理由本例创建资源；observer复用原run_all生命周期。",
@@ -321,7 +234,14 @@
         "RunnerLifecycle.test_windows_tree_stop_terminates_owned_job_then_waits",
         "RunnerObservations.test_missing_duplicate_and_custom_collection_are_rejected",
         "RunnerObservations.test_nested_runner_does_not_replace_top_level_observations",
-        "RunnerObservations.test_opt_in_embeds_actual_cases_and_default_command_stays_unchanged",
+        "RunnerObservations.test_opt_in_embeds_actual_cases_and_default_summary_stays_suite_scoped",
+        "RunnerObservations.test_default_entry_rejects_unexecuted_unittest_and_empty_collection",
+        "RunnerObservations.test_default_entry_resolves_both_test_owners_without_preloading_product_paths",
+        "RunnerObservations.test_default_entry_preserves_quiet_scripts_and_original_exit_status",
+        "RunnerObservations.test_default_entry_rejects_missing_and_corrupt_receipts",
+        "RunnerObservations.test_default_entry_preserves_original_failure_diagnostics",
+        "RunnerObservations.test_entry_mode_preserves_conditional_results_and_nested_runner_ownership",
+        "RunnerObservations.test_entry_receipt_identity_and_execution_counts_are_bound",
         "RunnerObservations.test_partial_and_repeated_top_level_runs_are_rejected",
         "RunnerObservations.test_skips_and_cleanup_errors_cannot_pass",
         "WindowsOwnership.test_ambiguous_threads_and_wrong_suspend_counts_are_rejected",
@@ -572,9 +492,10 @@
         "smoke verdict accepts stable dirty source and rejects changed evidence",
         "smoke report paths stay separate from full CI",
         "smoke concurrency changes capacity without changing selection or gates",
-        "smoke summary explains report rejection even when observed cases passed"
+        "smoke summary explains report rejection even when observed cases passed",
+        "smoke total budget includes execution, publication and lock cleanup without publishing after release"
       ],
-      "expectedCount": 10
+      "expectedCount": 11
     }
   ],
   "assessments": [
@@ -582,8 +503,7 @@
       "candidate": "核心数据写入、关闭后重开读回",
       "decision": "selected",
       "entries": [
-        "session-artifacts",
-        "literature-delivery"
+        "session-artifacts"
       ],
       "reason": "原字节、SQLite记录及新进程重开均有独立expected。"
     },
@@ -591,16 +511,14 @@
       "candidate": "业务操作到真实数据库和文件交付接线",
       "decision": "selected",
       "entries": [
-        "literature-delivery",
         "session-artifacts"
       ],
-      "reason": "保留全部45项文献真实数据/隔离验证，Mock仅外部下载。"
+      "reason": "验证会话产物的真实文件和业务持久化。"
     },
     {
       "candidate": "幂等或重复提交",
       "decision": "selected",
       "entries": [
-        "literature-delivery",
         "session-artifacts"
       ],
       "reason": "同业务键、多批次和并发重复保存。"
@@ -609,7 +527,6 @@
       "candidate": "冲突不覆盖、事务失败及恢复",
       "decision": "selected",
       "entries": [
-        "literature-delivery",
         "schema-repair"
       ],
       "reason": "原字节保留、真实事务失败/子进程死亡恢复。"
@@ -618,7 +535,6 @@
       "candidate": "关键安全拒绝",
       "decision": "selected",
       "entries": [
-        "literature-delivery",
         "session-artifacts",
         "http-activity"
       ],

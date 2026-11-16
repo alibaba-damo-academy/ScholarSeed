@@ -40,7 +40,7 @@ RESOURCES_ROOT_RELATIVE = ""
 #: 文献是"客观不能更改的素材接入层"。物理分开后, 资料树不会被大量 PDF 冲散。
 LITERATURE_ROOT_RELATIVE = "文献"
 
-#: MANAGED 布局的内置双库目录名 (proposal 47 §5.3)。新建项目一律用这两个。
+#: MANAGED resource root and historical literature location; only resources is precreated.
 #:
 #: 用 ASCII 而非中文: 目录名会流经命令行、外部工具与跨平台文件系统,
 #: 中文名在非 UTF-8 locale、NFC/NFD 归一化差异下会解析失败。中文是**展示名**,
@@ -63,6 +63,7 @@ ROOT_SOURCE_CHANGED_ERROR = "root_source_changed"
 ROOT_BUSY_ERROR = "root_busy"
 PATH_OUTSIDE_ROOT_ERROR = "path_outside_root"
 READ_FAILED = "read_failed"
+READ_PERMISSION_DENIED = "read_permission_denied"
 
 #: 不进入任何扫描的目录名 (版本库内部、依赖、系统噪声、产品自己的状态目录)。
 IGNORED_NAMES = frozenset(

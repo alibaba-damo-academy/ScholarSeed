@@ -70,7 +70,12 @@ CURRENT_DOCUMENT_POLICY = (
     "refers to the currently open document; otherwise ignore it and answer normally. "
     "Explicitly named or attached sources take precedence. Read the exact locator with the "
     "matching product tool before making claims about document content. For literature "
-    "read, pass the locator verbatim as ref_id and include attachment_id when present."
+    "knowledge/read, pass the locator verbatim as ref_id and include attachment_id when present. "
+    "For literature, prefer saved L1 via scholarseed_bridge literature knowledge; request "
+    "only material needed for this question, optionally with query terms. Use its original fragments "
+    "directly when sufficient; do not reread for uncited summaries or unrelated partial coverage. "
+    "Answer only what was asked, without extra numbers, configurations or formulas. Read pages "
+    "only for a question-specific gap, conflict or explicit request. Never regenerate L1 automatically."
 )
 LOGGER = logging.getLogger(__name__)
 SELECTION_CONTENT_LEVEL = "selection"
@@ -135,7 +140,10 @@ SCOPE_INSTRUCTION = (
     "Scopes are user-authorized sources, not pre-read evidence. Use the locator and the "
     "source kind to choose the matching product tool, and inspect only what the question "
     "needs. For filesystem scopes, identify the files actually read. For literature scopes, "
-    "use scholarseed_bridge literature read with the supplied literature ref locator. Do not "
+    "prefer scholarseed_bridge literature knowledge with the supplied literature ref locator, "
+    "with question terms when useful. Use returned original fragments directly and read pages only "
+    "for question-specific gaps; unrelated pagination or partial coverage is not a reason to reread. "
+    "Do not add unasked numerical or mathematical claims. Never regenerate L1 automatically. Do not "
     "claim an entire scope was read unless it was enumerated and inspected."
 )
 READABLE_CONTEXT_STATES = (ContextResolutionState.READY, ContextResolutionState.TRUNCATED)
@@ -397,14 +405,11 @@ class AssistantService:
         session_id: str,
         client_turn_id: str,
         snapshot_id: str,
-        question: str,
     ) -> AssistantTurnContextResult:
         try:
             snapshot = self._store.snapshot_for_turn(session_id, client_turn_id)
             if snapshot is None or snapshot.snapshot_id != snapshot_id:
                 raise AssistantStateConflictError("assistant queued snapshot is unavailable")
-            if snapshot.question_hash != self._question_hash(question):
-                raise AssistantStateConflictError("assistant queued snapshot question changed")
             return AssistantTurnContextResult(context=self._context_from_snapshot(snapshot))
         except AssistantContextUnavailableError as exc:
             return AssistantTurnContextResult(
@@ -678,7 +683,7 @@ class AssistantService:
                 )
                 resolved_ref = replace(
                     ref,
-                    source_revision=resolution.source_revision or source.source_revision,
+                    source_revision=resolution.source_revision or source.source_revision or None,
                     label=source.label,
                     label_fallback=source.label_fallback,
                     selection_source_label=source.selection_source_label,
@@ -712,7 +717,11 @@ class AssistantService:
                 ref=ref,
                 state=ContextResolutionState.READY,
                 role=ContextItemRole.SCOPE,
-                model_locator=ref.ref_id,
+                model_locator=(
+                    f"{ref.kind.value}:{ref.source_id}"
+                    if ref.kind in (ContextRefKind.LITERATURE, ContextRefKind.LITERATURE_COLLECTION)
+                    else ref.ref_id
+                ),
                 surface={"content_level": "metadata"},
             )
             for index, ref in enumerate(selection.refs)
@@ -782,7 +791,7 @@ class AssistantService:
                 "media_type": media_type,
                 "attachment_id": attachment_id or None,
                 "read_tool": (
-                    "scholarseed_bridge literature read"
+                    "scholarseed_bridge literature knowledge"
                     if active.ref.kind is ContextRefKind.LITERATURE
                     else (
                         "scholarseed_bridge pdf read/search"
@@ -827,7 +836,7 @@ class AssistantService:
         has_selected_material = False
         feedback_index = 0
         for item in snapshot.items:
-            if item.role is not ContextItemRole.MATERIAL:
+            if item.role not in (ContextItemRole.MATERIAL, ContextItemRole.IMAGE):
                 continue
             rendered: dict[str, object] = {
                 "evidence_id": item.evidence_id,
@@ -842,6 +851,8 @@ class AssistantService:
                 # 出现 [/evidence] 或 Assistant footer 也无法改变结构边界。
                 "content": item.excerpt_text if item.state in READABLE_CONTEXT_STATES else "",
             }
+            if item.role is ContextItemRole.IMAGE:
+                rendered["input_type"] = ContextItemRole.IMAGE.value
             if item.ref.project_id:
                 rendered["project_id"] = item.ref.project_id
                 rendered["read_tool"] = "scholarseed_bridge resource read"
@@ -901,32 +912,32 @@ class AssistantService:
                 if item.ref.kind is ContextRefKind.DIR
                 else item.ref.label
             )
-            refs.append(
-                {
-                    "type": "assistant_context",
-                    # Chat 的通用用户消息引用投影消费 id/title/status；同时保留
-                    # Assistant 自己的结构化字段，供溯源和恢复检查使用。
-                    "id": item.evidence_id,
-                    "title": title or item.ref.label,
-                    "status": item.state.value,
-                    "snapshot_id": snapshot.snapshot_id,
-                    "evidence_id": item.evidence_id,
-                    "kind": item.ref.kind.value,
-                    "source_id": item.ref.source_id,
-                    "source_revision": item.ref.source_revision,
-                    **({"project_id": item.ref.project_id} if item.ref.project_id else {}),
-                    "label": item.ref.label,
-                    "label_fallback": item.ref.label_fallback,
-                    "selection_source_label": item.ref.selection_source_label,
-                    "ref_id": item.ref.ref_id,
-                    "state": item.state.value,
-                    "reason": item.reason,
-                    "retention": item.ref.retention.value,
-                    "origin": item.ref.origin.value,
-                    "anchor": asdict(item.ref.anchor) if item.ref.anchor is not None else None,
-                    "surface": dict(item.surface),
-                }
-            )
+            reference: MessageReferencePayload = {
+                "type": "assistant_context",
+                # Chat 的通用用户消息引用投影消费 id/title/status；同时保留
+                # Assistant 自己的结构化字段，供溯源和恢复检查使用。
+                "id": item.evidence_id,
+                "title": title or item.ref.label,
+                "status": item.state.value,
+                "snapshot_id": snapshot.snapshot_id,
+                "evidence_id": item.evidence_id,
+                "kind": item.ref.kind.value,
+                "source_id": item.ref.source_id,
+                "source_revision": item.ref.source_revision,
+                "label": item.ref.label,
+                "label_fallback": item.ref.label_fallback,
+                "selection_source_label": item.ref.selection_source_label,
+                "ref_id": item.ref.ref_id,
+                "state": item.state.value,
+                "reason": item.reason,
+                "retention": item.ref.retention.value,
+                "origin": item.ref.origin.value,
+                "anchor": asdict(item.ref.anchor) if item.ref.anchor is not None else None,
+                "surface": dict(item.surface),
+            }
+            if item.ref.project_id:
+                reference["project_id"] = item.ref.project_id
+            refs.append(reference)
         return tuple(refs)
 
     @staticmethod

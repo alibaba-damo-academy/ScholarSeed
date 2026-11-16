@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
@@ -15,11 +16,14 @@ from reportlab.pdfgen.canvas import Canvas
 from service.platform.pdf import (
     PdfDocumentError,
     PdfNativeOperation,
+    PdfRect,
     _native_pdf,
     pdf_document_info,
     pdf_document_text,
     pdf_image_bounds,
+    pdf_page_layout,
     render_pdf_page,
+    render_pdf_preview,
 )
 from service.workbench.service.extraction import extract
 
@@ -85,6 +89,10 @@ class PdfWorkerContracts(unittest.TestCase):
         self.assertEqual(spawn.call_count, 1)
         self.assertIn("-B", spawn.call_args.args[0])
 
+    def test_fractional_render_scale_is_preserved(self):
+        with render_pdf_page(self.payload, 1, scale=1.5) as image:
+            self.assertEqual(image.size, (300, 450))
+
     def test_timeout_kills_and_reaps_actual_process(self):
         original = subprocess.Popen
         processes = []
@@ -103,6 +111,55 @@ class PdfWorkerContracts(unittest.TestCase):
         self.assertEqual(len(processes), 1)
         self.assertIsNotNone(processes[0].poll())
         self.assertTrue(processes[0].stdin.closed)
+
+    def test_preview_preserves_existing_crop_and_encoding(self):
+        quad = (0.1, 0.2, 0.8, 0.9)
+        layout = pdf_page_layout(self.payload, 1)
+        crop = PdfRect(
+            quad[0] * layout.width,
+            quad[1] * layout.height,
+            quad[2] * layout.width,
+            quad[3] * layout.height,
+        )
+        with render_pdf_page(self.payload, 1, scale=1.5, crop=crop) as image:
+            image.thumbnail((1024, 1024))
+            output = BytesIO()
+            image.save(output, format="JPEG", quality=80)
+        actual = render_pdf_preview(
+            self.payload,
+            1,
+            quad=quad,
+            scale=1.5,
+            max_edge=1024,
+            quality=80,
+            deadline=time.monotonic() + 5,
+        )
+        self.assertEqual(actual, output.getvalue())
+
+    def test_preview_deadline_terminates_layout_worker(self):
+        original = subprocess.Popen
+        processes = []
+
+        def spawn(_command, **kwargs):
+            process = original([sys.executable, "-c", "import time; time.sleep(30)"], **kwargs)
+            processes.append(process)
+            return process
+
+        started = time.monotonic()
+        with patch("service.platform.pdf.subprocess.Popen", side_effect=spawn):
+            with self.assertRaisesRegex(PdfDocumentError, "pdf_worker_timeout"):
+                render_pdf_preview(
+                    self.payload,
+                    1,
+                    quad=(0, 0, 1, 1),
+                    scale=1,
+                    max_edge=1024,
+                    quality=80,
+                    deadline=started + 0.1,
+                )
+        self.assertLess(time.monotonic() - started, 3)
+        self.assertEqual(len(processes), 1)
+        self.assertIsNotNone(processes[0].poll())
 
     def test_native_crashes_have_exactly_one_retry(self):
         for code in (-11, 0xC0000005):

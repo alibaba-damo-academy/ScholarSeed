@@ -17,6 +17,10 @@ def bind(workspace, skill):
               'python':sys.executable,'platform':sys.platform}
     if path.exists() or path.is_symlink() or config.exists():
         actual=json.loads(config.read_text(encoding='utf-8')) if config.exists() else None
+        if isinstance(actual,dict) and 'run_id' in actual:
+            if not isinstance(actual['run_id'],str) or not actual['run_id']:
+                raise ValueError('workspace run identity is invalid')
+            actual={key:value for key,value in actual.items() if key!='run_id'}
         if not path.is_file() or actual not in (legacy,expected):
             raise ValueError('workspace launcher already exists or skill binding changed; choose a new entry location')
         return path

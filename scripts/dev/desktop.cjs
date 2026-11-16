@@ -13,6 +13,7 @@ const MAX_PORT = 65535
 const ID_LENGTH = 16
 const DEBUG_ROOT = '.ss-debug'
 const LOCK_FILE = 'launcher.json'
+const CODEX_DIRECTORY = 'codex'
 const WINDOWS = 'win32'
 const SHUTDOWN_TIMEOUT_MS = 30000
 const WINDOWS_SHUTDOWN_TIMEOUT_MS = 60000
@@ -26,7 +27,7 @@ const STATE = Object.freeze({ stopped: 'stopped', unknown: 'unknown', starting: 
   stale: 'stale', running: 'running', orphaned: 'orphaned' })
 const ISOLATION_ENV = [
   'SCHOLARSEED_HOME', 'DAMOATRACE_HOME', 'DAMOATRACE_LEDGER_ROOT',
-  'SCHOLARSEED_CODEX_HOME', 'SCHOLARSEED_SERVE_URL', 'SCHOLARSEED_DEFAULT_WORKSPACE'
+  'SCHOLARSEED_CODEX_HOME', 'CODEX_SQLITE_HOME', 'SCHOLARSEED_SERVE_URL', 'SCHOLARSEED_DEFAULT_WORKSPACE'
 ]
 const RESTART_ROOTS = ['apps/desktop/src/main', 'apps/desktop/src/preload',
   'apps/desktop/electron.vite.config.ts', 'apps/desktop/endpoints.ts', 'apps/serve/service',
@@ -85,6 +86,10 @@ function watchRestartSources(directory, notify = message => console.error(messag
     }
     else notify(`[debug] Non-HMR source changed: ${changed.join(', ')}. Finish the active conversation, then Ctrl+C and pnpm ops dev to restart. No process was restarted.`)
   }
+  const schedule = relative => {
+    pending.add(relative)
+    if (!timer) { timer = setTimeout(flush, WATCH_DEBOUNCE_MS); timer.unref() }
+  }
   const close = () => {
     closed = true
     if (timer) clearTimeout(timer)
@@ -105,8 +110,7 @@ function watchRestartSources(directory, notify = message => console.error(messag
         const child = changed ? String(changed) : ''
         if (!isDirectory && child && child !== path.basename(filename)) return
         if (child.split(/[\\/]/).some(part => WATCH_EXCLUDED.has(part))) return
-        pending.add(relative)
-        if (!timer) { timer = setTimeout(flush, WATCH_DEBOUNCE_MS); timer.unref() }
+        schedule(relative)
       })
       watcher.on('error', error => {
         notify(`[debug] Source monitoring failed (${relative}): ${error.code || 'watch error'}. Restart manually after non-renderer changes.`)
@@ -114,6 +118,7 @@ function watchRestartSources(directory, notify = message => console.error(messag
       })
       watchers.push(watcher)
     }
+    for (const relative of snapshots.keys()) schedule(relative)
     return close
   } catch (error) {
     close()
@@ -323,6 +328,16 @@ async function supervise(invocation, observation = {}) {
   }
 }
 
+function debugEnvironment(paths, source = process.env) {
+  const conflicts = ISOLATION_ENV.filter(name => source[name])
+  if (conflicts.length) throw new Error(`isolated dev refuses shared overrides: ${conflicts.join(', ')}; unset these overrides before starting dev`)
+  const environment = { ...source, SCHOLARSEED_HOME: paths.home, SCHOLARSEED_REPO: paths.repo,
+    SCHOLARSEED_CODEX_HOME: path.join(paths.home, CODEX_DIRECTORY) }
+  delete environment.ELECTRON_RUN_AS_NODE
+  delete environment.NODE_OPTIONS
+  return environment
+}
+
 async function main(argv, directory = path.resolve(__dirname, '../..')) {
   const args = argv[0] === '--' ? argv.slice(1) : argv
   if (args.length === 1 && args[0] === '--help') {
@@ -342,9 +357,8 @@ async function main(argv, directory = path.resolve(__dirname, '../..')) {
   if (args.length && (args.length !== 2 || args[0] !== '--port' || !/^[0-9]+$/.test(args[1]) || Number(args[1]) < 1 || Number(args[1]) > MAX_PORT)) {
     throw new Error('usage: pnpm ops dev [--port <1-65535>]')
   }
-  const conflicts = ISOLATION_ENV.filter(name => process.env[name])
-  if (conflicts.length) throw new Error(`isolated dev refuses shared overrides: ${conflicts.join(', ')}; unset these overrides before starting dev`)
   const paths = debugPaths(directory)
+  const environment = debugEnvironment(paths)
   fs.mkdirSync(paths.root, { recursive: true, mode: 0o700 })
   const owner = { pid: process.pid, repo: paths.repo }
   const release = acquire(paths.lock, owner)
@@ -356,9 +370,6 @@ async function main(argv, directory = path.resolve(__dirname, '../..')) {
     fs.mkdirSync(paths.home, { recursive: true, mode: 0o700 })
     fs.mkdirSync(paths.profile, { recursive: true, mode: 0o700 })
     console.log(`[debug] worktree ${paths.repo}\n[debug] Home ${paths.home}\n[debug] profile ${paths.profile}\n[debug] CDP http://${LOOPBACK}:${owner.port}\n[debug] playwright-cli -s=scholarseed-${owner.port} attach --cdp=http://${LOOPBACK}:${owner.port}`)
-    const environment = { ...process.env, SCHOLARSEED_HOME: paths.home, SCHOLARSEED_REPO: paths.repo }
-    delete environment.ELECTRON_RUN_AS_NODE
-    delete environment.NODE_OPTIONS
     const invocation = prepareDesktop(paths.repo, debugArguments(owner.port, paths.profile), environment)
     releaseAllowed = false
     const code = await supervise(invocation, { observe: () => inspectDebug(paths.repo, undefined, Date.now() + PROBE_TIMEOUT_MS) })
@@ -372,7 +383,7 @@ async function main(argv, directory = path.resolve(__dirname, '../..')) {
   }
 }
 
-module.exports = { debugPaths, instanceLogs, acquire, freePort, debugArguments, supervise, inspectDebug, waitForRenderer, watchRestartSources, main }
+module.exports = { debugPaths, debugEnvironment, instanceLogs, acquire, freePort, debugArguments, supervise, inspectDebug, waitForRenderer, watchRestartSources, main }
 if (require.main === module) {
   main(process.argv.slice(2)).then(code => { process.exitCode = code }).catch(error => {
     console.error(`[debug] ${error.message}`)

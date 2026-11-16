@@ -2,7 +2,7 @@ import { useStartup } from '../../app/connection'
 import { STARTUP_PHASE } from '../../../../startup'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { BrushCleaning } from 'lucide-react'
+import { BrushCleaning, ChevronDown } from 'lucide-react'
 import { IconFont } from '../primitive/Iconfont'
 
 import {
@@ -19,6 +19,9 @@ import {
 import { useApp } from '../../store'
 import {
   Button,
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
   EllipsisText,
   IconButton,
   ProgressBar,
@@ -147,6 +150,7 @@ export function TaskCenterProvider({
     () => ({
       activeCount: tasks.filter(isActiveProductTask).length,
       tasks: visibleTaskMessages(tasks, state.taskMessageDismissals),
+      sources,
       open,
       setOpen,
       clearingCompleted,
@@ -166,7 +170,17 @@ export function TaskCenterProvider({
       errorText,
       failures,
     }),
-    [act, clearingCompleted, errorText, failures, feed, open, state.taskMessageDismissals, tasks]
+    [
+      act,
+      clearingCompleted,
+      errorText,
+      failures,
+      feed,
+      open,
+      sources,
+      state.taskMessageDismissals,
+      tasks,
+    ]
   )
 
   return <TaskCenterContext.Provider value={value}>{children}</TaskCenterContext.Provider>
@@ -193,7 +207,7 @@ const STATUS_MESSAGE_KEYS = {
 export function TaskCenter(): React.JSX.Element {
   const { t } = useTranslation('tasks')
   const { t: uiText } = useTranslation('ui')
-  const { tasks, cancel, retry, clearCompleted, clearingCompleted } = useTaskCenter()
+  const { tasks, sources, cancel, retry, clearCompleted, clearingCompleted } = useTaskCenter()
   const hasCompleted = tasks.some((task) => task.status === 'completed')
   return (
     <section
@@ -235,16 +249,36 @@ export function TaskCenter(): React.JSX.Element {
           <div className="grid min-w-0 grid-cols-1 gap-[var(--vds-space-2)]">
             {tasks.map((task) => {
               const active = isActiveProductTask(task)
-              const canCancel = task.status === 'queued' || task.status === 'running'
+              const source = sources.find((candidate) => candidate.id === task.sourceId)
+              const presentation = source?.present(task, t)
+              const row = presentation?.row
+              const canCancel = source?.cancel && active
               const canRetry =
-                task.status === 'failed' || task.status === 'partial' || task.status === 'cancelled'
-              const progress = taskProgressPresentation(task, t)
+                source?.retry &&
+                (task.status === 'failed' ||
+                  task.status === 'partial' ||
+                  task.status === 'cancelled')
+              const progress = presentation?.progress ?? taskProgressPresentation(task, t)
               const title =
                 typeof task.title === 'string' ? taskTitleText(task.title, t) : t(task.title.key)
               const files =
                 task.sourceNames.length > 0
                   ? task.sourceNames
                   : task.outcome.results.map((result) => result.name)
+              const sourceListLabel = files.length > 0 ? row?.sourceListLabel : undefined
+              const TaskBody = sourceListLabel ? Collapsible : 'div'
+              const sourceItems = files.map((name, index) => (
+                <EllipsisText
+                  key={`${index}:${name}`}
+                  tooltip={name}
+                  tooltipContentClassName="!z-[var(--vds-z-update-entry-tooltip)]"
+                  tooltipPortalled
+                  tabIndex={0}
+                  data-testid="task-source-name"
+                >
+                  {name}
+                </EllipsisText>
+              ))
               const createdAt = new Date(task.createdAt * TIMESTAMP_MILLISECONDS_PER_SECOND)
               const dateParts = Object.fromEntries(
                 MESSAGE_DATE_FORMATTER.formatToParts(createdAt).map((part) => [
@@ -274,27 +308,40 @@ export function TaskCenter(): React.JSX.Element {
                       {t(STATUS_MESSAGE_KEYS[task.status])}
                     </Tag>
                   </div>
-                  <div className="mt-[var(--vds-message-center-content-gap)] grid min-w-0 grid-cols-1 gap-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-tertiary)]">
-                    {files.length > 0 ? (
-                      files.map((name, index) => (
-                        <EllipsisText
-                          key={`${index}:${name}`}
-                          tooltip={name}
-                          tooltipContentClassName="!z-[var(--vds-z-update-entry-tooltip)]"
-                          tooltipPortalled
-                          tabIndex={0}
-                          data-testid="task-source-name"
-                        >
-                          {name}
-                        </EllipsisText>
-                      ))
+                  <TaskBody className="mt-[var(--vds-message-center-content-gap)] !grid min-w-0 grid-cols-1 !gap-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-tertiary)]">
+                    {row ? (
+                      <>
+                        <p className="m-0 break-words text-[var(--vds-text-secondary)]">
+                          {active ? progress.label : row.summary}
+                        </p>
+                        <p className="m-0 break-words">{row.context}</p>
+                      </>
+                    ) : sourceItems.length > 0 ? (
+                      sourceItems
                     ) : (
                       <p className="m-0">{t('center.noFiles')}</p>
                     )}
                     <div className="flex flex-wrap items-center justify-between gap-[var(--vds-space-1)]">
                       <time dateTime={createdAt.toISOString()}>{createdAtText}</time>
-                      {canCancel || canRetry ? (
-                        <div className="flex gap-[var(--vds-space-2)]">
+                      {sourceListLabel || canCancel || canRetry ? (
+                        <div className="ml-auto flex flex-wrap justify-end gap-[var(--vds-space-2)]">
+                          {sourceListLabel ? (
+                            <CollapsibleTrigger asChild>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="group"
+                                icon={
+                                  <ChevronDown
+                                    aria-hidden="true"
+                                    className="group-aria-expanded:rotate-180"
+                                  />
+                                }
+                              >
+                                {sourceListLabel}
+                              </Button>
+                            </CollapsibleTrigger>
+                          ) : null}
                           {canCancel ? (
                             <Button size="sm" variant="outline" onClick={() => void cancel(task)}>
                               {uiText('cancel')}
@@ -318,12 +365,18 @@ export function TaskCenter(): React.JSX.Element {
                         </div>
                       ) : null}
                     </div>
-                  </div>
+                    {sourceListLabel ? (
+                      <CollapsibleContent className="grid grid-cols-1 gap-[var(--vds-space-1)]">
+                        {sourceItems}
+                      </CollapsibleContent>
+                    ) : null}
+                  </TaskBody>
                   {active ? (
                     <ProgressBar
-                      className="mt-3 w-full max-w-full"
+                      className="mt-[var(--vds-space-3)] w-full max-w-full"
                       indeterminate={!progress.determinate}
                       label={progress.label}
+                      showLabel={!row}
                       value={progress.value}
                     />
                   ) : null}

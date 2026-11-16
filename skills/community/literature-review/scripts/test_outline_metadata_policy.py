@@ -54,32 +54,39 @@ class MetadataPolicyTest(unittest.TestCase):
         return result
 
     def candidates(self):
-        return [self.good,
+        papers = [self.good,
                 {**self.good,'paper_id':'no_abstract','title':'No abstract','abstract':''},
                 {**self.good,'paper_id':'no_author','title':'No author','authors':[{'name':'  '}]},
                 {**self.good,'paper_id':'no_year','title':'No year','year':None},
-                {**self.good,'paper_id':'all_missing','title':'All missing','abstract':'N/A','authors':['Unknown'],'year':0}]
+                {**self.good,'paper_id':'all_missing','title':'All missing','abstract':'N/A','authors':['Unknown'],'year':0},
+                {**self.good,'paper_id':'no_title','title':' '}]
+        return [{**paper, 'doi': '10.1234/' + paper['paper_id']} for paper in papers]
 
     def test_valid_author_shapes_source_year_and_placeholders(self):
         self.assertEqual(author_objects('Ada Lovelace'),[{'name':'Ada Lovelace'}])
         self.assertEqual(author_objects([{'normalized_name':'Ada Lovelace'}])[0]['name'],'Ada Lovelace')
         for authors in ([],None,['N/A'],[{}],['...']):
-            self.assertIn('usable_authors',{p['rule'] for p in problems({**self.good,'authors':authors})})
+            self.assertEqual(author_objects(authors), [])
+            self.assertEqual(problems({**self.good,'authors':authors}), [])
         for year in (None,0,True,'n.d.','0000'):
             self.assertIsNone(year_of({'year':year}))
+            self.assertEqual(problems({**self.good,'year':year}), [])
         self.assertEqual(year_of({'year':None,'publication_date':'2024-03-15'}),2024)
         self.assertIsNone(year_of({'year':None,'arxiv_id':'2403.12345'}))
 
     def test_adapter_excludes_before_dedup_and_reports_all_missing_fields(self):
         ws=self.base/'survey';configure(ws,{'intent':'Review mechanisms'})
         target=ws/'02_retrieval';target.mkdir(exist_ok=True)
-        papers=self.candidates();papers[2]['title']=self.good['title']
-        (target/'metadata.json').write_text(json.dumps({'papers':[papers[2],*papers[:2],*papers[3:]]}))
+        papers=self.candidates();papers[1]['title']=self.good['title'];papers[1]['doi']=self.good['doi']
+        (target/'metadata.json').write_text(json.dumps({'papers':[papers[1],papers[0],*papers[2:]]}))
         corpus,report,status=adapt(ws)
-        self.assertEqual(set(corpus),{'good'})
-        self.assertEqual(report['metadata_filter']['rejected_count'],4)
-        self.assertEqual(report['metadata_filter']['reason_counts'],{'usable_abstract':2,'usable_authors':2,'usable_year':2})
-        self.assertEqual(len(report['dropped']),4);self.assertEqual(status['status'],'PARTIAL_SUCCESS')
+        self.assertEqual(set(corpus),{'good','no_author','no_year'})
+        self.assertEqual(corpus['no_author']['authors'], [])
+        self.assertIsNone(corpus['no_year']['year'])
+        self.assertEqual(report['metadata_filter']['policy'], 'usable_title_with_abstract_or_verified_library_excerpt')
+        self.assertEqual(report['metadata_filter']['rejected_count'],3)
+        self.assertEqual(report['metadata_filter']['reason_counts'],{'usable_abstract':2,'usable_title':1})
+        self.assertEqual(len(report['dropped']),3);self.assertEqual(status['status'],'PARTIAL_SUCCESS')
 
     def test_each_search_mode_is_screened_without_modifying_imported_metadata(self):
         for mode in ('balanced','quality','quick','web_only'):
@@ -89,18 +96,19 @@ class MetadataPolicyTest(unittest.TestCase):
                 path=folder/'metadata.json'
                 path.write_text(json.dumps({'search_summary':{'mode':mode},'papers':self.candidates()}))
                 original=path.read_bytes();corpus,report,_=adapt(ws)
-                self.assertEqual(set(corpus),{'good'})
-                self.assertEqual(report['metadata_filter']['rejected_count'],4)
+                self.assertEqual(set(corpus),{'good','no_author','no_year'})
+                self.assertEqual(report['metadata_filter']['rejected_count'],3)
                 self.assertEqual(path.read_bytes(),original)
 
     def test_no_eligible_search_result_is_failure(self):
         ws=self.base/'empty';configure(ws,{'intent':'Review mechanisms'})
         folder=ws/'02_retrieval';folder.mkdir(exist_ok=True)
-        (folder/'metadata.json').write_text(json.dumps({'papers':self.candidates()[1:]}))
+        (folder/'metadata.json').write_text(json.dumps({'papers':[
+            paper for paper in self.candidates() if paper['paper_id'] in {'no_abstract','all_missing','no_title'}]}))
         corpus,report,status=adapt(ws)
         self.assertEqual(corpus,{})
         self.assertEqual(status['status'],'FAILED')
-        self.assertEqual(report['metadata_filter']['rejected_count'],4)
+        self.assertEqual(report['metadata_filter']['rejected_count'],3)
 
     def test_complete_source_date_supplies_year_without_identifier_guessing(self):
         ws=self.base/'dated';configure(ws,{'intent':'Review mechanisms'})
@@ -115,7 +123,7 @@ class MetadataPolicyTest(unittest.TestCase):
         configure(ws,{'intent':'Review 2020-2025 work with foundations',
             'retrieval':{'time_range':{'start_year':2020,'end_year':2025}}})
         folder=ws/'02_retrieval';folder.mkdir(exist_ok=True)
-        foundation={**self.good,'paper_id':'foundation','title':'Foundational paper','year':1998}
+        foundation={**self.good,'paper_id':'foundation','title':'Foundational paper','year':1998,'doi':'10.1234/foundation'}
         (folder/'metadata.json').write_text(json.dumps({'papers':[foundation,self.good]}))
         corpus,report,status=adapt(ws)
         self.assertEqual(set(corpus),{'foundation','good'})

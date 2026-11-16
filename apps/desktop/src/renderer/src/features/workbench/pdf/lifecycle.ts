@@ -1,3 +1,5 @@
+import type { PdfRecords } from '../../../contracts/workbench.ts'
+
 export const SCHOLARSEED_ANNOTATIONS_ATTACHMENT = 'scholarseed-annotations.json'
 
 export interface PdfAttachmentLike {
@@ -5,8 +7,7 @@ export interface PdfAttachmentLike {
 }
 
 export type PdfAttachmentCollection =
-  | ReadonlyMap<string, PdfAttachmentLike>
-  | Record<string, PdfAttachmentLike>
+  ReadonlyMap<string, PdfAttachmentLike> | Record<string, PdfAttachmentLike>
 
 export interface PdfDocumentLike<Page> {
   numPages: number
@@ -21,7 +22,7 @@ export interface PdfLoadingTaskLike<Document> {
 
 export interface PdfLifecycleDependencies<Bytes, Document, Page> {
   createTask: (bytes: Bytes) => PdfLoadingTaskLike<Document>
-  restore: (bytes: Bytes) => Promise<Bytes>
+  restore: (bytes: Bytes, sources?: PdfRecords['native_annotations']) => Promise<Bytes>
 }
 
 export interface PdfOpenResult<Document, Page> {
@@ -30,22 +31,17 @@ export interface PdfOpenResult<Document, Page> {
   pageCount: number
 }
 
-export function hasScholarSeedAnnotations(
-  attachments: PdfAttachmentCollection | null
-): boolean {
+export function hasScholarSeedAnnotations(attachments: PdfAttachmentCollection | null): boolean {
   if (!attachments) return false
   const entries = attachments instanceof Map ? attachments.entries() : Object.entries(attachments)
-  return Array.from(entries).some(([name, attachment]) => (
-    name === SCHOLARSEED_ANNOTATIONS_ATTACHMENT
-    || attachment.filename === SCHOLARSEED_ANNOTATIONS_ATTACHMENT
-  ))
+  return Array.from(entries).some(
+    ([name, attachment]) =>
+      name === SCHOLARSEED_ANNOTATIONS_ATTACHMENT ||
+      attachment.filename === SCHOLARSEED_ANNOTATIONS_ATTACHMENT
+  )
 }
 
-export class PdfLifecycle<
-  Bytes,
-  Document extends PdfDocumentLike<Page>,
-  Page
-> {
+export class PdfLifecycle<Bytes, Document extends PdfDocumentLike<Page>, Page> {
   private readonly destroyed = new WeakSet<object>()
   private readonly pages = new Map<number, Promise<Page | null>>()
   private document: Document | null = null
@@ -54,7 +50,11 @@ export class PdfLifecycle<
 
   constructor(private readonly dependencies: PdfLifecycleDependencies<Bytes, Document, Page>) {}
 
-  async open(bytes: Bytes, requestedPage: number): Promise<PdfOpenResult<Document, Page> | null> {
+  async open(
+    bytes: Bytes,
+    requestedPage: number,
+    sources?: PdfRecords['native_annotations']
+  ): Promise<PdfOpenResult<Document, Page> | null> {
     const generation = ++this.generation
     const previous = this.task
     this.task = null
@@ -71,10 +71,10 @@ export class PdfLifecycle<
       return null
     }
 
-    if (hasScholarSeedAnnotations(await document.getAttachments())) {
+    if (sources?.length || hasScholarSeedAnnotations(await document.getAttachments())) {
       await this.destroy(task)
       if (this.task === task) this.task = null
-      const restored = await this.dependencies.restore(bytes)
+      const restored = await this.dependencies.restore(bytes, sources)
       if (generation !== this.generation) return null
       task = this.dependencies.createTask(restored)
       this.task = task
@@ -98,9 +98,11 @@ export class PdfLifecycle<
     const generation = this.generation
     let page = this.pages.get(pageNumber)
     if (!page) {
-      page = document.getPage(pageNumber).then(result => (
-        generation === this.generation && document === this.document ? result : null
-      ))
+      page = document
+        .getPage(pageNumber)
+        .then((result) =>
+          generation === this.generation && document === this.document ? result : null
+        )
       this.pages.set(pageNumber, page)
     }
     return page

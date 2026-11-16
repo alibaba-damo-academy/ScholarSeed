@@ -4,11 +4,30 @@ import remarkMath from 'remark-math'
 import remarkParse from 'remark-parse'
 import { unified } from 'unified'
 
-import { GFM_PLUGIN } from '../../components/markdown/gfm.ts'
-import { markdownSourceRange, type MarkdownSyntaxNode } from './mapping.ts'
+import { GFM_PLUGIN } from '../../../../markdown/gfm.ts'
+import { markdownSourceRange, markdownRenderedRange, type MarkdownSyntaxNode } from './mapping.ts'
 import { normalizeMathSource, restoreSourcePositions } from './mathematics.ts'
 
 const parser = unified().use(remarkParse).use(GFM_PLUGIN[0], GFM_PLUGIN[1]).use(remarkMath)
+
+test('selection navigation reverses source anchors across blocks and repeated formatted text', () => {
+  const source = '**same**\n\nsecond\n\n**same**'
+  const rendered = 'samesecondsame'
+  const tree = parser.parse(source) as MarkdownSyntaxNode
+  for (const [from, to] of [
+    [0, 4],
+    [4, 14],
+    [10, 14],
+  ]) {
+    const anchor = markdownSourceRange(source, tree, rendered, from, to)!
+    assert.ok(anchor)
+    assert.deepEqual(markdownRenderedRange(source, tree, rendered, anchor.start, anchor.end), {
+      from,
+      to,
+    })
+  }
+  assert.equal(markdownRenderedRange(source, tree, rendered, 0, source.length + 1), null)
+})
 
 /** Rendered text as ProseMirror exposes it: text and atom values, no block separators. */
 function select(source: string, rendered: string, selected: string, occurrence = 0): string | null {
@@ -29,6 +48,20 @@ test('single-block selection keeps its exact source slice and repeated text occu
   const range = markdownSourceRange(source, tree, rendered, second, second + 2)
   assert.ok(range)
   assert.equal(range.start, source.lastIndexOf('文本'))
+})
+
+test('selection navigation restores a wrapped source leaf and keeps Markdown syntax authoritative', () => {
+  const source =
+    '- First line with a [link](https://example.com),\n  followed by wrapped text and `code`.\n\nTail.'
+  const rendered = 'First line with a link,followed by wrapped text and code.Tail.'
+  const tree = parser.parse(source) as MarkdownSyntaxNode
+  const to = rendered.indexOf('Tail.')
+  const selected = markdownSourceRange(source, tree, rendered, 0, to)
+  assert.ok(selected)
+  assert.deepEqual(markdownRenderedRange(source, tree, rendered, selected.start, selected.end), {
+    from: 0,
+    to,
+  })
 })
 
 test('numeric ranges retain literal single tildes in source mappings', () => {
@@ -60,7 +93,10 @@ test('selection into and inside fenced code blocks maps code content', () => {
   const rendered = '说明文字print("a")\nreturn 1结尾'
   assert.equal(select(source, rendered, '文字print'), '文字\n\n```python\nprint\n```')
   assert.equal(select(source, rendered, 'return'), '```python\nreturn\n```')
-  assert.equal(select(source, rendered, 'print("a")\nreturn 1'), '```python\nprint("a")\nreturn 1\n```')
+  assert.equal(
+    select(source, rendered, 'print("a")\nreturn 1'),
+    '```python\nprint("a")\nreturn 1\n```'
+  )
   assert.equal(select(source, rendered, '1结尾'), '```python\n1\n```\n\n结尾')
 })
 
@@ -103,11 +139,17 @@ test('completed Markdown quotes retain only selected content and source-backed c
   const strong = markdownSourceRange(source, tree, rendered, from, from + 'second'.length)
   assert.ok(strong)
   assert.equal(strong.text, '**second**')
-  assert.deepEqual(strong.segments.map(segment => source.slice(segment.start, segment.end)), ['**', 'second**'])
+  assert.deepEqual(
+    strong.segments.map((segment) => source.slice(segment.start, segment.end)),
+    ['**', 'second**']
+  )
 
   const codeFrom = rendered.indexOf('run')
   const code = markdownSourceRange(source, tree, rendered, codeFrom, codeFrom + 'run'.length)
   assert.ok(code)
   assert.equal(code.text, '`run`')
-  assert.deepEqual(code.segments.map(segment => source.slice(segment.start, segment.end)), ['`run', '`'])
+  assert.deepEqual(
+    code.segments.map((segment) => source.slice(segment.start, segment.end)),
+    ['`run', '`']
+  )
 })

@@ -32,6 +32,7 @@ export function ImageDocument({
     <ImageView
       url={url}
       title={session?.title ?? ''}
+      showMetadata={false}
       failed={!session || session.loadState === 'error'}
       viewState={tab?.viewState}
       onViewChange={(next) => controller.setTabViewState(tabId, { ...next })}

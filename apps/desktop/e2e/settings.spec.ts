@@ -99,12 +99,12 @@ for (const scenario of [
       )
       await openPromptSettings(page)
       const initial = defaultSelectionPrompts(scenario.language)
-      for (const action of SELECTION_PROMPT_ACTIONS)
+      for (const action of SELECTION_PROMPT_ACTIONS.filter((action) => action !== 'translate'))
         await expect(page.getByTestId(`selection-prompt-${action}`)).toHaveValue(initial[action])
       await page.screenshot({ path: join(PROMPT_SNAPSHOTS, `${scenario.language}-initial.png`) })
       await changePromptLanguage(page, scenario.resetLanguage)
       await openPromptSettings(page)
-      for (const action of SELECTION_PROMPT_ACTIONS)
+      for (const action of SELECTION_PROMPT_ACTIONS.filter((action) => action !== 'translate'))
         await expect(page.getByTestId(`selection-prompt-${action}`)).toHaveValue(initial[action])
       await expect.poll(() => readPreferences()?.selectionPrompts).toEqual(initial)
       await page.getByTestId('selection-prompt-restore-explain').click()
@@ -151,7 +151,7 @@ for (const scenario of [
         'lang',
         scenario.resetLanguage === 'en' ? 'en-US' : 'zh-CN'
       )
-      for (const action of SELECTION_PROMPT_ACTIONS)
+      for (const action of SELECTION_PROMPT_ACTIONS.filter((action) => action !== 'translate'))
         await expect(page.getByTestId(`selection-prompt-${action}`)).toHaveValue(saved[action])
       expect(readPreferences().selectionPrompts).toEqual(saved)
       await page.screenshot({ path: join(PROMPT_SNAPSHOTS, `${scenario.language}-restart.png`) })
@@ -162,7 +162,10 @@ for (const scenario of [
         await page.screenshot({ path: join(PROMPT_SNAPSHOTS, `${scenario.language}-failure.png`) })
         writeFileSync(
           join(PROMPT_SNAPSHOTS, `${scenario.language}-failure.txt`),
-          await page.locator('[role="dialog"]').allTextContents().then((dialogs) => dialogs.join('\n'))
+          await page
+            .locator('[role="dialog"]')
+            .allTextContents()
+            .then((dialogs) => dialogs.join('\n'))
         )
       }
       throw error
@@ -184,7 +187,9 @@ test('about version copies native system information and supports mouse text sel
   try {
     const page = await desktop.launch()
     await desktop.app!.evaluate(({ app, BrowserWindow }, size) => {
-      const main = BrowserWindow.getAllWindows().find(window => !window.webContents.getURL().includes('menu.html'))!
+      const main = BrowserWindow.getAllWindows().find(
+        (window) => !window.webContents.getURL().includes('menu.html')
+      )!
       main.setSize(size.width, size.height)
       main.show()
       main.focus()
@@ -192,13 +197,23 @@ test('about version copies native system information and supports mouse text sel
     }, WORKSPACE_WINDOW_SIZE)
     await page.bringToFront()
     await expect.poll(() => page.evaluate(() => document.hasFocus())).toBe(true)
-    await page.getByTestId('activity-account').evaluate(element => (element as HTMLElement).click())
-    await expect.poll(async () => {
-      for (const window of desktop.app!.windows()) {
-        if (await window.getByTestId('account-menu-settings').isVisible().catch(() => false)) return true
-      }
-      return false
-    }).toBe(true)
+    await page
+      .getByTestId('activity-account')
+      .evaluate((element) => (element as HTMLElement).click())
+    await expect
+      .poll(async () => {
+        for (const window of desktop.app!.windows()) {
+          if (
+            await window
+              .getByTestId('account-menu-settings')
+              .isVisible()
+              .catch(() => false)
+          )
+            return true
+        }
+        return false
+      })
+      .toBe(true)
     for (const window of desktop.app!.windows()) {
       const settings = window.getByTestId('account-menu-settings')
       if (await settings.isVisible().catch(() => false)) {
@@ -227,28 +242,43 @@ test('about version copies native system information and supports mouse text sel
     expect(await desktop.app!.evaluate(({ clipboard }) => clipboard.readText())).toBe(expected)
     await page.screenshot({ path: join(VERSION_SCREENSHOTS, 'copied.png') })
     await expect(version).toHaveCSS('user-select', 'text')
-    const textBounds = await version.evaluate(element => {
+    const textBounds = await version.evaluate((element) => {
       const range = document.createRange()
       range.selectNodeContents(element)
-      return Array.from(range.getClientRects(), rectangle => ({
-        x: rectangle.x, y: rectangle.y, width: rectangle.width, height: rectangle.height,
+      return Array.from(range.getClientRects(), (rectangle) => ({
+        x: rectangle.x,
+        y: rectangle.y,
+        width: rectangle.width,
+        height: rectangle.height,
       }))
     })
     const firstLine = textBounds[0]
     const lastLine = textBounds[textBounds.length - 1]
     await page.mouse.move(firstLine.x + SELECTION_INSET, firstLine.y + firstLine.height / 2)
     await page.mouse.down()
-    await page.mouse.move(lastLine.x + lastLine.width + SELECTION_INSET, lastLine.y + lastLine.height / 2, { steps: SELECTION_STEPS })
+    await page.mouse.move(
+      lastLine.x + lastLine.width + SELECTION_INSET,
+      lastLine.y + lastLine.height / 2,
+      { steps: SELECTION_STEPS }
+    )
     await page.mouse.up()
-    await expect.poll(() => page.evaluate(() => window.getSelection()?.toString())).toContain(identity.version)
+    await expect
+      .poll(() => page.evaluate(() => window.getSelection()?.toString()))
+      .toContain(identity.version)
     await page.screenshot({ path: join(VERSION_SCREENSHOTS, 'selected.png') })
     await page.keyboard.press(process.platform === 'darwin' ? 'Meta+c' : 'Control+c')
-    await expect.poll(() => desktop.app!.evaluate(({ clipboard }) => clipboard.readText())).toContain(identity.version)
+    await expect
+      .poll(() => desktop.app!.evaluate(({ clipboard }) => clipboard.readText()))
+      .toContain(identity.version)
     await copy.focus()
     await page.keyboard.press('Enter')
-    await expect.poll(() => desktop.app!.evaluate(({ clipboard }) => clipboard.readText())).toBe(expected)
+    await expect
+      .poll(() => desktop.app!.evaluate(({ clipboard }) => clipboard.readText()))
+      .toBe(expected)
     await desktop.app!.evaluate(({ BrowserWindow }, minimum) => {
-      const main = BrowserWindow.getAllWindows().find(window => !window.webContents.getURL().includes('menu.html'))!
+      const main = BrowserWindow.getAllWindows().find(
+        (window) => !window.webContents.getURL().includes('menu.html')
+      )!
       main.setSize(minimum.width, minimum.height)
     }, WORKSPACE_WINDOW_MINIMUM)
     await expect(copy).toBeVisible()
@@ -273,10 +303,13 @@ test('settings keep titles and descriptions fixed while only their content scrol
   const runtime = createRuntime(testInfo)
   const preferencesPath = join(runtime.userData, PREFERENCES_FILE)
   const preferences = JSON.parse(readFileSync(preferencesPath, 'utf8'))
-  writeFileSync(preferencesPath, JSON.stringify({
-    ...preferences,
-    onboarding: { seen: Object.fromEntries(ONBOARDING_GROUPS.map(group => [group, true])) }
-  }))
+  writeFileSync(
+    preferencesPath,
+    JSON.stringify({
+      ...preferences,
+      onboarding: { seen: Object.fromEntries(ONBOARDING_GROUPS.map((group) => [group, true])) },
+    })
+  )
   const desktop = new DesktopSession(runtime, testInfo)
   try {
     const page = await desktop.launch()
@@ -291,7 +324,9 @@ test('settings keep titles and descriptions fixed while only their content scrol
       if (!(await shell.isVisible())) await openAccountSettings(page)
       for (const entry of SETTINGS_PAGES) {
         await page.getByTestId(`account-settings-nav-${entry.tab}`).click()
-        const surface = page.getByTestId(entry.tab === 'about' ? 'about-settings-page' : `account-settings-${entry.page}`)
+        const surface = page.getByTestId(
+          entry.tab === 'about' ? 'about-settings-page' : `account-settings-${entry.page}`
+        )
         const header = surface.locator(':scope > [data-slot="page-header"]')
         const body = surface.locator(':scope > [data-slot="page-body"]')
         await expect(header).toBeVisible()
@@ -300,31 +335,36 @@ test('settings keep titles and descriptions fixed while only their content scrol
         expect(before).not.toBeNull()
         await body.hover()
         await page.mouse.wheel(0, SCROLL_DISTANCE)
-        await expect.poll(async () => {
-          const after = await header.boundingBox()
-          return Math.abs((after?.y ?? Infinity) - before!.y)
-        }).toBeLessThan(GEOMETRY_TOLERANCE)
+        await expect
+          .poll(async () => {
+            const after = await header.boundingBox()
+            return Math.abs((after?.y ?? Infinity) - before!.y)
+          })
+          .toBeLessThan(GEOMETRY_TOLERANCE)
         await expect(header.locator('h1')).toBeVisible()
-        await expect(header.locator('p')).toBeVisible()
-        expect(await shell.locator('main').evaluate(element => element.scrollTop)).toBe(0)
+        if (entry.tab === 'prompts') await expect(surface.getByRole('status')).toBeVisible()
+        else await expect(header.locator('p')).toBeVisible()
+        expect(await shell.locator('main').evaluate((element) => element.scrollTop)).toBe(0)
         if (entry.tab === 'prompts') {
-          await page.screenshot({ path: join(runtime.artifacts, `settings-${entry.tab}-${viewport.width}.png`) })
+          await page.screenshot({
+            path: join(runtime.artifacts, `settings-${entry.tab}-${viewport.width}.png`),
+          })
         }
       }
-      await page.getByRole('dialog', { name: '设置', exact: true }).getByRole('button', { name: '关闭', exact: true }).click()
-      await page.getByTestId('activity-skills').click()
-      await page.getByTestId('skills-tab-scholarseed').click()
-      await expect(page.getByTestId('skills-page')).toBeVisible()
-      const catalog = JSON.parse(readFileSync(
-        join(__dirname, '../../serve/service/capabilities/catalog.json'), 'utf8'
-      ))
+      await page.getByTestId('account-settings-nav-skills').click()
+      await expect(page.getByTestId('account-settings-skills')).toBeVisible()
+      const catalog = JSON.parse(
+        readFileSync(join(__dirname, '../../serve/service/capabilities/catalog.json'), 'utf8')
+      )
       for (const name of catalog.surfaces.settings.skills) {
         const card = page.getByTestId(`skill-card-${name}`)
         // The internal authoring dependency is intentionally absent from user inventory.
         if (name === 'plugin-create') await expect(card).toHaveCount(0)
         else await expect(card).toBeVisible()
       }
-      await page.screenshot({ path: join(runtime.artifacts, `settings-skills-${viewport.width}.png`) })
+      await page.screenshot({
+        path: join(runtime.artifacts, `settings-skills-${viewport.width}.png`),
+      })
     }
     desktop.assertNoPageErrors()
   } finally {

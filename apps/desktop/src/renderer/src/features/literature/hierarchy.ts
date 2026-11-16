@@ -51,6 +51,24 @@ export function flattenDestinations(
   ])
 }
 
+export function joinCollectionOptions(
+  globalCollections: CardCollection[],
+  projectCollections: CardCollection[],
+  projectId: string | undefined,
+  labels: { global: string; project: string }
+): Array<JoinDestination & { key: string; label: string }> {
+  return [
+    ...flattenDestinations(collectionNodes(globalCollections, undefined, [labels.global])),
+    ...flattenDestinations(collectionNodes(projectCollections, projectId, [labels.project])),
+  ].map(({ node }) => ({
+    key: JSON.stringify([node.projectId, node.collectionId]),
+    label: node.path.join(' / '),
+    path: node.path.slice(1),
+    collectionId: node.collectionId,
+    projectId: node.projectId,
+  }))
+}
+
 export function paperJoinKey(paper: LiteratureSearchPaper, projectId?: string): string {
   return JSON.stringify([
     projectId || '',

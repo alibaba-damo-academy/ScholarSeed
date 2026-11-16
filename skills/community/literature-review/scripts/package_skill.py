@@ -13,6 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 EXCLUDED_NAMES = {
+    ".scholarseed.json",
     ".DS_Store",
     ".git",
     ".pytest_cache",
@@ -21,6 +22,7 @@ EXCLUDED_NAMES = {
     "dist",
 }
 EXCLUDED_SUFFIXES = (".pyc", ".pyo", ".log", ".tar.gz", ".zip")
+MANIFEST_EXCLUDED = {"PACKAGE-MANIFEST.sha256", ".scholarseed-package.json", ".scholarseed.json"}
 
 
 def _ignore(_directory: str, names: list[str]) -> set[str]:
@@ -46,7 +48,10 @@ def _sha256(path: Path) -> str:
 
 def _write_manifest(stage: Path) -> None:
     rows = []
-    for path in sorted(item for item in stage.rglob("*") if item.is_file()):
+    for path in sorted(
+        item for item in stage.rglob("*")
+        if item.is_file() and item.name not in MANIFEST_EXCLUDED
+    ):
         rows.append(f"{_sha256(path)}  {path.relative_to(stage).as_posix()}")
     (stage / "PACKAGE-MANIFEST.sha256").write_text("\n".join(rows) + "\n", encoding="utf-8")
 

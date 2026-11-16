@@ -1,6 +1,6 @@
-import { spawnSync } from 'node:child_process'
-import { isAbsolute } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 
+import type { DomainNative } from '../../native/domains.cjs'
 import {
   POLICY_SCHEMA_VERSION,
   emptyPolicy,
@@ -14,6 +14,8 @@ import type {
   StoredPolicy,
   SiteRule,
 } from './policy-record.ts'
+import { assertDirectoryOwnership, retainUncertainDirectoryOwnership } from './writer.ts'
+import { beginDomains, ensureDirectories } from '../../native/domains.cjs'
 export { normalizePolicyOrigin } from './policy-record.ts'
 export type {
   BrowserAgentAction,
@@ -22,160 +24,245 @@ export type {
 } from './policy-record.ts'
 
 const MAX_POLICY_BYTES = 1024 * 1024
-const IO_TIMEOUT_MILLISECONDS = 5000
+const READ_RETRY_BUDGET_MILLISECONDS = 20
+const WRITE_BUDGET_MILLISECONDS = 100
+const RETRY_BACKOFF_MILLISECONDS = 2
 const MAX_POLICY_CONFLICT_RETRIES = 3
-const POLICY_CONFLICT_EXIT_CODE = 73
 const POLICY_IO_ERROR = 'browser_policy_io_unavailable'
 const POLICY_CONFLICT_ERROR = 'browser_policy_revision_conflict'
 const POLICY_INVALID_ERROR = 'browser_policy_invalid'
 const POLICY_CORRUPT_ERROR = 'browser_policy_corrupt'
-const POLICY_IO_SCRIPT = `import fcntl
-import json
-import os
-import stat
-import sys
-import uuid
+const BROWSER_DIRECTORY = 'browser'
+const POLICY_LEAF = 'agent-policy.json'
 
-mode, home, expected = sys.argv[1:]
-if mode not in ('read', 'write') or not os.path.isabs(home):
-    raise ValueError('invalid policy request')
-flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-def safe_parent(directory):
-    details = os.fstat(directory)
-    if details.st_uid not in (0, os.geteuid()):
-        raise ValueError('untrusted policy ancestor')
-    if details.st_mode & 0o022 and not details.st_mode & stat.S_ISVTX:
-        raise ValueError('writable policy ancestor')
-
-def open_home(home):
-    directory = os.open('/', flags)
-    try:
-        for component in home.split('/'):
-            if not component:
-                continue
-            if component in ('.', '..'):
-                raise ValueError('invalid home component')
-            safe_parent(directory)
-            next_directory = os.open(component, flags, dir_fd=directory)
-            os.close(directory)
-            directory = next_directory
-        details = os.fstat(directory)
-        if details.st_uid != os.geteuid() or details.st_mode & 0o022:
-            raise ValueError('unsafe policy home')
-        return directory
-    except:
-        os.close(directory)
-        raise
-
-def read_policy(browser):
-    try:
-        source = os.open('agent-policy.json', os.O_RDONLY | os.O_NOFOLLOW, dir_fd=browser)
-    except FileNotFoundError:
-        return None
-    try:
-        details = os.fstat(source)
-        if not stat.S_ISREG(details.st_mode) or details.st_nlink != 1 or details.st_size > 1048576 or details.st_uid != os.geteuid() or details.st_mode & 0o022:
-            raise ValueError('invalid policy file')
-        contents = os.read(source, 1048577)
-        if len(contents) > 1048576:
-            raise ValueError('policy file too large')
-        return contents
-    finally:
-        os.close(source)
-
-directory = open_home(home)
-try:
-    try:
-        browser = os.open('browser', flags, dir_fd=directory)
-    except FileNotFoundError:
-        if mode == 'read':
-            sys.stdout.buffer.write(b'0')
-            sys.exit(0)
-        os.mkdir('browser', 0o700, dir_fd=directory)
-        browser = os.open('browser', flags, dir_fd=directory)
-    try:
-        browser_details = os.fstat(browser)
-        if browser_details.st_uid != os.geteuid() or browser_details.st_mode & 0o022:
-            raise ValueError('unsafe browser policy directory')
-        if mode == 'read':
-            current = read_policy(browser)
-            sys.stdout.buffer.write(b'0' if current is None else b'1' + current)
-        else:
-            fcntl.flock(browser, fcntl.LOCK_EX)
-            current = read_policy(browser)
-            revision = 0 if current is None else json.loads(current.decode('utf-8'))['revision']
-            if type(revision) is not int:
-                raise ValueError('invalid policy revision')
-            if revision != int(expected):
-                sys.exit(${POLICY_CONFLICT_EXIT_CODE})
-            contents = sys.stdin.buffer.read(1048577)
-            if len(contents) > 1048576:
-                raise ValueError('policy file too large')
-            next_revision = json.loads(contents.decode('utf-8'))['revision']
-            if type(next_revision) is not int or next_revision != revision + 1:
-                raise ValueError('invalid next policy revision')
-            temporary = '.agent-policy-' + uuid.uuid4().hex
-            target = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=browser)
-            try:
-                with os.fdopen(target, 'wb', closefd=False) as output:
-                    output.write(contents)
-                    output.flush()
-                    os.fsync(target)
-                os.replace(temporary, 'agent-policy.json', src_dir_fd=browser, dst_dir_fd=browser)
-                os.fsync(browser)
-                verified_home = open_home(home)
-                try:
-                    verified_browser = os.open('browser', flags, dir_fd=verified_home)
-                    try:
-                        home_details = os.fstat(directory)
-                        verified_home_details = os.fstat(verified_home)
-                        browser_details = os.fstat(browser)
-                        verified_browser_details = os.fstat(verified_browser)
-                        if (home_details.st_dev, home_details.st_ino) != (verified_home_details.st_dev, verified_home_details.st_ino) or (browser_details.st_dev, browser_details.st_ino) != (verified_browser_details.st_dev, verified_browser_details.st_ino):
-                            raise ValueError('policy directory was replaced')
-                    finally:
-                        os.close(verified_browser)
-                finally:
-                    os.close(verified_home)
-            finally:
-                os.close(target)
-                try:
-                    os.unlink(temporary, dir_fd=browser)
-                except FileNotFoundError:
-                    pass
-    finally:
-        os.close(browser)
-finally:
-    os.close(directory)
-`
-
-function policyIo(
-  home: string,
-  python: string | null,
-  mode: 'read' | 'write',
-  contents = '',
-  expectedRevision = 0
-): string {
-  if (process.platform === 'win32' || !python || !isAbsolute(python) || !isAbsolute(home))
-    throw new Error(POLICY_IO_ERROR)
-  const result = spawnSync(
-    python,
-    ['-I', '-B', '-c', POLICY_IO_SCRIPT, mode, home, String(expectedRevision)],
-    {
-      input: contents,
-      encoding: 'utf8',
-      maxBuffer: MAX_POLICY_BYTES + 1,
-      timeout: IO_TIMEOUT_MILLISECONDS,
-      windowsHide: true,
-    }
-  )
-  if (!result.error && result.status === POLICY_CONFLICT_EXIT_CODE && mode === 'write')
-    throw new Error(POLICY_CONFLICT_ERROR)
-  if (result.error || result.status !== 0) throw new Error(POLICY_IO_ERROR)
-  return result.stdout
+function backoff(): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, RETRY_BACKOFF_MILLISECONDS)
 }
 
-export function createBrowserPolicy(home: string, python: string | null) {
+function errorCode(error: unknown): string | undefined {
+  return (error as { code?: string }).code
+}
+
+function uncertainRelease(error: unknown): boolean {
+  return ['ERR_LEASE_RELEASE', 'ERR_DOMAIN_RELEASE', 'ERR_LEASE_SYNC'].includes(
+    errorCode(error) ?? ''
+  )
+}
+
+/**
+ * Read and publish through one qualified policy transaction. On macOS, writes
+ * also retain the flock used by the legacy Python writer.
+ */
+function createPolicyIo(home: string, native: DomainNative, coordinator: string) {
+  if (!isAbsolute(home)) throw new Error(POLICY_IO_ERROR)
+  const directory = join(home, BROWSER_DIRECTORY)
+  type Occupancy = ReturnType<typeof beginDomains>
+  let reader:
+    { domains: Occupancy; acquire: () => unknown; release: (handle: unknown) => void } | undefined
+  let closed = false
+
+  const verifyBarriers = (domains: Occupancy): void => {
+    try {
+      domains.verifyReadBarriers()
+    } catch (error) {
+      if (errorCode(error) !== 'ERR_LEASE_BUSY') throw error
+      throw new Error(POLICY_IO_ERROR, { cause: error })
+    }
+  }
+
+  const closeDomains = (domains: Occupancy): void => {
+    try {
+      domains.close()
+    } catch (error) {
+      retainUncertainDirectoryOwnership(domains, error)
+      throw new Error(POLICY_IO_ERROR, { cause: error })
+    }
+  }
+
+  const close = (): void => {
+    closed = true
+    const active = reader
+    reader = undefined
+    if (active) closeDomains(active.domains)
+  }
+
+  const lockBinding = (domains: Occupancy) => {
+    const binding = domains.policyBinding(home)
+    const name = binding.lineage.at(-1)!.replaceAll(':', '-') + '-policy'
+    return { acquire: () => binding.acquire(name), release: binding.release }
+  }
+
+  const transaction = <T>(
+    roots: string[],
+    run: (domains: ReturnType<typeof beginDomains>, lock: (pin: unknown) => void) => T
+  ): T => {
+    assertDirectoryOwnership()
+    let domains: ReturnType<typeof beginDomains> | undefined
+    const locks: { handle: unknown; release: (handle: unknown) => void }[] = []
+    let uncertain = false
+    try {
+      domains = beginDomains(native, coordinator, roots)
+      domains.occupy()
+      verifyBarriers(domains)
+      const binding = lockBinding(domains)
+      locks.push({ handle: binding.acquire(), release: binding.release })
+      domains.check()
+      return run(domains, (pin) => {
+        if (!native.lockDirectoryAt) throw new Error(POLICY_IO_ERROR)
+        locks.push({
+          handle: native.lockDirectoryAt(pin),
+          release: (handle) => native.release(handle),
+        })
+      })
+    } catch (error) {
+      uncertain = uncertainRelease(error)
+      if (uncertain) retainUncertainDirectoryOwnership(domains, locks, error)
+      throw error
+    } finally {
+      if (!uncertain) {
+        try {
+          while (locks.length) {
+            const lock = locks[locks.length - 1]
+            lock.release(lock.handle)
+            locks.pop()
+          }
+          domains?.close()
+        } catch (error) {
+          retainUncertainDirectoryOwnership(domains, locks, error)
+          throw new Error(POLICY_IO_ERROR, { cause: error })
+        }
+      }
+    }
+  }
+
+  const retry = <T>(deadline: number, run: () => T): T => {
+    for (;;) {
+      try {
+        return run()
+      } catch (error) {
+        const code = errorCode(error)
+        if (
+          (code !== 'ERR_LEASE_BUSY' && code !== 'ERR_LEASE_CHANGED') ||
+          performance.now() >= deadline
+        )
+          throw error
+        backoff()
+      }
+    }
+  }
+
+  const parse = (bytes: Buffer | null): StoredPolicy =>
+    bytes === null ? emptyPolicy() : parsePolicy(bytes.toString('utf8'))
+
+  const acquireReader = () => {
+    let domains: Occupancy | undefined
+    try {
+      domains = beginDomains(native, coordinator, [home, directory])
+      domains.occupy()
+      verifyBarriers(domains)
+      return { domains, ...lockBinding(domains) }
+    } catch (error) {
+      if (uncertainRelease(error)) retainUncertainDirectoryOwnership(domains, error)
+      else if (domains) closeDomains(domains)
+      throw error
+    }
+  }
+
+  const readRecord = (): Buffer | null => {
+    if (closed) throw new Error(POLICY_IO_ERROR)
+    assertDirectoryOwnership()
+    const active = (reader ??= acquireReader())
+    let lock: unknown
+    try {
+      lock = active.acquire()
+    } catch (error) {
+      if (uncertainRelease(error)) {
+        reader = undefined
+        retainUncertainDirectoryOwnership(active, error)
+      }
+      throw error
+    }
+    let uncertain = false
+    let discard = false
+    try {
+      return active.domains.read(directory, POLICY_LEAF, MAX_POLICY_BYTES)
+    } catch (error) {
+      uncertain = uncertainRelease(error)
+      discard = true
+      if (uncertain) retainUncertainDirectoryOwnership(active, lock, error)
+      throw error
+    } finally {
+      if (discard) reader = undefined
+      if (!uncertain) {
+        try {
+          active.release(lock)
+        } catch (error) {
+          reader = undefined
+          retainUncertainDirectoryOwnership(active, lock, error)
+          throw new Error(POLICY_IO_ERROR, { cause: error })
+        }
+        if (discard) closeDomains(active.domains)
+      }
+    }
+  }
+
+  const read = (): StoredPolicy =>
+    retry(performance.now() + READ_RETRY_BUDGET_MILLISECONDS, () => {
+      try {
+        return parse(readRecord())
+      } catch (error) {
+        if (errorCode(error) !== 'ERR_LEASE_MISSING') throw error
+      }
+      return transaction([home], (domains) => {
+        // Confirm absence only after acquiring both home occupancy and the policy
+        // lock. A writer may have created the directory since the first attempt.
+        let pin: unknown
+        try {
+          pin = native.pin(directory, false)
+        } catch (error) {
+          if (errorCode(error) !== 'ERR_LEASE_MISSING') throw error
+          domains.check()
+          return emptyPolicy()
+        }
+        try {
+          native.release(pin)
+        } catch (error) {
+          retainUncertainDirectoryOwnership(pin)
+          throw Object.assign(new Error(POLICY_IO_ERROR, { cause: error }), {
+            code: 'ERR_LEASE_RELEASE',
+          })
+        }
+        throw Object.assign(new Error(POLICY_IO_ERROR), { code: 'ERR_LEASE_CHANGED' })
+      })
+    })
+
+  const write = (expectedRevision: number, next: StoredPolicy, deadline: number): void => {
+    const bytes = Buffer.from(JSON.stringify(next), 'utf8')
+    if (bytes.length > MAX_POLICY_BYTES) throw new Error(POLICY_INVALID_ERROR)
+    retry(deadline, () => {
+      assertDirectoryOwnership()
+      // Check the home before preparing its child. The preparation itself
+      // uses domains admission and checks the durable mutation barriers.
+      transaction([home], () => {})
+      ensureDirectories(native, coordinator, [directory])
+      transaction([home, directory], (domains, lock) => {
+        if (process.platform !== 'win32') lock(domains.policyBinding(directory).pin)
+        const current = parse(domains.read(directory, POLICY_LEAF, MAX_POLICY_BYTES))
+        if (current.revision !== expectedRevision) throw new Error(POLICY_CONFLICT_ERROR)
+        domains.admit()
+        domains.replace(directory, POLICY_LEAF, bytes)
+      })
+    })
+  }
+
+  return { read, write, close }
+}
+
+export function createBrowserPolicy(
+  home: string,
+  native: DomainNative | null,
+  coordinator: string
+) {
   const changeListeners = new Set<() => void>()
   const notifyChange = (): void => {
     for (const listener of changeListeners) {
@@ -184,16 +271,12 @@ export function createBrowserPolicy(home: string, python: string | null) {
       } catch {}
     }
   }
+  const io = native ? createPolicyIo(home, native, coordinator) : null
   let policy: StoredPolicy
   let unavailable = false
-  const read = (): StoredPolicy => {
-    const raw = policyIo(home, python, 'read')
-    if (raw === '0') return emptyPolicy()
-    if (!raw.startsWith('1')) throw new Error(POLICY_CORRUPT_ERROR)
-    return parsePolicy(raw.slice(1))
-  }
   try {
-    policy = read()
+    if (!io) throw new Error(POLICY_IO_ERROR)
+    policy = io.read()
   } catch {
     policy = emptyPolicy()
     unavailable = true
@@ -203,7 +286,8 @@ export function createBrowserPolicy(home: string, python: string | null) {
   }
   const refresh = (): void => {
     try {
-      const latest = read()
+      if (!io) throw new Error(POLICY_IO_ERROR)
+      const latest = io.read()
       if (latest.revision < policy.revision) throw new Error(POLICY_CORRUPT_ERROR)
       const changed = unavailable || latest.revision !== policy.revision
       policy = latest
@@ -216,16 +300,33 @@ export function createBrowserPolicy(home: string, python: string | null) {
       }
     }
   }
+  // One immediate disk read per authorization decision. Every independent
+  // authorization re-reads, so a revoke takes effect at once; nothing is reused
+  // across decisions.
+  const observe = (): StoredPolicy | null => {
+    refresh()
+    return unavailable ? null : policy
+  }
+  const ruleFor = (
+    snapshot: StoredPolicy,
+    input: string,
+    action: BrowserAgentAction
+  ): BrowserAgentDecision => {
+    if (!snapshot.agentBrowserUseEnabled) return 'block'
+    if (action === 'submit') return 'ask'
+    return snapshot.sites[normalizePolicyOrigin(input)]?.[action] ?? 'ask'
+  }
   const decision = (input: string, action: BrowserAgentAction): BrowserAgentDecision => {
     if (action === 'submit') return 'ask'
-    refresh()
-    if (unavailable) return 'block'
-    const origin = normalizePolicyOrigin(input)
-    return policy.sites[origin]?.[action] ?? 'ask'
+    const snapshot = observe()
+    if (!snapshot) return 'block'
+    return snapshot.sites[normalizePolicyOrigin(input)]?.[action] ?? 'ask'
   }
   const commit = (change: (current: StoredPolicy) => StoredPolicy): void => {
     refresh()
     assertWritable()
+    if (!io) throw new Error(POLICY_IO_ERROR)
+    const deadline = performance.now() + WRITE_BUDGET_MILLISECONDS
     for (let attempt = 0; attempt < MAX_POLICY_CONFLICT_RETRIES; attempt += 1) {
       const candidate = change(policy)
       if (candidate === policy) return
@@ -236,12 +337,13 @@ export function createBrowserPolicy(home: string, python: string | null) {
         sites: candidate.sites,
       }
       try {
-        policyIo(home, python, 'write', JSON.stringify(next), policy.revision)
+        io.write(policy.revision, next, deadline)
       } catch (error) {
         if (error instanceof Error && error.message === POLICY_CONFLICT_ERROR) {
           refresh()
           assertWritable()
-          continue
+          if (performance.now() < deadline) continue
+          throw error
         }
         unavailable = true
         notifyChange()
@@ -275,6 +377,15 @@ export function createBrowserPolicy(home: string, python: string | null) {
     update(input, (existing) => ({ ...existing, [action]: choice }))
   }
   return {
+    close: (): void => {
+      try {
+        io?.close()
+      } catch {
+        // The owner is retained and new admissions already fail closed.
+      } finally {
+        unavailable = true
+      }
+    },
     onChange(listener: () => void): () => void {
       changeListeners.add(listener)
       return () => {
@@ -298,19 +409,21 @@ export function createBrowserPolicy(home: string, python: string | null) {
     ): { revision: number; decision: BrowserAgentDecision } => {
       refresh()
       assertWritable()
-      const origin = normalizePolicyOrigin(input)
-      return {
-        revision: policy.revision,
-        decision: !policy.agentBrowserUseEnabled
-          ? 'block'
-          : action === 'submit'
-            ? 'ask'
-            : (policy.sites[origin]?.[action] ?? 'ask'),
-      }
+      return { revision: policy.revision, decision: ruleFor(policy, input, action) }
     },
     effectiveDecision: (input: string, action: BrowserAgentAction): BrowserAgentDecision => {
-      refresh()
-      return unavailable || !policy.agentBrowserUseEnabled ? 'block' : decision(input, action)
+      const snapshot = observe()
+      return snapshot ? ruleFor(snapshot, input, action) : 'block'
+    },
+    /** One snapshot for the whole action fence: switch, grant revision and rule. */
+    fence: (input: string, action: BrowserAgentAction, grantRevision: number): boolean => {
+      const snapshot = observe()
+      if (!snapshot) return false
+      return (
+        snapshot.agentBrowserUseEnabled &&
+        snapshot.revision === grantRevision &&
+        ruleFor(snapshot, input, action) !== 'block'
+      )
     },
     setAgentBrowserUse(enabled: boolean): void {
       if (typeof enabled !== 'boolean') throw new Error(POLICY_INVALID_ERROR)
@@ -330,12 +443,12 @@ export function createBrowserPolicy(home: string, python: string | null) {
       action: BrowserAgentPersistentAction,
       capturedRevision: number
     ): boolean => {
-      refresh()
+      const snapshot = observe()
       return (
-        !unavailable &&
-        policy.agentBrowserUseEnabled &&
-        policy.revision === capturedRevision &&
-        decision(input, action) === 'allow'
+        snapshot !== null &&
+        snapshot.agentBrowserUseEnabled &&
+        snapshot.revision === capturedRevision &&
+        ruleFor(snapshot, input, action) === 'allow'
       )
     },
     sites: (): Array<{

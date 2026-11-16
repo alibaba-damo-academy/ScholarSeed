@@ -13,6 +13,24 @@ import {
   modelDefaultEffort,
 } from './reasoning.ts'
 
+const modelSelectionStorage: Storage = (() => {
+  const data = new Map<string, string>()
+  return {
+    get length() {
+      return data.size
+    },
+    clear: () => data.clear(),
+    getItem: (key) => data.get(key) ?? null,
+    key: (index) => [...data.keys()][index] ?? null,
+    removeItem: (key) => {
+      data.delete(key)
+    },
+    setItem: (key, value) => {
+      data.set(key, value)
+    },
+  }
+})()
+
 test('first-turn request carries an explicit effort but leaves model default omitted', () => {
   assert.equal(
     buildSessionOpenRequest({ modelId: 'model', reasoningEffort: 'high' }).reasoning_effort,
@@ -171,8 +189,11 @@ test('bundled Qwen defaults reach new sessions without overriding saved low', ()
 test('model failure reconciles saved intent without turning the failed operation into success', async (t) => {
   const originalWindow = globalThis.window
   const originalFetch = globalThis.fetch
-  globalThis.window = { scholarseed: { getApiBase: () => 'http://service.test' } } as Window &
-    typeof globalThis
+  globalThis.window = {
+    dispatchEvent: () => true,
+    sessionStorage: modelSelectionStorage,
+    scholarseed: { getApiBase: () => 'http://service.test' },
+  } as unknown as Window & typeof globalThis
   t.after(() => {
     globalThis.window = originalWindow
     globalThis.fetch = originalFetch
@@ -201,6 +222,9 @@ test('model failure reconciles saved intent without turning the failed operation
     },
   ]
   for (const scenario of scenarios) {
+    // Each case starts in a fresh service lifetime; an uncertain write must
+    // deliberately fence later writes within the same lifetime.
+    modelSelectionStorage.clear()
     const requests: string[] = []
     const authority = {
       session_id: 'session-1',
@@ -222,7 +246,7 @@ test('model failure reconciles saved intent without turning the failed operation
       }
       return Response.json(authority)
     }
-    const result = await setSessionModel('session-1', 'new-model', 'high')
+    const result = await setSessionModel('session-1', 'new-model', 'high', false, 'instance')
     assert.equal(result?.ok, false, scenario.name)
     assert.equal(result?.model_id, scenario.selected, scenario.name)
     assert.deepEqual(result?.runtime, authority.runtime, scenario.name)
@@ -243,8 +267,10 @@ test('only explicit model selection requests remember the default alongside the 
   const originalWindow = globalThis.window
   const originalFetch = globalThis.fetch
   const bodies: Record<string, unknown>[] = []
-  globalThis.window = { scholarseed: { getApiBase: () => 'http://service.test' } } as Window &
-    typeof globalThis
+  globalThis.window = {
+    sessionStorage: modelSelectionStorage,
+    scholarseed: { getApiBase: () => 'http://service.test' },
+  } as Window & typeof globalThis
   globalThis.fetch = async (_url, init) => {
     bodies.push(JSON.parse(String(init?.body)))
     return Response.json({
@@ -258,8 +284,8 @@ test('only explicit model selection requests remember the default alongside the 
     globalThis.window = originalWindow
     globalThis.fetch = originalFetch
   })
-  await setSessionModel('session', 'target', 'low')
-  const result = await setSessionModel('session', 'target', 'high', true)
+  await setSessionModel('session', 'target', 'low', false, 'instance')
+  const result = await setSessionModel('session', 'target', 'high', true, 'instance')
   assert.equal(Object.prototype.hasOwnProperty.call(bodies[0], 'remember_default'), false)
   assert.equal(bodies[1].remember_default, true)
   assert.equal(result?.default_model_id, 'target')
@@ -268,14 +294,17 @@ test('only explicit model selection requests remember the default alongside the 
 test('unavailable model readback never fabricates the requested selection', async (t) => {
   const originalWindow = globalThis.window
   const originalFetch = globalThis.fetch
-  globalThis.window = { scholarseed: { getApiBase: () => 'http://service.test' } } as Window &
-    typeof globalThis
+  globalThis.window = {
+    dispatchEvent: () => true,
+    sessionStorage: modelSelectionStorage,
+    scholarseed: { getApiBase: () => 'http://service.test' },
+  } as unknown as Window & typeof globalThis
   globalThis.fetch = async () => Response.json({ error: 'unavailable' }, { status: 503 })
   t.after(() => {
     globalThis.window = originalWindow
     globalThis.fetch = originalFetch
   })
-  const result = await setSessionModel('session-1', 'unconfirmed-target', 'high')
+  const result = await setSessionModel('session-1', 'unconfirmed-target', 'high', false, 'instance')
   assert.equal(result?.ok, false)
   assert.equal(result?.model_id, '')
   assert.equal(result?.runtime, undefined)

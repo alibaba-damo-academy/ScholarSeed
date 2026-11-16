@@ -62,10 +62,14 @@ class LiteraturePdf:
 
     def page_count(self, item: LiteratureItem) -> int:
         """Read the managed PDF through the shared structure boundary."""
+        return self.describe(item)[0]
 
-        payload, _media_type = self.read(item)
+    def describe(self, item: LiteratureItem) -> tuple[int, str]:
+        """Return page count and the same bytes' revision in one read."""
+        attachment = self.primary(item.id)
+        payload, _media_type, revision = self.read_attachment(item.id, attachment.id)
         try:
-            return pdf_document_info(payload).page_count
+            return pdf_document_info(payload).page_count, revision
         except PdfPasswordError as error:
             raise ContentError("pdf_password_required") from error
         except PdfDocumentError as error:

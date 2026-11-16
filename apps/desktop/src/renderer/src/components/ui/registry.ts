@@ -57,9 +57,29 @@ export const NON_COMPONENT_EXPORTS = [
   'cx',
   'FOCUS_SCOPE_EXTENSION_ATTRIBUTE',
   'getPaginationItems',
+  'captureChartSVG',
+  'prepareChartExport',
+  'rasterizeChartSVG',
+  'renderLegacyChartSVG',
+  'validateLegacyChartExport',
 ] as const
 
 export const UI_REGISTRY: Readonly<Record<string, UiComponentEntry>> = {
+  ImageStrip: {
+    exports: ['ImageStrip'],
+    intents: ['图片列表', '图片横向滚动', '图片翻页', '已发送图片', 'image strip', 'image gallery'],
+    use: '120px 等大图片单行列表，8px 圆角与 border-default 描边；sourceLabel 在左上角展示来源 Badge，未提供时不展示；隐藏滚动条，悬停或键盘聚焦显示可用方向的 24px 按钮（6px 圆角），按可见完整卡片数量平滑翻动；打开图片和加载失败由回调处理',
+    replaces: ['button', 'div', 'img'],
+    avoid: '不读取会话或加载文件；大图预览由调用方组合；输入框可删除缩略图使用 ImageAttachments',
+  },
+  Link: {
+    exports: ['Link'],
+    intents: ['链接', '超链接', '行内链接', '外链', '带图标链接', 'link', 'anchor'],
+    use: '通用语义链接，支持图标、禁用、ref及原生anchor属性；长地址可换行，新窗口链接自动补齐安全rel',
+    replaces: ['a'],
+    avoid:
+      '不读取业务store、不调用Desktop桥接、不识别或改写URL；系统浏览器打开策略由调用方传入onClick；执行命令而非导航用Button',
+  },
   Page: {
     exports: ['Page', 'PageHeader', 'PageBody', 'PageSection'],
     intents: ['页面骨架', '页面布局', '分组表单', '阅读宽度', '标题操作栏', 'page', 'layout'],
@@ -88,7 +108,7 @@ export const UI_REGISTRY: Readonly<Record<string, UiComponentEntry>> = {
       'banner',
       'inline message',
     ],
-    use: '页面内常驻的状态说明(info/success/warning/danger), 可用 AlertIcon 组合图标，不打断操作',
+    use: '页面内常驻的状态说明(neutral/info/success/warning/error)；layout=stacked用于会话内常驻提示，线性图标居中、彩色标题、完整说明与右侧可换行操作；warning表示可恢复异常，error表示阻断报错',
     replaces: ['div'],
     avoid: '一次性的操作反馈用 Toast; 需要用户确认才能继续的用 AlertDialog',
   },
@@ -200,10 +220,10 @@ export const UI_REGISTRY: Readonly<Record<string, UiComponentEntry>> = {
       'ChartTooltipContent',
     ],
     intents: ['图表', '柱状图', '数据可视化', 'chart', 'bar', 'metrics'],
-    use: '轻量自绘图表(内部是 div 布局, 不依赖图表库)。`ChartContainer` 是 `Chart` 的别名',
+    use: '优先 OpenUI 官方柱/线/饼图；缺失值、特殊统计图与不可直接映射的数据保留受限扩展。支持既有 label/value 或 ChartModel、图例及键盘选行。ChartContainer 是独立主题容器，不是 Chart 别名。',
     replaces: ['div'],
     avoid:
-      '`ChartTooltip`/`ChartLegend` 及其 Content 目前是透传壳(仅渲染 children), 不要以为它们自带浮层或图例计算; 复杂统计图需要先在设计系统内立项, 不要在 feature 里引图表库',
+      'ChartTooltip/ChartLegend 是内容组合入口，实际图表交互由 Chart 提供。仅接收声明数据，不开放任意 ECharts option、HTML formatter、函数或外部链接；行选择不执行业务。',
   },
   Checkbox: {
     exports: ['Checkbox'],
@@ -274,6 +294,13 @@ export const UI_REGISTRY: Readonly<Record<string, UiComponentEntry>> = {
     replaces: ['button'],
     avoid: '不要自己写 button + clipboard + 定时器重置这一套',
   },
+  portal: {
+    exports: ['PortalProvider', 'usePortalDocument'],
+    intents: ['跨文档浮层', '原生宿主', 'portal document', 'portal scope'],
+    use: '为复用浮层提供所属 Document；默认保持当前文档，不包含业务或原生能力',
+    replaces: [],
+    avoid: '不用于跨源文档或向外部网页提供产品内容',
+  },
   Dialog: {
     exports: [
       'Dialog',
@@ -288,7 +315,7 @@ export const UI_REGISTRY: Readonly<Record<string, UiComponentEntry>> = {
       'DialogTrigger',
     ],
     intents: ['弹窗', '模态框', '对话框', '表单弹层', 'dialog', 'modal', 'popup'],
-    use: '模态弹层: 表单、详情、导入向导等；DialogContent 的 headerLayout="aligned" 对齐标题与关闭按钮；portalClassName 为嵌套表面指定共享浮层容器的语义层级',
+    use: '模态弹层: 表单、详情、导入向导等；tone 支持 default/info/danger/warning；headerLayout="aligned" 对齐标题与关闭按钮；portalClassName 为嵌套表面指定共享浮层容器的语义层级，菜单/选择器/后续弹窗保持同一归属',
     replaces: ['dialog', 'div'],
     avoid: '危险操作确认用 AlertDialog; 侧边滑出用 Sheet/Drawer; 轻量悬浮内容用 Popover',
   },
@@ -337,14 +364,14 @@ export const UI_REGISTRY: Readonly<Record<string, UiComponentEntry>> = {
       'DropdownMenuTrigger',
     ],
     intents: ['下拉菜单', '更多操作', '三点菜单', '模型切换', 'dropdown', 'menu', 'more actions'],
-    use: '按钮唤起的操作菜单, 支持子菜单/勾选项/单选组；Content 默认非模态，trapFocus 可显式约束键盘焦点',
+    use: '按钮唤起的操作菜单, 支持子菜单/勾选项/单选组；CheckboxItem 的 indicatorAlign="end" 保留文字左对齐；Content 默认非模态，trapFocus 可显式约束键盘焦点；coordinateNavigation 可协调鼠标实际移动与键盘单项高亮',
     replaces: ['button', 'div', 'ul'],
     avoid: '表单取值用 Select(菜单不是表单控件); 右键唤起用 ContextMenu',
   },
   EmptyState: {
     exports: ['EmptyState'],
     intents: ['空状态', '暂无数据', '无结果', 'empty', 'placeholder', '零结果'],
-    use: '列表/面板无内容时的占位: 标题、说明、可选操作; 小区域弹窗用 variant="compact"，圆角方形图标与主色标题用 variant="panel"，页面级保留默认样式',
+    use: '列表/面板无内容时的占位: 标题、说明、可选操作; 小区域弹窗用 variant="compact"，圆角方形图标与主色标题用 variant="panel"，iconTone="subtle" 使用主题低强调底色，页面级保留默认样式',
     replaces: ['div'],
     avoid: '加载中用 Spinner/Skeleton/LoadingOverlay; 错误用 Alert',
   },
@@ -358,7 +385,7 @@ export const UI_REGISTRY: Readonly<Record<string, UiComponentEntry>> = {
   FloatingToolbar: {
     exports: ['FloatingToolbar'],
     intents: ['浮动工具栏', '划词操作条', '上下文操作', 'floating toolbar', 'contextual actions'],
-    use: '悬浮在正文或画布上方的一组上下文操作；提供不透明 raised surface、边框、圆角、阴影和 toolbar 语义',
+    use: '悬浮在正文或画布上方的一组上下文操作；提供不透明 raised surface、toolbar 语义及可选拖动/缩放增量回调，支持方向键操作',
     replaces: ['div'],
     avoid: '点击后弹出的内容面板用 Popover；业务定位、选区状态和请求逻辑留在消费 Feature',
   },
@@ -428,7 +455,7 @@ export const UI_REGISTRY: Readonly<Record<string, UiComponentEntry>> = {
   Label: {
     exports: ['Label'],
     intents: ['标签文字', '字段名', '表单标题', 'label', 'field name'],
-    use: '表单控件的关联标签',
+    use: '表单控件的关联标签；variant=form（默认）为14px/400/text-primary，variant=display为12px/400/text-tertiary；与字段间距8px',
     replaces: ['label'],
     avoid: '状态标记用 Badge; 在 Form 结构里优先 FormLabel',
   },
@@ -491,7 +518,7 @@ export const UI_REGISTRY: Readonly<Record<string, UiComponentEntry>> = {
       'tab bar',
       'document tabs',
     ],
-    use: '带固定总览页签的横向页签导航；默认宽页签常显右侧关闭，压缩后仅当前页签显示关闭，最小保留图标；NavigationTabsMenu 列出全部页签，onOverflowChange 可交由宿主在工具栏展示溢出入口；支持未保存红点(`dirty`)、省略文本和滚轮；onReorder 回传顺序，总览固定，getTabProps.draggable=false 或 aria-disabled 禁止拖拽；trailing 可放尾部操作',
+    use: '带固定总览页签的横向页签导航；默认按名称自适应宽度并常显右侧关闭，长标题保留宽度上限与省略；压缩后仅当前页签显示关闭，最小保留图标；NavigationTabsMenu 列出全部页签，onOverflowChange 可交由宿主在工具栏展示溢出入口；支持未保存红点(`dirty`)、省略文本和滚轮；onReorder 回传顺序，总览固定，getTabProps.draggable=false 或 aria-disabled 禁止拖拽；trailing 可放尾部操作',
     replaces: ['button', 'div'],
     avoid: '普通内容分组切换用 Tabs; 页面级下拉导航用 NavigationMenu',
   },
@@ -526,14 +553,14 @@ export const UI_REGISTRY: Readonly<Record<string, UiComponentEntry>> = {
   Resizable: {
     exports: ['ResizableHandle', 'ResizablePanel', 'ResizablePanelGroup'],
     intents: ['可拖拽分栏', '分割面板', '调整宽度', '独立边缘拖拽', 'resizable', 'split pane'],
-    use: '可拖拽调整比例的多栏布局；animated 可选收起宽度过渡，拖动即时跟手并尊重减少动态效果',
+    use: '可拖拽调整比例的多栏布局；animated 可选收起宽度过渡，拖动即时跟手并尊重减少动态效果；renderHandle 可将原拖拽控件交给宿主呈现，不改变分栏几何与拖动计算',
     replaces: ['div'],
     avoid: '固定比例布局不要引入它',
   },
   ScrollArea: {
     exports: ['ScrollArea', 'ScrollBar'],
     intents: ['滚动容器', '自定义滚动条', '长列表滚动', 'scroll area', 'scrollbar'],
-    use: '带统一滚动条样式的滚动容器；overlay 提供不占布局宽度、可拖拽和键盘操作的覆盖式滚动条；shadow="auto" 按上下剩余内容显示渐变遮罩，shadow=true 保持双边遮罩',
+    use: '带统一滚动条样式的滚动容器；overlay 提供不占布局宽度、可拖拽和键盘操作的覆盖式滚动条；shadow="auto" 按上下剩余内容显示渐变遮罩，shadow=true 保持双边遮罩；horizontalControls 按横向溢出方向显示按钮及渐变，variant=image 复用图片条箭头，scrollBy=items 按完整子项翻页，hoverOnly 保留键盘聚焦显示',
     replaces: ['div'],
     avoid: '整页滚动不需要它; 它不做虚拟列表',
   },
@@ -582,9 +609,9 @@ export const UI_REGISTRY: Readonly<Record<string, UiComponentEntry>> = {
     avoid: '精确输入用 Input(type=number)',
   },
   Spinner: {
-    exports: ['Skeleton', 'Spinner'],
-    intents: ['加载中', '转圈', '骨架屏', '占位', 'spinner', 'loading', 'skeleton'],
-    use: '`Spinner` 行内不确定加载，可用 imageSrc 指定动画图片，未指定时保留默认转圈; `Skeleton` 内容骨架占位(同一模块导出)',
+    exports: ['LoadingFallback', 'Skeleton', 'Spinner'],
+    intents: ['加载兜底', '加载中', '转圈', '骨架屏', '占位', 'spinner', 'loading', 'skeleton'],
+    use: '`LoadingFallback` 是页面和内容区的默认加载兜底，居中展示转圈和本地化文案；`Spinner` 用于行内加载，可用 imageSrc 指定动画图片；`Skeleton` 用于内容骨架占位',
     replaces: ['div', 'span'],
     avoid: '需要遮住整块并禁交互用 LoadingOverlay; 有确定百分比用 ProgressBar',
   },
@@ -699,7 +726,7 @@ export const UI_REGISTRY: Readonly<Record<string, UiComponentEntry>> = {
   Tooltip: {
     exports: ['Tooltip', 'TooltipContent', 'TooltipProvider', 'TooltipTrigger'],
     intents: ['文字提示', '悬浮说明', '图标含义', 'tooltip', 'hint', 'title 提示'],
-    use: '悬停/聚焦时的简短文字说明',
+    use: '悬停/聚焦时的简短文字说明；consumeEscape=false 可在关闭提示时将 Escape 留给宿主取消操作',
     replaces: ['div', 'span'],
     avoid: '富内容用 HoverCard; 需要点击交互用 Popover; 不要用 `title` 属性代替它',
   },

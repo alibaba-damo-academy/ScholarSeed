@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import type { FeedbackSubmissionRequest } from '../../feedback.ts'
+import { type FeedbackSubmissionRequest } from '../../feedback.ts'
 import test from 'node:test'
 import { createInstance } from 'i18next'
 import zh from '../../localization/locales/zh/conversation.json' with { type: 'json' }
@@ -15,7 +15,6 @@ import {
   permissionModeSelectedFeedback,
   formatRuntimeStatus,
 } from './runtime.ts'
-
 import {
   adoptProject,
   createManagedProject,
@@ -27,6 +26,8 @@ import {
   listProjects,
   setSessionArchived,
   deleteSession,
+  sessionChildCount,
+  restoreSessionParent,
   readNavigationSession,
   confirmUnknownTurn,
   checkSessionRecovery,
@@ -36,10 +37,16 @@ import {
   sendQueuedMessage,
   setMode,
   setSessionModel,
+  SESSION_MODEL_OUTCOME_UNKNOWN_EVENT,
+  MODEL_SELECTION_UNCONFIRMED,
   createSubscriptionProfile,
+  subscriptionRegistrations,
+  claimSubscriptionRegistration,
+  deleteSubscriptionProfile,
   parseOpenSessionResponse,
   classifySessionResumeFailure,
   interruptSession,
+  retryExecutionTool,
   respondHil,
   DiagnosticOperationError,
   getDiagnosticPolicy,
@@ -61,8 +68,154 @@ import {
   submitFeedback,
   uploadAttachmentFile,
   getSessionFiles,
+  detachSession,
+  reorderSession,
+  updateQueuedMessage,
 } from './api.ts'
 import { SKILL_CATALOG_CHANGED_EVENT } from '../../skills.ts'
+import { createModelSelectionGuard } from './modelselection.ts'
+
+const modelSelectionStorage: Storage = (() => {
+  const data = new Map<string, string>()
+  return {
+    get length() {
+      return data.size
+    },
+    clear: () => data.clear(),
+    getItem: (key) => data.get(key) ?? null,
+    key: (index) => [...data.keys()][index] ?? null,
+    removeItem: (key) => {
+      data.delete(key)
+    },
+    setItem: (key, value) => {
+      data.set(key, value)
+    },
+  }
+})()
+
+test('unconfirmed model change is bounded and reports the affected session', async () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const previousFetch = globalThis.fetch
+  const events: CustomEvent[] = []
+  const signals: Array<AbortSignal | null | undefined> = []
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      sessionStorage: modelSelectionStorage,
+      scholarseed: { getApiBase: () => '' },
+      dispatchEvent: (event: CustomEvent) => {
+        events.push(event)
+        return true
+      },
+    },
+  })
+  try {
+    globalThis.fetch = async (_input, init) => {
+      signals.push(init?.signal)
+      throw new DOMException('timeout', 'TimeoutError')
+    }
+    const result = await setSessionModel('session-a', 'model-a', '', false, 'instance')
+    assert.equal(result?.ok, false)
+    assert.ok(signals.some((signal) => signal instanceof AbortSignal))
+    assert.equal(events.at(-1)?.type, SESSION_MODEL_OUTCOME_UNKNOWN_EVENT)
+    assert.equal(events.at(-1)?.detail.sessionId, 'session-a')
+    events.length = 0
+    modelSelectionStorage.clear()
+    globalThis.fetch = async () => Response.json({ detail: 'update_maintenance' }, { status: 503 })
+    await setSessionModel('session-a', 'model-a', '', false, 'instance')
+    assert.equal(
+      events.some((event) => event.type === SESSION_MODEL_OUTCOME_UNKNOWN_EVENT),
+      false
+    )
+  } finally {
+    globalThis.fetch = previousFetch
+    if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
+    else Reflect.deleteProperty(globalThis, 'window')
+  }
+})
+
+test('model write is fenced before fetch and a reload observes it until confirmation', async () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const previousFetch = globalThis.fetch
+  modelSelectionStorage.clear()
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      sessionStorage: modelSelectionStorage,
+      scholarseed: { getApiBase: () => '' },
+      dispatchEvent: () => true,
+    },
+  })
+  let respond!: (response: Response) => void
+  const pending = new Promise<Response>((resolve) => {
+    respond = resolve
+  })
+  globalThis.fetch = async (_input, init) => {
+    assert.equal(JSON.parse(String(init?.body)).service_instance_id, 'reload-instance')
+    return pending
+  }
+  try {
+    const request = setSessionModel('reload-session', 'model', '', false, 'reload-instance')
+    const reloaded = createModelSelectionGuard(modelSelectionStorage, () => 'new')
+    assert.equal(reloaded.unknown('reload-instance', 'reload-session'), true)
+    respond(Response.json({ ok: true, session_id: 'reload-session', model_id: 'model' }))
+    assert.equal((await request)?.ok, true)
+    assert.equal(reloaded.unknown('reload-instance', 'reload-session'), false)
+  } finally {
+    globalThis.fetch = previousFetch
+    if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
+    else Reflect.deleteProperty(globalThis, 'window')
+  }
+})
+
+test('turn, queued send and side send never cross a pending or unknown model write', async () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const previousFetch = globalThis.fetch
+  modelSelectionStorage.clear()
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      sessionStorage: modelSelectionStorage,
+      scholarseed: { getApiBase: () => '' },
+      dispatchEvent: () => true,
+    },
+  })
+  let requests = 0
+  globalThis.fetch = async () => {
+    requests++
+    return Response.json({ ok: true })
+  }
+  const guard = createModelSelectionGuard(modelSelectionStorage, () => 'write')
+  const key = guard.begin('instance', 'session')
+  try {
+    const admission = { clientUserMessageId: 'message', serviceInstanceId: 'instance' }
+    for (const result of [
+      await postTurn('session', [{ type: 'text', text: 'draft' }], 'default', admission),
+      await sendQueuedMessage('session', 'queued', 'instance'),
+      await postSide('session', 'queued', 'active-turn', 'instance'),
+    ])
+      assert.equal(result?.ok, false)
+    assert.equal(requests, 0)
+    assert.equal(
+      (await postTurn('session', [], 'default', admission))?.code,
+      MODEL_SELECTION_UNCONFIRMED
+    )
+    guard.finish(key, false)
+    assert.equal(
+      (await postTurn('session', [], 'default', admission))?.submissionOutcome,
+      'rejected'
+    )
+    assert.equal(requests, 0)
+    await postTurn('other', [], 'default', admission)
+    await postTurn('session', [], 'default', { ...admission, serviceInstanceId: 'new-instance' })
+    assert.equal(requests, 2)
+  } finally {
+    modelSelectionStorage.clear()
+    globalThis.fetch = previousFetch
+    if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
+    else Reflect.deleteProperty(globalThis, 'window')
+  }
+})
 
 test('marketplace reuses catalogue pages and labels and coalesces concurrent visits', async () => {
   clearMarketplaceCache()
@@ -101,6 +254,80 @@ test('marketplace reuses catalogue pages and labels and coalesces concurrent vis
     assert.equal(requests.length, 7)
   } finally {
     clearMarketplaceCache()
+    if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
+    else Reflect.deleteProperty(globalThis, 'window')
+  }
+})
+
+test('subscription registration selection and deletion preserve structured warnings', async () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const previousFetch = globalThis.fetch
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: { scholarseed: { getApiBase: () => '' } },
+  })
+  const calls: Array<{ url: string; method: string | undefined }> = []
+  try {
+    globalThis.fetch = async (input, init) => {
+      calls.push({ url: String(input), method: init?.method })
+      return new Response(JSON.stringify({ warning: 'oauth_revocation_unconfirmed' }), {
+        status: 200,
+      })
+    }
+    await subscriptionRegistrations('personal/new')
+    await claimSubscriptionRegistration('personal/new', 'personal/old')
+    const result = await deleteSubscriptionProfile('personal/new')
+    assert.deepEqual(
+      calls.map((call) => [call.url, call.method]),
+      [
+        ['/api/settings/model-connections/personal%2Fnew/registrations', 'GET'],
+        ['/api/settings/model-connections/personal%2Fnew/registrations/personal%2Fold', 'POST'],
+        ['/api/serve/model-profiles/personal%2Fnew', 'DELETE'],
+      ]
+    )
+    assert.equal(result.ok && result.data.warning, 'oauth_revocation_unconfirmed')
+  } finally {
+    globalThis.fetch = previousFetch
+    if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
+    else Reflect.deleteProperty(globalThis, 'window')
+  }
+})
+
+test('tool recovery submits only recorded identities and preserves unknown outcomes', async () => {
+  const previousFetch = globalThis.fetch
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: { scholarseed: { getApiBase: () => '' } },
+  })
+  try {
+    globalThis.fetch = async (url, options) => {
+      assert.equal(String(url), '/api/serve/sessions/session/tools/recovery')
+      assert.deepEqual(JSON.parse(String(options?.body)), {
+        turn_id: 'turn',
+        tool_id: 'tool',
+        request_id: 'same-request',
+        approved: true,
+      })
+      return Response.json({ ok: true, status: 'completed', tool_id: 'retry' })
+    }
+    assert.equal(
+      (await retryExecutionTool('session', 'turn', 'tool', 'same-request'))?.status,
+      'completed'
+    )
+    globalThis.fetch = async () => new Response(null, { status: 409 })
+    assert.equal(
+      (await retryExecutionTool('session', 'turn', 'tool', 'same-request'))?.status,
+      'failed'
+    )
+    globalThis.fetch = async () => new Response(null, { status: 500 })
+    assert.equal(await retryExecutionTool('session', 'turn', 'tool', 'same-request'), null)
+    globalThis.fetch = async () => {
+      throw new TypeError('offline')
+    }
+    assert.equal(await retryExecutionTool('session', 'turn', 'tool', 'same-request'), null)
+  } finally {
+    globalThis.fetch = previousFetch
     if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
     else Reflect.deleteProperty(globalThis, 'window')
   }
@@ -336,6 +563,42 @@ test('project archive pagination preserves its filter and does not replace autho
   }
 })
 
+test('deletion counts and returning require matching validated responses', async () => {
+  const previousFetch = globalThis.fetch
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: { scholarseed: { getApiBase: () => '' } },
+  })
+  try {
+    globalThis.fetch = async () => Response.json({ session_id: 'child', child_count: 3 })
+    assert.equal(await sessionChildCount('child'), 3)
+    for (const child_count of [-1, 1.5, '3', null]) {
+      globalThis.fetch = async () => Response.json({ session_id: 'child', child_count })
+      assert.equal(await sessionChildCount('child'), null)
+    }
+    globalThis.fetch = async (url, options) => {
+      assert.equal(String(url), '/api/serve/sessions/child/display-parent')
+      assert.equal(options?.method, 'PUT')
+      assert.deepEqual(JSON.parse(String(options?.body)), { parent_session_id: 'parent' })
+      return Response.json({ ok: true, session_id: 'child', display_parent_session_id: 'parent' })
+    }
+    assert.equal((await restoreSessionParent('child', 'parent')).ok, true)
+    globalThis.fetch = async () =>
+      Response.json({ ok: true, session_id: 'other', display_parent_session_id: 'parent' })
+    assert.equal((await restoreSessionParent('child', 'parent')).ok, false)
+    globalThis.fetch = async () => {
+      throw new Error('offline')
+    }
+    assert.equal(await sessionChildCount('child'), null)
+    assert.equal((await restoreSessionParent('child', 'parent')).ok, false)
+  } finally {
+    globalThis.fetch = previousFetch
+    if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
+    else Reflect.deleteProperty(globalThis, 'window')
+  }
+})
+
 test('delete requires a matching acknowledgement after stopping the task', async () => {
   const previousFetch = globalThis.fetch
   const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
@@ -376,6 +639,15 @@ test('archive requires a matching acknowledgement and preserves an explicit arch
       return Response.json({ ok: true, session_id: 'task', archived: true })
     }
     assert.equal((await setSessionArchived('task', true)).ok, true)
+    globalThis.fetch = async (_url, options) => {
+      assert.deepEqual(JSON.parse(String(options?.body)), { archived: true, stop_running: false })
+      return Response.json({ ok: false, error: 'session_archive_stop_required' }, { status: 409 })
+    }
+    assert.deepEqual(await setSessionArchived('task', true, false), {
+      ok: false,
+      status: 409,
+      stopRequired: true,
+    })
     globalThis.fetch = async () => Response.json({ ok: true, session_id: 'other', archived: true })
     assert.equal((await setSessionArchived('task', true)).ok, false)
     globalThis.fetch = async (url) => {
@@ -813,6 +1085,7 @@ for (const absolutePath of [
     Object.defineProperty(globalThis, 'window', {
       configurable: true,
       value: {
+        sessionStorage: modelSelectionStorage,
         scholarseed: { getApiBase: () => '' },
         setTimeout,
         clearTimeout,
@@ -843,6 +1116,7 @@ for (const absolutePath of [
     }
   })
 }
+
 for (const sessionId of [null, 'feedback-session']) {
   test(`feedback without diagnostic consent excludes logs and trace: ${sessionId}`, async () => {
     const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
@@ -939,6 +1213,7 @@ test('queue withdrawal preserves business errors and uncertain transport results
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
     value: {
+      sessionStorage: modelSelectionStorage,
       scholarseed: { getApiBase: () => '' },
       setTimeout,
       clearTimeout,
@@ -1014,6 +1289,7 @@ test('all permission choices can be restored and persisted as the new-session de
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
     value: {
+      sessionStorage: modelSelectionStorage,
       scholarseed: { getApiBase: () => '' },
       setTimeout,
       clearTimeout,
@@ -1123,6 +1399,7 @@ test('session resume accepts waiting HIL and submits complete answers without re
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
     value: {
+      sessionStorage: modelSelectionStorage,
       scholarseed: { getApiBase: () => '' },
       setTimeout,
       clearTimeout,
@@ -1204,6 +1481,7 @@ test('model profile requests preserve auth events and raw HTTP diagnostics witho
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
     value: {
+      sessionStorage: modelSelectionStorage,
       scholarseed: { getApiBase: () => '' },
       dispatchEvent: (event: Event) => {
         events.push(event.type)
@@ -1299,6 +1577,7 @@ test('session open distinguishes local timeout and empty failures without reclas
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
     value: {
+      sessionStorage: modelSelectionStorage,
       scholarseed: { getApiBase: () => '' },
       dispatchEvent: (event: Event) => {
         events.push(event.type)
@@ -1458,6 +1737,41 @@ test('recovery inspection never sends a turn and rejects malformed clearance', a
   }
 })
 
+test('follow-up submissions carry the selected mode and exact active turn', async () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const previousFetch = globalThis.fetch
+  const requests: Array<Record<string, unknown>> = []
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      sessionStorage: modelSelectionStorage,
+      scholarseed: { getApiBase: () => '' },
+    },
+  })
+  try {
+    globalThis.fetch = async (_url, options) => {
+      requests.push(JSON.parse(String(options?.body)))
+      return Response.json({ ok: true, accepted: true, disposition: 'queued' })
+    }
+    await postTurn('session', [{ type: 'text', text: 'follow-up' }], 'default', {
+      clientUserMessageId: 'follow-up-steer',
+      followUpMode: 'steer',
+      expectedTurnId: 'active-turn',
+    })
+    await postTurn('session', [{ type: 'text', text: 'ordinary' }], 'default', {
+      clientUserMessageId: 'follow-up-ordinary',
+    })
+    assert.equal(requests[0].follow_up_mode, 'steer')
+    assert.equal(requests[0].expected_turn_id, 'active-turn')
+    assert.equal('follow_up_mode' in requests[1], false)
+    assert.equal('expected_turn_id' in requests[1], false)
+  } finally {
+    globalThis.fetch = previousFetch
+    if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
+    else Reflect.deleteProperty(globalThis, 'window')
+  }
+})
+
 test('failed turn continuation carries its origin without changing ordinary messages', async () => {
   const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
   const previousFetch = globalThis.fetch
@@ -1465,6 +1779,7 @@ test('failed turn continuation carries its origin without changing ordinary mess
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
     value: {
+      sessionStorage: modelSelectionStorage,
       scholarseed: { getApiBase: () => '' },
     },
   })
@@ -1496,6 +1811,7 @@ test('HTTP fallback provenance survives every service-error adapter without chan
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
     value: {
+      sessionStorage: modelSelectionStorage,
       scholarseed: { getApiBase: () => '' },
       dispatchEvent: (event: CustomEvent) => {
         events.push(event)
@@ -1509,11 +1825,11 @@ test('HTTP fallback provenance survives every service-error adapter without chan
     assert.ok(submitted)
     const results = [
       submitted,
-      await postSide('session', 'queued'),
+      await postSide('session', 'queued', 'active-turn'),
       await sendQueuedMessage('session', 'queued'),
       await interruptSession('session'),
       await respondHil('session', 'hil', { option_id: 'deny' }),
-      await setSessionModel('session', 'model'),
+      await setSessionModel('session', 'model', '', false, 'instance'),
       await setMode('session', 'ask'),
       await confirmUnknownTurn('session', 'turn'),
       await openSession(),
@@ -1527,9 +1843,13 @@ test('HTTP fallback provenance survives every service-error adapter without chan
       })
       assert.equal('ok' in result ? result.ok : undefined, 'status' in result ? undefined : false)
     }
-    assert.equal(events.length, 1)
+    const uncertain = events.filter((event) => event.type === SESSION_MODEL_OUTCOME_UNKNOWN_EVENT)
+    assert.equal(uncertain.length, 1)
+    assert.equal(uncertain[0].detail.sessionId, 'session')
+    const failures = events.filter((event) => event.type !== SESSION_MODEL_OUTCOME_UNKNOWN_EVENT)
+    assert.equal(failures.length, 1)
     assert.ok(
-      events.every(
+      failures.every(
         (event) => event.detail.message === '503 request failed' && event.detail.code === undefined
       )
     )
@@ -1577,6 +1897,7 @@ test('HTTP fallback provenance survives every service-error adapter without chan
       componentsZh.composer.modeSelected.replace('{{mode}}', 'vendor_raw_mode')
     )
   } finally {
+    modelSelectionStorage.clear()
     globalThis.fetch = previousFetch
     if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
     else Reflect.deleteProperty(globalThis, 'window')
@@ -1590,6 +1911,7 @@ test('handled queue conflicts do not publish raw backend failures', async () => 
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
     value: {
+      sessionStorage: modelSelectionStorage,
       scholarseed: { getApiBase: () => '' },
       dispatchEvent: (event: CustomEvent) => {
         events.push(event)
@@ -1619,6 +1941,7 @@ test('turn submission marks HTTP admission failures as rejected and transport fa
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
     value: {
+      sessionStorage: modelSelectionStorage,
       scholarseed: { getApiBase: () => '' },
       dispatchEvent: (event: CustomEvent) => {
         events.push(event)
@@ -1653,6 +1976,32 @@ test('turn submission marks HTTP admission failures as rejected and transport fa
       renderFeedback(locale, turnAdmissionFeedback(events.at(-1)?.detail)),
       en.request.resourceReviewRequired
     )
+
+    for (const [wireState, expected] of [
+      ['unsupported', 'unsupported'],
+      ['restart_required', 'restart_required'],
+      ['rejected', 'rejected'],
+      ['applied', undefined],
+      [undefined, undefined],
+    ] as const) {
+      globalThis.fetch = async () =>
+        Response.json(
+          {
+            ok: false,
+            error: 'runtime_host_busy',
+            preparation_error: true,
+            preparation_state: wireState,
+          },
+          { status: 409 }
+        )
+      assert.deepEqual(await postTurn('session', [{ type: 'text', text: 'draft' }]), {
+        ok: false,
+        error: 'runtime_host_busy',
+        preparation_error: true,
+        submissionOutcome: 'rejected',
+        ...(expected === undefined ? {} : { preparation_state: expected }),
+      })
+    }
 
     globalThis.fetch = async () => {
       throw new Error('connection lost')
@@ -1797,4 +2146,188 @@ test('session catalog failures retain safe route and phase evidence without chan
   globalThis.fetch = async () => Response.json({ sessions: [] })
   assert.equal((await loadSessionCatalog()).ok, true)
   assert.equal(records.length, 0)
+})
+
+test('detach validates the durable session identity and cleared display parent', async () => {
+  const previousFetch = globalThis.fetch
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: { scholarseed: { getApiBase: () => '' } },
+  })
+  try {
+    for (const payload of [
+      { ok: true, session_id: 'child', display_parent_session_id: null },
+      { ok: true, session_id: 'other', display_parent_session_id: null },
+      { ok: true, session_id: 'child', display_parent_session_id: 'parent' },
+      { ok: true, session_id: 'child' },
+      { ok: false, session_id: 'child', display_parent_session_id: null },
+    ]) {
+      globalThis.fetch = async (url, options) => {
+        assert.equal(String(url), '/api/serve/sessions/child/display-parent')
+        assert.equal(options?.method, 'DELETE')
+        assert.equal(options?.body, undefined)
+        return Response.json(payload)
+      }
+      const expected =
+        payload.ok === true &&
+        payload.session_id === 'child' &&
+        payload.display_parent_session_id === null
+      assert.equal((await detachSession('child')).ok, expected)
+    }
+    globalThis.fetch = async () => new Response(null, { status: 404 })
+    assert.deepEqual(await detachSession('child'), { ok: false, status: 404 })
+    globalThis.fetch = async () => {
+      throw new TypeError('offline')
+    }
+    assert.deepEqual(await detachSession('child'), { ok: false, status: 0 })
+  } finally {
+    globalThis.fetch = previousFetch
+    if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
+    else Reflect.deleteProperty(globalThis, 'window')
+  }
+})
+
+test('relative ordering validates source, target and placement without sending a partial catalog', async () => {
+  const previousFetch = globalThis.fetch
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: { scholarseed: { getApiBase: () => '' } },
+  })
+  try {
+    for (const payload of [
+      { ok: true, session_id: 'source', target_session_id: 'target', placement: 'before' },
+      { ok: true, session_id: 'other', target_session_id: 'target', placement: 'before' },
+      { ok: true, session_id: 'source', target_session_id: 'other', placement: 'before' },
+      { ok: true, session_id: 'source', target_session_id: 'target', placement: 'after' },
+      { ok: false, session_id: 'source', target_session_id: 'target', placement: 'before' },
+    ]) {
+      globalThis.fetch = async (url, options) => {
+        assert.equal(String(url), '/api/serve/sessions/source/display-order')
+        assert.equal(options?.method, 'PUT')
+        assert.deepEqual(JSON.parse(String(options?.body)), {
+          target_session_id: 'target',
+          placement: 'before',
+        })
+        return Response.json(payload)
+      }
+      assert.equal(
+        (await reorderSession('source', 'target', 'before')).ok,
+        payload.ok &&
+          payload.session_id === 'source' &&
+          payload.target_session_id === 'target' &&
+          payload.placement === 'before'
+      )
+    }
+    globalThis.fetch = async () => new Response(null, { status: 409 })
+    assert.deepEqual(await reorderSession('source', 'target', 'before'), { ok: false, status: 409 })
+    globalThis.fetch = async () => {
+      throw new TypeError('offline')
+    }
+    assert.deepEqual(await reorderSession('source', 'target', 'before'), { ok: false, status: 0 })
+  } finally {
+    globalThis.fetch = previousFetch
+    if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
+    else Reflect.deleteProperty(globalThis, 'window')
+  }
+})
+
+test('project catalog retries an invalidated cursor once without publishing partial roots', async () => {
+  const previousFetch = globalThis.fetch
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const synchronized: string[][] = []
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      scholarseed: {
+        getApiBase: () => '',
+        syncAuthorizedRoots: async (_scope: string, roots: string[]) => {
+          synchronized.push(roots)
+        },
+      },
+    },
+  })
+  try {
+    const cursors: (string | null)[] = []
+    globalThis.fetch = async (url) => {
+      const cursor = new URL(String(url), 'http://localhost').searchParams.get('cursor')
+      cursors.push(cursor)
+      assert.equal(synchronized.length, 0)
+      if (cursors.length === 1)
+        return Response.json({
+          sessions: [{ session_id: 'removed', runtime_workdir: '/removed' }],
+          next_cursor: 'stale',
+        })
+      if (cursor === 'stale')
+        return Response.json({ detail: 'session_list_cursor_invalid' }, { status: 422 })
+      if (!cursor)
+        return Response.json({
+          sessions: [{ session_id: 'current', runtime_workdir: '/current' }],
+          next_cursor: 'tail',
+        })
+      return Response.json({
+        sessions: [{ session_id: 'tail', runtime_workdir: '/tail' }],
+        next_cursor: null,
+      })
+    }
+    const rows = await listAllSessions({ scope: 'project', projectPath: '/project' })
+    assert.deepEqual(
+      rows?.map((row) => row.session_id),
+      ['current', 'tail']
+    )
+    assert.deepEqual(cursors, [null, 'stale', null, 'tail'])
+    assert.deepEqual(synchronized, [['/current', '/tail']])
+    synchronized.length = 0
+    let calls = 0
+    globalThis.fetch = async (url) => {
+      calls++
+      return new URL(String(url), 'http://localhost').searchParams.has('cursor')
+        ? Response.json({ detail: 'session_list_cursor_invalid' }, { status: 422 })
+        : Response.json({
+            sessions: [{ session_id: 'removed', runtime_workdir: '/removed' }],
+            next_cursor: 'stale',
+          })
+    }
+    assert.equal(await listAllSessions({ scope: 'project', projectPath: '/project' }), null)
+    assert.equal(calls, 4)
+    assert.deepEqual(synchronized, [])
+    calls = 0
+    assert.equal(
+      await listAllSessions({ scope: 'project', projectPath: '/project' }, () => calls < 2),
+      null
+    )
+    assert.equal(calls, 2)
+    assert.deepEqual(synchronized, [])
+  } finally {
+    globalThis.fetch = previousFetch
+    if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
+    else Reflect.deleteProperty(globalThis, 'window')
+  }
+})
+
+test('queue editing sends text only and steering binds the selected task', async () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const previousFetch = globalThis.fetch
+  const requests: Array<{ method: string; body: unknown }> = []
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: { scholarseed: { getApiBase: () => '' }, dispatchEvent: () => true },
+  })
+  try {
+    globalThis.fetch = async (_url, options) => {
+      requests.push({ method: String(options?.method), body: JSON.parse(String(options?.body)) })
+      return Response.json({ ok: true, message: { queued_message_id: 'queue-a' } })
+    }
+    await updateQueuedMessage('session', 'queue-a', 'edited text')
+    await postSide('session', 'queue-a', 'turn-a')
+    assert.deepEqual(requests, [
+      { method: 'PATCH', body: { text: 'edited text' } },
+      { method: 'POST', body: { queued_message_id: 'queue-a', expected_turn_id: 'turn-a' } },
+    ])
+  } finally {
+    globalThis.fetch = previousFetch
+    if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
+    else Reflect.deleteProperty(globalThis, 'window')
+  }
 })

@@ -666,7 +666,7 @@ class InitialVersionPlan:
     observation_id: str
 
     def validate(self) -> None:
-        if type(self.now_ms) is not int or self.now_ms < 0:
+        if (not isinstance(self.now_ms, int) or isinstance(self.now_ms, bool)) or self.now_ms < 0:
             raise ValueError("invalid initial version timestamp")
         for value in (self.file_id, self.path_id, self.version_id, self.observation_id):
             if (
@@ -1108,7 +1108,7 @@ class VersionStore:
         """Apply the real observation transition in a live or private transaction."""
         if not connection.in_transaction:
             raise ValueError("resource observation requires a transaction")
-        if type(now) is not int or now < 0:
+        if (not isinstance(now, int) or isinstance(now, bool)) or now < 0:
             raise ValueError("invalid resource observation timestamp")
         identity = f"{EXTERNAL_OBSERVATION_REASON}:{file_id}"
         values = (
@@ -2844,6 +2844,7 @@ class VersionStore:
             for member in members:
                 snapshot, baseline = member.snapshot, member.baseline
                 file_id = baseline.file_id
+                self._retain_review_baseline(connection, session_id, turn_id, baseline)
                 for descriptor in (member.descriptor, member.annotation_descriptor):
                     if descriptor is not None:
                         self._record_object(connection, descriptor, now)
@@ -2937,11 +2938,59 @@ class VersionStore:
             )
             connection.execute(
                 """
-                DELETE FROM resources_turn_changes WHERE session_id = ? AND turn_id = ?
+                DELETE FROM resources_turn_changes
+                WHERE session_id = ? AND turn_id = ? AND status != 'sealed'
                 """,
                 (session_id, turn_id),
             )
         return result
+
+    @staticmethod
+    def _retain_review_baseline(
+        connection: sqlite3.Connection, session_id: str, turn_id: str, baseline: TurnBaseline
+    ) -> None:
+        current = pending.read(connection, baseline.file_id)
+        if current is None or current.review is None:
+            return
+        identity = SnapshotIdentity(
+            baseline.object_id,
+            baseline.state,
+            baseline.path,
+            baseline.mode_bits,
+            baseline.annotation_object_id,
+        )
+        if identity in (current.review.base, current.review.candidate):
+            return
+        connection.execute(
+            """
+            UPDATE resources_turn_changes SET status = 'sealed'
+            WHERE session_id = ? AND turn_id = ? AND file_id = ?
+              AND NOT EXISTS (
+                SELECT 1 FROM resources_turn_changes retained
+                JOIN resources_turns turns USING (turn_occurrence_id)
+                WHERE retained.file_id = resources_turn_changes.file_id
+                  AND retained.status = 'sealed' AND turns.state = 'completed'
+                  AND retained.baseline_object_id IS resources_turn_changes.baseline_object_id
+                  AND retained.baseline_state IS resources_turn_changes.baseline_state
+                  AND retained.baseline_path IS resources_turn_changes.baseline_path
+                  AND retained.baseline_mode_bits IS resources_turn_changes.baseline_mode_bits
+                  AND retained.baseline_annotation_object_id IS resources_turn_changes.baseline_annotation_object_id
+              )
+            """,
+            (session_id, turn_id, baseline.file_id),
+        )
+
+    @staticmethod
+    def _release_review_baselines(connection: sqlite3.Connection, file_id: str) -> None:
+        connection.execute(
+            """
+            DELETE FROM resources_turn_changes
+            WHERE file_id = ? AND status = 'sealed' AND turn_occurrence_id IN (
+                SELECT turn_occurrence_id FROM resources_turns WHERE state = 'completed'
+            )
+            """,
+            (file_id,),
+        )
 
     def review_result(self, session_id: str, turn_id: str) -> ReviewCaptureResult | None:
         if not self._database.exists():
@@ -3021,6 +3070,7 @@ class VersionStore:
             for file_id, _decision, snapshot in prepared:
                 result = self._seal_snapshot(connection, snapshot, None, now, force_new=True)
                 connection.execute("DELETE FROM resources_pending WHERE file_id = ?", (file_id,))
+                self._release_review_baselines(connection, file_id)
                 pending.sync_working(connection, file_id, PendingOrigin.USER, now)
                 connection.execute(
                     """
@@ -4455,6 +4505,7 @@ class VersionStore:
                     "DELETE FROM resources_pending WHERE file_id = ?",
                     (result.version.file_id,),
                 )
+                self._release_review_baselines(connection, result.version.file_id)
                 connection.execute(
                     """
                     UPDATE resources_review_batch_members
@@ -4995,6 +5046,7 @@ class VersionStore:
         )
         self._advance_head(connection, file_id, snapshot, now)
         connection.execute("DELETE FROM resources_pending WHERE file_id = ?", (file_id,))
+        self._release_review_baselines(connection, file_id)
         pending.sync_working(connection, file_id, origin, now)
 
     @classmethod
@@ -5607,7 +5659,7 @@ class VersionStore:
         """
         if not connection.in_transaction:
             raise ValueError("working head recovery requires a transaction")
-        if type(now) is not int or now < 0:
+        if (not isinstance(now, int) or isinstance(now, bool)) or now < 0:
             raise ValueError("invalid working head timestamp")
         required = (() if file_id is not None else (new_file_id, new_path_id)) + (
             () if reason == EXTERNAL_OBSERVATION_REASON else (observation_id,)

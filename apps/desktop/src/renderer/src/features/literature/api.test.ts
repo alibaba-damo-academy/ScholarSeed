@@ -4,18 +4,113 @@ import { literatureErrorMessage } from './error.ts'
 
 import {
   addLiteratureNote,
+  generateLiteratureNote,
   createLiteratureCollection,
   fetchPaperMeta,
   getLiteratureFacets,
   importPdf,
   LiteratureApiError,
+  NoteGenerationFailure,
   linkLiteraturesToProject,
   listAllLiteratures,
   literatureQueryKey,
   listLiteratureNotes,
-  updateLiteratureNote
+  updateLiteratureNote,
+  retryFulltextAuthorization,
 } from './api.ts'
 import { classifyPaperMetaFailure } from './metadata.ts'
+
+test('a lost reauthorization response is reconciled by reading, never by reposting', async (context) => {
+  const previousWindow = globalThis.window
+  const previousFetch = globalThis.fetch
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: { scholarseed: { getApiBase: () => 'http://service.test' } },
+  })
+  context.after(() => {
+    globalThis.fetch = previousFetch
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      writable: true,
+      value: previousWindow,
+    })
+  })
+  const methods: string[] = []
+  globalThis.fetch = async (url, init) => {
+    assert.equal(
+      String(url),
+      'http://service.test/api/sessions/session/literature/authorizations/question/retry'
+    )
+    methods.push(init?.method ?? 'GET')
+    if (init?.method === 'POST') {
+      assert.deepEqual(JSON.parse(String(init.body)), { assistant_context_revision: 7 })
+      throw new TypeError('response lost')
+    }
+    return Response.json({ ok: true, request_id: 'renewed' })
+  }
+  await retryFulltextAuthorization('session', 'question', 7)
+  assert.deepEqual(methods, ['POST', 'GET'])
+})
+
+test('note generation consumes split SSE and never automatically retries failures', async (context) => {
+  const previousWindow = globalThis.window
+  const previousFetch = globalThis.fetch
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: {
+      scholarseed: { getApiBase: () => 'http://service.test' },
+    },
+  })
+  context.after(() => {
+    globalThis.fetch = previousFetch
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      writable: true,
+      value: previousWindow,
+    })
+  })
+  const request = {
+    attachment_id: 'pdf',
+    source_revision: 'source',
+    record_revision: 'records',
+    mark_ids: ['chosen'],
+    model_key: 'exact:model',
+    language: 'zh' as const,
+  }
+  let calls = 0
+  let content =
+    ': heartbeat\r\n\r\ndata: {"type":"result","note":{"id":"new","text":"新笔记"}}\r\n\r\n'
+  globalThis.fetch = async (url, init) => {
+    calls++
+    assert.equal(String(url), 'http://service.test/api/v1/literatures/paper/notes/generate')
+    assert.deepEqual(JSON.parse(String(init?.body)), request)
+    const bytes = new TextEncoder().encode(content)
+    return new Response(
+      new ReadableStream({
+        start(controller) {
+          for (const byte of bytes) controller.enqueue(Uint8Array.of(byte))
+          controller.close()
+        },
+      })
+    )
+  }
+  assert.equal((await generateLiteratureNote('paper', request)).text, '新笔记')
+  content =
+    'data: {"type":"error","code":"failed","invocation_id":"run","detail":"Preparation failed"}\n\n'
+  await assert.rejects(generateLiteratureNote('paper', request), (error: unknown) => {
+    assert.ok(error instanceof NoteGenerationFailure)
+    assert.equal(error.invocationId, 'run')
+    assert.equal(error.detail, 'Preparation failed')
+    return true
+  })
+  for (content of ['data: {"type":"error","code":"failed"}\n\n', ': heartbeat\n\n']) {
+    const before = calls
+    await assert.rejects(generateLiteratureNote('paper', request))
+    assert.equal(calls, before + 1)
+  }
+})
 
 for (const projectId of [undefined, 'project-library']) {
   for (const total of [0, 100, 251]) {
@@ -24,13 +119,21 @@ for (const projectId of [undefined, 'project-library']) {
       const previousFetch = globalThis.fetch
       const requests: URL[] = []
       const source = Array.from({ length: total }, (_, index) => ({ id: `paper-${index}` }))
-      Object.defineProperty(globalThis, 'window', { configurable: true, writable: true, value: {
-        location: { href: 'http://desktop.test/' },
-        scholarseed: { getApiBase: () => 'http://service.test' }
-      } })
+      Object.defineProperty(globalThis, 'window', {
+        configurable: true,
+        writable: true,
+        value: {
+          location: { href: 'http://desktop.test/' },
+          scholarseed: { getApiBase: () => 'http://service.test' },
+        },
+      })
       context.after(() => {
         globalThis.fetch = previousFetch
-        Object.defineProperty(globalThis, 'window', { configurable: true, writable: true, value: previousWindow })
+        Object.defineProperty(globalThis, 'window', {
+          configurable: true,
+          writable: true,
+          value: previousWindow,
+        })
       })
       globalThis.fetch = async (input) => {
         const url = new URL(String(input))
@@ -39,13 +142,22 @@ for (const projectId of [undefined, 'project-library']) {
         const size = Number(url.searchParams.get('page_size'))
         const items = source.slice((page - 1) * size, page * size)
         return Response.json({
-          items, total, page, page_size: size,
-          next_cursor: items.length === size ? String(page + 1) : null
+          items,
+          total,
+          page,
+          page_size: size,
+          next_cursor: items.length === size ? String(page + 1) : null,
         })
       }
       const items = await listAllLiteratures({
-        project_id: projectId, q: 'research', collection_id: ['collection-a', 'collection-b'],
-        tag_id: ['tag-a'], sort: 'title', order: 'asc', page: 9, page_size: 1
+        project_id: projectId,
+        q: 'research',
+        collection_id: ['collection-a', 'collection-b'],
+        tag_id: ['tag-a'],
+        sort: 'title',
+        order: 'asc',
+        page: 9,
+        page_size: 1,
       })
       assert.deepEqual(items, source)
       // 200 是服务端 MAX_PAGE_SIZE: 整表加载必须一页取满, 否则 2000+ 条会退化成几十次
@@ -56,7 +168,10 @@ for (const projectId of [undefined, 'project-library']) {
         assert.equal(request.searchParams.get('page_size'), '200')
         assert.equal(request.searchParams.get('project_id'), projectId ?? null)
         assert.equal(request.searchParams.get('q'), 'research')
-        assert.deepEqual(request.searchParams.getAll('collection_id'), ['collection-a', 'collection-b'])
+        assert.deepEqual(request.searchParams.getAll('collection_id'), [
+          'collection-a',
+          'collection-b',
+        ])
         assert.deepEqual(request.searchParams.getAll('tag_id'), ['tag-a'])
         assert.equal(request.searchParams.get('sort'), 'title')
         assert.equal(request.searchParams.get('order'), 'asc')
@@ -70,19 +185,33 @@ test('single-page literature cancels obsolete queries and does not return partia
   const previousFetch = globalThis.fetch
   const controller = new AbortController()
   let calls = 0
-  Object.defineProperty(globalThis, 'window', { configurable: true, writable: true, value: {
-    location: { href: 'http://desktop.test/' },
-    scholarseed: { getApiBase: () => 'http://service.test' }
-  } })
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: {
+      location: { href: 'http://desktop.test/' },
+      scholarseed: { getApiBase: () => 'http://service.test' },
+    },
+  })
   context.after(() => {
     globalThis.fetch = previousFetch
-    Object.defineProperty(globalThis, 'window', { configurable: true, writable: true, value: previousWindow })
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      writable: true,
+      value: previousWindow,
+    })
   })
   globalThis.fetch = async (_input, init) => {
     calls += 1
     assert.equal(init?.signal, controller.signal)
     controller.abort()
-    return Response.json({ items: [{ id: 'first' }], total: 2, page: 1, page_size: 1, next_cursor: '2' })
+    return Response.json({
+      items: [{ id: 'first' }],
+      total: 2,
+      page: 1,
+      page_size: 1,
+      next_cursor: '2',
+    })
   }
   await assert.rejects(listAllLiteratures({}, controller.signal), { name: 'AbortError' })
   assert.equal(calls, 1)
@@ -90,7 +219,13 @@ test('single-page literature cancels obsolete queries and does not return partia
   globalThis.fetch = async () => {
     calls += 1
     return calls === 1
-      ? Response.json({ items: [{ id: 'first' }], total: 2, page: 1, page_size: 1, next_cursor: '2' })
+      ? Response.json({
+          items: [{ id: 'first' }],
+          total: 2,
+          page: 1,
+          page_size: 1,
+          next_cursor: '2',
+        })
       : Response.json({ detail: 'unavailable' }, { status: 503 })
   }
   await assert.rejects(listAllLiteratures({}), LiteratureApiError)
@@ -107,8 +242,8 @@ test('joining literature to a project sends the explicit target project', async 
     writable: true,
     value: {
       location: { href: 'http://desktop.test/' },
-      scholarseed: { getApiBase: () => 'http://service.test' }
-    }
+      scholarseed: { getApiBase: () => 'http://service.test' },
+    },
   })
   globalThis.fetch = async (input, init) => {
     observedUrl = String(input)
@@ -123,14 +258,14 @@ test('joining literature to a project sends the explicit target project', async 
     assert.deepEqual(observedBody, {
       literature_ids: ['paper-1'],
       operation: 'link_project',
-      parameters: { project_id: 'project-1' }
+      parameters: { project_id: 'project-1' },
     })
   } finally {
     globalThis.fetch = previousFetch
     Object.defineProperty(globalThis, 'window', {
       configurable: true,
       writable: true,
-      value: previousWindow
+      value: previousWindow,
     })
   }
 })
@@ -140,16 +275,21 @@ test('structured notes use stable create, list and patch contracts', async () =>
   const previousFetch = globalThis.fetch
   const requests: Array<{ method: string; url: string; body: unknown }> = []
   const note = {
-    id: 'note-1', title: '笔记 1', text: '# Draft', created_at: 1,
-    updated_at: 1, version: 1, position: 1
+    id: 'note-1',
+    title: '笔记 1',
+    text: '# Draft',
+    created_at: 1,
+    updated_at: 1,
+    version: 1,
+    position: 1,
   }
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
     writable: true,
     value: {
       location: { href: 'http://desktop.test/' },
-      scholarseed: { getApiBase: () => 'http://service.test' }
-    }
+      scholarseed: { getApiBase: () => 'http://service.test' },
+    },
   })
   globalThis.fetch = async (input, init) => {
     const body = init?.body ? JSON.parse(String(init.body)) : undefined
@@ -164,24 +304,29 @@ test('structured notes use stable create, list and patch contracts', async () =>
     const created = await addLiteratureNote('paper 1', '# Draft')
     const listed = await listLiteratureNotes('paper 1')
     const updated = await updateLiteratureNote('paper 1', created.id, {
-      title: 'Methods', text: '# Final', version: created.version
+      title: 'Methods',
+      text: '# Final',
+      version: created.version,
     })
 
     assert.equal(listed[0].id, created.id)
     assert.equal(updated.id, created.id)
     assert.equal(updated.version, 2)
-    assert.deepEqual(requests.map(({ method, body }) => ({ method, body })), [
-      { method: 'POST', body: { title: '', text: '# Draft' } },
-      { method: 'GET', body: undefined },
-      { method: 'PATCH', body: { title: 'Methods', text: '# Final', version: 1 } }
-    ])
+    assert.deepEqual(
+      requests.map(({ method, body }) => ({ method, body })),
+      [
+        { method: 'POST', body: { title: '', text: '# Draft' } },
+        { method: 'GET', body: undefined },
+        { method: 'PATCH', body: { title: 'Methods', text: '# Final', version: 1 } },
+      ]
+    )
     assert.ok(requests.every(({ url }) => url.includes('/literatures/paper%201/notes')))
   } finally {
     globalThis.fetch = previousFetch
     Object.defineProperty(globalThis, 'window', {
       configurable: true,
       writable: true,
-      value: previousWindow
+      value: previousWindow,
     })
   }
 })
@@ -196,8 +341,8 @@ test('creating a child literature collection sends its parent id', async () => {
     writable: true,
     value: {
       location: { href: 'http://desktop.test/' },
-      scholarseed: { getApiBase: () => 'http://service.test' }
-    }
+      scholarseed: { getApiBase: () => 'http://service.test' },
+    },
   })
   globalThis.fetch = async (input, init) => {
     observedUrl = String(input)
@@ -207,7 +352,7 @@ test('creating a child literature collection sends its parent id', async () => {
       name: 'Child',
       project_id: 'project-1',
       parent_id: 'parent-1',
-      count: 0
+      count: 0,
     })
   }
   try {
@@ -218,20 +363,20 @@ test('creating a child literature collection sends its parent id', async () => {
       name: 'Child',
       project_id: 'project-1',
       parent_id: 'parent-1',
-      count: 0
+      count: 0,
     })
     assert.equal(observedUrl, 'http://service.test/api/v1/collections')
     assert.deepEqual(observedBody, {
       name: 'Child',
       project_id: 'project-1',
-      parent_id: 'parent-1'
+      parent_id: 'parent-1',
     })
   } finally {
     globalThis.fetch = previousFetch
     Object.defineProperty(globalThis, 'window', {
       configurable: true,
       writable: true,
-      value: previousWindow
+      value: previousWindow,
     })
   }
 })
@@ -239,25 +384,40 @@ test('creating a child literature collection sends its parent id', async () => {
 test('request fallback keeps HTTP identity and leaves app wording to the descriptor', async () => {
   const previousWindow = globalThis.window
   const previousFetch = globalThis.fetch
-  Object.assign(globalThis, { window: { location: { href: 'http://desktop.test/' }, scholarseed: { getApiBase: () => 'http://service.test' } } })
+  Object.assign(globalThis, {
+    window: {
+      location: { href: 'http://desktop.test/' },
+      scholarseed: { getApiBase: () => 'http://service.test' },
+    },
+  })
   try {
     globalThis.fetch = async () => new Response('unparseable', { status: 503 })
     await assert.rejects(getLiteratureFacets({}), (error: unknown) => {
       assert.ok(error instanceof LiteratureApiError)
       assert.equal(error.failure.status, 503)
       assert.equal(error.message, '')
-      assert.deepEqual(literatureErrorMessage(error.failure.code, error.message, 'batch.loadFailed'), { key: 'batch.loadFailed', detail: undefined })
+      assert.deepEqual(
+        literatureErrorMessage(error.failure.code, error.message, 'batch.loadFailed'),
+        { key: 'batch.loadFailed', detail: undefined }
+      )
       return true
     })
-    globalThis.fetch = async () => Response.json({ detail: { code: 'VENDOR_ERROR', message: '原始诊断' } }, { status: 502 })
+    globalThis.fetch = async () =>
+      Response.json({ detail: { code: 'VENDOR_ERROR', message: '原始诊断' } }, { status: 502 })
     await assert.rejects(getLiteratureFacets({}), (error: unknown) => {
       assert.ok(error instanceof LiteratureApiError)
       assert.equal(error.failure.code, 'VENDOR_ERROR')
       assert.equal(error.message, '原始诊断')
-      assert.deepEqual(literatureErrorMessage(error.failure.code, error.message, 'batch.loadFailed'), { key: 'batch.loadFailed', detail: undefined })
+      assert.deepEqual(
+        literatureErrorMessage(error.failure.code, error.message, 'batch.loadFailed'),
+        { key: 'batch.loadFailed', detail: undefined }
+      )
       return true
     })
-  } finally { globalThis.window = previousWindow; globalThis.fetch = previousFetch }
+  } finally {
+    globalThis.window = previousWindow
+    globalThis.fetch = previousFetch
+  }
 })
 
 test('literature query identity follows content, not object identity', () => {
@@ -268,14 +428,11 @@ test('literature query identity follows content, not object identity', () => {
     project_id: 'project-library',
     recent: true,
     page: 1,
-    page_size: 50
+    page_size: 50,
   }
   // catalog 每次 query()/filter() 都换一个新对象; 内容相同就必须是同一个身份,
   // 否则列表 effect 会取消在飞请求再重拉一遍。
-  assert.equal(
-    literatureQueryKey(recentScope),
-    literatureQueryKey({ ...recentScope })
-  )
+  assert.equal(literatureQueryKey(recentScope), literatureQueryKey({ ...recentScope }))
   assert.equal(
     literatureQueryKey(recentScope),
     literatureQueryKey({
@@ -285,14 +442,20 @@ test('literature query identity follows content, not object identity', () => {
       project_id: 'project-library',
       sort: 'created_at',
       order: 'desc',
-      attachment: 'any'
+      attachment: 'any',
     })
   )
-  assert.notEqual(literatureQueryKey(recentScope), literatureQueryKey({ ...recentScope, recent: undefined }))
+  assert.notEqual(
+    literatureQueryKey(recentScope),
+    literatureQueryKey({ ...recentScope, recent: undefined })
+  )
   assert.notEqual(literatureQueryKey(recentScope), literatureQueryKey({ ...recentScope, page: 2 }))
   // 与 url() 同一口径: 空值不参与身份, 数组展开成同名多值 (顺序不影响服务端语义)。
   assert.equal(literatureQueryKey({ q: '', without_project: false, tag_id: undefined }), '')
-  assert.equal(literatureQueryKey({ tag_id: ['second', 'first'] }), literatureQueryKey({ tag_id: ['first', 'second'] }))
+  assert.equal(
+    literatureQueryKey({ tag_id: ['second', 'first'] }),
+    literatureQueryKey({ tag_id: ['first', 'second'] })
+  )
 })
 
 test('PDF upload network and malformed-success failures expose stable display codes', async () => {
@@ -309,74 +472,154 @@ test('PDF upload network and malformed-success failures expose stable display co
     method = ''
     endpoint = ''
     headers = new Headers()
-    setRequestHeader(name: string, value: string) { this.headers.set(name, value) }
-    open(method: string, endpoint: string) { this.method = method; this.endpoint = endpoint }
+    setRequestHeader(name: string, value: string) {
+      this.headers.set(name, value)
+    }
+    open(method: string, endpoint: string) {
+      this.method = method
+      this.endpoint = endpoint
+    }
     send(body: unknown) {
       assert.ok(this.headers.get('Idempotency-Key'))
       requests.push({ method: this.method, endpoint: this.endpoint, body })
       if (mode === 'network') this.onerror?.()
-      else { this.status = 200; this.responseText = '{}'; this.onload?.() }
+      else {
+        this.status = 200
+        this.responseText = '{}'
+        this.onload?.()
+      }
     }
   }
-  Object.assign(globalThis, { window: { location: { href: 'http://desktop.test/' }, scholarseed: { getApiBase: () => 'http://service.test' } }, XMLHttpRequest: FakeXHR })
+  Object.assign(globalThis, {
+    window: {
+      location: { href: 'http://desktop.test/' },
+      scholarseed: { getApiBase: () => 'http://service.test' },
+    },
+    XMLHttpRequest: FakeXHR,
+  })
   try {
     const file = new File(['pdf'], '原文.pdf', { type: 'application/pdf' })
-    for (const [next, code, key] of [['network', 'PDF_UPLOAD_NETWORK_FAILED', 'pdfImport.networkFailed'], ['invalid', 'PDF_IMPORT_INVALID_RESPONSE', 'pdfImport.invalidResponse']]) {
+    for (const [next, code, key] of [
+      ['network', 'PDF_UPLOAD_NETWORK_FAILED', 'pdfImport.networkFailed'],
+      ['invalid', 'PDF_IMPORT_INVALID_RESPONSE', 'pdfImport.invalidResponse'],
+    ]) {
       mode = next
       await assert.rejects(importPdf(file), (error: unknown) => {
         assert.ok(error instanceof LiteratureApiError)
         assert.equal(error.failure.code, code)
         assert.equal(error.message, '')
-        assert.deepEqual(literatureErrorMessage(error.failure.code, error.message, 'pdfImport.parseFailed'), { key })
+        assert.deepEqual(
+          literatureErrorMessage(error.failure.code, error.message, 'pdfImport.parseFailed'),
+          { key }
+        )
         return true
       })
     }
-    assert.ok(requests.every(item => item.method === 'POST' && item.endpoint === 'http://service.test/api/v1/imports/pdf'))
-    assert.ok(requests.every(item => item.body instanceof FormData && item.body.get('file') instanceof File))
-  } finally { globalThis.window = previousWindow; globalThis.XMLHttpRequest = previousXHR }
+    assert.ok(
+      requests.every(
+        (item) =>
+          item.method === 'POST' && item.endpoint === 'http://service.test/api/v1/imports/pdf'
+      )
+    )
+    assert.ok(
+      requests.every(
+        (item) => item.body instanceof FormData && item.body.get('file') instanceof File
+      )
+    )
+  } finally {
+    globalThis.window = previousWindow
+    globalThis.XMLHttpRequest = previousXHR
+  }
 })
 
-test('metadata sync posts only the chosen dimension and keeps the payload verbatim', async () => {
+test('metadata sync posts the chosen dimension and keeps the payload verbatim', async () => {
   const previousWindow = globalThis.window
   const previousFetch = globalThis.fetch
   // 三条腿同形: serve 已经把上游归一化成更新体, 渲染层原样收下不再解析。
   const payload = {
     success: true,
     bib_type: 'article',
-    fields: { title: 'Attention is All You Need', year: 2017, arxiv: '1706.03762' }
+    fields: { title: 'Attention is All You Need', year: 2017, arxiv: '1706.03762' },
   }
   let observedUrl = ''
   let observedInit: RequestInit | undefined
-  Object.assign(globalThis, { window: { location: { href: 'http://desktop.test/' }, scholarseed: { getApiBase: () => 'http://service.test' } } })
+  Object.assign(globalThis, {
+    window: {
+      location: { href: 'http://desktop.test/' },
+      scholarseed: { getApiBase: () => 'http://service.test' },
+    },
+  })
   try {
     globalThis.fetch = async (input, init) => {
       observedUrl = String(input)
       observedInit = init
       return Response.json(payload)
     }
-    assert.deepEqual(await fetchPaperMeta({ dimension: 'arxiv', value: '1706.03762' }), payload)
+    assert.deepEqual(
+      await fetchPaperMeta({ dimension: 'arxiv', value: '1706.03762', alternates: {} }),
+      payload
+    )
     assert.equal(observedUrl, 'http://service.test/api/literature/papermeta')
     assert.equal(observedInit?.method, 'POST')
     assert.deepEqual(JSON.parse(String(observedInit?.body)), { arxiv: '1706.03762' })
 
-    globalThis.fetch = async () => Response.json(
-      { detail: { code: 'PAPER_META_QUOTA_EXHAUSTED', message: '元数据接口限流，请稍后重试' } },
-      { status: 429 }
+    globalThis.fetch = async () =>
+      Response.json(
+        { detail: { code: 'PAPER_META_QUOTA_EXHAUSTED', message: '元数据接口限流，请稍后重试' } },
+        { status: 429 }
+      )
+    await assert.rejects(
+      fetchPaperMeta({ dimension: 'doi', value: '10.1/x', alternates: {} }),
+      (error: unknown) => {
+        assert.ok(error instanceof LiteratureApiError)
+        assert.equal(error.failure.status, 429)
+        assert.equal(classifyPaperMetaFailure(error.failure), 'quota')
+        return true
+      }
     )
-    await assert.rejects(fetchPaperMeta({ dimension: 'doi', value: '10.1/x' }), (error: unknown) => {
-      assert.ok(error instanceof LiteratureApiError)
-      assert.equal(error.failure.status, 429)
-      assert.equal(classifyPaperMetaFailure(error.failure), 'quota')
-      return true
-    })
 
     // 0 命中是可行动的「没这篇」, 与限流一样单独分类, 不折进笼统的 failed。
-    globalThis.fetch = async () => Response.json({ detail: { code: 'PAPER_META_NOT_FOUND' } }, { status: 404 })
-    await assert.rejects(fetchPaperMeta({ dimension: 'title', value: 'Nothing like this' }), (error: unknown) => {
-      assert.ok(error instanceof LiteratureApiError)
-      assert.equal(error.failure.status, 404)
-      assert.equal(classifyPaperMetaFailure(error.failure), 'missing')
-      return true
-    })
-  } finally { globalThis.window = previousWindow; globalThis.fetch = previousFetch }
+    globalThis.fetch = async () =>
+      Response.json({ detail: { code: 'PAPER_META_NOT_FOUND' } }, { status: 404 })
+    await assert.rejects(
+      fetchPaperMeta({ dimension: 'title', value: 'Nothing like this', alternates: {} }),
+      (error: unknown) => {
+        assert.ok(error instanceof LiteratureApiError)
+        assert.equal(error.failure.status, 404)
+        assert.equal(classifyPaperMetaFailure(error.failure), 'missing')
+        return true
+      }
+    )
+  } finally {
+    globalThis.window = previousWindow
+    globalThis.fetch = previousFetch
+  }
+})
+
+test('metadata sync sends other known identifiers alongside the chosen dimension', async () => {
+  const previousWindow = globalThis.window
+  const previousFetch = globalThis.fetch
+  let observedInit: RequestInit | undefined
+  Object.assign(globalThis, {
+    window: {
+      location: { href: 'http://desktop.test/' },
+      scholarseed: { getApiBase: () => 'http://service.test' },
+    },
+  })
+  try {
+    globalThis.fetch = async (_input, init) => {
+      observedInit = init
+      return Response.json({ success: true, fields: {} })
+    }
+    // 题录维度与备用标识同时出现在请求体里: 服务端按优先级选题录腿, 备用标识只进摘要链。
+    await fetchPaperMeta({ dimension: 'doi', value: '10.1/x', alternates: { arxiv: '1706.03762' } })
+    assert.deepEqual(JSON.parse(String(observedInit?.body)), { arxiv: '1706.03762', doi: '10.1/x' })
+
+    // 中选维度自己不会被备用值覆盖: 展开在前, 题录维度在后。
+    await fetchPaperMeta({ dimension: 'arxiv', value: '1706.03762', alternates: { doi: '10.1/x' } })
+    assert.deepEqual(JSON.parse(String(observedInit?.body)), { arxiv: '1706.03762', doi: '10.1/x' })
+  } finally {
+    globalThis.window = previousWindow
+    globalThis.fetch = previousFetch
+  }
 })

@@ -15,6 +15,7 @@ from fastapi import FastAPI
 
 from apps.serve.tests import pdf as pdf_fixture
 from apps.serve.tests.contract_model_capabilities import outbound_body
+from service.assistant.domain.language import translation_target
 from service.assistant.persistence.invocations import (
     AssistantInvocationRecord,
     AssistantInvocationStore,
@@ -39,14 +40,11 @@ from service.literature.service.analysis import (
     AnalysisError,
     AnalysisErrorCode,
     AnalysisRequest,
-    InterpretationSegment,
     PreparedAnalysis,
     ResponseLanguage,
     TranslationDirection,
-    compile_interpretation_reduction,
     interpretation_input_limit,
     normalize,
-    partition_interpretation_summaries,
     prepare,
     read_source,
     selection_context,
@@ -58,6 +56,7 @@ from service.literature.service.analysis import (
     verify_translation_coverage,
     visual_context,
 )
+from service.literature.service.comprehension import MAX_OUTPUT_TOKENS as READING_OUTPUT_TOKENS
 from service.literature.service.preview import project_preview
 from service.platform.activity import Activities
 from service.platform.citations import LITERATURE_STORAGE, PdfPageContent
@@ -80,6 +79,163 @@ TASK_TEST_TIMEOUT_SECONDS = 2
 
 
 class PdfAnalysisContracts(unittest.TestCase):
+    def test_artifact_selection_requires_exact_owner_source_and_readonly_action(self):
+        reference = {"session_id": "session", "artifact_id": "publication", "member": "report.pdf"}
+        request = AnalysisRequest(
+            artifact=reference,
+            revision="sha256:pdf",
+            model_key="model",
+            kind=ActionKind.EXPLANATION,
+            client_action_id="action",
+            client_attempt_id="attempt",
+        )
+        reader = Mock(return_value=(b"pdf", "report.pdf"))
+        repository, pdf = Mock(), Mock()
+        for kind in (ActionKind.EXPLANATION, ActionKind.WORD_TRANSLATION):
+            selected = request.model_copy(update={"kind": kind})
+            self.assertEqual(
+                read_source(selected, repository, pdf, artifact_reader=reader),
+                (b"pdf", "report.pdf"),
+            )
+            reader.assert_called_with(request.artifact)
+        self.assertIn("publication", request.source_id)
+        for changes in (
+            {"literature_id": "paper"},
+            {"path": "report.pdf"},
+            {"project_id": "project"},
+            {"attachment_id": "attachment"},
+            {"asset_id": "asset"},
+            {"revision": ""},
+            {"kind": ActionKind.INTERPRETATION},
+        ):
+            with self.subTest(changes=changes), self.assertRaises(AnalysisError):
+                read_source(
+                    request.model_copy(update=changes), repository, pdf, artifact_reader=reader
+                )
+        with self.assertRaises(AnalysisError):
+            read_source(request, repository, pdf)
+        repository.get.assert_not_called()
+        pdf.read.assert_not_called()
+
+    def test_artifact_selection_verifies_pdf_revision_before_preparing_action(self):
+        with pdf_fixture.open() as document:
+            document.new_page().insert_text((72, 72), "Artifact selection evidence")
+            payload = document.tobytes()
+        revision = hashlib.sha256(payload).hexdigest()
+        request = AnalysisRequest(
+            artifact={"session_id": "session", "artifact_id": "publication"},
+            revision=f"sha256:{revision}",
+            model_key="model",
+            kind=ActionKind.EXPLANATION,
+            text="Artifact selection evidence",
+            client_action_id="action",
+            client_attempt_id="attempt",
+        )
+        reader = Mock(return_value=(payload, "report.pdf"))
+        result = prepare(request, Mock(), Mock(), artifact_reader=reader)
+        self.assertEqual(result.revision, revision)
+        self.assertIn(request.text, result.pages[0])
+        with self.assertRaisesRegex(AnalysisError, AnalysisErrorCode.SOURCE_CHANGED.value):
+            prepare(
+                request.model_copy(update={"revision": "sha256:stale"}),
+                Mock(),
+                Mock(),
+                artifact_reader=reader,
+            )
+
+    def test_retained_citations_read_exact_source_without_library_lookup(self):
+        references = (
+            {
+                "kind": "answer",
+                "session_id": "session",
+                "answer_id": "answer",
+                "answer_revision": "answer-sha",
+                "handle": "handle",
+            },
+            {"kind": "saved", "project_id": "project", "path": "report.md", "handle": "handle"},
+            {
+                "kind": "artifact",
+                "session_id": "session",
+                "artifact_id": "report",
+                "revision": "report-sha",
+                "handle": "handle",
+            },
+        )
+        for reference in references:
+            with self.subTest(kind=reference["kind"]):
+                request = AnalysisRequest(
+                    citation=reference,
+                    revision="pdf-sha",
+                    model_key="model",
+                    kind=ActionKind.TRANSLATION,
+                    client_action_id="action",
+                    client_attempt_id="attempt",
+                )
+                repository = Mock()
+                reader = Mock(return_value=(b"exact-pdf", "Retained paper"))
+                self.assertEqual(
+                    read_source(request, repository, Mock(), citation_reader=reader),
+                    (b"exact-pdf", "Retained paper"),
+                )
+                reader.assert_called_once_with(request.citation)
+                repository.get.assert_not_called()
+                changed = request.model_copy(
+                    update={"citation": request.citation.model_copy(update={"handle": "other"})}
+                )
+                self.assertNotEqual(request.source_id, changed.source_id)
+
+    def test_citation_source_requires_one_complete_identity_and_a_revision(self):
+        base = {
+            "revision": "pdf-sha",
+            "model_key": "model",
+            "kind": ActionKind.TRANSLATION,
+            "client_action_id": "action",
+            "client_attempt_id": "attempt",
+        }
+        reference = {
+            "kind": "answer",
+            "session_id": "session",
+            "answer_id": "answer",
+            "answer_revision": "answer-sha",
+            "handle": "handle",
+        }
+        for fields in (
+            {},
+            {"literature_id": "paper", "citation": reference},
+            {"path": "paper.pdf", "project_id": "project", "citation": reference},
+            {"attachment_id": "attachment", "citation": reference},
+            {"citation": {**reference, "artifact_id": "foreign"}},
+            {"citation": {**reference, "handle": ""}},
+        ):
+            with self.subTest(fields=fields), self.assertRaises(ValueError):
+                request = AnalysisRequest(**base, **fields)
+                read_source(request, Mock(), Mock(), citation_reader=Mock())
+
+    def test_citation_translation_checks_the_pdf_revision(self):
+        reference = {
+            "kind": "answer",
+            "session_id": "session",
+            "answer_id": "answer",
+            "answer_revision": "answer-sha",
+            "handle": "handle",
+        }
+        request = AnalysisRequest(
+            citation=reference,
+            revision="wrong-sha",
+            model_key="model",
+            kind=ActionKind.TRANSLATION,
+            client_action_id="action",
+            client_attempt_id="attempt",
+        )
+        with self.assertRaises(AnalysisError) as raised:
+            prepare(
+                request,
+                Mock(),
+                Mock(),
+                citation_reader=Mock(return_value=(b"exact-pdf", "Retained paper")),
+            )
+        self.assertEqual(raised.exception.code, AnalysisErrorCode.SOURCE_CHANGED)
+
     def test_visual_context_prioritizes_nearby_caption_with_bounded_input(self):
         document = pdf_fixture.open()
         document.new_page().insert_text((72, 72), "Page text")
@@ -138,7 +294,7 @@ class PdfAnalysisContracts(unittest.TestCase):
                 self.assertNotIn("document_pages", body)
                 self.assertEqual(len(prepared.compiled.attachments), 1)
 
-    def test_document_file_limit_and_input_budget_have_distinct_codes(self):
+    def test_document_file_limit_has_a_distinct_code(self):
         repository = Mock()
         repository.get.return_value = Mock(title="Paper")
         pdf = Mock()
@@ -146,20 +302,13 @@ class PdfAnalysisContracts(unittest.TestCase):
         request = AnalysisRequest(
             literature_id="paper",
             model_key="model",
-            kind=ActionKind.INTERPRETATION,
+            kind=ActionKind.TRANSLATION,
             client_action_id="document",
             client_attempt_id="attempt",
         )
         with self.assertRaises(AnalysisError) as failure:
             prepare(request, repository, pdf)
         self.assertEqual(failure.exception.code.value, "pdf_ai_file_too_large")
-        document = pdf_fixture.open()
-        document.new_page().insert_text((72, 72), "Paper text")
-        pdf.read.return_value = (document.tobytes(), "application/pdf")
-        document.close()
-        with self.assertRaises(AnalysisError) as failure:
-            prepare(request, repository, pdf, max_interpretation_chars=1)
-        self.assertEqual(failure.exception.code.value, "pdf_ai_input_too_large")
 
     def test_interpretation_preview_projects_partial_sections_without_unverified_evidence(self):
         request = AnalysisRequest(
@@ -408,6 +557,83 @@ class PdfAnalysisContracts(unittest.TestCase):
                 )
         self.assertEqual(content.read_bytes.call_count, 2)
 
+    def test_project_translation_prepares_path_and_asset_sources(self):
+        document = pdf_fixture.open()
+        document.new_page().insert_text((72, 72), "Page text.")
+        data = document.tobytes()
+        document.close()
+        content = Mock()
+        content.read_bytes.return_value = content.read_asset_bytes.return_value = (
+            data,
+            "application/pdf",
+        )
+        repository = Mock()
+        for asset_id in ("", "asset"):
+            with self.subTest(asset_id=asset_id):
+                request = AnalysisRequest(
+                    project_id="project",
+                    path="resources/paper.pdf",
+                    asset_id=asset_id,
+                    revision=hashlib.sha256(data).hexdigest(),
+                    model_key="model",
+                    kind=ActionKind.TRANSLATION,
+                    client_action_id="action",
+                    client_attempt_id="attempt",
+                )
+                prepared = prepare(request, repository, Mock(), content)
+                self.assertEqual(prepared.page_count, 1)
+                self.assertEqual(normalize(prepared.pages[0]), normalize("Page text."))
+                self.assertTrue(prepared.translation_structure)
+                self.assertEqual(
+                    json.loads(prepared.compiled.input_text)["document_pages"][0]["page"], 1
+                )
+                self.assertNotEqual(
+                    request.source_id, request.model_copy(update={"project_id": "other"}).source_id
+                )
+                with self.assertRaises(AnalysisError) as raised:
+                    prepare(
+                        request.model_copy(update={"revision": "stale"}),
+                        repository,
+                        Mock(),
+                        content,
+                    )
+                self.assertEqual(raised.exception.code, AnalysisErrorCode.SOURCE_CHANGED)
+        content.read_bytes.assert_called_with("project", "resources/paper.pdf")
+        content.read_asset_bytes.assert_called_with("project", "asset")
+        repository.get.assert_not_called()
+
+    def test_project_translation_keeps_source_admission_and_content_permissions(self):
+        request = AnalysisRequest(
+            project_id="project",
+            asset_id="asset",
+            path="resources/paper.pdf",
+            model_key="model",
+            kind=ActionKind.TRANSLATION,
+            client_action_id="action",
+            client_attempt_id="attempt",
+        )
+        for fields in (
+            {"project_id": ""},
+            {"asset_id": "", "path": ""},
+            {"literature_id": "paper"},
+            {"attachment_id": "attachment"},
+            {"kind": ActionKind.INTERPRETATION},
+        ):
+            content = Mock()
+            with self.subTest(fields=fields), self.assertRaises(AnalysisError) as raised:
+                read_source(request.model_copy(update=fields), Mock(), Mock(), content)
+            self.assertEqual(raised.exception.code, AnalysisErrorCode.SOURCE_INVALID)
+            content.read_asset_bytes.assert_not_called()
+        content = Mock()
+        content.read_asset_bytes.return_value = (b"not-pdf", "text/plain")
+        with self.assertRaises(AnalysisError) as raised:
+            read_source(request, Mock(), Mock(), content)
+        self.assertEqual(raised.exception.code, AnalysisErrorCode.SOURCE_INVALID)
+        content.read_asset_bytes.side_effect = ContentError("source_forbidden")
+        with self.assertRaises(ContentError):
+            read_source(request, Mock(), Mock(), content)
+        content.read_bytes.assert_not_called()
+
     def test_project_figure_uses_registered_asset_for_linked_pdf(self):
         request = AnalysisRequest(
             literature_id="",
@@ -489,18 +715,6 @@ class PdfAnalysisContracts(unittest.TestCase):
         pdf = Mock()
         pdf.read.return_value = (payload, "application/pdf")
 
-        interpretation = prepare(
-            AnalysisRequest(
-                literature_id="paper",
-                model_key="model",
-                kind=ActionKind.INTERPRETATION,
-                response_language=ResponseLanguage.ENGLISH,
-                client_action_id="interpretation",
-                client_attempt_id="interpretation-attempt",
-            ),
-            repository,
-            pdf,
-        )
         figure = prepare(
             AnalysisRequest(
                 literature_id="paper",
@@ -515,11 +729,10 @@ class PdfAnalysisContracts(unittest.TestCase):
             pdf,
         )
 
-        for compiled in (interpretation.compiled, figure.compiled):
+        for compiled in (figure.compiled,):
             self.assertIsNotNone(compiled)
             self.assertIn("Use English for every generated", compiled.instructions)
             self.assertIn('"response_language": "en"', compiled.input_text)
-        self.assertNotIn("中文全文总结", interpretation.compiled.instructions)
         self.assertNotIn("中文 Markdown", figure.compiled.instructions)
 
     def test_document_actions_use_extracted_pages_without_pdf_attachment(self):
@@ -545,113 +758,16 @@ class PdfAnalysisContracts(unittest.TestCase):
             repository,
             pdf,
         )
-        interpretation = prepare(
-            AnalysisRequest(
-                literature_id="paper",
-                model_key="text-model",
-                kind=ActionKind.INTERPRETATION,
-                page=2,
-                client_action_id="interpretation",
-                client_attempt_id="interpretation-attempt",
-            ),
-            repository,
-            pdf,
-        )
         self.assertEqual(
             json.loads(translation.compiled.input_text)["document_pages"],
             [{"page": 2, "text": "Second page"}],
         )
-        self.assertEqual(
-            json.loads(interpretation.compiled.input_text)["document_pages"],
-            [{"page": 1, "text": "First page"}, {"page": 2, "text": "Second page"}],
-        )
         self.assertEqual(translation.compiled.attachments, ())
-        self.assertEqual(interpretation.compiled.attachments, ())
-        self.assertEqual(translation.pages, ("", "Second page"))
-        self.assertEqual(interpretation.pages, ("First page", "Second page"))
 
     def test_interpretation_uses_model_window_up_to_five_hundred_thousand_chars(self):
         self.assertEqual(interpretation_input_limit(1_000_000), 500_000)
         self.assertEqual(interpretation_input_limit(200_000), 167_232)
         self.assertEqual(interpretation_input_limit(None), 120_000)
-
-    def test_large_interpretation_is_segmented_without_losing_physical_pages(self):
-        document = pdf_fixture.open()
-        for page_number in range(1, 5):
-            page = document.new_page()
-            page.insert_textbox(
-                pdf_fixture.Rect(36, 36, 560, 800),
-                f"page-{page_number} " + (f"evidence-{page_number} " * 90),
-                fontsize=8,
-            )
-        payload = document.tobytes()
-        document.close()
-        repository = Mock()
-        repository.get.return_value = Mock(title="Long paper")
-        pdf = Mock()
-        pdf.read.return_value = (payload, "application/pdf")
-
-        prepared = prepare(
-            AnalysisRequest(
-                literature_id="paper",
-                model_key="model",
-                kind=ActionKind.INTERPRETATION,
-                response_language=ResponseLanguage.ENGLISH,
-                client_action_id="interpretation",
-                client_attempt_id="interpretation-attempt",
-            ),
-            repository,
-            pdf,
-            max_interpretation_chars=4_000,
-        )
-
-        self.assertIsNone(prepared.compiled)
-        self.assertGreater(len(prepared.segments), 1)
-        observed_pages = []
-        for segment in prepared.segments:
-            self.assertLessEqual(len(segment.compiled.input_text), 4_000)
-            self.assertIn("Use English for every generated", segment.compiled.instructions)
-            segment_pages = json.loads(segment.compiled.input_text)["document_pages"]
-            observed_pages.extend(page["page"] for page in segment_pages)
-            self.assertEqual(segment.first_page, segment_pages[0]["page"])
-            self.assertEqual(segment.last_page, segment_pages[-1]["page"])
-        self.assertEqual(sorted(set(observed_pages)), [1, 2, 3, 4])
-
-    def test_interpretation_reduction_preserves_evidence_payload(self):
-        request = AnalysisRequest(
-            literature_id="paper",
-            model_key="model",
-            kind=ActionKind.INTERPRETATION,
-            response_language=ResponseLanguage.ENGLISH,
-            client_action_id="interpretation",
-            client_attempt_id="interpretation-attempt",
-        )
-        prepared = PreparedAnalysis(
-            request=request,
-            revision="revision",
-            title="Paper",
-            pages=("one", "two"),
-            compiled=None,
-            interpretation_input_limit=2_500,
-        )
-        summary = {
-            "text": "summary",
-            "paper_type": "study",
-            "contribution": {
-                "text": "contribution",
-                "evidence": [{"page": 2, "quote": "q"}],
-            },
-            "claims": [{"text": "claim", "evidence": [{"page": 2, "quote": "q"}]}],
-            "method": {"text": "method", "evidence": []},
-            "limitations": {"text": "limitations", "evidence": []},
-        }
-        groups = partition_interpretation_summaries(prepared, [summary])
-        compiled = compile_interpretation_reduction(prepared, groups[0])
-        self.assertIn("Use English for every generated", compiled.instructions)
-        self.assertEqual(
-            json.loads(compiled.input_text)["segment_summaries"][0]["claims"][0]["evidence"],
-            [{"page": 2, "quote": "q"}],
-        )
 
     def test_page_translation_uses_the_low_latency_output_budget(self):
         document = pdf_fixture.open()
@@ -675,21 +791,8 @@ class PdfAnalysisContracts(unittest.TestCase):
             repository,
             pdf,
         )
-        interpretation = prepare(
-            AnalysisRequest(
-                literature_id="paper",
-                model_key="model",
-                kind=ActionKind.INTERPRETATION,
-                client_action_id="interpretation",
-                client_attempt_id="interpretation-attempt",
-            ),
-            repository,
-            pdf,
-        )
 
-        self.assertEqual(
-            translation.compiled.max_output_tokens, interpretation.compiled.max_output_tokens
-        )
+        self.assertEqual(translation.compiled.max_output_tokens, READING_OUTPUT_TOKENS)
         self.assertEqual(json.loads(translation.compiled.input_text)["context"], "")
 
     def test_dense_translation_page_is_split_without_losing_text(self):
@@ -789,6 +892,52 @@ class PdfAnalysisContracts(unittest.TestCase):
                 "Use domain terminology." in custom,
                 kind in (ActionKind.WORD_TRANSLATION, ActionKind.EXPLANATION, ActionKind.FIGURE),
             )
+
+    def test_selection_translation_compiles_the_effective_target_after_personal_requirements(self):
+        source = "A study of language. Journal, 18(4):467-479."
+        document = pdf_fixture.open()
+        page = document.new_page()
+        page.insert_text((72, 72), source)
+        payload = document.tobytes()
+        document.close()
+        repository = Mock()
+        repository.get.return_value = Mock(title="References")
+        pdf = Mock()
+        pdf.read.return_value = (payload, "application/pdf")
+        for direction in TranslationDirection:
+            with self.subTest(direction=direction):
+                request = AnalysisRequest(
+                    literature_id="paper",
+                    model_key="model",
+                    kind=ActionKind.WORD_TRANSLATION,
+                    text=source,
+                    target_language=direction,
+                    instruction="Preserve citations and technical terminology.",
+                    client_action_id="action",
+                    client_attempt_id="attempt",
+                )
+                compiled = prepare(request, repository, pdf).compiled
+                assert compiled is not None
+                target = translation_target(direction.value)
+                binding = f"translated_text 的目标语言为 {target.prompt_name}（{target.code}）"
+                self.assertIn(binding, compiled.instructions)
+                self.assertLess(
+                    compiled.instructions.index(request.instruction),
+                    compiled.instructions.index(binding),
+                )
+                self.assertEqual(compiled.prompt_version, "pdf-selection-translation/v3")
+                self.assertEqual(compiled.target_language, target.code)
+                self.assertNotIn("response_language", json.loads(compiled.input_text))
+                self.assertEqual(json.loads(compiled.input_text)["target_language"], target.code)
+
+    def test_selection_translation_distinguishes_citation_identifiers_from_translatable_text(self):
+        request = self.prepared(ActionKind.WORD_TRANSLATION).request.model_copy(
+            update={"instruction": "准确翻译所选内容，保留专业术语、引用、数字和段落格式。"}
+        )
+        policy = selection_prompt(request).split("\nSELECTION_OUTPUT_POLICY\n", 1)[1]
+        self.assertIn("引用标识", policy)
+        self.assertIn("题名和描述性文字仍须翻译", policy)
+        self.assertIn("不得把整段参考文献当作无需翻译的内容", policy)
 
     def test_selection_explanation_preserves_design_evidence_and_constraints(self):
         sources = (
@@ -990,7 +1139,175 @@ class PdfAnalysisContracts(unittest.TestCase):
         }
         self.assertTrue(validate_result(json.dumps(value), prepared)["blocks"][0]["located"])
         value["blocks"][0]["source_text"] = "fabricated source"
-        self.assertFalse(validate_result(json.dumps(value), prepared)["blocks"][0]["located"])
+        with self.assertRaises(AnalysisError) as raised:
+            validate_result(json.dumps(value), prepared)
+        self.assertEqual(raised.exception.code, AnalysisErrorCode.TRANSLATION_CONTENT_MISSING)
+
+    def test_selection_translation_derives_summary_from_translated_blocks(self):
+        prepared = self.prepared(ActionKind.WORD_TRANSLATION)
+        prepared = replace(
+            prepared,
+            request=prepared.request.model_copy(update={"text": "First page. A reference."}),
+        )
+        for summary in ("First page. A reference.", None):
+            with self.subTest(summary=summary):
+                value = {
+                    "source_language": "en",
+                    "target_language": "zh-CN",
+                    "blocks": [
+                        {
+                            "source_text": "First page.",
+                            "translated_text": "第一页。",
+                            "paragraph_start": True,
+                        },
+                        {
+                            "source_text": "A reference.",
+                            "translated_text": "一条参考文献。",
+                            "paragraph_start": False,
+                        },
+                    ],
+                }
+                if summary is not None:
+                    value["text"] = summary
+                result = validate_result(json.dumps(value), prepared)
+                self.assertEqual(result["text"], "第一页。 一条参考文献。")
+                self.assertTrue(all(block["located"] for block in result["blocks"]))
+
+    def test_selection_translation_rejects_wrong_body_with_matching_target_label(self):
+        source = (
+            "Peter F Brown, Peter V Desouza, Robert L Mercer. 1992.\n"
+            "Class-based n-gram models of natural language.\n"
+            "Computational linguistics, 18(4):467–479."
+        )
+        chinese = source.replace(
+            "Class-based n-gram models of natural language.", "基于类别的自然语言n-gram模型。"
+        )
+        for target, translated in (
+            (TranslationDirection.ENGLISH, chinese),
+            (TranslationDirection.SIMPLIFIED_CHINESE, source),
+        ):
+            with self.subTest(target=target):
+                prepared = self.prepared(ActionKind.WORD_TRANSLATION)
+                prepared = replace(
+                    prepared,
+                    request=prepared.request.model_copy(
+                        update={"text": source, "target_language": target}
+                    ),
+                )
+                payload = {
+                    "source_language": "en",
+                    "target_language": target.value,
+                    "blocks": [{"source_text": source, "translated_text": translated}],
+                }
+                with self.assertRaises(AnalysisError) as raised:
+                    validate_result(json.dumps(payload), prepared)
+                self.assertEqual(
+                    raised.exception.code.value, "pdf_ai_translation_content_language_mismatch"
+                )
+
+    def test_selection_translation_cannot_omit_prose_and_return_only_identifiers(self):
+        prepared = self.prepared(ActionKind.WORD_TRANSLATION)
+        source = "Peter F Brown. 1992. Models of natural language."
+        prepared = replace(prepared, request=prepared.request.model_copy(update={"text": source}))
+        payload = {
+            "source_language": "en",
+            "target_language": "zh-CN",
+            "blocks": [
+                {"source_text": "Peter F Brown. 1992.", "translated_text": "Peter F Brown. 1992."}
+            ],
+        }
+        with self.assertRaises(AnalysisError) as raised:
+            validate_result(json.dumps(payload), prepared)
+        self.assertEqual(raised.exception.code, AnalysisErrorCode.TRANSLATION_CONTENT_MISSING)
+
+    def test_selection_translation_keeps_identifiers_terms_and_same_language(self):
+        samples = (
+            (
+                TranslationDirection.SIMPLIFIED_CHINESE,
+                "Peter F Brown, Vincent J Della Pietra, and Jenifer C Lai. 1992. Models of natural language. Computational linguistics, 18(4):467–479.",
+                "Peter F Brown, Vincent J Della Pietra, and Jenifer C Lai. 1992. 自然语言模型。 Computational linguistics, 18(4):467–479.",
+            ),
+            (
+                TranslationDirection.ENGLISH,
+                "An example of natural language models.",
+                "An example of natural language models.",
+            ),
+            (
+                TranslationDirection.SIMPLIFIED_CHINESE,
+                "Peter F Brown. 1992. Models of natural language.",
+                "Peter F Brown. 1992. 自然语言模型。",
+            ),
+            (TranslationDirection.SIMPLIFIED_CHINESE, "BERT", "BERT"),
+            (
+                TranslationDirection.SIMPLIFIED_CHINESE,
+                "https://example.org/10.1/model",
+                "https://example.org/10.1/model",
+            ),
+            (TranslationDirection.ENGLISH, "‘注意力’ is a term.", "‘注意力’ is a term."),
+        )
+        for target, source, translated in samples:
+            with self.subTest(source=source):
+                prepared = self.prepared(ActionKind.WORD_TRANSLATION)
+                prepared = replace(
+                    prepared,
+                    request=prepared.request.model_copy(
+                        update={"text": source, "target_language": target}
+                    ),
+                )
+                result = validate_result(
+                    json.dumps(
+                        {
+                            "source_language": "en",
+                            "target_language": target.value,
+                            "blocks": [{"source_text": source, "translated_text": translated}],
+                        }
+                    ),
+                    prepared,
+                )
+                self.assertEqual(result["text"], translated)
+
+    def test_selection_translation_summary_keeps_paragraph_and_heading_boundaries(self):
+        prepared = self.prepared(ActionKind.WORD_TRANSLATION)
+        value = {
+            "source_language": "en",
+            "target_language": "zh-CN",
+            "text": "Unrelated summary",
+            "blocks": [
+                {"source_text": "Title", "translated_text": "标题", "heading": True},
+                {"source_text": "First", "translated_text": "第一句。"},
+                {"source_text": "Second", "translated_text": "第二句。"},
+                {"source_text": "Section", "translated_text": "下一节", "heading": True},
+                {"source_text": "Last", "translated_text": "末句。", "paragraph_start": True},
+            ],
+        }
+        self.assertEqual(
+            validate_result(json.dumps(value), prepared)["text"],
+            "标题\n\n第一句。 第二句。\n\n下一节\n\n末句。",
+        )
+
+    def test_selection_translation_preview_uses_partial_translated_blocks(self):
+        request = self.prepared(ActionKind.WORD_TRANSLATION).request
+        self.assertEqual(project_preview('{"text":"English summary"', request), {})
+        self.assertEqual(
+            project_preview('{"blocks":[{"source_text":"First","translated_text":"第一', request),
+            {"text": "第一"},
+        )
+        self.assertEqual(
+            project_preview(
+                json.dumps(
+                    {
+                        "text": "English summary",
+                        "blocks": [
+                            {"translated_text": "第一页。"},
+                            {"translated_text": 42},
+                            {"translated_text": "第二页。", "paragraph_start": True},
+                        ],
+                    }
+                ),
+                request,
+            ),
+            {"text": "第一页。\n\n第二页。"},
+        )
 
     def test_structured_summary(self):
         section = {"text": "内容", "evidence": [{"page": 1, "quote": "First page"}]}
@@ -1251,8 +1568,22 @@ class QueuedTranslationContracts(unittest.IsolatedAsyncioTestCase):
         self.attempts = set()
         self.result_store = AnalysisStore(repository.database)
         self.revision = revision
+        self.citation_reads = []
+        self.citation_revoked = False
+        self.content = Mock()
+
+        def read_citation(reference, principal):
+            self.citation_reads.append((reference, principal))
+            if self.citation_revoked:
+                raise ContentError("source_forbidden")
+            return source, "Paper"
+
+        def read_current(payload, *args, citation_reader=None, **kwargs):
+            return citation_reader(payload.citation) if payload.citation else (source, "Paper")
 
         def prepared(payload, *args, **kwargs):
+            if payload.citation:
+                kwargs["citation_reader"](payload.citation)
             compiled = CompiledAssistantAction(
                 "literature.document_translation.segment",
                 "v6",
@@ -1278,9 +1609,9 @@ class QueuedTranslationContracts(unittest.IsolatedAsyncioTestCase):
                 retry_of_attempt_id=None,
                 kind=compiled.purpose,
                 request_hash=f"request-{attempt_id}",
-                project_id="",
-                source_id="paper",
-                source_revision=revision,
+                project_id=kwargs["project_id"],
+                source_id=kwargs["source_id"],
+                source_revision=kwargs["source_revision"],
                 prompt_version=compiled.prompt_version,
                 status=ModelInvocationStatus.RUNNING,
                 target_language="zh-CN",
@@ -1324,8 +1655,9 @@ class QueuedTranslationContracts(unittest.IsolatedAsyncioTestCase):
         for target, kwargs in (
             ("LiteratureRepository", {"return_value": repository}),
             ("request_user_id", {"return_value": "owner"}),
+            ("request_owner_id", {"return_value": "data-owner"}),
             ("prepare", {"side_effect": prepared}),
-            ("read_source", {"return_value": (source, "Paper")}),
+            ("read_source", {"side_effect": read_current}),
         ):
             patcher = patch(f"service.literature.api.analysis.{target}", **kwargs)
             patcher.start()
@@ -1338,16 +1670,20 @@ class QueuedTranslationContracts(unittest.IsolatedAsyncioTestCase):
             tasks=self.tasks,
             models=models,
             pdf=Mock(),
+            content=self.content,
+            read_citation=read_citation,
         )
         self.client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         )
         self.addAsyncCleanup(self.client.aclose)
 
-    async def submit(self, attempt, page=1, kind=ActionKind.TRANSLATION):
+    async def submit(self, attempt, page=1, kind=ActionKind.TRANSLATION, citation=None):
         self.attempts.add(attempt)
         request = AnalysisRequest(
-            literature_id="paper",
+            literature_id="" if citation else "paper",
+            citation=citation,
+            revision=self.revision,
             model_key="selected",
             kind=kind,
             page=page,
@@ -1357,6 +1693,234 @@ class QueuedTranslationContracts(unittest.IsolatedAsyncioTestCase):
         return await self.client.post(
             "/api/literature/ai/tasks", json=request.model_dump(mode="json")
         )
+
+    async def selection_result(self, outputs, attempt):
+        source = "Models of natural language."
+        calls = []
+
+        async def complete_selection(**kwargs):
+            calls.append(kwargs)
+            invocation = AssistantInvocationRecord(
+                invocation_id=f"invocation-{kwargs['client_attempt_id']}",
+                owner_id="owner",
+                client_action_id=kwargs["client_action_id"],
+                client_attempt_id=kwargs["client_attempt_id"],
+                retry_of_attempt_id=kwargs.get("retry_of_attempt_id"),
+                kind="compiled",
+                request_hash=kwargs["client_attempt_id"],
+                project_id="",
+                source_id="paper",
+                source_revision=self.revision,
+                prompt_version="pdf-selection-translation/v3",
+                status=ModelInvocationStatus.COMPLETED,
+                target_language="en",
+                model_key="selected",
+                output_text=json.dumps(
+                    {
+                        "source_language": "en",
+                        "target_language": "en",
+                        "blocks": [
+                            {
+                                "source_text": source,
+                                "translated_text": outputs[min(len(calls) - 1, len(outputs) - 1)],
+                            }
+                        ],
+                    }
+                ),
+            )
+            self.tasks.claim(invocation)
+            return invocation
+
+        self.actions.invoke_compiled.side_effect = complete_selection
+        self.attempts.add(attempt)
+        response = await self.client.post(
+            "/api/literature/ai/tasks",
+            json={
+                "literature_id": "paper",
+                "revision": self.revision,
+                "model_key": "selected",
+                "kind": "selection_translation",
+                "text": source,
+                "target_language": "en",
+                "client_action_id": f"action-{attempt}",
+                "client_attempt_id": attempt,
+            },
+        )
+        self.assertEqual(response.status_code, 202)
+        return await self.terminal(attempt), calls
+
+    async def test_selection_language_failure_gets_one_source_bound_correction(self):
+        terminal, calls = await self.selection_result(
+            ["自然语言模型。", "Models of natural language."], "selection-corrected"
+        )
+        self.assertEqual(terminal["status"], "completed")
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0]["compiled"].input_text, calls[1]["compiled"].input_text)
+        self.assertEqual(calls[0]["source_revision"], calls[1]["source_revision"])
+        self.assertNotEqual(calls[0]["client_attempt_id"], calls[1]["client_attempt_id"])
+        self.assertEqual(terminal["result"]["text"], "Models of natural language.")
+        self.assertEqual(terminal["result"]["translation_validation"]["corrections"], 1)
+        rejected = self.tasks.get_attempt(calls[0]["client_attempt_id"], "owner")
+        self.assertEqual(rejected.status, ModelInvocationStatus.FAILED)
+        self.assertIn(
+            "自然语言模型", json.loads(rejected.output_text)["blocks"][0]["translated_text"]
+        )
+        workflow = self.tasks.get_attempt("selection-corrected", "owner")
+        self.assertEqual(workflow.target_language, "en")
+        self.assertEqual(workflow.detected_source_language, "en")
+        self.assertNotEqual(workflow.invocation_id, rejected.invocation_id)
+        self.assertEqual(
+            (await self.client.get("/api/literature/ai/tasks/selection-corrected")).json()[
+                "result"
+            ]["text"],
+            "Models of natural language.",
+        )
+
+    async def test_selection_language_correction_is_bounded_and_never_publishes_failure(self):
+        terminal, calls = await self.selection_result(["自然语言模型。"], "selection-rejected")
+        self.assertEqual(terminal["status"], "failed")
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(terminal["error_code"], "pdf_ai_translation_content_language_mismatch")
+        self.assertIsNone(terminal.get("result"))
+        self.assertNotIn("selection_translation", self.result_store.read("paper", self.revision))
+
+    async def test_valid_selection_translation_does_not_spend_a_correction(self):
+        terminal, calls = await self.selection_result(
+            ["Models of natural language."], "selection-valid"
+        )
+        self.assertEqual(terminal["status"], "completed")
+        self.assertEqual(len(calls), 1)
+
+    async def test_selection_correction_rechecks_source_access(self):
+        with patch(
+            "service.literature.api.analysis.read_source",
+            side_effect=ContentError("source_forbidden"),
+        ):
+            terminal, calls = await self.selection_result(["自然语言模型。"], "selection-revoked")
+        self.assertEqual(terminal["status"], "failed")
+        self.assertEqual(len(calls), 1)
+        self.assertIsNone(terminal.get("result"))
+
+    async def test_selection_correction_rechecks_source_revision(self):
+        with patch(
+            "service.literature.api.analysis.read_source", return_value=(b"changed source", "Paper")
+        ):
+            terminal, calls = await self.selection_result(["自然语言模型。"], "selection-changed")
+        self.assertEqual(terminal["status"], "failed")
+        self.assertEqual(
+            terminal["error_code"], AnalysisErrorCode.SOURCE_CHANGED_DURING_GENERATION.value
+        )
+        self.assertEqual(len(calls), 1)
+        self.assertIsNone(terminal.get("result"))
+
+    async def test_citation_tasks_keep_distinct_handles_and_data_principal(self):
+        reference = {
+            "kind": "answer",
+            "session_id": "session",
+            "answer_id": "answer",
+            "answer_revision": "sha",
+            "handle": "first",
+        }
+        self.assertEqual((await self.submit("citation-one", citation=reference)).status_code, 202)
+        self.assertEqual(await self.started_attempt(), "citation-one")
+        self.assertEqual(
+            (
+                await self.submit("citation-two", citation={**reference, "handle": "second"})
+            ).status_code,
+            202,
+        )
+        self.assertEqual(await self.started_attempt(), "citation-two")
+        self.releases["citation-one"].set()
+        self.releases["citation-two"].set()
+        self.assertEqual((await self.terminal("citation-one"))["status"], "completed")
+        self.assertEqual((await self.terminal("citation-two"))["status"], "completed")
+        self.assertGreaterEqual(len(self.citation_reads), 4)
+        self.assertTrue(all(principal == "data-owner" for _, principal in self.citation_reads))
+
+    async def test_citation_revoked_during_translation_cannot_complete(self):
+        reference = {
+            "kind": "answer",
+            "session_id": "session",
+            "answer_id": "answer",
+            "answer_revision": "sha",
+            "handle": "first",
+        }
+        self.assertEqual((await self.submit("revoked", citation=reference)).status_code, 202)
+        self.assertEqual(await self.started_attempt(), "revoked")
+        self.citation_revoked = True
+        self.releases["revoked"].set()
+        self.assertEqual((await self.terminal("revoked"))["status"], "failed")
+
+    async def test_structure_preparation_does_not_invoke_translation(self):
+        payload = AnalysisRequest(
+            literature_id="paper",
+            model_key="",
+            kind=ActionKind.TRANSLATION,
+            client_action_id="structure",
+            client_attempt_id="structure",
+        )
+        response = await self.client.post(
+            "/api/literature/ai/structure", json=payload.model_dump(mode="json")
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["revision"], self.revision)
+        self.assertEqual(response.json()["blocks"], [])
+        self.actions.invoke_compiled.assert_not_called()
+
+    async def test_project_translation_completes_and_rechecks_the_registered_source(self):
+        document = pdf_fixture.open()
+        document.new_page().insert_text((72, 72), "Page text.")
+        data = document.tobytes()
+        document.close()
+        revision = hashlib.sha256(data).hexdigest()
+        with (
+            patch("service.literature.api.analysis.prepare", new=prepare),
+            patch("service.literature.api.analysis.read_source", new=read_source),
+        ):
+            for outcome in ("completed", "changed", "forbidden"):
+                with self.subTest(outcome=outcome):
+                    self.content.read_asset_bytes.reset_mock()
+                    self.content.read_asset_bytes.side_effect = None
+                    self.content.read_asset_bytes.return_value = (data, "application/pdf")
+                    attempt = f"project-{outcome}"
+                    self.attempts.add(attempt)
+                    request = AnalysisRequest(
+                        project_id="project",
+                        asset_id="asset",
+                        path="resources/paper.pdf",
+                        revision=revision,
+                        model_key="selected",
+                        kind=ActionKind.TRANSLATION,
+                        client_action_id=f"action-{attempt}",
+                        client_attempt_id=attempt,
+                    )
+                    response = await self.client.post(
+                        "/api/literature/ai/tasks", json=request.model_dump(mode="json")
+                    )
+                    self.assertEqual(response.status_code, 202, response.text)
+                    self.assertEqual(await self.started_attempt(), attempt)
+                    if outcome == "changed":
+                        self.content.read_asset_bytes.return_value = (b"changed", "application/pdf")
+                    elif outcome == "forbidden":
+                        self.content.read_asset_bytes.side_effect = ContentError("source_forbidden")
+                    self.releases[attempt].set()
+                    terminal = await self.terminal(attempt)
+                    self.assertEqual(
+                        terminal["status"], "completed" if outcome == "completed" else "failed"
+                    )
+                    if outcome == "completed":
+                        self.assertEqual(
+                            terminal["result"]["pages"][0]["blocks"][0]["translated_text"], "译文。"
+                        )
+                        record = self.tasks.get_attempt(attempt, "owner")
+                        self.assertEqual(record.source_id, request.source_id)
+                        self.assertEqual(record.source_revision, revision)
+                        self.assertEqual(record.project_id, "project")
+                        self.assertEqual(json.loads(record.output_text)["target_language"], "zh-CN")
+                        self.assertEqual(self.result_store.read("", revision), {})
+                    self.assertEqual(self.content.read_asset_bytes.call_count, 2)
+                    self.content.read_asset_bytes.assert_called_with("project", "asset")
+                    self.content.read_bytes.assert_not_called()
 
     async def asyncTearDown(self):
         for attempt in self.attempts:
@@ -1891,156 +2455,6 @@ class StreamingContracts(unittest.IsolatedAsyncioTestCase):
                         tasks.get_attempt("attempt", "owner").status,
                         ModelInvocationStatus.COMPLETED,
                     )
-
-    async def test_segmented_interpretation_reuses_cached_segments_before_final_synthesis(self):
-        with tempfile.TemporaryDirectory() as directory:
-            database = Path(directory) / "literature.sqlite3"
-            repository = Mock(database=database)
-            tasks = AssistantInvocationStore(Path(directory) / "invocations.sqlite3")
-            models = Mock()
-            models.inference_connection.return_value = {"context_window": 1_000_000}
-            source = b"stable source"
-            revision = hashlib.sha256(source).hexdigest()
-            pages = ("first quote", "second quote")
-            summary = {
-                "modules": {
-                    "summary": {
-                        "text": "summary",
-                        "paper_type": "study",
-                        "contribution": {
-                            "text": "contribution",
-                            "evidence": [{"page": 1, "quote": "first quote"}],
-                        },
-                        "claims": [
-                            {
-                                "text": "claim",
-                                "evidence": [{"page": 2, "quote": "second quote"}],
-                            }
-                        ],
-                        "method": {"text": "method", "evidence": []},
-                        "limitations": {"text": "limitations", "evidence": []},
-                    }
-                }
-            }
-
-            def prepared(payload, *args, **kwargs):
-                segments = tuple(
-                    InterpretationSegment(
-                        index=index,
-                        total=2,
-                        first_page=index,
-                        last_page=index,
-                        content_hash=f"hash-{index}",
-                        compiled=CompiledAssistantAction(
-                            "literature.interpretation.segment",
-                            "v5",
-                            "instructions",
-                            json.dumps(
-                                {"document_pages": [{"page": index, "text": pages[index - 1]}]}
-                            ),
-                        ),
-                    )
-                    for index in (1, 2)
-                )
-                return PreparedAnalysis(
-                    request=payload,
-                    revision=revision,
-                    title="Paper",
-                    pages=pages,
-                    compiled=None,
-                    segments=segments,
-                    interpretation_input_limit=500_000,
-                )
-
-            async def complete(**kwargs):
-                attempt_id = kwargs["client_attempt_id"]
-                compiled = kwargs["compiled"]
-                record = AssistantInvocationRecord(
-                    invocation_id=f"invocation-{attempt_id}",
-                    owner_id="owner",
-                    client_action_id=kwargs["client_action_id"],
-                    client_attempt_id=attempt_id,
-                    retry_of_attempt_id=None,
-                    kind=compiled.purpose,
-                    request_hash=f"request-{attempt_id}",
-                    project_id="",
-                    source_id="paper",
-                    source_revision=revision,
-                    prompt_version=compiled.prompt_version,
-                    status=ModelInvocationStatus.COMPLETED,
-                    target_language="",
-                    model_key="selected",
-                    output_text=json.dumps(summary),
-                )
-                before = (
-                    await client.get(f"/api/literature/ai/tasks/{request.client_attempt_id}")
-                ).json()
-                self.assertNotIn("preview", before)
-                await kwargs["observer"](
-                    ModelInvocationEvent(
-                        record.invocation_id,
-                        ModelInvocationEventKind.OUTPUT_DELTA,
-                        '{"modules":{"summary":{"contribution":{"text":"正在形成结论',
-                    )
-                )
-                snapshot = (
-                    await client.get(f"/api/literature/ai/tasks/{request.client_attempt_id}")
-                ).json()
-                self.assertEqual(snapshot["status"], "running")
-                self.assertEqual(
-                    snapshot["preview"]["summary"]["contribution"]["text"], "正在形成结论"
-                )
-                self.assertNotIn("result", snapshot)
-                tasks.claim(record)
-                return record
-
-            actions = Mock(invoke_compiled=AsyncMock(side_effect=complete))
-            app = FastAPI()
-            with (
-                patch(
-                    "service.literature.api.analysis.LiteratureRepository",
-                    return_value=repository,
-                ),
-                patch("service.literature.api.analysis.request_user_id", return_value="owner"),
-                patch("service.literature.api.analysis.prepare", side_effect=prepared),
-                patch(
-                    "service.literature.api.analysis.read_source", return_value=(source, "Paper")
-                ),
-            ):
-                register_analysis_routes(
-                    app,
-                    activities=Activities(),
-                    actions=actions,
-                    tasks=tasks,
-                    models=models,
-                    pdf=Mock(),
-                )
-                async with httpx.AsyncClient(
-                    transport=httpx.ASGITransport(app=app), base_url="http://test"
-                ) as client:
-                    for attempt in ("first", "second"):
-                        request = AnalysisRequest(
-                            literature_id="paper",
-                            model_key="selected",
-                            kind=ActionKind.INTERPRETATION,
-                            client_action_id=f"action-{attempt}",
-                            client_attempt_id=attempt,
-                        )
-                        response = await client.post(
-                            "/api/literature/ai/tasks",
-                            json=request.model_dump(mode="json"),
-                        )
-                        self.assertEqual(response.status_code, 202)
-                        for _ in range(20):
-                            await asyncio.sleep(0.01)
-                            state = (await client.get(f"/api/literature/ai/tasks/{attempt}")).json()
-                            if state["status"] == "completed":
-                                break
-                        self.assertEqual(state["status"], "completed")
-
-                        self.assertNotIn("preview", state)
-
-            self.assertEqual(actions.invoke_compiled.await_count, 4)
 
     async def test_chat_stream_preserves_text_usage_and_requires_terminal(self):
         events = [

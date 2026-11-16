@@ -56,6 +56,7 @@ from service.chat.service.rejections import (
 from service.chat.service.streams import (
     SSE_BUFFER_LIMIT,
     NativeResponseNormalizer,
+    StreamObservation,
     TextDeltaBatcher,
     coalesce_text_delta_stream,
 )
@@ -94,9 +95,11 @@ def forward_contract(
     responses_endpoint: str = RESPONSES_ENDPOINT,
     reasoning_effort: str | None = None,
     reasoning_options: list[dict] | None = None,
+    reasoning_summary_models: frozenset[str] = frozenset(),
     approval_model_ref: str = "",
     thinking: ModelThinking | None = None,
     wire_protocol: ModelWireProtocol | None = None,
+    allow_tools: bool = True,
     turn_id_provider: Callable[[str], str] | None = None,
     source_endpoints: tuple[str, ...] = (),
     send_exc: BaseException | tuple[BaseException | None, ...] | None = None,
@@ -155,6 +158,7 @@ def forward_contract(
         ),
     )
     registration = bridge.register(
+        reasoning_summary_models=reasoning_summary_models,
         endpoint=CHAT_ENDPOINT,
         responses_endpoint=responses_endpoint,
         api_key=api_key,
@@ -168,6 +172,7 @@ def forward_contract(
         # 夹具模拟的是 OpenAI 兼容端点；思考参数按家族公开字段名出站。
         provider="openai",
         wire_protocol=wire_protocol,
+        allow_tools=allow_tools,
         turn_id_provider=turn_id_provider,
         token_provider=token_provider,
         owner_id=owner_id,
@@ -189,6 +194,51 @@ def forward_contract(
             )
             client.portal.call(bridge.close)
     return response, captured
+
+
+def test_generation_registration_excludes_tools() -> None:
+    payload = {
+        "model": "alias",
+        "input": "Write from supplied evidence.",
+        "stream": False,
+        "tools": [
+            {
+                "type": "function",
+                "name": "request_user_input",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        ],
+        "tool_choice": "auto",
+        "parallel_tool_calls": True,
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "draft",
+                "schema": {"type": "object", "properties": {}},
+            }
+        },
+    }
+    for protocol in (ModelWireProtocol.RESPONSES, ModelWireProtocol.CHAT_COMPLETIONS):
+        body = (
+            b'{"id":"response-1","output":[]}'
+            if protocol == ModelWireProtocol.RESPONSES
+            else b'{"choices":[{"message":{"content":"{}"}}]}'
+        )
+        for enabled in (True, False):
+            response, requests = forward_contract(
+                payload, body, wire_protocol=protocol, allow_tools=enabled
+            )
+            assert response.status_code == 200, response.text
+            sent = json.loads(requests[0].content)
+            assert bool(sent.get("tools")) is enabled
+            if not enabled:
+                assert sent.get("tool_choice") in (None, "none")
+                assert "parallel_tool_calls" not in sent
+            if protocol == ModelWireProtocol.RESPONSES:
+                assert sent["text"] == payload["text"]
+            else:
+                assert sent["response_format"]["type"] == "json_schema"
+    assert payload["tools"] and payload["parallel_tool_calls"] is True
 
 
 def test_upstream_client_pool_reuses_connections_without_credentials() -> None:
@@ -375,6 +425,48 @@ def test_native_tools_preserve_request_and_response() -> None:
         and captured[0].headers[CONV_MESSAGE_ID_HEADER] == "search-contract",
     )
     check("request routing does not mutate the caller payload", payload["model"] == "alias")
+
+
+def test_native_reasoning_summary_registration_is_model_scoped() -> None:
+    payload = {
+        "model": "alias",
+        "stream": True,
+        "input": "Public contract probe",
+        "reasoning": {"effort": "medium"},
+    }
+    event = {
+        "type": "response.reasoning_text.delta",
+        "item_id": "reasoning-item",
+        "output_index": 0,
+        "content_index": 0,
+        "delta": "Public summary",
+    }
+    body = (f"data: {json.dumps(event)}\n\n" + 'data: {"type":"response.completed"}\n\n').encode()
+    for models in (frozenset(), frozenset({"selected-model"}), frozenset({"other-model"})):
+        response, captured = forward_contract(
+            payload,
+            body,
+            wire_protocol=ModelWireProtocol.RESPONSES,
+            reasoning_summary_models=models,
+        )
+        events = [
+            json.loads(line[5:])
+            for line in response.content.splitlines()
+            if line.startswith(b"data:")
+        ]
+        check(
+            "only the declared routed model normalizes summary events",
+            events[0]["type"]
+            == (
+                "response.reasoning_summary_text.delta"
+                if "selected-model" in models
+                else "response.reasoning_text.delta"
+            ),
+        )
+        check(
+            "summary response normalization leaves the outbound request unchanged",
+            json.loads(captured[0].content) == {**payload, "model": "selected-model"},
+        )
 
 
 def test_native_errors_and_nonstream_responses_are_preserved() -> None:
@@ -710,6 +802,57 @@ def test_transient_server_failures_retry_for_all_bridge_upstreams() -> None:
                 response.status_code == 500 and len(captured) == 3,
                 f"status={response.status_code} calls={len(captured)}",
             )
+
+
+def test_declared_native_reasoning_summary() -> None:
+    for content_index in (None, 0, 1):
+        for suffix in ("delta", "done"):
+            payload = {
+                "type": f"response.reasoning_text.{suffix}",
+                "item_id": "reasoning-item",
+                "output_index": 2,
+                "sequence_number": 3,
+                "delta" if suffix == "delta" else "text": "Public summary 摘要",
+            }
+            if content_index is not None:
+                payload["content_index"] = content_index
+            wire = (
+                f"event: {payload['type']}\r\n"
+                f"data: {json.dumps(payload, ensure_ascii=False)}\r\n\r\n"
+            ).encode()
+            normalizer = NativeResponseNormalizer(reasoning_summary=True)
+            output = b"".join(
+                part
+                for offset in range(0, len(wire), 3)
+                for part in normalizer.feed(wire[offset : offset + 3])
+            ) + b"".join(normalizer.finish())
+            expected = dict(payload)
+            expected["type"] = f"response.reasoning_summary_text.{suffix}"
+            expected["summary_index"] = expected.pop("content_index", 0)
+            actual = json.loads(output.split(b"data: ", 1)[1])
+            check("declared summary dialect preserves payload and part index", actual == expected)
+            check(
+                "declared summary dialect normalizes the SSE event name",
+                output.startswith(f"event: {expected['type']}\r\n".encode()),
+            )
+            unchanged = NativeResponseNormalizer()
+            check(
+                "undeclared reasoning remains byte-identical",
+                b"".join((*unchanged.feed(wire), *unchanged.finish())) == wire,
+            )
+    for wire in (
+        b'data: {"type":"response.reasoning_summary_text.delta","summary_index":1,"delta":"public"}\n\n',
+        b'data: {"type":"response.output_item.done","item":{"type":"reasoning","summary":[{"type":"summary_text","text":"public"}],"content":[{"type":"reasoning_text","text":"private"}]}}\n\n',
+        b"data: malformed\n\n",
+        b'data: {"type":[]}\n\n',
+        b'data: {"type":"response.reasoning_text.delta","content_index":true}\n\n',
+        b"data: " + b"x" * SSE_BUFFER_LIMIT + b"\n\n",
+    ):
+        normalizer = NativeResponseNormalizer(reasoning_summary=True)
+        check(
+            "summary normalization preserves other events and malformed input",
+            b"".join((*normalizer.feed(wire), *normalizer.finish())) == wire,
+        )
 
 
 def test_native_stream_coalesces_complete_events() -> None:
@@ -2158,6 +2301,79 @@ def test_namespaced_chat_stream_restores_tool_identity() -> None:
     )
 
 
+def test_structured_output_format_reaches_upstream_without_protocol_fallback() -> None:
+    schema = {
+        "type": "object",
+        "properties": {"paragraphs": {"type": "array"}},
+        "required": ["paragraphs"],
+    }
+    format_ = {
+        "type": "json_schema",
+        "name": "reading",
+        "schema": schema,
+        "strict": True,
+        "description": "Reading contract",
+    }
+    payload = {"model": "alias", "input": "source", "stream": False, "text": {"format": format_}}
+    response, requests = forward_contract(
+        payload,
+        b'{"choices":[{"message":{"content":"{}"}}]}',
+        wire_protocol=ModelWireProtocol.CHAT_COMPLETIONS,
+    )
+    check("structured chat output succeeds", response.status_code == 200)
+    check("structured chat output performs one upstream call", len(requests) == 1)
+    sent = json.loads(requests[0].content)
+    check(
+        "structured schema reaches chat upstream unchanged",
+        sent.get("response_format")
+        == {
+            "type": "json_schema",
+            "json_schema": {key: value for key, value in format_.items() if key != "type"},
+        },
+    )
+    diagnostics = []
+    response, requests = forward_contract(
+        payload,
+        b'{"id":"response","object":"response","output":[]}',
+        wire_protocol=ModelWireProtocol.RESPONSES,
+        diagnostics=diagnostics,
+    )
+    observed = [fields for _session, fields in diagnostics if fields.get("phase") == "headers"]
+    check(
+        "native output schema reaches actual upstream",
+        response.status_code == 200
+        and len(requests) == 1
+        and json.loads(requests[0].content).get("text") == payload["text"],
+    )
+    check(
+        "native headers diagnostic identifies output schema",
+        bool(observed)
+        and observed[-1].get("output_format_type") == "json_schema"
+        and bool(observed[-1].get("output_schema_sha256")),
+    )
+    invalid = {**payload, "text": {"format": {"type": "future_format"}}}
+    response, requests = forward_contract(
+        invalid, b"{}", wire_protocol=ModelWireProtocol.CHAT_COMPLETIONS
+    )
+    check(
+        "unsupported format fails explicitly",
+        response.status_code == 400
+        and response.json().get("error", {}).get("code") == "model_bridge_invalid_output_format",
+    )
+    check("unsupported format causes no upstream call", not requests)
+    response, requests = forward_contract(
+        invalid,
+        b'{"id":"response","object":"response","output":[]}',
+        wire_protocol=ModelWireProtocol.RESPONSES,
+    )
+    check(
+        "native Responses format stays native",
+        response.status_code == 200
+        and len(requests) == 1
+        and json.loads(requests[0].content).get("text") == invalid["text"],
+    )
+
+
 def test_invalid_chat_namespaces_fail_before_upstream() -> None:
     declaration = {"type": "function", "name": "inspect", "parameters": {"type": "object"}}
     cases = [
@@ -2866,11 +3082,48 @@ def test_turn_header_reaches_the_outbound_request() -> None:
     )
 
 
+def test_managed_responses_transport_is_stable_before_reasoning_selection() -> None:
+    bridge = CompletionBridge("http://127.0.0.1:8123")
+    config = {
+        "base_url": "https://model.example.test/v1",
+        "call_url": "https://model.example.test/v1/responses",
+        "provider": "openai",
+        "model_name": "managed-responses-model",
+        "api_key": "private-contract-key",
+    }
+    connections = [
+        _codex_provider(
+            config,
+            bridge,
+            session_id=session_id,
+            reasoning_effort=effort,
+        )
+        for session_id, effort in (
+            ("host-preparation", None),
+            ("default-task", ""),
+            ("reasoning-task", "medium"),
+        )
+    ]
+    assert all(environment == {} for _provider, environment in connections)
+    assert all(
+        MODEL_BRIDGE_ROUTE_PREFIX in provider["base_url"] for provider, _environment in connections
+    )
+    assert len({provider["proxy_bypass_hosts"] for provider, _environment in connections}) == 1
+    assert len(bridge._upstreams) == len(connections)
+    assert {
+        upstream.call_headers()[CONV_MESSAGE_ID_HEADER] for upstream in bridge._upstreams.values()
+    } == {"host-preparation", "default-task", "reasoning-task"}
+    direct_provider, direct_environment = _codex_provider(config, bridge)
+    assert direct_provider["base_url"] == config["base_url"]
+    assert set(direct_environment.values()) == {config["api_key"]}
+    assert len(bridge._upstreams) == len(connections)
+
+
 def test_codex_provider_registers_the_turn_hook() -> None:
     print("codex 主链路注册处注入轮 id 钩子")
     holder = AccountTokenHolder()
     holder.remember("u-1", "header.payload.signature")
-    bridge = CompletionBridge("http://127.0.0.1:8123")
+    bridge = CompletionBridge("http://127.0.0.1:8123", source_endpoints=(DEEPRD_GATEWAY_BASE_URL,))
     gateway = {"base_url": DEEPRD_GATEWAY_BASE_URL, "provider": "openai"}
     config = apply_model_to_config(gateway, resolve_model_choice("qwen3.8-max", gateway))
 
@@ -2885,6 +3138,42 @@ def test_codex_provider_registers_the_turn_hook() -> None:
         account_tokens=holder,
         turn_id_provider=resolve_turn,
     )
+    check(
+        "gateway registration carries only the verified model summary declaration",
+        next(iter(bridge._upstreams.values())).reasoning_summary_models
+        == frozenset({"qwen3.8-max"}),
+    )
+    flash_bridge = CompletionBridge(
+        "http://127.0.0.1:8123", source_endpoints=(DEEPRD_GATEWAY_BASE_URL,)
+    )
+    _codex_provider(
+        apply_model_to_config(gateway, resolve_model_choice("qwen3.8-flash", gateway)),
+        flash_bridge,
+        account_tokens=holder,
+        user_id="u-1",
+    )
+    check(
+        "Flash registration carries its verified summary declaration",
+        next(iter(flash_bridge._upstreams.values())).reasoning_summary_models
+        == frozenset({"qwen3.8-flash"}),
+    )
+    for model in ("qwen3.8-max", "qwen3.8-flash"):
+        personal_bridge = CompletionBridge("http://127.0.0.1:8123")
+        _codex_provider(
+            {
+                "base_url": "https://model.example.test/v1",
+                "call_url": "https://model.example.test/v1/responses",
+                "provider": "qwen",
+                "model_name": model,
+            },
+            personal_bridge,
+            account_tokens=holder,
+            user_id="u-1",
+        )
+        check(
+            "the same model name on a personal endpoint does not gain summary permission",
+            not next(iter(personal_bridge._upstreams.values())).reasoning_summary_models,
+        )
     headers = next(iter(bridge._upstreams.values())).call_headers()
     check(
         "会话头 = product session_id，轮头 = 当次请求所属轮",
@@ -3200,7 +3489,65 @@ def test_reasoning_tokens_are_not_erased() -> None:
     )
 
 
+def test_stream_diagnostics_preserve_usage_without_content() -> None:
+    observation = StreamObservation()
+    for payload in (
+        {"type": "response.reasoning_text.delta", "delta": "private reasoning"},
+        {"type": "response.output_text.delta", "delta": "最终正文"},
+        {
+            "type": "response.completed",
+            "response": {
+                "usage": {
+                    "input_tokens": 22000,
+                    "output_tokens": 10000,
+                    "total_tokens": 32000,
+                    "output_tokens_details": {"reasoning_tokens": 8200, "secret": "sensitive"},
+                    "input_tokens_details": {"cached_tokens": 1000},
+                    "unknown": "sensitive",
+                }
+            },
+        },
+    ):
+        observation.feed(b"data: " + json.dumps(payload).encode() + b"\n\n")
+    snapshot = observation.snapshot()
+    check(
+        "diagnostics retain exact upstream token counts",
+        snapshot.get("usage")
+        == {
+            "input_tokens": 22000,
+            "output_tokens": 10000,
+            "total_tokens": 32000,
+            "output_tokens_details": {"reasoning_tokens": 8200},
+            "input_tokens_details": {"cached_tokens": 1000},
+        },
+    )
+    check(
+        "diagnostics count prose and reasoning without retaining either",
+        snapshot.get("text_delta_characters") == 4
+        and snapshot.get("reasoning_delta_characters") == 17
+        and "private reasoning" not in json.dumps(snapshot)
+        and "sensitive" not in json.dumps(snapshot),
+    )
+    missing = StreamObservation().snapshot()
+    check("missing usage remains unknown rather than zero", missing.get("usage") == {})
+    chat = StreamObservation()
+    chat.feed(
+        b'data: {"usage":{"completion_tokens":20,"completion_tokens_details":{"reasoning_tokens":12},"prompt_tokens":30}}\n\n'
+    )
+    check(
+        "diagnostics retain Chat usage field names",
+        chat.snapshot().get("usage")
+        == {
+            "completion_tokens": 20,
+            "completion_tokens_details": {"reasoning_tokens": 12},
+            "prompt_tokens": 30,
+        },
+    )
+
+
 def main() -> int:
+    test_stream_diagnostics_preserve_usage_without_content()
+    test_generation_registration_excludes_tools()
     test_credential_diagnostics_exclude_secrets()
     test_http_rejections_publish_known_codes_before_finished_diagnostic()
     test_http_credential_revocation_precedes_provider_authentication_diagnostic()
@@ -3359,9 +3706,11 @@ def main() -> int:
     test_native_tools_preserve_request_and_response()
     test_upstream_client_pool_reuses_connections_without_credentials()
     test_upstream_client_pool_reuses_tcp_connection()
+    test_native_reasoning_summary_registration_is_model_scoped()
     test_native_errors_and_nonstream_responses_are_preserved()
     test_internal_unstructured_rate_limit_retries_before_returning()
     test_transient_server_failures_retry_for_all_bridge_upstreams()
+    test_declared_native_reasoning_summary()
     test_native_stream_coalesces_complete_events()
     test_native_stream_coalesces_logical_text_deltas()
     test_native_stream_coalesces_reasoning_deltas()
@@ -3391,6 +3740,7 @@ def main() -> int:
     test_namespaced_chat_tools_roundtrip()
     test_bridge_projects_upstream_search_capability()
     test_namespaced_chat_stream_restores_tool_identity()
+    test_structured_output_format_reaches_upstream_without_protocol_fallback()
     test_invalid_chat_namespaces_fail_before_upstream()
     test_namespace_aliases_are_bounded_and_stable()
     test_streamed_provider_error_becomes_failed_response()
@@ -3410,6 +3760,7 @@ def main() -> int:
     test_token_is_resolved_per_call_not_snapshotted()
     test_turn_header_is_resolved_per_call_not_snapshotted()
     test_turn_header_reaches_the_outbound_request()
+    test_managed_responses_transport_is_stable_before_reasoning_selection()
     test_codex_provider_registers_the_turn_hook()
     test_switching_accounts_moves_a_warm_session_to_the_new_token()
     test_anonymous_session_falls_back_to_caller_key()

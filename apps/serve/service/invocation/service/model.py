@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
+from service.platform.inference import ReasoningPolicy
+
 # 一次性调用的默认档：调用方不写时按它跑，写别的值必须落在这条坐标声明的档位里
 # （准入校验在 API schema 层，用能力层的唯一全集 ``REASONING_EFFORT_LEVELS``）。
 DEFAULT_INVOCATION_REASONING_EFFORT = "low"
@@ -33,6 +35,7 @@ class InvocationExecution:
     network_access: bool = True
     reasoning_effort: str | None = DEFAULT_INVOCATION_REASONING_EFFORT
     service_tier: str = "fast"
+    generation_reasoning_policy: ReasoningPolicy = ReasoningPolicy.DEFAULT
 
 
 DEFAULT_INVOCATION_EXECUTION = InvocationExecution()
@@ -44,6 +47,7 @@ class InvocationCommand:
     skill: InvocationSkill | None
     developer_prompt: bool = True
     execution: InvocationExecution = DEFAULT_INVOCATION_EXECUTION
+    model_id: str = ""
 
 
 class InvocationStatus(str, Enum):
@@ -81,6 +85,7 @@ class InvocationRecord:
     output_tokens: int = 0
     vendor_thread_id: str = ""
     vendor_turn_id: str = ""
+    diagnostic: dict[str, object] = field(default_factory=dict)
 
 
 __all__ = [

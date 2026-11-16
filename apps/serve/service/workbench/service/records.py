@@ -7,11 +7,13 @@ from dataclasses import replace
 from typing import Any
 
 from service.content.domain.model import ContentError
+from service.platform.activity import MaintenanceActive
 from service.platform.content import AssetState, ContentPort
 from service.platform.notifications import Change, ChangeHub, ChangeTopic
 from service.platform.pdf import PdfAnnotationError, embedded_pdf_records
 from service.platform.records import (
     EMPTY_RECORDS,
+    NATIVE_ANNOTATIONS,
     RECORD_LINK_CONFLICT,
     RECORD_SOURCE_UNAVAILABLE,
     PdfRecordSnapshot,
@@ -23,6 +25,7 @@ from service.platform.records import (
     payload_revision,
     project_anchors,
     record_revision,
+    retain_native_sources,
 )
 from service.platform.resources import AnnotationContent
 from service.workbench.domain.model import WORKBENCH_PREVIEW_MAX_BYTES
@@ -84,7 +87,9 @@ class PdfRecordStore:
         if snapshot.source_revision != binding.revision:
             raise ContentError("source_revision_conflict")
         local = self._catalog.get(project_id, asset_id)
-        if local is not None and decode_records(local.payload) != EMPTY_RECORDS:
+        if local is not None and any(
+            local.records()[key] for key in ("marks", "comments", "notes")
+        ):
             raise ContentError(RECORD_LINK_CONFLICT)
         try:
             self._catalog.link(project_id, asset_id, target)
@@ -93,30 +98,43 @@ class PdfRecordStore:
         if self._changes is not None:
             self._changes.publish((Change(ChangeTopic.RECORDS, subject=asset_id),))
 
-    def _linked_snapshot(self, project_id: str, asset_id: str) -> PdfRecordSnapshot | None:
+    def _linked_snapshot(
+        self, project_id: str, asset_id: str, *, read_only: bool
+    ) -> PdfRecordSnapshot | None:
         target = self._catalog.linked_target(project_id, asset_id)
         if target is None:
             return None
-        binding = self._content.asset_status(project_id, asset_id)
+        binding = self._content.asset_status(project_id, asset_id, read_only=read_only)
         if (
             binding.state is not AssetState.AVAILABLE
             or binding.revision is None
             or self._shared_records is None
         ):
             raise ContentError(RECORD_SOURCE_UNAVAILABLE)
-        snapshot = self._shared_records.snapshot_target(target)
+        snapshot = self._shared_records.peek_target(target)
         if snapshot.source_revision != binding.revision:
             raise ContentError("source_revision_conflict")
+        if NATIVE_ANNOTATIONS not in snapshot.records:
+            try:
+                source, _media = self._content.read_asset_bytes(
+                    project_id, asset_id, WORKBENCH_PREVIEW_MAX_BYTES, read_only=True
+                )
+            except MaintenanceActive:
+                return replace(snapshot, source_path=binding.asset.path)
+            if payload_revision(source) != binding.revision:
+                raise ContentError("source_revision_conflict")
+            if embedded_pdf_records(source, snapshot.records) != snapshot.records:
+                snapshot = self._shared_records.snapshot_target(target)
         return replace(snapshot, source_path=binding.asset.path)
 
     def snapshot_asset(
         self, project_id: str, asset_id: str, *, initial_records: dict[str, Any] | None = None
     ) -> PdfRecordSnapshot:
-        linked = self._linked_snapshot(project_id, asset_id)
+        linked = self._linked_snapshot(project_id, asset_id, read_only=True)
         if linked is not None:
             return linked
-        binding = self._content.asset_status(project_id, asset_id)
-        stored = self._catalog.get(project_id, asset_id)
+        stored = self._catalog.peek(project_id, asset_id)
+        binding = self._content.asset_status(project_id, asset_id, read_only=stored is not None)
         if stored is not None and (
             binding.state is not AssetState.AVAILABLE or binding.revision is None
         ):
@@ -148,6 +166,10 @@ class PdfRecordStore:
                     if initial_records is None
                     else decode_records(initial_records)
                 )
+                if initial_records is not None:
+                    native = embedded_pdf_records(source)
+                    if NATIVE_ANNOTATIONS in native:
+                        initial.setdefault(NATIVE_ANNOTATIONS, native[NATIVE_ANNOTATIONS])
             except PdfAnnotationError as error:
                 raise ContentError("invalid_annotations") from error
             payload = encode_records(initial)
@@ -158,6 +180,39 @@ class PdfRecordStore:
                 binding.revision,
                 payload,
             )
+        if (
+            stored.source_revision == binding.revision
+            and NATIVE_ANNOTATIONS not in stored.records()
+        ):
+            try:
+                source, _media_type = self._content.read_asset_bytes(
+                    project_id, asset_id, WORKBENCH_PREVIEW_MAX_BYTES, read_only=True
+                )
+            except MaintenanceActive:
+                # Existing records remain readable while maintenance defers backfill.
+                return self._snapshot(
+                    project_id,
+                    asset_id,
+                    binding.state,
+                    binding.asset.path,
+                    binding.revision,
+                    stored,
+                )
+            if payload_revision(source) != binding.revision:
+                raise ContentError("source_revision_conflict")
+            enriched = embedded_pdf_records(source, stored.records())
+            if enriched != stored.records():
+                saved = self._catalog.commit(
+                    project_id,
+                    asset_id,
+                    stored.record_revision,
+                    record_revision(binding.revision, enriched),
+                    binding.revision,
+                    encode_records(enriched),
+                )
+                stored = saved or self._catalog.peek(project_id, asset_id)
+                if stored is None:
+                    raise ContentError("records_uninitialized")
         return self._snapshot(
             project_id,
             asset_id,
@@ -173,6 +228,33 @@ class PdfRecordStore:
             raise ContentError("records_uninitialized")
         return self.snapshot_asset(project_id, binding.asset.asset_id)
 
+    def peek_target(self, target: RecordTarget) -> PdfRecordSnapshot:
+        if target.owner is not RecordOwner.PROJECT_ASSET:
+            raise ContentError("record_owner_mismatch")
+        binding = self._content.asset_status(target.scope_id, target.subject_id, read_only=True)
+        if binding.state is AssetState.AUTHORIZATION_REQUIRED:
+            raise ContentError("record_owner_mismatch")
+        if binding.state is AssetState.MISSING:
+            raise ContentError("file_not_found")
+        if binding.state is AssetState.CONFLICT:
+            raise ContentError("source_revision_conflict")
+        if binding.state is not AssetState.AVAILABLE or binding.revision is None:
+            raise ContentError(RECORD_SOURCE_UNAVAILABLE)
+        stored = self._catalog.peek(target.scope_id, target.subject_id)
+        if stored is None:
+            raise ContentError("pdf_comment_missing")
+        payload, _media = self._content.read_asset_bytes(
+            target.scope_id, target.subject_id, WORKBENCH_PREVIEW_MAX_BYTES, read_only=True
+        )
+        return self._snapshot(
+            target.scope_id,
+            target.subject_id,
+            binding.state,
+            binding.asset.path,
+            payload_revision(payload),
+            stored,
+        )
+
     def commit_asset(
         self,
         project_id: str,
@@ -181,7 +263,7 @@ class PdfRecordStore:
         expected_record_revision: str,
         expected_source_revision: str,
     ) -> PdfRecordSnapshot:
-        linked = self._linked_snapshot(project_id, asset_id)
+        linked = self._linked_snapshot(project_id, asset_id, read_only=False)
         if linked is not None:
             if self._shared_records is None:
                 raise ContentError(RECORD_SOURCE_UNAVAILABLE)
@@ -195,7 +277,10 @@ class PdfRecordStore:
         if binding.revision != expected_source_revision:
             raise ContentError("source_revision_conflict")
         try:
-            normalized = decode_records(records)
+            current = self._catalog.peek(project_id, asset_id)
+            normalized = retain_native_sources(
+                records, current.records() if current else EMPTY_RECORDS
+            )
             payload = encode_records(normalized)
         except (TypeError, ValueError) as exc:
             raise ContentError("invalid_annotations") from exc

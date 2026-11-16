@@ -925,6 +925,59 @@ class TaskIdentityContract(unittest.TestCase):
         self.assertEqual(request["run_id"], self.run.name)
         self.assertIn("once per turn", result["task_activation_hint"])
 
+    def test_session_output_run_keeps_its_cwd_relative_binding_on_resume(self) -> None:
+        session_dir = Path("named container/会话 [1]")
+        run = initialize_run(self.work, "find papers", session_dir=session_dir)
+        relative = run.relative_to(self.work)
+        self.assertEqual(relative.parent, session_dir / ".precise-literature-search/runs")
+        self.assertFalse((self.work / session_dir / "work").exists())
+        self.assertEqual(activation_request(run)["request"]["workspace"], relative.as_posix())
+        (run / BINDING_FILE).unlink()
+        self.assertEqual(activation_request(run)["request"]["workspace"], relative.as_posix())
+        with self.assertRaises(ValueError):
+            initialize_run(self.work, "find papers", session_dir=Path("../outside"))
+
+    def test_absolute_session_directory_uses_the_same_run_layout(self) -> None:
+        session_dir = self.work / "output/会话名称"
+        run = initialize_run(self.work, "find papers", session_dir=session_dir)
+        self.assertEqual(run.parent, session_dir / ".precise-literature-search/runs")
+        self.assertEqual(
+            activation_request(run)["request"]["workspace"],
+            run.relative_to(self.work).as_posix(),
+        )
+
+    def test_previous_session_work_layout_resumes_without_moving_files(self) -> None:
+        session_dir = Path("output/旧会话 [1]")
+        old_base = self.work / session_dir / "work"
+        run = initialize_run(old_base, "preserve the old request")
+        relative = run.relative_to(self.work).as_posix()
+        state = read_state(run)
+        state["activation_workspace"] = relative
+        atomic_write_json(run / "state.json", state)
+        binding = RUN_STATE.write_binding(run, self.work)
+        binding["version"] = "1.0.39"
+        atomic_write_json(run / BINDING_FILE, binding)
+        original_request = (run / "request.txt").read_bytes()
+        original_state = (run / "state.json").read_bytes()
+        for missing_binding in (False, True):
+            with self.subTest(missing_binding=missing_binding):
+                if missing_binding:
+                    (run / BINDING_FILE).unlink()
+                request = activation_request(run)["request"]
+                self.assertEqual(request["workspace"], relative)
+                self.assertEqual(request["run_id"], run.name)
+                self.assertEqual(request["skill_version"], manifest_version())
+                self.assertEqual((run / "request.txt").read_bytes(), original_request)
+                self.assertEqual((run / "state.json").read_bytes(), original_state)
+                self.assertFalse((self.work / session_dir / ".precise-literature-search").exists())
+
+    def test_session_directory_equal_to_cwd_keeps_a_valid_binding(self) -> None:
+        run = initialize_run(self.work, "find papers", session_dir=self.work)
+        relative = run.relative_to(self.work).as_posix()
+        self.assertEqual(run.parent, self.work / ".precise-literature-search/runs")
+        (run / BINDING_FILE).unlink()
+        self.assertEqual(activation_request(run)["request"]["workspace"], relative)
+
     def test_a_resumed_run_regenerates_a_missing_binding(self) -> None:
         expected = activation_request(self.run)["request"]
         (self.run / BINDING_FILE).unlink()

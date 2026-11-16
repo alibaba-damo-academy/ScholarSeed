@@ -55,6 +55,54 @@ def _identity(
 
 
 class StorageContract(unittest.TestCase):
+    def test_copy_tree_owns_independent_bytes_and_preserves_relative_names(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source = root / "source"
+            (source / "中文目录").mkdir(parents=True)
+            original = source / "中文目录" / "data.bin"
+            original.write_bytes(bytes(range(256)))
+            target = root / "target"
+            storage.copy_tree(source, target)
+            copied = target / original.relative_to(source)
+            self.assertEqual(copied.read_bytes(), original.read_bytes())
+            copied.write_bytes(b"branch")
+            self.assertEqual(original.read_bytes(), bytes(range(256)))
+            storage.copy_tree(target, root / "grandchild")
+            copied.unlink()
+            self.assertEqual(
+                (root / "grandchild" / original.relative_to(source)).read_bytes(), b"branch"
+            )
+
+    def test_copy_tree_preserves_an_existing_nonempty_destination(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source, target = root / "source", root / "target"
+            source.mkdir()
+            target.mkdir()
+            (target / "keep").write_bytes(b"existing")
+            with self.assertRaises(FileExistsError):
+                storage.copy_tree(source, target)
+            self.assertEqual((target / "keep").read_bytes(), b"existing")
+
+    def test_copy_tree_rejects_linked_directories_and_cleans_partial_destination(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source, target = root / "source", root / "target"
+            source.mkdir()
+            (source / "first").write_bytes(b"copied before failure")
+            if os.name == "nt":
+                subprocess.run(
+                    ["cmd", "/c", "mklink", "/J", str(source / "link"), str(root)],
+                    check=True,
+                    capture_output=True,
+                )
+            else:
+                (source / "link").symlink_to(root, target_is_directory=True)
+            with self.assertRaises(OSError):
+                storage.copy_tree(source, target)
+            self.assertFalse(target.exists())
+
     @unittest.skipIf(os.name == "nt", "POSIX descriptor readlink")
     def test_readlink_is_pinned_read_only_and_does_not_relax_regular_open(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -132,6 +180,194 @@ class StorageContract(unittest.TestCase):
                     storage.remove_tree(root, (child.name,))
             self.assertEqual(caught.exception.errno, errno.ESTALE)
             self.assertEqual(sentinel.read_bytes(), PAYLOAD)
+
+    def test_inherited_directory_creation_uses_pinned_parent_and_closes_handle(self) -> None:
+        parent = storage.DirectoryHandle(Path.cwd(), native_handles=(DEVICE,))
+        with (
+            patch.object(windows, "open_relative", return_value=INODE) as opened,
+            patch.object(windows, "close") as closed,
+            patch.object(storage.os, "mkdir") as mkdir,
+        ):
+            parent.mkdir("cache", inherit_acl=True)
+            opened.assert_called_once_with(
+                DEVICE,
+                "cache",
+                directory=True,
+                disposition=windows.CREATE,
+                inherit_acl=True,
+                share=windows.SHARE_READ | windows.SHARE_WRITE,
+            )
+            closed.assert_called_once_with(INODE)
+            mkdir.assert_not_called()
+
+    def test_inherited_directory_creation_preserves_existing_and_denied_entries(self) -> None:
+        parent = storage.DirectoryHandle(Path.cwd(), native_handles=(DEVICE,))
+        for error in (FileExistsError("existing"), PermissionError("denied")):
+            with self.subTest(error=type(error)):
+                with (
+                    patch.object(windows, "open_relative", side_effect=error),
+                    patch.object(windows, "close") as closed,
+                    patch.object(windows, "protect_private") as protected,
+                ):
+                    with self.assertRaises(type(error)) as caught:
+                        parent.mkdir("cache", inherit_acl=True)
+                    self.assertIs(caught.exception, error)
+                    closed.assert_not_called()
+                    protected.assert_not_called()
+
+    def test_windows_inherited_creation_adds_only_host_grant_and_frees_descriptor(self) -> None:
+        user = "S-1-5-21-1-2-3-1000"
+
+        def convert(_text, _revision, pointer, _size):
+            ctypes.cast(pointer, ctypes.POINTER(wintypes.LPVOID))[0] = INODE
+            return True
+
+        def parent_security(parent, kind, information, _owner, _group, _dacl, _sacl, pointer):
+            self.assertEqual(
+                (parent, kind, information), (DEVICE, windows.FILE_OBJECT, windows.DACL_INFORMATION)
+            )
+            ctypes.cast(pointer, ctypes.POINTER(wintypes.LPVOID))[0] = MODIFIED_AT
+            return 0
+
+        def process_token(_process, access, pointer):
+            self.assertEqual(access, windows.TOKEN_QUERY | windows.TOKEN_DUPLICATE)
+            ctypes.cast(pointer, ctypes.POINTER(wintypes.HANDLE))[0] = CREATED_AT
+            return True
+
+        def inherit(parent, creator, pointer, object_type, container, flags, token, mapping):
+            self.assertEqual((parent.value, creator.value), (MODIFIED_AT, INODE))
+            self.assertIsNone(object_type)
+            self.assertTrue(container)
+            self.assertEqual(flags, windows.SEF_DACL_AUTO_INHERIT)
+            self.assertEqual(token.value, CREATED_AT)
+            generic = ctypes.cast(mapping, ctypes.POINTER(windows.GenericMapping)).contents
+            self.assertEqual(
+                (generic.read, generic.write, generic.execute, generic.all),
+                (0x120089, 0x120116, 0x1200A0, 0x1F01FF),
+            )
+            ctypes.cast(pointer, ctypes.POINTER(wintypes.LPVOID))[0] = REPLACEMENT_INODE
+            return True
+
+        for inherit_acl in (False, True):
+            with (
+                self.subTest(inherit_acl=inherit_acl),
+                patch.object(windows, "current_sid", return_value=user),
+                patch.object(windows, "SECURITY") as security,
+                patch.object(windows, "NT") as native,
+                patch.object(windows, "KERNEL") as kernel,
+            ):
+                security.ConvertStringSecurityDescriptorToSecurityDescriptorW.side_effect = convert
+                security.GetSecurityInfo.side_effect = parent_security
+                security.OpenProcessToken.side_effect = process_token
+                security.CreatePrivateObjectSecurityEx.side_effect = inherit
+
+                def create(_handle, _access, attributes, *_args):
+                    actual = ctypes.cast(
+                        attributes, ctypes.POINTER(windows.ObjectAttributes)
+                    ).contents
+                    self.assertEqual(actual.root, DEVICE)
+                    self.assertEqual(actual.security, REPLACEMENT_INODE if inherit_acl else INODE)
+                    return -1
+
+                native.NtCreateFile.side_effect = create
+                native.RtlNtStatusToDosError.return_value = windows.ERROR_ALREADY_EXISTS
+                with self.assertRaises(FileExistsError):
+                    windows.open_relative(
+                        DEVICE,
+                        "cache",
+                        directory=True,
+                        disposition=windows.CREATE,
+                        inherit_acl=inherit_acl,
+                    )
+                descriptor = (
+                    security.ConvertStringSecurityDescriptorToSecurityDescriptorW.call_args.args[0]
+                )
+                expected = (
+                    f"O:{user}D:(A;OICI;FA;;;{user})"
+                    if inherit_acl
+                    else f"O:{user}D:P(A;;FA;;;{user})(A;;FA;;;SY)"
+                )
+                self.assertEqual(descriptor, expected)
+                self.assertEqual(
+                    [call.args[0].value for call in kernel.LocalFree.call_args_list],
+                    [MODIFIED_AT, INODE] if inherit_acl else [INODE],
+                )
+                if inherit_acl:
+                    security.CreatePrivateObjectSecurityEx.assert_called_once()
+                    security.DestroyPrivateObjectSecurity.assert_called_once()
+                    pointer = security.DestroyPrivateObjectSecurity.call_args.args[0]
+                    self.assertEqual(
+                        ctypes.cast(pointer, ctypes.POINTER(wintypes.LPVOID))[0], REPLACEMENT_INODE
+                    )
+                    kernel.CloseHandle.assert_called_once_with(CREATED_AT)
+                else:
+                    security.GetSecurityInfo.assert_not_called()
+                    security.CreatePrivateObjectSecurityEx.assert_not_called()
+                    security.DestroyPrivateObjectSecurity.assert_not_called()
+                    kernel.CloseHandle.assert_not_called()
+
+    def test_windows_inheritance_errors_never_fall_back_to_host_only_creation(self) -> None:
+        for failed_stage in ("parent", "token", "inherit"):
+            with (
+                self.subTest(stage=failed_stage),
+                patch.object(windows, "current_sid", return_value="S-1-5-21-1-2-3-1000"),
+                patch.object(windows, "GET_LAST_ERROR", return_value=5),
+                patch.object(windows, "SECURITY") as security,
+                patch.object(windows, "NT") as native,
+                patch.object(windows, "KERNEL") as kernel,
+            ):
+
+                def convert(_text, _revision, pointer, _size):
+                    ctypes.cast(pointer, ctypes.POINTER(wintypes.LPVOID))[0] = INODE
+                    return True
+
+                def parent_security(*args):
+                    if failed_stage == "parent":
+                        return 5
+                    ctypes.cast(args[-1], ctypes.POINTER(wintypes.LPVOID))[0] = MODIFIED_AT
+                    return 0
+
+                def process_token(_process, _access, pointer):
+                    if failed_stage == "token":
+                        return False
+                    ctypes.cast(pointer, ctypes.POINTER(wintypes.HANDLE))[0] = CREATED_AT
+                    return True
+
+                security.ConvertStringSecurityDescriptorToSecurityDescriptorW.side_effect = convert
+                security.GetSecurityInfo.side_effect = parent_security
+                security.OpenProcessToken.side_effect = process_token
+                security.CreatePrivateObjectSecurityEx.return_value = False
+                with self.assertRaises(OSError):
+                    windows.open_relative(
+                        DEVICE,
+                        "cache",
+                        directory=True,
+                        disposition=windows.CREATE,
+                        inherit_acl=True,
+                    )
+                native.NtCreateFile.assert_not_called()
+                security.SetSecurityInfo.assert_not_called()
+                self.assertEqual(
+                    [call.args[0].value for call in kernel.LocalFree.call_args_list],
+                    [INODE] if failed_stage == "parent" else [MODIFIED_AT, INODE],
+                )
+                if failed_stage == "inherit":
+                    kernel.CloseHandle.assert_called_once_with(CREATED_AT)
+                else:
+                    kernel.CloseHandle.assert_not_called()
+
+    def test_windows_inherited_creation_rejects_existing_object_operations(self) -> None:
+        for fields in (
+            {"disposition": windows.OPEN},
+            {"disposition": windows.OPEN_IF},
+            {"directory": False},
+            {"private": False},
+        ):
+            with self.subTest(fields=fields), patch.object(windows, "NT") as native:
+                arguments = {"directory": True, "disposition": windows.CREATE, **fields}
+                with self.assertRaises(ValueError):
+                    windows.open_relative(DEVICE, "cache", inherit_acl=True, **arguments)
+                native.NtCreateFile.assert_not_called()
 
     def test_windows_tree_deletion_enumerates_pinned_handle_and_releases_on_failure(self) -> None:
         parent = storage.DirectoryHandle(Path.cwd(), native_handles=(DEVICE,))
@@ -420,6 +656,7 @@ class StorageContract(unittest.TestCase):
             root = Path(temporary).resolve()
             target = root / "target"
             target.mkdir(mode=0o755)
+            target.chmod(0o755)
             alias = root / "alias"
             alias.symlink_to(target, target_is_directory=True)
             with self.assertRaises(OSError):

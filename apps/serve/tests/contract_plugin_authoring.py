@@ -6,6 +6,7 @@ import contextlib
 import hashlib
 import io
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -13,7 +14,11 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from service.capabilities.service.descriptor import PLUGIN_DESCRIPTOR, validate_component_submission
+from service.capabilities.service.descriptor import (
+    PLUGIN_DESCRIPTOR,
+    PluginComponent,
+    validate_component_submission,
+)
 from service.capabilities.service.package import PACKAGE_MANIFEST
 from service.cli.plugins import main
 from service.platform.bridge import (
@@ -22,10 +27,34 @@ from service.platform.bridge import (
     CONTRACT_DESCRIBE_OPERATION,
     ComponentInvocation,
 )
-from service.platform.vocabulary import BRIDGE_MAX_REQUEST_BYTES
 
 
 class AuthoringContract(unittest.TestCase):
+    def test_openui_layout_is_data_only(self):
+        declaration = {
+            "id": "result",
+            "slot": "test.result",
+            "preview": "result.json",
+            "input_schema": {
+                "type": "object",
+                "properties": {"title": {"type": "string"}},
+                "required": ["title"],
+            },
+            "openui": {
+                "component": "Conversation",
+                "args": [[{"component": "TextContent", "args": [{"field": "title"}]}]],
+            },
+        }
+        self.assertIsNone(PluginComponent.model_validate(declaration).entry)
+        for override in (
+            {"entry": "card.js"},
+            {"actions": [{"id": "confirm", "capability": "interaction.answer"}]},
+            {"openui": {"component": "Conversation", "args": [{"field": "unknown"}]}},
+            {"openui": {"component": "TextContent", "args": ["not the root"]}},
+        ):
+            with self.subTest(override=override), self.assertRaises(ValueError):
+                PluginComponent.model_validate({**declaration, **override})
+
     def test_authoring_reuses_registered_plan_contract_without_session_state(self):
         status, result = self.call("describe")
         self.assertEqual(status, 0, result)
@@ -94,59 +123,57 @@ class AuthoringContract(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertEqual(json.loads(snapshot.read_text()), actual)
 
-    def test_templates_generate_inspectable_sources_without_overwriting(self):
+    def test_template_generates_data_only_package_without_overwriting(self):
         script = (
             Path(__file__).resolve().parents[3]
             / "skills/community/plugin-create/scripts/scaffold.py"
         )
-        for kind, count in (("selection", 1), ("comparison", 2), ("stages", 2)):
-            with self.subTest(kind=kind):
-                source = self.root / kind
-                command = [
-                    sys.executable,
-                    str(script),
-                    kind,
-                    str(source),
-                    "--name",
-                    f"test-{kind}",
-                    "--host",
-                    ">=0.2.0,<0.4.0",
-                ]
-                generated = subprocess.run(command, capture_output=True, text=True, check=True)
-                self.assertFalse(json.loads(generated.stdout)["ready_for_delivery"])
-                status, result = self.call(
-                    "pack",
-                    source,
-                    "--name",
-                    f"test-{kind}",
-                    "--version",
-                    "0.1.0",
-                    "--output",
-                    self.root / f"{kind}.zip",
-                )
-                self.assertEqual(status, 0, result)
-                self.assertEqual(len(result["descriptor"]["components"]), count)
-                self.assertFalse(result["runtime_verified"])
-                for component in result["descriptor"]["components"]:
-                    request_path = source / "requests" / f"{component['id']}.json"
-                    request = json.loads(request_path.read_text())
-                    self.assertEqual(request["slot"], component["slot"])
-                    self.assertEqual(
-                        request["data"]["actions"],
-                        [action["id"] for action in component["actions"]],
-                    )
-                    status, validation = self.call(
-                        "validate", source / PLUGIN_DESCRIPTOR, request_path
-                    )
-                    self.assertEqual(status, 0, validation)
-                    self.assertIn(
-                        f"requests/{component['id']}.json",
-                        (source / "SKILL.md").read_text(),
-                    )
-                before = (source / "SKILL.md").read_bytes()
-                duplicate = subprocess.run(command, capture_output=True)
-                self.assertNotEqual(duplicate.returncode, 0)
-                self.assertEqual(before, (source / "SKILL.md").read_bytes())
+        source = self.root / "comparison"
+        command = [
+            sys.executable,
+            str(script),
+            "comparison",
+            str(source),
+            "--name",
+            "test-comparison",
+            "--host",
+            ">=0.2.0,<0.4.0",
+        ]
+        generated = subprocess.run(command, capture_output=True, text=True, check=True)
+        self.assertFalse(json.loads(generated.stdout)["ready_for_delivery"])
+        archive = self.root / "comparison.zip"
+        status, result = self.call(
+            "pack",
+            source,
+            "--name",
+            "test-comparison",
+            "--version",
+            "0.1.0",
+            "--output",
+            archive,
+        )
+        self.assertEqual(status, 0, result)
+        self.assertFalse(result["runtime_verified"])
+        descriptor = result["descriptor"]
+        self.assertIsNone(descriptor.get("ui"))
+        (component,) = descriptor["components"]
+        self.assertIsNone(component.get("entry"))
+        self.assertEqual(component["openui"]["component"], "Conversation")
+        with zipfile.ZipFile(archive) as package:
+            self.assertFalse(any(path.endswith(".js") for path in package.namelist()))
+        request_path = source / "requests/display.json"
+        request = json.loads(request_path.read_text(encoding="utf-8"))
+        self.assertEqual(request["slot"], component["slot"])
+        for current, valid in ((["15 days"], True), (["21 days"], True), (21, False)):
+            request["data"]["current"] = current
+            request_path.write_text(json.dumps(request), encoding="utf-8")
+            status, validation = self.call("validate", source / PLUGIN_DESCRIPTOR, request_path)
+            self.assertEqual(status == 0, valid, validation)
+        self.assertIn("requests/display.json", (source / "SKILL.md").read_text(encoding="utf-8"))
+        before = (source / "SKILL.md").read_bytes()
+        duplicate = subprocess.run(command, capture_output=True)
+        self.assertNotEqual(duplicate.returncode, 0)
+        self.assertEqual(before, (source / "SKILL.md").read_bytes())
 
     def test_contract_identity_matches_full_contract_and_is_compact(self):
         status, full = self.call("describe")
@@ -167,7 +194,7 @@ class AuthoringContract(unittest.TestCase):
             result["component_invocation_schema"], ComponentInvocation.model_json_schema()
         )
         self.assertIn("title", result["component_invocation_schema"]["required"])
-        self.assertEqual(result["bridge_request_max_bytes"], BRIDGE_MAX_REQUEST_BYTES)
+        self.assertNotIn("bridge_request_max_bytes", result)
         self.assertFalse(result["grants_permissions"])
 
     def test_validate_request_preserves_input_and_reports_missing_material_id(self):
@@ -320,6 +347,45 @@ class AuthoringContract(unittest.TestCase):
         (self.source / "scope.json").write_text(json.dumps(scenario))
         status, result = self.pack(archive)
         self.assertEqual(status, 0, result)
+
+    @unittest.skipUnless(shutil.which("node"), "requires a JavaScript parser")
+    def test_entry_syntax_gate_checks_archive_as_classic_script_without_executing(self):
+        self.descriptor["components"] = [
+            {"id": "card", "entry": "card.js", "preview": "card.json", "actions": []}
+        ]
+        self.save_descriptor()
+        (self.source / "card.json").write_text('{"data": {}, "responses": {}}')
+        source = self.source / "card.js"
+        source.write_text("const okay = true;\nwindow.mount(1;\n")
+        archive = self.root / "sample.zip"
+        self.assertEqual(self.pack(archive)[0], 0)
+        status, report = self.call("check", archive, "--check-entries")
+        self.assertEqual(status, 1, report)
+        self.assertEqual(report["issues"][-1]["code"], "component_entry_syntax_invalid")
+        self.assertEqual(report["issues"][-1]["path"], "card.js")
+        self.assertEqual(report["issues"][-1]["detail"]["line"], 2)
+        self.assertIn("missing )", report["issues"][-1]["message"])
+
+        candidate = self.root / "candidate.zip"
+        args = (
+            "pack",
+            self.source,
+            "--name",
+            "sample-plugin",
+            "--version",
+            "0.1.0",
+            "--output",
+            candidate,
+            "--check-entries",
+        )
+        self.assertEqual(self.call(*args)[0], 1)
+        self.assertFalse(candidate.exists())
+        source.write_text("throw new Error('must not execute');")
+        status, report = self.call(*args)
+        self.assertEqual(status, 0, report)
+        self.assertEqual(report["entry_syntax"]["checked"], ["card.js"])
+        self.assertFalse(report["runtime_verified"])
+        self.assertTrue(candidate.is_file())
 
     def test_pack_and_check_share_the_same_descriptor(self):
         archive = self.root / "sample.zip"

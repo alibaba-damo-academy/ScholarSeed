@@ -1,4 +1,4 @@
-"""Serve-owned Windows socket teardown for the reviewed CPython 3.12 runtime.
+"""Serve-owned Windows socket teardown for supported CPython runtimes.
 
 CPython's Proactor socket transport calls shutdown before close/_detach. A peer
 reset can raise there after protocol.connection_lost has already removed the
@@ -10,6 +10,7 @@ No interpreter files or process-wide asyncio classes are patched.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import socket
 import sys
@@ -20,19 +21,24 @@ if sys.platform == "win32":
 
 logger = logging.getLogger(__name__)
 LOOP_FACTORY = "service.platform.transport:create_loop"
+SERVER_DETACH_WITH_TRANSPORT = (
+    "transport" in inspect.signature(inspect.getattr_static(asyncio.Server, "_detach")).parameters
+)
 
 
 class SocketTransport(_ProactorSocketTransport):
     def _call_connection_lost(self, exc):
         if self._called_connection_lost:
             return
+        transportSocket = self._sock
+        transportServer = self._server
         try:
-            self._protocol.connection_lost(exc)
+            self.get_protocol().connection_lost(exc)
         finally:
             try:
-                if self._sock.fileno() != -1:
+                if transportSocket is not None and transportSocket.fileno() != -1:
                     try:
-                        self._sock.shutdown(socket.SHUT_RDWR)
+                        transportSocket.shutdown(socket.SHUT_RDWR)
                     except ConnectionResetError:
                         # The peer has already ended this connection. Still
                         # close our socket and release the server attachment.
@@ -40,13 +46,17 @@ class SocketTransport(_ProactorSocketTransport):
                             "socket peer reset during teardown local=%s peer=%s server=%s",
                             self.get_extra_info("sockname"),
                             self.get_extra_info("peername"),
-                            self._server is not None,
+                            transportServer is not None,
                         )
             finally:
-                self._sock.close()
+                if transportSocket is not None:
+                    transportSocket.close()
                 self._sock = None
-                if self._server is not None:
-                    self._server._detach()
+                if transportServer is not None:
+                    if SERVER_DETACH_WITH_TRANSPORT:
+                        transportServer._detach(self)
+                    else:
+                        transportServer._detach()
                     self._server = None
                 self._called_connection_lost = True
 

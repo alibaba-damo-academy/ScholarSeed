@@ -79,6 +79,8 @@ Review generated code before sharing it. Exclude API keys, passwords, signing cr
 
 The desktop commands download the pinned Python runtime and prepare `.venv`; you do not need to install Python separately for this setup. Runtime assets are downloaded from the reviewed HTTPS URLs in the manifests, verified by size and SHA-256, and cached locally. Git LFS is not required. The first setup needs internet access for JavaScript/Python dependencies and runtime assets.
 
+This upgrade candidate pins standard-GIL CPython 3.14.10; library packages retain their separate Python >=3.12 compatibility contract. macOS dependency selection and native wheel repair target the product's 13.0 floor. Source builds require the platform compiler; a passing build or static minimum-version check does not replace native platform and Desktop acceptance.
+
 ### macOS
 
 Homebrew is not required. Source startup compiles native modules as well as the frontend, so these tools are needed even when you are not building a DMG. Install [Apple's Command Line Tools](https://developer.apple.com/documentation/xcode/installing-the-command-line-tools/) and complete the system installation dialog before continuing; skip installation if a working Xcode toolchain is already available:

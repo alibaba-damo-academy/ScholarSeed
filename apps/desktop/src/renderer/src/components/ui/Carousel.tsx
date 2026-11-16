@@ -103,7 +103,7 @@ const CAROUSEL_INDICATOR_PROGRESS_CLASS_NAME =
   'vds-carousel__indicator-progress absolute inset-y-0 left-0 w-full origin-left rounded-[var(--vds-radius-pill)] bg-[var(--vds-carousel-indicator-value)]'
 const DEFAULT_AUTO_PLAY_INTERVAL_MS = 4000
 const MILLISECONDS_PER_SECOND = 1000
-const INERT_ATTRIBUTE = { inert: '' } as const
+const INERT_ATTRIBUTE = { inert: true } as const
 
 function carouselTransform(
   index: number,

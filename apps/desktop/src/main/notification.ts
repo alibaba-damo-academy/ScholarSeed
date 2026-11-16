@@ -24,13 +24,16 @@ const NOTIFICATION_SETTING_UNAVAILABLE_EVENT = 'setting-unavailable'
 const NOTIFICATION_SETTING_UNKNOWN = -1
 const HRESULT_HEX_WIDTH = 8
 const DIAGNOSTIC_STAGE_LIMIT = 100
-const NOTIFICATION_URL_PREFIX = 'scholarseed://notification/'
-const NOTIFICATION_URL =
-  /^scholarseed:\/\/notification\/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+export const NOTIFICATION_PROTOCOL = 'scholarseed-notification'
+const NOTIFICATION_URL_PREFIX = `${NOTIFICATION_PROTOCOL}://notification/`
+const ATTENTION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+export function isNotificationAttentionId(id: string): boolean {
+  return ATTENTION_ID.test(id)
+}
 export function findNotificationUrl(args: readonly string[]): string | undefined {
   return args
     .map((arg) => (arg.startsWith('"') && arg.endsWith('"') ? arg.slice(1, -1) : arg))
-    .find((arg) => NOTIFICATION_URL.test(arg))
+    .find((arg) => notificationAttentionId(arg) !== undefined)
 }
 interface NotificationEntry {
   handle?: unknown
@@ -110,7 +113,7 @@ export class WindowsNotifications {
       url: NOTIFICATION_URL_PREFIX + input.attentionId,
       click: callbacks.click,
     }
-    if (!NOTIFICATION_URL.test(entry.url)) throw new Error('Invalid attention identity')
+    if (!isNotificationAttentionId(input.attentionId)) throw new Error('Invalid attention identity')
     const previous = this.active.get(entry.url)
     if (previous) this.close(previous)
     this.active.set(entry.url, entry)
@@ -217,7 +220,9 @@ export class WindowsNotifications {
 }
 
 export function notificationAttentionId(url: string): string | undefined {
-  return NOTIFICATION_URL.test(url) ? url.slice(NOTIFICATION_URL_PREFIX.length) : undefined
+  if (!url.startsWith(NOTIFICATION_URL_PREFIX)) return undefined
+  const id = url.slice(NOTIFICATION_URL_PREFIX.length)
+  return isNotificationAttentionId(id) ? id : undefined
 }
 
 export function notificationLaunchAttentionId(launchInfo: unknown): string | undefined {

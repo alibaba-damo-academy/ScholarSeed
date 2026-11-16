@@ -20,6 +20,8 @@ from service.cli.inspection import (
     evidence,
     request,
 )
+from service.cli.inspection_cas import publication_reader
+from service.resources.persistence.inspection import CasPublication
 
 
 @dataclass(frozen=True)
@@ -29,6 +31,16 @@ class EvidenceRecord:
 
 
 class InspectionContracts(unittest.TestCase):
+    def test_publication_reader_retains_one_frozen_projection(self):
+        publication = CasPublication("sha256:" + "a" * 64)
+        batch = {"database": (publication,), "empty": ()}
+        read = publication_reader(batch)
+        batch["database"] = ()
+        self.assertEqual(read("database"), (publication,))
+        self.assertEqual(read("empty"), ())
+        with self.assertRaisesRegex(ValueError, "unknown CAS publication database"):
+            read("missing")
+
     def test_evidence_rejects_unregistered_builtin_subclasses(self):
         # Even apparently ordinary values can have subclass-specific equality.
         for base, value in (

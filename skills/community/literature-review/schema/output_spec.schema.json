@@ -13,7 +13,8 @@
       "type": "string",
       "enum": [
         "latex_pdf",
-        "markdown"
+        "markdown",
+        "docx"
       ]
     },
     "template": {
@@ -23,10 +24,16 @@
       ],
       "enum": [
         "neurips",
-        "ctexart",
-        null
+        "word",
+        null,
+        "standard_chinese",
+        "ieee",
+        "iclr",
+        "icml",
+        "aaai",
+        "ctexart"
       ],
-      "description": "For latex_pdf: neurips on English runs, ctexart on Chinese runs. Null for Markdown. This is selected by the pipeline, not offered as a user choice."
+      "description": "PDF template identity; standard_chinese for Chinese, NeurIPS/IEEE/ICLR/ICML/AAAI for English. ctexart is a legacy alias. Null for Markdown."
     },
     "citation_style": {
       "type": "string",
@@ -122,6 +129,11 @@
           "template": {
             "enum": [
               "neurips",
+              "standard_chinese",
+              "ieee",
+              "iclr",
+              "icml",
+              "aaai",
               "ctexart"
             ]
           }

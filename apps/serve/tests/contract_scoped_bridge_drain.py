@@ -9,6 +9,7 @@ import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import httpx
@@ -20,6 +21,7 @@ from service.chat.api.history import register_history_routes
 from service.chat.api.plan import register_plan_routes
 from service.chat.api.tasks import register_task_routes
 from service.chat.persistence.catalog import SessionCatalogStore, SessionPrincipal, SessionStatus
+from service.chat.persistence.events import ProductEventStore
 from service.chat.runtime.live import LiveSession
 from service.platform.activity import Activities, ActivityDomain
 from service.platform.http_activity import ServeApplication
@@ -41,36 +43,37 @@ class ScopedBridgeDrainContracts(unittest.IsolatedAsyncioTestCase):
         self.activities = Activities()
         self.owner = self.activities.enter(ActivityDomain.TURN)
         self.addCleanup(self.owner.close)
-        self.live = SimpleNamespace(
-            id="session",
-            bridge_token="private",
-            turn_activity=self.owner,
-            bridge_activity=self.owner,
-            publication_turn_id="turn",
-            user_id="owner",
-            ledger=SimpleNamespace(active_turn_id="turn"),
-            active_assistant_snapshot_id="snapshot",
-            active_product_turn_id="turn",
-            product_turn_generation=1,
-            task_lease_revision=0,
-            active_task_lease=None,
-            active_task_type="",
+        catalog = SessionCatalogStore(self.root / "sessions.sqlite3")
+        self.live: Any = LiveSession(
+            session_id="session",
+            runtime_id="codex",
             runtime_workdir=self.root,
-            current_task=SimpleNamespace(done=lambda: False),
-            interrupting=False,
-            terminating=False,
-            terminated=False,
-            publish=AsyncMock(),
-            publish_artifact=AsyncMock(return_value={"id": "artifact"}),
-            display_card=AsyncMock(return_value={"id": "card"}),
-            plans=SimpleNamespace(current=lambda: {"items": []}),
-            skill_state_by_name=AsyncMock(return_value=None),
-            set_task_lease=Mock(
-                side_effect=lambda lease: LiveSession.set_task_lease(self.live, lease)
-            ),
-            clear_task_lease=Mock(side_effect=lambda: LiveSession.clear_task_lease(self.live)),
+            project_path=None,
+            output_root=self.root / "output",
+            model_id="contract-model",
+            catalog=catalog,
+            events=ProductEventStore(catalog.database),
+            artifacts=Mock(),
+            skills=Mock(),
+            logger=Mock(),
+            trace=Mock(),
+            user_id="owner",
         )
-        self.live.catalog = SessionCatalogStore(self.root / "sessions.sqlite3")
+        self.addAsyncCleanup(self.live.persistence.close)
+        self.live.bridge_token = "private"
+        self.live.turn_activity = self.owner
+        self.live.ledger = SimpleNamespace(active_turn_id="turn")
+        self.live.active_assistant_snapshot_id = "snapshot"
+        self.live.active_product_turn_id = "turn"
+        self.live.product_turn_generation = 1
+        self.live.current_task = SimpleNamespace(done=lambda: False)
+        self.live.publish = AsyncMock()
+        self.live.publish_artifact = AsyncMock(return_value={"id": "artifact"})
+        self.live.display_card = AsyncMock(return_value={"id": "card"})
+        self.live.plans = SimpleNamespace(current=lambda: {"items": []})
+        self.live.skill_state_by_name = AsyncMock(return_value=None)
+        self.live.set_task_lease = Mock(wraps=self.live.set_task_lease)
+        self.live.clear_task_lease = Mock(wraps=self.live.clear_task_lease)
         self.live.catalog.register(
             self.live.id,
             SessionPrincipal(self.live.user_id),
@@ -116,8 +119,8 @@ class ScopedBridgeDrainContracts(unittest.IsolatedAsyncioTestCase):
         self.owner.close()
         self.owner = self.activities.enter(ActivityDomain.TURN, root=True)
         self.addCleanup(self.owner.close)
-        self.live.turn_activity = self.live.bridge_activity = self.owner
-        self.live.active_product_turn_id = self.live.publication_turn_id = "next-turn"
+        self.live.turn_activity = self.owner
+        self.live.active_product_turn_id = "next-turn"
         self.live.product_turn_generation += 1
         self.live.ledger.active_turn_id = "next-turn"
 

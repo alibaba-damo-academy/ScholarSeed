@@ -3,6 +3,7 @@ export const IMAGE_MAX_SCALE = 32
 export const IMAGE_ZOOM_FACTOR = 1.25
 export const IMAGE_DOUBLE_ZOOM_FACTOR = 2
 export const IMAGE_PERCENT = 100
+export const IMAGE_POINTER_BUTTON = 0
 
 export interface ImageSize {
   width: number

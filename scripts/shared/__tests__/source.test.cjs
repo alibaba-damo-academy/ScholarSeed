@@ -9,7 +9,7 @@ const { sourceSnapshot, developmentSourceSnapshot, sourceUnchanged } = require('
 const SOURCE_TEST_XATTR = 'com.scholarseed.source-test'
 
 function interleaveReads(context, filename, action, { preserveMtime = false } = {}) {
-  const initial = fs.lstatSync(filename)
+  const initial = fs.lstatSync(filename, { bigint: true })
   const originalLstat = fs.lstatSync
   const originalFstat = fs.fstatSync
   const originalRead = fs.readFileSync
@@ -18,8 +18,8 @@ function interleaveReads(context, filename, action, { preserveMtime = false } = 
   const observed = info => {
     if (info.dev !== initial.dev || info.ino !== initial.ino) return info
     return Object.create(info, {
-      ctimeMs: { value: info.ctimeMs + revision },
-      mtimeMs: { value: preserveMtime ? initial.mtimeMs : info.mtimeMs }
+      ctimeNs: { value: info.ctimeNs + BigInt(revision) },
+      mtimeNs: { value: preserveMtime ? initial.mtimeNs : info.mtimeNs }
     })
   }
   context.mock.method(fs, 'lstatSync', (...args) => observed(originalLstat(...args)))
@@ -27,7 +27,7 @@ function interleaveReads(context, filename, action, { preserveMtime = false } = 
   context.mock.method(fs, 'readFileSync', (descriptor, ...args) => {
     const content = originalRead(descriptor, ...args)
     if (typeof descriptor === 'number') {
-      const info = originalFstat(descriptor)
+      const info = originalFstat(descriptor, { bigint: true })
       if (info.dev === initial.dev && info.ino === initial.ino) {
         reads += 1
         if (action(reads)) revision += 1
@@ -71,6 +71,7 @@ test('a replacement during a read is rejected without retrying its new identity'
   const observed = interleaveReads(context, filename, reads => {
     if (reads !== 1) return false
     write('replacement', 'initial')
+    if (process.platform === 'win32') fs.renameSync(filename, path.join(root, 'previous'))
     fs.renameSync(path.join(root, 'replacement'), filename)
     return true
   }, { preserveMtime: true })
@@ -179,12 +180,14 @@ test('development binary ctime races require stable bytes and bounded rereads', 
 function fixture(context) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ops-source-'))
   context.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const globalConfig = path.join(root, '.git-fixture-global')
+  fs.writeFileSync(globalConfig, '')
   const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8',
-    env: { ...process.env, GIT_CONFIG_GLOBAL: os.devNull, GIT_CONFIG_NOSYSTEM: '1' } })
+    env: { ...process.env, GIT_CONFIG_GLOBAL: globalConfig, GIT_CONFIG_NOSYSTEM: '1' } })
   git('init', '--quiet')
   git('config', 'user.name', 'Source Fixture')
   git('config', 'user.email', 'source@example.test')
-  fs.writeFileSync(path.join(root, '.gitignore'), 'ignored/\n')
+  fs.writeFileSync(path.join(root, '.gitignore'), 'ignored/\n.git-fixture-global\n')
   fs.writeFileSync(path.join(root, 'tracked.txt'), 'initial')
   git('add', '.')
   git('commit', '--quiet', '-m', 'fixture')

@@ -79,9 +79,12 @@ class ParentChannel:
             raise
 
     def receive(self, length):
+        connection = self.connection
+        if connection is None:
+            raise RuntimeError("private control disconnected")
         frame = bytearray()
         while len(frame) < length:
-            part = self.connection.recv(length - len(frame))
+            part = connection.recv(length - len(frame))
             if not part:
                 raise RuntimeError("private control disconnected")
             frame.extend(part)
@@ -151,12 +154,15 @@ def supervise(arguments, directories):
 
     def launch():
         owner = ParentChannel()
+        child = None
         try:
             child = subprocess.Popen(
                 [*arguments, *CONTROL_FLAGS],
                 start_new_session=os.name == POSIX_PLATFORM,
                 stdin=subprocess.PIPE,
             )
+            if child.stdin is None:
+                raise RuntimeError("private control input is unavailable")
             try:
                 child.stdin.write(owner.bootstrap())
                 child.stdin.flush()
@@ -164,7 +170,15 @@ def supervise(arguments, directories):
                 pass
             return child, owner
         except BaseException:
-            owner.close()
+            try:
+                if child is not None:
+                    try:
+                        stop(child)
+                    finally:
+                        if child.stdin is not None:
+                            child.stdin.close()
+            finally:
+                owner.close()
             raise
 
     try:
@@ -202,7 +216,8 @@ def supervise(arguments, directories):
                 return 0
             if permitted:
                 stop(process)
-                process.stdin.close()
+                if process.stdin is not None:
+                    process.stdin.close()
                 process = None
                 channel.close()
                 channel = None
@@ -216,7 +231,7 @@ def supervise(arguments, directories):
             if process is not None:
                 stop(process)
         finally:
-            if process is not None:
+            if process is not None and process.stdin is not None:
                 process.stdin.close()
             if channel is not None:
                 channel.close()

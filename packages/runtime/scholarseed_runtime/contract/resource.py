@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Protocol
+from contextlib import AbstractContextManager
+from typing import Protocol, runtime_checkable
 
 from scholarseed_runtime.contract.command import OpenSessionRequest, ResumeSessionRequest
 
@@ -27,6 +28,13 @@ class ResourceLease(Protocol):
     """Physical resource ownership, retained until its OS lifetime has ended."""
 
     def close(self) -> None: ...
+
+
+@runtime_checkable
+class ProcessResourceLease(ResourceLease, Protocol):
+    """A lease that can extend ownership into a POSIX child process."""
+
+    def runtime_descriptors(self) -> AbstractContextManager[tuple[int, ...]]: ...
 
 
 class ResourcePurpose(str, Enum):
@@ -110,6 +118,7 @@ __all__ = [
     "ResourceCapacity",
     "ResourceEvidence",
     "ResourceLease",
+    "ProcessResourceLease",
     "ResourcePolicy",
     "ResourcePurpose",
     "ResourceReceipt",

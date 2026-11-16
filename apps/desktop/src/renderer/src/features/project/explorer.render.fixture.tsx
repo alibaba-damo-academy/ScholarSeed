@@ -28,6 +28,7 @@ export function Fixture(): React.JSX.Element {
   const [menuPath, setMenuPath] = useState<string | null>(null)
   const [draft, setDraft] = useState(false)
   const [selected, setSelected] = useState<string | null>(null)
+  const [drop, setDrop] = useState('')
   const onLoadingChange = useCallback((_path: string, value: boolean) => setLoading(value), [])
   return (
     <>
@@ -80,11 +81,12 @@ export function Fixture(): React.JSX.Element {
           }
           onSelect={(node) => setSelected(node.path)}
           onMenu={(node) => setMenuPath(node.path)}
-          onDrop={() => undefined}
+          onDrop={(source, destination) => setDrop(JSON.stringify({ source, destination }))}
           onDragTarget={() => undefined}
           onLoadingChange={onLoadingChange}
         />
       )}
+      <output data-testid="fixture-drop">{drop}</output>
       {menuPath !== null && (
         <Button data-testid="fixture-close-menu" onClick={() => setMenuPath(null)}>
           Close menu

@@ -131,8 +131,8 @@ export interface SquirrelUpdater extends Pick<EventEmitter, 'on' | 'once' | 'rem
   quitAndInstall(): void
 }
 
-/** Diagnostic event emitted once a committed handoff reports a terminal native failure. */
-export const SQUIRREL_NATIVE_ERROR_EVENT = 'native-error'
+/** A committed handoff was durably recorded as failed. */
+export const SQUIRREL_HANDOFF_FAILED_EVENT = 'handoff-failed'
 export type SquirrelLaunchCleanup = (outcome?: 'failed') => void
 
 /**
@@ -143,7 +143,7 @@ export function discardOnTerminalSquirrelFailure(
   event: string,
   discard: SquirrelLaunchCleanup | undefined
 ): SquirrelLaunchCleanup | undefined {
-  if (event !== SQUIRREL_NATIVE_ERROR_EVENT || !discard) return discard
+  if (event !== SQUIRREL_HANDOFF_FAILED_EVENT || !discard) return discard
   discard('failed')
   return undefined
 }
@@ -297,11 +297,16 @@ export class SquirrelInstallation {
   private nativeFailed = false
   private binding: SquirrelBinding | undefined
   private running: Promise<void> | null = null
-  private readonly nativeError = (): void => {
+  private readonly nativeError = (error: unknown): void => {
     this.nativeFailed = true
     if (this.handedOff) {
+      const code = (error as { code?: unknown } | null | undefined)?.code
+      this.diagnostic(
+        'native-error',
+        typeof code === 'number' && Number.isSafeInteger(code) ? String(code) : undefined
+      )
       const terminal = this.recordFailure()
-      this.diagnostic(terminal ? SQUIRREL_NATIVE_ERROR_EVENT : 'native-outcome-unknown')
+      this.diagnostic(terminal ? SQUIRREL_HANDOFF_FAILED_EVENT : 'native-outcome-unknown')
     }
   }
   private recordFailure(): boolean {
@@ -323,7 +328,7 @@ export class SquirrelInstallation {
   constructor(
     private readonly updater: SquirrelUpdater,
     private readonly recordPath: string,
-    private readonly diagnostic: (event: string) => void,
+    private readonly diagnostic: (event: string, errorCode?: string) => void,
     private readonly timeoutMs = HANDOFF_TIMEOUT_MS,
     private readonly bindNativeRequest?: (
       identity: SquirrelHandoff
@@ -428,16 +433,18 @@ export class SquirrelInstallation {
           }
           const failed = (): void => {
             cleanup()
-            if (this.recordFailure()) this.diagnostic(SQUIRREL_NATIVE_ERROR_EVENT)
-            reject(new Error('Squirrel installation outcome unknown'))
+            // The lifetime error listener already recorded and reported this native error.
+            reject(new Error('Squirrel reported an installation error'))
           }
           const unavailable = (): void => {
             cleanup()
-            if (this.recordFailure()) this.diagnostic(SQUIRREL_NATIVE_ERROR_EVENT)
+            this.diagnostic('handoff-candidate-unavailable')
+            if (this.recordFailure()) this.diagnostic(SQUIRREL_HANDOFF_FAILED_EVENT)
             reject(new Error('Squirrel candidate unavailable'))
           }
           const downloaded = (): void => {
             void (async () => {
+              this.diagnostic('handoff-binding-request')
               const nativeRequest = await this.bindNativeRequest?.(identity)
               if (settled) return
               if (
@@ -461,11 +468,17 @@ export class SquirrelInstallation {
             })().catch((error) => {
               if (settled) return
               cleanup()
-              if (this.recordFailure()) this.diagnostic(SQUIRREL_NATIVE_ERROR_EVENT)
+              this.diagnostic('handoff-binding-failed')
+              if (this.recordFailure()) this.diagnostic(SQUIRREL_HANDOFF_FAILED_EVENT)
               reject(error)
             })
           }
-          const timer = setTimeout(failed, this.timeoutMs)
+          const timer = setTimeout(() => {
+            cleanup()
+            this.diagnostic('handoff-timeout')
+            if (this.recordFailure()) this.diagnostic(SQUIRREL_HANDOFF_FAILED_EVENT)
+            reject(new Error('Squirrel installation outcome unknown'))
+          }, this.timeoutMs)
           this.updater.once('error', failed)
           this.updater.once('update-not-available', unavailable)
           this.updater.once('update-downloaded', downloaded)

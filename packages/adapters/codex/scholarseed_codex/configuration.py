@@ -66,7 +66,11 @@ async def credential_value(request: McpConfigurationRequest, binding: McpCredent
 
 
 async def native_mcp_configuration(request: McpConfigurationRequest) -> NativeMcpConfiguration:
-    if type(request.revision) is not int or request.revision < MCP_INITIAL_CONFIGURATION_REVISION:
+    if (
+        not isinstance(request.revision, int)
+        or isinstance(request.revision, bool)
+        or request.revision < MCP_INITIAL_CONFIGURATION_REVISION
+    ):
         raise ValueError(MCP_CONFIGURATION_INVALID)
     servers: dict[str, dict[str, Any]] = {}
     environment: dict[str, str] = {}
@@ -93,7 +97,7 @@ async def native_mcp_configuration(request: McpConfigurationRequest) -> NativeMc
         shared[binding] = alias
         environment[alias] = await credential_value(request, binding)
     for server in request.servers:
-        if not server.name or server.name in servers or type(server.enabled) is not bool:
+        if not server.name or server.name in servers or not isinstance(server.enabled, bool):
             raise ValueError(MCP_CONFIGURATION_INVALID)
         native: dict[str, Any] = {MCP_NATIVE_ENABLED: server.enabled}
         for key, timeout in (
@@ -101,7 +105,11 @@ async def native_mcp_configuration(request: McpConfigurationRequest) -> NativeMc
             (MCP_NATIVE_STARTUP_TIMEOUT, server.startup_timeout_ms),
         ):
             if timeout is not None:
-                if type(timeout) is not int or timeout < MILLISECONDS_PER_SECOND:
+                if (
+                    not isinstance(timeout, int)
+                    or isinstance(timeout, bool)
+                    or timeout < MILLISECONDS_PER_SECOND
+                ):
                     raise ValueError(MCP_CONFIGURATION_INVALID)
                 if key == MCP_NATIVE_STARTUP_TIMEOUT and timeout > MCP_MAX_STARTUP_TIMEOUT_MS:
                     raise ValueError(MCP_CONFIGURATION_INVALID)

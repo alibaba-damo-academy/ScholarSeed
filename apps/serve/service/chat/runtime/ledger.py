@@ -46,6 +46,7 @@ from service.chat.constants import (
 from service.chat.persistence.catalog import (
     UNCERTAINTY_RUNTIME_EVENT_KEY,
     UNCERTAINTY_THREAD_REPLACEMENT_KEY,
+    QueuedMessageRecord,
     QueuedMessageState,
     SessionCatalogStore,
     SessionStatus,
@@ -142,6 +143,23 @@ class SessionLedger:
     @property
     def has_unknown_outcome(self) -> bool:
         return bool(self._unknown_admission)
+
+    def reconciled_turn_status(self, turn_id: str) -> TurnStatus | None:
+        outcome = self._turn_outcomes.get(turn_id)
+        if outcome is None or outcome[0] not in {
+            PRODUCT_TURN_OUTCOME_COMPLETED,
+            PRODUCT_TURN_OUTCOME_FAILED,
+            PRODUCT_TURN_OUTCOME_INTERRUPTED,
+        }:
+            return None
+        uncertainty = self._catalog.uncertainty(self.id, UncertaintyKind.TURN, turn_id)
+        if (
+            uncertainty is None
+            or uncertainty.state is not UncertaintyState.RECONCILED
+            or uncertainty.payload.get("vendor_turn_id") != turn_id
+        ):
+            return None
+        return TurnStatus(outcome[0])
 
     async def activate_turn(self, turn_id: str) -> None:
         await self._persistence.run(
@@ -478,7 +496,7 @@ class SessionLedger:
                 "incoming_generation": generation,
             },
         )
-        self._trace.runtime_event(incident_event)
+        await self._persistence.run(self._trace.runtime_event, incident_event)
         await self.incident(incident_event, incident)
         return False
 
@@ -619,7 +637,7 @@ class SessionLedger:
                 kind=RuntimeEventKind.RUNTIME_INCIDENT,
                 payload={"incident": incident_data(recovered)},
             )
-            self._trace.runtime_event(observation)
+            await self._persistence.run(self._trace.runtime_event, observation)
             await self.incident(observation, recovered)
 
     async def broadcast_expired_hil(self, *, reason: str) -> None:
@@ -920,7 +938,12 @@ class SessionLedger:
                             or payload.get("reconciled_from_history") is True
                             and payload.get("reason") == RuntimeIncidentKind.PROCESS_EXIT.value
                         )
-                        else {}
+                        else (
+                            {"reason": payload["reason"]}
+                            if outcome == PRODUCT_TURN_OUTCOME_INTERRUPTED
+                            and isinstance(payload.get("reason"), str)
+                            else {}
+                        )
                     ),
                     **({"confirmed": True} if confirmed_unknown else {}),
                     **(
@@ -1119,7 +1142,7 @@ class SessionLedger:
                     "reason": reason,
                 },
             )
-            self._trace.runtime_event(event)
+            await self._persistence.run(self._trace.runtime_event, event)
             await self.terminal(
                 event,
                 fallback_submission_id=correlation_id,
@@ -1157,18 +1180,25 @@ class SessionLedger:
             )
             if uncertainty is None or uncertainty.state is not UncertaintyState.RECONCILED:
                 continue
-            if await self._persistence.run(
-                self._catalog.remove_reconciled_unknown_message,
-                self.id,
-                queued.queued_message_id,
-                int(queued.operation_seq or 0),
-            ):
-                await self.publish(
-                    PRODUCT_EVENT_MESSAGE_REMOVED,
-                    {
-                        "queued_message_id": queued.queued_message_id,
-                        "reason": QueuedMessageState.COMPLETED.value,
-                    },
-                    turn_id=native_turn_id,
-                    idempotency_key=f"queue:{queued.queued_message_id}:native-reconciled:{queued.operation_seq}",
-                )
+            await self.complete_reconciled_queue_row(queued, native_turn_id)
+
+    async def complete_reconciled_queue_row(
+        self, queued: QueuedMessageRecord, native_turn_id: str
+    ) -> None:
+        """Settle the exact queue operation after its native turn is reconciled."""
+
+        if await self._persistence.run(
+            self._catalog.remove_reconciled_unknown_message,
+            self.id,
+            queued.queued_message_id,
+            int(queued.operation_seq or 0),
+        ):
+            await self.publish(
+                PRODUCT_EVENT_MESSAGE_REMOVED,
+                {
+                    "queued_message_id": queued.queued_message_id,
+                    "reason": QueuedMessageState.COMPLETED.value,
+                },
+                turn_id=native_turn_id,
+                idempotency_key=f"queue:{queued.queued_message_id}:native-reconciled:{queued.operation_seq}",
+            )

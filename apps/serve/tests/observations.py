@@ -10,14 +10,17 @@ import runpy
 import sys
 import tempfile
 import time
+import traceback
 import unittest
 from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import patch
 
 from service.platform.storage import filesystem_path
-from tests.prefetch import prefetch_cases
-from tests.progress import PROGRESS_MODULE, emit
+
+from ._directories import ENTRY_TOKEN_ENV
+from .prefetch import prefetch_cases
+from .progress import PROGRESS_MODULE, emit
 
 SCHEMA_VERSION = 1
 SUCCESS = "passed"
@@ -83,8 +86,14 @@ def test_cases(suite):
 
 
 class Observations:
-    def __init__(self, module, artifact_directory=None, *, collect_only=False):
+    def __init__(self, module, artifact_directory=None, *, collect_only=False, verify_entry=False):
         self.collect_only = collect_only
+        self.verify_entry = verify_entry
+        self.entry_planned = 0
+        self.entry_executed = 0
+        self.entry_skipped = 0
+        self.entry_expected_failures = 0
+        self.entry_successful = True
         self.module = module
         self.artifact_directory = artifact_directory
         self.depth = 0
@@ -212,6 +221,24 @@ class Observations:
     def run(self, runner, suite, original):
         if self.depth:
             return original(runner, suite)
+        if self.verify_entry:
+            self.runs += 1
+            planned = suite.countTestCases()
+            self.entry_planned += planned
+            if planned == 0:
+                self.errors.append("unittest runner collected no cases")
+            self.depth += 1
+            try:
+                result = original(runner, suite)
+            finally:
+                self.depth -= 1
+            self.entry_executed += result.testsRun
+            self.entry_skipped += len(result.skipped)
+            self.entry_expected_failures += len(result.expectedFailures)
+            self.entry_successful = self.entry_successful and result.wasSuccessful()
+            if result.wasSuccessful() and result.testsRun != planned:
+                self.errors.append("successful unittest runner did not execute its collection")
+            return result
         self.runs += 1
         if self.runs != 1:
             raise ValueError("case observations require exactly one top-level unittest runner")
@@ -249,7 +276,39 @@ class Observations:
             runner.resultclass = previous
             self.depth -= 1
 
-    def report(self, exit_status):
+    def report(self, exit_status, namespace=None):
+        if self.verify_entry:
+            namespace = namespace or {}
+            declared = any(
+                isinstance(value, type)
+                and issubclass(value, unittest.TestCase)
+                and value.__module__ == namespace.get("__name__")
+                and (
+                    unittest.defaultTestLoader.getTestCaseNames(value)
+                    or callable(getattr(value, "runTest", None))
+                )
+                for value in namespace.values()
+            )
+            if declared and not self.runs:
+                self.errors.append("declared unittest cases were not executed")
+            if self.errors or not self.entry_successful:
+                exit_status = exit_status or 1
+            return {
+                "schemaVersion": SCHEMA_VERSION,
+                "kind": "entry",
+                "module": self.module,
+                "token": os.environ.get(ENTRY_TOKEN_ENV, ""),
+                "pid": os.getpid(),
+                "runners": self.runs,
+                "declaredUnittest": declared,
+                "plannedTests": self.entry_planned,
+                "reportedTestsRun": self.entry_executed,
+                "skipped": self.entry_skipped,
+                "expectedFailures": self.entry_expected_failures,
+                "errors": self.errors,
+                "cleanupErrors": self.cleanup_errors,
+                "exitStatus": exit_status,
+            }
         if self.runs != 1:
             self.errors.append("expected exactly one top-level unittest runner")
         actual = [case["id"] for case in self.cases]
@@ -313,11 +372,19 @@ def main():
     parser.add_argument("--case")
     parser.add_argument("--collect-only", action="store_true")
     parser.add_argument("--isolation-root", type=Path)
+    parser.add_argument("--verify-entry", action="store_true")
     arguments = parser.parse_args()
     if arguments.collect_only and arguments.case is not None:
         parser.error("--collect-only cannot be combined with --case")
+    if arguments.verify_entry and (
+        arguments.collect_only or arguments.case is not None or arguments.isolation_root is not None
+    ):
+        parser.error("--verify-entry requires the original whole-module entry")
     observations = Observations(
-        arguments.module, arguments.report.parent / "cases", collect_only=arguments.collect_only
+        arguments.module,
+        arguments.report.parent / "cases",
+        collect_only=arguments.collect_only,
+        verify_entry=arguments.verify_entry,
     )
     original = unittest.TextTestRunner.run
     status = 0
@@ -325,6 +392,7 @@ def main():
     owned = None
     isolated_root = None
     cleanup_errors = []
+    namespace = {}
     sys.argv = [arguments.module]
     try:
         if arguments.isolation_root is not None:
@@ -353,7 +421,7 @@ def main():
             lambda runner, suite: observations.run(runner, suite, original),
         ):
             if arguments.case is None:
-                runpy.run_module(arguments.module, run_name="__main__", alter_sys=True)
+                namespace = runpy.run_module(arguments.module, run_name="__main__", alter_sys=True)
             else:
                 module = importlib.import_module(arguments.module)
                 suite = unittest.defaultTestLoader.loadTestsFromName(arguments.case, module)
@@ -373,9 +441,21 @@ def main():
                             ) or not database.is_relative_to(home):
                                 raise AssertionError("case Home or database escaped its owned root")
     except SystemExit as error:
-        status = error.code if isinstance(error.code, int) else int(error.code is not None)
+        code = int(error.code) if isinstance(error.code, bool) else error.code
+        status = code if isinstance(code, int) else int(code is not None)
+        if arguments.verify_entry and error.code is not None and not isinstance(error.code, int):
+            print(error.code, file=sys.stderr)
+        frame_traceback = error.__traceback__
+        while frame_traceback is not None:
+            candidate = frame_traceback.tb_frame.f_globals
+            if getattr(candidate.get("__spec__"), "name", None) == arguments.module:
+                namespace = candidate
+                break
+            frame_traceback = frame_traceback.tb_next
     except BaseException as error:
         observations.errors.append(type(error).__name__ + ": " + str(error))
+        if arguments.verify_entry:
+            traceback.print_exc()
         status = 1
     finally:
         if arguments.case is not None or arguments.collect_only:
@@ -396,7 +476,10 @@ def main():
                 observations.errors.append(message)
                 cleanup_errors.append(message)
                 status = 1
-    report = observations.report(status)
+    report = observations.report(status, namespace)
+    if arguments.verify_entry:
+        for error in report["errors"]:
+            sys.stderr.write(f"[ci:failure] entry observation: {error}\n")
     if isolation is not None:
         report["isolation"] = isolation
     if cleanup_errors:

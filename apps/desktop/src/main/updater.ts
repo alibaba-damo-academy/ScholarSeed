@@ -53,6 +53,7 @@ import {
   inspectSquirrelStartup,
   settleSquirrelStartup,
   inspectSquirrelIdle,
+  verifySquirrelReplacement,
   squirrelLaunchSuperseded,
   squirrelAdmission,
   type SquirrelAdmission,
@@ -125,7 +126,12 @@ import {
   splitFiletime,
 } from './handshake.ts'
 import type { HandshakeDecision, HandshakeRequest, ReadyRecord, ReadyOutcome } from './handshake.ts'
-import { MACOS_HDIUTIL, mountPointsOfImage, readHdiutilInfoPlist } from './mounts.ts'
+import {
+  MACOS_HDIUTIL,
+  mountPointsOfImage,
+  readHdiutilInfoPlist,
+  withDmgCleanup,
+} from './mounts.ts'
 import { planUpdatePrune, stagedInstallerName, updateArtifactKind } from './staging.ts'
 import type { UpdateArtifactEntry } from './staging.ts'
 import { requireCommandAsync, runCommandAsync, type CommandOptions } from './subprocess.ts'
@@ -156,7 +162,7 @@ export type LogSink = (line: string) => void
 const UPDATE_CACHE_DIRNAME = 'scholarseed-update'
 const PREVIEW_CANDIDATE_DIRNAME = 'preview'
 // 计时/结果日志额外落一份到 $SCHOLARSEED_HOME/logs/update.log（见 persistUpdateLog）。
-const UPDATE_LOG_FILE = 'update.log'
+export const UPDATE_LOG_FILE = 'update.log'
 const UPDATE_LOG_MAX_BYTES = 4 * 1024 * 1024
 let updateLog: RotatingFileLog | null = null
 const REQUEST_TIMEOUT_MS = 8000
@@ -1124,6 +1130,12 @@ interface UpdateEventFields {
   event: string
   result?: string
   errorCode?: string
+  stage?: string
+  diagnostic?: unknown
+  httpStatus?: number
+  expectedBytes?: number
+  receivedBytes?: number
+  writtenBytes?: number
   updateId?: string
   fromVersion?: string
   toVersion?: string
@@ -1851,22 +1863,32 @@ async function withMountedDmg<T>(
   operation: (source: string) => Promise<T>
 ): Promise<T> {
   const mount = await mountDmg(dmgPath, log, installation)
-  try {
-    const source = join(mount, PRODUCT_APPLICATION)
-    if (
-      !lstatSync(source).isDirectory() ||
-      realpathSync(source) !== join(realpathSync(mount), PRODUCT_APPLICATION)
-    )
-      throw new Error('DMG application must be an exact directory inside the mounted image')
-    installation.signal?.throwIfAborted()
-    return await operation(source)
-  } finally {
-    // Cleanup must not inherit an already-aborted operation signal.
-    await runLoggedCommand(log, 'detach update image', MACOS_HDIUTIL, ['detach', mount, '-force'], {
-      timeoutMs: MACOS_MOUNT_COMMAND_TIMEOUT_MS,
-    })
-    rmdirSync(mount)
-  }
+  return withDmgCleanup(
+    async () => {
+      const source = join(mount, PRODUCT_APPLICATION)
+      if (
+        !lstatSync(source).isDirectory() ||
+        realpathSync(source) !== join(realpathSync(mount), PRODUCT_APPLICATION)
+      )
+        throw new Error('DMG application must be an exact directory inside the mounted image')
+      installation.signal?.throwIfAborted()
+      return operation(source)
+    },
+    async () => {
+      // Cleanup must not inherit an already-aborted operation signal.
+      await runLoggedCommand(
+        log,
+        'detach update image',
+        MACOS_HDIUTIL,
+        ['detach', mount, '-force'],
+        {
+          timeoutMs: MACOS_MOUNT_COMMAND_TIMEOUT_MS,
+        }
+      )
+      rmdirSync(mount)
+    },
+    (error) => logUpdateLine(log, `[update] secondary DMG cleanup failure: ${String(error)}\n`)
+  )
 }
 
 function squirrelHandoffPath(home = desktopHome()): string {
@@ -1923,7 +1945,21 @@ export async function macStartupAdmission(
         )
       if (!expected || !squirrelLaunchSuperseded(config.buildNumber, expected))
         return admitted('allow')
-      if (!(await inspectSquirrelIdle(systemCacheDir(), config.bundleId)))
+      if (
+        !(await inspectSquirrelIdle(
+          systemCacheDir(),
+          config.bundleId,
+          resolve(dirname(process.execPath), '..', '..'),
+          handoff,
+          (application) =>
+            verifySquirrelReplacement(
+              application,
+              config.bundleId,
+              config.expectedTeamId,
+              config.buildNumber
+            )
+        ))
+      )
         throw new Error(
           'Superseded Mac launch still has native update activity or uncertain evidence'
         )
@@ -1980,6 +2016,11 @@ export async function completeMacStartupAdmission(
   launch?: ObservedUpdateLaunch | null
 ): Promise<void> {
   let handoff = readAdmittedMacHandoff(log, startup)
+  if (startup?.admission === 'superseded') {
+    const refreshed = await macStartupAdmission(desktopHome(), log, launch?.context)
+    if (refreshed.admission !== 'superseded')
+      throw new Error('Mac superseded recovery evidence changed or is unavailable')
+  }
   if (handoff?.state === 'installing' && startup?.admission === 'failed') {
     const refreshed = await macStartupAdmission(desktopHome(), log)
     if (refreshed.admission !== 'failed')
@@ -1995,7 +2036,10 @@ export async function completeMacStartupAdmission(
   if (!handoff || startup?.admission === 'failed') return
   logUpdateEvent(log, {
     phase: 'macos-install',
-    event: 'installed-build-observed',
+    event:
+      startup?.admission === 'superseded'
+        ? 'superseded-build-observed'
+        : 'installed-build-observed',
     updateId: handoff.candidate,
     toVersion: handoff.version,
     result: 'success',
@@ -2598,10 +2642,11 @@ export async function installStagedUpdate(
       squirrel ??= new SquirrelInstallation(
         autoUpdater,
         squirrelHandoffPath(),
-        (event) => {
+        (event, errorCode) => {
           logUpdateEvent(log, {
             phase: 'macos-install',
             event,
+            errorCode,
             updateId: staged.meta.id,
             toVersion: staged.meta.version,
           })

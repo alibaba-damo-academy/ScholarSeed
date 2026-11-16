@@ -6,7 +6,7 @@ import { PREVIEW_BROWSING } from './listing.ts'
 import type { PreviewBrowsingPolicy } from './listing.ts'
 
 test('sample tree and recursive listing derive directories and files from the original VFS', async () => {
-  const files = new PreviewFiles()
+  const files = new PreviewFiles('reviewed')
   const before = files.manifest()
   const owner = new PreviewBrowsing(files, { seed: 'sample' })
   assert.deepEqual(files.manifest(), before)
@@ -32,12 +32,12 @@ test('sample tree and recursive listing derive directories and files from the or
 })
 
 test('empty seed changes the same VFS while paged seed preserves samples and contains real readable files', async () => {
-  const emptyFiles = new PreviewFiles()
+  const emptyFiles = new PreviewFiles('reviewed')
   const empty = new PreviewBrowsing(emptyFiles, { seed: 'empty' })
   assert.deepEqual(emptyFiles.manifest(), [])
   assert.deepEqual(await empty.tree(), { entries: [], total: 0, offset: 0 })
   assert.deepEqual(await empty.listing(), [])
-  const files = new PreviewFiles()
+  const files = new PreviewFiles('reviewed')
   const sample = files.read('sample.pdf')
   const owner = new PreviewBrowsing(files, { seed: 'paged' })
   assert.deepEqual(files.read('sample.pdf'), sample)
@@ -53,7 +53,7 @@ test('empty seed changes the same VFS while paged seed preserves samples and con
 })
 
 test('more failure is per canonical nonempty page and invalid or cancelled requests do not consume it', async () => {
-  const owner = new PreviewBrowsing(new PreviewFiles(), { seed: 'paged', explorerMore: 'fail-once' })
+  const owner = new PreviewBrowsing(new PreviewFiles('reviewed'), { seed: 'paged', explorerMore: 'fail-once' })
   const first = await owner.tree()
   for (const offset of [-1, 0.5, NaN, Infinity]) await assert.rejects(owner.tree('', offset), { status: 422 })
   await assert.rejects(owner.tree('../', 100), { code: PREVIEW_FILE_ERROR.invalidPath })
@@ -70,7 +70,7 @@ test('more failure is per canonical nonempty page and invalid or cancelled reque
 
 test('persistent read failures are independent, recover explicitly without modifying files or more policy', async () => {
   for (const source of ['listing', 'explorer'] as const) {
-    const files = new PreviewFiles()
+    const files = new PreviewFiles('reviewed')
     const policy: PreviewBrowsingPolicy = { seed: 'paged', explorerMore: 'fail-once', [source === 'listing' ? 'listingRead' : 'explorerRead']: 'failed' }
     const owner = new PreviewBrowsing(files, policy)
     const before = files.manifest()
@@ -84,15 +84,15 @@ test('persistent read failures are independent, recover explicitly without modif
     assert.deepEqual(files.manifest(), before)
     await assert.rejects(owner.tree('', 100), { message: PREVIEW_BROWSING.moreFailure })
     assert.ok((await owner.tree('', 100)).entries.length)
-    const reset = new PreviewBrowsing(new PreviewFiles(), policy)
+    const reset = new PreviewBrowsing(new PreviewFiles('reviewed'), policy)
     await assert.rejects(source === 'listing' ? reset.listing() : reset.tree(), { status: 503 })
   }
-  assert.throws(() => new PreviewBrowsing(new PreviewFiles()).recover(), { status: 409 })
+  assert.throws(() => new PreviewBrowsing(new PreviewFiles('reviewed')).recover(), { status: 409 })
 })
 
 test('delays use current VFS facts and cancellation or disposal fences all pending receipts', async context => {
   context.mock.timers.enable({ apis: ['setTimeout'] })
-  const files = new PreviewFiles()
+  const files = new PreviewFiles('reviewed')
   const policy: PreviewBrowsingPolicy = { seed: 'paged', listingRead: 'delayed', explorerRead: 'normal', explorerMore: 'delayed' }
   const owner = new PreviewBrowsing(files, policy)
   policy.listingRead = 'normal'
@@ -121,7 +121,7 @@ test('delays use current VFS facts and cancellation or disposal fences all pendi
 })
 
 test('each directory and owner has its own more receipt and snapshots cannot mutate VFS metadata', async () => {
-  const files = new PreviewFiles()
+  const files = new PreviewFiles('reviewed')
   const owner = new PreviewBrowsing(files, { seed: 'paged', explorerMore: 'fail-once' })
   for (let index = 0; index <= PREVIEW_BROWSING.pageSize; index++) files.write(`another/item-${index}.md`, new Uint8Array([index]))
   await assert.rejects(owner.tree('', 100), { message: PREVIEW_BROWSING.moreFailure })
@@ -131,7 +131,7 @@ test('each directory and owner has its own more receipt and snapshots cannot mut
   const original = result.entries[0]
   Object.assign(original, { name: 'modified', identity: 'modified' })
   assert.notEqual((await owner.tree('another', 100)).entries[0].identity, original.identity)
-  const otherFiles = new PreviewFiles()
+  const otherFiles = new PreviewFiles('reviewed')
   const other = new PreviewBrowsing(otherFiles, { seed: 'paged', explorerMore: 'fail-once' })
   await assert.rejects(other.tree('', 100), { message: PREVIEW_BROWSING.moreFailure })
   assert.ok((await owner.tree('', 100)).entries.length)
@@ -143,7 +143,7 @@ test('each directory and owner has its own more receipt and snapshots cannot mut
 
 test('delayed initial tree fences disposal after timer completion and rejects changed paths', async context => {
   context.mock.timers.enable({ apis: ['setTimeout'] })
-  const files = new PreviewFiles()
+  const files = new PreviewFiles('reviewed')
   files.write('temporary/child.md', new Uint8Array([1]))
   const owner = new PreviewBrowsing(files, { seed: 'sample', explorerRead: 'delayed' })
   const missing = assert.rejects(owner.tree('temporary'), { code: PREVIEW_FILE_ERROR.notFound })
@@ -157,14 +157,14 @@ test('delayed initial tree fences disposal after timer completion and rejects ch
   context.mock.timers.tick(PREVIEW_BROWSING.delayMs)
   owner.dispose()
   await old
-  const recovered = new PreviewBrowsing(new PreviewFiles(), { seed: 'sample', listingRead: 'failed', explorerRead: 'failed' })
+  const recovered = new PreviewBrowsing(new PreviewFiles('reviewed'), { seed: 'sample', listingRead: 'failed', explorerRead: 'failed' })
   recovered.recover()
   await recovered.tree()
   await recovered.listing()
 })
 
 test('synchronous page shares the projection without consuming or bypassing async caller policies', async () => {
-  const owner = new PreviewBrowsing(new PreviewFiles(), { seed: 'paged', explorerRead: 'failed', explorerMore: 'fail-once' })
+  const owner = new PreviewBrowsing(new PreviewFiles('reviewed'), { seed: 'paged', explorerRead: 'failed', explorerMore: 'fail-once' })
   assert.equal(owner.page().entries.length, PREVIEW_BROWSING.pageSize)
   const more = owner.page('', PREVIEW_BROWSING.pageSize)
   assert.ok(more.entries.length)

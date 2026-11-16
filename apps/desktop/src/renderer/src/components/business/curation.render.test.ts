@@ -5,6 +5,7 @@ import test from 'node:test'
 import { chromium, expect } from '@playwright/test'
 import react from '@vitejs/plugin-react'
 import { createServer } from 'vite'
+import { renderConfig } from '../../../../test-helpers/render.ts'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 
@@ -12,14 +13,19 @@ test(
   'outline confirmation renders English, submits the original answer and localizes history',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
-      configFile: false,
-      root: ROOT,
-      plugins: [react()],
-      server: { host: '127.0.0.1', port: 0 },
-    })
+    const server = await createServer(
+      renderConfig({
+        configFile: false,
+        root: ROOT,
+        plugins: [react()],
+        server: { host: '127.0.0.1', port: 0 },
+      })
+    )
     await server.listen()
-    const browser = await chromium.launch({ headless: true })
+    const browser = await chromium.launch({
+      headless: true,
+      channel: process.env.PLAYWRIGHT_CHANNEL,
+    })
     try {
       const page = await browser.newPage()
       await page.goto(
@@ -56,7 +62,10 @@ test(
       )
       const reply = page.getByTestId('interaction-reply')
       await expect(reply).toContainText('Confirm outline and output settings')
-      await reply.getByRole('button').click()
+      await page
+        .getByRole('button', { name: 'Confirm outline and output settings', exact: true })
+        .click()
+      await expect(reply).toBeVisible()
       await expect(reply).toContainText('Start writing with the current plan')
       await expect(reply).not.toContainText('按当前方案开始撰写')
     } finally {
@@ -70,14 +79,19 @@ test(
   'curation card uses the rendering language and submits only canonical answers',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
-      configFile: false,
-      root: ROOT,
-      plugins: [react()],
-      server: { host: '127.0.0.1', port: 0 },
-    })
+    const server = await createServer(
+      renderConfig({
+        configFile: false,
+        root: ROOT,
+        plugins: [react()],
+        server: { host: '127.0.0.1', port: 0 },
+      })
+    )
     await server.listen()
-    const browser = await chromium.launch({ headless: true })
+    const browser = await chromium.launch({
+      headless: true,
+      channel: process.env.PLAYWRIGHT_CHANNEL,
+    })
     try {
       for (const [index, canonical, displayed] of [
         [0, '确认执行', 'Confirm execution'],
@@ -116,7 +130,10 @@ test(
       const reply = page.getByTestId('interaction-reply')
       await expect(reply).toContainText('Literature library confirmation')
       await expect(reply).toContainText('Cancel')
-      await reply.getByRole('button').click()
+      await page
+        .getByRole('button', { name: 'Literature library confirmation', exact: true })
+        .click()
+      await expect(reply).toBeVisible()
       await expect(reply).toContainText('AI requests the destructive operation delete')
       await expect(reply).toContainText('用户标题')
       await expect(reply).not.toContainText('文献库操作确认')
