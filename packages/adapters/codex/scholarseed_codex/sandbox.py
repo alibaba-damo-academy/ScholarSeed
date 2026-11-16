@@ -294,7 +294,7 @@ class WindowsSandboxBootstrap:
                 for entry, probe in enumerate(probes):
                     # Native execution can refresh the private DACL before the
                     # next command. Requalify under the same startup mutex.
-                    await self._prepare_private_storage()
+                    await self._prepare_probe_storage(probe.kind, entry)
                     LOGGER.info(
                         "windows_sandbox_tool_check event=started kind=%s entry=%s",
                         probe.kind,
@@ -472,6 +472,31 @@ class WindowsSandboxBootstrap:
                 "Windows sandbox cannot access built-in tools; check resource permissions",
                 SANDBOX_RESOURCE_ERROR,
             ) from error
+
+    async def _prepare_probe_storage(self, kind: str, entry: int) -> None:
+        started_at = time.monotonic()
+        try:
+            await self._prepare_private_storage()
+        except AppServerError as error:
+            LOGGER.warning(
+                "windows_sandbox_probe_maintenance event=failed kind=%s entry=%s "
+                "generation=%s elapsed_ms=%d safe_error=%s",
+                kind,
+                entry,
+                self._generation,
+                round((time.monotonic() - started_at) * 1000),
+                error.safe_error,
+            )
+            raise
+        LOGGER.info(
+            "windows_sandbox_probe_maintenance event=finished kind=%s entry=%s "
+            "generation=%s elapsed_ms=%d recovery_available=%s",
+            kind,
+            entry,
+            self._generation,
+            round((time.monotonic() - started_at) * 1000),
+            self._recovery is not None and self._version in SANDBOX_RECOVERY_VERSIONS,
+        )
 
     async def _prepare_private_storage(self) -> None:
         if self._recovery is None:

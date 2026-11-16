@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "pdf-multipage",
+  "revision": "1",
+  "name": "多页 PDF 合成输入",
+  "description": "十页合成 PDF 原始输入，用于阅读和查找专项，不包含产品状态或执行结果。",
+  "source": {
+    "kind": "synthetic",
+    "origin": "Repository-authored synthetic multipage PDF generated with ReportLab invariant mode.",
+    "rights": "Synthetic repository input containing no third-party or user data; repository license applies."
+  },
+  "files": [
+    {
+      "id": "multipage-pdf",
+      "source": "files/multipage.pdf",
+      "target": "multipage.pdf",
+      "mediaType": "application/pdf",
+      "size": 6838,
+      "sha256": "255322ad540ce1297af7252a4a807eb8f56c7a847e29347cc76229d4066a672d"
+    }
+  ]
+}

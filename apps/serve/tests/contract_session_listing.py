@@ -286,7 +286,11 @@ def principal_axis(root: Path) -> None:
             )
 
         app.state.runtime_service.readiness = readiness
-        response = client.get("/api/serve/sessions")
+        with patch.object(
+            catalog, "observe", side_effect=AssertionError("list installed mutation triggers")
+        ) as observer:
+            response = client.get("/api/serve/sessions")
+            check("ordinary listing skips notification setup", not observer.called)
         payload = response.json()
         rows = payload.get("sessions", [])
         ids = [row["session_id"] for row in rows]
@@ -443,6 +447,36 @@ def principal_axis(root: Path) -> None:
         )
         project_scopes(app, client, root, principal)
         pagination_regression(app, client, principal)
+        legacy = catalog.register(
+            "legacy-model",
+            principal,
+            runtime_id=RUNTIME_ID,
+            vendor_thread_id="legacy-model-thread",
+            vendor_session_id=None,
+            runtime_workdir=str(root / "legacy-model"),
+            project_path=None,
+            output_root=str(root / "legacy-model" / "output"),
+            codex_version=None,
+            model_id=None,
+            policy_id=None,
+            status=SessionStatus.READY,
+            title="Legacy model",
+            created_at=0.0,
+        )
+        with patch.object(catalog, "observe", wraps=catalog.observe) as observer:
+            legacy_response = client.get("/api/serve/sessions", params={"query": legacy.title})
+            check("legacy model backfill uses one observed connection", observer.call_count == 1)
+        legacy_rows = legacy_response.json().get("sessions", [])
+        persisted = catalog.get(legacy.session_id)
+        check(
+            "legacy model is persisted and projected by listing",
+            legacy_response.status_code == 200
+            and len(legacy_rows) == 1
+            and persisted is not None
+            and bool(persisted.model_id)
+            and legacy_rows[0]["runtime"]["model_id"] == persisted.model_id,
+            legacy_response.text,
+        )
 
 
 def pagination_regression(app: Any, client: TestClient, principal: SessionPrincipal) -> None:

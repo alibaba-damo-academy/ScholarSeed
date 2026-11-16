@@ -509,6 +509,13 @@ class SessionModelState:
 
 
 @dataclass(frozen=True)
+class SessionListState:
+    binding: RuntimeBinding | None
+    model: SessionModelState
+    pending: PendingTurnSettlement | None
+
+
+@dataclass(frozen=True)
 class SessionHilRecord:
     """One durable vendor RPC to product HIL request mapping."""
 
@@ -4485,6 +4492,12 @@ class SessionCatalogStore:
                 (session_id,),
             ).fetchone()
             if row is None:
+                begin_write(connection, self._database)
+                row = connection.execute(
+                    f"SELECT * FROM {SESSION_MODEL_TABLE} WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+            if row is None:
                 catalog = connection.execute(
                     f"SELECT model_id, updated_at FROM {SESSION_CATALOG_TABLE} WHERE session_id = ?",
                     (session_id,),
@@ -4514,6 +4527,50 @@ class SessionCatalogStore:
         if row is None:
             raise SessionAccessError("session not found")
         return self._model_state(row)
+
+    def list_states(
+        self, session_ids: Sequence[str], *, default_model_id: str
+    ) -> dict[str, SessionListState]:
+        """Read a page of durable task state without installing mutation triggers."""
+
+        if not session_ids:
+            return {}
+        placeholders = ",".join("?" for _ in session_ids)
+        with reader(self._database) as connection:
+            connection.execute("BEGIN")
+            bindings = {
+                str(row["product_session_id"]): self._runtime_binding(row)
+                for row in connection.execute(
+                    f"SELECT * FROM {SESSION_RUNTIME_BINDING_TABLE} "
+                    f"WHERE product_session_id IN ({placeholders})",
+                    session_ids,
+                )
+            }
+            models = {
+                str(row["session_id"]): self._model_state(row)
+                for row in connection.execute(
+                    f"SELECT * FROM {SESSION_MODEL_TABLE} WHERE session_id IN ({placeholders})",
+                    session_ids,
+                )
+            }
+            settlements = _materialize_rows(
+                connection,
+                connection.execute(
+                    f"SELECT * FROM {SESSION_TURN_SETTLEMENT_TABLE} "
+                    f"WHERE session_id IN ({placeholders})",
+                    session_ids,
+                ).fetchall(),
+            )
+            pending = {str(row["session_id"]): self._turn_settlement(row) for row in settlements}
+        return {
+            session_id: SessionListState(
+                bindings.get(session_id),
+                models.get(session_id)
+                or self.model_state(session_id, default_model_id=default_model_id),
+                pending.get(session_id),
+            )
+            for session_id in session_ids
+        }
 
     @staticmethod
     def _model_state(row: sqlite3.Row | Mapping[str, Any]) -> SessionModelState:
@@ -6012,7 +6069,7 @@ class SessionCatalogStore:
             limit_clause = "LIMIT ?"
             params.append(limit)
         order = "updated_at DESC, session_id"
-        with closing(self._connect()) as connection, connection:
+        with reader(self._database) as connection:
             rows = connection.execute(
                 f"""
                 SELECT * FROM {SESSION_CATALOG_TABLE}

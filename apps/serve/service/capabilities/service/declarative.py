@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -14,6 +14,9 @@ OPENUI_FORMAT = "openui-lang"
 OPENUI_ROOT = "Conversation"
 OPENUI_ROOT_REQUIRED = "openui_root_required"
 OPENUI_SOURCE_BYTES = 65536
+OPENUI_LAYOUT_DEPTH = 16
+OPENUI_LAYOUT_NAME = re.compile(r"[A-Z][A-Za-z0-9]*")
+OPENUI_LITERAL_TYPES = frozenset({"string", "number", "integer", "boolean", "null"})
 OPENUI_OPENING_DELIMITERS = frozenset("([{")
 OPENUI_DECLARATIONS = re.compile(
     r"""(?:"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|(?:\#|//)[^\r\n]*)"""
@@ -47,3 +50,50 @@ class ConversationDocument(BaseModel):
         if not source.strip() or len(source.encode()) > OPENUI_SOURCE_BYTES:
             raise ValueError("openui_source_size")
         return source
+
+
+class ConversationLayout(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    component: Literal["Conversation"]
+    args: list[Any]
+
+    @staticmethod
+    def literal_field(schema: object) -> bool:
+        while isinstance(schema, dict):
+            kind = schema.get("type")
+            if not isinstance(kind, str):
+                return False
+            if kind != "array":
+                return kind in OPENUI_LITERAL_TYPES
+            schema = schema.get("items")
+        return False
+
+    def validate_fields(self, schema: dict[str, Any]) -> None:
+        required = set(schema.get("required", ()))
+        pending = [(self.args, 0)]
+        while pending:
+            value, depth = pending.pop()
+            if depth > OPENUI_LAYOUT_DEPTH:
+                raise ValueError("openui_layout_depth")
+            if isinstance(value, list):
+                pending.extend((item, depth + 1) for item in value)
+            elif isinstance(value, dict):
+                if set(value) == {"field"}:
+                    field = value["field"]
+                    if (
+                        not isinstance(field, str)
+                        or field not in required
+                        or not self.literal_field(schema.get("properties", {}).get(field))
+                        or field in {"__proto__", "constructor", "prototype"}
+                    ):
+                        raise ValueError("openui_layout_field_invalid")
+                elif (
+                    set(value) == {"component", "args"}
+                    and isinstance(value["component"], str)
+                    and OPENUI_LAYOUT_NAME.fullmatch(value["component"])
+                    and isinstance(value["args"], list)
+                ):
+                    pending.append((value["args"], depth + 1))
+                else:
+                    raise ValueError("openui_layout_node_invalid")

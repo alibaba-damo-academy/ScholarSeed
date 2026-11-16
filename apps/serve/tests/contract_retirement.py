@@ -66,6 +66,29 @@ native.release(pin)
 
 
 class RetirementContracts(unittest.TestCase):
+    def test_inventory_accepts_only_empty_regular_legacy_policy_slots(self):
+        for identity in (
+            "posix-0000000000000001-0000000000000002",
+            "windows-0000000000000001-00000000000000000000000000000002",
+        ):
+            with self.subTest(identity=identity), directory("ss-retirement-") as root:
+                source = root / LEGACY_DIRECTORY
+                source.mkdir()
+                slot = source / f"{identity}-policy"
+                slot.touch()
+                inspection = retire(source, "inspect")
+                self.assertEqual(inspection["entries"], 1)
+                with self.assertRaisesRegex(ValueError, "Confirm old processes"):
+                    retire(source, "quarantine", expected_identity=str(inspection["identity"]))
+                self.assertTrue(slot.exists())
+                slot.write_bytes(b"not a lock placeholder")
+                with self.assertRaisesRegex(ValueError, "Unrecognized or nonempty"):
+                    retire(source, "inspect")
+                slot.unlink()
+                (source / f"{identity}-policy-unknown").touch()
+                with self.assertRaisesRegex(ValueError, "Unrecognized or nonempty"):
+                    retire(source, "inspect")
+
     @unittest.skipUnless(sys.platform in {"darwin", "win32"}, "native registry locks")
     def test_default_registry_cleans_legacy_on_startup_and_reuses_released_slots(self):
         with directory("ss-registry-") as account:
@@ -130,7 +153,7 @@ class RetirementContracts(unittest.TestCase):
         with directory("ss-retirement-") as root:
             source = root / ".scholarseed-coordination"
             source.mkdir()
-            (source / _SLOT_NAME).touch()
+            (source / "posix-0000000000000001-0000000000000002-policy").touch()
             expected = str(retire(source, "inspect")["identity"])
             for action in ("quarantine", "purge"):
                 result = subprocess.run(

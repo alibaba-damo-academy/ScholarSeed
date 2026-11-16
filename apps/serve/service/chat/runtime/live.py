@@ -956,6 +956,9 @@ class LiveSession:
     async def run_runtime(
         self, turn_input: TurnInput, *, frozen_request: TurnRequest | None = None
     ) -> RuntimeTurnResult:
+        if self.prediction_task is not None and self.prediction_task is not asyncio.current_task():
+            self.prediction_task.cancel()
+            await asyncio.gather(self.prediction_task, return_exceptions=True)
         driver = self.runtime_driver
         if driver is None:
             raise RuntimeError("runtime session driver is unavailable")
@@ -3693,6 +3696,8 @@ class LiveSession:
                 validate_component_value(
                     definition.get("input_schema", COMPONENT_SCHEMA_DEFAULT), command.data
                 )
+                if waiting and definition.get("openui") is not None:
+                    raise ValueError("component_display_only")
                 if waiting and not any(
                     action["capability"] == COMPONENT_ANSWER_CAPABILITY
                     for action in definition["actions"]

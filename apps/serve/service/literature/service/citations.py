@@ -13,19 +13,19 @@ from service.literature.service.comprehension import EXTRACTION_PURPOSE, Compreh
 from service.literature.service.joint import (
     CITATION_MARKER,
     READING_END,
-    SOURCE_MARKER,
     JointStream,
+    citation_issues,
 )
 from service.platform.inference import ReasoningPolicy
 
 WORDS = re.compile(r"[a-zA-Zα-ωΑ-Ω][a-zA-Zα-ωΑ-Ω0-9_]*|\d+(?:\.\d+)?")
 MAX_CANDIDATES = 64
 MAX_SOURCE_CHARS = 16000
-MAX_ISSUES = 12
+MAX_REPAIR_INPUT_CHARS = 32000
 CONTEXT_BEFORE = 650
 CONTEXT_AFTER = 150
 RETRIEVED_CANDIDATES = 6
-MAX_REPAIR_TOKENS = 1024
+MAX_REPAIR_TOKENS = 2048
 CONTEXT_RADIUS = 2
 ERROR = "pdf_ai_reading_citations_invalid"
 INSTRUCTIONS = """Select direct source evidence for the marked claims in an existing reading.
@@ -87,12 +87,9 @@ def compile_citation_repair(stream: JointStream) -> CitationRepair | None:
         return None
     body = stream.output.split(READING_END, 1)[0]
     markers = list(CITATION_MARKER.finditer(body))
-    matches = [
-        m
-        for m in markers
-        if not SOURCE_MARKER.fullmatch(m[0]) or m[0][2:-2] not in stream.plan.sources
-    ]
-    if not matches or len(matches) > MAX_ISSUES:
+    matches = citation_issues(body, stream.plan.sources)
+    # An unterminated marker may include prose; selection-only repair must not delete it.
+    if not matches or any(not m[0].endswith("]]") for m in matches):
         return None
     sources = stream.plan.sources
     words = {key: set(WORDS.findall(value["text"].lower())) for key, value in sources.items()}
@@ -100,7 +97,7 @@ def compile_citation_repair(stream: JointStream) -> CitationRepair | None:
     supplied: dict[str, str] = {}
     remaining = MAX_SOURCE_CHARS
     for index, match in enumerate(matches):
-        position = markers.index(match)
+        position = next(i for i, marker in enumerate(markers) if marker.span() == match.span())
         while (
             position and not body[markers[position - 1].end() : markers[position].start()].strip()
         ):
@@ -152,10 +149,25 @@ def compile_citation_repair(stream: JointStream) -> CitationRepair | None:
         )
         allowed.append(frozenset(candidates))
     payload = json.dumps({"issues": issues, "sources": supplied}, ensure_ascii=False)
+    # Bound the serialized request and a conservative two-characters-per-token
+    # response estimate using actual candidate ID lengths, not the issue count.
+    response_bound = json.dumps(
+        {
+            "replacements": [
+                {"index": i, "source_ids": sorted(ids, key=len, reverse=True)[:3]}
+                for i, ids in enumerate(allowed)
+            ]
+        }
+    )
+    if (
+        len(payload) + len(INSTRUCTIONS) > MAX_REPAIR_INPUT_CHARS
+        or len(response_bound) > MAX_REPAIR_TOKENS * 2
+    ):
+        return None
     return CitationRepair(
         CompiledAssistantAction(
             purpose=EXTRACTION_PURPOSE,
-            prompt_version="reading/citation-repair-v1",
+            prompt_version="reading/citation-repair-v2",
             instructions=INSTRUCTIONS,
             input_text=payload,
             max_input_chars=len(payload) + len(INSTRUCTIONS),

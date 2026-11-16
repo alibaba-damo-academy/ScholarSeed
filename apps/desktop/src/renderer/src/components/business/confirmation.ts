@@ -20,7 +20,7 @@ export function pendingConversationConfirmations(
   return thread.readOnly
     ? []
     : pendingHilItems(thread.conversation).filter((item) =>
-        availabilityPolicy.hilAvailable(item.hilKind ?? '')
+        availabilityPolicy.hilAvailable(item.hilKind ?? '', item.browserApproval?.action)
       )
 }
 

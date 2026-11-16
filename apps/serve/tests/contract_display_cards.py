@@ -16,7 +16,7 @@ from jsonschema import Draft7Validator
 
 from service.assistant.service.nextsteps import NEXT_STEPS_CARD, validate_next_steps_card
 from service.capabilities.service.components import ComponentRegistry
-from service.capabilities.service.descriptor import validate_component_value
+from service.capabilities.service.descriptor import PluginComponent, validate_component_value
 from service.capabilities.service.skills import SkillCatalog
 from service.chat.api.cards import register_card_routes
 from service.chat.constants import PRODUCT_EVENT_DISPLAY_CARD
@@ -92,6 +92,50 @@ def reference_payload() -> dict:
 
 
 class DisplayCardContract(unittest.TestCase):
+    def test_fixed_layout_display_pins_each_data_set_and_rejects_invalid_calls(self):
+        live, events = self._live()
+        registry = ComponentRegistry(self.root / "fixed.sqlite3")
+        live._skills.components = registry
+        component = PluginComponent.model_validate(
+            {
+                "id": "comparison",
+                "slot": "fixed.comparison",
+                "preview": "preview.json",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"current": {"type": "string"}},
+                    "required": ["current"],
+                    "additionalProperties": False,
+                },
+                "openui": {
+                    "component": "Conversation",
+                    "args": [[{"component": "TextContent", "args": [{"field": "current"}]}]],
+                },
+            }
+        ).model_dump(mode="json")
+        registry.publish(
+            [{"fingerprint": "fixed-v1", "descriptor": {"id": "fixed", "components": [component]}}]
+        )
+        for index, current in enumerate(("15 days", "21 days")):
+            command = ComponentInvocation(
+                request_id=f"result-{index}",
+                slot="fixed.comparison",
+                title="Comparison",
+                data={"current": current},
+            )
+            result = asyncio.run(
+                live.component_interaction(command, turn_id=TURN_ID, waiting=False)
+            )
+            snapshot = registry.snapshot(result["component"], user_id=live.user_id)
+            self.assertEqual(snapshot["descriptor"]["components"][0]["openui"], component["openui"])
+            self.assertEqual(snapshot["interaction"]["data"], {"current": current})
+        with self.assertRaisesRegex(ValueError, "component_display_only"):
+            asyncio.run(live.component_interaction(command, turn_id=TURN_ID, waiting=True))
+        invalid = command.model_copy(update={"request_id": "invalid", "data": {"current": 21}})
+        with self.assertRaises(ValueError):
+            asyncio.run(live.component_interaction(invalid, turn_id=TURN_ID, waiting=False))
+        self.assertEqual(len(events.replay(live.id)), 2)
+
     def test_canvas_display_is_nonblocking_and_interaction_uses_existing_wait_path(self):
         live, events = self._live()
         live._skills.components = ComponentRegistry(self.root / "canvas.sqlite3")
@@ -208,7 +252,7 @@ class DisplayCardContract(unittest.TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="display-card-")
         self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name)
+        self.root = Path(temporary.name).resolve()
         self.registry = CardRegistry()
         self.registry.register(BIBLIOGRAPHY_TEST_CARD, validate_citations)
 

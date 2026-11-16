@@ -2,6 +2,27 @@
   "descriptor": ".scholarseed-plugin.json",
   "schema": {
     "$defs": {
+      "ConversationLayout": {
+        "additionalProperties": false,
+        "properties": {
+          "component": {
+            "const": "Conversation",
+            "title": "Component",
+            "type": "string"
+          },
+          "args": {
+            "items": {},
+            "title": "Args",
+            "type": "array"
+          }
+        },
+        "required": [
+          "component",
+          "args"
+        ],
+        "title": "ConversationLayout",
+        "type": "object"
+      },
       "PluginAction": {
         "additionalProperties": false,
         "properties": {
@@ -74,6 +95,18 @@
             "default": null,
             "description": "Package-relative compiled JavaScript component entry",
             "title": "Entry"
+          },
+          "openui": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ConversationLayout"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Fixed display-only OpenUI layout. Agent data can fill declared required fields only."
           },
           "preview": {
             "description": "Package-relative conversation scenario JSON",
@@ -1237,6 +1270,6 @@
   },
   "identity": {
     "version": "1.0.0",
-    "sha256": "f8480ea9fbe744094cdfef7402144f088b46c42ca38ca6b9337c6acb8ecac49f"
+    "sha256": "0b0f126dcf170c84a086bcbc88504dfc4ddec43001ca5e9d4cd6c9ca08d04ce2"
   }
 }

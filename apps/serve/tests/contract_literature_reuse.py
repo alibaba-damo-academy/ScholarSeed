@@ -101,7 +101,7 @@ class ReadingReuseContract(unittest.TestCase):
         self.assertEqual(exported["source_mapping"], self.asset["source_mapping"])
 
     def test_transport_only_upgrade_keeps_both_saved_versions_reusable(self):
-        for version in ("0.2.4", "0.2.5", "0.2.6"):
+        for version in ("0.2.4", "0.2.5", "0.2.6", "0.2.7"):
             with self.subTest(version=version):
                 self.asset["metadata"]["extractor_version"] = version
                 self.assertEqual(self.prepare()["assets"]["p1"], self.asset)

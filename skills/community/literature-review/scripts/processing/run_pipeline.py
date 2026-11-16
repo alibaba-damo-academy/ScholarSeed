@@ -13,8 +13,10 @@ from typing import Optional
 from types import SimpleNamespace
 from pathlib import Path
 
+from knowledge_layer.comprehend import ExtractionProtocolError, extraction_blocks
+
 from service.literature.service.atomic import material_asset, prepare_abstract
-from service.literature.service.comprehension import ReadingInput, ComprehensionError, EXTRACTION_INCOMPLETE, extraction_blocks
+from service.literature.service.comprehension import ReadingInput, ComprehensionError, EXTRACTION_INCOMPLETE
 
 
 import llm_call  # for setting LLM_RETRIES at runtime
@@ -115,7 +117,7 @@ async def _process_single_paper(
                         try:
                             parsed = {key: value for key, value in extraction_blocks(response, paper_type).items()
                                       if key != 'paper_type'}
-                        except ComprehensionError as error:
+                        except ExtractionProtocolError as error:
                             parsed = None
                             values['protocol_error'] = str(error)
                     values['response_ref'] = diagnostic.result(paper_id, 'model_response',

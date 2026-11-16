@@ -3350,6 +3350,48 @@ test('literature PDF AI requests require configured models', async ({}, testInfo
   } finally { await desktop.attachArtifacts() }
 })
 
+test('literature PDF keeps reading position when the page input loses focus to the outline', async ({}, testInfo) => {
+  const runtime = createRuntime(testInfo)
+  const desktop = new DesktopSession(runtime, testInfo)
+  try {
+    const page = await desktop.launch()
+    const { document } = await openSeededLiteraturePdf(page, runtime)
+    const pageInput = document.getByTestId('pdf-page-input')
+    const pages = document.locator('.vds-pdf-pages')
+    const navigationToggle = document.getByTestId('pdf-sidebar-toggle')
+    await expect(document.getByTestId('pdf-page-1').locator('canvas')).toBeVisible()
+    await pageInput.press('Enter')
+    const readingOffset = () => pages.evaluate((element) => element.scrollTop)
+    const pageStart = await readingOffset()
+    await pages.hover()
+    await page.mouse.wheel(0, SELECTION_SCROLL_DISTANCE_PX)
+    await expect.poll(readingOffset).toBeGreaterThan(pageStart + PDF_ZOOM_ANCHOR_TOLERANCE_PX)
+    const beforeToggle = await readingOffset()
+    await expect(pageInput).toBeFocused()
+    const geometry = () => pages.evaluate((element) => ({
+      top: element.scrollTop,
+      maxTop: element.scrollHeight - element.clientHeight,
+      width: element.clientWidth,
+      pageTop: element.querySelector('[data-testid="pdf-page-1"]')?.getBoundingClientRect().top,
+    }))
+    const before = await geometry()
+    await navigationToggle.click()
+    await expect(navigationToggle).toHaveAttribute('aria-pressed', 'true')
+    const expanded = await geometry()
+    await navigationToggle.click()
+    await expect(navigationToggle).toHaveAttribute('aria-pressed', 'false')
+    try {
+      await expect.poll(async () => Math.abs(await readingOffset() - beforeToggle))
+        .toBeLessThanOrEqual(PDF_ZOOM_ANCHOR_TOLERANCE_PX)
+    } finally {
+      await testInfo.attach('pdf-directory-geometry', {
+        body: JSON.stringify({ before, expanded, after: await geometry() }),
+        contentType: 'application/json',
+      })
+    }
+  } finally { await desktop.attachArtifacts() }
+})
+
 test('literature PDF opens annotations from the right rail and excludes the resource-only global control', async ({}, testInfo) => {
   const runtime = createRuntime(testInfo)
   const desktop = new DesktopSession(runtime, testInfo)

@@ -37,7 +37,19 @@ export function usePortalDocument(): Document {
   return useContext(PortalDocumentContext) ?? globalThis.document
 }
 
-export function Portal({ children }: { children?: ReactNode }): React.JSX.Element {
+export function Portal({
+  children,
+  hosted = false,
+}: {
+  children?: ReactNode
+  hosted?: boolean
+}): React.JSX.Element {
+  const renderOverlay = usePortalOverlay()
+  const content = <DocumentPortal>{children}</DocumentPortal>
+  return <>{hosted && renderOverlay ? renderOverlay(content) : content}</>
+}
+
+function DocumentPortal({ children }: { children?: ReactNode }): React.JSX.Element {
   const document = usePortalDocument()
   const container = useContext(PortalContext)
   return typeof document === 'undefined' ? (

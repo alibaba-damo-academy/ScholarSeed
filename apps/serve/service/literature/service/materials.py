@@ -11,8 +11,8 @@ import time
 from dataclasses import asdict, replace
 from io import BytesIO
 
-import pdfplumber
 from knowledge_layer.comprehend import SourceImage
+from PIL import Image
 
 from service.platform.citations import (
     PDF_CAPTION,
@@ -24,9 +24,9 @@ from service.platform.citations import (
     PdfOmission,
     PdfVisualRegion,
 )
-from service.platform.pdf import PdfRect, pdf_page_layout, render_pdf_page
+from service.platform.pdf import extract_pdf_table, render_pdf_preview
 
-POLICY_VERSION = "l1-images/v4"
+POLICY_VERSION = "l1-images/v6"
 MAX_IMAGES = 1
 MAX_IMAGE_EDGE = 1024
 MAX_IMAGE_PIXELS = 1_500_000
@@ -117,6 +117,7 @@ def prepare_images(
     enabled: bool,
     first_number: int,
     disabled_reason: str = "model_text_only",
+    deadline: float | None = None,
 ):
     policy = {
         "version": POLICY_VERSION,
@@ -129,6 +130,9 @@ def prepare_images(
     if not enabled:
         return (), {}, {**policy, "skipped": [disabled_reason], "elapsed_seconds": 0}
     started = time.monotonic()
+    deadline = deadline if deadline is not None else started + MAX_PREPARATION_SECONDS
+    if started >= deadline:
+        return (), {}, {**policy, "skipped": ["preparation_time_budget"], "elapsed_seconds": 0}
     candidates = []
     for region in index.regions:
         if region.kind not in (PDF_FIGURE, PDF_TABLE):
@@ -152,7 +156,7 @@ def prepare_images(
         if len(images) >= MAX_IMAGES:
             skipped.append("image_count_budget")
             break
-        if time.monotonic() - started > MAX_PREPARATION_SECONDS:
+        if time.monotonic() >= deadline:
             skipped.append("preparation_time_budget")
             break
         x0, y0, x1, y1 = region.quad
@@ -169,27 +173,32 @@ def prepare_images(
         ):
             continue
         try:
-            layout = pdf_page_layout(payload, region.page)
-            crop = PdfRect(
-                x0 * layout.width, y0 * layout.height, x1 * layout.width, y1 * layout.height
+            data = render_pdf_preview(
+                payload,
+                region.page,
+                quad=region.quad,
+                scale=IMAGE_SCALE,
+                max_edge=MAX_IMAGE_EDGE,
+                quality=JPEG_QUALITY,
+                deadline=deadline,
             )
-            image = render_pdf_page(payload, region.page, scale=IMAGE_SCALE, crop=crop)
-            image.thumbnail((MAX_IMAGE_EDGE, MAX_IMAGE_EDGE))
-            output = BytesIO()
-            image.save(output, format="JPEG", quality=JPEG_QUALITY)
-            data = output.getvalue()
+            with Image.open(BytesIO(data)) as image:
+                width, height = image.size
         except (ValueError, OSError, RuntimeError) as error:
             LOGGER.info(
                 "l1_optional_image_skipped region=%s error=%s",
                 region.region_id,
                 type(error).__name__,
             )
+            if time.monotonic() >= deadline:
+                skipped.append("preparation_time_budget")
+                break
             skipped.append("crop_failed")
             continue
-        if time.monotonic() - started > MAX_PREPARATION_SECONDS:
+        if time.monotonic() >= deadline:
             skipped.append("preparation_time_budget")
             break
-        count = image.width * image.height
+        count = width * height
         if pixels + count > MAX_IMAGE_PIXELS or size + len(data) > MAX_IMAGE_BYTES:
             skipped.append("image_input_budget")
             continue
@@ -201,8 +210,8 @@ def prepare_images(
             "label": label,
             "caption": caption,
             "sha256": hashlib.sha256(data).hexdigest(),
-            "width": image.width,
-            "height": image.height,
+            "width": width,
+            "height": height,
             "bytes": len(data),
             "render_scale": IMAGE_SCALE,
             "media_type": "image/jpeg",
@@ -225,93 +234,92 @@ def prepare_images(
     )
 
 
-def with_table_text(index: PdfIndex, payload: bytes) -> PdfIndex:
+def with_table_text(
+    index: PdfIndex,
+    payload: bytes,
+    *,
+    deadline: float | None = None,
+    diagnostics: dict | None = None,
+) -> PdfIndex:
     """Recover captioned native tables as layout blocks, without inferring cell values."""
     regions = [region for region in index.regions if region.kind == PDF_TABLE]
     if not regions or not payload:
         return index
+    deadline = deadline if deadline is not None else time.monotonic() + MAX_PREPARATION_SECONDS
     fragments = list(index.fragments)
     selected: list[PdfVisualRegion] = []
     omissions = list(index.omissions)
-    with pdfplumber.open(BytesIO(payload)) as document:
-        for region in sorted(
-            regions, key=lambda r: (r.page, -(r.quad[2] - r.quad[0]) * (r.quad[3] - r.quad[1]))
+    for region in sorted(
+        regions, key=lambda r: (r.page, -(r.quad[2] - r.quad[0]) * (r.quad[3] - r.quad[1]))
+    ):
+        x0, y0, x1, y1 = region.quad
+        if not (
+            all(math.isfinite(value) for value in region.quad)
+            and 0 <= x0 < x1 <= 1
+            and 0 <= y0 < y1 <= 1
         ):
-            x0, y0, x1, y1 = region.quad
-            if not (
-                all(math.isfinite(value) for value in region.quad)
-                and 0 <= x0 < x1 <= 1
-                and 0 <= y0 < y1 <= 1
-            ):
-                LOGGER.warning(
-                    "pdf_table_region_invalid index=%s region=%s page=%s quad=%s",
-                    index.index_id,
-                    region.region_id,
-                    region.page,
-                    region.quad,
-                )
-                omissions.append(PdfOmission(PDF_TABLE, "invalid_region_geometry", ()))
-                continue
-            if _text_covered(index, region) or any(
-                old.page == region.page and _overlaps(old.quad, region.quad) for old in selected
-            ):
-                continue
-            captions = _captions(index, region)
-            page = document.pages[region.page - 1]
-            x0, y0, x1, y1 = region.quad
-            crop = page.crop((x0 * page.width, y0 * page.height, x1 * page.width, y1 * page.height))
-            grids = [table.extract() for table in crop.find_tables()]
-            grids = [
-                rows
-                for rows in grids
-                if len(rows) >= 2 and all(sum(bool(cell) for cell in row) >= 2 for row in rows)
-            ]
-            if grids:
-                text = "\n".join(
-                    " | ".join(" ".join((cell or "").split()) for cell in row)
-                    for rows in grids
-                    for row in rows
-                )
-            else:
-                # Native layout covers unruled tables without guessing cell relations.
-                # Caption association avoids treating plot axes as a numeric table.
-                if not any(
+            LOGGER.warning(
+                "pdf_table_region_invalid index=%s region=%s page=%s quad=%s",
+                index.index_id,
+                region.region_id,
+                region.page,
+                region.quad,
+            )
+            omissions.append(PdfOmission(PDF_TABLE, "invalid_region_geometry", ()))
+            continue
+        if _text_covered(index, region) or any(
+            old.page == region.page and _overlaps(old.quad, region.quad) for old in selected
+        ):
+            continue
+        captions = _captions(index, region)
+        if time.monotonic() >= deadline:
+            if diagnostics is not None:
+                diagnostics["timeout_stage"] = "table"
+            break
+        try:
+            result = extract_pdf_table(
+                payload,
+                region.page,
+                quad=region.quad,
+                allow_unruled=any(
                     re.match(r"\s*Table\s+\d+|\s*表\s*\d+", item.text, re.I) for item in captions
-                ):
-                    continue
-                text = (
-                    crop.extract_text(
-                        layout=True,
-                        x_density=TABLE_LAYOUT_X_DENSITY,
-                        y_density=TABLE_LAYOUT_Y_DENSITY,
-                        x_tolerance=TABLE_WORD_TOLERANCE,
-                    )
-                    or ""
-                )
-                lines = [line.rstrip() for line in text.splitlines() if line.strip()]
-                if len(lines) < 2:
-                    continue
-                text = "\n".join(lines)
-            text = "\n".join([*(item.text for item in captions), text])
-            quads = tuple(
-                dict.fromkeys(
-                    (
-                        region.quad,
-                        *(
-                            q
-                            for item in captions
-                            for p in item.pages
-                            if p.page == region.page
-                            for q in p.quads
-                        ),
-                    )
+                ),
+                layout_settings={
+                    "x_density": TABLE_LAYOUT_X_DENSITY,
+                    "y_density": TABLE_LAYOUT_Y_DENSITY,
+                    "x_tolerance": TABLE_WORD_TOLERANCE,
+                },
+                deadline=deadline,
+            )
+        except (ValueError, OSError, RuntimeError):
+            if time.monotonic() >= deadline:
+                if diagnostics is not None:
+                    diagnostics["timeout_stage"] = "table"
+                break
+            raise
+        text = result["text"]
+        if not text:
+            continue
+        text = "\n".join([*(item.text for item in captions), text])
+        quads = tuple(
+            dict.fromkeys(
+                (
+                    region.quad,
+                    *(
+                        q
+                        for item in captions
+                        for p in item.pages
+                        if p.page == region.page
+                        for q in p.quads
+                    ),
                 )
             )
-            pages = (CitationPage(region.page, quads),)
-            identity = hashlib.sha256(
-                f"{index.index_id}:{region.region_id}:{text}".encode()
-            ).hexdigest()
-            prefix = "table_partial_" if crop.images else "table_"
-            fragments.append(PdfFragment(f"{prefix}{identity}", text, pages, kind=TABLE_TEXT))
-            selected.append(region)
+        )
+        pages = (CitationPage(region.page, quads),)
+        identity = hashlib.sha256(
+            f"{index.index_id}:{region.region_id}:{text}".encode()
+        ).hexdigest()
+        prefix = "table_partial_" if result["partial"] else "table_"
+        fragments.append(PdfFragment(f"{prefix}{identity}", text, pages, kind=TABLE_TEXT))
+        selected.append(region)
     return replace(index, fragments=tuple(fragments), omissions=tuple(omissions))

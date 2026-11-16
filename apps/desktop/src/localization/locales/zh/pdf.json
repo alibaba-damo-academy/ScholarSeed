@@ -193,8 +193,10 @@
     "resizeTranslation": "调整原文与译文列宽",
     "organizing": "正在生成解读",
     "preview": "生成预览 · 尚未保存",
+    "incomplete": "解读未完成，请重试。",
+    "viewPartial": "查看已生成内容",
     "basic": "基础解读 · L1",
-    "previousPreserved": "之前保存的解读仍可使用。"
+    "previousPreserved": "本次生成未完成，已保留上次解读。"
   },
   "status": {
     "strikethroughSaved": "删除线已保存",

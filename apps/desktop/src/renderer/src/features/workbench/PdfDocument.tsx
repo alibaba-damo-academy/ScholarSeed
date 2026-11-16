@@ -563,6 +563,12 @@ export function PdfDocument({
   const [searchError, setSearchError] = useState<string | null>(null)
   const [hasText, setHasText] = useState(true)
   const viewportRef = useRef<HTMLDivElement>(null)
+  const restoredViewportRef = useRef<HTMLDivElement | null>(null)
+  const constrainedNavigationRef = useRef<{
+    viewport: HTMLDivElement
+    top: number
+    anchor: Pick<PdfZoomAnchor, 'page' | 'y' | 'clientY'>
+  } | null>(null)
   const citationNavigationRef = useRef<HTMLDivElement>(null)
   const [citationNavigationHeight, setCitationNavigationHeight] = useState(0)
   const documentRef = useRef<HTMLDivElement>(null)
@@ -782,11 +788,11 @@ export function PdfDocument({
   }
   const fittedPageSize = translationLayoutOpen
     ? translationSpreadSize(translationSourceSize, translationRatio)
-    : natural
+    : (natural ?? estimatedPageSize)
   const scale =
     mode === 'custom'
       ? storedScale
-      : fittedPageSize && size.width && size.height
+      : size.width && size.height
         ? fittedScale(mode, fittedPageSize, fitViewport)
         : 1
   const scaleRef = useRef(scale)
@@ -861,9 +867,14 @@ export function PdfDocument({
       )
       return
     }
-    viewportRef.current
-      ?.querySelector<HTMLElement>(`[data-testid="pdf-page-${currentPage}"]`)
-      ?.scrollIntoView({ block: 'start', inline: 'center' })
+    const viewport = viewportRef.current
+    if (viewport && viewport !== restoredViewportRef.current && pageCount > 0) {
+      const page = viewport.querySelector<HTMLElement>(`[data-testid="pdf-page-${currentPage}"]`)
+      if (page) {
+        restoredViewportRef.current = viewport
+        page.scrollIntoView({ block: 'start', inline: 'center' })
+      }
+    }
     if (focus?.kind === 'citation' && focus.page === currentPage) {
       requestFocus({ kind: 'citation', page: currentPage, region: focus.region })
     }
@@ -890,7 +901,12 @@ export function PdfDocument({
     const page = viewport.querySelector<HTMLElement>(`[data-testid="pdf-page-${anchor.page}"]`)
     if (!page) return
     const bounds = page.getBoundingClientRect()
-    viewport.scrollBy({ top: bounds.top + bounds.height * anchor.y - anchor.clientY })
+    const target = viewport.scrollTop + bounds.top + bounds.height * anchor.y - anchor.clientY
+    viewport.scrollTo({ top: target })
+    constrainedNavigationRef.current =
+      target < 0 || target > viewport.scrollHeight - viewport.clientHeight
+        ? { viewport, top: viewport.scrollTop, anchor }
+        : null
   }, [sidebar, size])
   useEffect(() => setPageInput(String(currentPage)), [currentPage])
 
@@ -1753,7 +1769,14 @@ export function PdfDocument({
   }
   const toggleNavigation = (): void => {
     const viewport = viewportRef.current
+    const constrained = constrainedNavigationRef.current
+    constrainedNavigationRef.current = null
     if (viewport && !citationPages?.length && focus?.kind !== 'citation') {
+      if (constrained?.viewport === viewport && constrained.top === viewport.scrollTop) {
+        navigationAnchorRef.current = constrained.anchor
+        update({ sidebar: !sidebar })
+        return
+      }
       const frame = viewport.getBoundingClientRect()
       const clientY = frame.top + frame.height / 3
       let nearestDistance = Infinity
@@ -2247,7 +2270,11 @@ export function PdfDocument({
                 onKeyDown={(event) => {
                   if (event.key === 'Enter') navigate(pageNumber(pageInput, pageCount))
                 }}
-                onBlur={() => navigate(pageNumber(pageInput, pageCount))}
+                onBlur={() => {
+                  const target = pageNumber(pageInput, pageCount)
+                  if (target !== currentPage) navigate(target)
+                  setPageInput(String(target))
+                }}
               />
               <span className="whitespace-nowrap text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] [font-weight:var(--vds-fw-regular)] text-[var(--vds-text-tertiary)] tabular-nums">
                 / {pageCount || '…'}

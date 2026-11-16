@@ -10,7 +10,12 @@ import shutil
 import time
 import uuid
 from collections import deque
-from contextlib import AbstractAsyncContextManager, AbstractContextManager, AsyncExitStack, nullcontext
+from contextlib import (
+    AbstractAsyncContextManager,
+    AbstractContextManager,
+    AsyncExitStack,
+    nullcontext,
+)
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from functools import partial
@@ -2729,12 +2734,19 @@ class CodexProcessHost:
             if str(status.get("type") or "") == "notLoaded":
                 state.attachment_state = CodexThreadAttachmentState.DETACHED
                 state.attached_generation = 0
-                incident = self._attachment_incident(
-                    state,
-                    message_generation,
-                    safe_error="codex_thread_not_loaded",
-                )
-                await self._emitter.incident(state, incident, turn_id=turn_id)
+                if state.unload_confirmation is None:
+                    incident = self._attachment_incident(
+                        state,
+                        message_generation,
+                        safe_error="codex_thread_not_loaded",
+                    )
+                    await self._emitter.incident(state, incident, turn_id=turn_id)
+                else:
+                    logger.info(
+                        "codex_thread_not_loaded expected_unload=true thread_id=%s generation=%s",
+                        thread_id,
+                        message_generation,
+                    )
             await self._emitter.emit(
                 state,
                 CodexSessionEventKind.RUNTIME_STATUS,

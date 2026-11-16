@@ -370,6 +370,8 @@ export interface BrowserVisit {
   visitedAt: number
 }
 
+export const MAX_HISTORY_SEARCH_CHARS = 256
+
 export interface BrowserHistoryQuery {
   search?: string
   offset: number

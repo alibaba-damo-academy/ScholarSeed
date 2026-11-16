@@ -19,7 +19,10 @@ export type BrowserUiPort = Pick<
 >
 
 export type BrowserAgentHostPort = AgentBrowserPort &
-  Pick<BrowserRegistry, 'onAgentTargetInvalidated' | 'createAgentTarget' | 'closeAgentTarget'>
+  Pick<
+    BrowserRegistry,
+    'onAgentTargetInvalidated' | 'createAgentTarget' | 'closeAgentTarget' | 'isAgentTarget'
+  >
 
 export interface ActiveBrowserHost {
   readonly ui: BrowserUiPort

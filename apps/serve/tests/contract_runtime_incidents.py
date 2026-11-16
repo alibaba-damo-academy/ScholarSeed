@@ -2682,6 +2682,48 @@ class RuntimeIncidentContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(product_failure["status"], "error")
         self.assertEqual(product_failure["error"]["code"], "insufficient_quota")
 
+    async def test_subscription_limit_preserves_main_turn_attribution_after_auxiliary_failure(self):
+        client_turn_id = "client-subscription-limit-turn"
+        self.live.active_product_turn_id = client_turn_id
+        diagnostic = {
+            "phase": "finished",
+            "status_code": 200,
+            "end_reason": "provider_error",
+            "upstream_end": "provider_error",
+            "downstream": {
+                "last_event": "response.failed",
+                "terminal_event": "",
+                "error_code": "subscription_sharing_usage_limit_exceeded",
+            },
+        }
+        for stale_id in ("sample-request", "previous-turn", ""):
+            self.live.trace_completion({**diagnostic, "client_user_message_id": stale_id})
+            self.assertIsNone(self.live._model_bridge_failure)
+        self.live.trace_completion({**diagnostic, "client_user_message_id": client_turn_id})
+        recovered = self.live._model_bridge_failure
+        self.assertIsNotNone(recovered)
+        self.live.trace_completion(
+            {
+                **diagnostic,
+                "client_user_message_id": "late-sample-request",
+                "downstream": {"error_code": "authentication_error"},
+            }
+        )
+        self.assertEqual(self.live._model_bridge_failure, recovered)
+        await self.emit(
+            RuntimeEventKind.TURN_FAILED,
+            payload={
+                "error_code": "codex_provider_failed",
+                "safe_error": "The model provider rejected the request.",
+                "retryability": RuntimeRetryability.USER_RETRYABLE.value,
+            },
+        )
+        await self.settle_pending(client_turn_id)
+        record = self._settled_failure()
+        self.assertEqual(record.payload["code"], "subscription_sharing_usage_limit_exceeded")
+        self.assertFalse(record.payload["retryable"])
+        self.assertIsNone(self.live._model_bridge_failure)
+
     async def test_model_bridge_transport_failure_enriches_same_turn_runtime_failure(self) -> None:
         client_turn_id = "client-disconnected-turn"
         self.live.active_product_turn_id = client_turn_id

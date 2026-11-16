@@ -16,7 +16,7 @@ license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
-    "deep-rnd-l1==0.2.6",
+    "deep-rnd-l1==0.2.8",
     "aiosqlite",
     "damoatrace==0.1.0",
     "anthropic",

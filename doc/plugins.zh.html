@@ -153,11 +153,12 @@ footer { border-top: 1px solid var(--line); padding: 24px 0; font-size: 13px; co
 <h2 id="create--让-ai-创建">让 AI 创建</h2>
 <p>在书深对话中发送：</p>
 <blockquote>
-<p>请使用 plugin-create 创建 paper-reading-notes 插件。用户提供论文或摘录后，先用卡片询问阅读重点：“理解方法”或“核对证据”。理解方法时整理研究问题、方法步骤和适用条件；核对证据时整理主要结论、对应证据和局限。笔记附上页码或段落位置，材料未提到的内容标为未说明。生成源码、检查并打包 ZIP，再提供安装卡片。</p>
+<p>请使用 plugin-create 创建版本对比插件。对比用户提供的两个版本，在固定的 OpenUI 表格中显示条目、旧值、新值和来源。生成业务数据 schema，检查并打包 ZIP，再提供安装卡片。</p>
 </blockquote>
 <p>AI 会生成 Skill、描述符、组件和场景。检查交付的源码和报告后，在安装卡片中确认安装。</p>
 <p>要修改它，在同一对话继续指名 <code>plugin-create</code> 并描述变更；不用重新创建一个相同身份的插件。</p>
 <h2 id="create--自己编写">自己编写</h2>
+<p>以下手写的论文阅读示例使用现有 JavaScript 插件 SDK。<code>plugin-create</code> 不依赖该 SDK：适用的结果用固定 OpenUI 布局展示，交互和工作台需求则分别核实宿主能力。</p>
 <p>在安装了目标版本书深后端的 Python 环境中，查询 <code>host</code> 字段需要填写的值：</p>
 <pre><code class="language-sh">python -c &quot;from importlib.metadata import version; print('==' + version('scholarseed'))&quot;
 </code></pre>

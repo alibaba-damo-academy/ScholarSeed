@@ -201,6 +201,81 @@ test(
       return { page, start, submissions, cancelled, errors, result }
     }
 
+    await context.test(
+      'failed reading hides fallback assets and collapses partial prose',
+      async () => {
+        const { page, start, submissions } = await fixture(false)
+        try {
+          await start.click()
+          await expect.poll(() => submissions.length).toBe(1)
+          const partial = {
+            ...SAVED.modules.summary,
+            paper_type: 'survey',
+            text: 'Unfinished survey',
+            overview: { text: 'Unfinished survey' },
+            sections: [{ key: 'problem', items: [{ text: 'Survey background', evidence: [] }] }],
+          }
+          await submissions[0].fulfill({
+            json: {
+              task_id: 'failed-survey',
+              status: 'failed',
+              error_code: 'pdf_ai_reading_citations_invalid',
+              preview: partial,
+              result: {
+                ...SAVED,
+                modules: {
+                  summary: {
+                    ...partial,
+                    organization: 'fallback',
+                    text: 'Internal L1 fields',
+                    overview: { text: 'Internal L1 fields' },
+                  },
+                },
+              },
+            },
+          })
+          await expect(
+            page.getByText('部分引用未能确认，本次解读尚未保存，请重试。', { exact: true })
+          ).toBeVisible()
+          await expect(page.getByText('Internal L1 fields')).toHaveCount(0)
+          await expect(page.getByText('基础解读 · L1')).toHaveCount(0)
+          await expect(page.getByText('Unfinished survey', { exact: true })).not.toBeVisible()
+          await page.getByRole('button', { name: '查看已生成内容', exact: true }).click()
+          await expect(page.getByText('Unfinished survey', { exact: true })).toBeVisible()
+          await expect(page.getByText('领域脉络', { exact: true })).toBeVisible()
+          await expect(page.getByRole('button', { name: '重试', exact: true })).toBeEnabled()
+          await page.evaluate(() => Reflect.get(window, 'setLanguage')('en'))
+          await expect(
+            page.getByText(
+              'Some citations could not be verified. This reading has not been saved. Try again.',
+              { exact: true }
+            )
+          ).toBeVisible()
+          await page.route('**/ai/state?**', (route) =>
+            route.fulfill({
+              json: {
+                revision: 'revision',
+                attachment_id: 'paper',
+                task: null,
+                results: {
+                  summary: {
+                    ...SAVED,
+                    modules: { summary: { ...partial, organization: 'fallback' } },
+                  },
+                },
+              },
+            })
+          )
+          await page.reload()
+          await expect(page.getByText('解读未完成，请重试。', { exact: true })).toBeVisible()
+          await expect(page.getByText('基础解读 · L1')).toHaveCount(0)
+          await expect(page.getByRole('button', { name: '重试', exact: true })).toBeEnabled()
+        } finally {
+          await page.close()
+        }
+      }
+    )
+
     async function verifyChatFailure(page: Page): Promise<void> {
       await page.evaluate(() => {
         Reflect.set(window, 'chatMode', 'pending')
@@ -241,7 +316,7 @@ test(
             await expect(page.getByTestId('reading-generating')).toBeVisible()
             await expect(page.getByTestId('reading-chat')).toBeDisabled()
             await expect(
-              page.getByTestId('reading-generating').getByText('正在生成解读', { exact: true })
+              page.getByTestId('reading-generating').getByText('正在准备论文…', { exact: true })
             ).toBeVisible()
             await expect(page.getByTestId('reading-generating').getByRole('button')).toHaveCount(0)
             await page.getByRole('button', { name: '取消', exact: true }).click()

@@ -13,8 +13,8 @@ description_zh: >-
   图表及PDF、Markdown、DOCX。在检索前确认方案，保留指定文献范围。
   新文献发现依赖独立安装的 agentic-search。
 metadata:
-  version: "2026.11.13+8"
-version: "2026.11.13+8"
+  version: "2026.11.13+9"
+version: "2026.11.13+9"
 ---
 # Literature review
 

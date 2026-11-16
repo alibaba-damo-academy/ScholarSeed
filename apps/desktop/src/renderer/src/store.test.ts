@@ -405,13 +405,18 @@ test('project literature entry preserves conversation and opens the files litera
   assert.deepEqual(state.tabs, literatureNavigation([], 'project').tabs)
 })
 
-test('web source navigation reveals a split workspace without losing the conversation or layout preference', () => {
+test('browser navigation preserves layout for in-page links and reveals split layout for web sources', () => {
   const action = block(storeSource, 'openWorkbenchView: (view, options) =>', 'toggleModulePanel:')
-  const compiled = transformSync(
-    `const actions = {${action}}; actions.openWorkbenchView('browser', { preserveProject: true, browserPageId: 'source-page', browserPageOwned: true })`,
-    { loader: 'ts', format: 'cjs' }
-  ).code
-  for (const swapped of [false, true]) {
+  for (const [preserveLayout, swapped] of [
+    [false, false],
+    [false, true],
+    [true, false],
+    [true, true],
+  ]) {
+    const compiled = transformSync(
+      `const actions = {${action}}; actions.openWorkbenchView('browser', { preserveProject: true, browserPageId: 'source-page', browserPageOwned: true ${preserveLayout ? ', preserveLayout: true' : ''} })`,
+      { loader: 'ts', format: 'cjs' }
+    ).code
     for (const full of [false, true]) {
       let state = {
         mainView: 'resource',
@@ -422,9 +427,10 @@ test('web source navigation reveals a split workspace without losing the convers
         activeTab: 'conversation',
         workbenchLayout: {
           ...DEFAULT_PROJECT_LAYOUT,
+          open: preserveLayout,
           swapped,
           full,
-          conversationFull: full,
+          conversationFull: !preserveLayout && full,
           taskTab: full,
         },
       }
@@ -443,9 +449,9 @@ test('web source navigation reveals a split workspace without losing the convers
         },
       })
       assert.equal(state.workbenchLayout.open, true)
-      assert.equal(state.workbenchLayout.full, false)
+      assert.equal(state.workbenchLayout.full, preserveLayout && full)
       assert.equal(state.workbenchLayout.conversationFull, false)
-      assert.equal(state.workbenchLayout.taskTab, false)
+      assert.equal(state.workbenchLayout.taskTab, preserveLayout && full)
       assert.equal(state.workbenchLayout.swapped, swapped)
       assert.equal(state.activeSession, 'session')
       assert.equal(state.composerText, 'unsent draft')

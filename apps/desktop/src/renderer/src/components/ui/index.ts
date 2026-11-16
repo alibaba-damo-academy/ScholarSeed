@@ -507,4 +507,4 @@ export {
 export { cx } from './utils'
 export { Page, PageHeader, PageBody, PageSection } from './Page'
 export type { PageProps, PageHeaderProps, PageBodyProps, PageSectionProps } from './Page'
-export { PortalProvider, usePortalDocument } from './portal'
+export { Portal, PortalProvider, usePortalDocument } from './portal'

@@ -9,7 +9,7 @@ const RIGHT_BUTTON = 2
 
 test('selection actions keep their intrinsic width outside the conversation clipping boundary', () => {
   const source = readFileSync(new URL('./Annotations.tsx', import.meta.url), 'utf8')
-  assert.match(source, /createPortal\(/)
+  assert.match(source, /<Portal hosted>/)
   assert.match(source, /!fixed[^`]+w-max/)
   assert.doesNotMatch(source, /SELECTION_TOOLBAR_MAX_WIDTH_PX|width: draft.width|overflow-x-auto/)
   assert.match(source, /flex w-max flex-nowrap/)

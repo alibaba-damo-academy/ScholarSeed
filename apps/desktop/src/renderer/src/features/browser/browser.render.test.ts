@@ -1766,6 +1766,12 @@ test(
       )
       await page.getByRole('textbox', { name: '网址' }).fill('Paper')
       await expect(overlay.getByRole('status')).toHaveText('暂时无法读取本机浏览历史。')
+      const longAddress = 'https://example.com/?q=' + 'x'.repeat(234)
+      await address.fill(longAddress)
+      await expect(address).toHaveValue(longAddress)
+      await expect(overlay.getByRole('status')).not.toHaveText('暂时无法读取本机浏览历史。')
+      await address.fill(longAddress.slice(0, -1))
+      await expect(overlay.getByRole('status')).toHaveText('暂时无法读取本机浏览历史。')
     } finally {
       await browser.close()
       await server.close()

@@ -112,6 +112,7 @@ from service.chat.persistence.catalog import (
     SessionCatalogStore,
     SessionHilRecord,
     SessionListScope,
+    SessionListState,
     SessionModelState,
     SessionOrderPlacement,
     SessionPrincipal,
@@ -238,6 +239,7 @@ PREDICTION_PROMPT = (
     "Do not use tools or perform actions. Do not introduce permissions or commitments. "
     "Use at most 500 characters. Return no text if there is no useful next message."
 )
+HTTP_ACCEPTED = 202
 HTTP_BAD_REQUEST = 400
 HTTP_NOT_FOUND = 404
 HTTP_CONFLICT = 409
@@ -416,6 +418,14 @@ def workspace_allows(active_workspace: Path, session_workspace: Path | None) -> 
     active = active_workspace.expanduser().resolve()
     requested = session_workspace.expanduser().resolve()
     return requested == active or active in requested.parents
+
+
+@dataclass(frozen=True)
+class SessionListEntry:
+    record: SessionCatalogRecord
+    state: SessionListState
+    match: dict[str, Any] | None
+    last_agent_reply_at: float | None
 
 
 class SessionService:
@@ -1649,9 +1659,14 @@ class SessionService:
                 continue
             self._access.require(session_id, principal)
             live = self._sessions.get(session_id)
-            row = self._list_row(record)
-            row.pop("last_seq", None)
             pending = self._access.pending_turn_settlement(session_id)
+            state = SessionListState(
+                self._access.runtime_binding(session_id), self._model_state(session_id), pending
+            )
+            row = self._list_row(record, state)
+            if row["recovery_blocked"] and pending is not None:
+                row.update(self._events.recovery_snapshot(session_id, pending.native_turn_id))
+            row.pop("last_seq", None)
             pending_running = pending is not None and not (
                 record.last_turn_id == pending.native_turn_id
                 and record.status
@@ -1710,6 +1725,55 @@ class SessionService:
         archived: bool = False,
         include_last_agent_reply: bool = False,
     ) -> dict[str, Any]:
+        entries, total, next_cursor = await self._activities.observe_thread(
+            self._read_list_page,
+            limit,
+            principal,
+            scope=scope,
+            project_path=project_path,
+            query=query,
+            history=history,
+            cursor=cursor,
+            archived=archived,
+            include_last_agent_reply=include_last_agent_reply,
+        )
+        sessions = []
+        for entry in entries:
+            record, state = entry.record, entry.state
+            row = self._list_row(record, state)
+            if entry.match is not None:
+                row["match"] = entry.match
+            if include_last_agent_reply:
+                row["last_agent_reply_at"] = entry.last_agent_reply_at
+            if row["recovery_blocked"] and state.pending is not None:
+                row.update(
+                    await self._activities.observe_thread(
+                        self._events.recovery_snapshot,
+                        record.session_id,
+                        state.pending.native_turn_id,
+                    )
+                )
+            sessions.append(row)
+        return {
+            "sessions": sessions,
+            "total": total,
+            "runtime_id": self._runtime.runtime_id,
+            "next_cursor": next_cursor,
+        }
+
+    def _read_list_page(
+        self,
+        limit: int,
+        principal: SessionPrincipal,
+        *,
+        scope: SessionListScope,
+        project_path: str | None,
+        query: str | None,
+        history: Callable[[str], tuple[Any, ...]] | None,
+        cursor: str,
+        archived: bool,
+        include_last_agent_reply: bool,
+    ) -> tuple[builtins.list[SessionListEntry], int, str | None]:
         bounded = min(SESSION_LIST_MAX_LIMIT, max(1, int(limit or SESSION_LIST_DEFAULT_LIMIT)))
         normalized_query = str(query or "").strip()[:SESSION_SEARCH_QUERY_MAX_LENGTH]
         normalized_project: str | None = None
@@ -1735,8 +1799,7 @@ class SessionService:
             after=parse_session_list_cursor(cursor),
             archived=archived,
         )
-        total = min(len(rows), scan_limit)
-        sessions = []
+        selected = []
         scanned = 0
         for record in rows[:scan_limit]:
             scanned += 1
@@ -1751,30 +1814,33 @@ class SessionService:
             )
             if normalized_query and match is None:
                 continue
-            row = self._list_row(record)
-            if match is not None:
-                row["match"] = match
-            sessions.append(row)
-            if include_last_agent_reply:
-                row["last_agent_reply_at"] = await asyncio.to_thread(
-                    self._events.last_agent_reply_at, record.session_id
-                )
-            if len(sessions) >= bounded:
+            selected.append((record, match))
+            if len(selected) >= bounded:
                 break
-        return {
-            "sessions": sessions,
-            "total": total,
-            "runtime_id": self._runtime.runtime_id,
-            "next_cursor": (
-                session_list_cursor(
-                    rows[scanned - 1].updated_at,
-                    rows[scanned - 1].session_id,
-                    rows[scanned - 1].pinned if scope is SessionListScope.PROJECT else None,
-                )
-                if scanned and scanned < len(rows)
-                else None
-            ),
-        }
+        session_ids = [record.session_id for record, _ in selected]
+        states = self._access.list_states(session_ids, default_model_id=RETIRED_NATIVE_MODEL_KEY)
+        entries = [
+            SessionListEntry(
+                record,
+                states[record.session_id],
+                match,
+                (
+                    self._events.last_agent_reply_at(record.session_id)
+                    if include_last_agent_reply
+                    else None
+                ),
+            )
+            for record, match in selected
+        ]
+        next_cursor = None
+        if scanned and scanned < len(rows):
+            anchor = rows[scanned - 1]
+            next_cursor = session_list_cursor(
+                anchor.updated_at,
+                anchor.session_id,
+                anchor.pinned if scope is SessionListScope.PROJECT else None,
+            )
+        return entries, min(len(rows), scan_limit), next_cursor
 
     async def search_project(
         self,
@@ -1851,11 +1917,11 @@ class SessionService:
             )
         )["sessions"]
 
-    def _list_row(self, record: SessionCatalogRecord) -> dict[str, Any]:
+    def _list_row(self, record: SessionCatalogRecord, state: SessionListState) -> dict[str, Any]:
         live = self._sessions.get(record.session_id)
-        binding = self._access.runtime_binding(record.session_id)
-        model_state = self._model_state(record.session_id)
-        pending = self._access.pending_turn_settlement(record.session_id)
+        binding = state.binding
+        model_state = state.model
+        pending = state.pending
         recovery_blocked = pending is not None and (live is None or pending.recovery_blocked)
         pending_running = pending is not None and not (
             record.last_turn_id == pending.native_turn_id
@@ -1909,11 +1975,6 @@ class SessionService:
             and not recovery_blocked,
             "recovery_blocked": recovery_blocked,
             "recovery_pending": pending is not None,
-            **(
-                self._events.recovery_snapshot(record.session_id, pending.native_turn_id)
-                if recovery_blocked and pending
-                else {}
-            ),
             "unknown_outcome": (
                 live.ledger.has_unknown_outcome
                 if live is not None
@@ -3972,8 +4033,12 @@ class SessionService:
             self._settings.set_runtime_model(target)
         if apply_now and live is not None:
             try:
-                await self.prepare_turn(live, purpose=ResourcePurpose.SESSION)
+                await self._prepare_turn(live, purpose=ResourcePurpose.SESSION)
             except Exception as error:
+                conflict = getattr(error, "safe_error", "") == RESOURCE_HOST_CONFIGURATION_CONFLICT
+                if conflict and self._schedule_reconfiguration(live):
+                    # The drain can finish only after this request releases its activity lease.
+                    return {"ok": True, **self.model(session_id)}, HTTP_ACCEPTED
                 return (
                     {
                         **_runtime_failure_payload(error, operation="model_switch"),
@@ -4089,20 +4154,21 @@ class SessionService:
                 self._schedule_reconfiguration(live)
             raise
 
-    def _schedule_reconfiguration(self, live: LiveSession) -> None:
+    def _schedule_reconfiguration(self, live: LiveSession) -> bool:
         try:
             if not self._runtime.reconfiguration_supported:
-                return
+                return False
             record = self._access.get(live.id)
             if record is None:
-                return
-            self._reconfigure_host(
+                return False
+            operation = self._reconfigure_host(
                 live.id,
                 SessionPrincipal(record.principal_id),
                 actor_id=live.user_id,
                 request_id=str(uuid.uuid4()),
                 model_id=self.model(live.id)["model_id"],
             )
+            return operation["state"] == CommandState.ACCEPTED.value
         except Exception as error:
             self._logger.warning(
                 "runtime_host_reconfiguration_not_scheduled session_id=%s failure_type=%s code=%s",
@@ -4110,6 +4176,7 @@ class SessionService:
                 type(error).__name__,
                 getattr(error, "safe_error", "") or RESOURCE_HOST_CONTEXT_REQUIRED,
             )
+            return False
 
     async def _prepare_turn(
         self,

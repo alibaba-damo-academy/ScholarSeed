@@ -23,7 +23,7 @@ from pydantic import (
     model_validator,
 )
 
-from service.capabilities.service.declarative import CANVAS_SLOT
+from service.capabilities.service.declarative import CANVAS_SLOT, ConversationLayout
 from service.capabilities.service.utils import json_object
 from service.platform.vocabulary import COMPONENT_ANSWER_CAPABILITY
 
@@ -191,6 +191,11 @@ class PluginComponent(Declaration):
     entry: str | None = Field(
         default=None, description="Package-relative compiled JavaScript component entry"
     )
+    openui: ConversationLayout | None = Field(
+        default=None,
+        exclude_if=lambda layout: layout is None,
+        description="Fixed display-only OpenUI layout. Agent data can fill declared required fields only.",
+    )
     preview: str = Field(description="Package-relative conversation scenario JSON")
     actions: list[PluginAction] = Field(default_factory=list, max_length=MAX_DECLARATIONS)
     input_schema: dict[str, Any] = Field(default_factory=lambda: {"type": "object"})
@@ -210,7 +215,18 @@ class PluginComponent(Declaration):
     def unique_actions(self) -> PluginComponent:
         if len({action.id for action in self.actions}) != len(self.actions):
             raise ValueError("UI action IDs must be unique")
-        if self.public:
+        if self.openui is not None:
+            if (
+                self.public
+                or self.entry is not None
+                or self.workbench
+                or self.actions
+                or self.slot is None
+                or self.slot in PUBLIC_COMPONENT_SLOTS
+            ):
+                raise ValueError("openui_layout_display_only")
+            self.openui.validate_fields(self.input_schema)
+        elif self.public:
             if self.workbench:
                 raise ValueError("workbench placement requires a packaged component")
             if self.slot not in PUBLIC_COMPONENT_SLOTS or self.entry is not None:
@@ -384,6 +400,8 @@ class PluginDescriptor(Declaration):
 
     @model_validator(mode="after")
     def declared_actions(self) -> PluginDescriptor:
+        if self.ui is not None and any(component.openui for component in self.components):
+            raise ValueError("openui_layout_sdk_dependency")
         if len(set(self.capabilities)) != len(self.capabilities):
             raise ValueError("capabilities must be unique")
         if len({field.key for field in self.configuration}) != len(self.configuration):
@@ -561,6 +579,14 @@ def inspect_plugin(
                 scenario = ComponentScenario.model_validate(
                     json_object(files[component.preview], limit=MAX_PREVIEW_BYTES)
                 )
+                if component.openui is not None:
+                    if scenario.interaction or any(case.interaction for case in scenario.cases):
+                        raise ValueError("openui_layout_display_only")
+                    validate_component_value(component.input_schema, scenario.data)
+                    for case in scenario.cases:
+                        validate_component_value(
+                            component.input_schema, {**scenario.data, **(case.data or {})}
+                        )
                 if set(scenario.responses) != {action.id for action in component.actions}:
                     raise ValueError("scenario responses must match declared actions")
                 for case in scenario.cases:

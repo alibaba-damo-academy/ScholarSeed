@@ -104,6 +104,7 @@ class TaskLeaseContract(unittest.TestCase):
             active_product_turn_id="turn-1",
             product_turn_generation=1,
             current_task=RunningTask(),
+            prediction_task=None,
             interrupting=False,
             terminating=False,
             terminated=False,

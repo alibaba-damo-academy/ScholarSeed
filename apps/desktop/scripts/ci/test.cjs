@@ -12,6 +12,7 @@ const TEST_GLOBS = Object.freeze({
 })
 const TEST_FILES = Object.freeze([
   '../../packages/ui/validation.test.ts',
+  '../../packages/ui/layout.test.ts',
   '../../packages/ui/messages.test.ts',
   '../../packages/ui/preview/native.test.cjs',
   'src/renderer/src/components/primitive/images.render.test.cjs',

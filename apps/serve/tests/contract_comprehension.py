@@ -4,15 +4,22 @@ import asyncio
 import hashlib
 import json
 import tempfile
+import time
 import unittest
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
 from fastapi import FastAPI
-from knowledge_layer.comprehend import SourceImage
+from knowledge_layer.comprehend import (
+    ExtractionProtocolError,
+    ExtractionSyntaxError,
+    SourceImage,
+    build_block_prompt,
+    extraction_blocks,
+)
 from knowledge_layer.core.docio import parse_sentences_index
 
 from apps.serve.tests import pdf as pdf_fixture
@@ -29,14 +36,11 @@ from service.literature.service.citations import (
     compile_citation_repair,
 )
 from service.literature.service.comprehension import (
-    BLOCK_INSTRUCTIONS,
     ComprehensionError,
-    ExtractionSyntaxError,
     ReadingClient,
     ReadingInput,
     _text,
     comprehend,
-    extraction_blocks,
     prepare_reading,
     project_field,
 )
@@ -191,7 +195,7 @@ class ReadingContracts(unittest.IsolatedAsyncioTestCase):
             blocks.replace("<card>{}</card>", ""),
             "<reading></reading>" + blocks,
         ):
-            with self.subTest(invalid=invalid), self.assertRaises(ComprehensionError):
+            with self.subTest(invalid=invalid), self.assertRaises(ExtractionProtocolError):
                 extraction_blocks(invalid, "method")
         for kind in ("method", "benchmark", "survey", "theory"):
             self.assertEqual(
@@ -205,7 +209,7 @@ class ReadingContracts(unittest.IsolatedAsyncioTestCase):
         )
         with self.assertRaises(ExtractionSyntaxError):
             extraction_blocks(malformed, "method")
-        with self.assertRaises(ComprehensionError) as caught:
+        with self.assertRaises(ExtractionProtocolError) as caught:
             extraction_blocks(malformed.removesuffix("</source_map>"), "method")
         self.assertNotIsInstance(caught.exception, ExtractionSyntaxError)
 
@@ -269,7 +273,9 @@ class ReadingContracts(unittest.IsolatedAsyncioTestCase):
         )
         result = await comprehend(source, ReadingClient(source, invoke))
         compiled = invoke.call_args_list[1].args[0]
-        self.assertIn(BLOCK_INSTRUCTIONS, compiled.instructions)
+        self.assertEqual(
+            build_block_prompt("method", output_language="en")[0], compiled.instructions
+        )
         self.assertFalse(compiled.json_output)
         self.assertNotIn("<reading paper_type=", compiled.instructions)
         self.assertTrue(source.content.startswith("#1 "))
@@ -385,7 +391,7 @@ class ReadingContracts(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(str(number), result["source_mapping"]["sentences"])
         self.assertEqual(result["metadata"]["input_mode"], "text_images")
 
-    async def test_joint_syntax_repair_omits_source_and_images_and_never_retries_again(self):
+    async def test_joint_syntax_repair_is_bounded_and_only_content_repair_reads_source(self):
         source = prepare_reading(
             extract(document()),
             doc_id="paper",
@@ -412,12 +418,16 @@ class ReadingContracts(unittest.IsolatedAsyncioTestCase):
                 else:
                     with self.assertRaises(ComprehensionError):
                         await finish_extraction(source, client, "method")
-                self.assertEqual(invoke.await_count, 1)
-                compiled = invoke.await_args.args[0]
+                self.assertEqual(invoke.await_count, 1 if success else 2)
+                compiled = invoke.await_args_list[0].args[0]
                 self.assertEqual(compiled.attachments, ())
                 self.assertNotIn(source.content, compiled.input_text)
-                self.assertEqual(compiled.prompt_version, "reading/l1-format-repair-v1")
-                self.assertEqual(client.retry_metadata()["l1_retry_mode"], "format")
+                self.assertEqual(compiled.prompt_version, "l1/format-repair-v2")
+                self.assertEqual(
+                    client.retry_metadata()["l1_retry_mode"], "format" if success else "content"
+                )
+                if not success:
+                    self.assertIn(source.content, invoke.await_args_list[1].args[0].input_text)
 
     async def test_joint_incomplete_tail_and_content_errors_keep_original_retry(self):
         source = prepare_reading(
@@ -442,12 +452,99 @@ class ReadingContracts(unittest.IsolatedAsyncioTestCase):
                 self.assertIn(source.content, invoke.await_args.args[0].input_text)
                 self.assertEqual(client.retry_metadata()["l1_retry_mode"], "content")
 
+    async def test_standalone_and_joint_share_mixed_repair_budget_and_preserve_blocks(self):
+        source = prepare_reading(
+            extract(document()),
+            doc_id="paper",
+            title="Paper",
+            abstract="",
+            language="en",
+            input_limit=120000,
+        )
+        partial = json.loads(json.dumps(JOINT))
+        partial["extraction"]["common_fields"] = {}
+        raw = joint_output(partial).replace("<common_fields>{", "<common_fields>{broken,", 1)
+        patch = {
+            "fields": {"common_fields": EXTRACTION["common_fields"]},
+            "source_map": EXTRACTION["source_map"],
+        }
+        for joint in (False, True):
+            with self.subTest(joint=joint):
+                responses = [record("syntax", partial["extraction"]), record("content", patch)]
+                if joint:
+                    invoke = AsyncMock(side_effect=responses)
+                    client = JointReadingClient(
+                        source, invoke, replace(record("initial", {}), output_text=raw)
+                    )
+                    result = await finish_extraction(source, client, "method")
+                    calls = invoke.call_args_list
+                else:
+                    invoke = AsyncMock(
+                        side_effect=[record("initial", raw.split("</reading>", 1)[1]), *responses]
+                    )
+                    result = await comprehend(
+                        source, ReadingClient(source, invoke), paper_type="method"
+                    )
+                    calls = invoke.call_args_list[1:]
+                self.assertEqual(len(calls), 2)
+                self.assertNotIn(source.content, calls[0].args[0].input_text)
+                self.assertIn(source.content, calls[1].args[0].input_text)
+                self.assertEqual(result["l1"]["extraction_quality"]["status"], "READY")
+                self.assertEqual(result["l1"]["card"], EXTRACTION["card"])
+                self.assertEqual(
+                    result["source_mapping"]["card_mapping"]["card.method.description"], [1]
+                )
+
+    def test_shared_budget_keeps_completed_table_and_skips_images(self):
+        index = replace(
+            extract(document()),
+            regions=(
+                PdfVisualRegion(
+                    "first", "table", "table_region", "exclude", 1, (0.1, 0.1, 0.4, 0.3)
+                ),
+                PdfVisualRegion(
+                    "second", "table", "table_region", "exclude", 1, (0.5, 0.5, 0.8, 0.7)
+                ),
+            ),
+        )
+        calls = []
+
+        def table(*args, **kwargs):
+            calls.append(kwargs["deadline"])
+            if len(calls) == 1:
+                return {"text": "Method | Score\nA | 1", "partial": False}
+            time.sleep(max(0, kwargs["deadline"] - time.monotonic()) + 0.01)
+            raise ValueError("pdf_worker_timeout")
+
+        with (
+            patch("service.literature.service.comprehension.MAX_PREPARATION_SECONDS", 0.1),
+            patch("service.literature.service.materials.extract_pdf_table", side_effect=table),
+            patch("service.literature.service.materials.render_pdf_preview") as render,
+        ):
+            source = prepare_reading(
+                index,
+                doc_id="paper",
+                title="Paper",
+                abstract="",
+                language="zh",
+                input_limit=100000,
+                payload=document(),
+                image_input=True,
+            )
+        self.assertEqual(calls[0], calls[1])
+        render.assert_not_called()
+        self.assertEqual(source.snapshot["preparation_diagnostic"], {"timeout_stage": "table"})
+        self.assertIn("Method | Score", source.content)
+        self.assertEqual(len(source.snapshot["fragments"]), len(index.fragments) + 1)
+        self.assertEqual(source.coverage["omissions"], [asdict(item) for item in index.omissions])
+        self.assertNotIn("timeout_stage", compile_joint(source).compiled.input_text)
+
     def test_text_only_never_renders_and_visual_failure_is_optional(self):
         index = replace(
             extract(document()),
             regions=(PdfVisualRegion("r1", "figure", "plot", "exclude", 1, (0.1, 0.1, 0.8, 0.5)),),
         )
-        with patch("service.literature.service.materials.render_pdf_page") as render:
+        with patch("service.literature.service.materials.render_pdf_preview") as render:
             images, manifest, policy = prepare_images(
                 index, document(), enabled=False, first_number=2
             )
@@ -455,7 +552,7 @@ class ReadingContracts(unittest.IsolatedAsyncioTestCase):
             render.assert_not_called()
             self.assertIn("model_text_only", policy["skipped"])
         with patch(
-            "service.literature.service.materials.render_pdf_page",
+            "service.literature.service.materials.render_pdf_preview",
             side_effect=ValueError("bad crop"),
         ):
             images, manifest, policy = prepare_images(
@@ -932,7 +1029,7 @@ class ReadingApiContracts(unittest.IsolatedAsyncioTestCase):
             json.dumps(JOINT),
             reading + "<extraction>" + json.dumps(JOINT["extraction"]) + "</extraction>",
         ):
-            with self.subTest(output=output[:50]), self.assertRaises(ComprehensionError):
+            with self.subTest(output=output[:50]), self.assertRaises(ExtractionProtocolError):
                 extraction_payload(output)
         stream = JointStream(compile_joint(source))
         stream.feed(json.dumps(JOINT))
@@ -949,11 +1046,11 @@ class ReadingApiContracts(unittest.IsolatedAsyncioTestCase):
         )
         payload = json.loads(compile_joint(source).compiled.input_text)
         method = payload["schema_reference"]["method"]
-        self.assertIn("key_components", method["template"])
+        self.assertIn("key_components", method["template"]["method"])
         self.assertIn("card.method.key_formulas[i]", method["source_fields"])
         self.assertNotIn("card.conclusion", method["source_fields"])
         self.assertNotIn("card.experiments.results[i]", method["source_fields"])
-        self.assertIn("source_ids", method["template"])
+        self.assertIn("source_ids", method["template"]["experiments"]["results"][0])
 
     async def test_invalid_reading_still_saves_valid_l1_for_reuse(self):
         payload = json.loads(json.dumps(JOINT))
@@ -1198,6 +1295,85 @@ class ReadingApiContracts(unittest.IsolatedAsyncioTestCase):
         repair.apply(stream, json.dumps({"replacements": [{"index": 0, "source_ids": ["S1"]}]}))
         self.assertIsNotNone(stream.summary)
         self.assertEqual(stream.output, joint_output(payload))
+
+    def test_joint_preview_keeps_type_and_repairs_complete_malformed_spans(self):
+        source = prepare_reading(
+            self.indexes.index.return_value,
+            doc_id="paper",
+            title="Paper",
+            abstract="",
+            language="en",
+            input_limit=500000,
+        )
+        plan = compile_joint(source)
+        for marker in ("[[S1][[S2]]", "]]", "[[#1]]", "[[S1-S2]]"):
+            with self.subTest(marker=marker):
+                payload = json.loads(json.dumps(JOINT))
+                payload["reading"]["items"][0]["text"] = QUOTE + marker
+                output = joint_output(payload).replace('paper_type="method"', 'paper_type="survey"')
+                stream = JointStream(plan)
+                preview = stream.feed(output.split("</reading>")[0])
+                self.assertEqual(preview["paper_type"], "survey")
+                stream.feed("</reading>" + output.split("</reading>", 1)[1])
+                self.assertEqual(stream.error, "pdf_ai_reading_citations_invalid")
+                repair = compile_citation_repair(stream)
+                self.assertIsNotNone(repair)
+                issues = json.loads(repair.compiled.input_text)["issues"]
+                self.assertEqual([issue["marker"] for issue in issues], [marker])
+                repair.apply(
+                    stream, json.dumps({"replacements": [{"index": 0, "source_ids": ["S1"]}]})
+                )
+                self.assertIsNone(stream.error)
+                self.assertEqual(stream.summary["paper_type"], "survey")
+                self.assertEqual(stream.output, output)
+
+    def test_unterminated_reference_cannot_remove_following_prose(self):
+        source = prepare_reading(
+            self.indexes.index.return_value,
+            doc_id="paper",
+            title="Paper",
+            abstract="",
+            language="en",
+            input_limit=500000,
+        )
+        payload = json.loads(json.dumps(JOINT))
+        payload["reading"]["items"][0]["text"] = QUOTE + "[[S1 additional claim text"
+        output = joint_output(payload)
+        stream = JointStream(compile_joint(source))
+        stream.feed(output)
+        self.assertEqual(stream.error, "pdf_ai_reading_citations_invalid")
+        self.assertIsNone(compile_citation_repair(stream))
+        self.assertEqual(stream.output, output)
+
+    def test_citation_repair_admits_many_small_issues_within_payload_budget(self):
+        source = prepare_reading(
+            self.indexes.index.return_value,
+            doc_id="paper",
+            title="Paper",
+            abstract="",
+            language="en",
+            input_limit=500000,
+        )
+        plan = compile_joint(source)
+        original = json.loads(plan.compiled.input_text)["original"]
+        self.assertTrue(original.startswith("S1 "))
+        self.assertTrue(source.content.startswith("#1 "))
+        payload = json.loads(json.dumps(JOINT))
+        payload["reading"]["items"][0]["text"] = "\n".join(QUOTE + "[[#1]]" for _ in range(22))
+        stream = JointStream(plan)
+        stream.feed(joint_output(payload))
+        repair = compile_citation_repair(stream)
+        self.assertIsNotNone(repair)
+        self.assertEqual(len(repair.spans), 22)
+        repair.apply(
+            stream,
+            json.dumps({"replacements": [{"index": i, "source_ids": ["S1"]} for i in range(22)]}),
+        )
+        self.assertIsNotNone(stream.summary)
+        with patch("service.literature.service.citations.MAX_REPAIR_INPUT_CHARS", 1):
+            rejected = JointStream(plan)
+            rejected.feed(joint_output(payload))
+            self.assertIsNone(compile_citation_repair(rejected))
 
     async def extracted(self, output, source):
         initial = replace(record("initial", {}), output_text=output)
@@ -1542,14 +1718,14 @@ class ReadingApiContracts(unittest.IsolatedAsyncioTestCase):
             '<reading paper_type="invalid">',
             "<card>{}</card>",
         ):
-            with self.subTest(prefix=prefix[:30]), self.assertRaises(ComprehensionError):
+            with self.subTest(prefix=prefix[:30]), self.assertRaises(ExtractionProtocolError):
                 extraction_payload(prefix + output)
         for invalid in (
             output.replace("</reading>", ""),
             output.replace("</source_map>", ""),
             output + "extra",
         ):
-            with self.subTest(invalid=invalid[-40:]), self.assertRaises(ComprehensionError):
+            with self.subTest(invalid=invalid[-40:]), self.assertRaises(ExtractionProtocolError):
                 extraction_payload("Here is the reading.\n" + invalid)
 
     async def test_joint_extraction_rejects_nonexistent_sources_and_fields(self):

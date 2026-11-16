@@ -4,6 +4,7 @@ import { Ellipsis, ExternalLink, Globe, RotateCw } from 'lucide-react'
 import {
   BROWSER_CDP_STATUS,
   BROWSER_ERROR,
+  MAX_HISTORY_SEARCH_CHARS,
   PAGE_ZOOM_DEFAULT,
   PAGE_ZOOM_FACTORS,
   pageZoomSteps,
@@ -820,7 +821,7 @@ export function Browser({
   }, [active?.tabId, active?.url])
   useEffect(() => {
     const query = address.trim()
-    if (!suggestionsOpen || !query) {
+    if (!suggestionsOpen || !query || query.length > MAX_HISTORY_SEARCH_CHARS) {
       setSuggestions([])
       setHistoryLoading(false)
       setHistoryError(false)

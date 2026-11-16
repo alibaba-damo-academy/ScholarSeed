@@ -180,6 +180,7 @@ interface Boot {
   developerToolsEnabled: boolean
   browserEnabled: boolean
   browserAdvancedSettingsEnabled: boolean
+  browserAgentNavigationEnabled?: boolean
   feedbackRecorderEnabled: boolean
   preferences: RendererPreferences
 }
@@ -472,6 +473,8 @@ const bridge = {
   developerToolsEnabled: boot.developerToolsEnabled,
   browserEnabled: boot.browserEnabled === true,
   browserAdvancedSettingsEnabled: browserAdvancedEnabled,
+  browserAgentNavigationEnabled:
+    boot.browserEnabled === true && boot.browserAgentNavigationEnabled === true,
   feedbackRecorderEnabled: boot.feedbackRecorderEnabled,
   preferences: boot.preferences,
   async savePreferences(

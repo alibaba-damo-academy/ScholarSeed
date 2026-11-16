@@ -27,7 +27,12 @@ from reportlab.pdfgen.canvas import Canvas
 
 from scholarseed_runtime.contract.sandbox import SandboxProbe
 from service.platform import access, windows
-from service.platform.storage import DirectoryHandle, open_directory, remove_tree
+from service.platform.storage import (
+    DIRECTORY_ACL_READ_ACCESS,
+    DirectoryHandle,
+    open_directory,
+    remove_tree,
+)
 from service.platform.toolchain import (
     PROBE_LIBRARIES_CODE,
     PROBE_OUTPUT_LIMIT,
@@ -215,10 +220,20 @@ class ToolResourceContracts(unittest.TestCase):
             return original(directory, name, *arguments, **keywords)
 
         with tempfile.TemporaryDirectory() as temporary:
-            with patch.object(DirectoryHandle, "mkdir", mkdir):
+            with (
+                patch.object(DirectoryHandle, "mkdir", mkdir),
+                patch("service.platform.toolchain.open_directory", wraps=open_directory) as opened,
+            ):
                 resources.prepare_environment(Path(temporary).resolve())
         self.assertTrue(calls)
         self.assertTrue(all(call.get("inherit_acl") is True for call in calls))
+        self.assertTrue(opened.call_args_list)
+        self.assertTrue(
+            all(
+                call.kwargs.get("final_access") == DIRECTORY_ACL_READ_ACCESS
+                for call in opened.call_args_list
+            )
+        )
 
     def test_compiler_description_preserves_fonts_and_is_an_immutable_snapshot(self) -> None:
         fonts = [str(Path(tempfile.gettempdir()).resolve() / "fonts & <字体>")]
@@ -764,7 +779,9 @@ class NativeCompilerCache(unittest.TestCase):
                                 artifact.parent.parent,
                                 artifact.parent,
                             ):
-                                with closing(open_directory(path, ())) as directory:
+                                with closing(
+                                    open_directory(path, (), final_access=DIRECTORY_ACL_READ_ACCESS)
+                                ) as directory:
                                     with access.security_snapshot(directory.native_handles[-1]) as (
                                         snapshot,
                                         _,
@@ -1236,7 +1253,10 @@ class ToolVerificationContracts(unittest.IsolatedAsyncioTestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
-            with patch.object(DirectoryHandle, "mkdir", mkdir):
+            with (
+                patch.object(DirectoryHandle, "mkdir", mkdir),
+                patch("service.platform.toolchain.open_directory", wraps=open_directory) as opened,
+            ):
                 async with resources.verification(root, writable=True) as probes:
                     verification = root / ".tool-cache" / "verification"
                     self.assertEqual(
@@ -1250,6 +1270,13 @@ class ToolVerificationContracts(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(artifact.parent.parent, verification)
                     self.assertTrue(artifact.parent.is_dir())
             self.assertFalse(artifact.parent.exists())
+        self.assertTrue(opened.call_args_list)
+        self.assertTrue(
+            all(
+                call.kwargs.get("final_access") == DIRECTORY_ACL_READ_ACCESS
+                for call in opened.call_args_list
+            )
+        )
 
     async def test_compiler_exit_is_not_a_permission_diagnosis_and_retains_output(self):
         with tempfile.TemporaryDirectory() as directory:

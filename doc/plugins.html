@@ -153,10 +153,11 @@ footer { border-top: 1px solid var(--line); padding: 24px 0; font-size: 13px; co
 <h2 id="create--ask-the-ai-to-create-it">Ask the AI to Create It</h2>
 <p>Send this in a ScholarSeed conversation:</p>
 <blockquote>
-<p>Use plugin-create to create a paper-reading-notes plugin. After the user supplies a paper or excerpt, show a card asking for a reading focus: Understand the method or Check the evidence. For method notes, summarize the research question, method steps, and applicable conditions. For evidence notes, summarize conclusions, supporting evidence, and limitations. Include page or paragraph locations and mark missing information as not stated. Generate the source, validate and package the ZIP, then provide an installation card.</p>
+<p>Use plugin-create to create a version comparison plugin. Compare the supplied versions and show the item, earlier value, revised value and source in a fixed OpenUI table. Generate a data schema, validate and package the ZIP, then provide an installation card.</p>
 </blockquote>
 <p>The AI generates the Skill, descriptor, component, and scenarios. Review the source and reports before confirming installation. To revise it, ask <code>plugin-create</code> for changes in the same conversation; do not create a second plugin with the same identity.</p>
 <h2 id="create--write-it-yourself">Write It Yourself</h2>
+<p>The hand-written paper-reading example below uses the existing JavaScript plugin SDK. <code>plugin-create</code> does not depend on that SDK: it uses fixed OpenUI layouts for compatible results and checks native interaction and workbench support separately.</p>
 <p>In a Python environment with the target ScholarSeed backend installed, obtain the required <code>host</code> value:</p>
 <pre><code class="language-sh">python -c &quot;from importlib.metadata import version; print('==' + version('scholarseed'))&quot;
 </code></pre>

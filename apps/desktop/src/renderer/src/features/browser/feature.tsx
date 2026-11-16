@@ -68,6 +68,7 @@ function BrowserNavigation(): null {
       ) {
         current.current.act.openWorkbenchView('browser', {
           preserveProject: true,
+          preserveLayout: true,
           browserPageId: activePage.tabId,
           browserPageOwned: true,
         })
